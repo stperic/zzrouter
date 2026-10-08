@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Built with Go 1.26.8 (compiler, runtime and `net/http` bug fixes; no security
+  fixes over 1.26.6).
+
 ## 0.1.0 (2026-10-08)
 
 First public release.

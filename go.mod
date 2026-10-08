@@ -1,6 +1,6 @@
 module github.com/stperic/zzrouter
 
-go 1.26.6
+go 1.26.8
 
 require (
 	charm.land/bubbles/v2 v2.1.1

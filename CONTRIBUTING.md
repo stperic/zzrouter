@@ -1,6 +1,6 @@
 # Contributing
 
-Use Go 1.26.6 or newer and golangci-lint 2.11.4. Windows release resources
+Use the Go version in `go.mod` (or newer) and golangci-lint 2.11.4. Windows release resources
 also require go-winres (`make deps-dev`).
 
 ```sh
