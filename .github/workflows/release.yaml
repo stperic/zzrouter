@@ -72,7 +72,9 @@ jobs:
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.PreRelease=$PRERELEASE"
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GitCommit=$GITHUB_SHA"
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GitBranch=${GITHUB_REF#refs/heads/}"
-          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The tagged commit's time, not the clock: every platform reports one version and rebuilds match.
+          BUILD_DATE=$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.BuildDate=$BUILD_DATE"
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GoVersion=$(go version | cut -d' ' -f3)"
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.Platform=${{ matrix.goos }}/${{ matrix.goarch }}"
           LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.BuildUser=github-actions"
@@ -85,14 +87,14 @@ jobs:
 
           # Build zzrouter client
           echo "Building zzrouter..."
-          go build -ldflags "$LDFLAGS" -o "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/zzrouter
+          go build -trimpath -ldflags "$LDFLAGS" -o "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/zzrouter
 
           # Build zzrouter-launcher. The node hashes it at build time and
           # refuses a launcher that does not match, so the two have to be
           # built and shipped together : see `make build-server`.
           echo "Building zzrouter-launcher..."
           LAUNCHER="zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
-          go build -ldflags "$LDFLAGS" -o "$LAUNCHER" ./cmd/zzrouter-launcher
+          go build -trimpath -ldflags "$LDFLAGS" -o "$LAUNCHER" ./cmd/zzrouter-launcher
 
           # sha256sum on linux and Git Bash, shasum on the macOS runners.
           if command -v sha256sum >/dev/null 2>&1; then
@@ -110,7 +112,7 @@ jobs:
           # launcher hash into a hard failure at run time instead of a
           # warn-and-continue, which is the whole point of embedding one.
           echo "Building zzrouter-node..."
-          go build -tags release \
+          go build -trimpath -tags release \
             -ldflags "$LDFLAGS -X github.com/stperic/zzrouter/pkg/prov_apps/process.LauncherSHA256=$LAUNCHER_SHA" \
             -o "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/zzrouter-node
 
