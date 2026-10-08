@@ -736,9 +736,15 @@ paths:
         their existing behavior. A memory snapshot cannot reserve against other
         workloads changing memory after the check.
 
+        While another run on the node is still claiming GPU memory, the
+        launch is accepted and queued: the run stays `starting` with
+        `waiting_on` naming that run, and is measured once it is ready. A
+        refusal at that point fails the run and its job with the same 409
+        detail.
+
         Returns 202 immediately with a pkg/jobs handle ID. Subscribe to
-        launch progress (launching → waiting-for-health → running/failed)
-        via `GET /zzrouter/v1/jobs/{job_id}/stream?node={node}`.
+        launch progress (queued → launching → waiting-for-health →
+        running/failed) via `GET /zzrouter/v1/jobs/{job_id}/stream?node={node}`.
 
         Cancel an in-flight launch with `DELETE /zzrouter/v1/jobs/{job_id}` ,
         this terminates the process. Once the run reaches Running the job
@@ -10939,6 +10945,11 @@ components:
         error_message:
           type: string
           description: Bounded redacted failure summary, preserving the first specific cause.
+        waiting_on:
+          type: string
+          description: |
+            Set while a `starting` run is queued: the run still claiming GPU
+            memory that this one is admitted after. Absent once admitted.
         failure:
           type: object
           description: Optional diagnostic snapshot captured by the failed run lifecycle; does not require a logs request.

@@ -59,13 +59,18 @@ const watcherHeartbeatInterval = 30 * time.Second
 // on a terminal handle is a no-op (clean by pkg/jobs semantics).
 func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h jobs.Handle) {
 	// Opening Progress: agents subscribing immediately see a "launching"
-	// event even before the first status transition. Meta MUST be set
+	// (or "queued") event even before the first status transition. Meta MUST be set
 	// before Progress — jobs.Handle.Meta patches the sidecar for the
 	// NEXT emitted event, so calling Progress first would emit an event
 	// carrying only the meta passed to jobs.Start (run_id/provider/etc.)
 	// and the "phase" field would arrive one event late.
-	h.Meta(jobs.Meta{"phase": "launching"})
-	h.Progress(0, "launching", jobs.Bytes{})
+	queuedOn, isQueued := queuedState(inst)
+	phase := "launching"
+	if isQueued {
+		phase = "queued"
+	}
+	h.Meta(jobs.Meta{"phase": phase, "waiting_on": queuedOn})
+	h.Progress(0, phase, jobs.Bytes{})
 
 	tick := time.NewTicker(watcherPollInterval)
 	defer tick.Stop()
@@ -107,14 +112,22 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			return
 
 		case <-heartbeat.C:
-			elapsed := utils.Now().Sub(startedAt)
-			h.Meta(jobs.Meta{
-				"phase":      "waiting-for-health",
-				"elapsed_ms": elapsed.Milliseconds(),
-			})
-			h.Progress(0, "waiting-for-health", jobs.Bytes{})
+			if !isQueued {
+				phase = "waiting-for-health"
+			}
+			h.Meta(jobs.Meta{"phase": phase, "elapsed_ms": utils.Now().Sub(startedAt).Milliseconds()})
+			h.Progress(0, phase, jobs.Bytes{})
 
 		case <-tick.C:
+			// A queued run's job says what it waits on, and when it is admitted.
+			if on, q := queuedState(inst); q != isQueued || on != queuedOn {
+				queuedOn, isQueued, phase = on, q, "launching"
+				if q {
+					phase = "queued"
+				}
+				h.Meta(jobs.Meta{"phase": phase, "waiting_on": queuedOn})
+				h.Progress(0, phase, jobs.Bytes{})
+			}
 			status := inst.GetStatus()
 			switch status {
 			case instance.StatusRunning:
@@ -148,4 +161,12 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			// StatusStopping are intermediate; keep watching.
 		}
 	}
+}
+
+// queuedState reports whether a run still waits to be admitted, and on which run.
+func queuedState(inst *instance.Instance) (waitingOn string, queued bool) {
+	if inst.GetStatus() != instance.StatusStarting || inst.Admitted() {
+		return "", false
+	}
+	return inst.WaitingOn(), true
 }

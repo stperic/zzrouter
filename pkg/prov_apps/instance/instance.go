@@ -103,6 +103,14 @@ type Instance struct {
 	// compared against to tell whether the run is still current.
 	resolved Resolved
 
+	// admitted is set once the run's claim on memory is accounted for; a
+	// starting run that is not admitted is queued behind waitingOn.
+	admitted  bool
+	waitingOn string
+	refusal   error
+	// leftStarting closes when Status first leaves StatusStarting.
+	leftStarting chan struct{}
+
 	// Log channel for streaming instance output. Not serialized.
 	Logs chan string `json:"-"`
 
@@ -226,14 +234,81 @@ func (i *Instance) IsRunning() bool {
 
 // --- Thread-safe status transitions ---
 
-// MarkStarting transitions to starting state.
-func (i *Instance) MarkStarting() {
+// setStatusLocked is the only writer of Status; callers hold i.mu.
+func (i *Instance) setStatusLocked(status Status) {
+	if i.Status == StatusStarting && status != StatusStarting && i.leftStarting != nil {
+		select {
+		case <-i.leftStarting: // SetStatus can put a run back to starting; close once
+		default:
+			close(i.leftStarting)
+		}
+	}
+	i.Status = status
+}
+
+// LeftStarting is closed once the run is no longer starting.
+func (i *Instance) LeftStarting() <-chan struct{} {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.Status = StatusStarting
-	i.ErrorMessage = ""
-	i.failure = nil
-	i.FailedAt = time.Time{}
+	if i.leftStarting == nil {
+		i.leftStarting = make(chan struct{})
+		if i.Status != StatusStarting {
+			close(i.leftStarting)
+		}
+	}
+	return i.leftStarting
+}
+
+// Admit records that a starting run's memory claim is accounted for. It
+// returns false when the run stopped while it waited.
+func (i *Instance) Admit() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.Status != StatusStarting {
+		return false
+	}
+	i.admitted, i.waitingOn = true, ""
+	return true
+}
+
+// MarkRefused fails a queued run its admission refused, keeping the error
+// so callers classify it as they would an inline refusal. Like any failed
+// run it keeps its port until it is stopped or replaced.
+func (i *Instance) MarkRefused(err error) {
+	i.MarkFailed(err.Error())
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.Status == StatusFailed {
+		i.refusal, i.waitingOn = err, ""
+	}
+}
+
+// Refusal returns the admission error of a refused queued run.
+func (i *Instance) Refusal() error {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.refusal
+}
+
+// Admitted reports whether the run's memory claim is accounted for.
+func (i *Instance) Admitted() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.admitted
+}
+
+// SetWaitingOn names the starting run this queued run waits for.
+func (i *Instance) SetWaitingOn(id string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.waitingOn = id
+}
+
+// WaitingOn returns the run a queued run waits for, if known.
+func (i *Instance) WaitingOn() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.waitingOn
 }
 
 // MarkRunning transitions to running state.
@@ -243,7 +318,7 @@ func (i *Instance) MarkRunning() {
 	if i.Status.IsTerminal() || i.Status == StatusStopping {
 		return
 	}
-	i.Status = StatusRunning
+	i.setStatusLocked(StatusRunning)
 	i.LastHealthy = utils.Now()
 	i.ErrorMessage = ""
 	i.failure = nil
@@ -256,7 +331,7 @@ func (i *Instance) MarkUnhealthy(errorMsg string) {
 	if i.Status.IsTerminal() || i.Status == StatusStopping {
 		return
 	}
-	i.Status = StatusUnhealthy
+	i.setStatusLocked(StatusUnhealthy)
 	i.ErrorMessage = errorMsg
 }
 
@@ -269,7 +344,7 @@ func (i *Instance) MarkFailed(errorMsg string) {
 func (i *Instance) SetStatus(status Status) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.Status = status
+	i.setStatusLocked(status)
 }
 
 // --- Process info (set by launcher) ---
@@ -734,6 +809,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Node:                  hostname,
 		KeepAlive:             i.KeepAlive.String(),
 		ErrorMessage:          i.ErrorMessage,
+		WaitingOn:             i.waitingOn,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),

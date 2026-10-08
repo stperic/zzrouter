@@ -88,7 +88,6 @@ func extractStatusCode(err error) int {
 	case errors.Is(err, prov_apps.ErrShutdown),
 		errors.Is(err, process.ErrMemoryObservation),
 		errors.Is(err, prov_apps.ErrAtCapacity),
-		errors.Is(err, prov_apps.ErrLaunchInProgress),
 		errors.Is(err, prov_apps.ErrPortUnavailable):
 		return http.StatusServiceUnavailable
 	default:
@@ -111,17 +110,9 @@ func respondProviderErr(c *gin.Context, err error) {
 		})
 		return
 	}
-	if errors.Is(err, prov_apps.ErrLaunchInProgress) {
-		RespondWithProblemOpts(c, http.StatusServiceUnavailable, "Launch in progress", utils.SanitizeErrorMessage(err.Error()), ProblemOpts{Code: codeLaunchInProgress})
-		return
-	}
 	status := extractStatusCode(err)
 	RespondWithProblem(c, status, http.StatusText(status), utils.SanitizeErrorMessage(err.Error()))
 }
-
-// codeLaunchInProgress tells a caller its launch waits on another one, not
-// on a broken node: the same request succeeds once that launch is ready.
-const codeLaunchInProgress = "launch_in_progress"
 
 // respondFinalizeErr maps a FinalizeOnboarding/FinalizeOffboarding error
 // to an HTTP response. Unknown-name errors become 404; everything else 500.

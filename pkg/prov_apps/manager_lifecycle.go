@@ -17,6 +17,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -31,7 +32,8 @@ import (
 // that arrives after a terminal launch completes gets the live instance
 // without paying for another launch round-trip.
 func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
-	if m.shutdown.Load() {
+	// stopping is set before Stop's drain, shutdown only after it.
+	if m.stopping.Load() || m.shutdown.Load() {
 		return nil, ErrShutdown
 	}
 
@@ -105,54 +107,81 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 
 // launchInstanceLocked is the inner body of LaunchInstance, held under
 // the launchGroup singleflight so only one per (provider, model) key
-// runs at a time. Split out so LaunchInstance stays focused on the
-// coalescing contract.
-func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest) (*instance.Instance, error) { //nolint:gocyclo,cyclop // Launch admission, resource allocation and failure cleanup share one ordered flow.
+// runs at a time. A run that must wait for another launch to claim its
+// GPU memory is accepted at once and admitted later by awaitAdmission.
+func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-
-	// Refuse a busy admission before config or feature work, without holding it across an install gate.
-	if m.memoryBudget != nil {
-		if !m.memoryLaunchMu.TryLock() {
-			return nil, ErrLaunchInProgress
-		}
-		m.memoryLaunchMu.Unlock()
-	}
-
-	// Resolve provider config
-	configKey, svcCfg, ok := m.resolveConfigKey(req.Provider)
-	if !ok {
-		return nil, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
-	}
-	// Freeze the selected runtime before locking; toolkit reads happen under its gate.
-	_, selected, _, err := m.featureRuntime(svcCfg, req.Model, req.Runtime)
+	configKey, svcCfg, err := m.resolveLaunch(&req)
 	if err != nil {
 		return nil, err
+	}
+	if !req.installSmoke {
+		unlock, err := m.installs.acquireProvider(ctx, req.selectedRuntime)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
+	budget, err := m.launchBudget(configKey)
+	if err != nil {
+		return nil, err
+	}
+	inst, err := m.registerRun(ctx, req, svcCfg)
+	if err != nil {
+		return nil, err
+	}
+	if budget != nil {
+		// Admission measures free memory, so admissions run one at a time.
+		select {
+		case m.memoryAdmission <- struct{}{}:
+		default:
+			return m.queueRun(inst, req, "")
+		}
+		defer func() { <-m.memoryAdmission }()
+		blocker, err := m.startingBlocker(inst.ID)
+		if err != nil {
+			m.releaseRun(inst)
+			return nil, err
+		}
+		if blocker != nil {
+			return m.queueRun(inst, req, blocker.ID)
+		}
+	}
+	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	if err != nil {
+		m.releaseRun(inst)
+		return nil, err
+	}
+	m.watchRun(inst, req)
+	m.startRun(inst, run)
+	return inst, nil
+}
+
+// resolveLaunch resolves the provider config and freezes the runtime a
+// launch selects; toolkit reads happen under that runtime's gate.
+func (m *ProviderAppManager) resolveLaunch(req *LaunchRequest) (string, config.ServiceConfig, error) {
+	configKey, svcCfg, ok := m.resolveConfigKey(req.Provider)
+	if !ok {
+		return "", svcCfg, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
+	}
+	_, selected, _, err := m.featureRuntime(svcCfg, req.Model, req.Runtime)
+	if err != nil {
+		return "", svcCfg, err
 	}
 	if selected == "" {
 		selected = svcCfg.Name
 	}
 	req.selectedRuntime = selected
 	if req.installSmoke && selected != req.Runtime {
-		return nil, fmt.Errorf("smoke model does not use the runtime being installed")
+		return "", svcCfg, fmt.Errorf("smoke model does not use the runtime being installed")
 	}
-	if !req.installSmoke {
-		unlock, err := m.installs.acquireProvider(ctx, selected)
-		if err != nil {
-			return nil, err
-		}
-		defer unlock()
-	}
+	return configKey, svcCfg, nil
+}
 
-	if m.memoryBudget != nil {
-		// Register and admit together; a pending GPU allocation remains visible to the next launch.
-		if !m.memoryLaunchMu.TryLock() {
-			return nil, ErrLaunchInProgress
-		}
-		defer m.memoryLaunchMu.Unlock()
-	}
-	// Allocate port
+// registerRun allocates a port and registers a starting, not yet admitted run.
+func (m *ProviderAppManager) registerRun(ctx context.Context, req LaunchRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
@@ -166,7 +195,6 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 		}
 	}
 
-	// Create instance
 	endpoint := string(EndpointOrDefault(req.Endpoint))
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
@@ -201,139 +229,253 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	// Wire keep-alive expiry to the manager's idle reaper
 	inst.IdleExpiry = m.idleExpiry
 
-	// Register in registry
 	if err := m.instances.Register(inst); err != nil {
 		m.ports.ReleaseForProvider(req.Provider, allocatedPort)
 		return nil, err
 	}
+	return inst, nil
+}
 
-	// From here, errors must clean up: remove from registry + release port
-	cleanup := func() {
-		if removeErr := m.instances.Remove(id); removeErr != nil {
-			slog.Warn("failed to remove instance during cleanup", "id", id, "error", removeErr)
-		}
-		m.ports.ReleaseForProvider(req.Provider, allocatedPort)
+// releaseRun undoes registerRun for a run no process was started for. The
+// port goes back only with the registry entry, so a racing stop cannot
+// return it twice.
+func (m *ProviderAppManager) releaseRun(inst *instance.Instance) {
+	if err := m.instances.Remove(inst.ID); err != nil {
+		slog.Warn("failed to remove instance during cleanup", "id", inst.ID, "error", err)
+		return
 	}
+	m.ports.ReleaseForProvider(inst.Provider, inst.Port)
+}
 
+// admittedRun is what an admitted run's process is started with.
+type admittedRun struct {
+	cmd       string
+	args      []string
+	vars      map[string]string
+	logFile   *os.File
+	health    health.CheckConfig
+	transform process.EnvironmentTransform
+}
+
+// admitRun measures and prepares a registered run, then marks it admitted.
+// Callers hold memoryAdmission when the provider has a memory budget.
+func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
 	// Create log file. Sanitize model name for filesystem safety —
 	// strip every character outside [A-Za-z0-9._-] so a hostile or
 	// quirky model id (slashes, backslashes, ..) cannot escape the
 	// log directory.
-	safeModel := sanitizeLogFragment(req.Model)
-	logFile, logPath, err := m.logMgr.CreateLogFile(id, req.Provider, safeModel)
+	logFile, logPath, err := m.logMgr.CreateLogFile(inst.ID, req.Provider, sanitizeLogFragment(req.Model))
 	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to create log file: %w", err)
+		return admittedRun{}, fmt.Errorf("failed to create log file: %w", err)
 	}
 	inst.SetLogFilePath(logPath)
+	run, err := m.prepareRun(ctx, inst, req, configKey, svcCfg)
+	if err == nil && !inst.Admit() {
+		err = fmt.Errorf("run %s stopped before it was admitted", inst.ID)
+	}
+	if err != nil {
+		logFile.Close()
+		return admittedRun{}, err
+	}
+	run.logFile = logFile
+	m.emitEvent(Event{
+		Type: EventInstanceStarting, Provider: req.Provider,
+		Instance: inst.ID, Model: req.Model,
+		Message: fmt.Sprintf("Starting %s on port %d", req.Model, inst.Port),
+		Time:    utils.Now(),
+	})
+	return run, nil
+}
 
+// prepareRun resolves a run's parameters, checks its memory fit and builds argv.
+func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
+	endpoint := inst.Endpoint
 	features, err := m.modelLaunchParameters(svcCfg, req, endpoint)
 	if err == nil {
-		err = m.admitMemory(ctx, configKey, id, instance.Resolved{Parameters: features.Params, Environment: features.Environment})
+		err = m.admitMemory(ctx, configKey, instance.Resolved{Parameters: features.Params, Environment: features.Environment})
 	}
 	var prepared preparedLaunch
 	if err == nil {
-		prepared, err = m.prepareLaunchFeatures(features, configKey, endpoint, req, allocatedPort)
+		prepared, err = m.prepareLaunchFeatures(features, configKey, endpoint, req, inst.Port)
 	}
 	if err != nil {
-		logFile.Close()
-		cleanup()
-		return nil, err
+		return admittedRun{}, err
 	}
-	svcCfg = prepared.config
 	inst.SetResolved(prepared.resolved)
-	launch, mergedEnv := prepared.launch, prepared.resolved.Environment
-
 	// An incomplete download reaches the engine as a corrupt-tensor crash
 	// tens of seconds in; catching it here names the actual problem.
-	if err := process.VerifyLocalWeights(ctx, launch.ModelPath); err != nil {
-		logFile.Close()
-		cleanup()
-		return nil, err
+	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath); err != nil {
+		return admittedRun{}, err
 	}
-
-	cmd, args := launch.Command, launch.Args
 	if err := ctx.Err(); err != nil {
-		logFile.Close()
-		cleanup()
-		return nil, err
+		return admittedRun{}, err
 	}
-	inst.WireModel = launch.WireModel
+	inst.WireModel = prepared.launch.WireModel
+	return admittedRun{
+		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
+		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment,
+	}, nil
+}
 
-	// Build health check config from provider config
-	hcConfig := buildHealthCheckConfig(svcCfg, allocatedPort)
+// queueRun accepts a run that waits for another launch to claim its GPU
+// memory. An install smoke cannot wait: its install holds the gate a
+// queued run needs.
+func (m *ProviderAppManager) queueRun(inst *instance.Instance, req LaunchRequest, blocker string) (*instance.Instance, error) {
+	if req.installSmoke {
+		m.releaseRun(inst)
+		return nil, errAdmissionBusy
+	}
+	inst.SetWaitingOn(blocker)
+	m.watchRun(inst, req)
+	inst.TrackGoroutine()
+	go func() {
+		defer inst.GoroutineDone()
+		defer utils.RecoverAndLog("prov_apps.awaitAdmission")
+		m.awaitAdmission(inst, req)
+	}()
+	return inst, nil
+}
 
-	// Emit starting event
-	m.emitEvent(Event{
-		Type: EventInstanceStarting, Provider: req.Provider,
-		Instance: id, Model: req.Model,
-		Message: fmt.Sprintf("Starting %s on port %d", req.Model, allocatedPort),
-		Time:    utils.Now(),
-	})
-
-	// Open a jobs.Handle for launch-readiness streaming before the
-	// lifecycle goroutine starts so the handle's ID lands on the
-	// instance struct atomically — LoadModel's 409 fast-path reads it
-	// back to return the SAME job_id on retries. Handle lifecycle is
-	// owned by watchInstanceReadiness below; StartDetached so the
-	// async-202 launch outlives the HTTP accept path (commit fa91f367).
-	if m.jobsRegistry != nil {
-		h, jerr := m.jobsRegistry.StartDetached(jobs.KindRun, "", jobs.Meta{
-			"run_id":   inst.ID,
-			"provider": req.Provider,
-			"model":    req.Model,
-			"port":     allocatedPort,
-		})
-		if jerr == nil {
-			inst.StreamJobID = h.ID()
-			inst.TrackGoroutine()
-			go func() {
-				defer inst.GoroutineDone()
-				defer utils.RecoverAndLog("prov_apps.watchInstanceReadiness")
-				m.watchInstanceReadiness(inst, h)
-			}()
-		} else {
-			slog.Warn("failed to open run job handle; continuing without SSE", "instance", id, "error", jerr)
+// awaitAdmission admits a queued run once no admitted run is still
+// starting, then starts it. Stopping the run ends the wait; StopInstance
+// owns its cleanup.
+func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req LaunchRequest) {
+	ctx := inst.Context()
+	for {
+		run, blocker, err := m.tryAdmit(ctx, inst, req)
+		switch {
+		case ctx.Err() != nil:
+			if run.logFile != nil { // stopped after admission, before its process
+				run.logFile.Close()
+			}
+			return
+		case err != nil:
+			inst.MarkRefused(err)
+			m.emitEvent(Event{
+				Type: EventInstanceFailed, Provider: inst.Provider,
+				Instance: inst.ID, Model: inst.Model,
+				Error: err, Message: err.Error(), Cause: obsruns.FailureLaunchErr,
+				Time: utils.Now(),
+			})
+			return
+		case blocker == nil:
+			m.startRun(inst, run)
+			return
+		}
+		inst.SetWaitingOn(blocker.ID)
+		select {
+		case <-blocker.LeftStarting():
+		case <-ctx.Done():
+			return
 		}
 	}
+}
 
-	// Spawn lifecycle goroutine: launch → reaper → health monitor
+// tryAdmit admits a queued run unless an admitted run is still starting.
+// Config is resolved again: it may have changed while the run waited.
+func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instance, req LaunchRequest) (admittedRun, *instance.Instance, error) {
+	configKey, svcCfg, err := m.resolveLaunch(&req)
+	if err != nil {
+		return admittedRun{}, nil, err
+	}
+	unlock, err := m.installs.acquireProvider(ctx, req.selectedRuntime)
+	if err != nil {
+		return admittedRun{}, nil, err
+	}
+	defer unlock()
+	select {
+	case m.memoryAdmission <- struct{}{}:
+	case <-ctx.Done():
+		return admittedRun{}, nil, ctx.Err()
+	}
+	defer func() { <-m.memoryAdmission }()
+	if blocker, err := m.startingBlocker(inst.ID); err != nil || blocker != nil {
+		return admittedRun{}, blocker, err
+	}
+	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	return run, nil, err
+}
+
+// watchRun opens the run's launch job. Its handle ID lands on the
+// instance before any goroutine starts, so LoadModel's 409 fast path
+// returns the SAME job_id on retries; StartDetached so the job outlives
+// the HTTP accept path.
+func (m *ProviderAppManager) watchRun(inst *instance.Instance, req LaunchRequest) {
+	if m.jobsRegistry == nil {
+		return
+	}
+	h, err := m.jobsRegistry.StartDetached(jobs.KindRun, "", jobs.Meta{
+		"run_id":   inst.ID,
+		"provider": req.Provider,
+		"model":    req.Model,
+		"port":     inst.Port,
+	})
+	if err != nil {
+		slog.Warn("failed to open run job handle; continuing without SSE", "instance", inst.ID, "error", err)
+		return
+	}
+	inst.StreamJobID = h.ID()
+	inst.TrackGoroutine()
+	go func() {
+		defer inst.GoroutineDone()
+		defer utils.RecoverAndLog("prov_apps.watchInstanceReadiness")
+		m.watchInstanceReadiness(inst, h)
+	}()
+}
+
+// startRun spawns an admitted run's lifecycle: launch, reaper, health monitor.
+func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.runInstanceLifecycle")
-		m.runInstanceLifecycle(inst, cmd, args, mergedEnv, logFile, hcConfig, prepared.executionEnvironment)
+		m.runInstanceLifecycle(inst, run.cmd, run.args, run.vars, run.logFile, run.health, run.transform)
 	}()
-
-	return inst, nil
 }
 
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider, id string, resolved instance.Resolved) error {
+// launchBudget returns the memory budget a launch is measured against: nil
+// when the provider declares none, or an external one nothing here measures.
+func (m *ProviderAppManager) launchBudget(provider string) (*schema.MemoryBudget, error) {
 	if m.memoryBudget == nil {
-		return nil
+		return nil, nil //nolint:nilnil // no budget is not an error
 	}
 	budget, err := m.memoryBudget(provider)
 	if err != nil {
-		return fmt.Errorf("memory budget declaration: %w", err)
+		return nil, fmt.Errorf("memory budget declaration: %w", err)
 	}
 	if budget == nil || budget.Kind == "external" {
-		return nil
+		return nil, nil //nolint:nilnil // no budget is not an error
 	}
+	return budget, nil
+}
+
+// startingBlocker returns an admitted run still starting under a measured
+// budget: its memory claim is not visible yet, so nothing else is measured
+// until it leaves starting.
+func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, error) {
 	for _, run := range m.instances.List() {
-		if run.ID == id || run.GetStatus() != instance.StatusStarting {
+		if run.ID == id || run.GetStatus() != instance.StatusStarting || !run.Admitted() {
 			continue
 		}
 		key, _, ok := m.resolveConfigKey(run.Provider)
 		if !ok {
 			continue
 		}
-		pending, err := m.memoryBudget(key)
+		pending, err := m.launchBudget(key)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if pending == nil || pending.Kind != "external" {
-			return fmt.Errorf("%w: run %s is still starting; retry when it is ready or stop it", ErrLaunchInProgress, run.ID)
+		if pending != nil {
+			return run, nil
 		}
+	}
+	return nil, nil //nolint:nilnil // no blocker is not an error
+}
+
+func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, resolved instance.Resolved) error {
+	budget, err := m.launchBudget(provider)
+	if err != nil || budget == nil {
+		return err
 	}
 	if budget.Kind != "fraction_total" {
 		return nil
@@ -648,9 +790,10 @@ func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) (resul
 		m.pidTracker.Untrack(id)
 	}
 	inst.CloseLogs()
-	m.ports.ReleaseForProvider(inst.Provider, inst.Port)
 	if err := m.instances.Remove(id); err != nil {
 		slog.Warn("failed to remove instance from registry", "id", id, "error", err)
+	} else {
+		m.ports.ReleaseForProvider(inst.Provider, inst.Port)
 	}
 
 	// Emit event

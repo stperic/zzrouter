@@ -108,9 +108,6 @@ func classifyLoadFailure(err error) *loadFailure {
 	if errors.Is(err, process.ErrMemoryBudgetInvalid) {
 		return newLoadFailure(http.StatusBadRequest, err.Error()).withCause(err)
 	}
-	if errors.Is(err, prov_apps.ErrLaunchInProgress) {
-		return (&loadFailure{status: http.StatusServiceUnavailable, errType: "api_error", code: codeLaunchInProgress, message: err.Error()}).withCause(err)
-	}
 	if errors.Is(err, process.ErrMemoryObservation) || errors.Is(err, prov_apps.ErrAtCapacity) {
 		return newLoadFailure(http.StatusServiceUnavailable, err.Error()).withCause(err)
 	}

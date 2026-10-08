@@ -295,6 +295,9 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 				slog.Info("Instance is now ready", "id", currentInstance.ID, "port", currentInstance.Port)
 				return currentInstance, nil
 			case instance.StatusFailed:
+				if refusal := currentInstance.Refusal(); refusal != nil {
+					return nil, classifyLoadFailure(refusal)
+				}
 				// GetErrorMessage takes the instance mutex; direct field
 				// access races with MarkFailed's write (Status atomic and
 				// the ErrorMessage write are not co-synchronized).

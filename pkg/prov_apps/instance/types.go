@@ -83,6 +83,7 @@ type InstanceInfo struct {
 	LastActivity          string            `json:"last_activity,omitempty"`
 	LastHealthCheck       string            `json:"last_health_check,omitempty"`
 	ErrorMessage          string            `json:"error_message,omitempty"`
+	WaitingOn             string            `json:"waiting_on,omitempty"` // run a queued launch waits for
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`

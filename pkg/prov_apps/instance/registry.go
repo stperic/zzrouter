@@ -171,11 +171,9 @@ func (r *Registry) UpdateStatus(id string, status Status, errorMsg string) error
 		inst.MarkRunning()
 	case StatusUnhealthy:
 		inst.MarkUnhealthy(errorMsg)
-	case StatusStarting:
-		inst.MarkStarting()
 	default:
 		inst.mu.Lock()
-		inst.Status = status
+		inst.setStatusLocked(status)
 		inst.ErrorMessage = errorMsg
 		inst.mu.Unlock()
 	}

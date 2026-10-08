@@ -360,7 +360,7 @@ func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, erro
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port status error_message failure parameters_status"
+	fields := "id:run_id provider model node port status waiting_on error_message failure parameters_status"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err

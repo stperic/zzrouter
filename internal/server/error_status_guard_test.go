@@ -42,7 +42,6 @@ var sentinelStatus = map[string]struct {
 	"ErrDangerousEnvVar":          {prov_apps.ErrDangerousEnvVar, http.StatusBadRequest},
 	"ErrShutdown":                 {prov_apps.ErrShutdown, http.StatusServiceUnavailable},
 	"ErrAtCapacity":               {prov_apps.ErrAtCapacity, http.StatusServiceUnavailable},
-	"ErrLaunchInProgress":         {prov_apps.ErrLaunchInProgress, http.StatusServiceUnavailable},
 	"ErrPortUnavailable":          {prov_apps.ErrPortUnavailable, http.StatusServiceUnavailable},
 }
 

@@ -74,7 +74,7 @@ func TestInstance_StatusTransitions_Concurrent(t *testing.T) {
 			case 2:
 				inst.MarkFailed("test")
 			case 3:
-				inst.MarkStarting()
+				inst.Admit()
 			}
 			_ = inst.GetStatus()
 			_ = inst.IsHealthy()
@@ -582,4 +582,43 @@ func TestInstance_LastActivityTime(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, time.Hour, 10)
 		assert.True(t, inst.GetLastActivity().IsZero())
 	})
+}
+
+// LeftStarting closes on every way out of starting, once, and a channel
+// asked for after the run left is already closed.
+func TestLeftStartingClosesOnEveryExit(t *testing.T) {
+	for name, leave := range map[string]func(*Instance){
+		"running":   func(i *Instance) { i.MarkRunning() },
+		"unhealthy": func(i *Instance) { i.MarkUnhealthy("x") },
+		"failed":    func(i *Instance) { i.MarkFailed("x") },
+		"stopping":  func(i *Instance) { i.SetStatus(StatusStopping) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			inst := NewInstance("id", "p", "m", 1, time.Minute, 0)
+			left := inst.LeftStarting()
+			select {
+			case <-left:
+				t.Fatal("closed while starting")
+			default:
+			}
+			leave(inst)
+			<-left
+			inst.SetStatus(StatusStarting)
+			inst.SetStatus(StatusStopped) // a second exit must not close it again
+			<-inst.LeftStarting()
+		})
+	}
+}
+
+// Admit is refused once the run stopped waiting, and clears waiting_on.
+func TestAdmit(t *testing.T) {
+	inst := NewInstance("id", "p", "m", 1, time.Minute, 0)
+	inst.SetWaitingOn("other")
+	assert.Equal(t, "other", inst.ToInfo("n").WaitingOn)
+	require.True(t, inst.Admit())
+	assert.True(t, inst.Admitted())
+	assert.Empty(t, inst.WaitingOn())
+	stopped := NewInstance("id2", "p", "m", 2, time.Minute, 0)
+	stopped.SetStatus(StatusStopping)
+	assert.False(t, stopped.Admit())
 }

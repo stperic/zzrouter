@@ -524,7 +524,7 @@ func (e *LoadExecutor) HandleInternalLoadModel(c *gin.Context) {
 		var memory *process.MemoryFitError
 		if errors.Is(err, config.ErrModelNameConflict) || errors.As(err, &memory) ||
 			errors.Is(err, process.ErrMemoryObservation) || errors.Is(err, process.ErrMemoryBudgetInvalid) ||
-			errors.Is(err, prov_apps.ErrAtCapacity) || errors.Is(err, prov_apps.ErrLaunchInProgress) {
+			errors.Is(err, prov_apps.ErrAtCapacity) {
 			respondProviderErr(c, err)
 		} else {
 			InternalNodeError(c, "failed to load model")

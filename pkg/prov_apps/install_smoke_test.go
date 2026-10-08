@@ -470,10 +470,11 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("normal launch did not reach runtime gate")
 	}
-	acquired := mgr.memoryLaunchMu.TryLock()
-	assert.True(t, acquired, "waiting on one runtime must not hold node memory admission")
-	if acquired {
-		mgr.memoryLaunchMu.Unlock()
+	select {
+	case mgr.memoryAdmission <- struct{}{}:
+		<-mgr.memoryAdmission
+	default:
+		t.Error("waiting on one runtime must not hold node memory admission")
 	}
 	sibling, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "sibling", Model: "other-model"})
 	require.NoError(t, err)

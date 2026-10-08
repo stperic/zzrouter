@@ -53,7 +53,7 @@ func (i *Instance) MarkFailedWithExit(reason string, exitCode *int, signal strin
 		i.failure.ErrorTail = failure.ErrorTail
 	}
 	i.failure.Truncated = i.failure.Truncated || failure.Truncated
-	i.Status = StatusFailed
+	i.setStatusLocked(StatusFailed)
 	if i.FailedAt.IsZero() {
 		i.FailedAt = utils.Now()
 	}
