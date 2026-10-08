@@ -21,13 +21,14 @@ func TestMemoryStartupGateInternalLoadKeepsUnavailableStatus(t *testing.T) {
 	s := variantNode(t)
 	executor := s.newLoadExecutor()
 	executor.launchOnDemand = func(context.Context, string, string, string, map[string]string, map[string]string) (*instance.Instance, error) {
-		return nil, fmt.Errorf("another GPU-budgeted run is starting: %w", prov_apps.ErrAtCapacity)
+		return nil, fmt.Errorf("run r1 is still starting: %w", prov_apps.ErrLaunchInProgress)
 	}
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs/load")
 	c.Request = httptest.NewRequest("POST", "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"llamacpp"}`))
 	executor.HandleInternalLoadModel(c)
 	require.Equal(t, 503, response.Code, response.Body.String())
-	assert.Contains(t, response.Body.String(), "another GPU-budgeted run is starting")
+	assert.Contains(t, response.Body.String(), "run r1 is still starting")
+	assert.Contains(t, response.Body.String(), `"code":"launch_in_progress"`)
 }
 
 func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {

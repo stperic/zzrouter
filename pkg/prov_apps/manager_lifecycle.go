@@ -115,7 +115,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	// Refuse a busy admission before config or feature work, without holding it across an install gate.
 	if m.memoryBudget != nil {
 		if !m.memoryLaunchMu.TryLock() {
-			return nil, ErrAtCapacity
+			return nil, ErrLaunchInProgress
 		}
 		m.memoryLaunchMu.Unlock()
 	}
@@ -148,7 +148,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	if m.memoryBudget != nil {
 		// Register and admit together; a pending GPU allocation remains visible to the next launch.
 		if !m.memoryLaunchMu.TryLock() {
-			return nil, fmt.Errorf("%w: another launch is being admitted; retry when it becomes ready or stops", ErrAtCapacity)
+			return nil, ErrLaunchInProgress
 		}
 		defer m.memoryLaunchMu.Unlock()
 	}
@@ -332,7 +332,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider, id strin
 			return err
 		}
 		if pending == nil || pending.Kind != "external" {
-			return fmt.Errorf("%w: run %s has a pending startup memory allocation; wait for readiness or stop it before another GPU launch", ErrAtCapacity, run.ID)
+			return fmt.Errorf("%w: run %s is still starting; retry when it is ready or stop it", ErrLaunchInProgress, run.ID)
 		}
 	}
 	if budget.Kind != "fraction_total" {

@@ -48,7 +48,7 @@ func TestMemoryAdmissionBusyGateDoesNotWait(t *testing.T) {
 			if cancelled {
 				assert.ErrorIs(t, err, context.Canceled)
 			} else {
-				assert.ErrorIs(t, err, ErrAtCapacity)
+				assert.ErrorIs(t, err, ErrLaunchInProgress)
 			}
 		})
 	}
@@ -151,7 +151,7 @@ func TestMemoryAdmissionSerializesDistinctStartingModels(t *testing.T) {
 		if err == nil {
 			accepted++
 		} else {
-			require.ErrorIs(t, err, ErrAtCapacity)
+			require.ErrorIs(t, err, ErrLaunchInProgress)
 			deferred++
 		}
 	}
