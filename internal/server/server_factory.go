@@ -648,7 +648,7 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 	// that branch on 405 vs 404.
 	s.engine.HandleMethodNotAllowed = true
 	s.engine.Use(
-		customLogger(),
+		skipMCPAccounting(customLogger()),
 		dropCoordinatorHeaders(),
 		httperr.AttachByPath(s.responders.dispatcher),
 		// GroupAwareRecovery replaces gin.Recovery. On panic it looks
@@ -724,18 +724,18 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 				s.engine.Use(observability.TracingMiddleware(otelCfg.ServiceName))
 			}
 			if otelCfg.IsMetricsEnabled() {
-				s.engine.Use(observability.MetricsMiddleware())
+				s.engine.Use(skipMCPAccounting(observability.MetricsMiddleware()))
 				// zz.proxy.failed.requests.metric — fires on every
 				// 4xx/5xx response. Sits beside MetricsMiddleware so
 				// the failure counter shares the otel-enabled gate
 				// rather than being unconditionally registered.
-				s.engine.Use(proxy.Middleware())
+				s.engine.Use(skipMCPAccounting(proxy.Middleware()))
 				// zz.proxy.total.requests.metric — fires on every LLM-
 				// route response regardless of outcome, with status_code
 				// label. Together with the failed counter above and a
 				// PromQL division, this gives the LiteLLM dashboard
 				// trio (total / failed / failure-rate).
-				s.engine.Use(obsspend.TotalRequestsMiddleware())
+				s.engine.Use(skipMCPAccounting(obsspend.TotalRequestsMiddleware()))
 			}
 		}
 	}

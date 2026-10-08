@@ -129,6 +129,7 @@ func (s *Server) setupRoutes() {
 		// Security: admin key (ZZROUTER_ADMIN_API_KEY).
 		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
 		s.registerPublicRoutes(publicAPI)
+		s.registerMCPServer(publicAPI)
 
 		// ACCESS CONTROL API — teams, virtual keys, spend reports.
 		// Separate group so operators can later swap in a dedicated

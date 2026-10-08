@@ -60,6 +60,8 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 
 func surfaceForPath(p string) string {
 	switch {
+	case p == "/zzrouter/v1/mcp":
+		return "mcp"
 	case strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "internal"
 	case p == "/zzrouter/v1" || strings.HasPrefix(p, "/zzrouter/v1/"):
