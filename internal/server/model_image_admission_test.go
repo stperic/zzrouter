@@ -221,7 +221,7 @@ func TestResponsesTranslatedUnsupportedImageBeforeAndAfterStream(t *testing.T) {
 	req.URL.Path = "/v1/chat/completions"
 	raw := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(raw)
-	writer := newResponsesStreamWriter(c.Writer, "org/model")
+	writer := newResponsesStreamWriter(c.Writer, "org/model", nil)
 	writer.WriteHeader(200)
 	s.streamFromInstance(writer, req, instanceFor(t, engine, "org/model", ""), dialectOf(req).(httperr.InBandStreamer))
 	writer.Close()

@@ -283,7 +283,7 @@ func (s *Server) handleResponsesViaTranslation(c *gin.Context, resolved *resolve
 
 	originalWriter := c.Writer
 	if parsed.Stream {
-		sw := newResponsesStreamWriter(originalWriter, model)
+		sw := newResponsesStreamWriter(originalWriter, model, parsed.toolNames)
 		c.Writer = sw
 		s.dispatchTo(c, resolved, model, chatBody, "chat")
 		sw.Close()
@@ -296,7 +296,7 @@ func (s *Server) handleResponsesViaTranslation(c *gin.Context, resolved *resolve
 		return
 	}
 
-	bw := newResponsesBufferedWriter(originalWriter, model)
+	bw := newResponsesBufferedWriter(originalWriter, model, parsed.toolNames)
 	c.Writer = bw
 	s.dispatchTo(c, resolved, model, chatBody, "chat")
 	bw.Finalize()
