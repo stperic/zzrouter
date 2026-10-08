@@ -11199,7 +11199,7 @@ components:
 
     LaunchRunRequest:
       type: object
-      required: [provider, launch_mode]
+      required: [provider]
       description: |
         Either `model` or `model_name` must be set. `model_name` wins
         when both are present; `model` is preferred for parity with
@@ -11208,7 +11208,7 @@ components:
         runtime: { type: string, description: Declared runtime for disposable launch; must match this model's applicable runtime. }
         disposable_plan_id: { type: string, pattern: '^[a-f0-9]{64}$', description: Verified disposable install plan. A normal running instance is never returned as its proof. }
         provider:    { type: string }
-        launch_mode: { type: string, enum: [native] }
+        launch_mode: { type: string, enum: [native], description: The only mode; omitted means native. }
         model:       { type: string, description: The model name, as in `/v1/*`. }
         model_name:  { type: string, description: Same as `model`. }
         node:        { type: string }

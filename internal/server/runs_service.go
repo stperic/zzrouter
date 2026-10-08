@@ -348,7 +348,8 @@ type LaunchRunRequest struct {
 	Runtime          string `json:"runtime,omitempty"`
 	DisposablePlanID string `json:"disposable_plan_id,omitempty"`
 	Provider         string `json:"provider" binding:"required"`
-	LaunchMode       string `json:"launch_mode" binding:"required,oneof=native"`
+	// LaunchMode has one value; omitted means it.
+	LaunchMode string `json:"launch_mode" binding:"required,oneof=native"`
 	// Accepts `model` (OpenAI-compat, preferred) or `model_name`.
 	// UnmarshalJSON below promotes either into this field.
 	Model string `json:"model_name" binding:"required"`
@@ -395,6 +396,9 @@ func (r *LaunchRunRequest) UnmarshalJSON(data []byte) error {
 	}
 	if r.Model == "" {
 		r.Model = aux.ModelAlias
+	}
+	if r.LaunchMode == "" {
+		r.LaunchMode = string(instance.LaunchModeNative)
 	}
 	return nil
 }
@@ -545,7 +549,7 @@ func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*En
 
 	launchReq := &LaunchRunRequest{
 		Provider:   cm.Provider,
-		LaunchMode: "native",
+		LaunchMode: string(instance.LaunchModeNative),
 		Model:      cm.Name,
 		Endpoint:   endpoint,
 		AutoDeploy: true,

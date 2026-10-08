@@ -56,6 +56,13 @@ func TestLaunchRunRequestNodeSelector(t *testing.T) {
 	assert.Equal(t, "worker-1", req.Node)
 }
 
+// launch_mode has one value, so a launch that omits it means it.
+func TestLaunchRunRequestDefaultsLaunchMode(t *testing.T) {
+	var req LaunchRunRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"vllm","model":"m"}`), &req))
+	assert.Equal(t, "native", req.LaunchMode)
+}
+
 // Preview takes the same model names as a launch: an agent that previews
 // with `model` and then launches with it must not be refused in between.
 func TestPreviewRequestAcceptsModelAliasAndStaysStrict(t *testing.T) {

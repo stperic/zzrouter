@@ -378,10 +378,7 @@ func (d dispatcher) preview(ctx context.Context, in previewInput) (agentOutput, 
 }
 
 func (d dispatcher) start(ctx context.Context, in startInput) (agentOutput, error) {
-	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: struct {
-		startInput
-		LaunchMode string `json:"launch_mode"`
-	}{in, "native"}, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port", "Run launch accepted; follow with zz_job.")
+	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: in, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port", "Run launch accepted; follow with zz_job.")
 }
 
 func (d dispatcher) childObject(ctx context.Context, req request, prefix routePrefix, id, suffix, node, fields, summary string) (agentOutput, error) {
