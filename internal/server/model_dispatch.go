@@ -11,6 +11,7 @@ import (
 
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
@@ -406,7 +407,7 @@ func (s *Server) resolvedRequestBody(c *gin.Context, resolved *resolver.Resolved
 	if target == model {
 		return body
 	}
-	body = rewriteModelInBody(body, target)
+	body = wire.RewriteRequestModel(body, c.GetHeader("Content-Type"), target)
 	replaceRequestBody(c, body)
 	if clientModelFromContext(c.Request.Context()) == "" {
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), CtxKeyClientModel, model))

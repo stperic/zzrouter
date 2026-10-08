@@ -329,7 +329,7 @@ func (p *Proxy) tryDeployment(
 	// name (the client sends the group alias, but the backend needs the
 	// real model name).
 	if dep.Model != resolved.OriginalName {
-		body = wire.RewriteModelInBody(body, dep.Model)
+		body = wire.RewriteRequestModel(body, c.Request.Header.Get("Content-Type"), dep.Model)
 	}
 	// The replica's own request defaults (a variant's, say), as a direct
 	// request for that model would get them.
