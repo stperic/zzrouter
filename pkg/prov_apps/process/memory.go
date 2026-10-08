@@ -34,8 +34,29 @@ type MemoryFitError struct {
 	AttributionReason string         `json:"attribution_reason,omitempty"`
 }
 
+// Error names who holds the memory, so the reader can tell an idle zzRouter
+// run it may stop from a workload only the operator can release.
 func (e *MemoryFitError) Error() string {
-	return fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s); release memory or reduce the configured budget", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
+	msg := fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s)", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
+	var held []string
+	for _, h := range e.Holders {
+		size := "size unknown"
+		if h.MemoryMiB != nil {
+			size = fmt.Sprintf("%d MiB", *h.MemoryMiB)
+		}
+		if h.Run != "" {
+			held = append(held, fmt.Sprintf("zzRouter run %s (pid %d, %s)", h.Run, h.PID, size))
+		} else {
+			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
+		}
+	}
+	switch {
+	case len(held) > 0:
+		msg += "; held by " + strings.Join(held, ", ")
+	case e.AttributionReason != "":
+		msg += "; holders unknown: " + e.AttributionReason
+	}
+	return msg + "; release memory or reduce the configured budget"
 }
 
 // CheckMemoryBudget compares a resolved fraction-of-total budget on each selected GPU.

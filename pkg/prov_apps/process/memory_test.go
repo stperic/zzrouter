@@ -25,6 +25,8 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	assert.Equal(t, "run-owned", failure.Holders[0].Run)
 	assert.Equal(t, "other_or_untracked", failure.Holders[1].Ownership)
 	assert.Nil(t, failure.Holders[1].MemoryMiB)
+	assert.Contains(t, failure.Error(), "held by zzRouter run run-owned (pid 42, 3000 MiB), a process zzRouter does not manage (pid 43, size unknown)",
+		"the message alone tells a stoppable run from a workload only the operator can release")
 	// An aggregate free total must not hide one undersized shard device.
 	devices = append(devices, gpu.MemoryDevice{UUID: "GPU-B", Index: 1, TotalMiB: 10000, FreeMiB: 5000})
 	err = CheckMemoryBudget(budget, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}, devices, nil)
