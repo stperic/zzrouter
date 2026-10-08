@@ -61,10 +61,9 @@ func NewAppsConfigStore(dirPath string) (*AppsConfigStore, error) {
 // NewAppsConfigStoreFromStandardLocations finds the providers/ directory
 // via XDG search and returns a store. Primary constructor for server use.
 func NewAppsConfigStoreFromStandardLocations() (*AppsConfigStore, error) {
-	cm := NewConfigManager("zzrouter")
-	dirPath := cm.FindAppsConfigDir()
-	if dirPath == "" {
-		return nil, fmt.Errorf("providers directory not found in %s", cm.GetNodeConfigDir())
+	dirPath, err := findAppsConfigDir()
+	if err != nil {
+		return nil, err
 	}
 	return NewAppsConfigStore(dirPath)
 }

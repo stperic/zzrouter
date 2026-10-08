@@ -351,8 +351,12 @@ func runServeStartCmd(hostCfg *pkgConfig.NodeConfig, cmd *cobra.Command, _ []str
 
 	// Load apps configuration from XDG-compliant location
 	appsConfig, appsConfigPath, err := pkgConfig.LoadAppsConfigFromStandardLocations()
+	if err != nil && !errors.Is(err, pkgConfig.ErrProvidersDirNotFound) {
+		// Starting anyway would serve with no providers and pass /health,
+		// which commits a self-update that should have rolled back.
+		return fmt.Errorf("provider config refused, node not started: %w", err)
+	}
 	if err != nil {
-		// If provider config doesn't exist, continue with default behavior
 		if detach {
 			fmt.Println(" No provider config found")
 			fmt.Printf("   Error: %v\n", err)
