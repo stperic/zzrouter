@@ -74,7 +74,6 @@ func TestProviderAssetsAPI_Lifecycle(t *testing.T) {
 	require.Len(t, byName, 2, "mine.jinja and t.jinja")
 	assert.Equal(t, []string{"defaults.parameters.chat-template-file"}, byName["mine.jinja"].ReferencedBy)
 	assert.Empty(t, byName["t.jinja"].ReferencedBy)
-	assert.False(t, byName["mine.jinja"].Shipped)
 
 	w = assetRequest(t, s, http.MethodDelete, path, nil)
 	require.Equal(t, http.StatusConflict, w.Code, "a named asset is not removed")

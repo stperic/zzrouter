@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/logging"
@@ -90,7 +89,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	}
 	s.controllers.System = NewSystemController(s.services.System, s.config, logMgr)
 	s.controllers.Params = NewParamsController(s.newParamsExecutor().WithRunsRefresher(s.runsRefresher()))
-	s.controllers.Assets = NewProviderAssetsController(s.configStore, templates.IsShippedAsset).
+	s.controllers.Assets = NewProviderAssetsController(s.configStore).
 		WithSyncWait(s.awaitProviderSync).
 		WithRunsRefresher(s.runsRefresher())
 

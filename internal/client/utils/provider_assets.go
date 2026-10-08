@@ -14,7 +14,6 @@ type ProviderAsset struct {
 	Name         string   `json:"name"`
 	Size         int64    `json:"size"`
 	SHA256       string   `json:"sha256"`
-	Shipped      bool     `json:"shipped"`
 	ReferencedBy []string `json:"referenced_by"`
 }
 

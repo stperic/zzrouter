@@ -16,7 +16,7 @@ func TestProviderAssetMethods(t *testing.T) {
 		require.Equal(t, "test-key", r.Header.Get("X-API-Key"))
 		switch r.Method + " " + r.URL.Path {
 		case "GET /zzrouter/v1/providers/eng/assets":
-			_, _ = io.WriteString(w, `{"assets":[{"name":"t.jinja","size":2,"sha256":"ab","shipped":true,"referenced_by":["defaults.parameters.k"]}]}`)
+			_, _ = io.WriteString(w, `{"assets":[{"name":"t.jinja","size":2,"sha256":"ab","referenced_by":["defaults.parameters.k"]}]}`)
 		case "GET /zzrouter/v1/providers/eng/assets/t.jinja":
 			w.Header().Set("Content-Type", "application/octet-stream")
 			_, _ = w.Write([]byte{0x00, 0xff})
@@ -24,7 +24,7 @@ func TestProviderAssetMethods(t *testing.T) {
 			gotBody, _ = io.ReadAll(r.Body)
 			gotType, gotQuery = r.Header.Get("Content-Type"), r.URL.RawQuery
 			w.WriteHeader(http.StatusCreated)
-			_, _ = io.WriteString(w, `{"name":"t.jinja","size":2,"sha256":"cd","shipped":false,"referenced_by":[]}`)
+			_, _ = io.WriteString(w, `{"name":"t.jinja","size":2,"sha256":"cd","referenced_by":[]}`)
 		case "DELETE /zzrouter/v1/providers/eng/assets/t.jinja":
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusConflict)
@@ -38,7 +38,7 @@ func TestProviderAssetMethods(t *testing.T) {
 
 	list, err := c.ListProviderAssets("eng")
 	require.NoError(t, err)
-	assert.Equal(t, []ProviderAsset{{Name: "t.jinja", Size: 2, SHA256: "ab", Shipped: true, ReferencedBy: []string{"defaults.parameters.k"}}}, list)
+	assert.Equal(t, []ProviderAsset{{Name: "t.jinja", Size: 2, SHA256: "ab", ReferencedBy: []string{"defaults.parameters.k"}}}, list)
 
 	data, err := c.GetProviderAsset("eng", "t.jinja")
 	require.NoError(t, err)

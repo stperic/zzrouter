@@ -337,15 +337,12 @@ func TestEveryTemplateCapabilitiesDeclaresWireEndpoints(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// A shipped schema.yaml and shipped assets are owned outright: drift is
-// rewritten whole. An operator's own asset beside them is never touched,
-// and a shipped file the operator removed is InstallDefaults' to restore.
-func TestReconcileManagesSchemaAndShippedAssets(t *testing.T) {
+// A shipped schema.yaml is owned outright: drift is rewritten whole. An
+// operator's asset beside it is never touched.
+func TestReconcileManagesSchema(t *testing.T) {
 	src := fstest.MapFS{
-		"files/providers/on-demand/eng/config.yaml":          {Data: []byte("description: engine\n")},
-		"files/providers/on-demand/eng/schema.yaml":          {Data: []byte("parameters:\n  tmpl: {type: asset}\n")},
-		"files/providers/on-demand/eng/assets/shipped.jinja": {Data: []byte("release bytes")},
-		"files/providers/on-demand/eng/assets/gone.jinja":    {Data: []byte("release bytes")},
+		"files/providers/on-demand/eng/config.yaml": {Data: []byte("description: engine\n")},
+		"files/providers/on-demand/eng/schema.yaml": {Data: []byte("parameters:\n  tmpl: {type: asset}\n")},
 	}
 	dst := t.TempDir()
 	engDir := filepath.Join(dst, "on-demand", "eng")
@@ -355,15 +352,11 @@ func TestReconcileManagesSchemaAndShippedAssets(t *testing.T) {
 	}
 	write("config.yaml", "description: engine\n")
 	write("schema.yaml", "parameters: {}\n")
-	write("assets/shipped.jinja", "edited on disk")
 	write("assets/mine.jinja", "operator bytes")
 
 	changed, err := reconcile(src, dst)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{
-		pathpkg.Join("on-demand", "eng", "schema.yaml"),
-		pathpkg.Join("on-demand", "eng", "assets", "shipped.jinja"),
-	}, changed)
+	assert.ElementsMatch(t, []string{pathpkg.Join("on-demand", "eng", "schema.yaml")}, changed)
 
 	read := func(rel string) string {
 		data, err := os.ReadFile(filepath.Join(engDir, rel))
@@ -371,28 +364,11 @@ func TestReconcileManagesSchemaAndShippedAssets(t *testing.T) {
 		return string(data)
 	}
 	assert.Equal(t, "parameters:\n  tmpl: {type: asset}\n", read("schema.yaml"))
-	assert.Equal(t, "release bytes", read("assets/shipped.jinja"))
 	assert.Equal(t, "operator bytes", read("assets/mine.jinja"))
-	_, statErr := os.Stat(filepath.Join(engDir, "assets", "gone.jinja"))
-	assert.ErrorIs(t, statErr, os.ErrNotExist)
 
 	again, err := reconcile(src, dst)
 	require.NoError(t, err)
 	assert.Empty(t, again, "an install in step is not rewritten")
-}
-
-func TestIsShippedAsset(t *testing.T) {
-	src := fstest.MapFS{
-		"files/providers/on-demand/eng/config.yaml":          {Data: []byte("x")},
-		"files/providers/on-demand/eng/assets/shipped.jinja": {Data: []byte("x")},
-	}
-	assert.True(t, isShippedAsset(src, "eng", "shipped.jinja"))
-	assert.False(t, isShippedAsset(src, "eng", "mine.jinja"))
-	assert.False(t, isShippedAsset(src, "other", "shipped.jinja"), "shipped names are per provider")
-	for _, provider := range []string{"", ".", "..", "../on-demand/eng", "on-demand/eng"} {
-		assert.False(t, isShippedAsset(src, provider, "shipped.jinja"), "provider %q", provider)
-	}
-	assert.False(t, isShippedAsset(src, "eng", "../config.yaml"), "a name is a single element")
 }
 
 // Ownership follows the exact layout: a provider named "assets" keeps its
@@ -401,11 +377,11 @@ func TestShippedFileOwnership(t *testing.T) {
 	cases := map[string]ownership{
 		"on-demand/eng/config.yaml":        managedKeys,
 		"on-demand/eng/schema.yaml":        managedWhole,
-		"on-demand/eng/assets/t.jinja":     managedWhole,
+		"on-demand/eng/assets/t.jinja":     notManaged,
 		"on-demand/assets/config.yaml":     managedKeys,
 		"on-demand/assets/schema.yaml":     managedWhole,
 		"on-demand/eng/assets/sub/t.jinja": notManaged,
-		"on-demand/eng/assets/schema.yaml": managedWhole,
+		"on-demand/eng/assets/schema.yaml": notManaged,
 		"on-demand/eng/README.md":          notManaged,
 		"on-demand/eng.schema.yaml":        notManaged,
 		"on-demand/eng/nested/schema.yaml": notManaged,

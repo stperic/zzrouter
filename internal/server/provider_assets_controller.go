@@ -19,22 +19,18 @@ import (
 
 // ProviderAssetsController serves a provider's asset files on the
 // coordinator, which owns them; peer-sync carries every change to the
-// workers. Shipped assets belong to the release and cannot be replaced
-// or removed here; operators add their own under other names.
+// workers.
 type ProviderAssetsController struct {
 	store *pkgConfig.AppsConfigStore
-	// shipped reports whether the release owns an asset name.
-	shipped func(provider, name string) bool
 	// awaitSync and runs follow a write as they do a parameter write: the
 	// workers get the asset, then the runs using it are reported.
 	awaitSync providerSyncWait
 	runs      *runsRefresher
 }
 
-// NewProviderAssetsController creates the controller. shipped answers
-// which names belong to the release (templates.IsShippedAsset).
-func NewProviderAssetsController(store *pkgConfig.AppsConfigStore, shipped func(provider, name string) bool) *ProviderAssetsController {
-	return &ProviderAssetsController{store: store, shipped: shipped}
+// NewProviderAssetsController creates the controller.
+func NewProviderAssetsController(store *pkgConfig.AppsConfigStore) *ProviderAssetsController {
+	return &ProviderAssetsController{store: store}
 }
 
 // WithSyncWait makes a write wait for the workers to have the asset.
@@ -60,10 +56,9 @@ func (ctrl *ProviderAssetsController) RegisterPublicRoutes(router *gin.RouterGro
 
 // assetDTO describes one asset on the wire.
 type assetDTO struct {
-	Name    string `json:"name"`
-	Size    int64  `json:"size"`
-	SHA256  string `json:"sha256"`
-	Shipped bool   `json:"shipped"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
 	// ReferencedBy lists the parameters naming this asset, as merge-patch
 	// paths ending in the key.
 	ReferencedBy []string `json:"referenced_by"`
@@ -88,7 +83,7 @@ func (ctrl *ProviderAssetsController) List(c *gin.Context) {
 	refs := ctrl.references(provider)
 	out := assetListResponse{Assets: make([]assetDTO, 0, len(infos))}
 	for _, info := range infos {
-		out.Assets = append(out.Assets, ctrl.toDTO(provider, info, refs))
+		out.Assets = append(out.Assets, toAssetDTO(info, refs))
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -136,7 +131,7 @@ func (ctrl *ProviderAssetsController) Put(c *gin.Context) {
 	sync := ctrl.awaitSync.await(c)
 	info := assets.Info{Name: name, Size: int64(len(data)), SHA256: assets.Digest(data)}
 	c.JSON(status, assetWriteResponse{
-		assetDTO: ctrl.toDTO(provider, info, ctrl.references(provider)),
+		assetDTO: toAssetDTO(info, ctrl.references(provider)),
 		Runs:     ctrl.runs.report(c.Request.Context(), provider, sync, restart),
 	})
 }
@@ -199,10 +194,6 @@ func (ctrl *ProviderAssetsController) mutable(c *gin.Context, provider, name str
 	}
 	if err := assets.ValidateName(name); err != nil {
 		respondAssetError(c, err)
-		return false
-	}
-	if ctrl.shipped(provider, name) {
-		Forbidden(c, fmt.Sprintf("asset %q ships with zzRouter and is restored on every start; add your own under another name", name))
 		return false
 	}
 	return true
@@ -290,7 +281,7 @@ func (e paramErrors) Error() string {
 	return strings.Join(msgs, "; ")
 }
 
-func (ctrl *ProviderAssetsController) toDTO(provider string, info assets.Info, refs map[string][]string) assetDTO {
+func toAssetDTO(info assets.Info, refs map[string][]string) assetDTO {
 	referencedBy := refs[info.Name]
 	if referencedBy == nil {
 		referencedBy = []string{}
@@ -299,7 +290,6 @@ func (ctrl *ProviderAssetsController) toDTO(provider string, info assets.Info, r
 		Name:         info.Name,
 		Size:         info.Size,
 		SHA256:       info.SHA256,
-		Shipped:      ctrl.shipped(provider, info.Name),
 		ReferencedBy: referencedBy,
 	}
 }

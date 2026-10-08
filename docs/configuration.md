@@ -21,7 +21,7 @@ protected environment configuration, rather than copied into examples.
 | `model_groups.yaml` | Logical model routes |
 
 Provider kinds are `on-demand`, `external`, `cloud` and `registries`.
-Shipped provider files and assets are embedded in the node; initialization
+Shipped provider files are embedded in the node; initialization
 materializes this tree. The coordinator owns provider writes. Workers receive
 managed copies through peer synchronization.
 

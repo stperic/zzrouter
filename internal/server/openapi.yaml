@@ -1619,9 +1619,8 @@ paths:
         An asset is a small file a launch parameter of type `asset` takes
         by name; the node that launches resolves the name to the file's
         path in its own copy. The coordinator owns the set and peer-sync
-        carries it to workers. `shipped` assets come with zzRouter and
-        are restored on every start; `referenced_by` lists the
-        parameters naming each one.
+        carries it to workers. `referenced_by` lists the parameters
+        naming each one.
       responses:
         '200':
           description: OK
@@ -1696,11 +1695,6 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '403':
-          description: The name belongs to an asset that ships with zzRouter.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
         '404':
           description: No such provider.
           content:
@@ -1726,11 +1720,6 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '403':
-          description: The asset ships with zzRouter.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
         '404':
           description: No such provider or asset.
           content:
@@ -12079,14 +12068,11 @@ components:
 
     AssetInfo:
       type: object
-      required: [name, size, sha256, shipped, referenced_by]
+      required: [name, size, sha256, referenced_by]
       properties:
         name: { type: string, description: The asset's name, which an asset-typed parameter takes as its value. }
         size: { type: integer, format: int64 }
         sha256: { type: string }
-        shipped:
-          type: boolean
-          description: Ships with zzRouter; restored on every start and cannot be replaced or deleted.
         referenced_by:
           type: array
           items: { type: string }
