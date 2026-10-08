@@ -1,7 +1,9 @@
 package servercli
 
 import (
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +27,7 @@ func TestDetachedNodeArgsPropagatesNoSetup(t *testing.T) {
 	cmd := NewStartCmd()
 	require.NoError(t, cmd.Flags().Set("no-setup", "true"))
 
-	args, err := detachedNodeArgs(cmd)
+	args, _, err := detachedNodeArgs(cmd)
 	require.NoError(t, err)
 	assert.True(t, argsContain(args, "--no-setup"),
 		"--no-setup must cross the detach boundary, got %v", args)
@@ -38,7 +40,7 @@ func TestDetachedNodeArgsPropagatesNoSetup(t *testing.T) {
 func TestDetachedNodeArgsOmitsNoSetupWhenUnset(t *testing.T) {
 	cmd := NewStartCmd()
 
-	args, err := detachedNodeArgs(cmd)
+	args, _, err := detachedNodeArgs(cmd)
 	require.NoError(t, err)
 	assert.False(t, argsContain(args, "--no-setup"),
 		"--no-setup must not appear unless requested, got %v", args)
@@ -52,7 +54,7 @@ func TestDetachedNodeArgsCarriesPortAndDir(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("dir", "/tmp/zzcfg"))
 	require.NoError(t, cmd.Flags().Set("debug", "true"))
 
-	args, err := detachedNodeArgs(cmd)
+	args, _, err := detachedNodeArgs(cmd)
 	require.NoError(t, err)
 
 	require.GreaterOrEqual(t, len(args), 1)
@@ -69,7 +71,25 @@ func TestDetachedNodeArgsCarriesPortAndDir(t *testing.T) {
 func TestDetachedNodeArgsDefaultsPort(t *testing.T) {
 	cmd := NewStartCmd()
 
-	args, err := detachedNodeArgs(cmd)
+	args, _, err := detachedNodeArgs(cmd)
 	require.NoError(t, err)
 	assert.True(t, argsContain(args, "--port"), "args %v", args)
+}
+
+func TestAwaitDetachedStartupReportsEarlyExit(t *testing.T) {
+	exited := make(chan error, 1)
+	exited <- errors.New("exit status 1")
+	err := awaitDetachedStartup(exited, func() bool { return false }, time.Minute, time.Millisecond)
+	require.ErrorContains(t, err, "exit status 1")
+}
+
+func TestAwaitDetachedStartupReturnsOnceServing(t *testing.T) {
+	err := awaitDetachedStartup(make(chan error), func() bool { return true }, time.Minute, time.Millisecond)
+	require.NoError(t, err)
+}
+
+// A slow start is not a failure: the child is still running.
+func TestAwaitDetachedStartupTimeoutIsNotFailure(t *testing.T) {
+	err := awaitDetachedStartup(make(chan error), func() bool { return false }, 10*time.Millisecond, time.Millisecond)
+	require.NoError(t, err)
 }

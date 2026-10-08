@@ -1,6 +1,7 @@
 package servercli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,6 +71,8 @@ func cleanupExistingProcesses() error {
 // Only one server process is allowed per host
 func killExistingServeProcesses() error {
 	currentPid := os.Getpid()
+	// A detached child's parent is the start -d process waiting on it.
+	parentPid := os.Getppid()
 
 	// Find all processes
 	processes, err := ps.Processes()
@@ -83,7 +86,7 @@ func killExistingServeProcesses() error {
 		// and with a sharper consequence here: without it, `zzrouter-node
 		// stop` kills the privileged updater, and killing it mid-update
 		// abandons a node on a version nothing is left watching.
-		if strings.Contains(proc.Executable(), "zzrouter-node") && proc.Pid() != currentPid && isServerProcess(proc.Pid()) {
+		if strings.Contains(proc.Executable(), "zzrouter-node") && proc.Pid() != currentPid && proc.Pid() != parentPid && isServerProcess(proc.Pid()) {
 			stopped, err := stopManagedService(proc.Pid())
 			if err != nil {
 				return err
@@ -201,10 +204,10 @@ func handleDetachedMode(cmd *cobra.Command, hostCfg *pkgConfig.NodeConfig) error
 // drop it and an elevated child takes the privileged path, installs the
 // system service, and the service then runs as its own account reading
 // its own node.yaml rather than the config this command was pointed at.
-func detachedNodeArgs(cmd *cobra.Command) ([]string, error) {
+func detachedNodeArgs(cmd *cobra.Command) ([]string, int, error) {
 	port, _, err := parseNodeFlags(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse flags: %w", err)
+		return nil, 0, fmt.Errorf("failed to parse flags: %w", err)
 	}
 
 	// ALWAYS include the port in the command line for process detection.
@@ -223,11 +226,11 @@ func detachedNodeArgs(cmd *cobra.Command) ([]string, error) {
 		args = append(args, "--no-setup")
 	}
 
-	return args, nil
+	return args, port, nil
 }
 
-// startDetachedNode spawns a new process to run the server in detached mode
-// Returns immediately after spawning - does not wait for server to be ready
+// startDetachedNode spawns the server as a background process and waits
+// until it serves, exits, or detachedStartupTimeout passes.
 func startDetachedNode(cmd *cobra.Command) error {
 	// Check if server is already running BEFORE spawning
 	// This prevents race conditions when multiple detach commands run simultaneously
@@ -241,7 +244,7 @@ func startDetachedNode(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	args, err := detachedNodeArgs(cmd)
+	args, port, err := detachedNodeArgs(cmd)
 	if err != nil {
 		return err
 	}
@@ -279,14 +282,49 @@ func startDetachedNode(cmd *cobra.Command) error {
 		return fmt.Errorf("failed to start detached process: %w", err)
 	}
 
-	// Return immediately - don't wait for server
-	// Node will log "zzRouter server started" when ready
-	fmt.Println("zzRouter server process started.")
+	exited := make(chan error, 1)
+	go func() { exited <- detachedCmd.Wait() }()
+	serving := awaitDetachedStartup(exited, func() bool { return checkNodeRunning(port) },
+		detachedStartupTimeout, detachedStartupPoll)
+
+	if serving == nil {
+		fmt.Println("zzRouter server process started.")
+	}
 	if logPath != "" {
 		fmt.Printf("Server logs: %s\n", logPath)
 	}
+	return serving
+}
 
-	return nil
+// detachedStartupTimeout bounds how long start -d waits for the child to
+// serve; a node still starting after it is reported as started.
+const detachedStartupTimeout = 30 * time.Second
+
+// detachedStartupPoll is the interval between readiness checks.
+const detachedStartupPoll = 250 * time.Millisecond
+
+// awaitDetachedStartup returns an error if the child exits before ready
+// reports true. The child's stderr is not captured, so the error points
+// at a foreground run, where startup errors print.
+func awaitDetachedStartup(exited <-chan error, ready func() bool, timeout, poll time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-exited:
+			if err == nil {
+				err = errors.New("exit status 0")
+			}
+			return fmt.Errorf("node exited during startup (%w); run 'zzrouter-node start' without -d to see why", err)
+		case <-deadline:
+			return nil
+		case <-ticker.C:
+			if ready() {
+				return nil
+			}
+		}
+	}
 }
 
 // serverLogPath returns the node's rotating log file path, ensuring the
