@@ -113,7 +113,7 @@ func (s *RunsService) WithModelLookup(lookup func(ctx context.Context, name stri
 // ListRunsRequest represents a request to list runs
 type ListRunsRequest struct {
 	Node   string // Node filter (supports wildcards)
-	Status string // Status filter (running, stopped, etc.)
+	Status string // Retained instance status filter.
 	// WithParametersStatus asks each node to report whether its runs still
 	// have what their config resolves to. It re-resolves every live run,
 	// so it is off unless asked for.

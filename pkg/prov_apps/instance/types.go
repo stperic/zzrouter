@@ -21,6 +21,12 @@ func (s Status) IsTerminal() bool {
 	return s == StatusStopped || s == StatusFailed
 }
 
+// ListableStatuses are the states a run can be found in: a stopped run is
+// removed, so StatusStopped is never listed.
+func ListableStatuses() []Status {
+	return []Status{StatusStarting, StatusRunning, StatusUnhealthy, StatusStopping, StatusFailed, StatusRestarting}
+}
+
 // LaunchMode represents how a provider process is launched.
 type LaunchMode string
 

@@ -57,7 +57,7 @@ func schemaObjects(value any) any {
 
 type runOutput struct {
 	RunID       string `json:"run_id"`
-	OldID       string `json:"old_id,omitempty"`
+	OldRunID    string `json:"old_run_id,omitempty"`
 	JobID       string `json:"job_id,omitempty"`
 	DeployJobID string `json:"deploy_job_id,omitempty"`
 	Node        string `json:"node,omitempty"`

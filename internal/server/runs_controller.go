@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -86,6 +87,11 @@ func (ctrl *RunsController) ListRuns(c *gin.Context) {
 	req := &ListRunsRequest{
 		Node:   QueryNode(c),
 		Status: c.Query("status"),
+	}
+
+	if listable := instance.ListableStatuses(); req.Status != "" && !slices.Contains(listable, instance.Status(req.Status)) {
+		BadRequest(c, fmt.Sprintf("status must be one of %v; stopped runs are removed", listable))
+		return
 	}
 
 	if !ctrl.nodes.IsKnownNode(req.Node) {

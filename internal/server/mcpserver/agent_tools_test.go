@@ -43,16 +43,16 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 	for _, tc := range []struct{ name, method, path, args, query, body, response, want string }{
 		{"zz_nodes", "GET", "/zzrouter/v1/nodes", "{}", "limit=50&offset=0", "", `{"data":[{"name":"coord","cluster_role":"coordinator","health_status":"healthy","config_path":"drop"}],"total":1}`, `[{"name":"coord","cluster_role":"coordinator","health_status":"healthy"}]`},
 		{"zz_nodes", "GET", "/zzrouter/v1/nodes/worker one", `{"node":"worker one"}`, "", "", `{"data":{"name":"worker one","health_status":"down","config_path":"drop"}}`, `{"name":"worker one","health_status":"down"}`},
-		{"zz_models", "GET", "/zzrouter/v1/models", `{"node":"worker","provider":"vllm","limit":2}`, "limit=2&offset=0&node=worker&provider=vllm&model=", "", `{"data":[{"name":"m","assigned_app":"vllm","node":"worker","details":{"drop":"huge"}}],"total":1}`, `[{"name":"m","provider":"vllm","node":"worker"}]`},
+		{"zz_models", "GET", "/zzrouter/v1/models", `{"node":"worker","provider":"vllm","limit":2}`, "limit=2&offset=0&node=worker&provider=vllm&model=", "", `{"data":[{"name":"m","assigned_app":"vllm","node":"worker","source_id":"org/M","details":{"drop":"huge","wire_endpoints":["embeddings"],"features":{"vision":"unsupported"}}}],"total":1}`, `[{"name":"m","source_id":"org/M","provider":"vllm","node":"worker","details":{"wire_endpoints":["embeddings"],"features":{"vision":"unsupported"}}}]`},
 		{"zz_model_search", "GET", "/zzrouter/v1/search", `{"query":"tiny"}`, "limit=50&offset=0&type=models&q=tiny&provider=", "", `{"data":{"results":[{"id":"org/model","downloads":5,"tags":["drop"]}],"total":1,"pagination":{"has_next":true}}}`, `[{"id":"org/model","downloads":5}]`},
 		{"zz_model_files", "GET", "/zzrouter/v1/registries/huggingface/variants", `{"model_id":"org/repo","limit":1,"offset":1}`, "id=org%2Frepo&limit=1&offset=1", "", `{"data":{"model_id":"org/repo","variants":[{"file":"a.gguf","size_bytes":99},{"file":"b.gguf","quantization":"Q4_K_M","bits":4,"size_bytes":123,"size_human":"123 B","recommended":true}],"total_size_bytes":222}}`, `[{"file":"b.gguf","quantization":"Q4_K_M","bits":4,"size_bytes":123,"size_human":"123 B","recommended":true}]`},
 		{"zz_providers", "GET", "/zzrouter/v1/providers", `{"node":"worker"}`, "node=worker&limit=50&offset=0", "", `{"data":[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}],"total":1}`, `[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}]`},
-		{"zz_runs", "GET", "/zzrouter/v1/runs", "{}", "limit=50&offset=0&node=&status=", "", `{"data":[{"id":"r","status":"failed","error_message":"bad parameters","environment":{"drop":"private"}}],"total":1}`, `[{"id":"r","status":"failed","error_message":"bad parameters"}]`},
-		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "limit=50&offset=0&node=worker&status=", "", `{"data":{"id":"r","status":"running","process_id":42}}`, `{"id":"r","status":"running"}`},
+		{"zz_runs", "GET", "/zzrouter/v1/runs", "{}", "limit=50&offset=0&node=&status=", "", `{"data":[{"id":"r","status":"failed","error_message":"bad parameters","environment":{"drop":"private"}}],"total":1}`, `[{"run_id":"r","status":"failed","error_message":"bad parameters"}]`},
+		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "limit=50&offset=0&node=worker&status=", "", `{"data":{"id":"r","status":"running","process_id":42}}`, `{"run_id":"r","status":"running"}`},
 		{"zz_run_preview", "POST", "/zzrouter/v1/runs/preview", `{"model_name":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, "", `{"model_name":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, `{"data":{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"},"working_dir":"drop"}}`, `{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"}}`},
 		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model_name":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model_name":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"launch_mode":"native"}`, `{"data":{"id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
-		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_id":"r","job_id":"j","node":"worker"}`},
-		{"zz_run_stop", "DELETE", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "node=worker", "", `{"data":{"id":"r","status":"stopped"}}`, `{"id":"r","status":"stopped"}`},
+		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_run_id":"r","job_id":"j","node":"worker"}`},
+		{"zz_run_stop", "DELETE", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "node=worker", "", `{"data":{"id":"r","status":"stopped"}}`, `{"run_id":"r","status":"stopped"}`},
 		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":""}`, `{"data":{"id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999}]}}`, `{"deployment_id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/jobs/j", `{"job_id":"j","node":"worker"}`, "node=worker", "", `{"accepted":true,"job_id":"j"}`, `{"accepted":true,"job_id":"j"}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/deployments/d", `{"deployment_id":"d"}`, "node=", "", `{"data":{"id":"d","status":"cancelled"}}`, `{"id":"d","status":"cancelled"}`},
@@ -61,9 +61,9 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
 		{"zz_params_get", "GET", "/zzrouter/v1/providers/vllm/resolved", `{"provider":"vllm","node":"worker","model":"org/model"}`, "node=worker&model=org%2Fmodel", "", `{"parameters":{"ctx":{"value":4096,"tier":"default"}},"install":{"drop":"huge"}}`, `{"parameters":{"ctx":{"value":4096,"tier":"default"}}}`},
-		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j"}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j"}}`},
+		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"id":"kept","overridden":["ctx"]}],"unknown":[{"id":"unsynced","reason":"sync pending"}]}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"run_id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"run_id":"kept","overridden":["ctx"]}],"unknown":[{"run_id":"unsynced","reason":"sync pending"}]}}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r"}`, "follow=false&lines=200", "", `{"data":{"lines":["old","last"],"total_lines":12,"count":2,"log_file":"run.log"}}`, `{"lines":["old","last"],"total_lines":12,"log_file":"run.log"}`},
-		{"zz_logs", "GET", "/zzrouter/v1/server/logs", "{}", "limit=50&offset=0", "", `{"data":[{"instance_id":"r","size":12,"path":"drop"}],"total":1}`, `[{"instance_id":"r","size":12}]`},
+		{"zz_logs", "GET", "/zzrouter/v1/server/logs", "{}", "limit=50&offset=0", "", `{"data":[{"instance_id":"r","size":12,"path":"drop"}],"total":1}`, `[{"run_id":"r","size":12}]`},
 		{"zz_update_status", "GET", "/zzrouter/v1/update/status", "{}", "", "", `{"data":{"state":"idle","update_available":true,"current_version":"1.0"}}`, `{"state":"idle","update_available":true,"current_version":"1.0"}`},
 		{"zz_update_check", "POST", "/zzrouter/v1/update/check", `{}`, "", "", `{"data":{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}}`, `{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}`},
 		{"zz_update_apply", "POST", "/zzrouter/v1/update/apply", `{"version":"1.1","nodes":["worker"],"idempotency_key":"retry"}`, "", `{"version":"1.1","nodes":["worker"]}`, `{"data":{"job_id":"j","version":"1.1","state":"queued"}}`, `{"job_id":"j","version":"1.1","state":"queued"}`},
@@ -249,11 +249,60 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 		}
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	descriptions := map[string]string{}
 	for _, tool := range response.Result.Tools {
+		descriptions[tool.Name] = tool.Description
 		require.NotEmpty(t, tool.Description)
 		require.NotContains(t, tool.Description, "—")
 		for field, schema := range tool.InputSchema.Properties {
 			require.NotEmpty(t, schema.Description, tool.Name+"."+field)
 		}
 	}
+	for _, name := range []string{"zz_run_preview", "zz_run_start"} {
+		require.Contains(t, descriptions[name], "Check zz_models first")
+		require.Contains(t, descriptions[name], "absent")
+	}
+	for _, phrase := range []string{"source_id", "case-insensitively", "exact (QWEN2.5 matches qwen2.5)", "final /", "QWEN2.5 matches org/qwen2.5", "*qwen2.5* matches org/qwen2.5-instruct", "does not suppress suffix hits"} {
+		require.Contains(t, descriptions["zz_models"], phrase)
+	}
+	require.Contains(t, descriptions["zz_run_stop"], "confirms the stop")
+	require.Contains(t, descriptions["zz_run_stop"], "404 by design")
+	require.Contains(t, descriptions["zz_run_start"], "job_id for zz_job")
+	require.Contains(t, descriptions["zz_job"], "Pass job_id here, not run_id")
+	require.Less(t, strings.Index(instructions, "Check zz_models first"), strings.Index(instructions, "zz_model_search"))
+
+}
+
+func TestProviderSummaryUsesReportedState(t *testing.T) {
+	for _, tc := range []struct {
+		installed, enabled bool
+	}{
+		{true, true},
+		{true, false},
+		{false, false},
+		{false, true},
+	} {
+		t.Run(fmt.Sprintf("%t/%t", tc.installed, tc.enabled), func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"installed": tc.installed, "enabled": tc.enabled}}))
+			})
+			result := callAgentTool(t, d, "zz_providers", map[string]any{"provider": "engine"})
+			summary := result["content"].([]any)[0].(map[string]any)["text"].(string)
+			require.Equal(t, fmt.Sprintf("Provider status: installed=%t, enabled=%t.", tc.installed, tc.enabled), summary)
+			if tc.installed {
+				require.NotContains(t, summary, "prerequisites")
+				require.NotContains(t, summary, "zz_provider_install")
+			}
+		})
+	}
+}
+
+func TestModelProjectionKeepsMissingEvidenceMissing(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+		writeFixture(t, w, []byte(`{"data":[{"name":"embedding-looking-name"},{"name":"other","details":{"format":"gguf"}}],"total":2}`))
+	})
+	result := callAgentTool(t, d, "zz_models", map[string]any{})["structuredContent"].(map[string]any)
+	raw, err := json.Marshal(result["models"])
+	require.NoError(t, err)
+	require.JSONEq(t, `[{"name":"embedding-looking-name"},{"name":"other","details":{}}]`, string(raw))
 }
