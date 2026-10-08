@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.26.2'
+          go-version-file: go.mod
       - name: Install pinned scanner
         run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
       - name: Scan full history
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.26.2'
+          go-version-file: go.mod
           cache: true
       - run: go mod verify
       - run: go build ./...
@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version: '1.26.2'
+          go-version-file: go.mod
           cache: true
       - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
       - run: golangci-lint run --timeout=5m
