@@ -280,6 +280,7 @@ release-preflight:
 release: release-preflight winres
 	@echo "Building release binaries for: $(RELEASE_PLATFORMS)"
 	@mkdir -p dist
+	@bash .github/scripts/third-party-notices.sh dist/THIRD_PARTY_NOTICES
 	@for platform in $(RELEASE_PLATFORMS); do \
 		goos=$${platform%-*}; \
 		goarch=$${platform#*-}; \
@@ -296,7 +297,8 @@ release: release-preflight winres
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -tags release -ldflags "$(LDFLAGS) -X github.com/stperic/zzrouter/pkg/prov_apps/process.LauncherSHA256=$$launcher_sha" -o "$$outdir/zzrouter-node$$ext" ./cmd/zzrouter-node || exit 1; \
 		echo "   building zzrouter (client)"; \
 		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build -ldflags "$(LDFLAGS)" -o "$$outdir/zzrouter$$ext" ./cmd/zzrouter || exit 1; \
-		echo "   bundling installer"; \
+		echo "   bundling installer and notices"; \
+		cp LICENSE NOTICE dist/THIRD_PARTY_NOTICES "$$outdir/" || exit 1; \
 		if [ "$$goos" = "windows" ]; then \
 			cp scripts/install.ps1 scripts/clean.ps1 "$$outdir/" || exit 1; \
 		else \
@@ -304,6 +306,7 @@ release: release-preflight winres
 			chmod +x "$$outdir/install.sh"; \
 		fi; \
 	done
+	@rm -f dist/THIRD_PARTY_NOTICES
 	@$(MAKE) winres-clean
 	@echo "Creating checksums..."
 	@cd dist && find . -type f ! -name 'checksums.txt' -print0 | xargs -0 shasum -a 256 > checksums.txt

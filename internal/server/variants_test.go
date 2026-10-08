@@ -75,7 +75,6 @@ func TestVariants_ResolvedDescribesTheVariant(t *testing.T) {
 	assert.Equal(t, qwenModel, r.From)
 	assert.Equal(t, "131072", r.Parameters["ctx-size"].Value)
 	assert.Equal(t, variantAgent, r.Parameters["ctx-size"].Model)
-	assert.Equal(t, "model-default", r.Parameters["chat-template-file"].Tier, "the family comes from the weights")
 	assert.Equal(t, map[string]any{"enable_thinking": false}, r.Request["chat_template_kwargs"].Value)
 	assert.Equal(t, "model", r.Request["chat_template_kwargs"].Tier)
 

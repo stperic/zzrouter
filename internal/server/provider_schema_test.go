@@ -100,20 +100,19 @@ func TestServerManagerLocalizesAssetParams(t *testing.T) {
 	assert.ErrorIs(t, err, assets.ErrNotFound)
 }
 
-// What the release ships fits together: the shipped schemas declare the
-// engines' template flags as assets, and the shipped template resolves
-// through them to the file installed beside the provider's config.
-func TestShippedTemplateParamsResolveToShippedAsset(t *testing.T) {
-	const shippedTemplate = "qwen3.8-system-anywhere.jinja"
+// The shipped schemas declare the engines' template flags as assets, so an
+// operator's template resolves to the file beside the provider's config.
+func TestTemplateParamsResolveToTheAssetFile(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(root))
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
-	require.True(t, templates.IsShippedAsset("llamacpp", shippedTemplate))
-
-	out, err := assetParamLocalizer(store)("llamacpp", "chat", "", map[string]string{"chat-template-file": shippedTemplate})
+	_, err = store.WriteAsset("llamacpp", "t.jinja", []byte("{{ messages }}"))
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(root, "on-demand", "llamacpp", assets.DirName, shippedTemplate), out.Params["chat-template-file"])
+
+	out, err := assetParamLocalizer(store)("llamacpp", "chat", "", map[string]string{"chat-template-file": "t.jinja"})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "on-demand", "llamacpp", assets.DirName, "t.jinja"), out.Params["chat-template-file"])
 
 	assert.Equal(t, schema.ParamAsset, loadProviderSchema(store, "vllm").Parameters["chat-template"].Kind)
 }

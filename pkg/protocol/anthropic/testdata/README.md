@@ -13,9 +13,9 @@ The MLX fixture reached its token limit while generating reasoning. It verifies 
 The vLLM fixture is the unmodified HTTP response from the engine's loopback
 Chat Completions endpoint. It reached its token limit. It used
 `attention-backend=FLASH_ATTN` and `VLLM_USE_FLASHINFER_SAMPLER=0`, plus eager
-execution, 20% GPU memory, a 1024-token context and the existing
-`qwen3.8-system-anywhere.jinja` template. This is the base Qwen model, not an
-instruction-following quality test. The capture preserves every frame,
+execution, 20% GPU memory, a 1024-token context and the
+`qwen3.8-system-anywhere.jinja` template, which releases no longer ship. This
+is the base Qwen model, not an instruction-following quality test. The capture preserves every frame,
 including the usage-only frame and the actual finish reason. vLLM 0.27.1
 could not start after its CUDA repair because FlashInfer failed to import on
 Python 3.11; 0.29.0 fixed that import but its default FlashInfer sampler still

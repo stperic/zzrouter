@@ -30,7 +30,19 @@ type apiDiscoveryResponse struct {
 	Docs                map[string]string   `json:"docs"`
 	ProviderDiagnostics string              `json:"provider_diagnostics,omitempty"`
 	UpdateControl       string              `json:"update_control"`
+	ChatTemplates       string              `json:"chat_templates"`
 }
+
+// chatTemplatesGuide is how a caller fixes a model whose own chat template
+// refuses its requests. zzRouter ships no templates; the engine's flag for
+// one is whichever parameter the provider's schema types as an asset.
+const chatTemplatesGuide = "Engines render each request with the chat template inside the model's weights. " +
+	"When it refuses a request, llama.cpp answers 400 chat_template_rejected; vLLM and MLX return the template's own message. " +
+	"Admin fix: GET /providers/{name}/schema and take the parameter of type asset described as a chat template. " +
+	"PUT /providers/{name}/assets/{asset} with the template text as the raw body. " +
+	"PATCH /providers/{name}/parameters?restart=affected (application/merge-patch+json) with " +
+	`{"models":{"<model>":{"parameters":{"<parameter>":"<asset>"}}}}. ` +
+	"GET /providers/{name}/resolved?model=<model> shows the template a launch uses and the tier that set it; patching the key to null removes it at that tier."
 
 // streamingGETs are the GET routes that answer text/event-stream and hold
 // the connection open until the client hangs up.
@@ -134,6 +146,7 @@ func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
 		APIVersion:          "v1",
 		ProviderDiagnostics: describeProviderDiagnostics(s),
 		UpdateControl:       "Admin: POST /update/apply with version and nodes (or [all]); workers first, coordinator last, sleeping nodes pending. GET /update/status and /update/history accept ?nodes=all. GET/PATCH /update/settings?node=NAME controls scheduled updates only. Explicit updates remain available when enabled=false. Protocol-breaking changes require an operator maintenance window and rollback of all nodes if any fails.",
+		ChatTemplates:       chatTemplatesGuide,
 		Authentication:      describeAuthentication(s),
 		Inference:           describeInference(s),
 		EndpointGroups:      collectAPIDiscoveryGroups(s),

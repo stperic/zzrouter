@@ -1,0 +1,10 @@
+{
+  "source": "https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418",
+  "evidence": "Verbatim llama-server 500 captured 2026-10-04 (pkg/protocol/anthropic/testdata/llamacpp_messages_error_500.json): the chat template rejecting an empty conversation.",
+  "reason": "No messages provided.",
+  "error": {
+    "code": 500,
+    "message": "\n------------\nWhile executing CallExpression at line 43, column 24 in source:\n... not messages %}↵    {{- raise_exception('No messages provided.') }}↵{%- endif %...\n                                           ^\nError: Jinja Exception: No messages provided.",
+    "type": "server_error"
+  }
+}

@@ -120,6 +120,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
+          bash .github/scripts/third-party-notices.sh THIRD_PARTY_NOTICES
 
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
@@ -131,13 +132,15 @@ jobs:
             7z a "dist/zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}.zip" \
               "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
               "zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
-              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              LICENSE NOTICE THIRD_PARTY_NOTICES
           else
             # Unix: Create tar.gz
             tar -czvf "dist/zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
               "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
               "zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
-              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              LICENSE NOTICE THIRD_PARTY_NOTICES
           fi
 
       - name: Upload artifact
@@ -288,8 +291,9 @@ jobs:
           body: |
             ## Installation
 
-            Archives contain the client, node and matching process launcher.
-            Install all three together. Available platforms: linux-amd64,
+            Archives contain the client, node and matching process launcher,
+            with LICENSE, NOTICE and THIRD_PARTY_NOTICES. Install all three
+            binaries together. Available platforms: linux-amd64,
             linux-arm64, darwin-amd64, darwin-arm64 and windows-amd64.
 
             On Linux/macOS, choose your platform and verify before installing:
