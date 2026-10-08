@@ -463,10 +463,8 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	utils.LogDebugf("[LoadExecutor] PreviewLocalRun: model=%s, provider=%s",
 		req.ModelName, req.Provider)
 
-	if e.appMgr != nil {
-		if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
-			return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
-		}
+	if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
+		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
 	}
 	normalizedApp := utils.NormalizeAppType(req.Provider)
 	if normalizedApp == "" {
@@ -475,20 +473,13 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 		return nil, newProblemError(http.StatusBadRequest, "Bad Request",
 			"provider is required: preview renders the launch command for one provider")
 	}
-	// Reject unknown or disabled providers up front so the response is a
-	// structured error envelope, not a 200 + all-empty PreviewRunResponse.
-	// Coord has an equivalent fast-path gate in RunsController.PreviewRun;
-	// this worker-side check covers the drift window when coord and
-	// worker have different appsConfig snapshots (peer-sync in flight).
-	if e.isProviderEnabled != nil && !e.isProviderEnabled(normalizedApp) {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request",
-			fmt.Sprintf("provider %q is not configured or enabled", normalizedApp))
+	// Check the worker's current config independently of the coordinator snapshot.
+	if err := previewProviderError(e.appMgr, normalizedApp); err != nil {
+		return nil, err
 	}
 
-	if e.appMgr != nil {
-		if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
-			return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
-		}
+	if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
+		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
 	}
 
 	mr, err := e.mergeAndResolve(req.ModelName, normalizedApp, req.Endpoint, req.Parameters, req.Environment)

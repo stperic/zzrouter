@@ -1299,9 +1299,11 @@ paths:
     get:
       tags: [Providers]
       operationId: listProviders
-      summary: List installed providers with runtime status
+      summary: List configured inference providers with runtime status
       description: |
-        Every provider this node knows about, with its runtime status.
+        Configured inference providers on this node and cached peers, including
+        disabled and uninstalled entries. Registries are excluded. `node` selects
+        one node; kind, enabled, installed, managed and version describe its state.
         Filterable by name, key or running state, and `refresh=true` forces
         a status re-probe instead of answering from cache.
 
@@ -1958,9 +1960,10 @@ paths:
       operationId: listProvidersStatus
       summary: List provider health, cooldowns, and rate-limit state
       description: |
-        Aggregate list across every provider. For one provider's full
-        status use `/providers/{name}/status`; for its service-manager
-        state alone use `/providers/{name}/service/status`.
+        Enabled configured entries, including model registries, with their
+        coordinator cooldown and rate-limit state. This is not the inference
+        provider inventory: use `/providers` for that. For one provider's
+        install and runtime status use `/providers/{name}/status`.
       responses:
         '200':
           description: OK
@@ -4064,8 +4067,9 @@ paths:
       operationId: getProviderStatus
       summary: Aggregate status (install + service + running instances) for a provider
       description: |
-        One provider's combined view. The all-providers list is
-        `/providers/status`; the raw service-manager state is
+        One provider's combined view. The inference-provider inventory is
+        `/providers`; `/providers/status` lists enabled-entry cooldowns,
+        including registries. The raw service-manager state is
         `/providers/{name}/service/status`.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
@@ -4815,6 +4819,12 @@ paths:
     get:
       tags: [Registries]
       operationId: listRegistriesHuggingfaceVariants
+      parameters:
+        - in: query
+          name: id
+          required: true
+          description: HuggingFace repository identifier (owner/repository).
+          schema: { type: string }
       summary: List available Hugging Face model variants for a repo
       description: |
         Quantisation variants available for a HuggingFace repo, so a caller

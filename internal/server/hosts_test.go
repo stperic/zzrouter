@@ -19,8 +19,9 @@ func TestEndpointToNodeInfo_AppsPropagate(t *testing.T) {
 			HealthReport: mesh.HealthReport{
 				ClusterRole: "worker",
 				Apps: []prov_apps.LocalProviderInfo{
-					{Key: "vllm", Type: "on-demand", Name: "vLLM"},
-					{Key: "ollama", Type: "always-on", Name: "Ollama"},
+					{Key: "vllm", Type: "on-demand", Name: "vLLM", State: prov_apps.StateLive},
+					{Key: "ollama", Type: "always-on", Name: "Ollama", State: prov_apps.StateLive},
+					{Key: "disabled", Name: "Disabled", State: prov_apps.StateDormant},
 				},
 			},
 		},

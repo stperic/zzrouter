@@ -251,10 +251,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		prov_apps.WithMemoryBudget(providerMemoryBudget(s.configStore)),
 	)
 	if err != nil {
-		logger.Warn("Failed to initialize provider app manager", "error", err)
-	} else {
-		s.providers.appMgr = providerAppMgr
+		return nil, fmt.Errorf("initialize provider manager: %w", err)
 	}
+	s.providers.appMgr = providerAppMgr
 
 	// Initialize download tracker with persistence
 	{

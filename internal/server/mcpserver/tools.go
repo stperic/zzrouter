@@ -87,6 +87,7 @@ func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Read a job's state, progress and result or error. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"getJob"}, dispatcher.job)
 	registerAgentTools(s, cfg, bindings)
+	registerAPITools(s, cfg, bindings)
 	return bindings
 }
 

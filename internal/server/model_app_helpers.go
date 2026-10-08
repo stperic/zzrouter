@@ -25,6 +25,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -435,6 +436,26 @@ func extractTagsFromExtra(extra map[string]any) []string {
 		}
 	}
 	return tags
+}
+
+// previewProviderError uses the target node's inventory to select one recovery action.
+func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error {
+	name = utils.NormalizeAppType(name)
+	provider, ok := mgr.AppsConfig().LookupApp(name)
+	if !ok {
+		return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is not configured on this node; choose a configured provider from GET /zzrouter/v1/providers or configure one from /zzrouter/v1/providers/catalog", name))
+	}
+	if provider.IsEnabled() {
+		return nil
+	}
+	next := fmt.Sprintf("install it with POST /zzrouter/v1/providers/%s/install", name)
+	for _, info := range mgr.LocalInfo("") {
+		if info.Key == name && info.State.IsInstalled() {
+			next = fmt.Sprintf("enable it with PATCH /zzrouter/v1/providers/%s with enabled=true", name)
+			break
+		}
+	}
+	return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is configured but disabled on this node; %s, then retry", name, next))
 }
 
 // isProviderEnabledInConfig checks if provider is enabled in provider config

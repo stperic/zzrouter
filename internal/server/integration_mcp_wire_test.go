@@ -60,7 +60,7 @@ func TestMCPWireDiscovery(t *testing.T) {
 	}
 	meta := result["_meta"].(map[string]any)
 	require.Equal(t, "zzrouter", meta["io.modelcontextprotocol/serverInfo"].(map[string]any)["name"])
-	require.NotContains(t, result["instructions"], "zz_api_search")
+	require.Contains(t, result["instructions"], "zz_api_search")
 }
 
 // https://modelcontextprotocol.io/specification/2026-07-28/basic
@@ -98,6 +98,7 @@ func TestMCPWireListContract(t *testing.T) {
 		"zz_runs": {readOnly: true}, "zz_run_preview": {readOnly: true}, "zz_run_start": {}, "zz_run_restart": {},
 		"zz_run_stop": {destructive: true}, "zz_chat": {}, "zz_logs": {readOnly: true}, "zz_job_cancel": {destructive: true},
 		"zz_providers": {readOnly: true}, "zz_provider_install": {}, "zz_params_get": {readOnly: true}, "zz_params_set": {},
+		"zz_model_files": {readOnly: true}, "zz_api_search": {readOnly: true}, "zz_api_get": {readOnly: true}, "zz_api": {destructive: true},
 		"zz_update_status": {readOnly: true}, "zz_update_check": {idempotent: true}, "zz_update_apply": {destructive: true},
 	}
 	expectedNames := make([]string, 0, len(expected))
@@ -236,7 +237,7 @@ func TestIntegrationMCPLegacySmoke(t *testing.T) {
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 21)
+	require.Len(t, tools.Tools, 25)
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError)

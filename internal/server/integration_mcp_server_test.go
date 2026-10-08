@@ -41,17 +41,16 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	defer session.Close()
 	require.Equal(t, protocol, session.InitializeResult().ProtocolVersion)
 	require.Less(t, len(session.InitializeResult().Instructions), 2<<10)
-	require.NotContains(t, session.InitializeResult().Instructions, "zz_api_search")
+	require.Contains(t, session.InitializeResult().Instructions, "zz_api_search")
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 21)
+	require.Len(t, tools.Tools, 25)
 	if protocol == "2026-07-28" {
 		require.Equal(t, int((5 * time.Minute).Milliseconds()), tools.TTLMs)
 	}
 	names := []string{}
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
-		require.NotContains(t, tool.Description, "zz_api_search")
 		require.NotNil(t, tool.Annotations)
 	}
 	require.Contains(t, names, "zz_overview")
@@ -190,6 +189,13 @@ func TestMCPOperationBindings(t *testing.T) {
 				operations[operation.ID] = boundRoute{strings.ToUpper(method), path}
 			}
 		}
+	}
+	bindings := mcpserver.OperationBindings()
+	require.Equal(t, []string{"listRegistriesHuggingfaceVariants"}, bindings["zz_model_files"])
+	require.Equal(t, []string{"listProviders", "getProviderStatus"}, bindings["zz_providers"])
+	for _, name := range []string{"zz_api_search", "zz_api_get", "zz_api"} {
+		require.Contains(t, bindings, name)
+		require.Empty(t, bindings[name], "escape hatches bind dynamically through the catalog/spec")
 	}
 	for tool, ids := range mcpserver.OperationBindings() {
 		for _, id := range ids {

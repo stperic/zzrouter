@@ -127,6 +127,9 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	if err := inner.Err(); err != nil {
 		return fmt.Errorf("REST request interrupted: %w", err)
 	}
+	if rec.statusCode() == http.StatusNoContent {
+		return nil
+	}
 	if err := json.Unmarshal(rec.body.Bytes(), out); err != nil {
 		return fmt.Errorf("decode REST response: %w", err)
 	}

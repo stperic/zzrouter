@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"reflect"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -10,7 +11,8 @@ import (
 type objectSchema[T any] struct{}
 
 func (objectSchema[T]) MarshalJSON() ([]byte, error) {
-	schema, err := jsonschema.For[T](nil)
+	// RawMessage is any JSON value, rather than its Go byte-slice representation.
+	schema, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{reflect.TypeFor[json.RawMessage](): {}}})
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +69,7 @@ type runOutput struct {
 type downloadOutput struct {
 	DeploymentID string         `json:"deployment_id"`
 	Model        string         `json:"model,omitempty"`
+	File         string         `json:"file,omitempty"`
 	Status       string         `json:"status,omitempty"`
 	RestartJobID string         `json:"restart_job_id,omitempty"`
 	Nodes        []downloadNode `json:"nodes,omitempty"`

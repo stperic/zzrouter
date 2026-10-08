@@ -45,19 +45,21 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_nodes", "GET", "/zzrouter/v1/nodes/worker one", `{"node":"worker one"}`, "", "", `{"data":{"name":"worker one","health_status":"down","config_path":"drop"}}`, `{"name":"worker one","health_status":"down"}`},
 		{"zz_models", "GET", "/zzrouter/v1/models", `{"node":"worker","provider":"vllm","limit":2}`, "limit=2&offset=0&node=worker&provider=vllm&model=", "", `{"data":[{"name":"m","assigned_app":"vllm","node":"worker","details":{"drop":"huge"}}],"total":1}`, `[{"name":"m","provider":"vllm","node":"worker"}]`},
 		{"zz_model_search", "GET", "/zzrouter/v1/search", `{"query":"tiny"}`, "limit=50&offset=0&type=models&q=tiny&provider=", "", `{"data":{"results":[{"id":"org/model","downloads":5,"tags":["drop"]}],"total":1,"pagination":{"has_next":true}}}`, `[{"id":"org/model","downloads":5}]`},
+		{"zz_model_files", "GET", "/zzrouter/v1/registries/huggingface/variants", `{"model_id":"org/repo","limit":1,"offset":1}`, "id=org%2Frepo&limit=1&offset=1", "", `{"data":{"model_id":"org/repo","variants":[{"file":"a.gguf","size_bytes":99},{"file":"b.gguf","quantization":"Q4_K_M","bits":4,"size_bytes":123,"size_human":"123 B","recommended":true}],"total_size_bytes":222}}`, `[{"file":"b.gguf","quantization":"Q4_K_M","bits":4,"size_bytes":123,"size_human":"123 B","recommended":true}]`},
+		{"zz_providers", "GET", "/zzrouter/v1/providers", `{"node":"worker"}`, "node=worker&limit=50&offset=0", "", `{"data":[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}],"total":1}`, `[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}]`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs", "{}", "limit=50&offset=0&node=&status=", "", `{"data":[{"id":"r","status":"failed","error_message":"bad parameters","environment":{"drop":"private"}}],"total":1}`, `[{"id":"r","status":"failed","error_message":"bad parameters"}]`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "limit=50&offset=0&node=worker&status=", "", `{"data":{"id":"r","status":"running","process_id":42}}`, `{"id":"r","status":"running"}`},
 		{"zz_run_preview", "POST", "/zzrouter/v1/runs/preview", `{"model_name":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, "", `{"model_name":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, `{"data":{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"},"working_dir":"drop"}}`, `{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"}}`},
 		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model_name":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model_name":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"launch_mode":"native"}`, `{"data":{"id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
 		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_id":"r","job_id":"j","node":"worker"}`},
 		{"zz_run_stop", "DELETE", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "node=worker", "", `{"data":{"id":"r","status":"stopped"}}`, `{"id":"r","status":"stopped"}`},
-		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":""}`, `{"data":{"id":"d","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999}]}}`, `{"deployment_id":"d","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
+		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":""}`, `{"data":{"id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999}]}}`, `{"deployment_id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/jobs/j", `{"job_id":"j","node":"worker"}`, "node=worker", "", `{"accepted":true,"job_id":"j"}`, `{"accepted":true,"job_id":"j"}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/deployments/d", `{"deployment_id":"d"}`, "node=", "", `{"data":{"id":"d","status":"cancelled"}}`, `{"id":"d","status":"cancelled"}`},
-		{"zz_providers", "GET", "/zzrouter/v1/providers/status", "{}", "limit=50&offset=0", "", `{"data":[{"name":"vllm","status":"cooldown","cooldown_seconds":3,"rate_limit":{"drop":"noise"}}],"total":1}`, `[{"name":"vllm","status":"cooldown","cooldown_seconds":3}]`},
+		{"zz_providers", "GET", "/zzrouter/v1/providers", "{}", "limit=50&offset=0&node=", "", `{"data":[{"name":"llamacpp","kind":"on-demand","enabled":false,"installed":false,"managed":false,"version":"unknown","node":"coord","description":"drop"}],"total":1}`, `[{"name":"llamacpp","kind":"on-demand","enabled":false,"installed":false,"managed":false,"version":"unknown","node":"coord"}]`},
 		{"zz_providers", "GET", "/zzrouter/v1/providers/vllm/status", `{"provider":"vllm","node":"worker"}`, "node=worker", "", `{"data":{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand","instances":[{"drop":"huge"}]}}`, `{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand"}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
-		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"managed","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"managed"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
+		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
 		{"zz_params_get", "GET", "/zzrouter/v1/providers/vllm/resolved", `{"provider":"vllm","node":"worker","model":"org/model"}`, "node=worker&model=org%2Fmodel", "", `{"parameters":{"ctx":{"value":4096,"tier":"default"}},"install":{"drop":"huge"}}`, `{"parameters":{"ctx":{"value":4096,"tier":"default"}}}`},
 		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j"}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j"}}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r"}`, "follow=false&lines=200", "", `{"data":{"lines":["old","last"],"total_lines":12,"count":2,"log_file":"run.log"}}`, `{"lines":["old","last"],"total_lines":12,"log_file":"run.log"}`},
@@ -99,7 +101,7 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 			require.Equal(t, 1, calls)
 			output := result["structuredContent"]
 			if strings.HasPrefix(tc.want, "[") {
-				key := map[string]string{"zz_nodes": "nodes", "zz_models": "models", "zz_model_search": "matches", "zz_runs": "runs", "zz_providers": "providers", "zz_logs": "log_files"}[tc.name]
+				key := map[string]string{"zz_nodes": "nodes", "zz_models": "models", "zz_model_search": "matches", "zz_model_files": "files", "zz_runs": "runs", "zz_providers": "providers", "zz_logs": "log_files"}[tc.name]
 				output = output.(map[string]any)[key]
 			}
 			data, err := json.Marshal(output)
@@ -149,7 +151,7 @@ func TestAgentListBoundsAndPaging(t *testing.T) {
 				args["query"] = "tiny"
 			}
 			result := callAgentTool(t, d, tool, args)["structuredContent"].(map[string]any)
-			key := map[string]string{"zz_nodes": "nodes", "zz_models": "models", "zz_model_search": "matches", "zz_runs": "runs", "zz_providers": "providers", "zz_logs": "log_files"}[tool]
+			key := map[string]string{"zz_nodes": "nodes", "zz_models": "models", "zz_model_search": "matches", "zz_model_files": "files", "zz_runs": "runs", "zz_providers": "providers", "zz_logs": "log_files"}[tool]
 			require.Len(t, result[key], 1)
 			require.Equal(t, true, result["has_more"])
 			if tool == "zz_nodes" || tool == "zz_runs" {
@@ -169,7 +171,7 @@ func TestAgentInvalidInputsNeverDispatch(t *testing.T) {
 		{"zz_run_stop", `{"run_id":"r?follow=true"}`}, {"zz_run_restart", `{"run_id":".."}`},
 		{"zz_job_cancel", `{"job_id":"a","deployment_id":"b"}`}, {"zz_job_cancel", "{}"},
 		{"zz_job_cancel", `{"deployment_id":"d","node":"worker"}`}, {"zz_job_cancel", `{"job_id":"%2f"}`},
-		{"zz_providers", `{"provider":"vllm/logs"}`}, {"zz_providers", `{"node":"worker"}`},
+		{"zz_providers", `{"provider":"vllm/logs"}`},
 		{"zz_provider_install", `{"provider":".."}`}, {"zz_params_get", `{"provider":"vllm#"}`},
 		{"zz_params_set", `{"provider":"vllm","patch":null}`}, {"zz_models", `{"limit":-1}`},
 		{"zz_models", `{"limit":1001}`}, {"zz_logs", `{"run_id":"r","lines":-1}`},

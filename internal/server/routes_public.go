@@ -78,7 +78,6 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		s.services.Runs, s.services.Load, s.services.RunsUtility,
 		nodeValidator,  // NodeValidator
 		s.logsHandlers, // RunLogHandler
-		appsConfigFn,   // for provider lookups on preview
 	)
 	s.ensureDiscoveryController()
 	s.controllers.Deployments = NewDeploymentsController(s.services.Deployments)

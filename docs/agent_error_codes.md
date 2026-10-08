@@ -115,6 +115,9 @@ Errors use Problem Details. Common `title`/`code` pairs an agent will see:
 
 | Status | What it means | Recovery |
 |---|---|---|
+| 400 `bad_request` with provider not configured | Preview selected a provider absent from that node's configuration. | Choose one from `GET /zzrouter/v1/providers` or configure a supported provider from `/providers/catalog`. |
+| 400 `bad_request` with provider disabled and not installed | The target node's inventory has no installed copy. | `POST /zzrouter/v1/providers/:name/install` on that node, follow the job, then retry. |
+| 400 `bad_request` with provider disabled and installed | The target node has an installed copy that is disabled. | `PATCH /zzrouter/v1/providers/:name` with `{"enabled":true}` on that node, then retry. |
 | 400 with `provider %q is cloud-only` | Tried to launch a cloud-backed model via `/runs`. | Use `POST /zzrouter/v1/deployments` instead. |
 | 400 with `provider %q has no search.registry configured` | auto_deploy was requested but the provider can't infer a download source. | Either deploy explicitly via `/deployments` or pick a provider with a registry. |
 | 421 with `Location: <coord-url>` | Worker received a write that only the coordinator may serve (e.g. provider PATCH). | Retry against the URL in the `Location` header. |

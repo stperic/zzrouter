@@ -6,7 +6,7 @@ import (
 )
 
 func (s *Server) registerMCPServer(router *gin.RouterGroup) {
-	handler := mcpserver.New(mcpserver.Config{Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed})
+	handler := mcpserver.New(mcpserver.Config{Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed, SearchAPI: searchOpenAPI, EligibleAPIRoute: s.eligibleAPIRoute})
 	serve := func(c *gin.Context) {
 		if c.Request.Context().Value(internalRequestKey) != nil {
 			Forbidden(c, "MCP cannot be called from a trusted internal request; use the public endpoint with an admin key")
