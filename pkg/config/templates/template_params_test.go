@@ -1,8 +1,6 @@
 package templates_test
 
 import (
-	"bytes"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -33,46 +31,10 @@ func TestMLXTakesTheTemplateByContent(t *testing.T) {
 	assert.Empty(t, schemas["vllm"].Parameters["chat-template"].Pass)
 }
 
-// Every model_defaults value of an asset-typed key must name an asset the
-// release ships for that same provider, and one template shipped to
-// several engines must be one template: a fix to one copy reaches all.
-func TestShippedModelDefaultsNameShippedAssets(t *testing.T) {
-	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
-	require.Empty(t, errs)
-	copies := map[string][]byte{}
-
-	err := fs.WalkDir(templates.AppsFS, "files/providers", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || path.Base(p) != "config.yaml" {
-			return err
-		}
-		raw, err := fs.ReadFile(templates.AppsFS, p)
-		require.NoError(t, err)
-		var doc struct {
-			ModelDefaults map[string]config.ModelSpec `yaml:"model_defaults"`
-		}
-		require.NoError(t, yaml.Unmarshal(raw, &doc), p)
-		provider := path.Base(path.Dir(p))
-		for pattern, spec := range doc.ModelDefaults {
-			for key, value := range spec.Parameters {
-				if schemas[provider].Parameters[key].Kind != schema.ParamAsset {
-					continue
-				}
-				data, err := fs.ReadFile(templates.AppsFS, path.Join(path.Dir(p), "assets", value))
-				require.NoError(t, err, "%s model_defaults.%s.%s names %q, which %s does not ship", provider, pattern, key, value, provider)
-				if prev, ok := copies[value]; ok {
-					assert.True(t, bytes.Equal(prev, data), "the shipped copies of %s differ", value)
-				}
-				copies[value] = data
-			}
-		}
-		return nil
-	})
-	require.NoError(t, err)
-}
-
-// A release that ships no model_defaults takes back the block an earlier
-// release wrote, and an operator's own model entry survives.
-func TestReconcileRemovesModelDefaultsTheReleaseNoLongerShips(t *testing.T) {
+// model_defaults is retired: an install that still carries the block has it
+// stripped before the strict load, which would otherwise refuse the file,
+// and the operator's own model entry survives.
+func TestReconcileStripsRetiredModelDefaults(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(dir))
 
@@ -97,7 +59,7 @@ func TestReconcileRemovesModelDefaultsTheReleaseNoLongerShips(t *testing.T) {
 		assert.Contains(t, changed, path.Join("on-demand", provider, "config.yaml"))
 		sc, _ := cfg.LookupApp(provider)
 		got := sc.Resolve("", "Qwen3.8-27B-Q8_0").Parameters
-		assert.NotContains(t, got, key, "%s: the release's old default is gone", provider)
+		assert.NotContains(t, got, key, "%s: the retired block is gone", provider)
 		assert.Equal(t, "8", got["threads"].Value, "%s: the operator's model entry survives", provider)
 	}
 }

@@ -46,19 +46,6 @@ func TestPatch_AutoDropsAnInheritedTemplate(t *testing.T) {
 	assert.Contains(t, string(resp.Body), string(httperr.CodeUnknownAsset))
 }
 
-// model_defaults is the release's; the write API refuses it and says what
-// to do instead.
-func TestPatch_ModelDefaultsIsNotWritable(t *testing.T) {
-	s, _ := assetTestNode(t)
-	resp := makeAuthRequest(t, s, "PATCH", apipath.ProviderParameters("llamacpp"), TestAdminKey, map[string]any{
-		"model_defaults": map[string]any{"qwen3.8-*": map[string]any{"parameters": map[string]any{"chat-template-file": "t.jinja"}}},
-	})
-	require.Equal(t, http.StatusBadRequest, resp.Code)
-	body := string(resp.Body)
-	assert.Contains(t, body, string(httperr.CodeUnknownField))
-	assert.Contains(t, body, `set the key under models.\u003cmodel\u003e`)
-}
-
 // mlx_lm.server takes the template's text, so an MLX asset reaches the
 // engine as content, not as a path.
 func TestMLXTemplateLocalizesToContent(t *testing.T) {

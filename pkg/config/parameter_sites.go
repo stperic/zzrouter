@@ -19,7 +19,7 @@ type ParameterSite struct {
 }
 
 // ParameterSites returns every place parameters are set in the tree, in
-// path order: each tier (defaults, model_defaults, models, nodes,
+// path order: each tier (defaults, models, nodes,
 // node×model) and each of their endpoint overlays. A consumer asking "where is this key set?"
 // walks this rather than the tree's shape.
 func (s *ServiceConfig) ParameterSites() []ParameterSite {
@@ -40,9 +40,6 @@ func (s *ServiceConfig) ParameterSites() []ParameterSite {
 	}
 	if s.Defaults != nil {
 		add([]string{"defaults"}, s.Defaults.Parameters, s.Defaults.Endpoints)
-	}
-	for m, spec := range s.ModelDefaults {
-		add([]string{"model_defaults", m}, spec.Parameters, spec.Endpoints)
 	}
 	for m, spec := range s.Models {
 		add([]string{"models", m}, spec.Parameters, spec.Endpoints)

@@ -75,7 +75,7 @@ func (p *ExternalProvider) Validate() error {
 	if err := ValidateInstallVariants(p.Name, p.InstallVariants); err != nil {
 		return fmt.Errorf("provider '%s': %w", p.Name, err)
 	}
-	if err := checkModels(modelsNotLaunched, nil, p.Models); err != nil {
+	if err := checkModels(modelsNotLaunched, p.Models); err != nil {
 		return fmt.Errorf("provider '%s': %w", p.Name, err)
 	}
 	return nil

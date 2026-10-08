@@ -314,7 +314,6 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 			Capabilities:    tp.Capabilities,
 			Discovery:       tp.Discovery,
 			Defaults:        tp.Defaults,
-			ModelDefaults:   tp.ModelDefaults,
 			Models:          tp.Models,
 			Nodes:           tp.Nodes,
 			Search:          tp.Search,

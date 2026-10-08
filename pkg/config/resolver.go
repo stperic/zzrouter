@@ -25,11 +25,6 @@ func (s *ServiceConfig) IsEndpointAware() bool {
 	if s.Defaults != nil && len(s.Defaults.Endpoints) > 0 {
 		return true
 	}
-	for _, md := range s.ModelDefaults {
-		if len(md.Endpoints) > 0 {
-			return true
-		}
-	}
 	for _, ms := range s.Models {
 		if len(ms.Endpoints) > 0 {
 			return true
@@ -105,14 +100,6 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 	// Tier 0 — defaults.
 	if s.Defaults != nil {
 		apply(s.Defaults.Parameters, s.Defaults.Environment, s.Defaults.Endpoints, ResolvedValue{Tier: TierDefault})
-	}
-
-	// The release's per-family defaults: above the provider-wide ones,
-	// below every tier an operator writes.
-	if key, md, ok := matchModelDefault(s.ModelDefaults, cells[0]); ok {
-		src := ResolvedValue{Tier: TierModelDefault, Model: cells[0], Pattern: key}
-		apply(md.Parameters, md.Environment, md.Endpoints, src)
-		applyRequest(md.Request, src)
 	}
 
 	// Tier 1 — model.
@@ -206,23 +193,6 @@ func matchSpec[T any](specs map[string]T, model string) (string, T, bool) {
 		}
 	}
 	return bestKey, best, found
-}
-
-// matchModelDefault picks the model_defaults entry for a model. A
-// release writes these patterns once for every install, so they cannot
-// know whose repository a model came from: a pattern is tried against
-// the full name and then against its last path element, so "qwen3.8-*"
-// covers Qwen3.8-27B-Q8_0, Qwen/Qwen3.8-27B and
-// mlx-community/Qwen3.8-27B-4bit alike. Operator tiers keep matchSpec's
-// full-name rule; they name the models the operator has.
-func matchModelDefault(specs map[string]ModelSpec, model string) (string, ModelSpec, bool) {
-	if key, spec, ok := matchSpec(specs, model); ok {
-		return key, spec, true
-	}
-	if i := strings.LastIndex(model, "/"); i >= 0 {
-		return matchSpec(specs, model[i+1:])
-	}
-	return "", ModelSpec{}, false
 }
 
 // autoValue is the sentinel a parameter carries to mean "the provider

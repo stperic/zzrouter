@@ -62,7 +62,7 @@ func isReservedRequestField(key string) bool {
 	return slices.ContainsFunc(reservedRequestFields, func(f string) bool { return strings.EqualFold(f, key) })
 }
 
-// ModelProblem is a models or model_defaults entry the tree cannot hold,
+// ModelProblem is a models entry the tree cannot hold,
 // at the merge-patch path of the field at fault.
 type ModelProblem struct {
 	Path    string
@@ -105,7 +105,7 @@ const (
 // sets out, and no request default over a field the client owns. Every
 // path that brings a tree in — load, sync, a write — runs it, so no
 // caller has to know the rules. A Message never repeats its Path.
-func checkModels(launches bool, modelDefaults, models map[string]ModelSpec) error {
+func checkModels(launches bool, models map[string]ModelSpec) error {
 	var problems ModelProblems
 	add := func(path, want, format string, args ...any) {
 		problems = append(problems, ModelProblem{Path: path, Want: want, Message: fmt.Sprintf(format, args...)})
@@ -128,14 +128,6 @@ func checkModels(launches bool, modelDefaults, models map[string]ModelSpec) erro
 		return "", false
 	}
 
-	for _, pattern := range slices.Sorted(maps.Keys(modelDefaults)) {
-		spec := modelDefaults[pattern]
-		if spec.From != "" {
-			add("model_defaults."+pattern+".from", "no from",
-				"a family pattern names no weights, so only a models entry can be a variant")
-		}
-		checkRequest("model_defaults."+pattern, spec.Request)
-	}
 	folded := map[string]string{}
 	for _, name := range names {
 		spec := models[name]
@@ -256,9 +248,6 @@ func (s *ServiceConfig) overlaidEndpoints() []string {
 	}
 	if s.Defaults != nil {
 		add(s.Defaults.Endpoints)
-	}
-	for _, m := range s.ModelDefaults {
-		add(m.Endpoints)
 	}
 	for _, m := range s.Models {
 		add(m.Endpoints)

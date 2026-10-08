@@ -69,14 +69,6 @@ type ServiceConfig struct {
 	// NOTE: No omitempty so that initialized (even if empty) defaults always serialize
 	Defaults *AppDefaultsConfig `yaml:"defaults"`
 
-	// ModelDefaults is what the release knows a model family needs on
-	// this engine, keyed by name pattern: the chat template that makes a
-	// family's tool calls and mid-conversation system messages work, say.
-	// Reconcile owns it (pkg/config/templates), so a fix reaches existing
-	// installs; it resolves just above Defaults, so every operator tier
-	// overrides it. See docs/plan_model_templates_and_variants.md.
-	ModelDefaults map[string]ModelSpec `yaml:"model_defaults,omitempty"`
-
 	// Tier 1 — per-model parameter/environment trees.
 	Models map[string]ModelSpec `yaml:"models,omitempty"`
 
@@ -365,10 +357,6 @@ type Tier int
 
 const (
 	TierDefault Tier = iota
-	// TierModelDefault is the release's per-family default
-	// (ServiceConfig.ModelDefaults): above the provider-wide defaults,
-	// below everything an operator sets.
-	TierModelDefault
 	TierModel
 	TierNode
 	TierNodeModel
@@ -381,8 +369,6 @@ func (t Tier) String() string {
 	switch t {
 	case TierDefault:
 		return "default"
-	case TierModelDefault:
-		return "model-default"
 	case TierModel:
 		return "model"
 	case TierNode:
@@ -403,7 +389,7 @@ type ResolvedValue struct {
 	Node  string `json:"node,omitempty"`
 	Model string `json:"model,omitempty"`
 	// Pattern is the model key that matched, when it is not the model's
-	// own name: a glob, or a model_defaults family pattern.
+	// own name: a glob.
 	Pattern  string `json:"pattern,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"` // non-empty when supplied by an endpoints[E] overlay
 }
@@ -428,7 +414,7 @@ type ResolvedParams struct {
 	From string
 }
 
-// ModelSpec is the per-model cell of the models and model_defaults tiers.
+// ModelSpec is the per-model cell of the models tier.
 //
 // Parameters, Environment and Endpoints are launch-time: they become the
 // process's argv and env. Request is request-time: body defaults for each

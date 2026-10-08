@@ -25,7 +25,6 @@ type OnDemandProvider struct {
 	Capabilities    *AppCapabilities     `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	Discovery       *AppDiscovery        `yaml:"discovery,omitempty" json:"discovery,omitempty"`
 	Defaults        *AppDefaultsConfig   `yaml:"defaults" json:"defaults"`
-	ModelDefaults   map[string]ModelSpec `yaml:"model_defaults,omitempty" json:"model_defaults,omitempty"`
 	Models          map[string]ModelSpec `yaml:"models,omitempty" json:"models,omitempty"`
 	Nodes           map[string]NodeSpec  `yaml:"nodes,omitempty" json:"nodes,omitempty"`
 	Search          *AppSearchConfig     `yaml:"search,omitempty" json:"search,omitempty"`
@@ -102,7 +101,7 @@ func (p *OnDemandProvider) Validate() error {
 			return fmt.Errorf("provider '%s': %w", p.Name, err)
 		}
 	}
-	if err := checkModels(modelsLaunched, p.ModelDefaults, p.Models); err != nil {
+	if err := checkModels(modelsLaunched, p.Models); err != nil {
 		return fmt.Errorf("provider '%s': %w", p.Name, err)
 	}
 	return nil

@@ -218,7 +218,7 @@ type resolvedValueDTO struct {
 	Node  string `json:"node,omitempty"`
 	Model string `json:"model,omitempty"`
 	// Pattern is the model key that supplied the value when it is not the
-	// model's own name: a glob, or a model_defaults family pattern.
+	// model's own name: a glob.
 	Pattern string `json:"pattern,omitempty"`
 	// SHA256 is the content of the asset an asset-typed value names, so
 	// a caller sees which bytes a launch gets, not only which name.

@@ -12,7 +12,7 @@ import (
 // from.
 type ResolvedValue struct {
 	Value any `json:"value"`
-	// Tier is default, model-default, model, node, node-model or request.
+	// Tier is default, model, node, node-model or request.
 	Tier  string `json:"tier"`
 	Node  string `json:"node,omitempty"`
 	Model string `json:"model,omitempty"`
