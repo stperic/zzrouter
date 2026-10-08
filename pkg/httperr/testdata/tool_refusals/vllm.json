@@ -1,0 +1,9 @@
+{
+  "source": "https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/serving_chat.py",
+  "evidence": "vLLM 400 for a tools request to Qwen/Qwen2.5-0.5B-Instruct launched without tool-calling flags, observed through zzRouter on localai 2026-10-08 (agent test campaign).",
+  "error": {
+    "message": "\"auto\" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set",
+    "type": "invalid_request_error",
+    "code": "BadRequestError"
+  }
+}

@@ -58,6 +58,10 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	if failure.Message == "" {
 		failure.Message = fmt.Sprintf("backend returned status %d", resp.StatusCode)
 	}
+	if resp.StatusCode == http.StatusBadRequest && strings.Contains(message, vllmToolChoiceRefusal) {
+		failure.Code = CodeToolCallingNotEnabled
+		failure.Message = utils.SanitizeErrorMessage("this model's engine was launched without tool calling: " + message + " " + ToolCallingRemedy)
+	}
 	if resp.StatusCode == http.StatusInternalServerError {
 		if unsupportedImage(message) {
 			failure.Code = "unsupported_input"
@@ -129,6 +133,18 @@ const CodeChatTemplateRejected = "chat_template_rejected"
 
 // ChatTemplateRemedy is what a caller can do about a template refusal.
 const ChatTemplateRemedy = "An admin can upload a chat template that accepts it and select it for this model; GET /zzrouter/v1 explains how under chat_templates."
+
+// CodeToolCallingNotEnabled: the engine serves the model but was launched
+// without the switches its tool calling needs.
+const CodeToolCallingNotEnabled = "tool_calling_not_enabled"
+
+// ToolCallingRemedy says how to launch the model with tool calling. Which
+// parser fits is per model family, and zzRouter ships no model knowledge.
+const ToolCallingRemedy = "Set the provider's tool-calling launch parameters for this model (for vLLM: enable-auto-tool-choice: \"true\" and the tool-call-parser for its family) with PATCH /zzrouter/v1/providers/{name}/parameters, then restart the run."
+
+// vLLM refuses a tools request this way when it was not launched with them:
+// https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/serving_chat.py
+const vllmToolChoiceRefusal = "--enable-auto-tool-choice"
 
 // llama.cpp prefixes a template's own raise_exception with this marker:
 // https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418
