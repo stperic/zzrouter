@@ -129,3 +129,6 @@ zzrouter-payload-*.json
 /scripts/oss/
 /config/host-dev.yaml.example
 /docker-compose.override.yml.example
+
+# Agent campaign lab file: real node names stay local (see test/agents/lab.example.json).
+test/agents/lab.json
