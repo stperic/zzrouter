@@ -922,6 +922,10 @@ paths:
         A run whose log file has not appeared yet is waited on briefly
         rather than 404'd immediately, since a just-launched instance
         creates its file a moment after the run exists.
+
+        A stopped run's log stays on the node it ran on and is still
+        read here, as a snapshot (`follow` does not apply): pass `node`
+        for a run that ran on a worker.
       parameters:
         - in: query
           name: follow
