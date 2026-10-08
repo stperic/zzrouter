@@ -60,9 +60,9 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_providers", "GET", "/zzrouter/v1/providers/vllm/status", `{"provider":"vllm","node":"worker"}`, "node=worker", "", `{"data":{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand","instances":[{"drop":"huge"}]}}`, `{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand"}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
-		{"zz_params_get", "GET", "/zzrouter/v1/providers/vllm/resolved", `{"provider":"vllm","node":"worker","model":"org/model"}`, "node=worker&model=org%2Fmodel", "", `{"parameters":{"ctx":{"value":4096,"tier":"default"}},"install":{"drop":"huge"}}`, `{"parameters":{"ctx":{"value":4096,"tier":"default"}}}`},
 		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"id":"kept","overridden":["ctx"]}],"unknown":[{"id":"unsynced","reason":"sync pending"}]}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"run_id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"run_id":"kept","overridden":["ctx"]}],"unknown":[{"run_id":"unsynced","reason":"sync pending"}]}}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r"}`, "follow=false&lines=200", "", `{"data":{"lines":["old","last"],"total_lines":12,"count":2,"log_file":"run.log"}}`, `{"lines":["old","last"],"total_lines":12,"log_file":"run.log"}`},
+		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r","grep":"offloaded"}`, "follow=false&lines=200&grep=offloaded", "", `{"data":{"lines":["offloaded 10/29 layers to GPU"],"total_lines":900,"count":1,"filtered":true,"log_file":"run.log"}}`, `{"lines":["offloaded 10/29 layers to GPU"],"total_lines":900,"filtered":true,"log_file":"run.log"}`},
 		{"zz_logs", "GET", "/zzrouter/v1/server/logs", "{}", "limit=50&offset=0", "", `{"data":[{"instance_id":"r","size":12,"path":"drop"}],"total":1}`, `[{"run_id":"r","size":12}]`},
 		{"zz_update_status", "GET", "/zzrouter/v1/update/status", "{}", "", "", `{"data":{"state":"idle","update_available":true,"current_version":"1.0"}}`, `{"state":"idle","update_available":true,"current_version":"1.0"}`},
 		{"zz_update_check", "POST", "/zzrouter/v1/update/check", `{}`, "", "", `{"data":{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}}`, `{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}`},
@@ -305,4 +305,30 @@ func TestModelProjectionKeepsMissingEvidenceMissing(t *testing.T) {
 	raw, err := json.Marshal(result["models"])
 	require.NoError(t, err)
 	require.JSONEq(t, `[{"name":"embedding-looking-name"},{"name":"other","details":{}}]`, string(raw))
+}
+
+// zz_params_get answers what is set and what can be set, so an agent never
+// searches the spec for a parameter name.
+func TestParamsGetIncludesAccepts(t *testing.T) {
+	var paths []string
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/zzrouter/v1/providers/llamacpp/resolved":
+			require.Equal(t, "worker", r.URL.Query().Get("node"))
+			require.Equal(t, "org/model", r.URL.Query().Get("model"))
+			writeFixture(t, w, []byte(`{"parameters":{"ctx-size":{"value":"4096","tier":"default"}},"install":{"drop":"huge"}}`))
+		case "/zzrouter/v1/providers/llamacpp/schema":
+			require.Empty(t, r.URL.RawQuery, "the schema route takes no selector")
+			writeFixture(t, w, []byte(`{"data":{"parameters":{"n-gpu-layers":{"type":"int","description":"Number of layers to offload to GPU"}},"diagnostics":{"drop":1}}}`))
+		default:
+			t.Fatalf("unexpected %s", r.URL.Path)
+		}
+	})
+	result := callAgentTool(t, d, "zz_params_get", map[string]any{"provider": "llamacpp", "node": "worker", "model": "org/model"})
+	require.NotEqual(t, true, result["isError"], result)
+	require.Equal(t, []string{"/zzrouter/v1/providers/llamacpp/resolved", "/zzrouter/v1/providers/llamacpp/schema"}, paths)
+	data, err := json.Marshal(result["structuredContent"])
+	require.NoError(t, err)
+	require.JSONEq(t, `{"parameters":{"ctx-size":{"value":"4096","tier":"default"}},"accepts":{"n-gpu-layers":{"type":"int","description":"Number of layers to offload to GPU"}}}`, string(data))
 }

@@ -145,6 +145,7 @@ type logsInput struct {
 	pageInput
 	RunID string `json:"run_id,omitempty" jsonschema:"Run id for a log snapshot. Omit to list available run-log files on the coordinator."`
 	Lines int    `json:"lines,omitempty" jsonschema:"Last N run-log lines. Default 200, capped at 1000. Never follows a stream."`
+	Grep  string `json:"grep,omitempty" jsonschema:"Literal text to find anywhere in the run log, including startup lines long scrolled out of the last N; returns the matching lines instead of the last N."`
 }
 type updateInput struct {
 	Nodes []string `json:"nodes,omitempty" jsonschema:"Optional node names for status, or [all]. Omit for coordinator."`
@@ -178,11 +179,11 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. A bare name works when one node holds it; otherwise pass node. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, with follow forced off. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, or every line matching grep across the whole log, with follow forced off. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_provider_install", Description: "Check prerequisites with preflight_only=true, then install with false; managed=false means no zzRouter-owned copy is installed and does not forbid installing. Successful installation enables the provider during finalization, before the job completes. Follow with zz_job, then zz_providers. If installation is not needed, use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query; cloud setup uses POST /zzrouter/v1/providers/{name}/verify after credentials are configured.", Annotations: write}, []string{"createProviderInstallPreflight", "createProviderInstall"}, dispatcher.install)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters"}, dispatcher.params)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model, and in accepts every parameter it takes with type and description. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters", "getProviderSchema"}, dispatcher.params)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_set", Description: "Apply a tiered merge-patch to provider parameters or environment. Returns resolved values and affected runs; restart_affected starts needed restarts. Follow with zz_job for runs.restart_job_id, then zz_params_get.", Annotations: write}, []string{"patchProviderParameters"}, dispatcher.patch)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_status", Description: "Read update status for selected nodes. Returns availability, version, progress and errors; call zz_update_check to refresh availability, then zz_update_apply when an update is wanted.", Annotations: read}, []string{"getUpdateStatus"}, dispatcher.updateStatus)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_check", Description: "Check for a newer release on the coordinator. Returns availability, release and skipped reason; read zz_update_status or use zz_update_apply when an update is wanted.", Annotations: &mcp.ToolAnnotations{DestructiveHint: new(bool), IdempotentHint: true}}, []string{"createUpdateCheck"}, dispatcher.updateCheck)
@@ -450,7 +451,18 @@ func (d dispatcher) install(ctx context.Context, in installInput) (agentOutput, 
 }
 
 func (d dispatcher) params(ctx context.Context, in paramsInput) (agentOutput, error) {
-	return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use a tiered merge-patch to change them.")
+	out, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; accepts lists every parameter the provider takes. Use a tiered merge-patch to change them.")
+	if err != nil {
+		return out, err
+	}
+	// What is set and what can be set answer one question: how to change a launch.
+	// The schema is the coordinator's: config is identical on every node.
+	schema, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, providersRoute, in.Provider, "/schema", "", "parameters", "")
+	if err != nil {
+		return out, err
+	}
+	out.fields["accepts"] = schema.fields["parameters"]
+	return out, nil
 }
 
 func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, error) {
@@ -502,7 +514,11 @@ func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error)
 	if in.Lines < 1 {
 		return agentOutput{}, fmt.Errorf("lines must be positive")
 	}
-	return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}}, routePrefix(string(runsRoute)+"/"), in.RunID, "/logs", "", "log_file total_lines lines truncated", "Run log snapshot retrieved; use errors to adjust parameters or provider setup.")
+	q := url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}
+	if in.Grep != "" {
+		q.Set("grep", in.Grep)
+	}
+	return d.childObject(ctx, request{method: http.MethodGet, query: q}, routePrefix(string(runsRoute)+"/"), in.RunID, "/logs", "", "log_file total_lines lines truncated filtered", "Run log snapshot retrieved; use errors to adjust parameters or provider setup.")
 }
 
 func (d dispatcher) updateStatus(ctx context.Context, in updateInput) (agentOutput, error) {
