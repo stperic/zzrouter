@@ -82,20 +82,6 @@ defaults:
     shutdown_timeout: "gpu"
     processor_type: "Metal GPU"
 
-# model_defaults: what a model family needs on this engine, keyed by a
-# name pattern tried against the full model name and its last path element.
-# zzRouter owns this block and rewrites it on start, like execution. Every
-# operator tier (models, nodes, node x model, request) resolves above it:
-# set the key under models.<model> to change it, or to "auto" to drop it.
-model_defaults:
-  # Qwen3.8's stock template raises on a system message after the first
-  # turn, which agent clients (Claude Code over /v1/messages) send. This
-  # one accepts system and developer messages anywhere and renders tool
-  # calls; plain chat renders the same.
-  "qwen3.8-*":
-    parameters:
-      chat-template: qwen3.8-system-anywhere.jinja
-
 runtime:
   port_range: [8090, 8099]
   base_port: 8090

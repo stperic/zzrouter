@@ -10,8 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
-	"github.com/stperic/zzrouter/pkg/config/assets"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
@@ -26,36 +24,9 @@ func resolvedFor(t *testing.T, s *Server, provider, model string) resolvedRespon
 	return r
 }
 
-// An agent asking where a value comes from sees that the release supplied
-// it, which family pattern matched, and which bytes the launch will get;
-// once an operator tier takes over, it says so.
-func TestResolved_ReportsTheShippedModelDefault(t *testing.T) {
-	s, _ := assetTestNode(t)
-	shipped, err := templates.AppsFS.ReadFile("files/providers/on-demand/llamacpp/assets/" + shippedLlamacppTemplate)
-	require.NoError(t, err)
-
-	got := resolvedFor(t, s, "llamacpp", qwenModel).Parameters["chat-template-file"]
-	assert.Equal(t, shippedLlamacppTemplate, got.Value)
-	assert.Equal(t, "model-default", got.Tier)
-	assert.Equal(t, "qwen3.8-*", got.Pattern)
-	assert.Equal(t, qwenModel, got.Model)
-	assert.Equal(t, assets.Digest(shipped), got.SHA256)
-
-	assert.NotContains(t, resolvedFor(t, s, "llamacpp", "Qwen3-8B-Q4_K_M").Parameters, "chat-template-file")
-
-	resp := makeAuthRequest(t, s, "PATCH", apipath.ProviderParameters("llamacpp"), TestAdminKey, map[string]any{
-		"models": map[string]any{qwenModel: map[string]any{"parameters": map[string]any{"chat-template-file": "t.jinja"}}},
-	})
-	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
-	got = resolvedFor(t, s, "llamacpp", qwenModel).Parameters["chat-template-file"]
-	assert.Equal(t, "t.jinja", got.Value)
-	assert.Equal(t, "model", got.Tier)
-	assert.Empty(t, got.Pattern, "an exact model key needs no pattern")
-}
-
-// "auto" is how an operator turns the shipped template off. It names no
+// "auto" is how an operator drops a template a lower tier set. It names no
 // asset, so it must not be refused as one that does not exist.
-func TestPatch_AutoTurnsAShippedTemplateOff(t *testing.T) {
+func TestPatch_AutoDropsAnInheritedTemplate(t *testing.T) {
 	s, _ := assetTestNode(t)
 	resp := makeAuthRequest(t, s, "PATCH", apipath.ProviderParameters("llamacpp"), TestAdminKey, map[string]any{
 		"models": map[string]any{qwenModel: map[string]any{"parameters": map[string]any{"chat-template-file": "auto"}}},
@@ -87,21 +58,14 @@ func TestPatch_ModelDefaultsIsNotWritable(t *testing.T) {
 	assert.Contains(t, body, `set the key under models.\u003cmodel\u003e`)
 }
 
-// The asset listing names the shipped default among a template's users,
-// so nobody is surprised which models use it.
-func TestAssetsList_NamesModelDefaultReferences(t *testing.T) {
+// mlx_lm.server takes the template's text, so an MLX asset reaches the
+// engine as content, not as a path.
+func TestMLXTemplateLocalizesToContent(t *testing.T) {
 	s, _ := assetTestNode(t)
-	w := assetRequest(t, s, http.MethodGet, "/zzrouter/v1/providers/llamacpp/assets", nil)
-	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
-	assert.Contains(t, w.Body.String(), `"model_defaults.qwen3.8-*.parameters.chat-template-file"`)
-}
-
-// The shipped MLX config reaches the engine as text end to end.
-func TestShippedMLXTemplateLocalizesToContent(t *testing.T) {
-	s, _ := assetTestNode(t)
-	shipped, err := templates.AppsFS.ReadFile("files/providers/on-demand/mlx/assets/" + shippedLlamacppTemplate)
+	const template = "{{ messages }}"
+	_, err := s.configStore.WriteAsset("mlx", "t.jinja", []byte(template))
 	require.NoError(t, err)
-	out, err := assetParamLocalizer(s.configStore)("mlx", "chat", "", map[string]string{"chat-template": shippedLlamacppTemplate})
+	out, err := assetParamLocalizer(s.configStore)("mlx", "chat", "", map[string]string{"chat-template": "t.jinja"})
 	require.NoError(t, err)
-	assert.Equal(t, string(shipped), out.Params["chat-template"])
+	assert.Equal(t, template, out.Params["chat-template"])
 }

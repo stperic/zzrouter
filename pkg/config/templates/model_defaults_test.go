@@ -17,47 +17,11 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
-// templateKeys is the asset-typed chat template flag of each engine the
-// Qwen3.8 default ships for.
+// templateKeys is the asset-typed chat template flag of each engine.
 var templateKeys = map[string]string{
 	"llamacpp": "chat-template-file",
 	"vllm":     "chat-template",
 	"mlx":      "chat-template",
-}
-
-const qwenTemplate = "qwen3.8-system-anywhere.jinja"
-
-// The motivating failure: an on-demand load resolves from stored config
-// alone, so a model that needs a template must get it from the tree, not
-// from a launch-time flag. Every name the model is known by, on every
-// engine that launches it, has to resolve to the shipped template.
-func TestShippedQwen38DefaultResolvesOnEveryEngine(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(dir))
-	cfg, err := config.LoadAppsConfig(dir)
-	require.NoError(t, err)
-	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
-	require.Empty(t, errs)
-
-	names := []string{
-		"Qwen3.8-27B-Q8_0",
-		"unsloth/Qwen3.8-27B-GGUF#Qwen3.8-27B-Q8_0.gguf",
-		"Qwen/Qwen3.8-27B",
-		"mlx-community/Qwen3.8-27B-4bit",
-	}
-	for provider, key := range templateKeys {
-		sc, ok := cfg.LookupApp(provider)
-		require.True(t, ok, provider)
-		assert.Equal(t, schema.ParamAsset, schemas[provider].Parameters[key].Kind,
-			"%s.%s must be asset-typed or the launch passes a bare name", provider, key)
-		for _, name := range names {
-			got := sc.Resolve("worker-1", name).Parameters[key]
-			assert.Equal(t, qwenTemplate, got.Value, "%s %s", provider, name)
-			assert.Equal(t, config.TierModelDefault, got.Tier, "%s %s", provider, name)
-		}
-		assert.NotContains(t, sc.Resolve("worker-1", "Qwen/Qwen3-8B").Parameters, key,
-			"%s: another family keeps its own template", provider)
-	}
 }
 
 // mlx_lm.server takes the template's text, not a path.
@@ -76,7 +40,6 @@ func TestShippedModelDefaultsNameShippedAssets(t *testing.T) {
 	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
 	require.Empty(t, errs)
 	copies := map[string][]byte{}
-	checked := 0
 
 	err := fs.WalkDir(templates.AppsFS, "files/providers", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || path.Base(p) != "config.yaml" {
@@ -94,7 +57,6 @@ func TestShippedModelDefaultsNameShippedAssets(t *testing.T) {
 				if schemas[provider].Parameters[key].Kind != schema.ParamAsset {
 					continue
 				}
-				checked++
 				data, err := fs.ReadFile(templates.AppsFS, path.Join(path.Dir(p), "assets", value))
 				require.NoError(t, err, "%s model_defaults.%s.%s names %q, which %s does not ship", provider, pattern, key, value, provider)
 				if prev, ok := copies[value]; ok {
@@ -106,22 +68,21 @@ func TestShippedModelDefaultsNameShippedAssets(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, checked, len(templateKeys))
 }
 
-// An install that predates model_defaults gains it on the next start,
-// and an operator's own model entry for the same family survives.
-func TestReconcileGivesAnExistingInstallTheModelDefaults(t *testing.T) {
+// A release that ships no model_defaults takes back the block an earlier
+// release wrote, and an operator's own model entry survives.
+func TestReconcileRemovesModelDefaultsTheReleaseNoLongerShips(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(dir))
 
-	for provider := range templateKeys {
+	for provider, key := range templateKeys {
 		p := filepath.Join(dir, "on-demand", provider, "config.yaml")
 		raw, err := os.ReadFile(p)
 		require.NoError(t, err)
 		var doc map[string]any
 		require.NoError(t, yaml.Unmarshal(raw, &doc))
-		delete(doc, "model_defaults")
+		doc["model_defaults"] = map[string]any{"qwen3.8-*": map[string]any{"parameters": map[string]any{key: "old.jinja"}}}
 		doc["models"] = map[string]any{"Qwen3.8-27B-Q8_0": map[string]any{"parameters": map[string]any{"threads": "8"}}}
 		old, err := yaml.Marshal(doc)
 		require.NoError(t, err)
@@ -136,7 +97,7 @@ func TestReconcileGivesAnExistingInstallTheModelDefaults(t *testing.T) {
 		assert.Contains(t, changed, path.Join("on-demand", provider, "config.yaml"))
 		sc, _ := cfg.LookupApp(provider)
 		got := sc.Resolve("", "Qwen3.8-27B-Q8_0").Parameters
-		assert.Equal(t, qwenTemplate, got[key].Value, provider)
+		assert.NotContains(t, got, key, "%s: the release's old default is gone", provider)
 		assert.Equal(t, "8", got["threads"].Value, "%s: the operator's model entry survives", provider)
 	}
 }

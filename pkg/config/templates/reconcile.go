@@ -44,10 +44,9 @@ var managedSpineKeys = []string{"execution", "health_check", "max_concurrent_req
 // could ever answer "is there a newer build?", which is precisely the
 // drift this key exists to detect.
 //
-// model_defaults is here because which chat template a model family needs
-// on this engine is a fact the release learns (Qwen3.8's stock template
-// raises on a mid-conversation system message) and must be able to fix
-// on every install, not only fresh ones. The operator is not shut out:
+// model_defaults is here because what a model family needs on an engine is
+// a fact a release learns and must be able to apply, or withdraw, on every
+// install, not only fresh ones. The operator is not shut out:
 // every operator tier resolves above it, so a models.<m> entry overrides
 // any key, and "auto" turns an asset back off.
 var managedTopLevelKeys = []string{"version_source", "model_defaults", "install"}

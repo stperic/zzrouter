@@ -17,9 +17,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/assets"
 )
 
-// shippedLlamacppTemplate is the chat template the release ships for llamacpp.
-const shippedLlamacppTemplate = "qwen3.8-system-anywhere.jinja"
-
 // assetTestNode is a coordinator with the shipped providers, whose
 // llamacpp schema declares chat-template-file an asset, plus the
 // operator asset t.jinja.
@@ -74,11 +71,10 @@ func TestProviderAssetsAPI_Lifecycle(t *testing.T) {
 	for _, a := range list.Assets {
 		byName[a.Name] = a
 	}
-	require.Len(t, byName, 3, "mine.jinja, t.jinja and the shipped template")
+	require.Len(t, byName, 2, "mine.jinja and t.jinja")
 	assert.Equal(t, []string{"defaults.parameters.chat-template-file"}, byName["mine.jinja"].ReferencedBy)
 	assert.Empty(t, byName["t.jinja"].ReferencedBy)
 	assert.False(t, byName["mine.jinja"].Shipped)
-	assert.True(t, byName[shippedLlamacppTemplate].Shipped)
 
 	w = assetRequest(t, s, http.MethodDelete, path, nil)
 	require.Equal(t, http.StatusConflict, w.Code, "a named asset is not removed")
@@ -110,22 +106,6 @@ func TestProviderAssetsAPI_Refusals(t *testing.T) {
 	w = assetRequest(t, s, http.MethodPut, apipath.ProviderAsset("no-such-provider", "x.jinja"), []byte("x"))
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Equal(t, http.StatusNotFound, assetRequest(t, s, http.MethodGet, apipath.ProviderAssets("no-such-provider"), nil).Code)
-}
-
-// A shipped asset belongs to the release: it cannot be replaced or
-// deleted, since the next start would put it back.
-func TestProviderAssetsAPI_ShippedIsReadOnly(t *testing.T) {
-	s, dir := assetTestNode(t)
-	before, err := dir.Read(shippedLlamacppTemplate)
-	require.NoError(t, err)
-
-	path := apipath.ProviderAsset("llamacpp", shippedLlamacppTemplate)
-	assert.Equal(t, http.StatusForbidden, assetRequest(t, s, http.MethodPut, path, []byte("new")).Code)
-	assert.Equal(t, http.StatusForbidden, assetRequest(t, s, http.MethodDelete, path, nil).Code)
-
-	after, err := dir.Read(shippedLlamacppTemplate)
-	require.NoError(t, err)
-	assert.Equal(t, before, after)
 }
 
 // /resolved reports the content digest of the asset an asset-typed value
