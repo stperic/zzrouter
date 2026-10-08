@@ -206,9 +206,12 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 	// Load apps configuration via centralized store
 	store, err := pkgConfig.NewAppsConfigStoreFromStandardLocations()
-	if err != nil {
+	switch {
+	case errors.Is(err, pkgConfig.ErrProvidersDirNotFound):
 		logger.Warn("No provider config found", "error", err)
-	} else {
+	case err != nil:
+		return nil, fmt.Errorf("provider config: %w", err)
+	default:
 		s.configStore = store
 		// TODO: restore connection-marker overlay hook (install.ApplyConnectionOverlay
 		// + AppsConfigStore.SetPreNotifyHook) — the supporting code is missing from

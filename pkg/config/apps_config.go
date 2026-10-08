@@ -30,6 +30,11 @@ var ErrProviderExists = errors.New("provider already exists")
 // 404 instead of 500. Use errors.Is rather than substring matching.
 var ErrProviderNotFound = errors.New("provider not found")
 
+// ErrProvidersDirNotFound means no providers/ directory exists. A tree
+// that exists but fails to load is a different error and must not be
+// read as "no providers".
+var ErrProvidersDirNotFound = errors.New("providers directory not found")
+
 // AppsConfig represents the complete apps configuration. The typed
 // providers map is the sole storage; legacy ServiceConfig is synthesized
 // at the boundary by LookupApp / RangeApps for callers that haven't
@@ -387,12 +392,9 @@ func (c *AppsConfig) GetEndpointApps() []string {
 // XDG-compliant location. DRY utility to eliminate duplicate loading
 // logic across the codebase. The returned path is the directory.
 func LoadAppsConfigFromStandardLocations() (*AppsConfig, string, error) {
-	cm := NewConfigManager("zzrouter")
-
-	// Use XDG-compliant search logic
-	configDir := cm.FindAppsConfigDir()
-	if configDir == "" {
-		return nil, "", fmt.Errorf("providers directory not found in %s", cm.GetNodeConfigDir())
+	configDir, err := findAppsConfigDir()
+	if err != nil {
+		return nil, "", err
 	}
 
 	// Load config from found location
@@ -402,6 +404,16 @@ func LoadAppsConfigFromStandardLocations() (*AppsConfig, string, error) {
 	}
 
 	return config, configDir, nil
+}
+
+// findAppsConfigDir returns the XDG providers/ directory or
+// ErrProvidersDirNotFound.
+func findAppsConfigDir() (string, error) {
+	cm := NewConfigManager("zzrouter")
+	if dir := cm.FindAppsConfigDir(); dir != "" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("%w in %s", ErrProvidersDirNotFound, cm.GetNodeConfigDir())
 }
 
 // ============================================================================
