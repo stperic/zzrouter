@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
@@ -167,11 +169,9 @@ func (r *Registry) DeleteModelByNameAndSource(ctx context.Context, modelName, so
 		return err
 	}
 
-	// For GGUF files (even from HuggingFace), delete the file directly.
-	// HuggingFace connector's DeleteModel expects a directory, but GGUF
-	// files are individual files.
+	// A GGUF model is a weights variant: every shard of a split set goes.
 	if model.Format == metadata.FormatGGUF {
-		return r.DeleteModel(model.FullPath)
+		return r.deleteGGUFVariant(model.FullPath)
 	}
 
 	// For HuggingFace models that are directories (not GGUF files), use
@@ -184,4 +184,19 @@ func (r *Registry) DeleteModelByNameAndSource(ctx context.Context, modelName, so
 	}
 	// For standalone models, just delete the file.
 	return r.DeleteModel(model.FullPath)
+}
+
+// deleteGGUFVariant removes every file of the variant whose first file is
+// path, leaving the repository's other variants and feature files.
+func (r *Registry) deleteGGUFVariant(path string) error {
+	v, ok := layout.VariantOf(path)
+	if !ok {
+		return r.DeleteModel(path)
+	}
+	for _, f := range v.Files {
+		if err := r.DeleteModel(filepath.Join(filepath.Dir(path), filepath.FromSlash(f.Path))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
