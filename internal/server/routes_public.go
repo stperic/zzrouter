@@ -118,7 +118,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.Deployments.RegisterPublicRoutes(router)
 
 	// Registries: agent-friendly pre-pull discovery (e.g., GGUF variants in a HF repo).
-	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }).RegisterPublicRoutes(router)
+	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }, func() *pkgConfig.AppsConfig { return s.appsConfig }).RegisterPublicRoutes(router)
 
 	// Discovery: Discover resources across cluster
 	s.controllers.Discovery.RegisterPublicRoutes(router)

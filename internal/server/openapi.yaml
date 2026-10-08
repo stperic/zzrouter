@@ -4837,16 +4837,61 @@ paths:
           required: true
           description: HuggingFace repository identifier (owner/repository).
           schema: { type: string }
+        - in: query
+          name: provider
+          required: false
+          description: Provider whose feature file declarations identify feature files. Omit for every enabled provider; an unconfigured one is a 400.
+          schema: { type: string }
       summary: List available Hugging Face model variants for a repo
       description: |
-        Quantisation variants available for a HuggingFace repo, so a caller
-        can pick a file size before downloading.
+        The loadable GGUF weights in a HuggingFace repo, so a caller can pick
+        a quantization and size before downloading. A split set is one
+        variant: `shards` counts its files, `size_bytes` is their total, and
+        its `file` (the first shard) is what a deployment's `file` takes to
+        fetch them all. An incomplete set is not offered. Files a provider
+        declares for a feature (a vision projector) are never variants; each
+        feature's preferred file is listed under `features`, fetched by a
+        deployment requesting that feature.
 
         The repo id goes in the `id` query parameter rather than the path,
         because HuggingFace ids contain a slash and path-escaping
         round-trips badly through some proxies and SDKs.
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      model_id: { type: string }
+                      variants:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            file: { type: string }
+                            shards: { type: integer }
+                            quantization: { type: string }
+                            bits: { type: integer }
+                            size_bytes: { type: integer, format: int64 }
+                            size_human: { type: string }
+                            recommended: { type: boolean }
+                            recommendation_reason: { type: string }
+                      features:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            feature: { type: string }
+                            file: { type: string }
+                            size_bytes: { type: integer, format: int64 }
+                            size_human: { type: string }
+                      non_gguf_files: { type: integer }
+                      total_size_bytes: { type: integer, format: int64 }
         '400':
           description: Missing or malformed `id`.
           content:
@@ -11164,8 +11209,8 @@ components:
         disposable_plan_id: { type: string, pattern: '^[a-f0-9]{64}$', description: Verified disposable install plan. A normal running instance is never returned as its proof. }
         provider:    { type: string }
         launch_mode: { type: string, enum: [native] }
-        model:       { type: string, description: "Preferred , alias of model_name" }
-        model_name:  { type: string, description: "Legacy field; still accepted" }
+        model:       { type: string, description: The model name, as in `/v1/*`. }
+        model_name:  { type: string, description: Same as `model`. }
         node:        { type: string }
         endpoint:
           type: string
@@ -11188,11 +11233,20 @@ components:
 
     PreviewRunRequest:
       type: object
+      description: |
+        Either `model` or `model_name` must be set, as for POST /runs.
+        Unknown fields are refused.
       properties:
-        provider: { type: string }
-        model:    { type: string }
-        node:     { type: string }
+        provider:   { type: string }
+        model:      { type: string, description: The model name, as in `/v1/*`. }
+        model_name: { type: string, description: Same as `model`. }
+        node:       { type: string }
+        endpoint:   { type: string, enum: [chat, embeddings, reranking] }
+        force:      { type: boolean }
         parameters:
+          type: object
+          additionalProperties: { type: string }
+        environment:
           type: object
           additionalProperties: { type: string }
 

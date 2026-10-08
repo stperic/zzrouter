@@ -59,8 +59,8 @@ type searchInput struct {
 	Provider string `json:"provider,omitempty" jsonschema:"Search registry, such as huggingface or ollama. Default all."`
 }
 type filesInput struct {
-	pageInput
-	ModelID string `json:"model_id" jsonschema:"HuggingFace org/repo identifier from zz_model_search. Returns GGUF files only."`
+	Model    string `json:"model" jsonschema:"HuggingFace org/repo, a zz_model_search result's model."`
+	Provider string `json:"provider,omitempty" jsonschema:"Optional provider whose feature files (a vision projector) to identify; omit for every enabled provider."`
 }
 type runsInput struct {
 	pageInput
@@ -76,7 +76,7 @@ type retryInput struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key; reuse it when retrying the same operation."`
 }
 type previewInput struct {
-	ModelName   string            `json:"model_name" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
+	Model       string            `json:"model" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
 	Provider    string            `json:"provider" jsonschema:"Enabled provider name to preview."`
 	Node        string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint    string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -85,7 +85,7 @@ type previewInput struct {
 }
 type startInput struct {
 	retryInput
-	ModelName  string            `json:"model_name" jsonschema:"Exact local model name from zz_models."`
+	Model      string            `json:"model" jsonschema:"Exact local model name from zz_models."`
 	Provider   string            `json:"provider" jsonschema:"Enabled provider name to launch."`
 	Node       string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint   string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -99,12 +99,13 @@ type restartInput struct {
 }
 type downloadInput struct {
 	retryInput
-	Model    string `json:"model" jsonschema:"Registry model identifier from zz_model_search."`
-	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address. Omit for REST's default placement."`
-	Registry string `json:"registry,omitempty" jsonschema:"Registry such as huggingface or ollama."`
-	Provider string `json:"provider,omitempty" jsonschema:"Optional provider to resolve the download format."`
-	File     string `json:"file,omitempty" jsonschema:"Exact GGUF filename from zz_model_files for a HuggingFace download."`
-	Format   string `json:"format,omitempty" jsonschema:"Optional model format, such as gguf or safetensors."`
+	Model    string   `json:"model" jsonschema:"Registry model identifier from zz_model_search."`
+	Node     string   `json:"node,omitempty" jsonschema:"Optional target node name, never an address. Omit for REST's default placement."`
+	Registry string   `json:"registry,omitempty" jsonschema:"Registry such as huggingface or ollama."`
+	Provider string   `json:"provider,omitempty" jsonschema:"Optional provider to resolve the download format."`
+	File     string   `json:"file,omitempty" jsonschema:"A variant's file from zz_model_files; a split variant's file fetches every shard."`
+	Features []string `json:"features,omitempty" jsonschema:"Features whose files to fetch beside the weights, such as [vision] for a projector zz_model_files lists. Omit for provider defaults; [] for none."`
+	Format   string   `json:"format,omitempty" jsonschema:"Optional model format, such as gguf or safetensors."`
 }
 type cancelInput struct {
 	JobID        string `json:"job_id,omitempty" jsonschema:"Job id to cancel. Supply exactly one of job_id or deployment_id."`
@@ -333,7 +334,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 }
 
 func (d dispatcher) nodes(ctx context.Context, in nodesInput) (agentOutput, error) {
-	fields := "name cluster_role health_status providers cpu memory gpu version last_error"
+	fields := "name os cluster_role health_status providers cpu memory gpu disk version last_error"
 	if in.Node != "" {
 		return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, routePrefix(string(nodesRoute)+"/"), in.Node, "", "", fields, "Node status retrieved; use its name as a selector.")
 	}
@@ -345,11 +346,17 @@ func (d dispatcher) models(ctx context.Context, in modelsInput) (agentOutput, er
 }
 
 func (d dispatcher) search(ctx context.Context, in searchInput) (agentOutput, error) {
-	return d.list(ctx, searchRoute.path(), in.pageInput, url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}, "results", "id name model_id provider size downloads likes pipeline_tag url", "matches")
+	return d.list(ctx, searchRoute.path(), in.pageInput, url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}, "results", "id:model name provider size downloads likes pipeline_tag url", "matches")
 }
 
 func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, error) {
-	return d.list(ctx, filesRoute.path(), in.pageInput, url.Values{"id": {in.ModelID}}, "variants", "file quantization bits size_bytes size_human recommended recommendation_reason", "files")
+	out, err := d.object(ctx, request{method: http.MethodGet, path: filesRoute.path(), query: url.Values{"id": {in.Model}, "provider": {in.Provider}}}, "variants features", "Pass a variant's file to zz_model_download; add features: [vision] to also fetch a listed vision file.")
+	if err != nil {
+		return out, err
+	}
+	out.fields["variants"] = compactObjects(out.fields["variants"], "file shards quantization bits size_bytes size_human recommended recommendation_reason")
+	out.fields["features"] = compactObjects(out.fields["features"], "feature file size_bytes size_human")
+	return out, nil
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
@@ -399,6 +406,9 @@ func (d dispatcher) stop(ctx context.Context, in runInput) (agentOutput, error) 
 
 func (d dispatcher) download(ctx context.Context, in downloadInput) (agentOutput, error) {
 	body := map[string]any{"model": in.Model, "registry": in.Registry, "provider": in.Provider, "file": in.File, "format": in.Format}
+	if in.Features != nil {
+		body["features"] = in.Features
+	}
 	if in.Node != "" {
 		body["nodes"] = []string{in.Node}
 	}

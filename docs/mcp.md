@@ -75,8 +75,11 @@ For an existing installation, use `zz_api` to PATCH `/zzrouter/v1/providers/{nam
 `/zzrouter/v1/providers/{name}/verify` after configuring credentials.
 
 Check `zz_models` first for an available local model. Only if it is absent,
-search with `zz_model_search`; for a HuggingFace GGUF, choose a file and size
-with `zz_model_files`. Download with `zz_model_download` and follow the jobs,
+search with `zz_model_search`; for a HuggingFace GGUF, choose a variant and
+size with `zz_model_files`. A split variant is one choice: its `file` fetches
+every shard, and the engine loads them together. To give a model vision,
+download with `features: [vision]`; `zz_model_files` lists the vision file
+that fetches. Download with `zz_model_download` and follow the jobs,
 then read `zz_models` on the target node for the exact local name before
 `zz_run_preview` and `zz_run_start`. Existing catalog `details.wire_endpoints`
 and `details.features` report serving capabilities when known; they are not
@@ -87,7 +90,8 @@ address. Lists default to 50 results; use `limit` and `offset` to bound output.
 ## Follow jobs
 
 Start tools return IDs immediately. Reuse the same `idempotency_key` when
-retrying the same start request. Call `zz_job` with each returned `job_id` and
+retrying the same start request. Only a success is replayed: a retry after
+an error runs again. Call `zz_job` with each returned `job_id` and
 `wait_seconds: 45`; if it is still running, call again. Downloads return jobs
 per node. Follow a launch's `deploy_job_id` too when present. Keep the
 `deployment_id` to cancel a download through `zz_job_cancel`; ordinary work

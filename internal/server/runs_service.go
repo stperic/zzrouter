@@ -390,15 +390,21 @@ func (r *LaunchRunRequest) UnmarshalJSON(data []byte) error {
 		ModelAlias string `json:"model"`
 		*raw
 	}{raw: (*raw)(r)}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&aux); err != nil {
+	if err := decodeStrict(data, &aux); err != nil {
 		return err
 	}
-	if r.Model == "" && aux.ModelAlias != "" {
+	if r.Model == "" {
 		r.Model = aux.ModelAlias
 	}
 	return nil
+}
+
+// decodeStrict decodes JSON refusing fields v does not define, the check a
+// custom UnmarshalJSON otherwise switches off.
+func decodeStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
 }
 
 // LaunchRunResponse represents the response from launching a run

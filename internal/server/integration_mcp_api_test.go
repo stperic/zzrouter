@@ -120,7 +120,7 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 		parameters []string
 	}{
 		{"GET getProviderResolvedParameters", "getProviderResolvedParameters", []string{"name", "node", "model"}},
-		{"listRegistriesHuggingfaceVariants", "listRegistriesHuggingfaceVariants", []string{"id"}},
+		{"listRegistriesHuggingfaceVariants", "listRegistriesHuggingfaceVariants", []string{"id", "provider"}},
 		{"getProvidersCatalog", "getProvidersCatalog", []string{"type", "mode", "kind"}},
 	} {
 		result := callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": tc.query})
@@ -216,7 +216,7 @@ func TestMCPPreviewProviderErrorsBelongToREST(t *testing.T) {
 		s.newLoadExecutor().HandleInternalPreviewRun(c)
 		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 		require.Contains(t, rec.Body.String(), `"code":"bad_request"`)
-		result := callMCPWireTool(t, s, "zz_run_preview", map[string]any{"provider": tc.provider, "model_name": "model"})
+		result := callMCPWireTool(t, s, "zz_run_preview", map[string]any{"provider": tc.provider, "model": "model"})
 		require.Equal(t, true, result["isError"])
 		require.Contains(t, result["content"].([]any)[0].(map[string]any)["text"], problem["detail"])
 	}
@@ -263,7 +263,7 @@ func TestMCPPreviewRecoveryUsesTargetInventory(t *testing.T) {
 	} {
 		coordinator.providers.appMgr.SetProviderVersion("llamacpp", tc.localVersion)
 		worker.providers.appMgr.SetProviderVersion("llamacpp", tc.workerVersion)
-		result := callMCPWireTool(t, coordinator, "zz_run_preview", map[string]any{"model_name": "model", "provider": "llamacpp", "node": "preview-worker"})
+		result := callMCPWireTool(t, coordinator, "zz_run_preview", map[string]any{"model": "model", "provider": "llamacpp", "node": "preview-worker"})
 		require.Equal(t, true, result["isError"])
 		text := result["content"].([]any)[0].(map[string]any)["text"]
 		require.Contains(t, text, "HTTP 400 bad_request")

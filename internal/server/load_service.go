@@ -187,6 +187,23 @@ func (s *LoadService) LoadModel(ctx context.Context, req *LoadModelRequest) (*Lo
 // PreviewRunRequest is the same as LoadModelRequest
 type PreviewRunRequest = LoadModelRequest
 
+// UnmarshalJSON accepts `model` for model_name, as POST /runs does, and
+// keeps refusing unknown fields.
+func (r *LoadModelRequest) UnmarshalJSON(data []byte) error {
+	type raw LoadModelRequest
+	aux := struct {
+		ModelAlias string `json:"model"`
+		*raw
+	}{raw: (*raw)(r)}
+	if err := decodeStrict(data, &aux); err != nil {
+		return err
+	}
+	if r.ModelName == "" {
+		r.ModelName = aux.ModelAlias
+	}
+	return nil
+}
+
 // PreviewRunResponse represents a run preview
 type PreviewRunResponse struct {
 	Model            string            `json:"model"`
