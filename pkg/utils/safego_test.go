@@ -78,7 +78,6 @@ func TestGoSafe_RecoversMultipleConcurrentPanics(t *testing.T) {
 	wg.Add(N)
 	var fired atomic.Int64
 	for i := 0; i < N; i++ {
-		i := i
 		GoSafe("concurrent", func() {
 			defer wg.Done()
 			defer fired.Add(1)

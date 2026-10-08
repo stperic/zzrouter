@@ -53,7 +53,6 @@ func TestValidateRepoFileName(t *testing.T) {
 		{"tab only", "\t", true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := validateRepoFileName(tc.input)
@@ -85,7 +84,6 @@ func TestEncodeRepoFilePath(t *testing.T) {
 		{"weird&char=value.bin", "weird&char=value.bin"}, // & and = are not reserved in path segments
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.input, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, encodeRepoFilePath(tc.input))

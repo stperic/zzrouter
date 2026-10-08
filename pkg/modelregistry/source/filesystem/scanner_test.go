@@ -31,7 +31,6 @@ func TestIsModelFile(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.path, func(t *testing.T) {
 			t.Parallel()
 			got := IsModelFile(tt.path)

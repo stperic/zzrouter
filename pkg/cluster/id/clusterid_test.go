@@ -61,7 +61,6 @@ func TestShortForm(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := ShortForm(tc.in)
@@ -227,7 +226,6 @@ func TestCASignRejectsWildcardSAN(t *testing.T) {
 
 	cases := []string{"*.lan", "*", "*.sub.example.com"}
 	for _, san := range cases {
-		san := san
 		t.Run(san, func(t *testing.T) {
 			t.Parallel()
 			csr, err := id.CSR("x", []string{san}, nil)
@@ -271,7 +269,6 @@ func TestCASignRejectsMalformedCSR(t *testing.T) {
 		{"wrong PEM type", encodePEM("CERTIFICATE", []byte("garbage"))},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := ca.Sign(tc.input, RoleWorker)
@@ -365,7 +362,6 @@ func TestInstallSignedCertRejectsMalformedPEM(t *testing.T) {
 		{"trailing bytes", append(id.CertPEM(), 'x', 'y', 'z')},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := id.InstallSignedCert(tc.input)
@@ -499,7 +495,6 @@ func TestCASignRejectsUnsafeIPSANs(t *testing.T) {
 		{"v4 broadcast", net.IPv4bcast},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			csr, err := id.CSR("x", nil, []net.IP{tc.ip})

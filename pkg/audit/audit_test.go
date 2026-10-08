@@ -123,7 +123,6 @@ func TestFileSink_ConcurrentEmit(t *testing.T) {
 	wg.Add(n)
 	start := time.Now()
 	for i := 0; i < n; i++ {
-		i := i
 		go func() {
 			defer wg.Done()
 			_ = sink.Emit(context.Background(), Event{

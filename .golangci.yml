@@ -8,7 +8,9 @@ linters:
   enable:
     - bodyclose
     - contextcheck
+    - copyloopvar
     - cyclop
+    - depguard
     - forbidigo
     - gocyclo
     - gosec
@@ -27,6 +29,14 @@ linters:
   settings:
     cyclop:
       max-complexity: 30
+    depguard:
+      rules:
+        denied:
+          deny:
+            - pkg: "math/rand$"
+              desc: "use math/rand/v2"
+            - pkg: "github.com/pkg/errors"
+              desc: "use errors and fmt.Errorf with %w"
     errcheck:
       check-type-assertions: true
       check-blank: false

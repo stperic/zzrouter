@@ -354,7 +354,6 @@ func TestCore_PendingReservations_ConcurrentSameKey(t *testing.T) {
 	var settleWg sync.WaitGroup
 	settleWg.Add(len(collected))
 	for _, id := range collected {
-		id := id
 		go func() {
 			defer settleWg.Done()
 			c.RecordSpendByKey(ac.Key.ID, id, 1000, 10, 20)
@@ -412,7 +411,6 @@ func TestCore_PendingReservations_CancelPending_Concurrent(t *testing.T) {
 	var drainWg sync.WaitGroup
 	drainWg.Add(len(ids))
 	for i, id := range ids {
-		i, id := i, id
 		if i%2 == 0 {
 			go func() {
 				defer drainWg.Done()

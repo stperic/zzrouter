@@ -77,7 +77,6 @@ func TestManager_Subscribers_FireInOrder(t *testing.T) {
 	var order []int
 	var mu sync.Mutex
 	for i := 0; i < 3; i++ {
-		i := i
 		m.Subscribe(func(Transition) {
 			mu.Lock()
 			order = append(order, i)
@@ -134,7 +133,6 @@ func TestManager_ConcurrentSet_Serializes(t *testing.T) {
 	roles := []Role{RoleCoordinator, RoleUnclaimed, RoleWorker, RoleDisabled, RoleCoordinator}
 	var wg sync.WaitGroup
 	for _, r := range roles {
-		r := r
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
