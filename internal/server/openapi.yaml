@@ -11953,8 +11953,8 @@ components:
 
         A cell with `from` is a **variant**: a model name of its own over
         another model's weights (Ollama's FROM, a LiteLLM alias with
-        params). Its launch walks its base's cells, then its own; its
-        model defaults come from its base's family. On the node that
+        params). Its launch walks its base's cells, then its own. On the
+        node that
         serves it, a variant that resolves to the same launch as its base
         is served by its base's process; one that changes the launch
         (a template, `ctx-size`) gets a process of its own. The catalog
