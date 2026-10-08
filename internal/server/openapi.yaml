@@ -3995,7 +3995,7 @@ paths:
         toolkit reports the nvcc selected by CUDA_HOME, CUDA_PATH or PATH. Missing observations are unknown.
         Kernel capability comes from the release schema; package presence is not proof of the kernel path used.
         Host findings explain human remediation and supported API workarounds. Requires a node supporting
-        runtime_environment_v1; protocol 5 is unchanged. No coordinator fallback for an unsupported worker.
+        runtime_environment_v1. No coordinator fallback for an unsupported worker.
       security: [{ AdminKey: [] }]
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
@@ -5819,7 +5819,6 @@ paths:
         DELETE /jobs/{id}; already accepted node work may finish. Each node downloads
         and verifies the signed release itself, then confirms health or rolls back.
         Only versions and node names are accepted, never binaries or URLs.
-        Protocol-5 nodes need an operator bootstrap before this route can update them.
         Breaking protocol changes require operator coordination and rollback of every
         node if any fails. This route does not orchestrate protocol cutover.
 

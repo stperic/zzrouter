@@ -10,7 +10,7 @@ First public release.
 - Virtual keys, teams, model access, quotas and usage accounting.
 - Model features, provider parameter tiers and variants.
 - Cluster mTLS and signed updates from `stperic/zzrouter`.
-- Cluster protocol 7, minimum 7. Every cluster node must use a compatible build.
+- Every cluster node must run the same cluster protocol (`zzrouter-node version --json`).
 - Built with Go 1.26.6; `govulncheck` reports no reachable vulnerabilities.
 - Reproducible release builds: every platform of a tag carries the same version.
 

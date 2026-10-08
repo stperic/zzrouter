@@ -76,8 +76,8 @@ func queryUpdateNode(ctx context.Context, client mesh.ClusterClient, node, path,
 	if err := json.Unmarshal(info.Body, &peer); err != nil {
 		return fmt.Errorf("read node version: %w", err)
 	}
-	if peer.ClusterProtocol < 6 || !slices.Contains(peer.Capabilities, version.CapabilityClusterUpdates) {
-		return fmt.Errorf("node %s does not support cluster updates; upgrade it to protocol 6 first", node)
+	if !slices.Contains(peer.Capabilities, version.CapabilityClusterUpdates) {
+		return fmt.Errorf("node %s does not support cluster updates; upgrade it first", node)
 	}
 	response, err := client.Unicast(ctx, node, "/zzrouter/v1/internal"+path, &mesh.QueryParams{Method: method, Body: body, Timeout: 30 * time.Second})
 	if err != nil {

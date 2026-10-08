@@ -158,30 +158,14 @@ func TestLocalProtocolWindow(t *testing.T) {
 	}
 }
 
-func TestFeatureProtocolWindow(t *testing.T) {
-	w := ProtocolWindow{Min: 5, Max: 5}
-	if err := w.Check(4); err == nil {
-		t.Fatal("protocol-4 peers must be rejected: their strict configs refuse features")
-	}
-	if err := w.Check(5); err != nil {
-		t.Fatalf("protocol-5 peers must be accepted: %v", err)
-	}
-}
-
-func TestTypedRecipeProtocolFlagDay(t *testing.T) {
-	window := LocalProtocolWindow()
-	if window.Min != 7 || window.Max != 7 {
-		t.Fatalf("typed recipes require exactly protocol 7, got %+v", window)
-	}
-	for _, remote := range []int{0, 5, 6, 8} {
-		if err := window.Check(remote); err == nil {
-			t.Errorf("protocol %d was admitted into recipe fleet", remote)
+func TestLocalProtocolWindowRejectsOutsidePeers(t *testing.T) {
+	w := LocalProtocolWindow()
+	for _, remote := range []int{w.Min - 1, w.Max + 1} {
+		if err := w.Check(remote); err == nil {
+			t.Errorf("protocol %d admitted by window %+v", remote, w)
 		}
 	}
-	if err := window.Check(7); err != nil {
-		t.Fatal(err)
-	}
-	if err := (ProtocolWindow{Min: 5, Max: 6}).Check(7); err == nil {
-		t.Fatal("protocol 6 coordinator admitted protocol 7 worker")
+	if err := (ProtocolWindow{Min: w.Max - 1, Max: w.Max - 1}).Check(w.Max); err == nil {
+		t.Fatal("an older coordinator admitted a newer worker")
 	}
 }

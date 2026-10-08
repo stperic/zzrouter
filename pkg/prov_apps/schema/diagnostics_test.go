@@ -99,7 +99,7 @@ func TestAutoMarginSchemaRoundTripAndDefaultCompatibility(t *testing.T) {
 		assert.Equal(t, margin, decoded.Memory.AutoSafetyMarginMiB)
 		if margin == 0 {
 			assert.NotContains(t, string(data), "auto_safety_margin_mib")
-			// The pre-fix protocol-7 reader strictly decodes diagnostics and these memory fields.
+			// The previous reader strictly decodes diagnostics and these memory fields.
 			var legacy struct {
 				Runtime  string                   `yaml:"runtime"`
 				Runtimes map[string]RuntimeChecks `yaml:"runtimes"`
