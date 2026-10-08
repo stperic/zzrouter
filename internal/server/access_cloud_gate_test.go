@@ -2,7 +2,12 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 )
@@ -72,4 +77,17 @@ func TestModelIsCloudBacked_UnknowableAnswersFalse(t *testing.T) {
 			t.Errorf("server with no cache and no groups reported %q as cloud-backed", name)
 		}
 	}
+}
+
+func TestAnonymousCloudGateDeniesLookupError(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	// Cancellation makes catalog lookup fail without inventing a cloud replica.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.True(t, s.modelIsCloudBacked(ctx, "unknown"))
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
+	require.False(t, s.access.Enforce(c, "unknown"))
+	require.Equal(t, http.StatusUnauthorized, w.Code)
 }

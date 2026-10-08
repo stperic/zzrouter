@@ -15,7 +15,7 @@ import (
 const DefaultAPISearchLimit = 20
 
 type apiSearchInput struct {
-	Query string `json:"query" jsonschema:"Keywords to match against REST methods, paths, operation ids, summaries and parameter names."`
+	Query string `json:"query" jsonschema:"Keywords to match against REST methods, paths, operation ids, summaries and parameters with their names, locations and required flags."`
 	Limit int    `json:"limit,omitempty" jsonschema:"Maximum matching operations. Default 20, maximum 1000."`
 }
 type apiGetInput struct {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/routing"
@@ -318,79 +318,25 @@ func (s *Server) buildIncompatibleDeployError(hostname, model, repo string) stri
 	return fmt.Sprintf("cannot deploy to node %q: %s, or use --force to override", hostname, msg)
 }
 
-// getRemoteModelInfo returns host and provider for a remote model.
-// If nodeHint is set, it takes priority over the cache lookup.
-// Returns empty strings if the model is local, not found, or if this
-// node cannot route cross-node (only the coordinator runs the
-// cluster-aware router; workers and standalone nodes always handle
-// locally).
-func (s *Server) getRemoteModelInfo(modelName string, nodeHint ...string) (host, provider string) {
-	if !s.IsCoordinator() {
-		return "", ""
-	}
-
-	// Node hint takes priority over cache lookup
-	if len(nodeHint) > 0 && nodeHint[0] != "" {
-		if s.node.IsLocalNode(nodeHint[0]) {
-			if cached, ok := s.model.Cache.LookupByNode(modelName, s.node.Nodename()); ok {
-				return "", cached.Provider
-			}
-			return "", "" // local node — handle locally
-		}
-		// Remote node — route there
-		if cached, ok := s.model.Cache.LookupByNode(modelName, nodeHint[0]); ok {
-			return nodeHint[0], cached.Provider
-		}
-		return nodeHint[0], ""
-	}
-
-	// Look up in cache
-	if cached, ok := s.model.Cache.LookupByName(modelName); ok {
-		if cached.Node != "" && cached.Node != constants.Localhost && !s.node.IsLocalNode(cached.Node) {
-			return cached.Node, cached.Provider
-		}
-		return "", cached.Provider
-	}
-	return "", ""
-}
-
-// RouteToModelOrBroadcast routes to model host if found, otherwise broadcasts.
-// Use this when model might not be in cache yet (e.g., loading a new model).
-//
-// Uses the non-blocking LookupByName fast path — if the cache is invalid
-// or the model isn't indexed, falls through to broadcast rather than
-// paying a populate in the hot routing path. Broadcast is the correct
-// fallback for "we don't know where this model is."
+// RouteToModelOrBroadcast uses the same target selection as inference and preview tiers.
 func (s *Server) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
-	if node := s.TargetNodeForModel(modelName); node != "" {
-		slog.Info("Found model on node: using unicast", "model_name", modelName, "node", node)
+	resolved, err := s.ResolveModel(ctx, modelName, "")
+	if err != nil {
+		return nil, err
+	}
+	node := resolved.Node
+	if node == "" && resolved.Provider != "" && !s.node.IsWorker() {
+		node = s.node.Nodename()
+	}
+	if node != "" {
 		return s.cluster.router.Unicast(ctx, node, path, method, body)
 	}
-	slog.Info("Model not in cache - broadcasting", "model_name", modelName)
 	return s.cluster.router.Broadcast(ctx, path, method, body)
 }
 
-// TargetNodeForModel names the node a model-addressed request will be
-// unicast to, or "" when it will fan out instead.
-//
-// Split out of RouteToModelOrBroadcast so that a caller preparing the
-// body and the router dispatching it cannot pick different nodes: a
-// request resolved for one node and delivered to another carries that
-// node's parameters, and they win over the receiver's own.
-//
-// The worker branch is carried over verbatim from before the split: a
-// worker has no peers to address, so it broadcasts and its own router
-// keeps that local. It is not pinned by a test — nothing outside this
-// package can seed the model cache — so treat it as behaviour to
-// preserve rather than behaviour something will catch you changing.
-func (s *Server) TargetNodeForModel(modelName string) string {
-	if s.node.IsWorker() {
-		return ""
-	}
-	if cached, ok := s.model.Cache.LookupByName(modelName); ok {
-		return cached.Node
-	}
-	return ""
+// ResolveModel shares group-first resolution with inference and management callers.
+func (s *Server) ResolveModel(ctx context.Context, modelName, nodeHint string) (*resolver.Resolved, error) {
+	return s.model.Resolver.Resolve(ctx, resolver.Reference{Model: modelName, Node: nodeHint})
 }
 
 // findMatchingModels finds models that match a name pattern (fuzzy matching)

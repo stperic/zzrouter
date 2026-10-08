@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/internal/server/mcpserver"
@@ -120,6 +121,7 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 	}{
 		{"GET getProviderResolvedParameters", "getProviderResolvedParameters", []string{"name", "node", "model"}},
 		{"listRegistriesHuggingfaceVariants", "listRegistriesHuggingfaceVariants", []string{"id"}},
+		{"getProvidersCatalog", "getProvidersCatalog", []string{"type", "mode", "kind"}},
 	} {
 		result := callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": tc.query})
 		require.NotEqual(t, true, result["isError"], result)
@@ -129,7 +131,18 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 		require.Equal(t, tc.id, op["operationId"])
 		require.Equal(t, "GET", op["method"])
 		require.NotEmpty(t, op["summary"])
-		require.ElementsMatch(t, tc.parameters, op["parameters"])
+		var names []string
+		for _, value := range op["parameters"].([]any) {
+			parameter := value.(map[string]any)
+			names = append(names, parameter["name"].(string))
+			require.NotEmpty(t, parameter["in"])
+			_, ok := parameter["required"].(bool)
+			require.True(t, ok)
+			if parameter["name"] == "id" || parameter["name"] == "name" {
+				require.Equal(t, true, parameter["required"])
+			}
+		}
+		require.ElementsMatch(t, tc.parameters, names)
 	}
 	first := callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": ""})["structuredContent"]
 	require.Len(t, first.(map[string]any)["operations"], mcpserver.DefaultAPISearchLimit)
@@ -225,10 +238,12 @@ func TestMCPAPINoContentSuccess(t *testing.T) {
 // previewWorkerRouter exercises the real worker executor without opening a listener.
 type previewWorkerRouter struct {
 	fakeRouter
-	worker http.Handler
+	worker   http.Handler
+	deadline time.Time
 }
 
 func (r *previewWorkerRouter) Unicast(ctx context.Context, node, path, method string, body []byte) (*routing.Response, error) {
+	r.deadline, _ = ctx.Deadline()
 	rec := httptest.NewRecorder()
 	r.worker.ServeHTTP(rec, httptest.NewRequestWithContext(ctx, method, path, bytes.NewReader(body)))
 	return &routing.Response{StatusCode: rec.Code, Body: rec.Body.Bytes(), Headers: rec.Header(), Node: node}, nil

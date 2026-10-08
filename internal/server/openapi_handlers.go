@@ -78,7 +78,8 @@ func searchOpenAPI(query string, limit int) ([]map[string]any, error) {
 				continue
 			}
 			summary, _ := operation["summary"].(string)
-			parameters := []string{}
+			parameters := []map[string]any{}
+			names := []string{}
 			for _, value := range []any{item["parameters"], operation["parameters"]} {
 				list, _ := value.([]any)
 				for _, value := range list {
@@ -90,11 +91,13 @@ func searchOpenAPI(query string, limit int) ([]map[string]any, error) {
 						}
 					}
 					if name, ok := parameter["name"].(string); ok {
-						parameters = append(parameters, name)
+						required, _ := parameter["required"].(bool)
+						parameters = append(parameters, map[string]any{"name": name, "in": parameter["in"], "required": required})
+						names = append(names, name)
 					}
 				}
 			}
-			text := strings.ToLower(method + " " + path + " " + id + " " + summary + " " + strings.Join(parameters, " "))
+			text := strings.ToLower(method + " " + path + " " + id + " " + summary + " " + strings.Join(names, " "))
 			matches := true
 			for _, word := range strings.Fields(strings.ToLower(query)) {
 				matches = matches && strings.Contains(text, word)

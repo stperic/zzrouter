@@ -115,19 +115,27 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 }
 
 func TestAgentChatSmokeBounds(t *testing.T) {
-	for _, tc := range []struct{ tokens, want int }{{0, DefaultChatTokens}, {5, 5}, {99999, MaxChatTokens}} {
+	for _, tc := range []struct {
+		tokens, want int
+		node         string
+	}{{0, DefaultChatTokens, ""}, {5, 5, "worker"}, {99999, MaxChatTokens, ""}} {
 		t.Run(fmt.Sprint(tc.tokens), func(t *testing.T) {
 			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
 				require.Equal(t, "/v1/chat/completions", r.URL.Path)
 				require.Equal(t, "POST", r.Method)
 				var body map[string]any
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				expectedModel := "m"
+				if tc.node != "" {
+					expectedModel += "@" + tc.node
+				}
+				require.Equal(t, expectedModel, body["model"])
 				require.EqualValues(t, tc.want, body["max_tokens"])
 				require.Equal(t, false, body["stream"])
 				require.Equal(t, []any{map[string]any{"role": "user", "content": "say hello"}}, body["messages"])
 				writeFixture(t, w, []byte(`{"model":"m","choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"drop":"extra"}`))
 			})
-			result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "message": "say hello", "max_tokens": tc.tokens})
+			result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "message": "say hello", "max_tokens": tc.tokens, "node": tc.node})
 			require.NotEqual(t, true, result["isError"])
 			data, err := json.Marshal(result["structuredContent"])
 			require.NoError(t, err)

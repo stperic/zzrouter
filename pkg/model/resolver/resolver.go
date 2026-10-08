@@ -12,6 +12,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/fallback"
 )
 
+// Reference carries the client's model spelling and separately trusted routing hints.
+type Reference struct{ Model, Provider, Node string }
+
 // Resolved is the result of resolving a client-facing model name to a
 // concrete routing target.
 type Resolved struct {
@@ -20,6 +23,9 @@ type Resolved struct {
 
 	// ModelName is the actual model identifier for the target provider
 	ModelName string
+
+	// RequestModel is the addressed catalog identity, preserving variant request defaults.
+	RequestModel string
 
 	// Node is the target node ("" = local, hostname = remote)
 	Node string
@@ -50,10 +56,5 @@ func (r *Resolved) IsRemote() bool {
 type Resolver interface {
 	// Resolve maps a model name to a Resolved target.
 	// nodeHint allows clients to pin requests to a specific node (via X-Node header).
-	Resolve(ctx context.Context, modelName string, nodeHint string) (*Resolved, error)
+	Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 }
-
-// RemoteLookup resolves a model name to its remote host and provider.
-// Supplied by the caller (typically the Server's cache) so this package
-// stays decoupled from the cache implementation.
-type RemoteLookup func(modelName string, nodeHint ...string) (host, provider string)

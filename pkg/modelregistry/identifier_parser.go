@@ -52,6 +52,7 @@ func Parse(input string, opts ParseOpts) (*Identifier, error) {
 	// Cloud short-circuit: explicit registry hint wins.
 	if opts.Registry != "" && isCloudRegistry(opts.Config, opts.Registry) {
 		id.Repository = opts.Registry
+		id.ProviderKey = opts.Registry
 		id.ModelName = strings.TrimPrefix(input, opts.Registry+"/")
 		id.Namespace = extractNamespace(opts.Registry, id.ModelName)
 		return id, nil
@@ -63,6 +64,7 @@ func Parse(input string, opts ParseOpts) (*Identifier, error) {
 			first := input[:slash]
 			if isCloudRegistry(opts.Config, first) {
 				id.Repository = first
+				id.ProviderKey = first
 				id.ModelName = input[slash+1:]
 				id.Namespace = extractNamespace(first, id.ModelName)
 				return id, nil
@@ -213,8 +215,8 @@ func parseFullIdentifierWithConfig(id *Identifier, fullID string, config *pkgCon
 	providerKey := ""
 	if config != nil {
 		lower := strings.ToLower(firstPart)
-		config.RangeApps(func(key string, provider pkgConfig.ServiceConfig) bool {
-			if provider.IsEnabled() && strings.ToLower(key) == lower {
+		config.RangeApps(func(key string, _ pkgConfig.ServiceConfig) bool {
+			if strings.ToLower(key) == lower {
 				isProvider = true
 				providerKey = key
 				return false

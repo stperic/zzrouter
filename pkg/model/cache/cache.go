@@ -70,8 +70,7 @@ type Cache struct {
 	lifeCancel  context.CancelFunc
 
 	// Owned cache state.
-	// valid is the only freshness signal — true iff models/indexes were
-	// successfully populated since the last Invalidate.
+	// valid means models/indexes were populated since the last Invalidate.
 	// lastUpdated is retained for /stats observability only; reads never
 	// consult it for validity decisions.
 	admissionModels            []*CachedModel
@@ -86,13 +85,10 @@ type Cache struct {
 	indexBySuffix              map[string]*CachedModel
 	valid                      bool
 	lastUpdated                time.Time
+	lastAttempt                time.Time
+	populateErr                error
 	mu                         sync.RWMutex
-	// refreshMu serializes blocking populate calls (LookupModel /
-	// ListModels → ensurePopulated). The non-winner blocks until
-	// the winner's RefreshCacheSync finishes, then returns against
-	// the freshly-populated cache. Distinct from mu so a populate
-	// in progress doesn't block concurrent reads of an already-valid
-	// cache.
+	// refreshMu coalesces blocking discovery without holding the catalog read lock.
 	refreshMu sync.Mutex
 	// refreshing gates the fire-and-forget RefreshAsync path so
 	// concurrent triggers collapse to one background goroutine.
@@ -318,6 +314,7 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 	if mc.appsConfig != nil {
 		cfg = mc.appsConfig()
 	}
+	models = append(models, expandVariants(models, cfg)...)
 	mc.admissionModels = models
 	mc.variantConflicts = buildVariantConflicts(models, cfg)
 	mc.models = models
@@ -358,6 +355,7 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 	}
 	mc.valid = true
 	mc.lastUpdated = utils.Now()
+	mc.lastAttempt, mc.populateErr = mc.lastUpdated, nil
 	utils.LogDebugf("Unified model cache updated: %d models", len(models))
 }
 
@@ -369,7 +367,7 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 // Cascades:
 //   - Registry scan cache (pkg/modelregistry): invalidated first so the
 //     next RefreshCacheSync re-scans fresh.
-//   - Cache itself: models + indexes cleared, valid flag flipped.
+//   - Cache itself: indexes cleared, valid flag flipped; last models retained as failure evidence.
 //
 // NodeResourceCache has no separate invalidation — it is refreshed in
 // lockstep with the model cache inside RefreshCacheSync.
@@ -423,13 +421,14 @@ func (mc *Cache) invalidateLocked() {
 	mc.admissionUnavailableLogged = false
 	mc.admissionModels = nil
 	clear(mc.variantConflicts)
-	mc.models = nil
+	// Retain the last snapshot only as evidence for failed nodes on the next publish.
 	clear(mc.indexByTarget)
 	clear(mc.indexByNode)
 	clear(mc.inventoryUnavailable)
 	clear(mc.indexByName)
 	clear(mc.indexBySuffix)
 	mc.valid = false
+	mc.lastAttempt = time.Time{}
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +445,12 @@ func (mc *Cache) GetCacheStats() map[string]any {
 	if !mc.lastUpdated.IsZero() {
 		ageSeconds = time.Since(mc.lastUpdated).Seconds()
 	}
+	size := len(mc.models)
+	if !mc.valid {
+		size = 0
+	}
 	return map[string]any{
-		"size":            len(mc.models),
+		"size":            size,
 		"indexed_by_name": len(mc.indexByName),
 		"suffix_entries":  len(mc.indexBySuffix),
 		"last_updated":    mc.lastUpdated,
@@ -506,37 +509,42 @@ func (mc *Cache) HasModelExact(ctx context.Context, name string) bool {
 	return ok
 }
 
-// ensurePopulated serializes blocking populates under refreshMu so a
-// burst of concurrent LookupModel / ListModels callers all observe a
-// populated cache before returning. The fast path checks valid under
-// RLock to skip the mutex entirely when the cache is hot.
-//
-// The previous implementation used an atomic CAS and let the non-winner
-// return without waiting — second concurrent caller saw an empty index
-// and returned ErrModelNotFound while a populate was in flight, which
-// is the race LookupModel was introduced to close. Mutex here is cheap
-// (populate happens once per invalidation) and correct.
-func (mc *Cache) ensurePopulated(ctx context.Context) error {
+// inventoryRetryInterval prevents failed discovery from being retried on every request.
+const inventoryRetryInterval = 30 * time.Second
+
+func (mc *Cache) populationCurrent() (bool, error) {
 	mc.mu.RLock()
-	valid := mc.valid
-	mc.mu.RUnlock()
-	if valid {
-		return nil
+	defer mc.mu.RUnlock()
+	if mc.valid && len(mc.inventoryUnavailable) == 0 {
+		return true, nil
+	}
+	return time.Since(mc.lastAttempt) < inventoryRetryInterval, mc.populateErr
+}
+
+// ensurePopulated serializes initial population and retries of degraded catalogs.
+func (mc *Cache) ensurePopulated(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if current, err := mc.populationCurrent(); current {
+		return err
 	}
 	mc.refreshMu.Lock()
 	defer mc.refreshMu.Unlock()
-	// Re-check under refreshMu: if another goroutine populated while
-	// we waited, skip the scan.
-	mc.mu.RLock()
-	valid = mc.valid
-	mc.mu.RUnlock()
-	if valid {
-		return nil
+	if current, err := mc.populationCurrent(); current {
+		return err
 	}
-	if err := mc.RefreshCacheSync(ctx); err != nil {
-		return fmt.Errorf("cache miss and refresh failed: %w", err)
+	attempted := utils.Now()
+	err := mc.RefreshCacheSync(ctx)
+	if err != nil {
+		err = fmt.Errorf("cache miss and refresh failed: %w", err)
+		mc.mu.Lock()
+		if mc.lastAttempt.Before(attempted) {
+			mc.lastAttempt, mc.populateErr = attempted, err
+		}
+		mc.mu.Unlock()
 	}
-	return nil
+	return err
 }
 
 func (mc *Cache) getAllModelsFromCache() []*CachedModel {
@@ -721,7 +729,10 @@ func (mc *Cache) fetchWorkerData(parent context.Context) ([]map[string]any, map[
 	broadcastResp, err := cc.Broadcast(ctx, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
 	if err != nil {
 		slog.Warn("[Cache] Failed to fetch worker data", "error", err)
-		return nil, nil, nil
+	}
+	if broadcastResp == nil {
+		// A top-level broadcast failure identifies no node; unknown names remain fail-open.
+		return nil, nil, []InventoryUnavailable{{Reason: "cluster model inventory could not be read"}}
 	}
 
 	var allModels []map[string]any
@@ -809,9 +820,6 @@ func (mc *Cache) modelItems(items []map[string]any) []*CachedModel {
 		}
 		cachedModels = append(cachedModels, cm)
 	}
-	if mc.appsConfig != nil {
-		cachedModels = append(cachedModels, expandVariants(cachedModels, mc.appsConfig())...)
-	}
 	return cachedModels
 }
 
@@ -825,6 +833,24 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 	defer mc.mu.Unlock()
 	if generation != mc.generation {
 		return false
+	}
+	known := make(map[modelTarget]bool, len(models))
+	for _, current := range models {
+		known[modelTarget{strings.ToLower(current.Name), current.Provider, current.Node}] = true
+	}
+	for _, previous := range mc.models {
+		if known[modelTarget{strings.ToLower(previous.Name), previous.Provider, previous.Node}] {
+			continue
+		}
+		if previous.VariantOf != "" {
+			continue
+		}
+		for _, failure := range unavailable {
+			if failure.Node != "" && strings.EqualFold(previous.Node, failure.Node) && (failure.Provider == "" || strings.EqualFold(previous.Provider, failure.Provider)) {
+				models = append(models, previous)
+				break
+			}
+		}
 	}
 	mc.updateModelCacheLocked(models)
 	mc.inventoryUnavailable = make(map[providerNode]InventoryUnavailable, len(unavailable))

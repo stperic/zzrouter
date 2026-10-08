@@ -79,7 +79,7 @@ func TestNormalizeUpstreamResponse(t *testing.T) {
 
 func TestNormalizeUpstreamResponseAnthropicAndUnreadable(t *testing.T) {
 	resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"images are not supported","type":"api_error"}}`))}
-	httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil))
+	_ = httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil))
 	out, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, 400, resp.StatusCode)

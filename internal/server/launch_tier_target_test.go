@@ -10,6 +10,8 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -80,7 +82,7 @@ func TestLoadService_PreMergeDoesNotOutrankTheRunningNodesTier(t *testing.T) {
 
 	// What worker1 resolves for itself. This is the answer any route
 	// has to arrive at.
-	own, err := target.resolveForLaunch("m", "vllm", "chat", nil, nil)
+	own, err := launchParameters(t, target, "m", "vllm", "chat", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "65536", own.Params["max-model-len"],
 		"fixture is wrong: the node tier is not being read at all")
@@ -89,14 +91,15 @@ func TestLoadService_PreMergeDoesNotOutrankTheRunningNodesTier(t *testing.T) {
 	// worker1 — which is where the router will send it.
 	svc := tierProbeService(t, cfg, "m", "worker1")
 	req := &LoadModelRequest{Provider: "vllm", ModelName: "m"}
-	sources := svc.preMerge(req)
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
 
 	assert.Equal(t, "65536", req.Parameters["max-model-len"],
 		"the request left carrying a value resolved for nobody")
 	assert.Equal(t, pkgConfig.TierNode.String(), sources["max-model-len"],
 		"a value nobody sent was reported as coming from the request")
 
-	got, err := target.resolveForLaunch("m", "vllm", "chat", req.Parameters, req.Environment)
+	got, err := launchParameters(t, target, "m", "vllm", "chat", req.Parameters, req.Environment)
 	require.NoError(t, err)
 	assert.Equal(t, "65536", got.Params["max-model-len"],
 		"a partial resolution defeated the node tier written for the node that ran the model")
@@ -110,7 +113,9 @@ func TestLoadService_LeavesLocalWorkToResolveItself(t *testing.T) {
 	svc := tierProbeService(t, cfg, "m", "localhost")
 
 	req := &LoadModelRequest{Provider: "vllm", ModelName: "m"}
-	assert.Nil(t, svc.preMerge(req))
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
+	assert.Nil(t, sources)
 	assert.Empty(t, req.Parameters)
 }
 
@@ -122,7 +127,9 @@ func TestLoadService_ResolvesNothingForAFanOut(t *testing.T) {
 	svc := tierProbeService(t, cfg, "other-model", "worker1")
 
 	req := &LoadModelRequest{Provider: "vllm", ModelName: "m"}
-	assert.Nil(t, svc.preMerge(req))
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
+	assert.Nil(t, sources)
 	assert.Empty(t, req.Parameters)
 }
 
@@ -133,7 +140,8 @@ func TestLoadService_ResolvesForTheNodeTheCallerNamed(t *testing.T) {
 	svc := tierProbeService(t, cfg, "m", "worker2")
 
 	req := &LoadModelRequest{Provider: "vllm", ModelName: "m", Node: "worker1"}
-	sources := svc.preMerge(req)
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
 	assert.Equal(t, "65536", req.Parameters["max-model-len"])
 	assert.Equal(t, pkgConfig.TierNode.String(), sources["max-model-len"])
 }
@@ -150,13 +158,14 @@ func TestLoadService_CallerOverrideStillWins(t *testing.T) {
 		ModelName:  "m",
 		Parameters: map[string]string{"max-model-len": "1024"},
 	}
-	sources := svc.preMerge(req)
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
 	assert.Equal(t, pkgConfig.TierRequest.String(), sources["max-model-len"])
 
-	got, err := target.resolveForLaunch("m", "vllm", "chat", req.Parameters, req.Environment)
+	got, err := launchParameters(t, target, "m", "vllm", "chat", req.Parameters, req.Environment)
 	require.NoError(t, err)
 	assert.Equal(t, "1024", got.Params["max-model-len"])
-	assert.Equal(t, pkgConfig.TierRequest.String(), got.ParamSources["max-model-len"])
+	assert.Equal(t, pkgConfig.TierRequest.String(), got.Sources["max-model-len"])
 }
 
 // capturingCache stands in for the cluster: it records the body a
@@ -176,7 +185,9 @@ func (c *capturingCache) ListModels(ctx context.Context, host, repo, app, model 
 
 func (c *capturingCache) Invalidate() {}
 
-func (c *capturingCache) TargetNodeForModel(string) string { return c.owner }
+func (c *capturingCache) ResolveModel(_ context.Context, model, _ string) (*resolver.Resolved, error) {
+	return &resolver.Resolved{ModelName: model, Node: c.owner}, nil
+}
 
 func (c *capturingCache) IsLocalNode(host string) bool { return host == "" || host == "localhost" }
 
@@ -220,6 +231,20 @@ func TestLoadService_ResolvesNothingForAnExplicitStar(t *testing.T) {
 	svc := tierProbeService(t, cfg, "m", "worker1")
 
 	req := &LoadModelRequest{Provider: "vllm", ModelName: "m", Node: "*"}
-	assert.Nil(t, svc.preMerge(req))
+	sources, err := svc.preMerge(context.Background(), req)
+	require.NoError(t, err)
+	assert.Nil(t, sources)
 	assert.Empty(t, req.Parameters)
+}
+
+// launchParameters reads the launch owner's tiers without requiring weights or a process.
+func launchParameters(t *testing.T, s *Server, model, provider, endpoint string, parameters, environment map[string]string) (prov_apps.LaunchParameters, error) {
+	t.Helper()
+	if s.providers.appMgr == nil {
+		manager, err := prov_apps.NewProviderAppManager(s.appsConfig, prov_apps.WithNodename(s.node.Nodename))
+		require.NoError(t, err)
+		s.providers.appMgr = manager
+		t.Cleanup(func() { _ = manager.Stop(context.Background()) })
+	}
+	return s.providers.appMgr.ResolveLaunchParameters(prov_apps.LaunchRequest{Provider: provider, Model: model, Endpoint: prov_apps.Endpoint(endpoint), Parameters: parameters, EnvVars: environment})
 }

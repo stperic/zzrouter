@@ -191,6 +191,11 @@ func RespondToError(c *gin.Context, err error) {
 	if err == nil {
 		return
 	}
+	var wire httperr.Error
+	if errors.As(err, &wire) {
+		respondSurfaceError(c, wire)
+		return
+	}
 	var re *RoutedError
 	if errors.As(err, &re) {
 		re.Respond(c)
@@ -210,6 +215,11 @@ func RespondToError(c *gin.Context, err error) {
 // with an upstream_timeout code); everything else is a genuine 404.
 func RespondToLookupError(c *gin.Context, err error) {
 	if err == nil {
+		return
+	}
+	var wire httperr.Error
+	if errors.As(err, &wire) {
+		respondSurfaceError(c, wire)
 		return
 	}
 	var re *RoutedError
@@ -244,6 +254,11 @@ func OllamaError(c *gin.Context, status int, message string) {
 // preserving the status code from *RoutedError and falling back to 500.
 func RespondToErrorOllama(c *gin.Context, err error) {
 	if err == nil {
+		return
+	}
+	var wire httperr.Error
+	if errors.As(err, &wire) {
+		respondSurfaceError(c, wire)
 		return
 	}
 	var re *RoutedError

@@ -200,3 +200,39 @@ func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewLaunchUsesActualExpansionAndFlags(t *testing.T) {
+	m, svc, dir := featureLaunchFixture(t)
+	landProjector(t, dir, "digest")
+	req := LaunchRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"max-model-len": "4096"}}
+	prepared, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	require.NoError(t, err)
+	preview, err := m.PreviewLaunch(req, 8100)
+	require.NoError(t, err)
+	require.Equal(t, prepared.parameters.Params, preview.Params)
+	require.Equal(t, prepared.parameters.Environment, preview.Environment)
+	require.Equal(t, prepared.parameters.Files, preview.Files)
+	require.Equal(t, prepared.parameters.Sources, preview.Sources)
+	require.Equal(t, svc.Runtime, preview.Config.Runtime)
+	require.Equal(t, "vendor/model", preview.Model)
+	require.Equal(t, config.TierRequest.String(), preview.Sources["max-model-len"])
+	require.Equal(t, prepared.launch.Command, preview.Command)
+	require.Equal(t, prepared.launch.ModelPath, preview.ModelPath)
+	require.Equal(t, prepared.launch.WireModel, preview.WireModel)
+	pairs := func(args []string) []string {
+		require.Zero(t, len(args)%2)
+		var result []string
+		for i := 0; i < len(args); i += 2 {
+			result = append(result, args[i]+"="+args[i+1])
+		}
+		return result
+	}
+	require.ElementsMatch(t, pairs(prepared.launch.Args), pairs(preview.Args))
+	require.Contains(t, preview.Args, filepath.Join(dir, "weights.gguf"))
+	require.Contains(t, preview.Args, "--max-model-len")
+	require.Contains(t, preview.Args, "4096")
+	require.Contains(t, preview.Args, filepath.Join(dir, "a-projector.gguf"))
+	for _, arg := range preview.Args {
+		require.NotContains(t, arg, "${")
+	}
+}

@@ -89,13 +89,22 @@ func TestParamErrorCodeWireValuesAreStable(t *testing.T) {
 // constant declared with the ParamErrorCode type, keyed by Go name.
 func declaredParamErrorCodes(t *testing.T) map[string]ParamErrorCode {
 	t.Helper()
+	out := map[string]ParamErrorCode{}
+	for name, value := range declaredErrorCodes(t, "param_code.go", "ParamErrorCode") {
+		out[name] = ParamErrorCode(value)
+	}
+	return out
+}
+
+func declaredErrorCodes(t *testing.T, filename, codeType string) map[string]string {
+	t.Helper()
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "param_code.go", nil, 0)
+	f, err := parser.ParseFile(fset, filename, nil, 0)
 	if err != nil {
-		t.Fatalf("parse param_code.go: %v", err)
+		t.Fatalf("parse %s: %v", filename, err)
 	}
 
-	out := map[string]ParamErrorCode{}
+	out := map[string]string{}
 	for _, decl := range f.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.CONST {
@@ -106,10 +115,10 @@ func declaredParamErrorCodes(t *testing.T) map[string]ParamErrorCode {
 			if !ok {
 				continue
 			}
-			// Only constants explicitly typed ParamErrorCode. An
+			// Only constants explicitly typed as this enum. An
 			// untyped sibling in the same block is not part of the enum.
 			ident, ok := vs.Type.(*ast.Ident)
-			if !ok || ident.Name != "ParamErrorCode" {
+			if !ok || ident.Name != codeType {
 				continue
 			}
 			for i, name := range vs.Names {
@@ -124,12 +133,12 @@ func declaredParamErrorCodes(t *testing.T) map[string]ParamErrorCode {
 				if err != nil {
 					t.Fatalf("unquote %s: %v", name.Name, err)
 				}
-				out[name.Name] = ParamErrorCode(val)
+				out[name.Name] = val
 			}
 		}
 	}
 	if len(out) == 0 {
-		t.Fatal("parsed no ParamErrorCode constants; the parser is broken, not the enum")
+		t.Fatalf("parsed no %s constants; the parser is broken, not the enum", codeType)
 	}
 	return out
 }

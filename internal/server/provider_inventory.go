@@ -57,6 +57,10 @@ func (s *Server) providerInventoryStatus(ctx context.Context, failures map[strin
 }
 
 func (s *Server) providerInventoryFailure(node, provider string, missing bool) *httperr.Error {
+	// A missing name without a target is not evidence that an unavailable node holds it.
+	if missing && node == "" {
+		return nil
+	}
 	if s.model == nil || s.model.Cache == nil {
 		return nil
 	}
@@ -113,7 +117,7 @@ func (s *Server) missingInventoryNode(req *http.Request) string {
 	}
 	hint := req.Header.Get("X-Node")
 	if hint == "" {
-		_, hint = s.splitModelRef(clientModelFromContext(req.Context()))
+		_, _, hint = s.splitModelRef(clientModelFromContext(req.Context()))
 	}
 	if hint != "" && s.node.IsLocalNode(hint) {
 		return s.node.Nodename()

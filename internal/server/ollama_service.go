@@ -17,6 +17,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -34,7 +35,7 @@ type OllamaService interface {
 // OllamaServiceImpl implements OllamaService
 type OllamaServiceImpl struct {
 	ollamaDaemon          func() (*backend.Resolved, error)
-	getRemoteModelInfo    func(string, ...string) (string, string)
+	resolveModel          func(context.Context, resolver.Reference) (*resolver.Resolved, error)
 	proxyToRemoteNode     func(*gin.Context, string, string, []byte)
 	getNodename           func() string
 	isLocalNode           func(string) bool
@@ -68,7 +69,7 @@ type OllamaServiceImpl struct {
 // NewOllamaService creates a new OllamaService
 func NewOllamaService(
 	ollamaDaemon func() (*backend.Resolved, error),
-	getRemoteModelInfo func(string, ...string) (string, string),
+	resolveModel func(context.Context, resolver.Reference) (*resolver.Resolved, error),
 	proxyToRemoteNode func(*gin.Context, string, string, []byte),
 	getNodename func() string,
 	isLocalNode func(string) bool,
@@ -84,7 +85,7 @@ func NewOllamaService(
 ) OllamaService {
 	return &OllamaServiceImpl{
 		ollamaDaemon:          ollamaDaemon,
-		getRemoteModelInfo:    getRemoteModelInfo,
+		resolveModel:          resolveModel,
 		proxyToRemoteNode:     proxyToRemoteNode,
 		getNodename:           getNodename,
 		isLocalNode:           isLocalNode,
@@ -318,8 +319,12 @@ func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, m
 			return newProblemError(http.StatusBadRequest, "Bad Request", "model name is required")
 		}
 
-		// Check cache for remote model
-		if host, provider := s.getRemoteModelInfo(modelName, c.GetHeader("X-Node")); host != "" {
+		// Management commands share direct model selection with inference.
+		resolved, err := s.resolveModel(c.Request.Context(), resolver.Reference{Model: modelName, Node: c.GetHeader("X-Node")})
+		if err != nil {
+			return err
+		}
+		if host, provider := resolved.Node, resolved.Provider; host != "" {
 			slog.Info("Ollama routing: model on remote node", "endpoint", endpoint, "model_name", modelName, "node", host)
 			s.proxyToRemoteNode(c, host, provider, body)
 			return nil

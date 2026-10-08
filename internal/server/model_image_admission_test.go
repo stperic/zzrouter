@@ -39,7 +39,7 @@ func imageAdmissionNode(t *testing.T, state string) (*Server, *atomic.Int32) {
 		return map[string]any{"features": map[string]string{"vision": state}}
 	}})
 	require.NoError(t, s.model.Cache.RefreshCacheSync(context.Background()))
-	s.model.Resolver = resolver.NewDefault(func(string, ...string) (string, string) { return "", "ollama" })
+	s.model.Resolver = staticModelResolver{provider: "ollama"}
 	return s, calls
 }
 

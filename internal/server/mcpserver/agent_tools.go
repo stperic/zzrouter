@@ -135,6 +135,7 @@ type patchInput struct {
 	RestartAffected bool           `json:"restart_affected,omitempty" jsonschema:"Restart runs made stale by this patch. Follow any returned runs.restart_job_id with zz_job."`
 }
 type chatInput struct {
+	Node      string `json:"node,omitempty" jsonschema:"Optional serving node name. Addresses the model as name@node."`
 	Model     string `json:"model" jsonschema:"Model name to smoke test through the coordinator."`
 	Message   string `json:"message" jsonschema:"One short user message."`
 	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum reply tokens. Default 64, capped at 256."`
@@ -166,7 +167,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	write := &mcp.ToolAnnotations{DestructiveHint: new(bool)}
 	destructive := &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_nodes", Description: "Find node names or inspect one node. Returns roles, health, providers and hardware; use a node name in model and run tools.", Annotations: read}, []string{"listNodes", "getNode"}, dispatcher.nodes)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_models", Description: "Find models already available on a node or provider. Returns compact model names, formats and sizes; select one for zz_run_preview.", Annotations: read}, []string{"listModels"}, dispatcher.models)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_models", Description: "Find models already available on a node or provider. The model filter is case-insensitive: exact name, suffix after /, or a glob such as *qwen2.5*. Returns compact model names, formats and sizes; select one for zz_run_preview.", Annotations: read}, []string{"listModels"}, dispatcher.models)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel with zz_job_cancel and deployment_id.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
@@ -175,7 +176,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Start a downloaded model with an enabled native provider after zz_run_preview. Use the exact local model name from zz_models; returns run_id, job_id and node, then follow with zz_job and smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run with its saved request overrides. Returns a new run_id and job_id; follow with zz_job and use the new run_id afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run and interrupt its inference. Returns stopped status; check zz_runs afterward if needed.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. A bare name works when one node holds it; otherwise pass node. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, with follow forced off. Without run_id, returns available run-log file metadata, not server log text; choose an instance_id and call again with run_id.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
@@ -453,6 +454,9 @@ func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, erro
 }
 
 func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error) {
+	if in.Node != "" {
+		in.Model += "@" + in.Node
+	}
 	if in.MaxTokens == 0 {
 		in.MaxTokens = DefaultChatTokens
 	}

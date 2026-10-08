@@ -18,6 +18,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
@@ -48,7 +49,7 @@ import (
 // recorder, never the dispatch decision.
 func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName, endpointType string) error {
 	// Extract @node hint from the model string. Header X-Node still wins.
-	modelName, body, nodeHint := s.stripNodeHint(c, modelName, body)
+	nodeHint := c.GetHeader("X-Node")
 
 	// Create and stash an inference recorder up front so downstream proxies
 	// and the fallback proxy can attach provider/routing/usage metadata.
@@ -66,13 +67,12 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), modelName, nodeHint)
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
 	if err != nil {
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend,
 			"", string(genai.OperationName(c.FullPath())))
-		return newProblemError(http.StatusNotFound, "Not Found",
-			fmt.Sprintf("model %q not found", modelName))
+		return err
 	}
 
 	// Enforce the /api/* Ollama-provider-scope invariant.
@@ -104,6 +104,7 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 	if !s.admitResolvedModels(c, resolved, nodeHint) || !s.admitImages(c, modelName, body, resolved) {
 		return nil
 	}
+	body = s.resolvedRequestBody(c, resolved, modelName, body)
 	// The Ollama surface never set this, so /api/* answered with no node at
 	// all. Group dispatch returns above and is attributed by CommitWithRouting.
 	s.attributeServingNode(c, resolved)

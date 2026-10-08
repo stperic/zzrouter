@@ -330,7 +330,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	}
 
 	// Initialize model resolver (default uses cache-based resolution)
-	defaultResolver := resolver.NewDefault(s.getRemoteModelInfo)
+	defaultResolver := resolver.NewDefault(resolver.DefaultConfig{Replicas: func(ctx context.Context, name, provider, node string) ([]*cache.CachedModel, error) {
+		return s.model.Cache.LookupReplicas(ctx, name, provider, node)
+	}, Parse: s.splitModelRef, Nodename: s.node.Nodename, IsLocalNode: s.node.IsLocalNode, CanRoute: s.IsCoordinator})
 	s.model.Resolver = defaultResolver
 
 	// Load model groups and virtual keys from their respective config files.

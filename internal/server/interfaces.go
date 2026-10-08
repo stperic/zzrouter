@@ -8,6 +8,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -18,10 +19,7 @@ type ModelCacheProvider interface {
 	ListModels(ctx context.Context, host, repo, app, model string) ([]*cache.CachedModel, error)
 	Invalidate()
 	RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error)
-	// TargetNodeForModel names the node RouteToModelOrBroadcast would
-	// unicast to, so a caller can resolve config for that node before
-	// handing the body over. Empty means the request fans out.
-	TargetNodeForModel(modelName string) string
+	ResolveModel(ctx context.Context, modelName, nodeHint string) (*resolver.Resolved, error)
 	IsLocalNode(host string) bool
 }
 

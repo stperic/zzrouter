@@ -30,14 +30,15 @@ func NewGroup(groupStore *group.GroupStore, fallback Resolver) *Group {
 //  1. If nodeHint is provided, delegate to fallback (explicit node pin).
 //  2. Check groupStore for modelName. If found, return the highest-priority replica.
 //  3. If not found, delegate to fallback (direct-model path).
-func (r *Group) Resolve(ctx context.Context, modelName string, nodeHint string) (*Resolved, error) {
-	if nodeHint != "" {
-		return r.fallback.Resolve(ctx, modelName, nodeHint)
+func (r *Group) Resolve(ctx context.Context, ref Reference) (*Resolved, error) {
+	modelName := ref.Model
+	if ref.Node != "" {
+		return r.fallback.Resolve(ctx, ref)
 	}
 
 	group := r.groupStore.Get(modelName)
 	if group == nil {
-		return r.fallback.Resolve(ctx, modelName, nodeHint)
+		return r.fallback.Resolve(ctx, ref)
 	}
 
 	rep := group.Replicas[0]

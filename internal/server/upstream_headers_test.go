@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -195,4 +196,22 @@ func TestParamsHealthProbe_SendsTheDeclaredCredential(t *testing.T) {
 	e := &ParamsExecutor{httpClient: daemon.Client()}
 	assert.True(t, e.checkHealth(t.Context(), cfg))
 	assert.True(t, e.waitForHealth(t.Context(), cfg, time.Second))
+}
+
+func TestPublicEntryDropsCoordinatorProviderHint(t *testing.T) {
+	engine := gin.New()
+	engine.Use(dropCoordinatorHeaders())
+	engine.POST("/v1/chat/completions", func(c *gin.Context) {
+		require.Empty(t, c.GetHeader(constants.HeaderServingProvider))
+		require.Empty(t, c.GetHeader(constants.HeaderServingNode))
+		require.Equal(t, "worker", c.GetHeader("X-Node"), "client node pins remain supported")
+		c.Status(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set(constants.HeaderServingProvider, "paid")
+	req.Header.Set(constants.HeaderServingNode, "injected")
+	req.Header.Set("X-Node", "worker")
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, req)
+	require.Equal(t, http.StatusNoContent, response.Code)
 }

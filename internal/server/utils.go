@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
@@ -233,38 +232,24 @@ func parseModelIdentifier(input string) (*modelregistry.Identifier, error) {
 // knows and the optional @node routing hint the caller decorated it with.
 // Uses AppsConfig so cloud model IDs (which reuse @ and : with different
 // semantics) stay opaque.
-func (s *Server) splitModelRef(modelName string) (identity, node string) {
+func (s *Server) splitModelRef(modelName string) (identity, provider, node string) {
 	id, err := modelregistry.Parse(modelName, modelregistry.ParseOpts{Config: s.appsConfig})
 	if err != nil || id == nil {
-		return modelName, ""
+		return modelName, "", ""
 	}
 	identity = id.GetFullModelName()
 	if identity == "" {
 		identity = modelName
 	}
-	return identity, id.Node
+	return identity, id.ProviderKey, id.Node
 }
 
 // modelIdentity is the control.ModelIdentity the access layer enforces on:
 // it drops the @node decoration the catalog publishes so an allow list
 // populated from /v1/models matches what the dispatcher asks about.
 func (s *Server) modelIdentity(modelName string) string {
-	identity, _ := s.splitModelRef(modelName)
+	identity, _, _ := s.splitModelRef(modelName)
 	return identity
-}
-
-// parseInferenceModel extracts an optional @node hint from the request's model
-// string and returns the clean model name the resolver should use. The explicit
-// X-Node header still wins over an embedded @node — body metadata is the
-// fallback, not an override.
-func (s *Server) parseInferenceModel(c *gin.Context, modelName string) (cleanModel, nodeHint string) {
-	cleanModel, embedded := s.splitModelRef(modelName)
-
-	nodeHint = c.GetHeader("X-Node")
-	if nodeHint == "" {
-		nodeHint = embedded
-	}
-	return cleanModel, nodeHint
 }
 
 // streamResponseWithFlush streams response body with immediate flushing for real-time updates

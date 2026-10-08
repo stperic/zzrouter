@@ -13,6 +13,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -485,17 +486,38 @@ func (s *ModelService) handleSaveModelDefaults(c *gin.Context) {
 func (s *ModelService) handleGetModelInstance(c *gin.Context) {
 	modelName := strings.TrimPrefix(c.Param("model"), "/")
 
-	inst, found := s.instanceProvider.GetInstanceByModel(modelName)
-	if !found {
-		NotFound(c, fmt.Sprintf("model '%s' not loaded", modelName))
+	resolved, err := s.cache.ResolveModel(c.Request.Context(), modelName, c.GetHeader("X-Node"))
+	if err != nil {
+		RespondToError(c, err)
 		return
 	}
-
-	respondSuccess(c, "Model instance retrieved", gin.H{
-		"model":    modelName,
-		"instance": inst.ID,
-		"port":     inst.Port,
-		"status":   string(inst.GetStatus()),
-		"provider": inst.Provider,
-	})
+	var runs struct {
+		Instances []instance.InstanceInfo `json:"instances"`
+	}
+	if resolved.IsRemote() {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), constants.ClusterQueryTimeout)
+		defer cancel()
+		resp, err := s.router.Unicast(ctx, resolved.Node, "/zzrouter/v1/internal/runs", http.MethodGet, nil)
+		if err != nil {
+			RespondToError(c, newRoutedTransportError(err, resolved.Node))
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			RespondToError(c, parseRoutedError(resp.StatusCode, resp.Body))
+			return
+		}
+		if err := json.Unmarshal(resp.Body, &runs); err != nil {
+			BadGateway(c, "node returned an invalid run inventory")
+			return
+		}
+	} else if inst, found := s.instanceProvider.GetInstanceByModel(resolved.ModelName); found {
+		runs.Instances = []instance.InstanceInfo{inst.ToInfo("")}
+	}
+	for _, run := range runs.Instances {
+		if strings.EqualFold(run.Model, resolved.ModelName) && (resolved.Provider == "" || strings.EqualFold(run.Provider, resolved.Provider)) && (!resolved.IsRemote() || !run.Status.IsTerminal()) {
+			respondSuccess(c, "Model instance retrieved", gin.H{"model": modelName, "instance": run.ID, "port": run.Port, "status": string(run.Status), "provider": run.Provider})
+			return
+		}
+	}
+	NotFound(c, fmt.Sprintf("model %q not loaded on the selected node; inspect GET /zzrouter/v1/runs", modelName))
 }

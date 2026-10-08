@@ -264,7 +264,7 @@ func (h *OllamaHandlers) handleOllamaShow(c *gin.Context) {
 // name and an optional @node routing hint. Used by /api/show + the
 // management verbs so callers can target a specific cluster node
 // (matches the model@node grammar /api/ps emits and the dispatch
-// path consumes via parseInferenceModel). Empty hint = use existing
+// path consumes via the model resolver). Empty hint = use existing
 // resolution logic.
 func splitOllamaAddr(raw string) (name, node string) {
 	at := strings.LastIndex(raw, "@")

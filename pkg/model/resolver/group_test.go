@@ -16,9 +16,9 @@ type recordingResolver struct {
 	ret          *Resolved
 }
 
-func (r *recordingResolver) Resolve(_ context.Context, modelName, nodeHint string) (*Resolved, error) {
-	r.lastModel = modelName
-	r.lastNodeHint = nodeHint
+func (r *recordingResolver) Resolve(_ context.Context, ref Reference) (*Resolved, error) {
+	r.lastModel = ref.Model
+	r.lastNodeHint = ref.Node
 	return r.ret, nil
 }
 
@@ -33,7 +33,7 @@ func TestGroup_Resolve_NodeHintSkipsGroup(t *testing.T) {
 	inner := &recordingResolver{ret: &Resolved{OriginalName: "fast-chat", ModelName: "fast-chat", Node: "override"}}
 	r := NewGroup(store, inner)
 
-	got, err := r.Resolve(context.Background(), "fast-chat", "override-node")
+	got, err := r.Resolve(context.Background(), Reference{Model: "fast-chat", Node: "override-node"})
 	assert.NoError(t, err)
 	assert.Equal(t, "override", got.Node)
 	assert.Equal(t, "fast-chat", inner.lastModel)
@@ -57,7 +57,7 @@ func TestGroup_Resolve_GroupHit(t *testing.T) {
 	inner := &recordingResolver{ret: nil}
 	r := NewGroup(store, inner)
 
-	got, err := r.Resolve(context.Background(), "fast-chat", "")
+	got, err := r.Resolve(context.Background(), Reference{Model: "fast-chat"})
 	assert.NoError(t, err)
 	assert.Equal(t, "fast-chat", got.OriginalName)
 	assert.Equal(t, "llama3-8b", got.ModelName, "highest-priority (lowest number) replica wins")
@@ -76,7 +76,7 @@ func TestGroup_Resolve_Miss_DelegatesToFallback(t *testing.T) {
 	inner := &recordingResolver{ret: &Resolved{OriginalName: "direct-model", ModelName: "direct-model", Provider: "ollama"}}
 	r := NewGroup(store, inner)
 
-	got, err := r.Resolve(context.Background(), "direct-model", "")
+	got, err := r.Resolve(context.Background(), Reference{Model: "direct-model"})
 	assert.NoError(t, err)
 	assert.Equal(t, "direct-model", inner.lastModel)
 	assert.Equal(t, "", inner.lastNodeHint)

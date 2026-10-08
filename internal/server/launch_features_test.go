@@ -38,11 +38,11 @@ func TestResolvedModelFeatureProvenanceAndPreview(t *testing.T) {
 	assert.Equal(t, "feature:vision", out.Parameters["mmproj"].Tier)
 	assert.Equal(t, "manifest-digest", out.Parameters["mmproj"].SHA256)
 	assert.Equal(t, filepath.Join(dir, "mmproj-F16.gguf"), out.Parameters["mmproj"].Value)
-	preview, err := s.resolveForLaunch("vendor/model", "llamacpp", "chat", nil, nil)
+	preview, err := launchParameters(t, s, "vendor/model", "llamacpp", "chat", nil, nil)
 	require.NoError(t, err)
-	assert.Equal(t, "feature:vision", preview.ParamSources["mmproj"])
+	assert.Equal(t, "feature:vision", preview.Sources["mmproj"])
 	assert.Equal(t, filepath.Join(dir, "mmproj-F16.gguf"), preview.Params["mmproj"])
-	suppressed, err := s.resolveForLaunch("vendor/model", "llamacpp", "chat", map[string]string{"mmproj": "auto"}, nil)
+	suppressed, err := launchParameters(t, s, "vendor/model", "llamacpp", "chat", map[string]string{"mmproj": "auto"}, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, suppressed.Params, "mmproj")
 }
@@ -82,4 +82,16 @@ func (r *featureResolvedRouter) Route(ctx context.Context, req *routing.Request)
 	response := httptest.NewRecorder()
 	r.worker.ServeHTTP(response, httptest.NewRequestWithContext(ctx, req.Method, req.Path, nil))
 	return &routing.Response{StatusCode: response.Code, Body: response.Body.Bytes(), Headers: response.Header()}, nil
+}
+
+func TestRunPreviewRendersLaunchCommand(t *testing.T) {
+	s := variantNode(t)
+	defineVariants(t, s)
+	response, err := s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent, Parameters: map[string]string{"ctx-size": "65536"}})
+	require.NoError(t, err)
+	require.NotContains(t, response.FullCommand, "${MODEL_PATH}")
+	require.NotContains(t, response.FullCommand, "${PORT}")
+	require.Contains(t, response.FullCommand, qwenModel+".gguf")
+	require.Contains(t, response.FullCommand, "--ctx-size 65536")
+	require.Contains(t, response.FullCommand, response.Parameters["ctx-size"])
 }

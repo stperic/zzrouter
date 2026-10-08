@@ -25,7 +25,20 @@ Codex: add this to `~/.codex/config.toml` (or your project configuration):
 url = "http://<coordinator>:9090/zzrouter/v1/mcp"
 env_http_headers = { "X-API-Key" = "ZZROUTER_ADMIN_API_KEY" }
 tool_timeout_sec = 60
+default_tools_approval_mode = "approve"
 ```
+
+Non-interactive `codex exec` rejects tools not marked read-only unless
+`default_tools_approval_mode = "approve"`. For interactive sessions use
+`"writes"`, which prompts only for non-read-only tools. A per-tool override:
+
+```toml
+[mcp_servers.zzrouter.tools.zz_update_apply]
+approval_mode = "prompt"
+```
+
+These policies control client approval; the server still enforces your API key.
+See the [Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
 `env_http_headers` maps header names to environment variable names. See the
 [Codex MCP configuration](https://developers.openai.com/codex/mcp) for these
@@ -79,7 +92,8 @@ cancels by `job_id`. After launch succeeds, use `zz_chat` for one short smoke
 test and `zz_run_stop` to stop the run.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
-returns methods, paths, operation IDs, summaries and parameter names.
+returns methods, paths, operation IDs, summaries and each parameter's name, location
+and required flag.
 `zz_api_get` reads a GET route; `zz_api` handles other methods and carries a
 destructive hint. Both refuse internal, MCP, streaming, retired and unmounted
 routes and require literal paths without URL encoding or traversal. Put query
