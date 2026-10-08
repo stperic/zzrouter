@@ -1,11 +1,14 @@
 # Cluster protocol compatibility
 
-The current cluster protocol is **7**, with minimum **7**. Coordinators accept
-peers only within the compiled minimum/maximum window. Workers advertise their
-version. Application semantic versions and cluster protocol versions are separate.
+The current cluster protocol and its minimum are defined once, in
+[protocol.go](../pkg/version/protocol.go); a node reports them as
+`cluster_protocol` and `min_cluster_protocol` in `zzrouter-node version --json`.
+Coordinators accept peers only within that minimum/maximum window. Workers
+advertise their version. Application semantic versions and cluster protocol
+versions are separate.
 
-Typed provider install recipes require protocol 7. Model features also require
-a compatible provider configuration on every node. Upgrade incompatible peers
+Model features and typed provider install recipes require a compatible
+provider configuration on every node. Upgrade incompatible peers
 in one maintenance window before rejoining them.
 
 ## Contributor policy

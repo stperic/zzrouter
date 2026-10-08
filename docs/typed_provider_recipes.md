@@ -1,4 +1,4 @@
-# Managed Python recipe repair (protocol 7)
+# Managed Python recipe repair
 
 `install.runtimes` is release-owned base data in a provider's `config.yaml`.
 `defaults.install` and `nodes.<name>.install` are JSON merge-patch overlays on

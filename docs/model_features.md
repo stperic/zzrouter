@@ -114,6 +114,6 @@ in-band; translated Responses emits `response.failed`, with no success event.
 
 ## Cluster compatibility
 
-Use protocol 7 nodes throughout the cluster. Provider feature declarations
+Use nodes with the same cluster protocol throughout the cluster. Provider feature declarations
 require compatible configuration on every launching node. Follow the
 [protocol maintenance procedure](protocol_versioning.md) for incompatible upgrades.

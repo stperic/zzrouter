@@ -155,11 +155,15 @@ func (f *updateWireClient) Unicast(ctx context.Context, _ string, path string, p
 	return &mesh.Response{StatusCode: out.Code, Body: out.Body.Bytes()}, nil
 }
 func TestUpdateWireVersionOnlyAndUnsupportedPeer(t *testing.T) {
-	for _, protocol := range []int{5, 6} {
-		t.Run(strconv.Itoa(protocol), func(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		t.Run(strconv.FormatBool(supported), func(t *testing.T) {
+			var capabilities []string
+			if supported {
+				capabilities = []string{version.CapabilityClusterUpdates}
+			}
 			engine := gin.New()
 			engine.GET("/zzrouter/v1/internal/version", func(c *gin.Context) {
-				c.JSON(200, version.VersionInfo{ClusterProtocol: protocol, Capabilities: []string{version.CapabilityClusterUpdates}})
+				c.JSON(200, version.VersionInfo{ClusterProtocol: version.ClusterProtocolVersion, Capabilities: capabilities})
 			})
 			engine.POST("/zzrouter/v1/internal/update/apply", func(c *gin.Context) {
 				var body map[string]any
@@ -172,8 +176,8 @@ func TestUpdateWireVersionOnlyAndUnsupportedPeer(t *testing.T) {
 				OperationID string `json:"operation_id"`
 			}
 			err := queryUpdateNode(context.Background(), client, "worker", "/update/apply", http.MethodPost, []byte(`{"version":"2.0.0-lab.1"}`), &result)
-			if protocol == 5 {
-				require.ErrorContains(t, err, "protocol 6")
+			if !supported {
+				require.ErrorContains(t, err, "does not support cluster updates")
 				require.Len(t, client.requests, 1)
 			} else {
 				require.NoError(t, err)
