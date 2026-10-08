@@ -122,9 +122,9 @@ func TestBuildVariantsResponse_GroupsShardsAndFeatures(t *testing.T) {
 func TestHumanizeBytes(t *testing.T) {
 	cases := map[int64]string{
 		512:                    "512 B",
-		2048:                   "2.0 KB",
-		5 * 1024 * 1024:        "5.0 MB",
-		3 * 1024 * 1024 * 1024: "3.0 GB",
+		2048:                   "2.0 KiB",
+		5 * 1024 * 1024:        "5.0 MiB",
+		3 * 1024 * 1024 * 1024: "3.0 GiB",
 	}
 	for n, want := range cases {
 		assert.Equal(t, want, humanizeBytes(n))

@@ -11064,10 +11064,10 @@ components:
           minimum: 0
         memory:
           type: object
-          description: RAM summary populated when the worker reported resources on last probe.
+          description: RAM summary populated when the worker reported resources on last probe. Every `*_gb` value on a node (memory, GPU, disk) is GiB, 1024^3 bytes.
           properties:
-            total_gb:     { type: number }
-            available_gb: { type: number }
+            total_gb:     { type: number, description: GiB }
+            available_gb: { type: number, description: GiB }
             used_percent: { type: number }
         metadata:
           type: object
