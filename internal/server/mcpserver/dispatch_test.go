@@ -205,7 +205,8 @@ func TestOverviewCompactProviders(t *testing.T) {
 	require.Equal(t, "down", out.Nodes[1].Health)
 	require.Equal(t, []string{"ollama", "vllm"}, out.EnabledProviders)
 	require.Equal(t, []string{"vllm"}, out.Nodes[0].EnabledProviders)
-	require.Equal(t, []string{"GET /zzrouter/v1/models", "POST /zzrouter/v1/mcp"}, out.Endpoints)
+	require.Equal(t, 2, out.EndpointCount)
+	require.Equal(t, "/openapi.yaml", out.OpenAPI)
 }
 
 func TestJobInFlightWaitBound(t *testing.T) {

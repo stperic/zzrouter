@@ -56,15 +56,24 @@ type request struct {
 	path                                         requestPath
 	query                                        url.Values
 	body                                         []byte
+	jsonBody                                     any
+	omit                                         []string
 }
 
 func (d dispatcher) call(ctx context.Context, input request, out any) error {
+	if input.jsonBody != nil {
+		body, err := jsonBody(input.jsonBody, input.omit...)
+		if err != nil {
+			return fmt.Errorf("encode tool input: %w", err)
+		}
+		input.body = body
+	}
 	req, err := http.NewRequestWithContext(ctx, input.method, input.path.value, bytes.NewReader(input.body))
 	if err != nil {
 		return fmt.Errorf("build REST request: %w", err)
 	}
 	req.URL.RawQuery = input.query.Encode()
-	if d.cfg.Streaming(input.method, req.URL.Path) != "" {
+	if d.cfg.Streaming(input.method, req.URL.Path) != "" && (d.cfg.SnapshotAllowed == nil || !d.cfg.SnapshotAllowed(req)) {
 		return fmt.Errorf("streaming route %s is unavailable to tools; use a snapshot endpoint", req.URL.Path)
 	}
 	// A fresh cancellable context strips every outer value, including auth markers.

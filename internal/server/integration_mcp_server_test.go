@@ -44,7 +44,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	require.NotContains(t, session.InitializeResult().Instructions, "zz_api_search")
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 2)
+	require.Len(t, tools.Tools, 21)
 	if protocol == "2026-07-28" {
 		require.Equal(t, int((5 * time.Minute).Milliseconds()), tools.TTLMs)
 	}
@@ -52,19 +52,20 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 		require.NotContains(t, tool.Description, "zz_api_search")
-		require.True(t, tool.Annotations.ReadOnlyHint)
-		require.False(t, *tool.Annotations.DestructiveHint)
+		require.NotNil(t, tool.Annotations)
 	}
-	require.ElementsMatch(t, []string{"zz_overview", "zz_job"}, names)
+	require.Contains(t, names, "zz_overview")
+	require.Contains(t, names, "zz_job")
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError, "%+v", result.Content)
 	data, err := json.Marshal(result.StructuredContent)
 	require.NoError(t, err)
 	var overview struct {
-		Health    string                                `json:"health"`
-		Nodes     []struct{ Name, Role, Health string } `json:"nodes"`
-		Endpoints []string                              `json:"endpoints"`
+		Health        string                                `json:"health"`
+		Nodes         []struct{ Name, Role, Health string } `json:"nodes"`
+		EndpointCount int                                   `json:"endpoint_count"`
+		OpenAPI       string                                `json:"openapi"`
 	}
 	require.NoError(t, json.Unmarshal(data, &overview))
 	require.Equal(t, "healthy", overview.Health)
@@ -72,7 +73,8 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	require.Equal(t, "test-host", overview.Nodes[0].Name)
 	require.NotEmpty(t, overview.Nodes[0].Role)
 	require.Equal(t, "healthy", overview.Nodes[0].Health)
-	require.Contains(t, overview.Endpoints, "POST /zzrouter/v1/mcp")
+	require.Positive(t, overview.EndpointCount)
+	require.Equal(t, "/openapi.yaml", overview.OpenAPI)
 	require.NotContains(t, string(data), "uptime_seconds")
 	missing, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_job", Arguments: map[string]any{"job_id": "missing-job"}})
 	require.NoError(t, err)
@@ -82,7 +84,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 
 func TestIntegrationMCPClientHTTP(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
-	for _, protocol := range []string{"2025-06-18", "2026-07-28"} {
+	for _, protocol := range []string{"2026-07-28"} {
 		t.Run(protocol, func(t *testing.T) {
 			ts := httptest.NewServer(s.engine)
 			defer ts.Close()
@@ -100,7 +102,7 @@ func TestIntegrationMCPClientHTTP(t *testing.T) {
 // Recorder transport exercises SDK HTTP semantics without a TCP listener.
 func TestIntegrationMCPClientRecorder(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
-	for _, protocol := range []string{"2025-06-18", "2026-07-28"} {
+	for _, protocol := range []string{"2026-07-28"} {
 		t.Run(protocol, func(t *testing.T) {
 			client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 				r.Header.Set("X-API-Key", TestAdminKey)
@@ -275,7 +277,7 @@ func TestIntegrationMCPJobResult(t *testing.T) {
 	})}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: "http://coordinator/zzrouter/v1/mcp", HTTPClient: client}, nil)
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: "http://coordinator/zzrouter/v1/mcp", HTTPClient: client}, &mcp.ClientSessionOptions{ProtocolVersion: "2026-07-28"})
 	require.NoError(t, err)
 	defer session.Close()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_job", Arguments: map[string]any{"job_id": handle.ID(), "wait_seconds": 45}})

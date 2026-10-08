@@ -38,7 +38,8 @@ type overviewOutput struct {
 	Health           string        `json:"health"`
 	Nodes            []nodeSummary `json:"nodes"`
 	EnabledProviders []string      `json:"enabled_providers"`
-	Endpoints        []string      `json:"endpoints"`
+	EndpointCount    int           `json:"endpoint_count"`
+	OpenAPI          string        `json:"openapi"`
 }
 type jobInput struct {
 	JobID       string `json:"job_id" jsonschema:"Job id returned by an operation. Follow it until state is done or failed."`
@@ -66,7 +67,8 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 	if s == nil {
 		return
 	}
-	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+	tool.InputSchema = objectSchema[In]{}
+	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		var out Out
 		d, err := newDispatcher(ctx, cfg)
 		if err == nil {
@@ -82,8 +84,9 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	bindings := map[string][]string{}
 	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", Description: "Start here: read cluster node names, roles, health, enabled providers and REST endpoints. Use node names as selectors and zz_job to follow jobs.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Read a job's state, progress and result or error. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"getJob"}, dispatcher.job)
+	registerAgentTools(s, cfg, bindings)
 	return bindings
 }
 
@@ -117,7 +120,7 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 			return overviewOutput{}, err
 		}
 	}
-	out := overviewOutput{Health: health.Data.Status, Nodes: []nodeSummary{}, EnabledProviders: []string{}, Endpoints: []string{}}
+	out := overviewOutput{Health: health.Data.Status, Nodes: []nodeSummary{}, EnabledProviders: []string{}, OpenAPI: "/openapi.yaml"}
 	providers := map[string]bool{}
 	for _, n := range nodes.Data {
 		summary := nodeSummary{Name: n.Name, Role: n.Role, Health: n.Health, EnabledProviders: []string{}}
@@ -136,10 +139,9 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 		out.EnabledProviders = append(out.EnabledProviders, name)
 	}
 	for _, endpoints := range discovery.Data.EndpointGroups {
-		out.Endpoints = append(out.Endpoints, endpoints...)
+		out.EndpointCount += len(endpoints)
 	}
 	sort.Strings(out.EnabledProviders)
-	sort.Strings(out.Endpoints)
 	return out, nil
 }
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -100,6 +101,9 @@ func authTierForPath(p string) string {
 
 func streamingForPath(method, p string) string { //nolint:unparam // Keep method and path together at catalog call sites; streaming depends on path.
 	switch p {
+	// Server-log inventory returns JSON; the /logs suffix rule would misclassify it.
+	case "/zzrouter/v1/server/logs":
+		return ""
 	case "/v1/chat/completions", "/v1/completions",
 		"/api/chat", "/api/generate", "/api/pull":
 		return "sse"
@@ -117,6 +121,26 @@ func streamingForPath(method, p string) string { //nolint:unparam // Keep method
 		return "sse"
 	}
 	return ""
+}
+
+// snapshotAllowed admits only explicit snapshot modes on catalogued streaming routes.
+func snapshotAllowed(r *http.Request) bool {
+	segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.Method == http.MethodGet && len(segments) == 5 && segments[0] == "zzrouter" && segments[1] == "v1" && segments[2] == "runs" && segments[4] == "logs" {
+		return r.URL.Query().Get("follow") == "false"
+	}
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" || r.GetBody == nil {
+		return false
+	}
+	body, err := r.GetBody()
+	if err != nil {
+		return false
+	}
+	defer body.Close()
+	var mode struct {
+		Stream *bool `json:"stream"`
+	}
+	return json.NewDecoder(body).Decode(&mode) == nil && mode.Stream != nil && !*mode.Stream
 }
 
 // asyncRoutes lists the method + path pairs (relative to /zzrouter/v1)

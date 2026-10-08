@@ -28,4 +28,5 @@ func TestStreamingForPathClassifiesSSERoutes(t *testing.T) {
 	// explicitly instead of matched on the suffix.
 	assert.Empty(t, streamingForPath(http.MethodGet, "/v1/fine_tuning/jobs/:job_id/events"))
 	assert.Empty(t, streamingForPath(http.MethodGet, "/zzrouter/v1/providers"))
+	assert.Empty(t, streamingForPath(http.MethodGet, "/zzrouter/v1/server/logs"), "server-log inventory is JSON")
 }

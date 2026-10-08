@@ -18,13 +18,14 @@ const MaxRequestBytes = 1 << 20
 // toolsListTTL keeps the binary's fixed tool declarations fresh for five minutes.
 const toolsListTTL = 5 * time.Minute
 
-const instructions = "zzRouter manages providers and models across a cluster. Connect to the coordinator; workers are reached through it. A node selector is a node name, never an address. Use zz_overview to learn nodes, health, enabled providers and endpoints. Use zz_job with a returned job_id to follow work; wait_seconds defaults to 0 and cannot exceed 45. REST remains the full API contract. For operations beyond these two tools, consult the discovery endpoints or /openapi.yaml."
+const instructions = "zzRouter manages providers and models across a cluster. Connect to the coordinator; workers are reached through it. A node selector is a node name, never an address. Start with zz_overview, then zz_nodes, zz_models or zz_providers. Find models with zz_model_search and place them with zz_model_download. Preview with zz_run_preview before zz_run_start; inspect zz_runs, zz_logs or zz_params_get to diagnose, and use zz_params_set to tune. zz_chat is a small smoke test. Follow returned job_id values with zz_job; wait_seconds defaults to 0 and cannot exceed 45. Downloads return deployment_id plus per-node job ids; zz_job_cancel takes deployment_id to cancel a download. Reuse idempotency_key when retrying start tools. Use zz_run_restart to relaunch and zz_run_stop to stop. Read zz_update_status, refresh with zz_update_check, then use zz_update_apply to apply. REST remains the full API contract at /openapi.yaml."
 
 // Config supplies the engine and its existing credential and route rules.
 type Config struct {
-	Engine     http.Handler
-	KeyHeaders []string
-	Streaming  func(method, path string) string
+	Engine          http.Handler
+	KeyHeaders      []string
+	Streaming       func(method, path string) string
+	SnapshotAllowed func(*http.Request) bool
 }
 
 type contextKey uint8
