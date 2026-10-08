@@ -6,11 +6,13 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/protocol/anthropic"
 )
 
 // messagesEndpoint is the wire_endpoints value of a provider that serves
@@ -70,13 +72,23 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 // speaks it, translated as tr says to one that speaks only Chat
 // Completions. A native body is never prepared the way Chat's is: an
 // Anthropic body has no stream_options, and the engine reports usage
-// unasked.
+// unasked. Either way the engine sees context turns folded into user
+// turns, here and only here.
 func (s *Server) routeMessages(c *gin.Context, model string, body []byte, tr messagesTranslation, admit func(model string) (release func(), ok bool)) {
 	nodeHint := c.GetHeader("X-Node")
 	release, ok := admit(model)
 	defer release()
 	if !ok {
 		return
+	}
+	folded, err := anthropic.FoldContextTurns(body)
+	if err != nil {
+		refuseMessagesBody(c, err)
+		return
+	}
+	if !bytes.Equal(folded, body) {
+		body = folded
+		replaceRequestBody(c, body)
 	}
 	resolved, ok := s.resolveTarget(c, model, nodeHint)
 	if !ok {

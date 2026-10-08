@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -44,11 +45,7 @@ var (
 func (s *Server) dispatchTranslated(c *gin.Context, resolved *resolver.Resolved, model string, body []byte, tr messagesTranslation) {
 	chat, err := tr.request(body)
 	if err != nil {
-		param := ""
-		if terr, ok := err.(*anthropic.TranslateError); ok {
-			param = terr.Param
-		}
-		httperr.FromContext(c).BadRequest(c, err.Error(), param)
+		refuseMessagesBody(c, err)
 		return
 	}
 
@@ -204,4 +201,15 @@ func (f flushingWriter) Write(p []byte) (int, error) {
 	n, err := f.w.Write(p)
 	f.w.Flush()
 	return n, err
+}
+
+// refuseMessagesBody answers a body zzRouter cannot read or translate as a
+// 400 in the client's dialect, naming the offending field when known.
+func refuseMessagesBody(c *gin.Context, err error) {
+	param := ""
+	var terr *anthropic.TranslateError
+	if errors.As(err, &terr) {
+		param = terr.Param
+	}
+	httperr.FromContext(c).BadRequest(c, err.Error(), param)
 }
