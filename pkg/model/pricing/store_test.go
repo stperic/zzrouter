@@ -237,6 +237,8 @@ func TestStoreStartAndShutdown(t *testing.T) {
 	defer cancel()
 
 	store.Start(ctx)
+	// The loop writes the cache into TempDir; it must exit before cleanup.
+	defer store.Stop()
 
 	// Start is non-blocking; wait for the background refresh to populate.
 	require.Eventually(t, func() bool {
@@ -263,6 +265,7 @@ func TestRefreshTickerFiresPeriodically(t *testing.T) {
 	defer cancel()
 
 	store.Start(ctx)
+	defer store.Stop()
 
 	// Wait for 3 hits: initial fetch + 2 ticker ticks.
 	for i := 0; i < 3; i++ {
