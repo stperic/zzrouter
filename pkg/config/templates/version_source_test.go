@@ -72,7 +72,7 @@ func TestReconcileContinuesPastAnUnreconcilableFile(t *testing.T) {
 		filepath.Join("external", "ollama", "config.yaml"),
 	} {
 		p := filepath.Join(dir, rel)
-		data, err := os.ReadFile(p) //nolint:gosec // test-owned temp path
+		data, err := os.ReadFile(p)
 		require.NoError(t, err)
 		var doc map[string]any
 		require.NoError(t, yaml.Unmarshal(data, &doc))
@@ -89,7 +89,7 @@ func TestReconcileContinuesPastAnUnreconcilableFile(t *testing.T) {
 		filepath.Join("on-demand", "llamacpp", "config.yaml"),
 		filepath.Join("external", "ollama", "config.yaml"),
 	} {
-		data, readErr := os.ReadFile(filepath.Join(dir, rel)) //nolint:gosec // test-owned temp path
+		data, readErr := os.ReadFile(filepath.Join(dir, rel))
 		require.NoError(t, readErr)
 		var doc struct {
 			VersionSource *config.VersionSource `yaml:"version_source"`

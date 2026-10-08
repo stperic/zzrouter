@@ -157,7 +157,7 @@ func newCAPinnedClient(caFingerprint string) (*http.Client, error) {
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, //nolint:gosec // verification moved to VerifyPeerCertificate (CA fingerprint pinning); default chain trust isn't used
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error { //nolint:gosec // session resumption disabled via tlsCfg below + TLS13 handshake resets
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			return verifyAgainstPinnedCA(rawCerts, pin)
 		},
 		SessionTicketsDisabled: true,

@@ -15,7 +15,6 @@ import (
 // sysx.Command and sysx.CommandContext everywhere instead of
 // exec.Command / exec.CommandContext, except inside this package.
 func Command(name string, arg ...string) *exec.Cmd {
-	//nolint:forbidigo // only legal exec.Command call site
 	cmd := exec.Command(name, arg...)
 	hideWindow(cmd)
 	return cmd
@@ -23,7 +22,6 @@ func Command(name string, arg ...string) *exec.Cmd {
 
 // CommandContext is the exec.CommandContext equivalent.
 func CommandContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
-	//nolint:forbidigo // only legal exec.CommandContext call site
 	cmd := exec.CommandContext(ctx, name, arg...)
 	hideWindow(cmd)
 	return cmd

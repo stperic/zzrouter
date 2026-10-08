@@ -409,7 +409,7 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		m.shutdownCancel = cancel
 
 		go m.eventLoop()
-		go m.idleReaper() //nolint:contextcheck // uses m.shutdownCtx internally; see idleReaper body
+		go m.idleReaper()
 		m.servicesObserved = make(chan struct{})
 		m.servicesStarted.Store(true)
 		go m.observeServices(childCtx)

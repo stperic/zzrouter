@@ -359,12 +359,12 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		slog.Error("Proxy error for instance", "id", inst.ID, "error", err) //nolint:gosec // slog structured fields escape control chars
+		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
 		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"})
 	}
 
 	if !quiet {
-		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path) //nolint:gosec // slog structured fields escape control chars
+		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path)
 	}
 	proxy.ServeHTTP(w, req)
 	if !quiet {

@@ -101,7 +101,7 @@ func reconcile(src fs.FS, dstDir string) ([]string, error) {
 		}
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 
-		live, readErr := os.ReadFile(dst) //nolint:gosec // dst is derived from the embedded tree, not user input
+		live, readErr := os.ReadFile(dst)
 		if errors.Is(readErr, os.ErrNotExist) {
 			return nil // absent — InstallDefaults owns the first write
 		}

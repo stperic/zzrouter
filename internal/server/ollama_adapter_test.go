@@ -139,7 +139,7 @@ func TestOllamaAdapter_ListEnvelope(t *testing.T) {
 func TestOllamaAdapter_ListEnvelope_Empty(t *testing.T) {
 	a := NewOllamaAdapter()
 	got := a.ListEnvelope(nil)
-	resp := got.(OllamaTagsResponse) //nolint:errcheck // test asserts on a known fixture shape
+	resp := got.(OllamaTagsResponse)
 	require.NotNil(t, resp.Models, "Models slice must be non-nil even when empty")
 	require.Len(t, resp.Models, 0)
 }

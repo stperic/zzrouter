@@ -145,7 +145,7 @@ func newApplyFixtureWithChecksum(t *testing.T, archiveMembers map[string][]byte,
 
 func (f *applyFixture) read(t *testing.T, path string) string {
 	t.Helper()
-	content, err := os.ReadFile(path) //nolint:gosec // path is inside the test's own temp tree
+	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return string(content)
 }

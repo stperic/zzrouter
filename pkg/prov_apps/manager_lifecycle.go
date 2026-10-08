@@ -302,7 +302,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.runInstanceLifecycle")
-		m.runInstanceLifecycle(inst, cmd, args, mergedEnv, logFile, hcConfig, prepared.executionEnvironment) //nolint:contextcheck // uses m.shutdownCtx via instance fields
+		m.runInstanceLifecycle(inst, cmd, args, mergedEnv, logFile, hcConfig, prepared.executionEnvironment)
 	}()
 
 	return inst, nil

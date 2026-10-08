@@ -143,7 +143,7 @@ func readAssetSource(stdin io.Reader, src string) ([]byte, error) {
 	if src == "-" {
 		return io.ReadAll(stdin)
 	}
-	return os.ReadFile(src) //nolint:gosec // the operator names the file to upload
+	return os.ReadFile(src)
 }
 
 // displayAssets prints to stdout, where the table renderer writes.

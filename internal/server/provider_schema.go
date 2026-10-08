@@ -90,7 +90,7 @@ func localizeAssetParams(provider string, params map[string]string, shapes map[s
 		if err != nil {
 			return prov_apps.Localized{}, fmt.Errorf("parameter %s names asset %q of provider %s: %w", key, value, provider, err)
 		}
-		data, err := os.ReadFile(path) //nolint:gosec // path is a located asset, a regular file inside the provider's asset directory
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return prov_apps.Localized{}, fmt.Errorf("parameter %s: read asset %q: %w", key, value, err)
 		}

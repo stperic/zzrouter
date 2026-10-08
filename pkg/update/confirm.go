@@ -157,7 +157,7 @@ func (c *Confirmer) Rollback(pending *PendingConfirm, reason string) error {
 func (c *Confirmer) Path() string { return c.path }
 
 func (c *Confirmer) load() (*PendingConfirm, error) {
-	data, err := os.ReadFile(c.path) //nolint:gosec // path is derived from the node's own config dir
+	data, err := os.ReadFile(c.path)
 	if os.IsNotExist(err) {
 		return nil, nil //nolint:nilnil // "no update awaiting proof" is the common case, not an error
 	}

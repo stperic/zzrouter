@@ -117,7 +117,7 @@ func TestReconcileGivesAnExistingInstallTheModelDefaults(t *testing.T) {
 
 	for provider := range templateKeys {
 		p := filepath.Join(dir, "on-demand", provider, "config.yaml")
-		raw, err := os.ReadFile(p) //nolint:gosec // test temp dir
+		raw, err := os.ReadFile(p)
 		require.NoError(t, err)
 		var doc map[string]any
 		require.NoError(t, yaml.Unmarshal(raw, &doc))

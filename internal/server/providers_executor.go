@@ -540,13 +540,13 @@ func (e *ProvidersExecutor) HandleInternalExecuteStep(c *gin.Context) {
 		inst, err := e.mgr.Install().Installer(name)
 		if err != nil {
 			slog.Warn("[ProvidersExecutor] finalize skipped: installer unavailable", "provider", name, "error", err)
-			return nil //nolint:nilerr // the step itself succeeded; failing it here would misreport the step
+			return nil
 		}
 		version := e.mgr.ResolveVersion(name, req.Version)
 		plan, err := inst.InstallPlan(c.Request.Context(), version)
 		if err != nil {
 			slog.Warn("[ProvidersExecutor] finalize skipped: plan unavailable", "provider", name, "version", version, "error", err)
-			return nil //nolint:nilerr // the step itself succeeded; failing it here would misreport the step
+			return nil
 		}
 		if !plan.VerifyAllContext(c.Request.Context()).AllOK {
 			return nil

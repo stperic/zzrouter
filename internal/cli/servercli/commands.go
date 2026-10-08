@@ -22,7 +22,7 @@ import (
 // ZZROUTER_ALLOW_DEV_KEY=1 is set, so a misconfigured prod box fails
 // loud at boot instead of silently accepting a publicly-known credential.
 const (
-	insecureDevAdminKey = "dev-key-please-change-in-production" //nolint:gosec // gated by ZZROUTER_ALLOW_DEV_KEY
+	insecureDevAdminKey = "dev-key-please-change-in-production"
 
 	// allowDevKeyEnv opts a process into the insecure dev-key fallback.
 	// Unset (the default) = hard-fail when no admin key is configured.

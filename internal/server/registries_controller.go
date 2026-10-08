@@ -173,8 +173,8 @@ func markRecommended(variants []GGUFVariant) {
 		}
 	}
 	if bestIdx >= 0 {
-		variants[bestIdx].Recommended = true                                                       //nolint:gosec // bestIdx < len(variants) by construction
-		variants[bestIdx].RecommendationReason = "smallest >=4-bit variant (Q4_K_M not available)" //nolint:gosec // bestIdx < len(variants) by construction
+		variants[bestIdx].Recommended = true
+		variants[bestIdx].RecommendationReason = "smallest >=4-bit variant (Q4_K_M not available)"
 		return
 	}
 	// Everything is <4 bits (unusual). Pick the largest so the agent
@@ -186,8 +186,8 @@ func markRecommended(variants []GGUFVariant) {
 			bestIdx = i
 		}
 	}
-	variants[bestIdx].Recommended = true                                                         //nolint:gosec // len(variants) > 0 checked above
-	variants[bestIdx].RecommendationReason = "largest available (only sub-4-bit quants offered)" //nolint:gosec // len(variants) > 0 checked above
+	variants[bestIdx].Recommended = true
+	variants[bestIdx].RecommendationReason = "largest available (only sub-4-bit quants offered)"
 }
 
 func humanizeBytes(n int64) string {

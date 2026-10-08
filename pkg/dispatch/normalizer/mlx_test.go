@@ -14,8 +14,8 @@ func TestNormalizeMLXBody_CopiesReasoningIntoContent(t *testing.T) {
 	if err := json.Unmarshal(out, &obj); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	choices := obj["choices"].([]any)                              //nolint:errcheck // test asserts on a known fixture shape
-	msg := choices[0].(map[string]any)["message"].(map[string]any) //nolint:errcheck // test asserts on a known fixture shape
+	choices := obj["choices"].([]any)
+	msg := choices[0].(map[string]any)["message"].(map[string]any)
 	if msg["content"] != "Thinking..." {
 		t.Errorf("content not copied: got %v", msg["content"])
 	}
@@ -30,7 +30,7 @@ func TestNormalizeMLXBody_PreservesExistingContent(t *testing.T) {
 
 	var obj map[string]any
 	_ = json.Unmarshal(out, &obj)
-	msg := obj["choices"].([]any)[0].(map[string]any)["message"].(map[string]any) //nolint:errcheck // test asserts on a known fixture shape
+	msg := obj["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
 	if msg["content"] != "already here" {
 		t.Errorf("existing content was overwritten: %v", msg["content"])
 	}

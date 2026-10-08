@@ -389,7 +389,7 @@ func writeJSONAtomic(path string, v any, mode os.FileMode) error {
 }
 
 func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path) //nolint:gosec // path is built from a fixed directory and a fixed name
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
