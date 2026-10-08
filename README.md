@@ -44,7 +44,7 @@ For Windows checksum verification and supervised installations, see
 
 ## Quick start
 
-For an evaluation install, build from source with Go 1.26.6 or newer:
+For an evaluation install, build from source with the Go version in `go.mod` or newer:
 
 ```sh
 make build
