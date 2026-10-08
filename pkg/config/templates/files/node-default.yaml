@@ -1,0 +1,232 @@
+# =============================================================================
+# zzRouter Node Configuration
+# =============================================================================
+# Default configuration for a zzRouter node.
+# Use the platform configuration directory or ZZROUTER_CONFIG_DIR.
+
+# =============================================================================
+# NODE
+# =============================================================================
+node:
+  name: ""                            # Node name (defaults to hostname)
+  bind: "0.0.0.0"                     # Bind address (0.0.0.0 = all interfaces)
+  port: 9090                          # HTTP port
+
+# =============================================================================
+# CLUSTER
+# =============================================================================
+# Multi-node cluster configuration.
+# A single coordinator works identically to standalone but can accept workers.
+cluster:
+  mode: coordinator                   # coordinator, worker, or disabled
+  bind_port: 9091                     # mTLS cluster listener port (coordinator↔worker /internal/*)
+#
+# mode:
+#   coordinator - Primary node, accepts worker connections
+#   worker      - Joins a coordinator node
+#   disabled    - Standalone mode, no clustering
+#
+# bind_port:
+#   TCP port for the mTLS cluster listener. Must match on coordinator + all
+#   workers: the coordinator derives each worker's cluster URL by swapping
+#   the public host onto its own bind_port. Default 9091. Zero/unset = OS-
+#   assigned (fine for tests, breaks dispatch).
+
+# =============================================================================
+# AUTH
+# =============================================================================
+# API keys for client access. Values are env var names resolved from .env file.
+auth:
+  admin_key: "ZZROUTER_ADMIN_API_KEY"     # Full access (config, models, cluster)
+  user_key: "ZZROUTER_API_KEY"       # Read-only access (inference, status)
+  require_compat_auth: true           # false: /v1/* and /api/* also answer requests without a key
+  allow_anonymous_cloud: false        # true: keyless requests may reach cloud models
+#
+# /zzrouter/v1/* always needs the admin key. The inference routes (/v1/*,
+# /api/*) need a key too, because this node binds every interface: give
+# each client a virtual key (zzrouter keys create, or POST
+# /zzrouter/v1/keys). On a loopback-only node, require_compat_auth: false
+# lets local OpenAI, Anthropic and Ollama clients work unconfigured; a
+# keyless request then reaches local models only. A node that answers
+# keyless requests on a network address logs a warning at startup.
+#
+# Key values are stored in .env (same directory), not in this file.
+# The .env file is auto-loaded on startup with 0600 permissions.
+
+# =============================================================================
+# SECURITY
+# =============================================================================
+security:
+  log_auth_attempts: true             # Log auth attempts for audit
+
+# =============================================================================
+# NETWORK DISCOVERY
+# =============================================================================
+# mDNS broadcasting for automatic cluster discovery on local networks.
+mdns_discovery: true                 # Broadcast node via mDNS
+
+# =============================================================================
+# CACHE
+# =============================================================================
+# Model list caching to reduce load on high-traffic deployments.
+# Workers always serve fresh data regardless of this setting.
+cache:
+  model_list_ttl_seconds: 0           # 0 = auto (coordinator: 120s, worker: disabled)
+
+# =============================================================================
+# MODELS
+# =============================================================================
+models:
+  # cache: ""                         # Local cache directory (default: platform-specific)
+  # shared: ""                        # Optional: shared storage path (NFS)
+  #
+  # Storage Modes:
+  #
+  #   1. Single Node / Independent Nodes (default):
+  #      No config needed. Uses default cache location:
+  #      - Linux: ~/.local/share/zzrouter/models
+  #      - macOS: ~/Library/Application Support/zzrouter/models
+  #      - Windows: %APPDATA%\zzrouter\models
+  #
+  #   2. Custom Cache Location:
+  #      cache: "/data/zzrouter/models"
+  #
+  #   3. Shared Storage (NFS/cluster FS):
+  #      # Coordinator (source of models):
+  #      cache: "/var/lib/zzrouter/models"    # Models stored here, exported via NFS
+  #      # (no shared needed - this IS the source)
+  #
+  #      # Workers (mount coordinator's storage):
+  #      cache: "/var/lib/zzrouter/local"     # Fast local SSD for caching
+  #      shared: "/mnt/nfs/zzrouter/models"   # NFS mount of coordinator's models
+  #
+  #      When shared is set:
+  #      - Models are discovered from shared storage
+  #      - Automatically copied to local cache on first use
+  #      - Subsequent loads use cache (fast local access)
+  #
+  # Environment variable override:
+  #   export ZZROUTER_MODEL_DIR=/data/zzrouter/models
+  #
+  download_strategy: "smart-default"  # smart-default, always-download, local-only
+  default_quantization: "Q4_K_M"      # Q4_K_M, Q5_K_M, Q8_0, F16
+  conversion:
+    gguf_converter: "auto"            # auto, llama.cpp, none
+    auto_convert: true                # Convert non-GGUF models automatically
+    show_progress: true               # Show conversion progress
+  #
+  # Pricing data from LiteLLM (per-token costs for 300+ models).
+  # pricing:
+  #   enabled: true                     # Enable pricing data fetch
+  #   source: ""                        # URL (default: LiteLLM GitHub JSON)
+  #   refresh_interval: "24h"           # How often to refresh (Go duration)
+
+# =============================================================================
+# PROVIDER INSTALL KNOBS
+# =============================================================================
+# Optional knobs that affect how provider installs (vllm, mlx, llamacpp,
+# ollama) behave at runtime. Every field is optional : with the section
+# absent, each subsystem uses its built-in default.
+# providers:
+#   # install_dir: /opt/zzrouter/providers   # Override the default provider root.
+#   #                                         # Linux default: /opt/zzrouter/providers
+#   #                                         # macOS default: ~/Library/Application Support/zzrouter/providers
+#   #                                         # Windows default: %LOCALAPPDATA%\zzrouter\providers
+#   #
+#   # proxy:                                  # Corporate proxy + CA bundle applied to every install step
+#   #                                         # (curl, pip, PowerShell Invoke-WebRequest). All fields optional.
+#   #   http_proxy: "http://proxy.corp:8080"
+#   #   https_proxy: "http://proxy.corp:8080"
+#   #   no_proxy: "localhost,127.0.0.1,.corp.local"
+#   #   ca_file: "/etc/ssl/certs/corp-ca.pem" # PEM bundle trusted by the proxy. Exported as
+#   #                                         # SSL_CERT_FILE / CURL_CA_BUNDLE / PIP_CERT to subprocesses.
+#   #
+#   # harden_venv: true                       # Run `chmod -R a-w` on Python venvs after pip install.
+#   #                                         # Default true. Set false on hosts with mixed venv ownership
+#   #                                         # (shared pip cache, service-user installs) where the chmod
+#   #                                         # would fail legitimately.
+
+# =============================================================================
+# COORDINATOR SETTINGS
+# =============================================================================
+# Settings that only apply when cluster.mode is "coordinator" (or standalone).
+# Workers ignore this section.
+coordinator:
+  routing:
+    # route_prefix: "route-"            # Prefix for route names in /v1/models
+    # inject_usage_metadata: false      # Add zz_provider/zz_model/zz_node to usage
+    # default_mode: "auto"              # auto, priority, round-robin
+    #
+    # resource_thresholds:
+    #   min_free_gpu_memory_mb: 1024    # Skip nodes below this free GPU memory
+    #   min_free_ram_mb: 2048           # Skip nodes below this free RAM
+    #   max_gpu_utilization: 90         # Skip nodes above this GPU %
+  #
+  # chat:
+  #   slash_commands:
+  #     enabled: true                   # Process / commands in chat messages
+  #     prefix: "/"                     # Command prefix character
+
+# =============================================================================
+# OBSERVABILITY
+# =============================================================================
+# OpenTelemetry metrics + traces. When enabled, the Prometheus /metrics
+# endpoint is served on the main HTTP port (same as the API). No outbound
+# network traffic is generated unless otlp.endpoint is set.
+observability:
+  enabled: true                        # Master switch for the observability subsystem
+  service_name: "zzrouter"             # Identifier in traces/metrics exporters
+  metrics:
+    enabled: true                      # Expose GET /metrics (Prometheus scrape)
+    # prometheus_port: 0               # Reserved for a dedicated sidecar listener (0 = disabled)
+    # export_interval: 15              # OTLP push interval (seconds)
+  tracing:
+    enabled: false                     # Distributed tracing : opt-in, needs otlp.endpoint
+    sample_rate: 0.1                   # 1.0 = sample all, 0.1 = 10%, 0.0 = off
+  # otlp:
+  #   endpoint: "localhost:4317"       # OTLP gRPC collector (Jaeger/Tempo/Honeycomb/etc.)
+  #   insecure: true                   # Skip TLS for local dev collectors
+  #   headers:                         # Auth headers for SaaS collectors
+  #     x-honeycomb-team: "..."
+
+# =============================================================================
+# AUTO-UPDATE
+# =============================================================================
+# Automatic update system for keeping zzrouter-node up-to-date.
+# Updates are downloaded from GitHub Releases and verified before installation.
+update:
+  enabled: true                        # Enable automatic updates (default: true)
+  channel: stable                      # Release channel: stable, beta
+  check_interval_hours: 24             # How often to check for updates
+  # maintenance_window: "0 3 * * *"    # Cron: apply updates at 3 AM only
+  # pinned_version: "1.2.x"            # Pin to specific version pattern
+  auto_restart: true                   # Restart service after update
+  keep_previous_versions: 2            # Backups to keep for rollback
+#
+# Maintenance window (cron syntax):
+#   "0 3 * * *"     = 3:00 AM daily
+#   "0 2 * * 0"     = 2:00 AM Sundays only
+#   ""              = Apply updates immediately (default)
+#
+# Version pinning:
+#   "1.2.3"         = Exact version only
+#   "1.2.x"         = Any patch version in 1.2
+#   "1.x"           = Any minor/patch version in 1.x
+#
+# CLI commands:
+#   zzrouter-node update status    # Show update status
+#   zzrouter-node update check     # Check for updates
+#   zzrouter-node update apply     # Apply pending update
+#   zzrouter-node update rollback  # Restore previous version
+#   zzrouter-node update history   # Show update history
+
+# =============================================================================
+# QUICK START
+# =============================================================================
+# Development:
+#   zzrouter-node run
+#
+# Production (set environment variables):
+#   export ZZROUTER_ADMIN_API_KEY="your-secure-admin-key"
+#   export ZZROUTER_API_KEY="your-secure-user-key"
+#   zzrouter-node run

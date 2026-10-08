@@ -1,0 +1,139 @@
+# Required synthetic fixtures only: exact file, rule and source line.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Decoded synthetic base64 fixture: pkg/config/security_test.go:195"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^test-key-1234567890$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/integration/integration_internal_api_test.go:189"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/integration/integration_internal_api_test\.go$''']
+regexes = ['''^\s*resp\ :=\ internal\("DELETE",\ "/zzrouter/v1/internal/deployments/stop\?key=nonexistent\-id\-12345",\ nil\)\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/integration_test_helpers.go:29"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/integration_test_helpers\.go$''']
+regexes = ['''^\s*TestAdminKey\ \ \ =\ "mx\-zzr\-it\-coord\-Kp9vB4xRmT2LqJfNdY"\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/integration_test_helpers.go:31"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/integration_test_helpers\.go$''']
+regexes = ['''^\s*TestClusterKey\ =\ "mx\-zzr\-it\-peer\-Fg7rZxMb6kDpC2NvHw"\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/observability_integration_test.go:630"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/observability_integration_test\.go$''']
+regexes = ['''^\s*AdminKey:\ "z9aP6kQwR3eY7Bx5mNcD4hJ2sV8fG1tL",\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/observability_integration_test.go:631"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/observability_integration_test\.go$''']
+regexes = ['''^\s*UserKey:\ \ "K4rL2mN6pQ8sV3xY7aZ9bC1dE5fH8jM2",\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: internal/server/observability_integration_test.go:1178"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/observability_integration_test\.go$''']
+regexes = ['''^\s*AdminKey:\ "z9aP6kQwR3eY7Bx5mNcD4hJ2sV8fG1tL",\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/types_test.go:513"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/types_test\.go$''']
+regexes = ['''^\s*config:\ \ NodeConfig\{Node:\ ServeConfig\{Port:\ 9090\},\ Auth:\ AuthConfig\{AdminKey:\ "this\-is\-a\-valid\-key\-with\-32\-chars"\}\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/security_test.go:150"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^\s*\{"valid\ strong\ key",\ "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",\ false\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/security_test.go:151"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^\s*\{"valid\ random\ key",\ "xK9mP2nQ5rT8wY3zA6bC1dE4fG7hJ0kL",\ false\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/security_test.go:152"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^\s*\{"valid\ generated\ key",\ "mx\-abcdefghijkXYZ7890ABCDEFGHIJK",\ false\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/security_test.go:164"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^\s*\{"contains\ 'secret'",\ "secret\-key\-1234567890abcdefghijk",\ true\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/config/security_test.go:195"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/config/security_test\.go$''']
+regexes = ['''^\s*\{"base64\ token",\ "dGVzdC1rZXktMTIzNDU2Nzg5MA==",\ false\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/prov_apps/manager_services_test.go:49"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/prov_apps/manager_services_test\.go$''']
+regexes = ['''^\s*fmt\.Fprintln\(os\.Stderr,\ "RuntimeError:\ managed\ daemon\ failed;\ token=sk\-123456789012345678901234567890123456"\)\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/security/redact_json_test.go:18"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/security/redact_json_test\.go$''']
+regexes = ['''^\s*\{"array\ element",\ `\[\{"api_key":"abcd1234efgh5678"\}\]`,\ "abcd1234efgh5678"\},\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/security/redaction_test.go:27"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/security/redaction_test\.go$''']
+regexes = ['''^\s*input:\ \ \ \ "X\-API\-Key:\ mx\-secretkey12345678901234567890",\s*$''']
+
+[[allowlists]]
+description = "Synthetic fixture: pkg/security/redaction_test.go:37"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)pkg/security/redaction_test\.go$''']
+regexes = ['''^\s*input:\ \ \ \ "ZZROUTER_ADMIN_API_KEY=mx\-verysecretkey1234567890abc",\s*$''']

@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/ggml-org/llama.cpp/blob/7049ff0cbeb1f5ead231de4522af6b75d8d773c0/tools/server/server-common.cpp#L1038",
+  "evidence": "Upstream exception message; envelope constructed for the normalizer test, not a live capture.",
+  "error": {
+    "message": "Multimodal data provided, but model does not support multimodal requests.",
+    "type": "server_error"
+  }
+}

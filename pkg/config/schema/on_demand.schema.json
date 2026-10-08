@@ -1,0 +1,947 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zzfactor.io/schemas/on_demand.schema.json",
+  "title": "zzRouter on-demand provider",
+  "description": "A provider that zzRouter launches per model request (vllm, llamacpp, mlx). Body only \u2014 the outer 'providers.on-demand.<name>:' wrapping is added by the loader.",
+  "type": "object",
+  "required": [
+    "protocol",
+    "runtime"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vision": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "flag": {
+              "type": "string"
+            },
+            "when": {
+              "type": "string"
+            },
+            "runtime": {
+              "type": "string"
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "cli",
+                    "python"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "working_dir": {
+                  "type": "string"
+                },
+                "wire_model": {
+                  "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
+                  "enum": [
+                    "name",
+                    "path"
+                  ]
+                }
+              }
+            },
+            "wire_endpoints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude_parameters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "protocol": {
+      "enum": [
+        "openai",
+        "ollama"
+      ]
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "pinned_version": {
+      "type": "string"
+    },
+    "version_source": {
+      "$ref": "#/$defs/versionSource"
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "os"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "os": {
+            "enum": [
+              "windows",
+              "linux",
+              "darwin"
+            ]
+          },
+          "arch": {
+            "enum": [
+              "amd64",
+              "arm64",
+              ""
+            ]
+          }
+        }
+      }
+    },
+    "requirements": {
+      "$ref": "#/$defs/requirements"
+    },
+    "install_variants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/installVariant"
+      }
+    },
+    "capabilities": {
+      "$ref": "#/$defs/capabilities"
+    },
+    "discovery": {
+      "$ref": "#/$defs/discovery"
+    },
+    "defaults": {
+      "$ref": "#/$defs/defaults"
+    },
+    "model_defaults": {
+      "description": "Per-family defaults the release ships, keyed by a name pattern tried against the full model name and its last path element. Managed: rewritten on start. Every operator tier resolves above it.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/modelSpec"
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/modelSpec"
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/nodeSpec"
+      }
+    },
+    "search": {
+      "$ref": "#/$defs/search"
+    },
+    "runtime": {
+      "type": "object",
+      "required": [
+        "port_range",
+        "base_port",
+        "execution"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "port_range": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "base_port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "keep_alive": {
+          "type": "string"
+        },
+        "max_concurrent_requests": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_timeout": {
+          "type": "string"
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "cli",
+                "python"
+              ]
+            },
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "working_dir": {
+              "type": "string"
+            },
+            "wire_model": {
+              "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
+              "enum": [
+                "name",
+                "path"
+              ]
+            }
+          }
+        },
+        "health_check": {
+          "$ref": "#/$defs/healthCheck"
+        }
+      }
+    },
+    "install": {
+      "$ref": "#/$defs/install"
+    }
+  },
+  "$defs": {
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "disk_space": {
+          "type": "string"
+        },
+        "python": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min": {
+                  "type": "string"
+                },
+                "max": {
+                  "type": "string"
+                }
+              }
+            }
+          ]
+        },
+        "gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "vendor": {
+              "enum": [
+                "nvidia",
+                "amd",
+                "apple",
+                ""
+              ]
+            },
+            "policy": {
+              "enum": [
+                "advisory",
+                "required",
+                ""
+              ]
+            }
+          }
+        }
+      }
+    },
+    "versionSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "description": "Where upstream publishes this provider's releases. An identifier, never a URL: each type owns a fixed URL template.",
+      "properties": {
+        "type": {
+          "enum": [
+            "github_release",
+            "pypi",
+            "homebrew"
+          ]
+        },
+        "repo": {
+          "type": "string",
+          "description": "owner/name, for github_release"
+        },
+        "package": {
+          "type": "string",
+          "description": "distribution name, for pypi"
+        },
+        "formula": {
+          "type": "string",
+          "description": "Homebrew formula name, for homebrew"
+        },
+        "strip_prefix": {
+          "type": "string",
+          "description": "trimmed from the upstream tag before comparison"
+        },
+        "compare": {
+          "enum": [
+            "semver",
+            "pep440",
+            "build_number",
+            "opaque"
+          ]
+        },
+        "platforms": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Replaces the whole source for nodes on a given GOOS. Use when a platform installs through a packager whose ceiling is its own.",
+          "properties": {
+            "darwin": {
+              "$ref": "#/$defs/versionSourceBase"
+            },
+            "linux": {
+              "$ref": "#/$defs/versionSourceBase"
+            },
+            "windows": {
+              "$ref": "#/$defs/versionSourceBase"
+            }
+          }
+        }
+      }
+    },
+    "versionSourceBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "description": "A platform override. Same shape as version_source but may not nest further platforms.",
+      "properties": {
+        "type": {
+          "enum": [
+            "github_release",
+            "pypi",
+            "homebrew"
+          ]
+        },
+        "repo": {
+          "type": "string"
+        },
+        "package": {
+          "type": "string"
+        },
+        "formula": {
+          "type": "string"
+        },
+        "strip_prefix": {
+          "type": "string"
+        },
+        "compare": {
+          "enum": [
+            "semver",
+            "pep440",
+            "build_number",
+            "opaque"
+          ]
+        }
+      }
+    },
+    "installVariant": {
+      "type": "object",
+      "required": [
+        "id",
+        "platforms"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "artifact"
+          ]
+        },
+        {
+          "required": [
+            "artifacts"
+          ]
+        }
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "filename"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "filename": {
+                "type": "string",
+                "minLength": 1
+              },
+              "url_pattern": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "url_pattern": {
+          "type": "string"
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "os",
+              "arch"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "os": {
+                "enum": [
+                  "windows",
+                  "linux",
+                  "darwin"
+                ]
+              },
+              "arch": {
+                "enum": [
+                  "amd64",
+                  "arm64"
+                ]
+              }
+            }
+          }
+        },
+        "gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "vendor": {
+              "enum": [
+                "nvidia",
+                "amd",
+                "apple",
+                ""
+              ]
+            },
+            "cuda_min": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "formats": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "format_note": {
+          "type": "string"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "default_variant": {
+          "type": "string"
+        },
+        "wire_endpoints": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "chat_completions",
+              "completions",
+              "embeddings",
+              "messages",
+              "rerank",
+              "responses",
+              "responses_compat",
+              "messages_compat"
+            ]
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "detection": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "method",
+              "target"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "enum": [
+                  "http",
+                  "executable",
+                  "python_module",
+                  "file"
+                ]
+              },
+              "target": {
+                "type": "string"
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "platforms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "version_command": {
+                "type": "string"
+              },
+              "version_path": {
+                "type": "string"
+              },
+              "version_pattern": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "runtime": {
+          "type": "array"
+        }
+      }
+    },
+    "defaults": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/endpointOverlay"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/metadata"
+        },
+        "install": {
+          "$ref": "#/$defs/install"
+        }
+      }
+    },
+    "endpointOverlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "process_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "startup_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shutdown_timeout": {
+          "type": "string"
+        },
+        "processor_type": {
+          "type": "string"
+        },
+        "context_param": {
+          "type": "string"
+        }
+      }
+    },
+    "modelSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "description": "Makes the entry a variant: a model name of its own over this model's weights.",
+          "type": "string",
+          "minLength": 1
+        },
+        "request": {
+          "description": "Request-body fields applied to each request for this model when the client did not send them.",
+          "type": "object"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/endpointOverlay"
+          }
+        }
+      }
+    },
+    "nodeSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/endpointOverlay"
+          }
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/modelSpec"
+          }
+        },
+        "install": {
+          "$ref": "#/$defs/install"
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "sort_options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_sorts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "client_filter": {
+          "type": "boolean"
+        },
+        "has_tags": {
+          "type": "boolean"
+        }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readiness_probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "liveness_probe": {
+          "$ref": "#/$defs/probe"
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout": {
+          "type": "string"
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "logPatterns": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "success": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pattern"
+              }
+            },
+            "failure": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pattern"
+              }
+            }
+          }
+        },
+        "serve": {
+          "description": "Request that proves the engine can serve. Log patterns and health endpoints report a listening socket, which for lazily-loading engines precedes a usable model.",
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string",
+              "description": "JSON body; ${WIRE_MODEL} expands to the token the engine keys on."
+            }
+          }
+        }
+      }
+    },
+    "pattern": {
+      "type": "object",
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "isRegex": {
+          "type": "boolean"
+        }
+      }
+    },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtimes": {
+          "type": "object",
+          "maxProperties": 16,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "package": {
+                "type": "string"
+              },
+              "version_constraint": {
+                "type": "string"
+              },
+              "startup_import": {
+                "type": "string"
+              },
+              "indexes": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "primary": {
+                    "type": "string"
+                  },
+                  "extra": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "companions": {
+                "type": "object",
+                "maxProperties": 24,
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "constraint": {
+                      "type": "string"
+                    },
+                    "build": {
+                      "enum": [
+                        "cuda",
+                        "metal",
+                        "none"
+                      ]
+                    }
+                  }
+                }
+              },
+              "verify": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "imports": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "checks": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "only_binary": {
+                "type": "boolean"
+              },
+              "timeout": {
+                "type": "string"
+              },
+              "toolkit": {
+                "enum": [
+                  "",
+                  "cuda13"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

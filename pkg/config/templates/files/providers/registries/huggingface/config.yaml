@@ -1,0 +1,11 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Open source ML model registry"
+enabled: true   # Always available as a search registry
+search:
+  sort_options: [popular, downloads, likes, newest, name]
+  client_sorts: [name, newest]
+  has_tags: true
+runtime:
+  endpoint: https://huggingface.co
+  model_url: "https://huggingface.co/%s"

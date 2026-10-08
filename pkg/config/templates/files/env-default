@@ -1,0 +1,52 @@
+# zzRouter Environment Configuration
+# Copy to .env and fill in values as needed.
+# Only uncomment the providers you use.
+
+# =============================================================================
+# zzRouter Keys (auto-generated on first run)
+# =============================================================================
+# Full access — manage models, providers, cluster, and inference
+# ZZROUTER_ADMIN_API_KEY=
+
+# Read-only access — inference and status queries only
+# ZZROUTER_API_KEY=
+
+# Coordinator↔worker cluster traffic is authenticated via mTLS on the
+# cluster-port listener (pkg/clusternode). No shared secret required.
+
+# =============================================================================
+# Cloud Providers — uncomment and add your API keys
+# =============================================================================
+
+# OpenAI
+# OPENAI_API_KEY=
+
+# Anthropic
+# ANTHROPIC_API_KEY=
+
+# Google Gemini
+# GEMINI_API_KEY=
+
+# Groq
+# GROQ_API_KEY=
+
+# OpenRouter
+# OPENROUTER_API_KEY=
+
+# Azure OpenAI
+# AZURE_OPENAI_ENDPOINT=https://YOUR_RESOURCE.openai.azure.com/openai
+# AZURE_OPENAI_API_KEY=
+
+# AWS Bedrock
+# AWS_REGION=us-east-1
+# AWS_BEDROCK_TOKEN=
+
+# Cloudflare Workers AI
+# CLOUDFLARE_ACCOUNT_ID=
+# CLOUDFLARE_API_KEY=
+
+# Hugging Face
+# HF_TOKEN=
+
+# Ollama Cloud
+# OLLAMA_API_KEY=

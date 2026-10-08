@@ -1,0 +1,121 @@
+# zzRouter Docker Compose Configuration
+# This file defines Docker services for major LLM providers
+#
+# Project name 'zzRouter' groups all containers together:
+#   - Containers: zzrouter-ollama, zzrouter-vllm, zzrouter-llamacpp
+#   - Network: zzRouter_network
+#   - Volumes: zzRouter_ollama-data
+
+name: zzRouter
+
+services:
+  # Ollama - Local LLM provider
+  ollama:
+    image: ollama/ollama:latest
+    container_name: zzrouter-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./models/ollama:/root/.ollama/models
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODELS=/root/.ollama/models
+      - OLLAMA_KEEP_ALIVE=5m
+    restart: unless-stopped
+    networks:
+      - network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # vLLM - High-performance inference engine
+  # NOTE: vLLM has limited ARM64 support. On Apple Silicon (M1/M2/M3),
+  #       you may want to comment out this service and use Ollama or llama.cpp instead.
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: zzrouter-vllm
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models/huggingface:/models
+      - ./cache:/root/.cache
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+    restart: unless-stopped
+    networks:
+      - network
+    # Uncomment for GPU support (NVIDIA only)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    # Command example (uncomment and modify):
+    # command: >
+    #   --model /models/meta-llama/Llama-2-7b-hf
+    #   --host 0.0.0.0
+    #   --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # llama.cpp - Efficient CPU/GPU inference
+  llamacpp:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    container_name: zzrouter-llamacpp
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models/gguf:/models
+    environment:
+      - LLAMA_ARG_MODEL=/models/model.gguf
+      - LLAMA_ARG_CTX_SIZE=4096
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=8080
+    restart: unless-stopped
+    networks:
+      - network
+    # Command example (uncomment and modify):
+    # command: >
+    #   --model /models/llama-2-7b.Q4_K_M.gguf
+    #   --host 0.0.0.0
+    #   --port 8080
+    #   --ctx-size 4096
+    #   --n-gpu-layers 35
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  ollama-data:
+    driver: local
+
+networks:
+  network:
+    driver: bridge
+
+# Usage:
+#   Start all services:     docker-compose up -d
+#   Stop all services:      docker-compose down
+#   View logs:              docker-compose logs -f
+#   Restart a service:      docker-compose restart ollama
+#   Check status:           docker-compose ps
+#
+# Notes:
+#   - All services share the ./models directory
+#   - Ollama models: ./models/ollama
+#   - HuggingFace models: ./models/huggingface (for vLLM)
+#   - GGUF models: ./models/gguf (for llama.cpp)
+#   - Cache is shared in ./cache (for HuggingFace downloads)
+#   - Uncomment GPU sections if you have NVIDIA GPU
+#   - Modify model paths in command sections as needed

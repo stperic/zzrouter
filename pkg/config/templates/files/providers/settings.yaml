@@ -1,0 +1,59 @@
+# Upstream release checks. zzRouter asks each installable provider's
+# configured version_source whether a newer release exists, and reports it.
+# It never upgrades anything: acting on the report stays a manual step.
+#
+# Set provider_version_checks to false on an air-gapped cluster. zzRouter then
+# makes no outbound request at all and reports every provider as unknown,
+# rather than timing out once per provider.
+updates:
+  provider_version_checks: true
+  check_interval: 12h
+
+# Global zzRouter settings. Loaded directly from
+# providers/settings.yaml by the per-provider directory loader.
+security:
+  allowed_executable_paths:
+    # Standard Unix/Linux paths
+    - /usr/local/bin/*              # Standard install location
+    - /usr/bin/*                    # System binaries
+    - /bin/*                        # Essential binaries
+    - /opt/*/bin/*                  # Optional software
+
+    # macOS specific
+    - /opt/homebrew/bin/*           # macOS Homebrew (Apple Silicon)
+    - /usr/local/Cellar/*/bin/*     # macOS Homebrew (Intel)
+    - /Applications/*.app/Contents/MacOS/*  # macOS applications
+
+    # Linux package managers
+    - /home/linuxbrew/.linuxbrew/bin/*  # Linuxbrew
+    - /snap/bin/*                   # Snap packages
+
+    # User-level installations
+    - ~/.local/bin/*                # User pip/pipx installs
+    - ~/Library/Python/*/bin/*      # macOS user Python packages
+    - ~/.cargo/bin/*                # Rust binaries (llama.cpp builds)
+
+    # Python virtual environments (vLLM)
+    - ~/.venv/bin/*                 # Common venv location
+    - ~/venv/bin/*                  # Alternative venv location
+    - .venv/bin/*                   # Project-local venv
+    - venv/bin/*                    # Project-local venv
+    - "*/bin/python*"               # Any Python executable
+
+    # Conda/Miniconda (vLLM)
+    - ~/miniconda*/bin/*            # Miniconda
+    - ~/anaconda*/bin/*             # Anaconda
+    - /opt/conda/bin/*              # System conda
+
+    # llama.cpp specific
+    - ~/llama.cpp/build/bin/*       # llama.cpp build directory
+    - /usr/local/llama.cpp/bin/*    # llama.cpp system install
+
+    # Windows paths (if running under WSL or cross-platform)
+    - /mnt/c/Users/*/AppData/Local/Programs/Python/*/Scripts/*  # Windows Python (WSL)
+    - /mnt/c/Program Files/*/bin/*  # Windows programs (WSL)
+
+# Runtime settings
+runtime:
+  cleanup_on_exit: true
+  cleanup_orphaned_processes: true

@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zzfactor.io/schemas/cloud.schema.json",
+  "title": "zzRouter cloud provider",
+  "description": "A hosted HTTPS API gateway (openai, anthropic, groq, etc). No execution, no install variants : just endpoint + auth.",
+  "type": "object",
+  "required": ["runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vision": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "flag": {
+              "type": "string"
+            },
+            "when": {
+              "type": "string"
+            },
+            "runtime": {
+              "type": "string"
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "cli",
+                    "python"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "working_dir": {
+                  "type": "string"
+                },
+                "wire_model": {
+                  "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
+                  "enum": [
+                    "name",
+                    "path"
+                  ]
+                }
+              }
+            },
+            "wire_endpoints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude_parameters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "formats": { "type": "array", "items": { "type": "string" } },
+        "format_note": { "type": "string" },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "priority": { "type": "integer", "minimum": 0 },
+        "wire_endpoints": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["chat_completions", "completions", "embeddings", "messages", "rerank", "responses", "responses_compat", "messages_compat"] },
+          "minItems": 1
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": { "type": "string" },
+        "sort_options": { "type": "array", "items": { "type": "string" } },
+        "client_sorts": { "type": "array", "items": { "type": "string" } },
+        "client_filter": { "type": "boolean" },
+        "has_tags": { "type": "boolean" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["endpoint", "api"],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "type": "string", "minLength": 1 },
+        "model_url": { "type": "string" },
+        "models_path": { "type": "string" },
+        "models_response_key": { "type": "string" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "api" }
+          }
+        },
+        "api": {
+          "type": "object",
+          "required": ["auth_type"],
+          "additionalProperties": false,
+          "properties": {
+            "auth_type": { "enum": ["bearer", "api-key", "custom", "none"] },
+            "auth_header": { "type": "string" },
+            "auth_prefix": { "type": "string" },
+            "token": { "type": "string" },
+            "custom_headers": { "type": "object", "additionalProperties": { "type": "string" } },
+            "rate_limit": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requests_per_minute": { "type": "integer", "minimum": 0 },
+                "tokens_per_minute": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        "health_check": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "interval": { "type": "string" },
+            "timeout": { "type": "string" },
+            "retries": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

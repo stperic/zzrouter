@@ -1,0 +1,143 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Apple MLX inference engine for Apple Silicon"
+features:
+  vision:
+    default: true
+    when: vision_config
+    runtime: mlx-vlm
+    execution:
+      type: python
+      command: python3
+      args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"]
+      wire_model: path
+    wire_endpoints: [chat_completions, responses, messages]
+    exclude_parameters: [chat-template]
+install:
+  runtimes:
+    mlx:
+      package: mlx-lm
+      startup_import: mlx_lm.server
+      version_constraint: ""
+      indexes: {primary: https://pypi.org/simple, extra: []}
+      companions:
+        mlx: {constraint: "", build: metal}
+      verify:
+        imports: [mlx.core, mlx_lm.server]
+        checks: [pip_check, imports, metal_available]
+      only_binary: true
+      timeout: 30m
+      toolkit: ""
+    mlx-vlm:
+      package: mlx-vlm
+      startup_import: mlx_vlm.server
+      version_constraint: ""
+      indexes: {primary: https://pypi.org/simple, extra: []}
+      companions:
+        mlx: {constraint: "", build: metal}
+      verify:
+        imports: [mlx.core, mlx_vlm.server]
+        checks: [pip_check, imports, metal_available]
+      only_binary: true
+      timeout: 30m
+      toolkit: ""
+protocol: openai
+search:
+  registry: huggingface
+enabled: false
+# pinned_version is release-managed and refreshed on startup.
+# An explicit install-call version overrides this seed.
+# version_source below reports whether upstream has moved on.
+pinned_version: "0.31.3"
+version_source:
+  type: pypi
+  package: mlx-lm
+  # pep440, not semver: PyPI identifiers can carry an epoch, extra release
+  # segments, or a .postN suffix, and a semver parser silently drops those.
+  compare: pep440
+# MLX targets Apple's Metal stack : Apple Silicon only.
+platforms:
+  - {os: darwin, arch: arm64}
+requirements:
+  disk_space: "2GB"
+  # Python 3.14 deadlocks mlx_lm's http.server worker mid-SSE (observed
+  # via `sample` on a live wedged PID inside lock_PyThread_acquire_lock).
+  # Cap at 3.13 until upstream validates the newer minor. The installer
+  # honors this range via pkg/prov_apps/install/interpreter.Select, so a
+  # 3.14-only host fails preflight with an actionable "brew install
+  # python@3.13" hint rather than silently building a broken venv.
+  python:
+    min: "3.9"
+    max: "3.14"
+capabilities:
+  formats: [mlx]
+  # mlx_lm.server only exposes /v1/chat/completions + /v1/models.
+  # The Responses and Anthropic Messages APIs go through translation shims.
+  wire_endpoints: [chat_completions, responses_compat, messages_compat]
+
+defaults:
+  parameters:
+    max-tokens: "4096"            # MLX default is 512, too low for thinking models
+  metadata:
+    shutdown_timeout: "gpu"
+    processor_type: "Metal GPU"
+
+# model_defaults: what a model family needs on this engine, keyed by a
+# name pattern tried against the full model name and its last path element.
+# zzRouter owns this block and rewrites it on start, like execution. Every
+# operator tier (models, nodes, node x model, request) resolves above it:
+# set the key under models.<model> to change it, or to "auto" to drop it.
+model_defaults:
+  # Qwen3.8's stock template raises on a system message after the first
+  # turn, which agent clients (Claude Code over /v1/messages) send. This
+  # one accepts system and developer messages anywhere and renders tool
+  # calls; plain chat renders the same.
+  "qwen3.8-*":
+    parameters:
+      chat-template: qwen3.8-system-anywhere.jinja
+
+runtime:
+  port_range: [8090, 8099]
+  base_port: 8090
+  keep_alive: 30m
+  max_concurrent_requests: 1  # Metal GPU processes one request at a time
+
+  execution:
+    type: python
+    command: python3
+    args:
+      - "-m"
+      - "mlx_lm"
+      - "server"
+      - "--model"
+      - "${MODEL_PATH}"
+      - "--port"
+      - "${PORT}"
+    working_dir: ./models
+    # mlx_lm has no --served-model-name: it loads whatever token the request
+    # carries and echoes it back, mapping only the literal "default_model"
+    # to --model. So it must be addressed by path on the wire; zzRouter
+    # restores the client-facing name on the way out.
+    wire_model: path
+
+  health_check:
+    path: /v1/models
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    readiness_probe:
+      logPatterns:
+        failure:
+          - pattern: "Traceback (most recent call last)"
+            isRegex: false
+          - pattern: "out of memory"
+            isRegex: false
+        success:
+          # mlx_lm starts its listener before loading weights, so this line
+          # means "process is up", not "ready" : the serve check decides.
+          - pattern: "INFO - Starting httpd"
+            isRegex: false
+      serve:
+        path: /v1/chat/completions
+        body: '{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}'
+      timeout: 600s

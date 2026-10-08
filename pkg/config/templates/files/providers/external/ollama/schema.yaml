@@ -1,0 +1,29 @@
+# Long-tail Ollama parameters. Go spine carries num-ctx.
+provider: ollama
+parameters:
+  num-predict:
+    type: int
+    description: Maximum tokens to predict (-1 = until EOS)
+  temperature:
+    type: float
+    min: 0.0
+    description: Sampling temperature
+  top-p:
+    type: float
+    min: 0.0
+    max: 1.0
+    description: Nucleus sampling probability mass
+  top-k:
+    type: int
+    min: 1
+    description: Top-K sampling cutoff
+  repeat-penalty:
+    type: float
+    min: 0.0
+    description: Penalty for repeated token n-grams
+
+diagnostics:
+  runtime: ollama
+  runtimes:
+    ollama: {kernels: external}
+  memory: {kind: external}

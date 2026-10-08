@@ -1,0 +1,19 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Managed foundation models on AWS"
+enabled: false
+runtime:
+  endpoint: "${AWS_BEDROCK_ENDPOINT:-https://bedrock-runtime.us-east-1.amazonaws.com}"
+  model_url: "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html#%s"
+  api:
+    auth_type: bearer
+    auth_header: "Authorization"
+    auth_prefix: "Bearer "
+    token: "${AWS_BEDROCK_TOKEN}"
+  health_check:
+    path: /v1/models
+    interval: 60s
+    timeout: 10s
+    retries: 3
+capabilities:
+  wire_endpoints: [chat_completions, responses_compat]

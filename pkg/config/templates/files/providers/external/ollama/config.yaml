@@ -1,0 +1,157 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Ollama local LLM app"
+features:
+  vision: {}
+protocol: ollama
+enabled: false  # Enable after installing Ollama
+# No pinned_version: installs resolve the newest upstream release. The tags
+# carry a "v" prefix that is stripped so it substitutes into url_pattern and
+# the version file uniformly.
+version_source:
+  type: github_release
+  repo: ollama/ollama
+  strip_prefix: "v"
+  compare: semver
+  # macOS installs the Homebrew formula (see buildDarwinSteps), and the
+  # formula is what a macOS node can actually reach: it trails the GitHub
+  # release by a day or two. Comparing a Mac against the GitHub tag offers an
+  # upgrade that cannot succeed, so that platform is compared against the
+  # ceiling its own installer has.
+  platforms:
+    darwin:
+      type: homebrew
+      formula: ollama
+      compare: semver
+requirements:
+  disk_space: "3GB"  # full standalone bundle ≈ 2 GB; rocm-only ≈ 350 MB
+  # Ollama bundles CUDA + ROCm runtimes and falls back to CPU at
+  # startup, so the GPU check is informational only. The probe
+  # still runs so operators see a hint when hardware is present
+  # but the driver isn't : but install never aborts.
+  gpu:
+    vendor: nvidia
+    policy: advisory
+
+# Install variants : declarative artifact list used by zzRouter's installer
+# (pkg/prov_apps/install/ollama.go) so download URLs are configuration, not
+# Go-code constants. Selection: platform first, then GPU filter, then CPU/
+# generic fallback (see pkg/prov_apps/install/variant.go).
+#
+# Why standalone CLI zips and NOT OllamaSetup.exe / OllamaSetup.dmg:
+# the Windows desktop installer ships a tray-app wrapper that ignores
+# OLLAMA_HOST set in the shell : clients can't be redirected to zzRouter
+# without registry edits + restarts. The standalone zips are the headless
+# CLI/server binaries that honor OLLAMA_HOST normally (the same shape
+# Linux's `curl|sh` and macOS's `brew install ollama` formula deliver).
+#
+# Asset names are real GitHub release filenames (verified against v0.20.7).
+install_variants:
+  # Windows ARM64: small dedicated build.
+  - id: win-arm64
+    platforms:
+      - {os: windows, arch: arm64}
+    artifact: "ollama-windows-arm64.zip"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+  # Windows AMD64 with AMD GPU: ROCm-only build (~350 MB; the full bundle
+  # is ~2 GB because it includes both CUDA and ROCm runtimes).
+  - id: win-amd64-rocm
+    platforms:
+      - {os: windows, arch: amd64}
+    artifact: "ollama-windows-amd64-rocm.zip"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+    gpu:
+      vendor: amd
+  # Windows AMD64 default: full bundle (CUDA + ROCm + CPU fallback). Used
+  # for NVIDIA, no-GPU, and any non-AMD case. Larger but always works.
+  - id: win-amd64
+    platforms:
+      - {os: windows, arch: amd64}
+    artifact: "ollama-windows-amd64.zip"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+  # Linux resolves its artifact from these variants (buildLinuxSteps), the
+  # same way Windows does. macOS installs the Homebrew formula instead, so
+  # its entry below is unused by the installer and kept for catalog
+  # completeness.
+  - id: linux-amd64-rocm
+    platforms:
+      - {os: linux, arch: amd64}
+    artifact: "ollama-linux-amd64-rocm.tar.zst"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+    gpu:
+      vendor: amd
+  - id: linux-amd64
+    platforms:
+      - {os: linux, arch: amd64}
+    artifact: "ollama-linux-amd64.tar.zst"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+  - id: linux-arm64
+    platforms:
+      - {os: linux, arch: arm64}
+    artifact: "ollama-linux-arm64.tar.zst"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+  - id: darwin-universal
+    platforms:
+      - {os: darwin, arch: arm64}
+      - {os: darwin, arch: amd64}
+    artifact: "ollama-darwin.tgz"
+    url_pattern: "https://github.com/ollama/ollama/releases/download/v{version}/{artifact}"
+search:
+  sort_options: [popular, newest, name]
+  client_sorts: [popular, name, newest]
+  client_filter: true
+  has_tags: true
+service:
+  manager: auto  # auto-detected: systemd | launchd | nssm
+
+capabilities:
+  formats: [gguf]
+  format_note: "ollama"
+  priority: 3
+  # Ollama exposes /v1/chat/completions, /v1/completions, /v1/embeddings
+  # (and its native /api/* surface). No /v1/responses today.
+  wire_endpoints: [chat_completions, completions, embeddings, responses_compat]
+discovery:
+  # LOAD-BEARING: this block is the only discovery.detection rule the
+  # runtime still reads. zzRouter's generic provider-discovery engine was
+  # cut; the one carve-out is the boot-time Ollama probe at
+  # `detect.ProbeOllama` (pkg/prov_apps/detect/ollama.go), which looks
+  # up the endpoint below via `detect.OllamaVersionEndpoint`. If you
+  # remove or rename this block, Ollama auto-enable silently stops
+  # working. Tests in pkg/prov_apps/detect/ollama_test.go guard this.
+  detection:
+    - method: http
+      target: http://localhost:11434/api/version
+      version_path: version
+      platforms: []
+
+defaults:
+  parameters:
+    keep-alive: "5m"
+    num-ctx: "2048"
+    num-gpu: "-1"
+    temperature: "0.8"
+    top-k: "40"
+    top-p: "0.9"
+    min-p: "0"
+    num-predict: "-1"
+    repeat-penalty: "1.1"
+  environment:
+    # Server-level settings (require Ollama restart to take effect)
+    # zzRouter applies these via the detected service manager (systemd/launchd/nssm)
+    OLLAMA_FLASH_ATTENTION: "1"
+    OLLAMA_KV_CACHE_TYPE: "q8_0"
+    OLLAMA_NUM_PARALLEL: "2"
+
+runtime:
+  endpoint: http://localhost:11434
+  model_url: "https://ollama.com/library/%s"
+  # none: the daemon takes no credential, so a caller's zzRouter key stops
+  # at zzRouter. A daemon behind its own auth uses bearer with a token.
+  api:
+    auth_type: none
+  health_check:
+    path: /api/version
+    interval: 30s
+    timeout: 5s
+    retries: 3

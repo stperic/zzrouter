@@ -1,0 +1,109 @@
+# zzRouter Unified Provider Configuration
+# This file combines discovery rules and runtime configuration
+#
+# Format: zzRouter Provider Configuration v1.0
+# - Discovery: How to find and detect providers
+# - Runtime: How to execute and manage providers
+# - Environment: User-configurable settings shared across all operations
+#
+version: "1.0"
+providers:
+  # ==========================================================================
+  # TEST PROVIDER - Dummy LLM for Testing
+  # ==========================================================================
+  test:
+    name: "Test Provider"
+    description: "Dummy OpenAI-compatible provider for testing"
+    protocol: openai
+    mode: on-demand
+    
+    capabilities:
+      priority: 10
+    
+    discovery:
+      detection:
+        - method: file_exists
+          target: ./test-provider/test-provider
+          priority: 1
+          platforms: []
+        
+        - method: executable
+          target: test-provider
+          priority: 2
+          platforms: []
+    
+    runtime:
+      endpoint: http://localhost:9000
+      port_range: [9000, 9009]
+      base_port: 9000
+      keep_alive: 30m
+      
+      execution:
+        type: cli
+        command: ""  # Filled by configurator/discovery
+        args:
+          - "--model"
+          - "${MODEL_PATH}"
+          - "--port"
+          - "${PORT}"
+        working_dir: ""
+     
+      health_check:
+        path: /health
+        interval: 30s
+        timeout: 5s
+        retries: 3
+
+# ============================================================================
+# GLOBAL SETTINGS
+# ============================================================================
+settings:
+
+  # Security settings
+  security:
+    allowed_executable_paths:
+      # Standard Unix/Linux paths
+      - /usr/local/bin/*              # Standard install location
+      - /usr/bin/*                    # System binaries
+      - /bin/*                        # Essential binaries
+      - /opt/*/bin/*                  # Optional software
+      
+      # macOS specific
+      - /opt/homebrew/bin/*           # macOS Homebrew (Apple Silicon)
+      - /usr/local/Cellar/*/bin/*     # macOS Homebrew (Intel)
+      - /Applications/*.app/Contents/MacOS/*  # macOS applications
+      
+      # Linux package managers
+      - /home/linuxbrew/.linuxbrew/bin/*  # Linuxbrew
+      - /snap/bin/*                   # Snap packages
+      
+      # User-level installations
+      - ~/.local/bin/*                # User pip/pipx installs
+      - ~/Library/Python/*/bin/*      # macOS user Python packages
+      - ~/.cargo/bin/*                # Rust binaries (llama.cpp builds)
+      
+      # Python virtual environments (vLLM)
+      - ~/.venv/bin/*                 # Common venv location
+      - ~/venv/bin/*                  # Alternative venv location
+      - .venv/bin/*                   # Project-local venv
+      - venv/bin/*                    # Project-local venv
+      - "*/bin/python*"               # Any Python executable
+      
+      # Conda/Miniconda (vLLM)
+      - ~/miniconda*/bin/*            # Miniconda
+      - ~/anaconda*/bin/*             # Anaconda
+      - /opt/conda/bin/*              # System conda
+      
+      # llama.cpp specific
+      - ~/llama.cpp/build/bin/*       # llama.cpp build directory
+      - /usr/local/llama.cpp/bin/*    # llama.cpp system install
+      
+      # Windows paths (if running under WSL or cross-platform)
+      - /mnt/c/Users/*/AppData/Local/Programs/Python/*/Scripts/*  # Windows Python (WSL)
+      - /mnt/c/Program Files/*/bin/*  # Windows programs (WSL)
+  
+  # Runtime settings
+  runtime:
+    cleanup_on_exit: true
+    cleanup_orphaned_processes: true
+    

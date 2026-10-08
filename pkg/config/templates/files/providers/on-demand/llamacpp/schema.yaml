@@ -1,0 +1,54 @@
+# Long-tail llama.cpp parameters. Go spine carries ctx-size + n-gpu-layers.
+provider: llamacpp
+parameters:
+  threads:
+    type: int
+    min: 1
+    description: Number of CPU threads for decoding
+  batch-size:
+    type: int
+    min: 1
+    description: Logical batch size (prompt processing)
+  ubatch-size:
+    type: int
+    min: 1
+    description: Physical micro-batch size
+  parallel:
+    type: int
+    min: 1
+    description: Number of concurrent completions served per slot
+  flash-attn:
+    type: bool
+    description: Enable flash attention kernels when available
+  verbose:
+    type: bool
+    description: Enable verbose llama-server logging
+  chat-template-file:
+    type: asset
+    description: Jinja chat template overriding the model's own, by asset name
+# Per-endpoint overlay schemas. The resolver applies these on top of the
+# base parameters when an instance is launched for a given endpoint, so
+# the same flag (e.g. "embeddings: true") is only legal under the matching
+# endpoint scope. Agents discover which params apply to each endpoint by
+# fetching GET /providers/llamacpp/schema.
+endpoints:
+  embeddings:
+    parameters:
+      embeddings:
+        type: bool
+        description: Serve the embeddings endpoint (mode-exclusive with chat)
+      pooling:
+        type: string
+        description: Pooling strategy for embeddings
+        enum: [none, mean, cls, last, rank]
+  reranking:
+    parameters:
+      reranking:
+        type: bool
+        description: Serve the reranking endpoint (mode-exclusive with chat)
+
+diagnostics:
+  runtime: llamacpp
+  runtimes:
+    llamacpp: {kernels: prebuilt}
+  memory: {kind: layers, parameter: n-gpu-layers}

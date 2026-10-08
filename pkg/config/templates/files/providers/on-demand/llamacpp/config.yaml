@@ -1,0 +1,204 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "llama.cpp inference engine"
+search:
+  registry: huggingface
+features:
+  vision:
+    default: true
+    files: ["mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-*.gguf"]
+    flag: mmproj
+protocol: openai
+enabled: false
+# pinned_version is release-managed and refreshed on startup.
+# An explicit install-call version overrides this seed.
+# version_source below reports whether upstream has moved on.
+pinned_version: "b10549"
+version_source:
+  type: github_release
+  repo: ggml-org/llama.cpp
+  strip_prefix: "b"
+  compare: build_number
+requirements:
+  disk_space: "500MB"
+  # The installer selects a GPU or CPU variant at install time via
+  # the install_variants block below, so the preflight only reports
+  # driver state : it never blocks. Which GPU build a node gets is
+  # platform-dependent (CUDA on Windows, Vulkan on Linux; see the
+  # note above install_variants), and a node with no usable driver
+  # gets the CPU build and runs on CPU.
+  gpu:
+    vendor: nvidia
+    policy: advisory
+# Install variants : the installer selects the best match for the target node.
+# Asset names are the real GitHub release filenames (verified 2026-08-21 against
+# b10549). Variants are evaluated top-to-bottom; the first GPU-matching variant
+# wins, else the first CPU variant is used. For the CUDA filter to match, the
+# NVIDIA driver's max-supported CUDA runtime (parsed from nvidia-smi's banner
+# by pkg/discovery/gpu) must be >= cuda_min.
+#
+# Linux note: llama.cpp upstream ships neither a Linux CUDA nor a Linux ROCm
+# binary : both NVIDIA and AMD users on Linux get the Vulkan build, which
+# accelerates through the respective driver's Vulkan path.
+# Darwin note: macos-arm64 upstream ships with Metal enabled by default, so
+# the darwin-arm64 variant below IS the GPU build : no explicit GPU filter
+# is needed. Intel Macs fall through to the x64 CPU build.
+install_variants:
+  # Windows + CUDA: llama.cpp ships the binaries and the CUDA runtime
+  # (cuBLAS, cudart) as PEER zips of one release. Both must be extracted
+  # into the same install dir or llama-server.exe fails to load with
+  # 0xc0000005 ACCESS_VIOLATION at startup. The cudart zip filename is
+  # stable across releases (no {version} token).
+  - id: win-amd64-cuda-13.3
+    platforms:
+      - {os: windows, arch: amd64}
+    artifacts:
+      - filename: "llama-{version}-bin-win-cuda-13.3-x64.zip"
+      - filename: "cudart-llama-bin-win-cuda-13.3-x64.zip"
+    gpu:
+      vendor: nvidia
+      cuda_min: "13.0"
+  - id: win-amd64-cuda-12.4
+    platforms:
+      - {os: windows, arch: amd64}
+    artifacts:
+      - filename: "llama-{version}-bin-win-cuda-12.4-x64.zip"
+      - filename: "cudart-llama-bin-win-cuda-12.4-x64.zip"
+    gpu:
+      vendor: nvidia
+      cuda_min: "12.0"
+  - id: win-amd64-rocm
+    platforms:
+      - {os: windows, arch: amd64}
+    artifact: "llama-{version}-bin-win-rocm-7.14-x64.zip"
+    gpu:
+      vendor: amd
+  - id: win-amd64-cpu
+    platforms:
+      - {os: windows, arch: amd64}
+    artifact: "llama-{version}-bin-win-cpu-x64.zip"
+  - id: win-arm64-cpu
+    platforms:
+      - {os: windows, arch: arm64}
+    artifact: "llama-{version}-bin-win-cpu-arm64.zip"
+  # AMD on Linux uses the Vulkan build: upstream stopped publishing a Linux
+  # ROCm asset, and Vulkan is the only GPU path it still ships for Linux.
+  - id: linux-amd64-vulkan-amd
+    platforms:
+      - {os: linux, arch: amd64}
+    artifact: "llama-{version}-bin-ubuntu-vulkan-x64.tar.gz"
+    gpu:
+      vendor: amd
+  - id: linux-amd64-vulkan
+    platforms:
+      - {os: linux, arch: amd64}
+    artifact: "llama-{version}-bin-ubuntu-vulkan-x64.tar.gz"
+    gpu:
+      vendor: nvidia
+  - id: linux-amd64
+    platforms:
+      - {os: linux, arch: amd64}
+    artifact: "llama-{version}-bin-ubuntu-x64.tar.gz"
+  - id: linux-arm64
+    platforms:
+      - {os: linux, arch: arm64}
+    artifact: "llama-{version}-bin-ubuntu-arm64.tar.gz"
+  - id: darwin-arm64
+    platforms:
+      - {os: darwin, arch: arm64}
+    artifact: "llama-{version}-bin-macos-arm64.tar.gz"
+  - id: darwin-amd64
+    platforms:
+      - {os: darwin, arch: amd64}
+    artifact: "llama-{version}-bin-macos-x64.tar.gz"
+capabilities:
+  formats: [gguf]
+  priority: 5
+  # GGUF variant picked when /runs auto_deploy=true and the source repo
+  # carries multiple quants (Q4_K_M / Q8_0 / fp16 / …). Skipped when the
+  # repo name itself encodes the quant (e.g. *-GGUF-Q8_0 repos).
+  default_variant: "Q4_K_M"
+  # Wire endpoints llama-server natively serves. /v1/responses absent :
+  # see ggml-org/llama.cpp#14702. Router uses translation shim for it.
+  wire_endpoints: [chat_completions, completions, embeddings, messages, responses_compat]
+
+defaults:
+  parameters:
+    ctx-size: "8192"
+  metadata:
+    shutdown_timeout: "gpu"
+    context_param: "ctx-size"
+  # llama-server is mode-exclusive: a process started without --embeddings
+  # 500s on /v1/embeddings ("This server does not support embeddings"). The
+  # endpoint-aware launch arc keys instances by (provider, model, endpoint)
+  # so we overlay the right flag at launch time per request.
+  endpoints:
+    embeddings:
+      parameters:
+        embeddings: "true"
+    reranking:
+      parameters:
+        reranking: "true"
+
+# model_defaults: what a model family needs on this engine, keyed by a
+# name pattern tried against the full model name and its last path element.
+# zzRouter owns this block and rewrites it on start, like execution. Every
+# operator tier (models, nodes, node x model, request) resolves above it:
+# set the key under models.<model> to change it, or to "auto" to drop it.
+model_defaults:
+  # Qwen3.8's stock template raises on a system message after the first
+  # turn, which agent clients (Claude Code over /v1/messages) send. This
+  # one accepts system and developer messages anywhere and renders tool
+  # calls; plain chat renders the same.
+  "qwen3.8-*":
+    parameters:
+      chat-template-file: qwen3.8-system-anywhere.jinja
+
+runtime:
+  port_range: [8080, 8089]
+  base_port: 8080
+  keep_alive: 30m
+  max_concurrent_requests: 1  # Single model slot by default (override with --parallel)
+
+  execution:
+    type: cli
+    # Relative name. Every node resolves it at spawn time against its
+    # own providers/<name>/bin/ or venv/bin/, so this file stays valid
+    # on every host the cluster shares it with.
+    command: llama-server
+    args:
+      - "--model"
+      - "${MODEL_PATH}"
+      - "--alias"
+      - "${MODEL}"  # clean model name for response.model echo (avoids .gguf suffix leak from filename)
+      - "--host"
+      - "127.0.0.1"  # loopback-only; zzrouter-node proxies external requests
+      - "--port"
+      - "${PORT}"
+    working_dir: ./models
+    # --alias makes llama-server echo the client-facing name instead of the
+    # .gguf filename.
+    wire_model: name
+
+  health_check:
+    path: /health
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    readiness_probe:
+      logPatterns:
+        success:
+          # llama-server's banner has moved across builds; match every
+          # spelling we've seen so a rebuilt engine doesn't go unnoticed.
+          - pattern: "listening on http"
+            isRegex: false
+          - pattern: "HTTP server listening"
+            isRegex: false
+          - pattern: "llama server listening"
+            isRegex: false
+        failure:
+          - pattern: "error:"
+            isRegex: false
+          - pattern: "out of memory"
+            isRegex: false
+      timeout: 120s

@@ -1,0 +1,10 @@
+# Embedded YAML + JSON Schema files must stay on LF — they're read through
+# embed.FS at runtime and we hash/concat their contents in tests. Letting
+# Git's autocrlf flip them to CRLF on Windows clones breaks determinism.
+pkg/config/templates/files/providers/**.yaml text eol=lf
+pkg/config/templates/files/*.yaml           text eol=lf
+pkg/config/schema/*.json                    text eol=lf
+pkg/config/schema/*.go                      text eol=lf
+
+# SSE fixtures retain the blank line that terminates their final frame.
+pkg/protocol/anthropic/testdata/*.sse whitespace=-blank-at-eof

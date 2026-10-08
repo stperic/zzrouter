@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zzfactor.io/schemas/external.schema.json",
+  "title": "zzRouter external daemon provider",
+  "description": "A daemon that runs independently (today: ollama). zzRouter connects to it but never launches it per model.",
+  "type": "object",
+  "required": ["protocol", "runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vision": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "flag": {
+              "type": "string"
+            },
+            "when": {
+              "type": "string"
+            },
+            "runtime": {
+              "type": "string"
+            },
+            "execution": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "enum": [
+                    "cli",
+                    "python"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "working_dir": {
+                  "type": "string"
+                },
+                "wire_model": {
+                  "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
+                  "enum": [
+                    "name",
+                    "path"
+                  ]
+                }
+              }
+            },
+            "wire_endpoints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude_parameters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "protocol": { "enum": ["openai", "ollama"] },
+    "enabled": { "type": "boolean" },
+    "pinned_version": { "type": "string" },
+    "version_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "Where upstream publishes this provider's releases. An identifier, never a URL: each type owns a fixed URL template.",
+      "properties": {
+        "type": { "enum": ["github_release", "pypi", "homebrew"] },
+        "repo": { "type": "string", "description": "owner/name, for github_release" },
+        "package": { "type": "string", "description": "distribution name, for pypi" },
+        "formula": { "type": "string", "description": "Homebrew formula name, for homebrew" },
+        "strip_prefix": { "type": "string", "description": "trimmed from the upstream tag before comparison" },
+        "compare": { "enum": ["semver", "pep440", "build_number", "opaque"] },
+        "platforms": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type"],
+            "properties": {
+              "type": { "enum": ["github_release", "pypi", "homebrew"] },
+              "repo": { "type": "string" },
+              "package": { "type": "string" },
+              "formula": { "type": "string" },
+              "strip_prefix": { "type": "string" },
+              "compare": { "enum": ["semver", "pep440", "build_number", "opaque"] }
+            }
+          },
+          "description": "Replaces the whole source for nodes on a given GOOS. Use when a platform installs through a packager whose ceiling is its own."
+        }
+      }
+    },
+    "install_variants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "platforms"],
+        "oneOf": [
+          { "required": ["artifact"] },
+          { "required": ["artifacts"] }
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "artifact": { "type": "string", "minLength": 1 },
+          "artifacts": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["filename"],
+              "additionalProperties": false,
+              "properties": {
+                "filename": { "type": "string", "minLength": 1 },
+                "url_pattern": { "type": "string" }
+              }
+            }
+          },
+          "url_pattern": { "type": "string" },
+          "platforms": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["os", "arch"],
+              "additionalProperties": false,
+              "properties": {
+                "os": { "enum": ["windows", "linux", "darwin"] },
+                "arch": { "enum": ["amd64", "arm64"] }
+              }
+            }
+          },
+          "gpu": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "vendor": { "enum": ["nvidia", "amd", "apple", ""] },
+              "cuda_min": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "disk_space": { "type": "string" },
+        "python": {
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "min": { "type": "string" },
+                "max": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "vendor": { "enum": ["nvidia", "amd", "apple", ""] },
+            "policy": { "enum": ["advisory", "required", ""] }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "formats": { "type": "array", "items": { "type": "string" } },
+        "format_note": { "type": "string" },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "priority": { "type": "integer", "minimum": 0 },
+        "wire_endpoints": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["chat_completions", "completions", "embeddings", "messages", "rerank", "responses", "responses_compat", "messages_compat"] },
+          "minItems": 1
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "detection": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["method", "target"],
+            "additionalProperties": false,
+            "properties": {
+              "method": { "enum": ["http", "executable", "python_module", "file"] },
+              "target": { "type": "string" },
+              "priority": { "type": "integer" },
+              "platforms": { "type": "array", "items": { "type": "string" } },
+              "version_command": { "type": "string" },
+              "version_path": { "type": "string" },
+              "version_pattern": { "type": "string" }
+            }
+          }
+        },
+        "runtime": { "type": "array" }
+      }
+    },
+    "defaults": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "parameters": { "type": "object", "additionalProperties": { "type": "string" } },
+        "environment": { "type": "object", "additionalProperties": { "type": "string" } },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "process_patterns": { "type": "array", "items": { "type": "string" } },
+            "startup_patterns": { "type": "array", "items": { "type": "string" } },
+            "shutdown_timeout": { "type": "string" },
+            "processor_type": { "type": "string" },
+            "context_param": { "type": "string" }
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "parameters": { "type": "object", "additionalProperties": { "type": "string" } },
+          "environment": { "type": "object", "additionalProperties": { "type": "string" } }
+        }
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "parameters": { "type": "object", "additionalProperties": { "type": "string" } },
+          "environment": { "type": "object", "additionalProperties": { "type": "string" } },
+          "models": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "parameters": { "type": "object", "additionalProperties": { "type": "string" } },
+                "environment": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "required": ["manager"],
+      "additionalProperties": false,
+      "properties": {
+        "manager": { "enum": ["auto", "systemd", "launchd", "nssm", "none"] }
+      }
+    },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": { "type": "string" },
+        "sort_options": { "type": "array", "items": { "type": "string" } },
+        "client_sorts": { "type": "array", "items": { "type": "string" } },
+        "client_filter": { "type": "boolean" },
+        "has_tags": { "type": "boolean" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["endpoint"],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "type": "string" },
+        "model_url": { "type": "string" },
+        "keep_alive": { "type": "string" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "api" }
+          }
+        },
+        "api": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "auth_type": { "enum": ["bearer", "api-key", "custom", "none", ""] },
+            "auth_header": { "type": "string" },
+            "auth_prefix": { "type": "string" },
+            "token": { "type": "string" },
+            "custom_headers": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "health_check": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "interval": { "type": "string" },
+            "timeout": { "type": "string" },
+            "retries": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

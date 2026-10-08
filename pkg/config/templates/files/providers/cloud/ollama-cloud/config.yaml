@@ -1,0 +1,21 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Hosted Ollama inference API"
+enabled: false
+search:
+  registry: ollama
+runtime:
+  endpoint: https://ollama.com
+  model_url: "https://ollama.com/library/%s"
+  api:
+    auth_type: bearer
+    auth_header: "Authorization"
+    auth_prefix: "Bearer "
+    token: "${OLLAMA_API_KEY}"
+  health_check:
+    path: /v1/models
+    interval: 60s
+    timeout: 10s
+    retries: 3
+capabilities:
+  wire_endpoints: [chat_completions, completions, embeddings, responses_compat]

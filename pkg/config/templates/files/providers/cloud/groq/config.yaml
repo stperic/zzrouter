@@ -1,0 +1,19 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Ultra-fast LPU inference engine"
+enabled: false
+runtime:
+  endpoint: https://api.groq.com/openai
+  model_url: "https://console.groq.com/docs/models#%s"
+  api:
+    auth_type: bearer
+    auth_header: "Authorization"
+    auth_prefix: "Bearer "
+    token: "${GROQ_API_KEY}"
+  health_check:
+    path: /v1/models
+    interval: 60s
+    timeout: 10s
+    retries: 3
+capabilities:
+  wire_endpoints: [chat_completions, completions, responses_compat]

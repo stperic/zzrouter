@@ -1,0 +1,47 @@
+# Long-tail vLLM parameters. Go spine in pkg/prov_apps/schema/registry.go
+# carries launcher-load-bearing shape (max-model-len, gpu-memory-utilization,
+# tensor-parallel-size, dtype). Everything here augments it.
+provider: vllm
+parameters:
+  enable-chunked-prefill:
+    type: bool
+    description: Enable chunked prefill for long contexts
+  swap-space:
+    type: int
+    min: 0
+    description: CPU swap space in GiB per GPU (offloads activations)
+  max-num-seqs:
+    type: int
+    min: 1
+    description: Maximum concurrent sequences vLLM batches per forward pass
+  quantization:
+    type: string
+    description: Quantization scheme (awq | gptq | fp8 | ...)
+  rope-scaling:
+    type: string
+    description: RoPE scaling strategy (linear | dynamic | yarn)
+  block-size:
+    type: int
+    min: 1
+    description: KV cache block size in tokens
+  chat-template:
+    type: asset
+    description: Jinja chat template overriding the model's own, by asset name
+
+diagnostics:
+  runtime: vllm
+  runtimes:
+    vllm:
+      imports: [torch, torchaudio, torchvision, vllm.entrypoints.cli.main, vllm.entrypoints.openai.api_server, vllm.v1.engine.core, flashinfer.comm.fd_exchange]
+      packages: [vllm, torch, torchaudio, torchvision, flashinfer-python, flashinfer-cubin, flashinfer-jit-cache]
+      checks: [pip_check, imports, cuda_companions, cuda_available]
+      kernels: prebuilt_or_jit
+      toolkit_minimum: {"12": "12.9"}
+      workaround: {VLLM_USE_FLASHINFER_SAMPLER: "0"}
+  memory:
+    kind: fraction_total
+    parameter: gpu-memory-utilization
+    device_count_parameter: tensor-parallel-size
+    # auto reserves max(2048 MiB, ceil(5% of total)) per GPU by default.
+    # Release-owned metadata: positive MiB overrides it; zero/omitted uses the default.
+    # auto_safety_margin_mib: 8192

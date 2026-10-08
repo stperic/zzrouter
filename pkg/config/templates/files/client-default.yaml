@@ -1,0 +1,88 @@
+# =============================================================================
+# zzRouter Client Configuration
+# =============================================================================
+# This is the default client configuration. Copy and customize as needed.
+# Config file: cli.yaml 
+
+# =============================================================================
+# SERVER CONNECTION
+# =============================================================================
+# Connection settings for the zzRouter server
+# Authentication selects a protected environment variable containing a key.
+# Use a generated high-entropy credential; do not use example keys.
+server:
+  address: "localhost"                 # Server address (hostname or IP)
+  port: 9090                           # Server port (default: 9090)
+  secure: false                        # Use HTTPS (true for production)
+  apiKeyEnv: "ZZROUTER_ADMIN_API_KEY"      # Env var name for authentication key (value stored in .env)
+#
+# address options:
+#   "localhost" - Local server (default for development)
+#   "192.168.1.100" - Specific IP address
+#   "my-server.com" - Domain name
+#
+# port options:
+#   9090 - Default zzRouter port
+#   Any port 1024-65535 (must match server port)
+#
+# secure options:
+#   false - HTTP connection (development)
+#   true - HTTPS connection (production recommended)
+#
+# apiKeyEnv (Client Authentication):
+#   - Provides access to zzRouter server APIs
+#   - The environment variable holds the credential, not its name.
+#   - Use an admin credential for management and a separate key for inference.
+#   - Must match one of the keys configured on the server
+#   - PRODUCTION: Use environment variable like "ZZROUTER_CLIENT_KEY"
+#   - Use generated credentials with at least 32 characters.
+
+# =============================================================================
+# CLIENT PREFERENCES
+# =============================================================================
+# User interface and behavior settings
+preferences:
+  editor: ""                           # Preferred editor (optional, auto-detected if empty)
+  emoji: "auto"                        # Emoji display: auto, on, off
+#
+# editor options (optional):
+#   "" - Auto-detect from system (nano, vim, notepad, etc.) [RECOMMENDED]
+#   "nano" - Use nano editor (if available)
+#   "vim" - Use vim editor (if available)
+#   "code" - Use VS Code (if available)
+#   If specified editor is not available, falls back to auto-detection
+#   Environment variables (ZZROUTER_EDITOR, EDITOR, VISUAL) override this setting
+#
+# emoji options:
+#   "auto" - Detect terminal capability automatically [RECOMMENDED]
+#   "on" - Always show emojis (force enable)
+#   "off" - Never show emojis (use ASCII fallbacks like [OK], [O], [HF])
+#
+# =============================================================================
+# CHAT SESSION SETTINGS (nested under preferences)
+# =============================================================================
+# These settings persist across chat sessions and can be toggled with /commands
+  chat:
+    verbose: false                       # Show LLM stats (toggle: /verbose)
+    thinking: false                      # Show thinking/reasoning (toggle: /thinking)
+    system_prompt: ""                    # Default system prompt (set: /system <msg>)
+    temperature: 0.7                     # Sampling temperature 0.0-2.0 (set: /temperature <n>)
+    top_p: -1                            # Nucleus sampling 0.0-1.0, -1 = not sent (set: /top_p <n>)
+    max_tokens: 0                        # Max response tokens, 0 = unlimited (set: /max_tokens <n>)
+#
+# =============================================================================
+# MODEL SEARCH SETTINGS (nested under preferences)
+# =============================================================================
+# Advanced filtering and search preferences for model discovery
+# In interactive search mode (zzrouter search -i), press 't' to cycle through these filters
+  search:
+    model_tags:                       # Filter models by tags (press 't' to toggle)
+      - tags: ["gguf"]                # GGUF format (CPU/GPU optimized, quantized)
+        logic: "AND"                  # Logic: AND, OR
+      - tags: ["mlx"]                 # MLX format (Apple Silicon optimized)
+        logic: "AND"                  # Logic: AND, OR
+      - tags: ["safetensors"]         # Safetensors format (PyTorch/HuggingFace)
+        logic: "AND"                  # Logic: AND, OR
+      - tags: ["pytorch"]             # PyTorch format (native PyTorch models)
+        logic: "AND"                  # Logic: AND, OR
+    default_logic: "AND"              # Default logic for multiple tags

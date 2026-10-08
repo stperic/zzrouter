@@ -1,0 +1,18 @@
+# Copy to an ignored local overlay and replace addresses and SSH settings.
+# Set ZZROUTER_E2E_SITES to the copied file for an SSH profile.
+cluster:
+  coordinator:
+    name: coord
+    address: 198.51.100.10
+    api_port: 9090
+    cluster_port: 9091
+  workers:
+    - name: worker-1
+      address: 192.0.2.10
+      api_port: 9090
+      cluster_port: 9091
+      tags: [gpu, cuda]
+      ssh:
+        host: 192.0.2.10
+        port: 22
+        user: operator

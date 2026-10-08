@@ -1,0 +1,36 @@
+# Long-tail MLX parameters. Go spine carries max-tokens.
+provider: mlx
+parameters:
+  temperature:
+    type: float
+    min: 0.0
+    description: Sampling temperature
+  top-p:
+    type: float
+    min: 0.0
+    max: 1.0
+    description: Nucleus sampling probability mass
+  trust-remote-code:
+    type: bool
+    description: Execute custom modeling code shipped with the HF repo
+  chat-template:
+    type: asset
+    # mlx_lm.server sets the tokenizer's chat_template to this flag's
+    # argument verbatim, so it takes the template's text, not a path.
+    pass: content
+    description: Jinja chat template overriding the model's own, by asset name
+
+diagnostics:
+  runtime: mlx
+  runtimes:
+    mlx:
+      imports: [mlx.core, mlx_lm.server]
+      packages: [mlx, mlx-lm, transformers, tokenizers, safetensors]
+      checks: [pip_check, imports, metal_available]
+      kernels: prebuilt_or_jit
+    mlx-vlm:
+      imports: [mlx.core, mlx_vlm.server]
+      packages: [mlx, mlx-vlm, transformers, tokenizers, safetensors]
+      checks: [pip_check, imports, metal_available]
+      kernels: prebuilt_or_jit
+  memory: {kind: unified}

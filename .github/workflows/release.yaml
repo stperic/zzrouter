@@ -1,0 +1,329 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Default-minimal top-level permissions. The build matrix only reads source;
+# only sign-and-release needs write + OIDC. Per-job grants below.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.26.2'
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: bash .github/scripts/release-version.sh
+
+      - name: Build binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          MAJOR=${{ steps.version.outputs.major }}
+          MINOR=${{ steps.version.outputs.minor }}
+          PATCH=${{ steps.version.outputs.patch }}
+          PRERELEASE=${{ steps.version.outputs.prerelease }}
+
+          LDFLAGS="-s -w"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.Major=$MAJOR"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.Minor=$MINOR"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.Patch=$PATCH"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.PreRelease=$PRERELEASE"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GitCommit=$GITHUB_SHA"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GitBranch=${GITHUB_REF#refs/heads/}"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.GoVersion=$(go version | cut -d' ' -f3)"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.Platform=${{ matrix.goos }}/${{ matrix.goarch }}"
+          LDFLAGS="$LDFLAGS -X github.com/stperic/zzrouter/pkg/version.BuildUser=github-actions"
+
+          # Determine binary extension
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+          fi
+
+          # Build zzrouter client
+          echo "Building zzrouter..."
+          go build -ldflags "$LDFLAGS" -o "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/zzrouter
+
+          # Build zzrouter-launcher. The node hashes it at build time and
+          # refuses a launcher that does not match, so the two have to be
+          # built and shipped together : see `make build-server`.
+          echo "Building zzrouter-launcher..."
+          LAUNCHER="zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          go build -ldflags "$LDFLAGS" -o "$LAUNCHER" ./cmd/zzrouter-launcher
+
+          # sha256sum on linux and Git Bash, shasum on the macOS runners.
+          if command -v sha256sum >/dev/null 2>&1; then
+            LAUNCHER_SHA=$(sha256sum "$LAUNCHER" | cut -d' ' -f1)
+          else
+            LAUNCHER_SHA=$(shasum -a 256 "$LAUNCHER" | cut -d' ' -f1)
+          fi
+          if [ -z "$LAUNCHER_SHA" ]; then
+            echo "ERROR: launcher SHA256 is empty : refusing to build a release server without an integrity hash" >&2
+            exit 1
+          fi
+          echo "Launcher SHA256: $LAUNCHER_SHA"
+
+          # Build zzrouter-node server. -tags release turns a missing
+          # launcher hash into a hard failure at run time instead of a
+          # warn-and-continue, which is the whole point of embedding one.
+          echo "Building zzrouter-node..."
+          go build -tags release \
+            -ldflags "$LDFLAGS -X github.com/stperic/zzrouter/pkg/prov_apps/process.LauncherSHA256=$LAUNCHER_SHA" \
+            -o "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" ./cmd/zzrouter-node
+
+      - name: Create archive
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+          fi
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            # Windows: Create zip
+            7z a "dist/zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}.zip" \
+              "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              "zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          else
+            # Unix: Create tar.gz
+            tar -czvf "dist/zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
+              "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              "zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
+              "zzrouter-node-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 1
+
+  sign-and-release:
+    name: Sign and Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release, upload assets
+      id-token: write   # sigstore OIDC keyless signing
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts/ -type f | sort
+
+      # SBOM generation uses the `app` subcommand (per CycloneDX guidance for
+      # distributed binaries): each SBOM reflects the actual import graph of
+      # a main package under the build tags / GOOS we ship, not the full
+      # go.mod dependency graph. We emit one SBOM per shipped binary so
+      # downstream SCA tooling can reason about each artifact individually.
+      # SBOMs are produced BEFORE `Generate checksums` so their SHA256 is
+      # covered by the cosign-signed checksums.txt (integrity anchor), and
+      # they are ALSO cosign-signed directly below for stronger per-file
+      # attestation that does not depend on checksums.txt ordering.
+      # cyclonedx-gomod version pinned for supply-chain reproducibility;
+      # Dependabot bumps it in lockstep with the rest of the gomod set.
+      - name: Install cyclonedx-gomod
+        env:
+          GOPROXY: https://proxy.golang.org,direct
+        run: go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.10.0
+
+      - name: Generate per-binary SBOMs (CycloneDX)
+        working-directory: ${{ github.workspace }}
+        run: |
+          cyclonedx-gomod app \
+            -json \
+            -licenses \
+            -main cmd/zzrouter \
+            -output artifacts/sbom.zzrouter.cyclonedx.json
+          cyclonedx-gomod app \
+            -json \
+            -licenses \
+            -main cmd/zzrouter-launcher \
+            -output artifacts/sbom.zzrouter-launcher.cyclonedx.json
+          cyclonedx-gomod app \
+            -json \
+            -licenses \
+            -main cmd/zzrouter-node \
+            -output artifacts/sbom.zzrouter-node.cyclonedx.json
+          echo "SBOMs generated:"
+          ls -la artifacts/sbom.*.cyclonedx.json
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          # Positive check: if no matching files exist, fail loudly instead of
+          # publishing an empty/partial checksums.txt. `|| true` would mask a
+          # missing-artifact bug until release consumers reported it.
+          sha256sum *.tar.gz *.zip sbom.*.cyclonedx.json > checksums.txt
+          test -s checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+        with:
+          cosign-release: v2.5.2
+
+      - name: Sign checksums (keyless)
+        run: |
+          cd artifacts
+          cosign sign-blob --yes \
+            --new-bundle-format \
+            --bundle checksums.txt.sigstore.json \
+            --output-signature checksums.txt.sig \
+            --output-certificate checksums.txt.pem \
+            checksums.txt
+
+          cosign verify-blob --new-bundle-format \
+            --bundle checksums.txt.sigstore.json \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yaml@${{ github.ref }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            checksums.txt
+
+          echo "Signature created:"
+          ls -la checksums.txt*
+
+      # Per-SBOM signatures: stronger than "hash is in signed checksums.txt"
+      # because consumers can verify an SBOM in isolation without fetching
+      # checksums.txt. Keeps the SBOM trust chain independent of filename
+      # ordering in the checksums file.
+      - name: Sign SBOMs (keyless)
+        run: |
+          cd artifacts
+          for sbom in sbom.*.cyclonedx.json; do
+            cosign sign-blob --yes \
+              --output-signature "${sbom}.sig" \
+              --output-certificate "${sbom}.pem" \
+              "${sbom}"
+          done
+          echo "SBOM signatures created:"
+          ls -la sbom.*.cyclonedx.json*
+
+      - name: Get version info
+        id: version
+        run: bash .github/scripts/release-version.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          name: zzRouter v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ steps.version.outputs.is_prerelease }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+            artifacts/sbom.zzrouter.cyclonedx.json
+            artifacts/sbom.zzrouter.cyclonedx.json.sig
+            artifacts/sbom.zzrouter.cyclonedx.json.pem
+            artifacts/sbom.zzrouter-launcher.cyclonedx.json
+            artifacts/sbom.zzrouter-launcher.cyclonedx.json.sig
+            artifacts/sbom.zzrouter-launcher.cyclonedx.json.pem
+            artifacts/sbom.zzrouter-node.cyclonedx.json
+            artifacts/sbom.zzrouter-node.cyclonedx.json.sig
+            artifacts/sbom.zzrouter-node.cyclonedx.json.pem
+            artifacts/checksums.txt
+            artifacts/checksums.txt.sigstore.json
+            artifacts/checksums.txt.sig
+            artifacts/checksums.txt.pem
+          body: |
+            ## Installation
+
+            Archives contain the client, node and matching process launcher.
+            Install all three together. Available platforms: linux-amd64,
+            linux-arm64, darwin-amd64, darwin-arm64 and windows-amd64.
+
+            On Linux/macOS, choose your platform and verify before installing:
+
+            ```sh
+            set -eu
+            PLATFORM=linux-amd64
+            VERSION=v${{ steps.version.outputs.version }}
+            BASE="https://github.com/${{ github.repository }}/releases/download/$VERSION"
+            for file in "zzrouter-$PLATFORM.tar.gz" checksums.txt checksums.txt.sigstore.json; do
+              curl -fLO "$BASE/$file"
+            done
+            cosign verify-blob --new-bundle-format \
+              --bundle checksums.txt.sigstore.json \
+              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yaml@refs/tags/$VERSION" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+            EXPECTED=$(awk -v name="zzrouter-$PLATFORM.tar.gz" '$2 == name {print $1}' checksums.txt)
+            test -n "$EXPECTED"
+            printf '%s  %s\n' "$EXPECTED" "zzrouter-$PLATFORM.tar.gz" | shasum -a 256 -c -
+            tar -xzf "zzrouter-$PLATFORM.tar.gz"
+            for bin in zzrouter zzrouter-node zzrouter-launcher; do
+              sudo install -m 0755 "$bin-$PLATFORM" "/usr/local/bin/$bin"
+            done
+            ```
+
+            See [Windows and service installation](https://github.com/${{ github.repository }}/blob/v${{ steps.version.outputs.version }}/docs/install.md).
+
+            ## Integrity and updates
+
+            `checksums.txt.sigstore.json` authenticates the exact release tag
+            through GitHub Actions. Per-binary CycloneDX SBOMs and their
+            signatures are included alongside the archives.
+
+            Check or apply a compatible update with `zzrouter-node update check`
+            and `zzrouter-node update apply`. Follow the protocol maintenance
+            procedure before upgrading incompatible cluster peers.

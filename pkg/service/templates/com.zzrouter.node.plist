@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.zzrouter.node</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{.BinaryPath}}</string>
+        <string>start</string>
+        <string>--no-setup</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>{{.ConfigDir}}</string>
+
+    <key>StandardOutPath</key>
+    <string>{{.LogDir}}/output.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{.LogDir}}/error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ZZROUTER_CONFIG_DIR</key>
+        <string>{{.ConfigDir}}</string>
+    </dict>
+
+    <!-- Resource limits -->
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <!-- Restart on crash -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

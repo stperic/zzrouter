@@ -1,0 +1,155 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "vLLM high-performance inference engine"
+features:
+  vision: {}
+install:
+  runtimes:
+    vllm:
+      package: vllm
+      startup_import: vllm.entrypoints.openai.api_server
+      version_constraint: ""
+      indexes: {primary: https://pypi.org/simple, extra: []}
+      companions:
+        torch: {constraint: "", build: cuda}
+        torchaudio: {constraint: "", build: cuda}
+        torchvision: {constraint: "", build: cuda}
+        nvidia-cuda-nvcc: {constraint: "==13.0.88", build: none}
+        nvidia-nvvm: {constraint: "==13.0.88", build: none}
+        nvidia-cuda-crt: {constraint: "==13.0.88", build: none}
+        nvidia-cuda-runtime: {constraint: "==13.0.96", build: none}
+        nvidia-cuda-cccl: {constraint: "==13.0.85", build: none}
+      verify:
+        imports: [torch, torchaudio, torchvision, vllm.entrypoints.cli.main, vllm.entrypoints.openai.api_server, vllm.v1.engine.core, flashinfer.comm.fd_exchange]
+        checks: [pip_check, imports, cuda_companions, cuda_available, managed_toolkit]
+      only_binary: true
+      timeout: 90m
+      toolkit: cuda13
+protocol: openai
+search:
+  registry: huggingface
+enabled: false
+# pinned_version is release-managed and refreshed on startup.
+# An explicit install-call version overrides this seed.
+# version_source below reports whether upstream has moved on.
+#
+# PyPI is the source rather than GitHub releases because pip resolves against
+# PyPI, so that is what an install actually receives. What it reports is the
+# latest *published* version; whether a given node can install it depends on
+# that node's Python minor and the torch wheel matrix (see requirements.python).
+pinned_version: "0.29.0"
+version_source:
+  type: pypi
+  package: vllm
+  # pep440, not semver: PyPI identifiers can carry an epoch, extra release
+  # segments, or a .postN suffix, and a semver parser silently drops those.
+  compare: pep440
+# vLLM is published as Linux/amd64 wheels only : torch+CUDA matrix doesn't
+# ship for darwin or arm64. Install on any other platform fails fast.
+platforms:
+  - {os: linux, arch: amd64}
+requirements:
+  disk_space: "10GB"
+  # vLLM refuses to start without a working NVIDIA driver stack,
+  # so the preflight gates hard : install is aborted if the
+  # probe returns anything other than StateDriverOK.
+  gpu:
+    vendor: nvidia
+    policy: required
+  # vLLM's torch wheel matrix is minor-sensitive : each vllm release
+  # lists explicit wheels for a closed set of Python minors. 3.13
+  # wheels landed in vllm 0.17; 3.14 wheels are not yet published.
+  # Max=3.14 rejects the as-yet-unsupported minor at preflight time,
+  # which matters on Linux hosts where the distro's `python3` alias
+  # can outrun vllm's supported set (same failure class as the MLX
+  # Homebrew-drift incident that motivated this range schema).
+  python:
+    min: "3.9"
+    max: "3.14"
+capabilities:
+  formats: [safetensors, pytorch, hf_transformers]
+  # vLLM serves /v1/responses for single-turn requests (multi-turn
+  # via previous_response_id is incomplete : vllm-project/vllm#33089).
+  # Listed so the router passes through; clients hitting multi-turn
+  # bugs surface them upstream rather than getting a translated
+  # answer that drifts from native vLLM behavior.
+  # The Anthropic Messages API is translated (messages_compat), which
+  # works on every vLLM. vLLM now serves /v1/messages itself, but its
+  # native endpoint rejects the system/ctx/msg turns Claude Code sends
+  # from 2.1.154 (vllm-project/vllm#44000, seen on 0.20.1); declare
+  # messages instead only on a vLLM verified to accept them.
+  wire_endpoints: [chat_completions, completions, embeddings, responses, messages_compat]
+
+defaults:
+  parameters:
+    gpu-memory-utilization: "0.95"
+    tensor-parallel-size: "1"
+    enable-chunked-prefill: "true"
+    max-model-len: "8192"
+  environment:
+    # Disable V1 multiprocessing for single-GPU setups : avoids gloo/IPv6 issues entirely.
+    # For multi-GPU (tensor-parallel-size > 1), remove this or set to "1".
+    VLLM_ENABLE_V1_MULTIPROCESSING: "0"
+    # Use spawn (not fork) : fork is broken on macOS and unsafe with CUDA
+    VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+    # Explicit IPv4 loopback : prevents gloo from attempting IPv6 socket creation
+    VLLM_HOST_IP: "127.0.0.1"
+  metadata:
+    shutdown_timeout: "gpu"
+    processor_type: "GPU"
+    context_param: "max-model-len"
+
+# model_defaults: what a model family needs on this engine, keyed by a
+# name pattern tried against the full model name and its last path element.
+# zzRouter owns this block and rewrites it on start, like execution. Every
+# operator tier (models, nodes, node x model, request) resolves above it:
+# set the key under models.<model> to change it, or to "auto" to drop it.
+model_defaults:
+  # Qwen3.8's stock template raises on a system message after the first
+  # turn, which agent clients (Claude Code over /v1/messages) send. This
+  # one accepts system and developer messages anywhere and renders tool
+  # calls; plain chat renders the same.
+  "qwen3.8-*":
+    parameters:
+      chat-template: qwen3.8-system-anywhere.jinja
+
+runtime:
+  port_range: [8000, 8009]
+  base_port: 8000
+  keep_alive: 30m
+  max_concurrent_requests: 8  # vLLM handles concurrent batching via --max-num-seqs
+
+  execution:
+    type: cli
+    command: vllm
+    args:
+      - "serve"
+      - "${MODEL_PATH}"
+      - "--host"
+      - "127.0.0.1"  # loopback-only; zzrouter-node proxies external requests
+      - "--port"
+      - "${PORT}"
+      - "--served-model-name"
+      - "${MODEL}"
+    working_dir: ./models
+    # --served-model-name makes vLLM answer to the client-facing name.
+    wire_model: name
+
+  health_check:
+    path: /v1/models
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    readiness_probe:
+      logPatterns:
+        success:
+          - pattern: "Application startup complete"
+            isRegex: false
+          - pattern: "Uvicorn running on"
+            isRegex: false
+        failure:
+          - pattern: "RuntimeError:"
+            isRegex: false
+          - pattern: "out of memory"
+            isRegex: false
+      timeout: 300s  # vLLM first-run compiles CUDA graphs (~2-3 min)

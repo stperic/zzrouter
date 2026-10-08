@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zzfactor.io/schemas/registry.schema.json",
+  "title": "zzRouter search registry",
+  "description": "A search-only catalog (today: huggingface). Never serves inference.",
+  "type": "object",
+  "required": ["runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "search": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": { "type": "string" },
+        "sort_options": { "type": "array", "items": { "type": "string" } },
+        "client_sorts": { "type": "array", "items": { "type": "string" } },
+        "client_filter": { "type": "boolean" },
+        "has_tags": { "type": "boolean" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["endpoint"],
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": { "type": "string", "minLength": 1 },
+        "model_url": { "type": "string" },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "api" }
+          }
+        }
+      }
+    }
+  }
+}

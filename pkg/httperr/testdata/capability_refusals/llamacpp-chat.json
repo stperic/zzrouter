@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/ggml-org/llama.cpp/blob/7049ff0cbeb1f5ead231de4522af6b75d8d773c0/tools/server/server-common.cpp#L1197",
+  "evidence": "Upstream exception message; envelope constructed for the normalizer test, not a live capture.",
+  "error": {
+    "message": "image input is not supported - hint: if this is unexpected, you may need to provide the mmproj",
+    "type": "server_error"
+  }
+}

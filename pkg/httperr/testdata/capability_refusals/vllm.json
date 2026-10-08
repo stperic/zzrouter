@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/vllm-project/vllm/blob/2e06395fd384f3bd6755faded96d90a19d87e31e/vllm/multimodal/registry.py#L159",
+  "evidence": "Upstream exception message; envelope constructed for the normalizer test, not a live capture.",
+  "error": {
+    "message": "text-model is not a multimodal model",
+    "type": "server_error"
+  }
+}

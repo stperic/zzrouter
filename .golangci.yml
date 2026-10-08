@@ -1,0 +1,249 @@
+version: "2"
+
+# golangci-lint v2 configuration.
+
+linters:
+  # v2 enables errcheck, govet, ineffassign, staticcheck, unused by default.
+  # The list below is the additional enable set we keep on top.
+  enable:
+    - bodyclose
+    - contextcheck
+    - cyclop
+    - forbidigo
+    - gocyclo
+    - gosec
+    - misspell
+    - nilerr
+    - unconvert
+    - unparam
+
+  disable:
+    # Too noisy for this codebase's style.
+    - exhaustive
+    - funlen
+    - varnamelen
+    - wrapcheck
+
+  settings:
+    cyclop:
+      max-complexity: 30
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # Force all callers to use pkg/host.Command / host.CommandContext so
+        # children inherit HideWindow / CREATE_NO_WINDOW on Windows. The only
+        # legal direct exec.Command call sites live inside pkg/host itself.
+        - pattern: ^exec\.Command(Context)?$
+          msg: "use pkg/host.Command / host.CommandContext instead (see pkg/host for rationale -- needed for Windows window-flash suppression)"
+
+        # Ban string-matching against err.Error(). Errors should be matched via
+        # errors.Is / errors.As against typed sentinels — string matches break
+        # silently when upstream wording changes and miss wrapped errors. Use
+        # err.Error() freely for log lines and user messages; just don't branch
+        # on it.
+        - pattern: 'strings\.Contains\([^,]*\.Error\(\)'
+          msg: "match errors with errors.Is / errors.As against a typed sentinel, not strings.Contains on err.Error()"
+        - pattern: 'strings\.ToLower\([^)]*\.Error\(\)'
+          msg: "match errors with errors.Is / errors.As, not by lowercasing err.Error()"
+        - pattern: 'strings\.HasPrefix\([^,]*\.Error\(\)'
+          msg: "match errors with errors.Is / errors.As against a typed sentinel"
+        - pattern: 'strings\.HasSuffix\([^,]*\.Error\(\)'
+          msg: "match errors with errors.Is / errors.As against a typed sentinel"
+
+        # Force all production call sites through pkg/utils. utils.Now() keeps
+        # the monotonic reading (correct for time.Since / duration math);
+        # utils.NowUTC() strips mono and normalises to UTC (correct for
+        # persistence + wire output). Raw time.Now() is a footgun because
+        # wrapping it in .UTC() silently drops monotonic and turns every
+        # time.Since into wall-clock subtraction. The only legitimate
+        # time.Now() call lives in pkg/utils/time.go (systemClock).
+        - pattern: ^time\.Now$
+          msg: "use utils.Now() for duration math, utils.NowUTC() for wire/persistence: see pkg/utils/time.go"
+    gocyclo:
+      min-complexity: 30
+    gosec:
+      excludes:
+        - G104  # Unhandled errors on Close() — acceptable in defer patterns
+        - G304  # File path from variable — we validate paths in security.go
+        # G115 flags integer conversions (uintptr/uint64/rune → bounded
+        # int types) that are safe at every call site we've audited
+        # (PIDs, byte offsets, rune→byte on validated ASCII-only inputs).
+        # Enforcing it would churn dozens of safe conversions.
+        - G115
+        # G306 WriteFile 0644: public launch-script / service-unit outputs
+        # (e.g. ~/.config/systemd/user/*.service, launchd plists) are
+        # intentionally world-readable; the sensitive configs use 0600
+        # separately.
+        - G306
+        # G404 math/rand is used for jitter/backoff where unpredictability
+        # doesn't matter — crypto/rand is overkill and adds syscall cost
+        # on a hot path. Cryptographic RNG sites use crypto/rand directly.
+        - G404
+        # G122 warns about symlink TOCTOU in filepath.Walk callbacks.
+        # Our walks operate on config/template trees we control; a
+        # root-scoped API rewrite is out of scope for lint cleanup.
+        - G122
+        # Taint-analysis checks are experimental in gosec and flag
+        # many false positives in a config-loader / HTTP-dispatch codebase.
+        # We enforce the underlying invariants via explicit validation
+        # (pkg/config/security.go, URL parsing in pkg/cluster/mesh).
+        - G703  # Path traversal via taint analysis
+        - G704  # SSRF via taint analysis
+        - G705  # XSS via taint analysis
+        - G706  # Log injection via taint analysis; we use slog structured fields
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # Too noisy, minimal performance impact
+        # Inner-scope `err := ...` declarations that shadow a function-level
+        # `err` are idiomatic Go; disabling keeps the lint focused on real
+        # correctness checks.
+        - shadow
+        # unusedwrite flags struct fields populated in test fixtures but
+        # not subsequently asserted. In a fixture-heavy codebase this is
+        # noise, not a bug signal — the test is documenting the shape.
+        - unusedwrite
+    staticcheck:
+      checks:
+        - all
+        # QF1001 (De Morgan), QF1002/QF1003 (tagged switch), QF1008
+        # (embed-field shortcut), QF1012 (Fprintf over WriteString+Sprintf)
+        # are quick-fix style suggestions. They don't indicate bugs and
+        # expanding them sometimes hurts readability at call sites that
+        # read left-to-right. Keep all the SA checks enabled.
+        - -QF1001
+        - -QF1002
+        - -QF1003
+        - -QF1008
+        - -QF1012
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # pkg/prov_apps intentionally uses an underscore in the package
+      # name; a rename would churn hundreds of import paths for a
+      # cosmetic gain. Silence ST1003 for the package name only (not
+      # for identifiers inside the package).
+      - path: pkg/prov_apps/
+        linters:
+          - staticcheck
+        text: "ST1003: should not use underscores in package names"
+      # pkg/host is the one place allowed to call exec.Command directly —
+      # it wraps them to apply Windows HideWindow / CREATE_NO_WINDOW.
+      - path: pkg/host/
+        linters:
+          - forbidigo
+      # pkg/utils/time.go is the one place allowed to call time.Now() directly.
+      # It is the implementation of utils.Now() / utils.NowUTC(); every other
+      # call site must go through those helpers.
+      - path: pkg/utils/time\.go
+        linters:
+          - forbidigo
+        text: "use utils.Now"
+      # pkg/utils/clock is the test-determinism Clock implementation; its
+      # System() constructor wraps the real time.Now for injection.
+      - path: pkg/utils/clock/clock\.go
+        linters:
+          - forbidigo
+        text: "use utils.Now"
+      # Test files legitimately assert on error message content (testify
+      # Contains, custom assertions). Production-code matching is what we're
+      # banning.
+      - path: _test\.go
+        linters:
+          - forbidigo
+        text: "match errors with errors\\."
+      # Tests may use time.Now() directly — fixtures frequently need raw
+      # wall-clock reads for assertions (NotBefore/NotAfter in cert tests,
+      # "future" / "past" sentinels). Production-code use is what we're
+      # banning.
+      - path: _test\.go
+        linters:
+          - forbidigo
+        text: "use utils.Now"
+      # TUI view/render methods accept a shared (width, height) signature
+      # so they can be dispatched polymorphically by the Root stack. Some
+      # variants don't consume height — the param is part of the contract,
+      # not dead code. unparam cannot see the interface satisfaction.
+      - path: internal/cli/client/tui/views/
+        linters:
+          - unparam
+        text: "height is unused"
+      # Bubbletea Update handlers are structurally branchy (one case per
+      # key + one per message type). Decomposing them costs readability —
+      # the switch IS the documentation of what the view responds to.
+      # Raise the complexity budget for this layer only.
+      - path: internal/cli/client/tui/views/
+        linters:
+          - gocyclo
+          - cyclop
+      # TUI update/view helpers on ModelsViewModel, ProvidersViewModel,
+      # TeamsViewModel, VkeysViewModel, NodesViewModel live outside the
+      # views/ subpath but follow the same branchy-by-design pattern.
+      - path: internal/cli/client/tui\.go
+        linters:
+          - gocyclo
+          - cyclop
+          - unparam
+      # Test helpers commonly take a param that is always one value in
+      # the current suite but exists for future test symmetry. unparam
+      # flagging them produces churn without a correctness win.
+      - path: _test\.go
+        linters:
+          - unparam
+      # Goroutine/background-task methods that use struct-internal ctx
+      # (m.shutdownCtx, instance ctx) trip contextcheck at the spawn site
+      # even though ctx IS plumbed — via the receiver, not a parameter.
+      # This is the ctx-ownership pattern documented in pkg/prov_apps
+      # and pkg/cluster/node lifecycle headers.
+      - path: pkg/prov_apps/
+        linters:
+          - contextcheck
+      - path: pkg/cluster/(node|mesh)/
+        linters:
+          - contextcheck
+      # ListAllModels/buildModelList thread model data through synchronous
+      # calls that don't need cancellation; plumbing ctx for lint cleanliness
+      # would churn ~40 call sites for a scan that completes in microseconds.
+      - path: internal/server/(load_executor|model_executor|model_streaming|chain_server_deps)\.go
+        linters:
+          - contextcheck
+      - path: pkg/model/cache/cache\.go
+        linters:
+          - contextcheck
+      # Test files commonly use untyped type-assertions (x.(map[string]any))
+      # against known JSON fixture shapes; the assertion IS the assertion.
+      # A panic on shape-mismatch is acceptable test failure semantics.
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Error return value is not checked"
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
