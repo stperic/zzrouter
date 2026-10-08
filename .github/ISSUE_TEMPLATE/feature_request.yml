@@ -1,0 +1,21 @@
+name: Feature request
+description: Something zzRouter should do that it does not.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How you would like it to work. An example request or config helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds
+      description: What you do now instead, if anything.

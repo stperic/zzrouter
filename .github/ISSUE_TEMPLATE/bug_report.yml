@@ -1,0 +1,51 @@
+name: Bug report
+description: Something zzRouter does differs from what it documents or should do.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues go to security@medoya.com, not here (see SECURITY.md).
+        Redact API keys, tokens and hostnames you do not want public.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The request or command, with the response status and body if there is one.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `zzrouter-node version`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and architecture, GPU if it matters, and whether the node is a coordinator or a worker.
+      placeholder: Ubuntu 24.04 amd64, RTX 4090, worker
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: Leave empty if the problem is not about inference.
+      placeholder: llama.cpp, Qwen3-8B-Q4_K_M
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant node log lines.
+      render: text

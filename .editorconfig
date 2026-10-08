@@ -1,0 +1,31 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.go]
+indent_style = tab
+
+[{Makefile,*.mk}]
+indent_style = tab
+
+[*.{yml,yaml,json,md}]
+indent_style = space
+indent_size = 2
+
+[*.{sh,ps1}]
+indent_style = space
+indent_size = 4
+
+# Markdown line breaks are trailing spaces.
+[*.md]
+trim_trailing_whitespace = false
+
+# Fixtures are captured bytes; an editor must not rewrite them.
+[**/testdata/**]
+trim_trailing_whitespace = unset
+insert_final_newline = unset
+end_of_line = unset
