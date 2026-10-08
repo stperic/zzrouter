@@ -44,11 +44,8 @@ var managedSpineKeys = []string{"execution", "health_check", "max_concurrent_req
 // could ever answer "is there a newer build?", which is precisely the
 // drift this key exists to detect.
 //
-// model_defaults is here because what a model family needs on an engine is
-// a fact a release learns and must be able to apply, or withdraw, on every
-// install, not only fresh ones. The operator is not shut out:
-// every operator tier resolves above it, so a models.<m> entry overrides
-// any key, and "auto" turns an asset back off.
+// model_defaults is a retired key: no release ships it, so listing it here
+// strips it from an older install before the strict load would refuse it.
 var managedTopLevelKeys = []string{"version_source", "model_defaults", "install"}
 
 // managedCapabilityKeys are the managed keys under capabilities.

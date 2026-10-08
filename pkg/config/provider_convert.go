@@ -32,7 +32,6 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 			Capabilities:    sc.Capabilities,
 			Discovery:       sc.Discovery,
 			Defaults:        sc.Defaults,
-			ModelDefaults:   sc.ModelDefaults,
 			Models:          sc.Models,
 			Nodes:           sc.Nodes,
 			Search:          sc.Search,

@@ -1539,16 +1539,7 @@ paths:
         Runs the tier resolution and reports both the winning value and
         where it was set, which is what turns "why is this flag 3072"
         into a one-request answer. Precedence, lowest first: provider
-        defaults, model defaults, per-model, per-node, then the node x
-        model cell.
-
-        Model defaults (`tier: model-default`) are what the release
-        ships for a model family on this engine, such as the chat
-        template a family needs; `pattern` names the family pattern that
-        matched. They are rewritten on every start and cannot be written
-        through this API. Every other tier overrides them: set the key
-        under `models.<model>` with `PATCH .../parameters`, or set an
-        asset-typed key to `"auto"` to drop the shipped file.
+        defaults, per-model, per-node, then the node x model cell.
 
         `node` and `model` select the cell to resolve. Omitting both
         resolves the defaults tier alone, which is not what a launch on
@@ -12044,7 +12035,7 @@ components:
           type: object
           description: |
             Request-body defaults each request for the model gets, from
-            the model-default and model tiers (a variant's base first,
+            the model tier (a variant's base first,
             then the variant). A field the client sends wins. Values keep
             their JSON type here. Absent when there are none.
           additionalProperties:
@@ -12069,18 +12060,16 @@ components:
         tier:
           type: string
           description: |
-            Which tier supplied this value, lowest first. `model-default`
-            is the release's per-family value; every later tier is the
-            operator's.
-          enum: [default, model-default, model, node, node-model, request, "feature:vision"]
+            Which tier supplied this value, lowest first. `default` is the
+            provider's; every later tier is the operator's.
+          enum: [default, model, node, node-model, request, "feature:vision"]
         node:  { type: string, description: Set when tier is node or node-model. }
-        model: { type: string, description: Set when tier is model-default, model or node-model. }
+        model: { type: string, description: Set when tier is model or node-model. }
         pattern:
           type: string
           description: |
             The model key that supplied the value when it is not the
-            model's own name: a glob such as `qwen*`, or the family
-            pattern of a model default such as `qwen3.8-*`.
+            model's own name: a glob such as `qwen*`.
         sha256:
           type: string
           description: |

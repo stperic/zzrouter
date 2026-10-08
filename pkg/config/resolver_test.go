@@ -170,12 +170,6 @@ func TestIsEndpointAware(t *testing.T) {
 	}}
 	assert.True(t, def.IsEndpointAware())
 
-	family := ServiceConfig{ModelDefaults: map[string]ModelSpec{
-		"qwen*": {Endpoints: map[string]EndpointOverlay{"embeddings": {Parameters: map[string]string{"embedding": "true"}}}},
-	}}
-	assert.True(t, family.IsEndpointAware())
-	assert.Equal(t, "true", family.ResolveEndpoint("", "qwen-small", "embeddings").Parameters["embedding"].Value)
-
 	mod := ServiceConfig{Models: map[string]ModelSpec{
 		"m1": {Endpoints: map[string]EndpointOverlay{"embeddings": {}}},
 	}}

@@ -27,17 +27,15 @@ func newProviderResolvedCmd() *cobra.Command {
 		Long: `Resolve a provider's parameter tree for one model on one node, the way
 a launch does, and show the tier each value came from:
 
-  default        the provider's own defaults
-  model-default  what zzRouter ships for the model's family (PATTERN says
-                 which), such as the chat template the family needs
-  model          models.<model>, set by an operator (for a variant, its
-                 base's cell and then its own)
-  node           nodes.<node>
-  node-model     nodes.<node>.models.<model>
+  default     the provider's own defaults
+  model       models.<model>, set by an operator (PATTERN names the glob
+              that matched; for a variant, its base's cell, then its own)
+  node        nodes.<node>
+  node-model  nodes.<node>.models.<model>
 
-Later tiers win. To change a model default, set the key at the model tier
-with PATCH /zzrouter/v1/providers/<provider>/parameters; "auto" drops an
-asset-typed key so the engine uses the model's own file. Rows marked
+Later tiers win. Change a value with PATCH
+/zzrouter/v1/providers/<provider>/parameters; "auto" at a later tier drops
+a key a lower tier set. Rows marked
 "request" are request-body defaults: each request for the model gets them
 unless it sends the field itself.
 

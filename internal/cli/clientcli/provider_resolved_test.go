@@ -28,7 +28,7 @@ func TestProvidersResolved_ShowsWhereEachValueComesFrom(t *testing.T) {
 
 	api := &fakeResolvedAPI{resolved: &pkgClient.ProviderResolved{
 		Parameters: map[string]pkgClient.ResolvedValue{
-			"chat-template-file": {Value: "qwen3.8-system-anywhere.jinja", Tier: "model-default", Pattern: "qwen3.8-*", SHA256: "bfb7cc68aaaaaaaaaaaa"},
+			"chat-template-file": {Value: "agent.jinja", Tier: "model", Pattern: "qwen3.8-*", SHA256: "bfb7cc68aaaaaaaaaaaa"},
 			"ctx-size":           {Value: "131072", Tier: "model", Model: "Qwen3.8-27B-Q8_0"},
 		},
 	}}
@@ -37,6 +37,6 @@ func TestProvidersResolved_ShowsWhereEachValueComesFrom(t *testing.T) {
 	assert.Equal(t, []string{"llamacpp", "worker-1", "Qwen3.8-27B-Q8_0"}, []string{api.provider, api.node, api.model})
 
 	got := out.String()
-	assert.Regexp(t, `chat-template-file\s+qwen3.8-system-anywhere.jinja\s+model-default\s+qwen3.8-\*\s+bfb7cc68aaaa\n`, got)
+	assert.Regexp(t, `chat-template-file\s+agent.jinja\s+model\s+qwen3.8-\*\s+bfb7cc68aaaa\n`, got)
 	assert.Regexp(t, `ctx-size\s+131072\s+model\s+-\s+-\n`, got)
 }

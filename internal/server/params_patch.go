@@ -449,16 +449,11 @@ var leafBlocks = map[string]bool{"parameters": true, "environment": true, "endpo
 
 // unknownFieldAdvice tailors the rejection to which mistake was made.
 // encoding/json reports no path with the name, so the name itself is the
-// only signal -- which is enough to separate the one wrong guess worth
-// naming from a plain typo. Telling someone who sent
+// only signal -- which is enough to separate a misplaced leaf block from a
+// plain typo. Telling someone who sent
 // {"defaults":{"env":{...}}} to "send {"defaults":{...}}" is advice they
 // already followed.
 func unknownFieldAdvice(name string) string {
-	if name == "model_defaults" {
-		return "model_defaults ships with zzRouter and is rewritten on every start, so this body cannot set it. " +
-			"Every tier this endpoint writes resolves above it: set the key under models.<model>, " +
-			"or set an asset-typed key to \"auto\" there to drop the shipped file"
-	}
 	if leafBlocks[name] {
 		return fmt.Sprintf("unknown field %q at the top level: every %s block lives under a tier, "+
 			"so this body sets nothing. Wrap it: {\"defaults\":{%q:{...}}}", name, name, name)

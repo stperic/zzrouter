@@ -22,12 +22,6 @@ const (
 func variantConfig() ServiceConfig {
 	return ServiceConfig{
 		Defaults: &AppDefaultsConfig{Parameters: map[string]string{"ctx-size": "8192"}},
-		ModelDefaults: map[string]ModelSpec{
-			"qwen3.8-*": {
-				Parameters: map[string]string{"chat-template-file": "fixed.jinja"},
-				Request:    map[string]any{"top_k": 20},
-			},
-		},
 		Models: map[string]ModelSpec{
 			base: {Parameters: map[string]string{"ctx-size": "32768", "threads": "8"}, Request: map[string]any{"temperature": 0.6}},
 			agent: {
@@ -43,8 +37,7 @@ func variantConfig() ServiceConfig {
 	}
 }
 
-// A variant inherits its base's cells and overrides only what it names;
-// its family comes from its weights, not its name.
+// A variant inherits its base's cells and overrides only what it names.
 func TestVariant_WalksTheBaseThenItself(t *testing.T) {
 	sc := variantConfig()
 	got := sc.Resolve("n1", agent)
@@ -57,20 +50,16 @@ func TestVariant_WalksTheBaseThenItself(t *testing.T) {
 	assert.Equal(t, base, p["threads"].Model)
 	assert.Equal(t, "99", p["n-gpu-layers"].Value, "the base's node x model cell is inherited")
 	assert.Equal(t, TierNodeModel, p["n-gpu-layers"].Tier)
-	assert.Equal(t, "fixed.jinja", p["chat-template-file"].Value, "model defaults match the weights")
-	assert.Equal(t, TierModelDefault, p["chat-template-file"].Tier)
 
 	r := got.Request
-	assert.Equal(t, 20, r["top_k"].Value)
-	assert.Equal(t, TierModelDefault, r["top_k"].Tier)
 	assert.Equal(t, 0.6, r["temperature"].Value, "the base's request defaults are inherited")
 	assert.Equal(t, map[string]any{"enable_thinking": false}, r["chat_template_kwargs"].Value)
 
 	assert.Equal(t, 0.9, sc.Resolve("", chatbot).Request["temperature"].Value, "the variant's own default wins")
 
-	// The family is the weights': a variant named anything still gets it.
+	// The base's cells follow the weights: a variant named anything gets them.
 	sc.Models["my-agent"] = ModelSpec{From: base}
-	assert.Equal(t, "fixed.jinja", sc.Resolve("", "my-agent").Parameters["chat-template-file"].Value)
+	assert.Equal(t, "8", sc.Resolve("", "my-agent").Parameters["threads"].Value)
 
 	// The base itself is untouched by its variants.
 	b := sc.Resolve("n1", base)
@@ -193,33 +182,28 @@ func TestCheckModels(t *testing.T) {
 		return out
 	}
 
-	assert.NoError(t, checkModels(modelsLaunched, variantConfig().ModelDefaults, variantConfig().Models))
+	assert.NoError(t, checkModels(modelsLaunched, variantConfig().Models))
 
 	chain := map[string]ModelSpec{"w": {}, "v1": {From: "w"}, "v2": {From: "V1"}}
-	assert.ElementsMatch(t, []string{"models.v2.from", "models.v1.from"}, pathsOf(checkModels(modelsLaunched, nil, chain)),
+	assert.ElementsMatch(t, []string{"models.v2.from", "models.v1.from"}, pathsOf(checkModels(modelsLaunched, chain)),
 		"a chain is reported at both ends of the link, whichever the write touched")
 
-	assert.Equal(t, []string{"models.loop.from"}, pathsOf(checkModels(modelsLaunched, nil, map[string]ModelSpec{"loop": {From: "LOOP"}})))
-	assert.Equal(t, []string{"models.a/b.from"}, pathsOf(checkModels(modelsLaunched, nil, map[string]ModelSpec{"a/b": {From: "w"}})))
+	assert.Equal(t, []string{"models.loop.from"}, pathsOf(checkModels(modelsLaunched, map[string]ModelSpec{"loop": {From: "LOOP"}})))
+	assert.Equal(t, []string{"models.a/b.from"}, pathsOf(checkModels(modelsLaunched, map[string]ModelSpec{"a/b": {From: "w"}})))
 
 	reserved := map[string]ModelSpec{"v": {From: "w", Request: map[string]any{"Tools": []any{}, "top_p": 0.9}}}
-	assert.Equal(t, []string{"models.v.request.Tools"}, pathsOf(checkModels(modelsLaunched, nil, reserved)),
+	assert.Equal(t, []string{"models.v.request.Tools"}, pathsOf(checkModels(modelsLaunched, reserved)),
 		"case does not hide a field the client owns")
 
 	twins := map[string]ModelSpec{"V": {From: "w"}, "v": {Parameters: map[string]string{"k": "x"}}}
-	assert.Equal(t, []string{"models.v"}, pathsOf(checkModels(modelsLaunched, nil, twins)), "a variant is found ignoring case")
+	assert.Equal(t, []string{"models.v"}, pathsOf(checkModels(modelsLaunched, twins)), "a variant is found ignoring case")
 
-	familyRequest := map[string]ModelSpec{"qwen*": {Request: map[string]any{"messages": []any{}}}}
-	assert.Equal(t, []string{"model_defaults.qwen*.request.messages"}, pathsOf(checkModels(modelsLaunched, familyRequest, nil)))
-	assert.Equal(t, []string{"models.m"}, pathsOf(checkModels(modelsNotLaunched, nil, map[string]ModelSpec{"m": {Request: map[string]any{"top_p": 0.9}}})),
+	assert.Equal(t, []string{"models.m"}, pathsOf(checkModels(modelsNotLaunched, map[string]ModelSpec{"m": {Request: map[string]any{"top_p": 0.9}}})),
 		"request defaults alone need a launch too")
 
-	familyFrom := map[string]ModelSpec{"qwen*": {From: "w"}}
-	assert.Equal(t, []string{"model_defaults.qwen*.from"}, pathsOf(checkModels(modelsLaunched, familyFrom, nil)))
-
-	assert.Equal(t, []string{"models.v"}, pathsOf(checkModels(modelsNotLaunched, nil, map[string]ModelSpec{"v": {From: "w"}})),
+	assert.Equal(t, []string{"models.v"}, pathsOf(checkModels(modelsNotLaunched, map[string]ModelSpec{"v": {From: "w"}})),
 		"only a provider the router launches can hold a variant")
-	assert.NoError(t, checkModels(modelsNotLaunched, nil, map[string]ModelSpec{"m": {Parameters: map[string]string{"k": "v"}}}))
+	assert.NoError(t, checkModels(modelsNotLaunched, map[string]ModelSpec{"m": {Parameters: map[string]string{"k": "v"}}}))
 }
 
 // A hand-edited or synced tree is held to the same rules as a write.

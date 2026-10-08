@@ -80,7 +80,7 @@ func buildLegacyModelResponse(provider, model string, r pkgConfig.ResolvedParams
 
 // entriesFromResolved converts the resolver map to the legacy slice; a
 // value an operator tier set is flagged as an override for wire-compat.
-// The release's own tiers (defaults, model defaults) are not overrides.
+// The release's defaults are not overrides.
 func entriesFromResolved(rv map[string]pkgConfig.ResolvedValue) []ParameterEntry {
 	var out []ParameterEntry
 	for k, v := range rv {
@@ -88,7 +88,7 @@ func entriesFromResolved(rv map[string]pkgConfig.ResolvedValue) []ParameterEntry
 			Key:        k,
 			Value:      coerce(v.Value),
 			Source:     v.Tier.String(),
-			IsOverride: v.Tier > pkgConfig.TierModelDefault,
+			IsOverride: v.Tier > pkgConfig.TierDefault,
 		})
 	}
 	return out

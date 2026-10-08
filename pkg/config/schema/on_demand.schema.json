@@ -151,13 +151,6 @@
     "defaults": {
       "$ref": "#/$defs/defaults"
     },
-    "model_defaults": {
-      "description": "Per-family defaults the release ships, keyed by a name pattern tried against the full model name and its last path element. Managed: rewritten on start. Every operator tier resolves above it.",
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/$defs/modelSpec"
-      }
-    },
     "models": {
       "type": "object",
       "additionalProperties": {

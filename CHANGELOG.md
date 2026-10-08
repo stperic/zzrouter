@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Removed `model_defaults`, the release-managed per-model-family tier. No
+  release shipped data in it after 0.1.0. Per-family settings belong in the
+  operator's `models` tier, which accepts glob patterns. `/resolved` no longer
+  reports a `model-default` tier. An install that still carries the block has
+  it removed on start.
 - Built with Go 1.26.8 (compiler, runtime and `net/http` bug fixes; no security
   fixes over 1.26.6).
 
