@@ -191,9 +191,9 @@ func TestEnvironHas(t *testing.T) {
 	}
 }
 
-// On darwin gopsutil cannot read a process environment at all, so a
-// perfectly healthy provider answers here forever. Collapsing that into
-// the same word as "not running" would make a caller treat it as broken.
+// Where the environment can be read, a missing declared value is drift.
+// Where it cannot, the answer names that rather than "not running", which
+// would make a caller treat a healthy provider as broken.
 func TestBinaryEnvStateNamesTheReasonItCannotTell(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -203,7 +203,7 @@ func TestBinaryEnvStateNamesTheReasonItCannotTell(t *testing.T) {
 	got := BinaryEnvState(self, map[string]string{"PATH": "/nonexistent-on-purpose"})
 
 	switch runtime.GOOS {
-	case "linux", "windows":
+	case "linux", "windows", "darwin":
 		assert.Equal(t, EnvStateStale, got, "the environment is readable here, so this is a real comparison")
 	default:
 		assert.Equal(t, EnvStateUnsupported, got,

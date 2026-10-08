@@ -180,8 +180,8 @@ func findByBinary(binaryPath string) (binaryMatch, error) {
 //
 // The not-current answers are separated rather than collapsed into one
 // "unknown", because they call for different reactions and a caller that
-// cannot tell them apart treats a healthy macOS provider as a broken one:
-// "unsupported" is permanent and expected there, "not_running" is a
+// cannot tell them apart treats a healthy provider as a broken one:
+// "unsupported" means this node cannot read the process, "not_running" is a
 // different endpoint's problem, and "unconfigured" is nobody's problem.
 // Only "stale" means a restart is owed.
 type EnvState string
@@ -193,8 +193,7 @@ const (
 	// expected is answered by Presence, not here.
 	EnvStateNotRunning EnvState = "not_running"
 	// EnvStateUnsupported: the process is there and its environment
-	// cannot be read. gopsutil implements Environ on Linux and Windows
-	// only, so this is the standing answer on darwin.
+	// cannot be read, by platform or by permission.
 	EnvStateUnsupported EnvState = "unsupported"
 	// EnvStateUnconfigured: the provider declares no environment, so
 	// there is nothing it could have drifted from.
