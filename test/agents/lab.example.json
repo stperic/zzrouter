@@ -1,21 +1,59 @@
 {
   "nodes": {
     "mac-coordinator": {
-      "providers": {"mlx": ["mlx-community/Qwen3.5-9B-MLX-4bit"]},
-      "fit": {"provider": "mlx", "model": "mlx-community/Qwen3.8-27B-bf16"},
+      "providers": {
+        "mlx": [
+          "mlx-community/Qwen3.5-9B-MLX-4bit"
+        ]
+      },
+      "fit": {
+        "provider": "mlx",
+        "model": "mlx-community/Qwen3.8-27B-bf16"
+      },
       "cloud": true
     },
     "linux-gpu-worker": {
       "providers": {
-        "vllm": ["Qwen/Qwen2.5-0.5B-Instruct"],
-        "llamacpp": ["gemma-4-E2B-it-Q3_K_M", "qwen2.5-1.5b-instruct-q4_k_m"]
+        "vllm": [
+          "Qwen/Qwen2.5-0.5B-Instruct"
+        ],
+        "llamacpp": [
+          "gemma-4-E2B-it-Q3_K_M",
+          "qwen2.5-1.5b-instruct-q4_k_m"
+        ]
       },
-      "budget": {"provider": "vllm", "model": "Qwen/Qwen2.5-0.5B-Instruct", "parameter": "gpu-memory-utilization"},
-      "vision": {"provider": "llamacpp", "model": "gemma-4-E2B-it-Q3_K_M"}
+      "budget": {
+        "provider": "vllm",
+        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "parameter": "gpu-memory-utilization"
+      },
+      "vision": {
+        "provider": "llamacpp",
+        "model": "gemma-4-E2B-it-Q3_K_M"
+      },
+      "queue": {
+        "provider": "vllm",
+        "models": [
+          "Qwen/Qwen2.5-0.5B-Instruct",
+          "Qwen/Qwen2.5-0.5B"
+        ],
+        "parameter": "gpu-memory-utilization",
+        "value": "0.3"
+      }
     },
     "windows-worker": {
-      "providers": {"llamacpp": ["qwen2.5-0.5b-instruct-q4_k_m"]},
-      "oversize": {"provider": "llamacpp", "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF", "gpu_gb": 4, "min_gb": 4.5, "max_gb": 6}
+      "providers": {
+        "llamacpp": [
+          "qwen2.5-0.5b-instruct-q4_k_m"
+        ]
+      },
+      "oversize": {
+        "provider": "llamacpp",
+        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "gpu_gb": 4,
+        "min_gb": 4.5,
+        "max_gb": 6
+      }
     }
   },
   "backend_models": {

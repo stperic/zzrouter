@@ -479,6 +479,18 @@ def scenarios(node):
                       "second_launch_ok (bool), stopped (bool).",
             "check": check_oom_budget,
         })
+    if "queue" in lab:
+        q = lab["queue"]
+        a, b = q["models"]
+        out.append({
+            "id": "queue",
+            "prompt": f"On node {node}, start {a} and then {b} with {q['provider']}, the second right after the first without "
+                      f"waiting for it to be ready, each for this launch only with {q['parameter']} set to {q['value']} (do not "
+                      "change saved provider parameters). Follow both until they serve, smoke-test each with one chat, confirm "
+                      f"with the runs list that both are running, then stop both.{TAIL} JSON keys: run_ids (list), "
+                      "both_running (bool), stopped (bool).",
+            "check": check_queue,
+        })
     if "vision" in lab:
         v = lab["vision"]
         out.append({
@@ -534,6 +546,15 @@ def check_lifecycle(ctx, starts, chats, stops):
             (f">= {stops} successful zz_run_stop", len(st) >= stops, len(st)),
             ("agent claims match", rj.get("stopped") is True and rj.get("both_running", True) is True, rj),
             ("no runs left on node", not ctx["left"], ctx["left"])]
+
+
+def check_queue(ctx):
+    starts = tool_calls(ctx, "zz_run_start")
+    seen = tool_calls(ctx, "zz_run_start") + tool_calls(ctx, "zz_job") + tool_calls(ctx, "zz_runs")
+    queued = any('"queued"' in c["resp"] or "waiting_on" in c["resp"] for c in seen)
+    return check_lifecycle(ctx, starts=2, chats=2, stops=2) + [
+        ("no start refused", not [c for c in starts if c["is_error"]], len(starts)),
+        ("second launch was queued, not refused (proxy)", queued, len(seen))]
 
 
 def check_oom_budget(ctx):
