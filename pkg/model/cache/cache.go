@@ -12,6 +12,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -521,6 +522,15 @@ func (mc *Cache) populationCurrent() (bool, error) {
 	return time.Since(mc.lastAttempt) < inventoryRetryInterval, mc.populateErr
 }
 
+// errCatalogChanged means an invalidation landed while a refresh was
+// gathering, so the refresh's result was not published.
+var errCatalogChanged = errors.New("model catalog changed during refresh")
+
+// maxOvertakenRefreshes bounds how often a read refreshes again after being
+// overtaken; invalidations come from discrete events (a run stops, a
+// download lands), so a few attempts outrun them.
+const maxOvertakenRefreshes = 3
+
 // ensurePopulated serializes initial population and retries of degraded catalogs.
 func (mc *Cache) ensurePopulated(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -536,6 +546,11 @@ func (mc *Cache) ensurePopulated(ctx context.Context) error {
 	}
 	attempted := utils.Now()
 	err := mc.RefreshCacheSync(ctx)
+	// An invalidation that overtook the refresh made its result stale, not
+	// wrong: refresh again from the newer evidence instead of failing the read.
+	for retry := 1; retry < maxOvertakenRefreshes && errors.Is(err, errCatalogChanged); retry++ {
+		err = mc.RefreshCacheSync(ctx)
+	}
 	if err != nil {
 		err = fmt.Errorf("cache miss and refresh failed: %w", err)
 		mc.mu.Lock()
@@ -636,7 +651,7 @@ func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
 	allItems = append(allItems, workerItems...)
 
 	if !mc.publishModelItems(allItems, generation, append(localUnavailable, workerUnavailable...)) {
-		return fmt.Errorf("model catalog changed during refresh")
+		return errCatalogChanged
 	}
 
 	if mc.autoRoute != nil {
