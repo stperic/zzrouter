@@ -94,6 +94,30 @@ func TestIdempotency_BodyMismatchConflict(t *testing.T) {
 		"conflict must not retrigger the handler")
 }
 
+// A failed first attempt is not recorded: the retry the error advises
+// must run the handler again instead of replaying the failure.
+func TestIdempotency_FailureIsNotReplayed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newIdempotencyStore()
+	calls := &atomic.Int64{}
+	r := gin.New()
+	r.POST("/runs", store.middleware(), func(c *gin.Context) {
+		if calls.Add(1) == 1 {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wait for readiness"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"job_id": "J2"})
+	})
+	headers := map[string]string{"Idempotency-Key": "abc"}
+
+	require.Equal(t, http.StatusServiceUnavailable, doPOST(r, `{"model_name":"x"}`, headers).Code)
+	w2 := doPOST(r, `{"model_name":"x"}`, headers)
+	require.Equal(t, http.StatusAccepted, w2.Code)
+	w3 := doPOST(r, `{"model_name":"x"}`, headers)
+	assert.Equal(t, w2.Body.String(), w3.Body.String(), "the success is what gets replayed")
+	assert.EqualValues(t, 2, calls.Load())
+}
+
 // 3. Concurrent race — two goroutines POST simultaneously with the
 // same key+body. One wins, the other blocks on inflight and replays.
 // The handler runs exactly once.
