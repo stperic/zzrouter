@@ -53,17 +53,21 @@ func (s *LoadService) WithTierResolution(appsConfig func() *pkgConfig.AppsConfig
 // Only a remote target is worth resolving for. Work that stays here
 // reads the live tree anyway, and a fan-out has no single node to
 // resolve for at all.
-func (s *LoadService) launchTarget(node, model string) string {
+func (s *LoadService) launchTarget(ctx context.Context, node, model string) (string, error) {
 	if s.appsConfig == nil {
-		return ""
+		return "", nil
 	}
 	if node == "" {
-		node = s.cache.TargetNodeForModel(model)
+		resolved, err := s.cache.ResolveModel(ctx, model, "")
+		if err != nil {
+			return "", err
+		}
+		node = resolved.Node
 	}
 	if node == "*" || s.cache.IsLocalNode(node) {
-		return ""
+		return "", nil
 	}
-	return node
+	return node, nil
 }
 
 // preMerge resolves the tier tree for the node a request names, and
@@ -78,12 +82,15 @@ func (s *LoadService) launchTarget(node, model string) string {
 // instance, so it carries no such consequence — and the coordinator
 // owns the tree, which is what lets a preview answer for a node whose
 // copy of it is a cache.
-func (s *LoadService) preMerge(req *LoadModelRequest) map[string]string {
-	target := s.launchTarget(req.Node, req.ModelName)
-	if target == "" {
-		return nil
+func (s *LoadService) preMerge(ctx context.Context, req *LoadModelRequest) (map[string]string, error) {
+	target, err := s.launchTarget(ctx, req.Node, req.ModelName)
+	if err != nil {
+		return nil, err
 	}
-	return preMergeForRequest(s.appsConfig(), req, target)
+	if target == "" {
+		return nil, nil
+	}
+	return preMergeForRequest(s.appsConfig(), req, target), nil
 }
 
 // LoadModelRequest represents a request to load a model
@@ -197,7 +204,10 @@ type PreviewRunResponse struct {
 func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*PreviewRunResponse, error) {
 	slog.Info("[LoadService] PreviewRun", "model", req.ModelName, "provider", req.Provider, "node", req.Node)
 
-	sources := s.preMerge(req)
+	sources, err := s.preMerge(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	requestBody, err := json.Marshal(req)
 	if err != nil {

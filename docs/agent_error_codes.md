@@ -17,6 +17,7 @@ Both surfaces preserve upstream status codes across cluster hops.
 
 | `error.code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
+| `model_node_ambiguous` | 409 | Several remote nodes hold the name, and none locally. | Choose a `name@node` reference from the detail, or set X-Node. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
 | `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models`; trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |
@@ -115,6 +116,9 @@ Errors use Problem Details. Common `title`/`code` pairs an agent will see:
 
 | Status | What it means | Recovery |
 |---|---|---|
+| 400 `bad_request` with provider not configured | Preview selected a provider absent from that node's configuration. | Choose one from `GET /zzrouter/v1/providers` or configure a supported provider from `/providers/catalog`. |
+| 400 `bad_request` with provider disabled and not installed | The target node's inventory has no installed copy. | `POST /zzrouter/v1/providers/:name/install` on that node, follow the job, then retry. |
+| 400 `bad_request` with provider disabled and installed | The target node has an installed copy that is disabled. | `PATCH /zzrouter/v1/providers/:name` with `{"enabled":true}` on that node, then retry. |
 | 400 with `provider %q is cloud-only` | Tried to launch a cloud-backed model via `/runs`. | Use `POST /zzrouter/v1/deployments` instead. |
 | 400 with `provider %q has no search.registry configured` | auto_deploy was requested but the provider can't infer a download source. | Either deploy explicitly via `/deployments` or pick a provider with a registry. |
 | 421 with `Location: <coord-url>` | Worker received a write that only the coordinator may serve (e.g. provider PATCH). | Retry against the URL in the `Location` header. |
@@ -140,3 +144,17 @@ the first owner's response. A 404 means no peer claims the job.
   depending on the surface; the `code` is the stable axis.
 - Absence of a `code` field on success responses : only error bodies
   carry codes.
+
+### Model node selection (inference and management)
+
+`model_node_ambiguous` is HTTP 409 when several remote nodes hold a name and
+none locally. The reference is valid, but the catalog state needs a node
+selection, so 409 fits better than a malformed-input 400. Choose a `name@node`
+reference from the detail or set X-Node. A provider prefix filters replicas;
+a coordinator-local replica always wins an unpinned request.
+
+Failed node discovery does not establish that an unknown model exists on that
+node. Unknown names keep the ordinary missing-model behavior; previously known
+replicas on a failed node can return 503 `cluster_unavailable`. Discovery failures
+are cached for 30 seconds between blocking retries. A provider observed stopped
+still reports `provider_not_running` with its service-start route.

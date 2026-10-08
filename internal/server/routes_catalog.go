@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -8,10 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// RouteSpec is the wire shape for the route catalog. Tags are inferred
-// from the path/method — the harness contract test asserts the catalog
-// matches a committed snapshot, so any wrong tag is a one-line snapshot
-// fix rather than a load-bearing runtime contract.
+// RouteSpec describes mounted routes for discovery and MCP escape-hatch eligibility.
 type RouteSpec struct {
 	Method    string `json:"method"`
 	Path      string `json:"path"`
@@ -39,15 +38,7 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 	routes := s.engine.Routes()
 	out := make([]RouteSpec, 0, len(routes))
 	for _, r := range routes {
-		out = append(out, RouteSpec{
-			Method:    r.Method,
-			Path:      r.Path,
-			Surface:   surfaceForPath(r.Path),
-			Auth:      authTierForPath(r.Path),
-			Streaming: streamingForPath(r.Method, r.Path),
-			Async:     asyncForPath(r.Method, r.Path),
-			Retired:   isRetiredRoute(r.Handler),
-		})
+		out = append(out, catalogRoute(r))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Path == out[j].Path {
@@ -58,9 +49,63 @@ func (s *Server) handleListRoutes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"routes": out, "count": len(out)})
 }
 
+func catalogRoute(r gin.RouteInfo) RouteSpec {
+	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: authTierForPath(r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
+}
+
+// eligibleAPIRoute uses the same mounted-route facts as the public catalog.
+func (s *Server) eligibleAPIRoute(method, path string) error {
+	var selected gin.RouteInfo
+	best := ""
+	for _, route := range s.engine.Routes() {
+		if route.Method != method {
+			continue
+		}
+		if rank, ok := catalogPathMatch(route.Path, path); ok && rank > best {
+			selected, best = route, rank
+		}
+	}
+	if best == "" {
+		return fmt.Errorf("route %s %s is not mounted; use zz_api_search", method, path)
+	}
+	route := catalogRoute(selected)
+	if route.Auth != "admin" || route.Surface != "admin" || route.Retired || route.Streaming != "" {
+		return fmt.Errorf("route %s %s is unavailable: auth=%s retired=%t streaming=%s", method, path, route.Auth, route.Retired, route.Streaming)
+	}
+	return nil
+}
+
+// catalogPathMatch preserves Gin's static, parameter, then catch-all precedence.
+func catalogPathMatch(pattern, path string) (string, bool) {
+	parts, segments := strings.Split(path, "/"), strings.Split(pattern, "/")
+	rank := ""
+	for i, segment := range segments {
+		if i >= len(parts) {
+			return "", false
+		}
+		switch {
+		case strings.HasPrefix(segment, "*"):
+			return rank + "0", true
+		case strings.HasPrefix(segment, ":"):
+			if parts[i] == "" {
+				return "", false
+			}
+			rank += "1"
+		default:
+			if segment != parts[i] {
+				return "", false
+			}
+			rank += "2"
+		}
+	}
+	return rank, len(parts) == len(segments)
+}
+
 func surfaceForPath(p string) string {
 	switch {
-	case strings.HasPrefix(p, "/zzrouter/v1/internal/"):
+	case p == "/zzrouter/v1/mcp" || strings.HasPrefix(p, "/zzrouter/v1/mcp/"):
+		return "mcp"
+	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "internal"
 	case p == "/zzrouter/v1" || strings.HasPrefix(p, "/zzrouter/v1/"):
 		return "admin"
@@ -82,7 +127,7 @@ func surfaceForPath(p string) string {
 
 func authTierForPath(p string) string {
 	switch {
-	case strings.HasPrefix(p, "/zzrouter/v1/internal/"):
+	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "cluster"
 	case p == "/zzrouter/v1" || strings.HasPrefix(p, "/zzrouter/v1/"):
 		return "admin"
@@ -98,6 +143,9 @@ func authTierForPath(p string) string {
 
 func streamingForPath(method, p string) string { //nolint:unparam // Keep method and path together at catalog call sites; streaming depends on path.
 	switch p {
+	// Server-log inventory returns JSON; the /logs suffix rule would misclassify it.
+	case "/zzrouter/v1/server/logs":
+		return ""
 	case "/v1/chat/completions", "/v1/completions",
 		"/api/chat", "/api/generate", "/api/pull":
 		return "sse"
@@ -115,6 +163,26 @@ func streamingForPath(method, p string) string { //nolint:unparam // Keep method
 		return "sse"
 	}
 	return ""
+}
+
+// snapshotAllowed admits only explicit snapshot modes on catalogued streaming routes.
+func snapshotAllowed(r *http.Request) bool {
+	segments := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if r.Method == http.MethodGet && len(segments) == 5 && segments[0] == "zzrouter" && segments[1] == "v1" && segments[2] == "runs" && segments[4] == "logs" {
+		return r.URL.Query().Get("follow") == "false"
+	}
+	if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" || r.GetBody == nil {
+		return false
+	}
+	body, err := r.GetBody()
+	if err != nil {
+		return false
+	}
+	defer body.Close()
+	var mode struct {
+		Stream *bool `json:"stream"`
+	}
+	return json.NewDecoder(body).Decode(&mode) == nil && mode.Stream != nil && !*mode.Stream
 }
 
 // asyncRoutes lists the method + path pairs (relative to /zzrouter/v1)

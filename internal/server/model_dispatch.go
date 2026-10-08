@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/trace"
@@ -87,30 +86,6 @@ const headerNotInference = "X-Zzrouter-Not-Inference"
 func markNotInference(c *gin.Context) {
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), CtxKeyNotInference, true))
 	c.Request.Header.Set(headerNotInference, "1")
-}
-
-// stripNodeHint removes the "@node" routing hint from the model string
-// and re-synchronizes every copy of the request body that downstream
-// code reads: the local slice, c.Request.Body, and the context stash.
-// The stash matters because proxyToInstance rebuilds the outbound body
-// from it — leaving the hint there puts it back on the wire, where an
-// engine that validates model names (Ollama) rejects the request. The
-// returned node hint is empty when the model carried none.
-func (s *Server) stripNodeHint(c *gin.Context, modelName string, body []byte) (string, []byte, string) {
-	cleanModel, nodeHint := s.parseInferenceModel(c, modelName)
-	if cleanModel == modelName {
-		return modelName, body, nodeHint
-	}
-	body = rewriteModelInBody(body, cleanModel)
-	c.Request.Body = io.NopCloser(bytes.NewReader(body))
-	stashInferenceContext(c, cleanModel, body)
-	// Everything downstream now sees the cleaned name, which is what the
-	// engine needs. Keep the client's own spelling so the response can be
-	// answered in it: the decorated form is the id the catalog advertises,
-	// and a caller that indexes on it should get it back.
-	c.Request = c.Request.WithContext(
-		context.WithValue(c.Request.Context(), CtxKeyClientModel, modelName))
-	return cleanModel, body, nodeHint
 }
 
 // requestUsageCounts asks the engine to report token counts, returning the
@@ -260,7 +235,7 @@ func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder 
 // Used by instrumented handlers (chat completions, completions).
 func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string, body []byte, recorder *llm.InferenceRecorder, span trace.Span, endpoint string) {
 	// Extract @node hint from the model string. Header X-Node still wins.
-	modelName, body, nodeHint := s.stripNodeHint(c, modelName, body)
+	nodeHint := c.GetHeader("X-Node")
 
 	release, ok := s.enforceAndAttribute(c, modelName, recorder)
 	defer release()
@@ -275,7 +250,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), modelName, nodeHint)
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
 	if err != nil {
 		llm.SetSpanError(span, err)
 		recorder.SetError("model_resolve_failed", err.Error())
@@ -286,7 +261,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend,
 			"", string(genai.OperationName(c.FullPath())))
-		writeError(c.Writer, c.Request, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "Failed to resolve model"})
+		RespondToError(c, err)
 		return
 	}
 
@@ -314,19 +289,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		recorder.SetModelGroup(resolved.GroupName, resolved.Candidates[0].Name)
 	}
 
-	// Rewrite model name in body/request when resolved via model group
-	// (client sends group alias like "fast-chat", backend needs real model like "llama3:latest")
-	if resolved.GroupName != "" && resolved.ModelName != modelName {
-		body = rewriteModelInBody(body, resolved.ModelName)
-		replaceRequestBody(c, body)
-		// The caller asked for the group, so the group is what the answer
-		// should name. Which replica served it is reported by the
-		// zzrouter block; overwriting the caller's own handle with a
-		// replica name it never mentioned is the same lie the @node path
-		// used to tell.
-		c.Request = c.Request.WithContext(
-			context.WithValue(c.Request.Context(), CtxKeyClientModel, modelName))
-	}
+	body = s.resolvedRequestBody(c, resolved, modelName, body)
 
 	s.attributeServingNode(c, resolved)
 
@@ -350,7 +313,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 	recorder.SetRouting(llm.RoutingDecisionLocal, s.node.Nodename())
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal, provider, operation)
-	if err := s.HandleLocalModel(c.Writer, c.Request, resolved.ModelName, endpoint); err != nil {
+	if err := s.HandleLocalModel(c.Writer, c.Request, resolved, endpoint); err != nil {
 		llm.SetSpanError(span, err)
 		return
 	}
@@ -364,7 +327,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 // reservation attribution on it, so spend settles; without one the proxy
 // sites log a keyless row.
 func (s *Server) resolveAndDispatchSimple(c *gin.Context, modelName string, body []byte, endpoint string) {
-	modelName, body, nodeHint := s.stripNodeHint(c, modelName, body)
+	nodeHint := c.GetHeader("X-Node")
 
 	recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
 	release, ok := s.enforceAndAttribute(c, modelName, recorder)
@@ -389,12 +352,12 @@ func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string) (*res
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil, false
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), modelName, nodeHint)
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
 	if err != nil {
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend, "", string(genai.OperationName(c.FullPath())))
 		recordErrorOnContext(c.Request.Context(), "server_error", "Failed to resolve model")
-		writeError(c.Writer, c.Request, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "Failed to resolve model"})
+		RespondToError(c, err)
 		return nil, false
 	}
 	return resolved, s.admitResolvedModels(c, resolved, nodeHint)
@@ -414,10 +377,7 @@ func (s *Server) dispatchTo(c *gin.Context, resolved *resolver.Resolved, modelNa
 		return
 	}
 
-	if resolved.GroupName != "" && resolved.ModelName != modelName {
-		body = rewriteModelInBody(body, resolved.ModelName)
-		replaceRequestBody(c, body)
-	}
+	body = s.resolvedRequestBody(c, resolved, modelName, body)
 	s.stashServingProvider(c, resolved.Provider)
 	s.attributeServingNode(c, resolved)
 
@@ -432,7 +392,24 @@ func (s *Server) dispatchTo(c *gin.Context, resolved *resolver.Resolved, modelNa
 
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal, provider, operation)
-	_ = s.HandleLocalModel(c.Writer, c.Request, resolved.ModelName, endpoint)
+	_ = s.HandleLocalModel(c.Writer, c.Request, resolved, endpoint)
+}
+
+// resolvedRequestBody canonicalizes engine tokens while keeping a shared variant's request defaults.
+func (s *Server) resolvedRequestBody(c *gin.Context, resolved *resolver.Resolved, model string, body []byte) []byte {
+	target := resolved.RequestModel
+	if target == "" {
+		target = resolved.ModelName
+	}
+	if target == model {
+		return body
+	}
+	body = rewriteModelInBody(body, target)
+	replaceRequestBody(c, body)
+	if clientModelFromContext(c.Request.Context()) == "" {
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), CtxKeyClientModel, model))
+	}
+	return body
 }
 
 // narrowToWireEndpoint keeps the targets that serve an endpoint, natively

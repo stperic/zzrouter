@@ -183,7 +183,7 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 		c, _ := gin.CreateTestContext(w)
 		c.Request = r.WithContext(context.WithValue(r.Context(), CtxKeyOriginalBody, raw))
 		httperr.AttachResponder(s.responders.openai)(c)
-		_ = s.HandleLocalModel(w, c.Request, body.Model, "chat")
+		_ = s.HandleLocalModel(w, c.Request, &resolver.Resolved{ModelName: body.Model, Provider: "llamacpp"}, "chat")
 	}))
 	defer worker.Close()
 	req := httptest.NewRequest(http.MethodPost, worker.URL+"/v1/chat/completions", strings.NewReader(`{"model":"`+variantChat+`"}`))

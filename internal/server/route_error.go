@@ -70,6 +70,10 @@ func newRouteProblemError(status int, title, detail string, code httperr.RouteEr
 // newRoutedTransportError is the 502 returned when router.Route itself
 // fails, classified by cause.
 func newRoutedTransportError(err error, node string) *RoutedError {
+	var wire httperr.Error
+	if errors.As(err, &wire) {
+		return newRouteProblemError(wire.Status, wire.Title, wire.Message, httperr.RouteErrorCode(wire.Code), node)
+	}
 	code, detail := classifyRouteError(err, node)
 	return newRouteProblemError(http.StatusBadGateway, "Bad Gateway", detail, code, node)
 }

@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -22,7 +21,6 @@ type RunsController struct {
 	utility     *RunsUtilityService
 	nodes       NodeValidator
 	logs        RunLogHandler
-	appsConfig  func() *pkgConfig.AppsConfig
 	idem        *idempotencyStore
 }
 
@@ -33,7 +31,6 @@ func NewRunsController(
 	utility *RunsUtilityService,
 	nodes NodeValidator,
 	logs RunLogHandler,
-	appsConfig func() *pkgConfig.AppsConfig,
 ) *RunsController {
 	return &RunsController{
 		service:     service,
@@ -41,7 +38,6 @@ func NewRunsController(
 		utility:     utility,
 		nodes:       nodes,
 		logs:        logs,
-		appsConfig:  appsConfig,
 		idem:        newIdempotencyStore(),
 	}
 }
@@ -278,25 +274,12 @@ func (ctrl *RunsController) PreviewRun(c *gin.Context) {
 		return
 	}
 
-	// Fail fast on unknown or disabled providers so the response is a
-	// structured 400, not a 200 + all-empty PreviewRunResponse from a
-	// worker that can't resolve the provider either. The worker has its
-	// own equivalent gate via isProviderEnabled in PreviewLocalRun for
-	// the drift case (coord/worker appsConfig divergence under peer-sync).
-	// Preview renders one provider's launch command, so an omitted
-	// provider is a client error, not something to auto-detect. It used
-	// to reach the executor and come back as an opaque 500.
+	// The target executor checks its provider configuration and installation state.
 	if req.Provider == "" {
 		BadRequest(c, "provider is required: preview renders the launch command for one provider: "+
 			"GET /zzrouter/v1/runs/capabilities lists the providers this cluster can run")
 		return
 	}
-	svc, ok := ctrl.appsConfig().LookupApp(req.Provider)
-	if !ok || !svc.IsEnabled() {
-		BadRequest(c, fmt.Sprintf("provider %q is not configured or enabled", req.Provider))
-		return
-	}
-
 	resp, err := ctrl.loadService.PreviewRun(c.Request.Context(), &req)
 	if err != nil {
 		RespondToError(c, err)

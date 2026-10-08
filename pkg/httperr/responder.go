@@ -137,6 +137,9 @@ type Error struct {
 	Extra map[string]any
 }
 
+// Error returns the actionable message while retaining structured wire fields.
+func (e Error) Error() string { return e.Message }
+
 // AuthenticateChallenge is the RFC 7235 challenge carried by every 401.
 // Bearer is the only one of the two accepted schemes that is nameable
 // in this header; the X-API-Key alternative is advertised in the error

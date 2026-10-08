@@ -94,7 +94,6 @@ func newAliasLoadExecutor(t *testing.T) (*LoadExecutor, *prov_apps.ProviderAppMa
 		func(string) bool { return true },
 		emptyModelStore{},
 		func(string) (*backend.Resolved, bool) { return nil, false },
-		nil, // mergeAndResolve belongs to the preview path, not this one
 		func(ctx context.Context, model, provider, endpoint string, _, _ map[string]string) (*instance.Instance, error) {
 			launches++
 			return mgr.LaunchInstance(ctx, prov_apps.LaunchRequest{
@@ -167,4 +166,19 @@ func TestLoadLocalModel_ReportsARunningRunNamedByItsRepoID(t *testing.T) {
 		"a running model was not reported as already running")
 	assert.Equal(t, existing.ID, resp.InstanceID)
 	assert.Equal(t, 0, *launches, "a running model was launched a second time")
+}
+
+func TestLoadLocalModelRefusesAnotherProvidersRun(t *testing.T) {
+	exec, mgr, launches := newAliasLoadExecutor(t)
+	existing := instance.NewInstance("other-run", "different-provider", aliasLoadFileStem, 8300, 0, 0)
+	existing.MarkRunning()
+	require.NoError(t, mgr.Instances().Register(existing))
+	t.Cleanup(func() { _ = mgr.Instances().Remove(existing.ID) })
+	resp, err := exec.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: aliasLoadRepoID, Provider: aliasLoadProvider})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Empty(t, resp.InstanceID)
+	require.Contains(t, resp.Error, "is held by provider")
+	require.Equal(t, instance.StatusRunning, existing.GetStatus())
+	require.Zero(t, *launches)
 }

@@ -928,15 +928,22 @@ func restartRequest(inst *instance.Instance) LaunchRequest {
 // Split out from LaunchInstance so the precedence contract can be
 // tested without starting a process.
 func (m *ProviderAppManager) resolveLaunchParams(svcCfg config.ServiceConfig, req LaunchRequest, endpoint string) (params, env map[string]string) {
-	params, env = m.resolveRawLaunchParams(svcCfg, req, endpoint)
+	params, env, _ = m.resolveRawLaunchParams(svcCfg, req, endpoint)
 	return config.FilterAutoValues(params), env
 }
 
-func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req LaunchRequest, endpoint string) (params, env map[string]string) {
+func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req LaunchRequest, endpoint string) (params, env, sources map[string]string) {
 	resolved := svcCfg.ResolveEndpoint(m.localNodename(), req.Model, endpoint)
 	env = mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
 	params = mergeStringMaps(config.FlattenParameters(resolved.Parameters), req.Parameters)
-	return params, env
+	sources = make(map[string]string, len(params))
+	for name, value := range resolved.Parameters {
+		sources[name] = value.Tier.String()
+	}
+	for name := range req.Parameters {
+		sources[name] = config.TierRequest.String()
+	}
+	return params, env, sources
 }
 
 // buildLaunch turns resolved parameters into the engine's command: it
@@ -969,10 +976,29 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 
 // preparedLaunch is a launch worked out from config but not started.
 type preparedLaunch struct {
+	parameters           LaunchParameters
 	executionEnvironment process.EnvironmentTransform
 	launch               process.Launch
 	resolved             instance.Resolved
 	config               config.ServiceConfig
+}
+
+// LaunchPreview carries argv and metadata from one launch preparation.
+type LaunchPreview struct {
+	process.Launch
+	LaunchParameters
+	Model string
+}
+
+// PreviewLaunch renders the same admitted launch preparation without starting a process.
+func (m *ProviderAppManager) PreviewLaunch(req LaunchRequest, port int) (LaunchPreview, error) {
+	req.Model = m.CanonicalModelName(req.Model)
+	key, svc, ok := m.resolveConfigKey(req.Provider)
+	if !ok {
+		return LaunchPreview{}, ErrProviderNotFound
+	}
+	prepared, err := m.prepareLaunch(svc, key, string(EndpointOrDefault(req.Endpoint)), req, port)
+	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
 }
 
 // prepareLaunch works out what launching req on port would give the
@@ -999,7 +1025,7 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, co
 		runtime = svcCfg.Name
 	}
 	return preparedLaunch{
-		launch: launch, config: svcCfg, executionEnvironment: features.ExecutionEnvironment,
+		launch: launch, config: svcCfg, parameters: features, executionEnvironment: features.ExecutionEnvironment,
 		resolved: instance.Resolved{AutoMemory: features.autoMemory, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
 	}, nil
 }

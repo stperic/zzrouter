@@ -358,6 +358,9 @@ func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 	if len(snap.Apps) > 0 {
 		apps := make([]map[string]any, 0, len(snap.Apps))
 		for _, a := range snap.Apps {
+			if !a.State.IsRoutable() {
+				continue
+			}
 			apps = append(apps, nodeProviderInfo(a))
 		}
 		nodeInfo["providers"] = apps
@@ -518,6 +521,9 @@ func (s *Server) GetLocalNodeInfo() map[string]any {
 
 	apps := []map[string]any{}
 	for _, app := range s.GetLocalAppsInfo() {
+		if !app.State.IsRoutable() {
+			continue
+		}
 		apps = append(apps, nodeProviderInfo(app))
 	}
 	hostInfo["providers"] = apps
@@ -787,26 +793,12 @@ func (s *Server) eligibleDeployProviders(model, repo, format string, force bool)
 	return slices.Compact(names)
 }
 
-// buildLocalAppsInfo builds the app details list from the
-// provider registry. Called by refreshLocalCaches to populate
-// the cache entry served by /hosts and by the /health handler's
-// apps_detail field.
-//
-// Wire-format note: each entry carries both "mode" (legacy, preserved
-// for back-compat with older client builds) and "kind" (canonical new
-// discriminator from config.Provider.Kind()). During the kind-split
-// arc the two always match; post-Commit-6 only "kind" remains.
-// buildLocalAppsInfo returns this node's routable providers. Filters
-// ProviderAppManager.LocalInfo down to live/cloud-available — dormant /
-// installing / not-installed stay internal to install coordinator and
-// recovery APIs.
+// buildLocalAppsInfo preserves the full inference inventory for REST and peer snapshots.
+// Consumers selecting providers for inference must check State.IsRoutable.
 func (s *Server) buildLocalAppsInfo() []prov_apps.LocalProviderInfo {
 	infos := s.providers.appMgr.LocalInfo(s.node.Name())
 	out := make([]prov_apps.LocalProviderInfo, 0, len(infos))
 	for _, info := range infos {
-		if !info.State.IsRoutable() {
-			continue
-		}
 		if info.Managed && info.Endpoint != "" {
 			status, err := s.providers.appMgr.ProviderServiceStatus(context.Background(), info.Key)
 			if err == nil {

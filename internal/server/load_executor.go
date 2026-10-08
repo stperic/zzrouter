@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -50,7 +51,6 @@ type LoadExecutor struct {
 	isProviderEnabled func(string) bool
 	registry          modelLister
 	resolveBackend    func(string) (*backend.Resolved, bool)
-	mergeAndResolve   func(modelName, appType, endpoint string, parameters, environment map[string]string) (*mergeResolveResult, error)
 	launchOnDemand    func(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instance.Instance, error)
 	invalidateCache   func()
 	getNodename       func() string
@@ -152,7 +152,6 @@ func NewLoadExecutor(
 	isProviderEnabled func(string) bool,
 	registry modelLister,
 	resolveBackend func(string) (*backend.Resolved, bool),
-	mergeAndResolve func(modelName, appType, endpoint string, parameters, environment map[string]string) (*mergeResolveResult, error),
 	launchOnDemand func(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instance.Instance, error),
 	invalidateCache func(),
 	getNodename func() string,
@@ -163,7 +162,6 @@ func NewLoadExecutor(
 		isProviderEnabled:      isProviderEnabled,
 		registry:               registry,
 		resolveBackend:         resolveBackend,
-		mergeAndResolve:        mergeAndResolve,
 		launchOnDemand:         launchOnDemand,
 		invalidateCache:        invalidateCache,
 		getNodename:            getNodename,
@@ -243,6 +241,9 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 	if existingInstance, found := e.appMgr.Instances().GetByModelEndpoint(req.ModelName, req.Endpoint); found {
 		status := existingInstance.GetStatus()
 		if !req.Force && (status == instance.StatusStarting || status == instance.StatusRunning) {
+			if normalizedProvider != "" && utils.NormalizeAppType(existingInstance.Provider) != normalizedProvider {
+				return &LoadModelResponse{StatusCode: http.StatusBadRequest, Error: fmt.Sprintf("model %q is held by provider %q; requested provider %q cannot reuse that run. Stop it before changing provider", req.ModelName, existingInstance.Provider, req.Provider)}, nil
+			}
 			detail := fmt.Sprintf("Instance %s is %s. Use --force to restart.", existingInstance.ID, status)
 			if status == instance.StatusRunning {
 				detail = fmt.Sprintf("Instance %s is running on port %d. Use --force to restart.", existingInstance.ID, existingInstance.Port)
@@ -463,10 +464,8 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	utils.LogDebugf("[LoadExecutor] PreviewLocalRun: model=%s, provider=%s",
 		req.ModelName, req.Provider)
 
-	if e.appMgr != nil {
-		if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
-			return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
-		}
+	if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
+		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
 	}
 	normalizedApp := utils.NormalizeAppType(req.Provider)
 	if normalizedApp == "" {
@@ -475,64 +474,38 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 		return nil, newProblemError(http.StatusBadRequest, "Bad Request",
 			"provider is required: preview renders the launch command for one provider")
 	}
-	// Reject unknown or disabled providers up front so the response is a
-	// structured error envelope, not a 200 + all-empty PreviewRunResponse.
-	// Coord has an equivalent fast-path gate in RunsController.PreviewRun;
-	// this worker-side check covers the drift window when coord and
-	// worker have different appsConfig snapshots (peer-sync in flight).
-	if e.isProviderEnabled != nil && !e.isProviderEnabled(normalizedApp) {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request",
-			fmt.Sprintf("provider %q is not configured or enabled", normalizedApp))
+	// Check the worker's current config independently of the coordinator snapshot.
+	if err := previewProviderError(e.appMgr, normalizedApp); err != nil {
+		return nil, err
 	}
 
-	if e.appMgr != nil {
-		if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
-			return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
-		}
+	if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
+		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
 	}
 
-	mr, err := e.mergeAndResolve(req.ModelName, normalizedApp, req.Endpoint, req.Parameters, req.Environment)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve parameters: %w", err)
-	}
-
-	// Build preview command string from app runtime config
-	fullCommand := fmt.Sprintf("%s run %s", normalizedApp, req.ModelName)
-	workingDir := "."
-	if mr.ProviderCfg.Runtime != nil {
-		exec := mr.ProviderCfg.Runtime.Execution
-		if exec.Command != "" {
-			fullCommand = exec.Command
-			if mr.Command != "" {
-				fullCommand = mr.Command
-			}
-			for _, arg := range exec.Args {
-				fullCommand += " " + arg
-			}
-		}
-		if exec.WorkingDir != "" {
-			workingDir = exec.WorkingDir
-		}
-	}
-
-	// Pool errors (no pool, exhausted) are non-fatal: leave Port=0 so the
-	// preview still renders. The real launch surfaces the same error.
 	projectedPort := 0
-	if e.appMgr != nil {
-		if p, err := e.appMgr.Ports().ProjectForProvider(normalizedApp); err == nil {
-			projectedPort = p
-		}
+	if p, err := e.appMgr.Ports().ProjectForProvider(normalizedApp); err == nil {
+		projectedPort = p
 	}
+	launch, err := e.appMgr.PreviewLaunch(prov_apps.LaunchRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
+	if err != nil {
+		return nil, err
+	}
+	workingDir := "."
+	if launch.Config.Runtime != nil && launch.Config.Runtime.Execution.WorkingDir != "" {
+		workingDir = launch.Config.Runtime.Execution.WorkingDir
+	}
+	fullCommand := strings.Join(append([]string{launch.Command}, launch.Args...), " ")
 
 	return &PreviewRunResponse{
-		Model:            req.ModelName,
+		Model:            launch.Model,
 		Provider:         normalizedApp,
 		Node:             e.getNodename(),
 		Port:             projectedPort,
 		FullCommand:      fullCommand,
-		Parameters:       mr.Params,
-		ParameterSources: mr.ParamSources,
-		Environment:      mr.Env,
+		Parameters:       launch.Params,
+		ParameterSources: launch.Sources,
+		Environment:      launch.Environment,
 		WorkingDir:       workingDir,
 	}, nil
 }

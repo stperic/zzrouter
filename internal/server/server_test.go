@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -1347,13 +1348,21 @@ func (m *mockModelCache) RouteToModelOrBroadcast(ctx context.Context, modelName,
 	return nil, nil
 }
 
-func (m *mockModelCache) TargetNodeForModel(modelName string) string {
+func (m *mockModelCache) ResolveModel(_ context.Context, modelName, nodeHint string) (*resolver.Resolved, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	r := &resolver.Resolved{ModelName: modelName, Node: nodeHint}
 	for _, cm := range m.models {
 		if cm != nil && cm.Name == modelName {
-			return cm.Node
+			r.ModelName, r.Provider = cm.Name, cm.Provider
+			if nodeHint == "" {
+				r.Node = cm.Node
+			}
+			break
 		}
 	}
-	return ""
+	return r, nil
 }
 
 func (m *mockModelCache) IsLocalNode(host string) bool {

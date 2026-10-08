@@ -72,7 +72,7 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 // Anthropic body has no stream_options, and the engine reports usage
 // unasked.
 func (s *Server) routeMessages(c *gin.Context, model string, body []byte, tr messagesTranslation, admit func(model string) (release func(), ok bool)) {
-	model, body, nodeHint := s.stripNodeHint(c, model, body)
+	nodeHint := c.GetHeader("X-Node")
 	release, ok := admit(model)
 	defer release()
 	if !ok {

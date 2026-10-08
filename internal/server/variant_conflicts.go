@@ -21,6 +21,7 @@ func (s *Server) checkCatalogVariantConflict(ctx context.Context, model string) 
 }
 
 func (s *Server) validateModel(ctx context.Context, model string) error {
+	model = s.modelIdentity(model)
 	if s.providers.appMgr != nil {
 		return s.providers.appMgr.ValidateModel(ctx, model)
 	}
@@ -41,6 +42,10 @@ func writeModelAdmissionError(w http.ResponseWriter, req *http.Request, err erro
 // preference can discard an otherwise usable replica.
 func (s *Server) admitResolvedModels(c *gin.Context, resolved *resolver.Resolved, nodeHint string) bool {
 	if len(resolved.Candidates) == 0 {
+		if err := s.validateModel(c.Request.Context(), resolved.OriginalName); err != nil {
+			writeModelAdmissionError(c.Writer, c.Request, err)
+			return false
+		}
 		return s.admitProviderInventory(c, resolved, nodeHint)
 	}
 	kept := make([]fallback.Candidate, 0, len(resolved.Candidates))

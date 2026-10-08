@@ -31,6 +31,7 @@ var tagBySegment = map[string]string{
 	"health":         "Health",
 	"inference-logs": "InferenceLogs",
 	"jobs":           "Jobs",
+	"mcp":            "MCP",
 	"keys":           "Keys",
 	"model-groups":   "ModelGroups",
 	"models":         "Models",

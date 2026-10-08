@@ -25,6 +25,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -39,19 +40,15 @@ func (s *Server) resolveCanonicalModelName(model string) string {
 	if model == "" || s.model.Cache == nil {
 		return model
 	}
-	cm, err := s.LookupModel(context.Background(), model)
-	if err != nil || cm == nil || cm.Name == "" {
-		return model
-	}
-	if cm.VariantOf != "" && s.variantSharesBase(cm) {
-		// Served by its base's process, the way a SourceID alias is. One
-		// level only: a base is weights, never another variant.
-		if b, err := s.LookupModel(context.Background(), cm.VariantOf); err == nil && b != nil && b.Name != "" && b.VariantOf == "" {
-			return b.Name
+	replicas, err := s.model.Cache.LookupReplicas(context.Background(), model, "", "")
+	if err == nil {
+		for _, replica := range replicas {
+			if s.node.IsLocalNode(replica.Node) {
+				return replica.Model
+			}
 		}
-		return cm.VariantOf
 	}
-	return cm.Name
+	return model
 }
 
 // modelSource returns the registry the catalog records model's weights
@@ -114,15 +111,6 @@ func (s *Server) requestDefaults(ctx context.Context, provider, model, path stri
 		values[k] = v.Value
 	}
 	return values
-}
-
-// variantSharesBase reports whether a variant resolves to the same launch
-// as its base on this node, so its base's process can serve it. The
-// decision is this node's: node tiers can split the two on one node and
-// not on another. See docs/plan_model_templates_and_variants.md.
-func (s *Server) variantSharesBase(v *cache.CachedModel) bool {
-	sc, ok := s.providerConfig(v.Provider)
-	return ok && sc.SameLaunch(s.node.Nodename(), v.Name, v.VariantOf)
 }
 
 // providerConfig looks a provider up by any name a launch accepts for it,
@@ -437,6 +425,26 @@ func extractTagsFromExtra(extra map[string]any) []string {
 	return tags
 }
 
+// previewProviderError uses the target node's inventory to select one recovery action.
+func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error {
+	name = utils.NormalizeAppType(name)
+	provider, ok := mgr.AppsConfig().LookupApp(name)
+	if !ok {
+		return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is not configured on this node; choose a configured provider from GET /zzrouter/v1/providers or configure one from /zzrouter/v1/providers/catalog", name))
+	}
+	if provider.IsEnabled() {
+		return nil
+	}
+	next := fmt.Sprintf("install it with POST /zzrouter/v1/providers/%s/install", name)
+	for _, info := range mgr.LocalInfo("") {
+		if info.Key == name && info.State.IsInstalled() {
+			next = fmt.Sprintf("enable it with PATCH /zzrouter/v1/providers/%s with enabled=true", name)
+			break
+		}
+	}
+	return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is configured but disabled on this node; %s, then retry", name, next))
+}
+
 // isProviderEnabledInConfig checks if provider is enabled in provider config
 func isProviderEnabledInConfig(appsConfig *pkgConfig.AppsConfig, providerType string) bool {
 	normalizedType := utils.NormalizeAppType(providerType)
@@ -486,4 +494,16 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 // block, not by overwriting the client's own handle for the model.
 func translateModel(inst *instance.Instance, clientModel string) bool {
 	return clientModel != "" && inst.WireModel != "" && inst.WireModel != clientModel
+}
+
+// modelInstance keeps provider selection intact when reusing an endpoint's run.
+func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Instance, bool) {
+	if s.providers.appMgr == nil {
+		return nil, false
+	}
+	inst, found := s.providers.appMgr.Instances().GetByModelEndpoint(model, endpoint)
+	if found && provider != "" && utils.NormalizeAppType(inst.Provider) != utils.NormalizeAppType(provider) {
+		return nil, false
+	}
+	return inst, found
 }

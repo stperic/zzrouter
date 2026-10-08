@@ -10,6 +10,9 @@ package httperr
 type RouteErrorCode string
 
 const (
+	// CodeModelNodeAmbiguous requires an explicit node for replicated remote models.
+	CodeModelNodeAmbiguous RouteErrorCode = "model_node_ambiguous"
+
 	// CodeNodeUnreachable is a transport failure against a named node: the
 	// node is offline, unpaired, or its cluster certificate is not valid.
 	CodeNodeUnreachable RouteErrorCode = "node_unreachable"

@@ -3,7 +3,7 @@
 //
 // Two implementations:
 //
-//   - [Default] — direct name lookup via a [RemoteLookup] closure
+//   - [Default] — direct name lookup via catalog replicas
 //   - [Group] — resolves through a [group.GroupStore] first, falling
 //     back to an inner [Resolver]
 //

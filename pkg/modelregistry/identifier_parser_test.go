@@ -402,3 +402,13 @@ func TestIdentifier_GetFullModelName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseConfiguredDisabledProviderPrefix(t *testing.T) {
+	cfg := &pkgConfig.AppsConfig{}
+	require.NoError(t, cfg.AddApp("llamacpp", pkgConfig.ServiceConfig{Enabled: new(false), Mode: "on-demand", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{BasePort: 8100, Execution: pkgConfig.ExecutionConfig{Type: "cli", Command: "echo"}}}))
+	id, err := Parse("LLAMACPP/model@worker", ParseOpts{Config: cfg})
+	require.NoError(t, err)
+	require.Equal(t, "llamacpp", id.ProviderKey)
+	require.Equal(t, "model", id.GetFullModelName())
+	require.Equal(t, "worker", id.Node)
+}

@@ -21,6 +21,7 @@ var apiDiscoveryHidden = map[string]struct{}{
 }
 
 type apiDiscoveryResponse struct {
+	MCP                 string              `json:"mcp,omitempty"`
 	APIVersion          string              `json:"api_version"`
 	Authentication      apiAuthentication   `json:"authentication"`
 	Inference           apiInference        `json:"inference"`
@@ -142,7 +143,12 @@ func registerAPIDiscoveryRoute(router *gin.RouterGroup, s *Server) {
 }
 
 func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
+	mcpEndpoint := ""
+	if s.config == nil || !s.config.Cluster.IsWorker() {
+		mcpEndpoint = "POST /zzrouter/v1/mcp"
+	}
 	return apiDiscoveryResponse{
+		MCP:                 mcpEndpoint,
 		APIVersion:          "v1",
 		ProviderDiagnostics: describeProviderDiagnostics(s),
 		UpdateControl:       "Admin: POST /update/apply with version and nodes (or [all]); workers first, coordinator last, sleeping nodes pending. GET /update/status and /update/history accept ?nodes=all. GET/PATCH /update/settings?node=NAME controls scheduled updates only. Explicit updates remain available when enabled=false. Protocol-breaking changes require an operator maintenance window and rollback of all nodes if any fails.",

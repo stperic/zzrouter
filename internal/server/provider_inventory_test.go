@@ -42,7 +42,7 @@ func TestLocalWorkerReportsStoppedProviderBeforeForwarding(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	request.Header.Set(constants.HeaderServingProvider, "generic-daemon")
-	require.Error(t, s.HandleLocalModel(response, request, "known", "chat"))
+	require.Error(t, s.HandleLocalModel(response, request, &resolver.Resolved{ModelName: "known", Provider: "generic-daemon"}, "chat"))
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Contains(t, response.Body.String(), "provider_not_running")
 	require.Contains(t, response.Body.String(), "service/start")
@@ -72,17 +72,15 @@ func TestMissingModelOnStoppedNodeReportsRecoveryWithoutClaimingIdentity(t *test
 	require.NotContains(t, response.Body.String(), "deployments")
 }
 
-func TestUnpinnedMissingModelRetainsWorkerInventoryFailure(t *testing.T) {
+func TestUnpinnedUnknownModelDoesNotClaimAStoppedWorkersInventory(t *testing.T) {
 	s := inventoryServer(t, []cache.InventoryUnavailable{stoppedInventory("worker")})
-	c, response := inventoryContext()
-	require.False(t, s.admitResolvedModels(c, &resolver.Resolved{ModelName: "unknown"}, ""))
-	require.Equal(t, http.StatusServiceUnavailable, response.Code)
-	require.Contains(t, response.Body.String(), "worker")
-	response = httptest.NewRecorder()
+	c, _ := inventoryContext()
+	require.True(t, s.admitResolvedModels(c, &resolver.Resolved{ModelName: "unknown"}, ""))
+	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	require.Error(t, s.HandleLocalModel(response, request, "unknown", "chat"))
-	require.Equal(t, http.StatusServiceUnavailable, response.Code)
-	require.NotContains(t, response.Body.String(), "model_not_found")
+	require.Error(t, s.HandleLocalModel(response, request, &resolver.Resolved{ModelName: "unknown"}, "chat"))
+	require.Equal(t, http.StatusNotFound, response.Code)
+	require.Contains(t, response.Body.String(), "model_not_found")
 	c, _ = inventoryContext()
 	require.True(t, s.admitResolvedModels(c, &resolver.Resolved{ModelName: "unknown"}, s.node.Nodename()),
 		"an explicitly local request does not consult a worker's inventory")
@@ -132,7 +130,7 @@ func TestMissingModelAfterSuccessfulInventoryRemainsNotFound(t *testing.T) {
 	s := inventoryServer(t, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	require.Error(t, s.HandleLocalModel(response, request, "absent", "chat"))
+	require.Error(t, s.HandleLocalModel(response, request, &resolver.Resolved{ModelName: "absent"}, "chat"))
 	require.Equal(t, http.StatusNotFound, response.Code)
 	require.Contains(t, response.Body.String(), "model_not_found")
 }

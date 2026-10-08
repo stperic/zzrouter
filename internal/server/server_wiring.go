@@ -120,7 +120,6 @@ func (s *Server) newLoadExecutor() *LoadExecutor {
 		func(p string) bool { return isProviderEnabledInConfig(s.appsConfig, p) },
 		s.model.Registry,
 		s.backend.Resolve,
-		s.resolveForLaunch,
 		s.launchOnDemandContainerWithParams,
 		s.model.Cache.Invalidate,
 		s.node.Nodename,
@@ -164,7 +163,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 func (s *Server) newOllamaService() OllamaService {
 	return NewOllamaService(
 		s.ollamaDaemon,
-		s.getRemoteModelInfo,
+		s.model.Resolver.Resolve,
 		s.proxyToRemoteNode,
 		s.node.Nodename,
 		s.node.IsLocalNode,

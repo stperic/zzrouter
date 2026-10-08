@@ -20,6 +20,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
@@ -28,10 +29,10 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// HandleLocalModel implements the LocalModelHandler interface for the Server.
 // HandleLocalModel handles requests for local models. endpoint is the
 // per-request endpoint label ("chat" for callers that don't know).
-func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, model, endpoint string) error {
+func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, resolved *resolver.Resolved, endpoint string) error {
+	model, providerType := resolved.ModelName, resolved.Provider
 	if err := s.validateModel(req.Context(), model); err != nil {
 		writeModelAdmissionError(w, req, err)
 		return err
@@ -40,32 +41,17 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, mode
 		endpoint = "chat"
 	}
 
-	// Alias resolution: rewrite to the cache canonical (indexByName key)
-	// before any instance/provider lookup so SourceID aliases (e.g.
-	// HF repo path "Qwen/.../GGUF") and the file-stem name resolve to
-	// the same instance / launch keys. Best-effort — a cache miss leaves
-	// `model` untouched and downstream "model_not_found" still applies.
-	if canonical := s.resolveCanonicalModelName(model); canonical != "" && canonical != model {
-		model = canonical
-	}
-
 	// FAST PATH: Check if model is already running (on-demand instances
 	// launched via runs API). Must be checked BEFORE findCapableProvider,
 	// as dynamically launched models may not be in the model registry but
 	// are ready to serve.
-	if s.providers.appMgr != nil {
-		registry := s.providers.appMgr.Instances()
-		existingInstance, found := registry.GetByModelEndpoint(model, endpoint)
-		if found && existingInstance.GetStatus() == instance.StatusRunning {
-			s.proxyToInstance(w, req, existingInstance, true)
-			return nil
-		}
+	existingInstance, found := s.modelInstance(model, endpoint, providerType)
+	if found && existingInstance.GetStatus() == instance.StatusRunning {
+		s.proxyToInstance(w, req, existingInstance, true)
+		return nil
 	}
 
-	// Check if provider was passed from coordinator (workers receive this)
-	providerType := req.Header.Get(constants.HeaderServingProvider)
-
-	// If no provider header, find it locally. A model that has no capable
+	// If resolution found no provider, find it locally. A model that has no capable
 	// provider maps to OpenAI's canonical "model_not_found" envelope —
 	// type=invalid_request_error, code=model_not_found, HTTP 404 — so
 	// stock OpenAI SDK clients can switch on error.type without needing
@@ -101,8 +87,7 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, mode
 
 	// For on-demand apps, check if model is already running (also handles
 	// starting status).
-	registry := s.providers.appMgr.Instances()
-	existingInstance, found := registry.GetByModelEndpoint(model, endpoint)
+	existingInstance, found = s.modelInstance(model, endpoint, providerType)
 
 	// Only this handler's own surfaces (/v1 and the responses/realtime
 	// wrappers) reach here, and OpenAI's `stream` defaults to false when

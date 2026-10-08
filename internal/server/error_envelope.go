@@ -50,7 +50,7 @@ func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Re
 // stripped; Content-Length + ContentLength are sized to the new body.
 // The response consumer closes the replacement body.
 func applyRewrittenError(req *http.Request, resp *http.Response) {
-	httperr.NormalizeUpstreamResponse(resp, dialectOf(req))
+	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req))
 }
 
 // ollamaSurfaceErrorBody renders an upstream backend error in the

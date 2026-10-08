@@ -79,6 +79,8 @@ tags:
   - name: Nodes
   - name: Deployments
   - name: Jobs
+  - name: MCP
+    description: Task-level tools for coding agents through the coordinator.
   - name: Keys
   - name: Teams
   - name: Spend
@@ -328,6 +330,63 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/APIDiscovery'
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+
+  /zzrouter/v1/mcp:
+    post:
+      tags: [MCP]
+      operationId: callMcp
+      summary: Stateless MCP tools for coding agents
+      description: |
+        Connect coding agents to this coordinator with an admin key in
+        X-API-Key or Authorization: Bearer. Workers do not mount this endpoint.
+        Use zz_overview to learn node names, health, enabled providers and REST
+        endpoints; use zz_job to read progress or wait up to 45 seconds.
+        Calls return synchronously as JSON-RPC with HTTP 200. REST failures
+        inside a tool appear as isError tool results with status, code, detail
+        and per-key errors; authentication failures occur before tool execution.
+        Protocol 2026-07-28 requests send MCP-Protocol-Version, Mcp-Method and,
+        for tool calls, Mcp-Name headers plus protocol metadata in params._meta.
+        Protocol 2025-06-18 clients use their initialize flow on the same
+        stateless transport. No session id is stored. Request bodies are
+        limited to 1 MiB; use POST rather than GET or DELETE.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: MCP JSON-RPC result, including actionable tool errors
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid MCP request }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { description: Internal or cross-origin request refused }
+        '413': { description: Request exceeds 1 MiB }
+    get:
+      tags: [MCP]
+      operationId: getMcp
+      summary: Stateless MCP does not support GET
+      description: |
+        This transport has no persistent session or server event stream.
+        Authenticated GET requests receive HTTP 405 from the MCP SDK.
+        Send JSON-RPC tool requests by POST to this same endpoint instead.
+      responses:
+        '405': { description: Method not allowed by the MCP transport }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+    delete:
+      tags: [MCP]
+      operationId: deleteMcp
+      summary: Stateless MCP does not support DELETE
+      description: |
+        This transport stores no session id, so there is no session to delete.
+        Authenticated DELETE requests receive HTTP 405 from the MCP SDK.
+        Close the client connection to finish using the endpoint; use POST
+        when another tool call is needed.
+      responses:
+        '405': { description: Method not allowed by the MCP transport }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
 
   /zzrouter/v1/health:
@@ -1240,9 +1299,11 @@ paths:
     get:
       tags: [Providers]
       operationId: listProviders
-      summary: List installed providers with runtime status
+      summary: List configured inference providers with runtime status
       description: |
-        Every provider this node knows about, with its runtime status.
+        Configured inference providers on this node and cached peers, including
+        disabled and uninstalled entries. Registries are excluded. `node` selects
+        one node; kind, enabled, installed, managed and version describe its state.
         Filterable by name, key or running state, and `refresh=true` forces
         a status re-probe instead of answering from cache.
 
@@ -1899,9 +1960,10 @@ paths:
       operationId: listProvidersStatus
       summary: List provider health, cooldowns, and rate-limit state
       description: |
-        Aggregate list across every provider. For one provider's full
-        status use `/providers/{name}/status`; for its service-manager
-        state alone use `/providers/{name}/service/status`.
+        Enabled configured entries, including model registries, with their
+        coordinator cooldown and rate-limit state. This is not the inference
+        provider inventory: use `/providers` for that. For one provider's
+        install and runtime status use `/providers/{name}/status`.
       responses:
         '200':
           description: OK
@@ -4005,8 +4067,9 @@ paths:
       operationId: getProviderStatus
       summary: Aggregate status (install + service + running instances) for a provider
       description: |
-        One provider's combined view. The all-providers list is
-        `/providers/status`; the raw service-manager state is
+        One provider's combined view. The inference-provider inventory is
+        `/providers`; `/providers/status` lists enabled-entry cooldowns,
+        including registries. The raw service-manager state is
         `/providers/{name}/service/status`.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
@@ -4756,6 +4819,12 @@ paths:
     get:
       tags: [Registries]
       operationId: listRegistriesHuggingfaceVariants
+      parameters:
+        - in: query
+          name: id
+          required: true
+          description: HuggingFace repository identifier (owner/repository).
+          schema: { type: string }
       summary: List available Hugging Face model variants for a repo
       description: |
         Quantisation variants available for a HuggingFace repo, so a caller
@@ -10552,6 +10621,7 @@ components:
     APIDiscovery:
       type: object
       properties:
+        mcp: { type: string, description: Coordinator MCP endpoint, example: POST /zzrouter/v1/mcp }
         api_version: { type: string, example: v1 }
         authentication:
           type: object

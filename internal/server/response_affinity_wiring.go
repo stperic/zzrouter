@@ -190,8 +190,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 		return
 	}
 
-	var nodeHint string
-	req.Model, body, nodeHint = s.stripNodeHint(c, req.Model, body)
+	nodeHint := c.GetHeader("X-Node")
 	recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
 	release, ok := s.enforceAndAttribute(c, req.Model, recorder)
 	defer release()
@@ -212,7 +211,8 @@ func (s *Server) handleResponses(c *gin.Context) {
 				if !s.admitImages(c, req.Model, body, targetModel) {
 					return
 				}
-				stashInferenceContext(c, req.Model, body)
+				body = s.resolvedRequestBody(c, targetModel, req.Model, body)
+				stashInferenceContext(c, s.modelIdentity(req.Model), body)
 				target := backend.PassthroughTarget(resolved.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
 				capturer := newResponseIDCapturingWriter(c.Writer)
 				c.Writer = capturer

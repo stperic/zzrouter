@@ -105,7 +105,7 @@ func TestResponsesAdmissionOnceForNativeTranslationAndAffinity(t *testing.T) {
 			}
 			require.NoError(t, s.appsConfig.AddApp("gateway", pkgConfig.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: upstream.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}}, Capabilities: &pkgConfig.AppCapabilities{Models: []string{"test-model"}, WireEndpoints: eps}}))
 			s.model.Cache.Invalidate()
-			s.model.Resolver = resolver.NewDefault(func(string, ...string) (string, string) { return "", "gateway" })
+			s.model.Resolver = staticModelResolver{provider: "gateway"}
 			s.access, _ = newGatewayWithEnforcer(t)
 			body := `{"model":"test-model","input":"hello"}`
 			if mode == "affinity" {
@@ -131,4 +131,11 @@ func TestResponsesAdmissionOnceForNativeTranslationAndAffinity(t *testing.T) {
 			assert.EqualValues(t, 1, calls.Load())
 		})
 	}
+}
+
+// staticModelResolver keeps feature-admission fixtures independent of catalog routing.
+type staticModelResolver struct{ provider string }
+
+func (r staticModelResolver) Resolve(_ context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
+	return &resolver.Resolved{ModelName: ref.Model, Provider: r.provider}, nil
 }

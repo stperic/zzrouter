@@ -217,7 +217,7 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, req
 	if req.Runtime != "" && req.DisposablePlanID == "" && !req.installSmoke {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
-	params, env := m.resolveRawLaunchParams(svc, req, endpoint)
+	params, env, sources := m.resolveRawLaunchParams(svc, req, endpoint)
 	selected := req.Runtime
 	if selected == "" {
 		selected = req.selectedRuntime
@@ -296,11 +296,12 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, req
 			return LaunchParameters{}, err
 		}
 	}
+	maps.Copy(sources, features.Sources)
 	params, autoMemory, err := m.filterLaunchAuto(req.Provider, features.Params)
 	if err != nil {
 		return LaunchParameters{}, err
 	}
-	return LaunchParameters{autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: features.Sources, Config: svc, RuntimeKey: key}, nil
+	return LaunchParameters{autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
 }
 
 // ResolveLaunchParameters resolves this node's tiers and selected feature

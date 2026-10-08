@@ -1,5 +1,7 @@
 # Agent quickstart
 
+For Claude Code or Codex tool access, see [MCP setup and tools](mcp.md).
+
 An operator initializes the node, approves provider installation authority and
 gives the management agent an admin key through a protected credential channel.
 Inference clients receive separate virtual keys. Host changes remain operator work.
