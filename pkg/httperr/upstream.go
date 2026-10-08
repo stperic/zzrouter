@@ -53,19 +53,22 @@ func readCapped(r io.Reader) []byte {
 func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	raw := readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
-	message := upstreamMessage(raw)
+	message, code := upstreamError(raw)
 	failure := Error{Status: resp.StatusCode, Type: openaicompat.StatusToErrorType(resp.StatusCode), Message: utils.SanitizeErrorMessage(message)}
 	if failure.Message == "" {
 		failure.Message = fmt.Sprintf("backend returned status %d", resp.StatusCode)
 	}
-	if resp.StatusCode == http.StatusBadRequest && strings.Contains(message, vllmToolChoiceRefusal) {
+	switch {
+	case refusalCodes[code]:
+		// The node that spoke to the engine classified it; a relay keeps that.
+		failure.Code = code
+	case resp.StatusCode == http.StatusBadRequest && strings.Contains(message, vllmToolChoiceRefusal):
 		failure.Code = CodeToolCallingNotEnabled
 		failure.Message = utils.SanitizeErrorMessage("this model's engine was launched without tool calling: " + message + " " + ToolCallingRemedy)
-	}
-	if resp.StatusCode == http.StatusInternalServerError {
-		if unsupportedImage(message) {
-			failure.Code = "unsupported_input"
-		} else if reason, ok := templateRefusal(message); ok {
+	case resp.StatusCode == http.StatusInternalServerError && unsupportedImage(message):
+		failure.Code = CodeUnsupportedInput
+	case resp.StatusCode == http.StatusInternalServerError:
+		if reason, ok := templateRefusal(message); ok {
 			failure.Code = CodeChatTemplateRejected
 			failure.Message = utils.SanitizeErrorMessage("the model's chat template rejected this request: " + reason + " " + ChatTemplateRemedy)
 		}
@@ -90,29 +93,33 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	return failure
 }
 
-func upstreamMessage(raw []byte) string {
+// upstreamError returns an error body's message and, when it carries one as
+// a string, its code.
+func upstreamError(raw []byte) (message, code string) {
 	var envelope struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		return string(raw)
+		return string(raw), ""
 	}
 	var text string
 	if json.Unmarshal(envelope.Error, &text) == nil {
-		return text
+		return text, ""
 	}
 	var inner struct {
 		Message string `json:"message"`
 		Error   string `json:"error"`
+		Code    any    `json:"code"`
 	}
 	if json.Unmarshal(envelope.Error, &inner) == nil {
+		code, _ = inner.Code.(string)
 		if inner.Message != "" {
-			return inner.Message
+			return inner.Message, code
 		}
-		return inner.Error
+		return inner.Error, code
 	}
-	return envelope.Message
+	return envelope.Message, ""
 }
 
 // Match explicit capability refusals only. A server failure mentioning images
@@ -126,6 +133,12 @@ func unsupportedImage(message string) bool {
 	}
 	return false
 }
+
+// CodeUnsupportedInput: the engine refused an input kind it cannot read.
+const CodeUnsupportedInput = "unsupported_input"
+
+// refusalCodes are the classifications NormalizeUpstreamResponse makes.
+var refusalCodes = map[string]bool{CodeUnsupportedInput: true, CodeChatTemplateRejected: true, CodeToolCallingNotEnabled: true}
 
 // CodeChatTemplateRejected: the engine's chat template refused to render the
 // request (vLLM answers such refusals 400 itself).

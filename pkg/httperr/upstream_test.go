@@ -168,6 +168,12 @@ func TestNormalizeToolCallingNotEnabled(t *testing.T) {
 	out, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `"code":"tool_calling_not_enabled"`)
+
+	// The coordinator relays the worker's classified reply: once is enough.
+	again := &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(out))}
+	relayed := httperr.NormalizeUpstreamResponse(again, openaiproto.New())
+	assert.Equal(t, httperr.CodeToolCallingNotEnabled, relayed.Code)
+	assert.Equal(t, failure.Message, relayed.Message)
 }
 
 func TestChatTemplateRefusalReasonIsBounded(t *testing.T) {
