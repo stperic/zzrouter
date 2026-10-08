@@ -67,7 +67,9 @@ func requestRecorder(ctx context.Context, model, provider string) *llm.Inference
 		return nil
 	}
 	if rec, _ := ctx.Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder); rec != nil {
-		rec.SetProvider(provider)
+		if provider != "" {
+			rec.SetProvider(provider)
+		}
 		return rec
 	}
 	return llm.NewInferenceRecorder(ctx, model, provider)

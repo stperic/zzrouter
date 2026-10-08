@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,4 +140,46 @@ func TestOllamaStreamRequested(t *testing.T) {
 			assert.Equal(t, tt.want, ollamaStreamRequested([]byte(tt.body), tt.endpointType))
 		})
 	}
+}
+
+// A coordinator that resolved a model to a node but not to a provider (an
+// explicit @node whose catalog entry is not current) used to reply and log
+// with provider "", so pricing missed and per-provider totals lost the
+// request. The worker that served it says which provider did.
+func TestProxyToWorkerURL_ProviderComesFromTheWorker(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	s.config.Coordinator.Routing.InjectUsageMetadata = true
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(constants.HeaderServingProvider, "vllm")
+		_, _ = w.Write([]byte(`{"id":"c","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`))
+	}))
+	t.Cleanup(worker.Close)
+
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	recorder := llm.NewInferenceRecorder(context.Background(), "m", "")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), CtxKeyInferenceRecorder, recorder))
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+
+	s.proxyToWorkerURL(c, worker.URL, "worker-1", "", body, http.DefaultClient)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	var reply struct {
+		Zzrouter struct {
+			Provider string `json:"provider"`
+			Node     string `json:"node"`
+		} `json:"zzrouter"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &reply))
+	assert.Equal(t, "vllm", reply.Zzrouter.Provider)
+	assert.Equal(t, "worker-1", reply.Zzrouter.Node)
+
+	var logged llm.InferenceLogData
+	llm.SetInferenceLogHook(captureHook(func(d llm.InferenceLogData) { logged = d }))
+	t.Cleanup(func() { llm.SetInferenceLogHook(nil) })
+	recorder.RecordCompletion(3, 1)
+	assert.Equal(t, "vllm", logged.App, "the inference log names the serving provider")
 }
