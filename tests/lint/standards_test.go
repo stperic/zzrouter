@@ -299,7 +299,6 @@ func TestCodingStandards(t *testing.T) {
 	}
 
 	for _, r := range rules {
-		r := r
 		t.Run(r.Name, func(t *testing.T) {
 			violations := scanForViolations(t, projectRoot, r)
 			for _, v := range violations {

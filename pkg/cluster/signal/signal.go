@@ -70,7 +70,7 @@ func (s *Signaler) Start(ctx context.Context) {
 	if s.lifeCancel != nil {
 		return
 	}
-	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx) //nolint:gosec // cancel stored on s.lifeCancel and invoked by Stop
+	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx)
 }
 
 // Stop cancels the lifecycle ctx and waits for in-flight notify

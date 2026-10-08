@@ -92,7 +92,6 @@ func TestModeStringAndMarshaling(t *testing.T) {
 		{Worker, "worker"},
 	}
 	for _, tc := range roundTrip {
-		tc := tc
 		t.Run(tc.text, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.text, tc.mode.String())
@@ -143,7 +142,6 @@ func TestConfigValidate(t *testing.T) {
 		{"invalid mode", Config{Mode: Mode(99)}, true},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			err := tc.cfg.validate()
@@ -213,7 +211,6 @@ func TestClusterModeGateUnit(t *testing.T) {
 		{"multi-deny", Disabled, []Mode{Unclaimed, Worker}, http.StatusNotImplemented},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

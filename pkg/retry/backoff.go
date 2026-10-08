@@ -6,7 +6,7 @@ package retry
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 )
 
@@ -68,7 +68,7 @@ func (b Backoff) Delay(attempt int) time.Duration {
 	if b.Jitter > 0 {
 		jitterRange := time.Duration(float64(delay) * b.Jitter)
 		if jitterRange > 0 {
-			delay += time.Duration(rand.Int63n(int64(jitterRange*2))) - jitterRange
+			delay += time.Duration(rand.Int64N(int64(jitterRange*2))) - jitterRange
 		}
 		// Floor so a large negative jitter can't drive us below half
 		// the base initial (prevents "delay=0" collapse on attempt 0).

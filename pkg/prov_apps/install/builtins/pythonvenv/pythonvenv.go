@@ -272,7 +272,7 @@ func (i *Installer) HealthCheck(ctx context.Context, reqs *config.AppRequirement
 		if writeErr := fsroot.WriteInstallManifest(i.cfg.Name, manifest); writeErr != nil {
 			// Non-fatal: the install is healthy; we just can't update
 			// the manifest. Surface as a warning on the next caller.
-			return nil //nolint:nilerr // policy: drift-only manifest update failure is non-fatal
+			return nil
 		}
 	}
 	return nil

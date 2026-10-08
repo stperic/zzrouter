@@ -153,7 +153,6 @@ runtime:
 
 	kinds := []kindCase{onDemand, external, cloud, registry}
 	for _, self := range kinds {
-		self := self
 		t.Run(self.name+"_accepts_own_body", func(t *testing.T) {
 			t.Parallel()
 			require.NoError(t, self.validator(self.body))
@@ -162,7 +161,6 @@ runtime:
 			if other.name == self.name {
 				continue
 			}
-			other := other
 			t.Run(self.name+"_rejected_by_"+other.name, func(t *testing.T) {
 				t.Parallel()
 				err := other.validator(self.body)

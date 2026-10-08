@@ -185,7 +185,7 @@ func (mc *Cache) Start(ctx context.Context) {
 		mc.lifecycleMu.Unlock()
 		return // already started
 	}
-	mc.lifeCtx, mc.lifeCancel = context.WithCancel(ctx) //nolint:gosec // cancel stored on mc.lifeCancel and invoked by Stop
+	mc.lifeCtx, mc.lifeCancel = context.WithCancel(ctx)
 	lifeCtx := mc.lifeCtx
 	mc.lifecycleMu.Unlock()
 

@@ -121,8 +121,8 @@ func TestMultiNodeDeploy_Get(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &createResp)
 	require.NoError(t, err)
 
-	createData := createResp["data"].(map[string]any) //nolint:errcheck // test asserts on known fixture shape
-	id := createData["id"].(string)                   //nolint:errcheck // test asserts on known fixture shape
+	createData := createResp["data"].(map[string]any)
+	id := createData["id"].(string)
 
 	getReq := httptest.NewRequest("GET", "/zzrouter/v1/deployments/"+id, nil)
 	getReq.Header.Set("X-API-Key", srv.TestAdminKey)
@@ -172,8 +172,8 @@ func TestMultiNodeDeploy_Cancel(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &createResp)
 	require.NoError(t, err)
 
-	createData := createResp["data"].(map[string]any) //nolint:errcheck // test asserts on known fixture shape
-	id := createData["id"].(string)                   //nolint:errcheck // test asserts on known fixture shape
+	createData := createResp["data"].(map[string]any)
+	id := createData["id"].(string)
 
 	cancelReq := httptest.NewRequest("DELETE", "/zzrouter/v1/deployments/"+id, nil)
 	cancelReq.Header.Set("X-API-Key", srv.TestAdminKey)

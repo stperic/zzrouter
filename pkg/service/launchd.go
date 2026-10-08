@@ -209,7 +209,7 @@ func (m *LaunchdManager) RestartService() error {
 func (m *LaunchdManager) RestartsOnExit() (bool, string) {
 	plistPath := m.getPlistPath()
 
-	data, err := os.ReadFile(plistPath) //nolint:gosec // path is this package's own install location
+	data, err := os.ReadFile(plistPath)
 	if err != nil {
 		return false, fmt.Sprintf("could not read %s", plistPath)
 	}

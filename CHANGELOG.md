@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased: first public release
+## 0.1.0 (2026-10-08)
+
+First public release.
 
 - Distributed model management through an authenticated API and terminal client.
 - OpenAI, Anthropic Messages and Ollama compatible inference.
@@ -9,6 +11,8 @@
 - Model features, provider parameter tiers and variants.
 - Cluster mTLS and signed updates from `stperic/zzrouter`.
 - Cluster protocol 7, minimum 7. Every cluster node must use a compatible build.
+- Built with Go 1.26.6; `govulncheck` reports no reachable vulnerabilities.
+- Reproducible release builds: every platform of a tag carries the same version.
 
-The first public tag is assigned when the release is approved. No private
-release history is included. Until 1.0, review compatibility notes before upgrading.
+No private release history is included. Until 1.0, review compatibility notes
+before upgrading.

@@ -39,7 +39,6 @@ func TestResolveModelToPath_GGUFRepoDirectory(t *testing.T) {
 		{"unmatched-hint-falls-back-to-the-only-gguf", "Qwen/Qwen2.5-0.5B-Instruct-GGUF#Q8_0", gguf},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := resolveModelToPath(tc.input)
 			if !ok || got != tc.want {

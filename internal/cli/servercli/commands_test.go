@@ -119,7 +119,7 @@ func TestGetNodename(t *testing.T) {
 }
 
 func TestDefaultConstants(t *testing.T) {
-	if insecureDevAdminKey != "dev-key-please-change-in-production" { //nolint:gosec // test fixture matches intentional dev fallback
+	if insecureDevAdminKey != "dev-key-please-change-in-production" {
 		t.Errorf("insecureDevAdminKey = %q, want 'dev-key-please-change-in-production'", insecureDevAdminKey)
 	}
 	if constants.DefaultZZROUTERPort != 9090 {

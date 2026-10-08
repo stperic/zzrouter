@@ -207,7 +207,7 @@ func (d Dir) Read(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.ReadFile(p) //nolint:gosec // p is a validated name inside this directory
+	return os.ReadFile(p)
 }
 
 // List describes every asset, sorted by name. Entries that are not valid
@@ -358,7 +358,7 @@ func (d Dir) holds(name string, data []byte) bool {
 	if err != nil || !fi.Mode().IsRegular() || fi.Size() != int64(len(data)) {
 		return false
 	}
-	have, err := os.ReadFile(p) //nolint:gosec // name was validated by ValidateSet
+	have, err := os.ReadFile(p)
 	return err == nil && bytes.Equal(have, data)
 }
 

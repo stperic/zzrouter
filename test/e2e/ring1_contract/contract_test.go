@@ -201,7 +201,6 @@ func TestRing1_RetiredRoutesAnswerGone(t *testing.T) {
 			continue
 		}
 		count++
-		r := r
 		t.Run(r.Method+" "+r.Path, func(t *testing.T) {
 			t.Parallel()
 			d := assert.Diagnostics(t, cluster)
@@ -280,7 +279,6 @@ func TestRing1_AuthMatrix(t *testing.T) {
 			continue
 		}
 		count++
-		r := r
 		t.Run(r.Method+" "+r.Path, func(t *testing.T) {
 			t.Parallel()
 			d := assert.Diagnostics(t, cluster)
@@ -347,7 +345,6 @@ func TestRing1_HealthIsAnonymous(t *testing.T) {
 			continue
 		}
 		count++
-		r := r
 		t.Run(r.Path, func(t *testing.T) {
 			t.Parallel()
 			d := assert.Diagnostics(t, cluster)
@@ -387,7 +384,6 @@ func TestRing1_RequestIDHeader(t *testing.T) {
 			continue
 		}
 		count++
-		r := r
 		t.Run(r.Method+" "+r.Path, func(t *testing.T) {
 			t.Parallel()
 			d := assert.Diagnostics(t, cluster)

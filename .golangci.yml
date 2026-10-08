@@ -8,12 +8,15 @@ linters:
   enable:
     - bodyclose
     - contextcheck
+    - copyloopvar
     - cyclop
+    - depguard
     - forbidigo
     - gocyclo
     - gosec
     - misspell
     - nilerr
+    - nolintlint
     - unconvert
     - unparam
 
@@ -27,6 +30,14 @@ linters:
   settings:
     cyclop:
       max-complexity: 30
+    depguard:
+      rules:
+        denied:
+          deny:
+            - pkg: "math/rand$"
+              desc: "use math/rand/v2"
+            - pkg: "github.com/pkg/errors"
+              desc: "use errors and fmt.Errorf with %w"
     errcheck:
       check-type-assertions: true
       check-blank: false
@@ -62,6 +73,10 @@ linters:
         # time.Now() call lives in pkg/utils/time.go (systemClock).
         - pattern: ^time\.Now$
           msg: "use utils.Now() for duration math, utils.NowUTC() for wire/persistence: see pkg/utils/time.go"
+    nolintlint:
+      # A suppression names its linter and says why.
+      require-specific: true
+      require-explanation: true
     gocyclo:
       min-complexity: 30
     gosec:
@@ -128,6 +143,11 @@ linters:
       - legacy
       - std-error-handling
     rules:
+      # unparam sees runtime.GOOS as a different constant per OS, so an
+      # unparam suppression is always unused on some OS.
+      - linters:
+          - nolintlint
+        text: 'is unused for linter "unparam"'
       # pkg/prov_apps intentionally uses an underscore in the package
       # name; a rename would churn hundreds of import paths for a
       # cosmetic gain. Silence ST1003 for the package name only (not

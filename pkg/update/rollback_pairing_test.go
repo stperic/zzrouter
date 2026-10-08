@@ -62,7 +62,7 @@ func (f *rollbackFixture) install(t *testing.T, nodeVer, launcherVer string) {
 
 func (f *rollbackFixture) read(t *testing.T, path string) []byte {
 	t.Helper()
-	content, err := os.ReadFile(path) //nolint:gosec // inside the test's own temp tree
+	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return content
 }

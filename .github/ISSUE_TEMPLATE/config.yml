@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/stperic/zzrouter/blob/main/SECURITY.md
+    about: Send security reports privately to security@medoya.com. Do not open a public issue.

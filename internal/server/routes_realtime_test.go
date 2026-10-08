@@ -286,7 +286,7 @@ func TestRealtime_EnforcesOpaqueAccessBeforeDial(t *testing.T) {
 		if key != "" {
 			h.Set("X-API-Key", key)
 		}
-		return websocket.DefaultDialer.Dial(endpoint, h) //nolint:bodyclose // caller closes failed handshake bodies
+		return websocket.DefaultDialer.Dial(endpoint, h)
 	}
 	refuse := func(key string, status int) {
 		before := dials.Load()

@@ -1,0 +1,26 @@
+version: 2
+
+# Weekly and grouped: one PR per ecosystem per week. Actions are pinned by
+# commit SHA, so this is what keeps those pins current.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      gomod:
+        patterns: ['*']
+    commit-message:
+      prefix: fix(deps)
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: chore(ci)

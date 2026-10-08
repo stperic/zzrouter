@@ -550,8 +550,6 @@ func (st *ScrollTable) Row(vals ...string) {
 }
 
 // Render measures the flexible column, builds the lipgloss table, and renders it.
-//
-//nolint:gocyclo,cyclop // column-flex + truncation + overflow rendering is one responsibility
 func (st *ScrollTable) Render() string {
 	cfg := st.cfg
 	helpStyle := cfg.Styles.Help

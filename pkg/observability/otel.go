@@ -53,11 +53,11 @@ func NewProvider(ctx context.Context, cfg *Config, version string) (*Provider, e
 		hostname = "unknown"
 	}
 
-	// Create resource with service information
+	// Schemaless: these keys are stable, and a pinned schema URL refuses to
+	// merge with the SDK's default as soon as the SDK moves to a newer one.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			semconv.ServiceName(cfg.ServiceName),
 			semconv.ServiceVersion(version),
 			semconv.ServiceInstanceID(hostname),

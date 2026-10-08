@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -270,7 +270,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 	// tests of schedulerLoop must currently Advance up to 60m to pass
 	// this jitter before the ticker fires; a deterministic override
 	// would let tests set it to 0.
-	s.initialJitter = time.Duration(rand.Int63n(int64(60 * time.Minute)))
+	s.initialJitter = time.Duration(rand.Int64N(int64(60 * time.Minute)))
 	s.wg.Add(1)
 	s.mu.Unlock()
 	go func() {

@@ -33,8 +33,8 @@ func createDeployment(t *testing.T, server *srv.Server, model string, nodes []st
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	data := resp["data"].(map[string]any) //nolint:errcheck // test asserts on known fixture shape
-	return data["id"].(string)            //nolint:errcheck // test asserts on known fixture shape
+	data := resp["data"].(map[string]any)
+	return data["id"].(string)
 }
 
 // seedLiveDownload injects a known download entry into the node's

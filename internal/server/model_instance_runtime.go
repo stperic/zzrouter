@@ -370,7 +370,7 @@ func (s *Server) resolveModelPathWithCache(ctx context.Context, model *metadata.
 	if modelcache.FileExists(cachePath) {
 		// Quick integrity check on cached model
 		if modelcache.HasManifest(cachePath) {
-			valid, err := s.model.Verifier.QuickVerify(context.WithoutCancel(ctx), cachePath) //nolint:contextcheck // Shared-cache verification must outlive a client disconnect.
+			valid, err := s.model.Verifier.QuickVerify(context.WithoutCancel(ctx), cachePath)
 			if err != nil || !valid {
 				slog.Info("[Models] Cached model failed integrity check, will re-cache", "cache", cachePath)
 				// Invalidate and continue to re-copy
@@ -392,7 +392,7 @@ func (s *Server) resolveModelPathWithCache(ctx context.Context, model *metadata.
 	// Check if shared storage has integrity manifest
 	if modelcache.HasManifest(sharedPath) {
 		// Use zero-trust copy: verify source → copy → verify destination
-		result, err := s.model.Verifier.VerifyAndCopy(context.WithoutCancel(ctx), sharedPath, cachePath) //nolint:contextcheck // A client disconnect must not abort a shared-cache copy.
+		result, err := s.model.Verifier.VerifyAndCopy(context.WithoutCancel(ctx), sharedPath, cachePath)
 		if err != nil {
 			slog.Info("[Models] Verified cache failed: , using shared storage directly", "failed", err)
 			return sharedPath, nil
@@ -412,7 +412,7 @@ func (s *Server) resolveModelPathWithCache(ctx context.Context, model *metadata.
 	}
 
 	// Create integrity manifest for future verifications
-	manifest, err := modelcache.CreateManifest(context.WithoutCancel(ctx), cachePath, model.Name, model.DownloadedFrom) //nolint:contextcheck // The shared cache needs its manifest even after a client disconnect.
+	manifest, err := modelcache.CreateManifest(context.WithoutCancel(ctx), cachePath, model.Name, model.DownloadedFrom)
 	if err != nil {
 		slog.Warn("[Models] Warning: failed to create integrity manifest", "manifest", err)
 	} else {

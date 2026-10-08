@@ -3,6 +3,7 @@
 package service
 
 import (
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,22 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/host"
 )
+
+//go:embed templates/zzrouter-node.service
+var systemdServiceTemplate string
+
+// The privileged updater: a root oneshot, the path unit that lets the
+// unprivileged node trigger it, and the timer that runs the scheduled
+// check. See templates/zzrouter-update.service for why it is split.
+
+//go:embed templates/zzrouter-update.service
+var systemdUpdateServiceTemplate string
+
+//go:embed templates/zzrouter-update.path
+var systemdUpdatePathTemplate string
+
+//go:embed templates/zzrouter-update.timer
+var systemdUpdateTimerTemplate string
 
 // NewServiceManager returns the Linux systemd service manager
 func NewServiceManager() ServiceManager {
