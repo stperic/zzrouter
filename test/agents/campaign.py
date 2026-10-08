@@ -19,7 +19,7 @@ Usage: ZZR_CAMPAIGN_KEY=<admin key> campaign.py --lab lab.json  (copy lab.exampl
 Needs claude and codex on PATH. Writes report.md and confusion.md under
 $TMPDIR/zzr-campaign/<time>/ unless --out says otherwise.
 """
-import argparse, base64, json, os, shutil, subprocess, sys, threading, time
+import argparse, base64, json, os, shlex, shutil, subprocess, sys, threading, time
 import http.server as httpserver, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
@@ -125,6 +125,11 @@ def sse_events(raw):
             yield line[5:].strip()
 
 
+# ANSWER_TOKENS leaves a thinking model room to reason before the answer a
+# probe judges; with less, it stops on length with empty content.
+ANSWER_TOKENS = 1024
+
+
 def direct_model(R, node, provider, model):
     name = f"{model}@{node}"
     sc = f"{provider}:{model}"
@@ -167,7 +172,7 @@ def direct_model(R, node, provider, model):
         msgs = [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."},
                 d["choices"][0]["message"],
                 {"role": "tool", "tool_call_id": tc[0]["id"], "content": json.dumps({"city": "Paris", "temp_c": 31, "sky": "sunny"})}]
-        code, d2, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": 120, "tools": [WEATHER_TOOL], "messages": msgs})
+        code, d2, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": msgs})
         ans = (d2.get("choices") or [{}])[0].get("message", {}).get("content") or "" if code == 200 else str(d2)
         R.add("direct", node, sc, "openai tool result round trip", code == 200 and "31" in ans, f"{code} {ans:.150}", ms)
     # Anthropic Messages + tools (native on llama.cpp, translated on vLLM/MLX)
@@ -400,11 +405,13 @@ def error_text(c):
         return c["resp"][:240]
 
 
-def confusion(calls):
-    """Every signal that an agent misread the interface, even when it recovered."""
+def confusion(calls, expect_error=None):
+    """Every signal that an agent misread the interface, even when it recovered.
+    An error carrying expect_error is the refusal the scenario asked for."""
     out, prev_err = [], None
     for c in calls:
-        if c["is_error"]:
+        expected = c["is_error"] and bool(expect_error) and expect_error in error_text(c)
+        if c["is_error"] and not expected:
             msg = error_text(c)
             kind = "schema" if "validating" in msg and "arguments" in msg else "unknown tool" if "unknown tool" in msg.lower() else "tool error"
             out.append({"kind": kind, "tool": c["tool"], "args": c["args"], "msg": msg})
@@ -412,7 +419,7 @@ def confusion(calls):
             out.append({"kind": "escape hatch", "tool": c["tool"], "args": c["args"], "msg": "task tool missing or unclear"})
         if prev_err and c["tool"] == prev_err:
             out.append({"kind": "retry after error", "tool": c["tool"], "args": c["args"], "msg": ""})
-        prev_err = c["tool"] if c["is_error"] else None
+        prev_err = c["tool"] if c["is_error"] and not expected else None
     return out
 
 
@@ -421,8 +428,10 @@ def analyze(out_dir):
     base = os.path.join(out_dir, "mcp")
     for sid in sorted(os.listdir(base)) if os.path.isdir(base) else []:
         p = os.path.join(base, sid, "calls.json")
+        sp = os.path.join(base, sid, "scenario.json")
+        expect = json.load(open(sp)).get("expect_error") if os.path.exists(sp) else None
         if os.path.exists(p):
-            for item in confusion(json.load(open(p))):
+            for item in confusion(json.load(open(p)), expect):
                 rows.append(dict(item, run=sid))
     by = {}
     for r in rows:
@@ -478,6 +487,7 @@ def scenarios(node):
                       "a value that fits, one chat, and stop it." + TAIL + " JSON keys: refused (bool), required_mib, free_mib, "
                       "second_launch_ok (bool), stopped (bool).",
             "check": check_oom_budget,
+            "expect_error": "GPU budget cannot fit",
         })
     if "queue" in lab:
         q = lab["queue"]
@@ -499,6 +509,7 @@ def scenarios(node):
                       "the supported way (its vision projector file from the same HuggingFace repo), then confirm the model catalog "
                       f"on {node} reports vision for it. Do not start any run." + TAIL + " JSON keys: projector_file, vision (bool).",
             "check": check_vision,
+            "setup": lambda: reset_vision(node),
         })
     if "oversize" in lab:
         o = lab["oversize"]
@@ -570,6 +581,22 @@ def check_oom_budget(ctx):
             ("no runs left on node", not ctx["left"], ctx["left"])]
 
 
+def reset_vision(node):
+    """Remove the projector out of band (lab reset command), rescan, and
+    confirm the catalog no longer reports vision before the agent starts."""
+    v = LAB[node]["vision"]
+    if not v.get("reset"):
+        return False, "lab has no vision reset command"
+    done = subprocess.run(shlex.split(v["reset"]), capture_output=True, text=True, timeout=60)
+    if done.returncode:
+        return False, f"reset failed: {done.stderr[:200]}"
+    http("POST", f"/zzrouter/v1/models/scan?node={node}")
+    name = v["model"] + "@" + node
+    m = [x for x in http("GET", "/v1/models")[1].get("data", []) if x["id"] == name]
+    vis = bool(m and m[0].get("capabilities", {}).get("vision"))
+    return bool(m) and not vis, f"present={bool(m)} vision={vis}"
+
+
 def check_vision(ctx):
     name = LAB[ctx["node"]]["vision"]["model"] + "@" + ctx["node"]
     _, d, _ = http("GET", "/v1/models")
@@ -598,7 +625,7 @@ def write_test_image():
 def vision_probe(model):
     img = IMAGE
     b64 = base64.b64encode(open(img, "rb").read()).decode()
-    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": 40, "messages": [{"role": "user", "content": [
+    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "messages": [{"role": "user", "content": [
         {"type": "text", "text": "What color is this square? One word."},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}]}]})
     ans = (d.get("choices") or [{}])[0].get("message", {}).get("content") or "" if code == 200 else str(d)
@@ -639,6 +666,12 @@ def track_mcp(R, node, agents, only, out):
             if only and only not in sid:
                 continue
             wd = os.path.join(out, "mcp", sid); os.makedirs(wd, exist_ok=True)
+            json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
+            if "setup" in sc:
+                ok, detail = sc["setup"]()
+                R.add("mcp", node, f"{sc['id']}.{agent}", "precondition", ok, detail)
+                if not ok:
+                    continue
             stop_runs(node)
             before = {r["id"] for r in runs(node)}
             drive = run_claude_mcp if agent == "claude" else run_codex_mcp
@@ -651,7 +684,7 @@ def track_mcp(R, node, agents, only, out):
             failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
             R.add("mcp", node, f"{sc['id']}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),
                   f"{secs}s calls={len(calls)} failed={failed} meta={meta}", secs * 1000)
-            conf = confusion(calls)
+            conf = confusion(calls, sc.get("expect_error"))
             R.add("mcp", node, f"{sc['id']}.{agent}", "no agent confusion", not conf,
                   "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
             for name, ok, detail in sc["check"](ctx):

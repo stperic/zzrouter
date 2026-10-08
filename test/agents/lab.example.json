@@ -29,7 +29,8 @@
       },
       "vision": {
         "provider": "llamacpp",
-        "model": "gemma-4-E2B-it-Q3_K_M"
+        "model": "gemma-4-E2B-it-Q3_K_M",
+        "reset": "ssh root@linux-gpu-worker rm -f /var/lib/zzrouter/models/unsloth/gemma-4-E2B-it-GGUF/mmproj-F16.gguf"
       },
       "queue": {
         "provider": "vllm",
