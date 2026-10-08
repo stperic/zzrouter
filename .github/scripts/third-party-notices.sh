@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Writes the license and NOTICE texts of everything compiled into the release
 # binaries: the Go standard library and every non-main module, for all
-# release platforms. Fails if a module ships no license file.
+# release platforms. Fails if a module ships no license file. Module cache
+# paths hold no spaces, which the file loop relies on.
 set -euo pipefail
+export LC_ALL=C
 
 out=${1:?usage: third-party-notices.sh OUTPUT}
 rule=$(printf '=%.0s' {1..72})
@@ -12,7 +14,7 @@ posix() { if command -v cygpath >/dev/null; then cygpath -u "$1"; else printf '%
 
 modules=$(
   for goos in linux darwin windows; do
-    GOOS=$goos go list -deps -f '{{with .Module}}{{if not .Main}}{{with .Replace}}{{.Path}}@{{.Version}} {{.Dir}}{{else}}{{.Path}}@{{.Version}} {{.Dir}}{{end}}{{end}}{{end}}' ./cmd/...
+    GOOS=$goos go list -tags release -deps -f '{{with .Module}}{{if not .Main}}{{with .Replace}}{{.Path}}@{{.Version}} {{.Dir}}{{else}}{{.Path}}@{{.Version}} {{.Dir}}{{end}}{{end}}{{end}}' ./cmd/...
   done | sort -u
 )
 

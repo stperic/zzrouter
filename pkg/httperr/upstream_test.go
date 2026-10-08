@@ -145,3 +145,20 @@ func TestNormalizeChatTemplateRefusal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `"code":"chat_template_rejected"`)
 }
+
+func TestChatTemplateRefusalReasonIsBounded(t *testing.T) {
+	for name, tc := range map[string]struct{ reason, want string }{
+		"empty": {"", "(no reason given)."},
+		"long":  {strings.Repeat("x", 5000), strings.Repeat("x", 300) + "..."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"error": map[string]string{"message": "Error: Jinja Exception: " + tc.reason}})
+			require.NoError(t, err)
+			resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}
+			failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New())
+			assert.Equal(t, httperr.CodeChatTemplateRejected, failure.Code)
+			assert.Contains(t, failure.Message, "request: "+tc.want+" ")
+			assert.Less(t, len(failure.Message), 600)
+		})
+	}
+}

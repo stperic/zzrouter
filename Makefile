@@ -306,7 +306,7 @@ release: release-preflight winres
 			chmod +x "$$outdir/install.sh"; \
 		fi; \
 	done
-	@rm dist/THIRD_PARTY_NOTICES
+	@rm -f dist/THIRD_PARTY_NOTICES
 	@$(MAKE) winres-clean
 	@echo "Creating checksums..."
 	@cd dist && find . -type f ! -name 'checksums.txt' -print0 | xargs -0 shasum -a 256 > checksums.txt

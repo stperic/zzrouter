@@ -134,7 +134,21 @@ const ChatTemplateRemedy = "An admin can upload a chat template that accepts it 
 // https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418
 const llamacppTemplateRefusal = "Jinja Exception: "
 
+// maxRefusalReason bounds the template's own words: a reason is a sentence,
+// and the body it is cut from may run to the 64 KiB read cap.
+const maxRefusalReason = 300
+
 func templateRefusal(message string) (string, bool) {
 	_, reason, ok := strings.Cut(message, llamacppTemplateRefusal)
-	return strings.TrimSpace(reason), ok
+	if !ok {
+		return "", false
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "(no reason given).", true
+	}
+	if r := []rune(reason); len(r) > maxRefusalReason {
+		reason = string(r[:maxRefusalReason]) + "..."
+	}
+	return reason, true
 }

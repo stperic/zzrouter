@@ -39,10 +39,10 @@ type apiDiscoveryResponse struct {
 const chatTemplatesGuide = "Engines render each request with the chat template inside the model's weights. " +
 	"When it refuses a request, llama.cpp answers 400 chat_template_rejected; vLLM and MLX return the template's own message. " +
 	"Admin fix: GET /providers/{name}/schema and take the parameter of type asset described as a chat template. " +
-	"PUT /providers/{name}/assets/{asset} with the template text. " +
+	"PUT /providers/{name}/assets/{asset} with the template text as the raw body. " +
 	"PATCH /providers/{name}/parameters?restart=affected (application/merge-patch+json) with " +
 	`{"models":{"<model>":{"parameters":{"<parameter>":"<asset>"}}}}. ` +
-	"GET /providers/{name}/resolved?model=<model> shows the template a launch uses; patch the key to null to return to the model's own."
+	"GET /providers/{name}/resolved?model=<model> shows the template a launch uses and the tier that set it; patching the key to null removes it at that tier."
 
 // streamingGETs are the GET routes that answer text/event-stream and hold
 // the connection open until the client hangs up.
