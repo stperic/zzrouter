@@ -74,10 +74,13 @@ For an existing installation, use `zz_api` to PATCH `/zzrouter/v1/providers/{nam
 `{"enabled":true}` and a `node` query when needed. Cloud onboarding uses POST
 `/zzrouter/v1/providers/{name}/verify` after configuring credentials.
 
-For a GGUF: search with `zz_model_search`, choose a file and size with
-`zz_model_files`, download with `zz_model_download`, then follow the jobs. Once
-complete, read `zz_models` on the target node for the exact local model name
-before `zz_run_preview` and `zz_run_start`. The download's registry model name
+Check `zz_models` first for an available local model. Only if it is absent,
+search with `zz_model_search`; for a HuggingFace GGUF, choose a file and size
+with `zz_model_files`. Download with `zz_model_download` and follow the jobs,
+then read `zz_models` on the target node for the exact local name before
+`zz_run_preview` and `zz_run_start`. Existing catalog `details.wire_endpoints`
+and `details.features` report serving capabilities when known; they are not
+a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
@@ -89,7 +92,10 @@ retrying the same start request. Call `zz_job` with each returned `job_id` and
 per node. Follow a launch's `deploy_job_id` too when present. Keep the
 `deployment_id` to cancel a download through `zz_job_cancel`; ordinary work
 cancels by `job_id`. After launch succeeds, use `zz_chat` for one short smoke
-test and `zz_run_stop` to stop the run.
+test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
+pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are
+removed, so a later run lookup returns 404 by design. Launch job results omit
+the serving node's local probe URL because it is not a coordinator-facing URL.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location

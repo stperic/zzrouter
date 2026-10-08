@@ -35,11 +35,15 @@ type nodeSummary struct {
 	EnabledProviders []string `json:"enabled_providers"`
 }
 type overviewOutput struct {
-	Health           string        `json:"health"`
-	Nodes            []nodeSummary `json:"nodes"`
-	EnabledProviders []string      `json:"enabled_providers"`
-	EndpointCount    int           `json:"endpoint_count"`
-	OpenAPI          string        `json:"openapi"`
+	Health         string        `json:"health"`
+	Nodes          []nodeSummary `json:"nodes"`
+	UnhealthyNodes []nodeHealth  `json:"unhealthy_nodes"`
+	EndpointCount  int           `json:"endpoint_count"`
+	OpenAPI        string        `json:"openapi"`
+}
+type nodeHealth struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 type jobInput struct {
 	JobID       string `json:"job_id" jsonschema:"Job id returned by an operation. Follow it until state is done or failed."`
@@ -56,7 +60,7 @@ type jobOutput struct {
 }
 
 func (out overviewOutput) summary() string {
-	return fmt.Sprintf("Cluster %s: %d nodes, %d enabled providers.", out.Health, len(out.Nodes), len(out.EnabledProviders))
+	return fmt.Sprintf("Cluster %s: %d nodes, %d unhealthy nodes.", out.Health, len(out.Nodes), len(out.UnhealthyNodes))
 }
 func (out jobOutput) summary() string {
 	return fmt.Sprintf("Job %s: %s, %d%%.", out.JobID, out.State, out.Progress)
@@ -85,7 +89,7 @@ func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	bindings := map[string][]string{}
 	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Read a job's state, progress and result or error. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"getJob"}, dispatcher.job)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"getJob"}, dispatcher.job)
 	registerAgentTools(s, cfg, bindings)
 	registerAPITools(s, cfg, bindings)
 	return bindings
@@ -111,6 +115,10 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 	var health struct {
 		Data struct {
 			Status string `json:"cluster_health"`
+			Nodes  []struct {
+				Name   string `json:"hostname"`
+				Status string `json:"status"`
+			} `json:"nodes"`
 		} `json:"data"`
 	}
 	for _, call := range []struct {
@@ -121,8 +129,7 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 			return overviewOutput{}, err
 		}
 	}
-	out := overviewOutput{Health: health.Data.Status, Nodes: []nodeSummary{}, EnabledProviders: []string{}, OpenAPI: "/openapi.yaml"}
-	providers := map[string]bool{}
+	out := overviewOutput{Health: health.Data.Status, Nodes: []nodeSummary{}, UnhealthyNodes: []nodeHealth{}, OpenAPI: "/openapi.yaml"}
 	for _, n := range nodes.Data {
 		summary := nodeSummary{Name: n.Name, Role: n.Role, Health: n.Health, EnabledProviders: []string{}}
 		for _, p := range n.Providers {
@@ -131,18 +138,18 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 				name = p.Name
 			}
 			summary.EnabledProviders = append(summary.EnabledProviders, name)
-			providers[name] = true
 		}
 		sort.Strings(summary.EnabledProviders)
 		out.Nodes = append(out.Nodes, summary)
 	}
-	for name := range providers {
-		out.EnabledProviders = append(out.EnabledProviders, name)
+	for _, n := range health.Data.Nodes {
+		if n.Status != "healthy" {
+			out.UnhealthyNodes = append(out.UnhealthyNodes, nodeHealth{Name: n.Name, Status: n.Status})
+		}
 	}
 	for _, endpoints := range discovery.Data.EndpointGroups {
 		out.EndpointCount += len(endpoints)
 	}
-	sort.Strings(out.EnabledProviders)
 	return out, nil
 }
 
@@ -180,9 +187,19 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) 
 		out = jobOutput{JobID: ev.JobID, State: ev.Phase, Progress: ev.Percent, Step: ev.Step, Error: ev.Err}
 		if ev.Phase.IsTerminal() {
 			out.Result = ev.Meta
+			delete(out.Result, "health_url")
+			if id, ok := out.Result["instance_id"]; ok {
+				out.Result["run_id"] = id
+				delete(out.Result, "instance_id")
+			}
 			return out, nil
 		}
 		if input.WaitSeconds == DefaultWaitSeconds {
+			return out, nil
+		}
+		// No time left for another poll: answer now rather than race the deadline.
+		if deadline, ok := pollCtx.Deadline(); ok && time.Until(deadline) <= jobPollInterval {
+			out.JobID, out.State = input.JobID, "still running, call zz_job again"
 			return out, nil
 		}
 		timer := time.NewTimer(jobPollInterval)

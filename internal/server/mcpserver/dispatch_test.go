@@ -190,9 +190,9 @@ func TestOverviewCompactProviders(t *testing.T) {
 		case "/zzrouter/v1":
 			writeFixture(t, w, []byte(`{"data":{"endpoint_groups":{"models":["GET /zzrouter/v1/models"],"mcp":["POST /zzrouter/v1/mcp"]},"chat_templates":"long prose"}}`))
 		case "/zzrouter/v1/nodes":
-			writeFixture(t, w, []byte(`{"data":[{"name":"coord","cluster_role":"coordinator","health_status":"healthy","providers":[{"key":"vllm","name":"vLLM","formats":["safetensors"]}]},{"name":"worker","cluster_role":"worker","health_status":"down","providers":[{"key":"vllm","name":"vLLM"},{"key":"ollama","name":"Ollama"}]}]}`))
+			writeFixture(t, w, []byte(`{"data":[{"name":"coord","cluster_role":"coordinator","health_status":"healthy","providers":[{"key":"vllm","name":"vLLM","formats":["safetensors"]}]},{"name":"worker","cluster_role":"worker","health_status":"healthy","providers":[{"key":"vllm","name":"vLLM"},{"key":"ollama","name":"Ollama"}]}]}`))
 		case "/zzrouter/v1/health":
-			writeFixture(t, w, []byte(`{"data":{"cluster_health":"degraded","total_nodes":2}}`))
+			writeFixture(t, w, []byte(`{"data":{"cluster_health":"degraded","total_nodes":2,"nodes":[{"hostname":"coord","status":"healthy"},{"hostname":"worker","status":"down"}]}}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -202,8 +202,14 @@ func TestOverviewCompactProviders(t *testing.T) {
 	require.Equal(t, "degraded", out.Health)
 	require.Len(t, out.Nodes, 2)
 	require.Equal(t, "worker", out.Nodes[1].Name)
-	require.Equal(t, "down", out.Nodes[1].Health)
-	require.Equal(t, []string{"ollama", "vllm"}, out.EnabledProviders)
+	require.Equal(t, "healthy", out.Nodes[1].Health) // The health call reports the later down state.
+	require.Equal(t, []nodeHealth{{Name: "worker", Status: "down"}}, out.UnhealthyNodes)
+	require.Equal(t, []string{"ollama", "vllm"}, out.Nodes[1].EnabledProviders)
+	raw, err := json.Marshal(out)
+	require.NoError(t, err)
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(raw, &fields))
+	require.NotContains(t, fields, "enabled_providers")
 	require.Equal(t, []string{"vllm"}, out.Nodes[0].EnabledProviders)
 	require.Equal(t, 2, out.EndpointCount)
 	require.Equal(t, "/openapi.yaml", out.OpenAPI)
@@ -292,5 +298,20 @@ func TestDispatcherMissingMetadata(t *testing.T) {
 		}
 		_, err := newDispatcher(ctx, Config{})
 		require.ErrorContains(t, err, "retry through the public MCP endpoint")
+	}
+}
+
+func TestJobResultDropsLocalURLAndKeepsRunID(t *testing.T) {
+	for _, field := range []string{"run_id", "instance_id"} {
+		t.Run(field, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+					"job_id": "run_job", "kind": "run", "phase": "done", "meta": map[string]any{field: "instance", "health_url": "http://localhost:8080/health", "port": 8080, "phase": "running"},
+				}}))
+			})
+			result := callAgentTool(t, d, "zz_job", map[string]any{"job_id": "run_job"})["structuredContent"].(map[string]any)
+			require.Equal(t, "run_job", result["job_id"])
+			require.Equal(t, map[string]any{"run_id": "instance", "port": float64(8080), "phase": "running"}, result["result"])
+		})
 	}
 }

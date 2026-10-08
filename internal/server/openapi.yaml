@@ -473,6 +473,11 @@ paths:
         `node`, `provider`, `registry` or `model`; `refresh=true` forces a
         re-scan instead of answering from cache.
 
+        The model filter checks both local names and source_id aliases,
+        case-insensitively: an exact name (QWEN2.5 matches qwen2.5), the entire
+        segment after the final / (QWEN2.5 matches org/qwen2.5), or a glob
+        (*qwen2.5* matches org/qwen2.5-instruct). Partial names require a glob.
+
         An unknown `node` is a 404 naming the nodes that exist, rather than an
         empty list: "wrong node" and "no models" are different answers and
         used to look identical.
@@ -679,6 +684,7 @@ paths:
         this is a broadcast: the coordinator asks each peer and merges
         the answers, so a slow or unreachable node shows up as missing
         rows rather than as an error. Name a `node` to ask exactly one.
+        Stopped runs are removed after stop completes; they are not history rows.
 
         An unknown `node` is a 404 that names the nodes that do exist,
         which is usually faster than a separate lookup.
@@ -686,7 +692,8 @@ paths:
         - $ref: '#/components/parameters/NodeParam'
         - in: query
           name: status
-          schema: { type: string }
+          description: Filter retained instance states; stopped runs are removed.
+          schema: { type: string, enum: [starting, running, unhealthy, stopping, failed, restarting] }
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/OffsetParam'
       responses:
@@ -702,6 +709,11 @@ paths:
                       data:
                         type: array
                         items: { $ref: '#/components/schemas/Run' }
+        '400':
+          description: Unsupported status filter, including stopped.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Unknown `node`
@@ -768,7 +780,7 @@ paths:
                           provider: { type: string }
                           status:   { type: string }
                           port:     { type: integer }
-                          health_url: { type: string }
+                          health_url: { type: string, description: "Node-local probe URL; may use the serving node's loopback and is not reachable from the coordinator." }
                           node:     { type: string }
         '400':
           description: >
@@ -10141,6 +10153,7 @@ components:
             total: { type: integer, format: int64 }
         meta:
           type: object
+          description: Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator.
           additionalProperties: true
 
     ProviderVersionsReport:
@@ -10572,7 +10585,7 @@ components:
             exists but its state is not one of the four the node tracks.
         health_url:
           type: string
-          description: Where the node probes the instance. Empty when the provider exposes none.
+          description: Node-local probe URL, which may use the serving node's loopback and is not reachable from the coordinator. Empty when the provider exposes none.
         uptime:
           type: string
           example: 34.05ms

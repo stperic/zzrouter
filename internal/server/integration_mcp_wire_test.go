@@ -151,6 +151,20 @@ func TestMCPWireObjectSubschemas(t *testing.T) {
 			if present {
 				assertObjectSubschemas(t, output, "outputSchema")
 				require.NotContains(t, output.(map[string]any)["properties"], "data")
+				properties := output.(map[string]any)["properties"].(map[string]any)
+				switch tool["name"] {
+				case "zz_overview":
+					require.Contains(t, properties, "unhealthy_nodes")
+					require.NotContains(t, properties, "enabled_providers")
+				case "zz_run_start", "zz_run_restart":
+					require.Contains(t, properties, "run_id")
+					require.Contains(t, properties, "job_id")
+					require.NotContains(t, properties, "id")
+					require.NotContains(t, properties, "old_id")
+					if tool["name"] == "zz_run_restart" {
+						require.Contains(t, properties, "old_run_id")
+					}
+				}
 			}
 		})
 	}
