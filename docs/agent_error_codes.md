@@ -24,6 +24,7 @@ Both surfaces preserve upstream status codes across cluster hops.
 | `invalid_request_error` (type) | 400 | Generic validation failure. `param` names the offending field. | Read `param`; fix and retry. |
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Retry with exponential backoff; if persistent, the model's `runtime.status` may be wrong : call `/zzrouter/v1/runs` to redeploy. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `responses_compat` translate supported Responses requests to Chat Completions. |
+| `chat_template_rejected` | 400 | The model's chat template refused to render the request (for example a system message after the first turn). Reported for llama.cpp; vLLM and MLX return the template's own message. | Retrying will not help. An admin installs a template that accepts the request: follow `chat_templates` in `GET /zzrouter/v1`. |
 
 ## Management surface (`/zzrouter/v1/*`)
 

@@ -58,8 +58,17 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	if failure.Message == "" {
 		failure.Message = fmt.Sprintf("backend returned status %d", resp.StatusCode)
 	}
-	if resp.StatusCode == http.StatusInternalServerError && unsupportedImage(message) {
-		failure.Status, failure.Type, failure.Code = http.StatusBadRequest, "invalid_request_error", "unsupported_input"
+	if resp.StatusCode == http.StatusInternalServerError {
+		if unsupportedImage(message) {
+			failure.Code = "unsupported_input"
+		} else if reason, ok := templateRefusal(message); ok {
+			failure.Code = CodeChatTemplateRejected
+			failure.Message = utils.SanitizeErrorMessage("the model's chat template rejected this request: " + reason + " " + ChatTemplateRemedy)
+		}
+	}
+	// A refusal is the request's fault and retrying cannot change it.
+	if failure.Code != "" {
+		failure.Status, failure.Type = http.StatusBadRequest, "invalid_request_error"
 		raw, _ = json.Marshal(map[string]any{"error": map[string]string{"message": failure.Message, "type": failure.Type, "code": failure.Code}})
 		resp.Header.Del("Retry-After")
 	}
@@ -112,4 +121,20 @@ func unsupportedImage(message string) bool {
 		}
 	}
 	return false
+}
+
+// CodeChatTemplateRejected: the engine's chat template refused to render the
+// request (vLLM answers such refusals 400 itself).
+const CodeChatTemplateRejected = "chat_template_rejected"
+
+// ChatTemplateRemedy is what a caller can do about a template refusal.
+const ChatTemplateRemedy = "An admin can upload a chat template that accepts it and select it for this model; GET /zzrouter/v1 explains how under chat_templates."
+
+// llama.cpp prefixes a template's own raise_exception with this marker:
+// https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418
+const llamacppTemplateRefusal = "Jinja Exception: "
+
+func templateRefusal(message string) (string, bool) {
+	_, reason, ok := strings.Cut(message, llamacppTemplateRefusal)
+	return strings.TrimSpace(reason), ok
 }

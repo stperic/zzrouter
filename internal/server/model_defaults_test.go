@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,4 +69,45 @@ func TestMLXTemplateLocalizesToContent(t *testing.T) {
 	out, err := assetParamLocalizer(s.configStore)("mlx", "chat", "", map[string]string{"chat-template": "t.jinja"})
 	require.NoError(t, err)
 	assert.Equal(t, template, out.Params["chat-template"])
+}
+
+// The chat_templates recipe in discovery, followed step by step: find the
+// template parameter in the schema, upload a template, select it for one
+// model, see it resolved, and return to the model's own.
+func TestChatTemplatesRecipeWorksAsWritten(t *testing.T) {
+	s, _ := assetTestNode(t)
+
+	w := assetRequest(t, s, http.MethodGet, "/zzrouter/v1/providers/llamacpp/schema", nil)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
+	var schemaDoc struct {
+		Parameters map[string]struct {
+			Type        string `json:"type"`
+			Description string `json:"description"`
+		} `json:"parameters"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &schemaDoc))
+	var param string
+	for name, p := range schemaDoc.Parameters {
+		if p.Type == "asset" && strings.Contains(strings.ToLower(p.Description), "chat template") {
+			param = name
+		}
+	}
+	require.NotEmpty(t, param, "the schema names the template parameter")
+
+	w = assetRequest(t, s, http.MethodPut, apipath.ProviderAsset("llamacpp", "agent.jinja"), []byte("{{ messages }}"))
+	require.Contains(t, []int{http.StatusOK, http.StatusCreated}, w.Code, "body: %s", w.Body)
+
+	patch := func(value any) {
+		resp := makeAuthRequest(t, s, "PATCH", apipath.ProviderParameters("llamacpp")+"?restart=affected", TestAdminKey, map[string]any{
+			"models": map[string]any{qwenModel: map[string]any{"parameters": map[string]any{param: value}}},
+		})
+		require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	}
+	patch("agent.jinja")
+	got := resolvedFor(t, s, "llamacpp", qwenModel).Parameters[param]
+	assert.Equal(t, "agent.jinja", got.Value)
+	assert.NotEmpty(t, got.SHA256, "the launch reads the uploaded bytes")
+
+	patch(nil)
+	assert.NotContains(t, resolvedFor(t, s, "llamacpp", qwenModel).Parameters, param)
 }

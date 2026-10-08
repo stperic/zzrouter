@@ -30,6 +30,8 @@ func TestNormalizeUpstreamResponse(t *testing.T) {
 		{"plain", `image input is not supported`, 500, 400, "invalid_request_error"},
 		{"multimodal decode", `{"error":"Failed to decode multimodal data"}`, 500, 500, "api_error"},
 		{"unsupported template", `{"error":"chat template does not support tool calls"}`, 500, 500, "api_error"},
+		{"template refusal", `{"error":{"message":"Error: Jinja Exception: System message must be at the beginning.","type":"server_error"}}`, 500, 400, "invalid_request_error"},
+		{"template refusal not 500", `{"error":"Jinja Exception: x"}`, 503, 503, "api_error"},
 		{"oom", `{"error":"image allocation failed: out of memory"}`, 500, 500, "api_error"},
 		{"prompt echo", `{"request":{"text":"images are not supported"},"error":"out of memory"}`, 500, 500, "api_error"},
 		{"bad request", `{"error":"bad input"}`, 400, 400, "invalid_request_error"},
@@ -61,7 +63,11 @@ func TestNormalizeUpstreamResponse(t *testing.T) {
 				assert.EqualValues(t, len(out), resp.ContentLength)
 				if tc.want != tc.status {
 					assert.Contains(t, string(out), `"type":"invalid_request_error"`)
-					assert.Contains(t, string(out), `"code":"unsupported_input"`)
+					code := "unsupported_input"
+					if strings.Contains(tc.raw, "Jinja Exception") {
+						code = httperr.CodeChatTemplateRejected
+					}
+					assert.Contains(t, string(out), `"code":"`+code+`"`)
 					assert.Empty(t, resp.Header.Get("Retry-After"))
 				} else {
 					assert.Equal(t, "60", resp.Header.Get("Retry-After"))
@@ -109,4 +115,33 @@ func TestNormalizeSourceVerifiedCapabilityRefusals(t *testing.T) {
 			assert.Equal(t, "unsupported_input", failure.Code)
 		})
 	}
+}
+
+// The engine's own words reach the caller with the way to fix it, as a 400
+// a client will not retry.
+func TestNormalizeChatTemplateRefusal(t *testing.T) {
+	raw, err := os.ReadFile("testdata/template_refusals/llamacpp.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Source string          `json:"source"`
+		Reason string          `json:"reason"`
+		Error  json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &fixture))
+	require.Contains(t, fixture.Source, "github.com/")
+	body, err := json.Marshal(map[string]json.RawMessage{"error": fixture.Error})
+	require.NoError(t, err)
+	resp := &http.Response{StatusCode: 500, Header: http.Header{"Retry-After": {"1"}}, Body: io.NopCloser(bytes.NewReader(body))}
+
+	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New())
+
+	assert.Equal(t, http.StatusBadRequest, failure.Status)
+	assert.Equal(t, httperr.CodeChatTemplateRejected, failure.Code)
+	assert.Contains(t, failure.Message, fixture.Reason)
+	assert.Contains(t, failure.Message, httperr.ChatTemplateRemedy)
+	assert.NotContains(t, failure.Message, "CallExpression", "the template source excerpt is not the reason")
+	assert.Empty(t, resp.Header.Get("Retry-After"))
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"code":"chat_template_rejected"`)
 }

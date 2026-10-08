@@ -38,6 +38,10 @@ curl -fsS -H "Authorization: Bearer $AGENT_API_KEY" \
   -d '{"model":"Qwen/Qwen2.5-0.5B-Instruct-GGUF","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+If a model's own chat template refuses a request (`chat_template_rejected`),
+`chat_templates` in `GET /zzrouter/v1` gives the API steps to install and
+select a template that accepts it. zzRouter ships no chat templates.
+
 Observe runs at `/zzrouter/v1/runs`, stop one with `DELETE /runs/:id` under that
 management prefix, and branch on error codes rather than message text.
 The [OpenAPI specification](../internal/server/openapi.yaml) is the field reference.

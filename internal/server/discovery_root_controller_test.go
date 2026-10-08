@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -269,4 +270,24 @@ func TestAPIDiscovery_InferenceIsNotAdvertisedOnAWorker(t *testing.T) {
 	assert.Empty(t, inference.Endpoints, "a worker must not name paths this port does not serve")
 	assert.Empty(t, inference.Catalog)
 	assert.Contains(t, inference.Note, "cluster mTLS port")
+}
+
+// An agent follows chat_templates verbatim, so every route it names must
+// be one the node serves.
+func TestAPIDiscovery_ChatTemplatesRoutesAreRegistered(t *testing.T) {
+	server := createTestNodeWithDefaults(t)
+
+	registered := map[string]struct{}{}
+	for _, r := range server.engine.Routes() {
+		registered[r.Method+" "+uriTemplatePath(r.Path)] = struct{}{}
+	}
+
+	named := regexp.MustCompile(`(GET|PUT|PATCH|POST|DELETE) (/[^ ?]+)`).FindAllStringSubmatch(chatTemplatesGuide, -1)
+	require.NotEmpty(t, named)
+	for _, m := range named {
+		route := m[1] + " " + apiDiscoveryPrefix + m[2]
+		_, found := registered[route]
+		assert.Truef(t, found, "chat_templates names %q but no such route is registered", route)
+	}
+	assert.Equal(t, chatTemplatesGuide, buildAPIDiscovery(server).ChatTemplates)
 }
