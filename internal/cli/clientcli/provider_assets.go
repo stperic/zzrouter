@@ -156,7 +156,6 @@ func displayAssets(list []pkgClient.ProviderAsset) {
 		{Header: "NAME", MaxWidth: 40},
 		{Header: "SIZE", MaxWidth: 10},
 		{Header: "SHA256", MaxWidth: 14},
-		{Header: "SHIPPED", MaxWidth: 7},
 		{Header: "USED BY", MaxWidth: 60},
 	}
 	rows := make([][]string, 0, len(list))
@@ -165,11 +164,7 @@ func displayAssets(list []pkgClient.ProviderAsset) {
 		if len(a.ReferencedBy) > 0 {
 			used = strings.Join(a.ReferencedBy, ", ")
 		}
-		shipped := "no"
-		if a.Shipped {
-			shipped = "yes"
-		}
-		rows = append(rows, []string{a.Name, shared.FormatSize(a.Size), shortDigest(a.SHA256), shipped, used})
+		rows = append(rows, []string{a.Name, shared.FormatSize(a.Size), shortDigest(a.SHA256), used})
 	}
 	renderer := ui.NewTerminalRendererWithOptions(nil, true, 0)
 	defer func() { _ = renderer.Close() }()

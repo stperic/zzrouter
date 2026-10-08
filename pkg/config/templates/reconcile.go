@@ -7,14 +7,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -73,10 +71,9 @@ var managedSections = []struct {
 // ReconcileManagedSpine brings every shipped provider file in dstDir back
 // in line with the embedded release. A config.yaml gets its managed keys
 // rewritten, including pinned_version when the template declares it. Other
-// keys (enabled, parameter tiers, node lists) as the operator left them; a schema.yaml and a
-// shipped asset are owned outright and rewritten whole when they differ.
-// Files with no embedded counterpart, such as operator-added providers
-// and assets, are untouched.
+// keys (enabled, parameter tiers, node lists) as the operator left them; a schema.yaml
+// is owned outright and rewritten whole when it differs. Everything else,
+// assets included, is the operator's and untouched.
 //
 // Returns the relative paths of the files it changed.
 func ReconcileManagedSpine(dstDir string) ([]string, error) {
@@ -146,9 +143,7 @@ const (
 	// release's and everything else is the operator's.
 	managedKeys
 	// managedWhole: schema.yaml describes the engine's flags, the same
-	// argument this file makes for execution, and a shipped asset is
-	// content the release vouches for; operators add their own under
-	// other names.
+	// argument this file makes for execution.
 	managedWhole
 )
 
@@ -162,40 +157,12 @@ func shippedFileOwnership(rel string) ownership {
 		return managedKeys
 	case len(parts) == providerFileDepth && parts[2] == "schema.yaml":
 		return managedWhole
-	case len(parts) == providerFileDepth+1 && parts[2] == assets.DirName:
-		return managedWhole
 	}
 	return notManaged
 }
 
 // providerFileDepth is the element count of <kind>/<name>/<file>.
 const providerFileDepth = 3
-
-// IsShippedAsset reports whether the release ships an asset of that name
-// for the provider. Those names are the release's to change.
-func IsShippedAsset(provider, name string) bool {
-	return isShippedAsset(AppsFS, provider, name)
-}
-
-func isShippedAsset(src fs.FS, provider, name string) bool {
-	if assets.ValidateName(name) != nil || provider != path.Base(provider) || provider == "." || provider == ".." {
-		return false
-	}
-	kinds, err := fs.ReadDir(src, providersRoot)
-	if err != nil {
-		return false
-	}
-	for _, kind := range kinds {
-		if !kind.IsDir() {
-			continue
-		}
-		fi, err := fs.Stat(src, path.Join(providersRoot, kind.Name(), provider, assets.DirName, name))
-		if err == nil && fi.Mode().IsRegular() {
-			return true
-		}
-	}
-	return false
-}
 
 // reconcileFeatures refreshes shipped declarations while retaining deployment policy.
 func reconcileFeatures(live, template map[string]any) bool {

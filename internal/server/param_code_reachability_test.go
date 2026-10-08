@@ -14,7 +14,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -81,7 +80,7 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 				require.NoError(t, server.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
 				c, rec := testGinContext(http.MethodDelete, apipath.ProviderAsset("llamacpp", "t.jinja"))
 				c.Params = gin.Params{{Key: "name", Value: "llamacpp"}, {Key: "asset", Value: "t.jinja"}}
-				NewProviderAssetsController(server.configStore, templates.IsShippedAsset).Delete(c)
+				NewProviderAssetsController(server.configStore).Delete(c)
 				return codesFromParamErrors(t, rec)
 			},
 		},

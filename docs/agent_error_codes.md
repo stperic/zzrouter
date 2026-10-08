@@ -82,9 +82,7 @@ Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is
 | `invalid_value` | 400 | The asset name is not a single file name of letters, digits, `.`, `_` or `-` (no leading or trailing `.`). | Rename. |
 | `asset_in_use` | 409 | `DELETE` of an asset a parameter still names; one `errors[]` entry per parameter, `key` its merge-patch path. | Point those parameters elsewhere (or `null` them) with `PATCH /providers/:n/parameters`, then delete. |
 
-A `PUT` or `DELETE` on an asset that ships with zzRouter is a 403: it is
-restored on every start. A body over 1 MiB, or a provider over 4 MiB or
-64 assets, is a 413.
+A body over 1 MiB, or a provider over 4 MiB or 64 assets, is a 413.
 
 ### Model groups / routes (`/zzrouter/v1/model-groups/*`)
 

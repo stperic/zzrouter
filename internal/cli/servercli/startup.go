@@ -342,7 +342,7 @@ func runServeStartCmd(hostCfg *pkgConfig.NodeConfig, cmd *cobra.Command, _ []str
 	}
 
 	// Seeding is copy-if-missing; reconcile is what brings an existing tree
-	// up to the release (managed keys, schemas, shipped assets).
+	// up to the release (managed keys, schemas).
 	if updated, reconcileErr := templates.ReconcileManagedSpine(appsDir); reconcileErr != nil {
 		slog.Warn("Failed to reconcile provider templates", "dir", appsDir, "err", reconcileErr)
 	} else if len(updated) > 0 {
