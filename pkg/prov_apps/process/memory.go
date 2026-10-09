@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	processinfo "github.com/shirou/gopsutil/v4/process"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -117,12 +118,34 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
 	for _, process := range device.Processes {
 		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
-		if run := owners[process.PID]; run != "" {
+		if run := runOwning(process.PID, owners); run != "" {
 			holder.Run, holder.Ownership = run, "zzrouter"
 		}
 		failure.Holders = append(failure.Holders, holder)
 	}
 	return failure
+}
+
+// runOwning returns the run whose process is pid or one of its ancestors: engines hold the GPU from
+// child processes. An ancestry it cannot read is nobody's.
+func runOwning(pid int, owners map[int]string) string {
+	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
+		if run := owners[pid]; run != "" {
+			return run
+		}
+		seen[pid] = true
+		parent, err := parentPID(int32(pid))
+		if err != nil {
+			return ""
+		}
+		pid = int(parent)
+	}
+	return ""
+}
+
+// parentPID reads a process's parent; tests replace it.
+var parentPID = func(pid int32) (int32, error) {
+	return (&processinfo.Process{Pid: pid}).Ppid()
 }
 
 func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, count int) ([]gpu.MemoryDevice, error) {
