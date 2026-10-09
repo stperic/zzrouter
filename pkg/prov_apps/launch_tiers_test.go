@@ -2,10 +2,11 @@ package prov_apps
 
 import (
 	"errors"
-	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"maps"
 	"strings"
 	"testing"
+
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

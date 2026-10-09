@@ -38,110 +38,151 @@ type attentionConfig struct {
 
 // ModelMemoryNeed returns unknown when local weights, context or attention geometry cannot be sized.
 func ModelMemoryNeed(modelPath string, svc config.ServiceConfig, params map[string]string) (Need, bool) {
-	contextKey := svc.GetContextParam()
-	value := params[contextKey]
+	context, ok := contextLength(svc, params)
+	if !ok || modelPath == "" {
+		return Need{}, false
+	}
+	cfg, ok := readAttentionConfig((ResolvedModel{Path: modelPath}).Directory())
+	if !ok {
+		return Need{}, false
+	}
+	kvBytes, ok := cfg.kvBytes(context)
+	if !ok {
+		return Need{}, false
+	}
+	weightBytes, ok := weightsBytes(modelPath, svc)
+	if !ok {
+		return Need{}, false
+	}
+	return Need{WeightsMiB: bytesToMiB(weightBytes), KVMiB: bytesToMiB(kvBytes), OverheadMiB: DefaultActivationOverheadMiB}, true
+}
+
+// contextLength reads the provider's context parameter, under either spelling a resolved key may carry.
+func contextLength(svc config.ServiceConfig, params map[string]string) (int64, bool) {
+	key := svc.GetContextParam()
+	if key == "" {
+		return 0, false
+	}
+	value := params[key]
 	if value == "" {
-		value = params[strings.ReplaceAll(contextKey, "-", "_")]
+		value = params[strings.ReplaceAll(key, "-", "_")]
 	}
 	context, err := strconv.ParseInt(value, 10, 64)
-	if contextKey == "" || err != nil || context <= 0 || modelPath == "" {
-		return Need{}, false
-	}
-	dir := (ResolvedModel{Path: modelPath}).Directory()
+	return context, err == nil && context > 0
+}
+
+// readAttentionConfig reads the language model's config.json, nested under text_config in multimodal models.
+func readAttentionConfig(dir string) (attentionConfig, bool) {
 	if dir == "" {
-		return Need{}, false
+		return attentionConfig{}, false
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		return Need{}, false
+		return attentionConfig{}, false
 	}
 	var envelope struct {
 		TextConfig json.RawMessage `json:"text_config"`
 	}
 	if json.Unmarshal(data, &envelope) != nil {
-		return Need{}, false
+		return attentionConfig{}, false
 	}
 	if len(envelope.TextConfig) > 0 {
 		data = envelope.TextConfig
 	}
 	var cfg attentionConfig
 	if json.Unmarshal(data, &cfg) != nil || cfg.Layers <= 0 || cfg.Heads <= 0 || len(cfg.KVLoRARank) > 0 {
-		return Need{}, false
+		return attentionConfig{}, false
 	}
+	return cfg, true
+}
+
+// kvBytes is the KV cache of one sequence of context tokens.
+func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
 	heads, ok := geometryValue(cfg.KVHeads, cfg.Heads)
 	if !ok {
-		return Need{}, false
+		return 0, false
 	}
 	dim := int64(0)
 	if cfg.HiddenSize > 0 && cfg.HiddenSize%cfg.Heads == 0 {
 		dim = cfg.HiddenSize / cfg.Heads
 	}
-	dim, ok = geometryValue(cfg.HeadDim, dim)
-	if !ok {
-		return Need{}, false
+	if dim, ok = geometryValue(cfg.HeadDim, dim); !ok {
+		return 0, false
 	}
+	dtypeBytes, ok := cfg.dtypeBytes()
+	if !ok {
+		return 0, false
+	}
+	layerTokens, ok := cfg.layerTokens(context)
+	if !ok {
+		return 0, false
+	}
+	kv, err := needProduct([]int64{2, layerTokens, heads, dim, dtypeBytes})
+	return kv, err == nil
+}
+
+func (cfg attentionConfig) dtypeBytes() (int64, bool) {
 	dtype := cfg.TorchDtype
 	if dtype == "" {
 		dtype = cfg.Dtype
 	}
-	var dtypeBytes int64
 	switch dtype {
 	case "bfloat16", "float16":
-		dtypeBytes = 2
+		return 2, true
 	case "float32":
-		dtypeBytes = 4
-	default:
-		return Need{}, false
+		return 4, true
 	}
-	var layerTokens int64
+	return 0, false
+}
+
+// layerTokens sums the tokens each attention layer caches; linear-attention state is covered by the overhead.
+func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 	if cfg.LayerTypes == nil {
 		if cfg.SlidingWindow != nil {
-			return Need{}, false
+			return 0, false
 		}
-		layerTokens, err = needProduct([]int64{cfg.Layers, context})
-	} else {
-		if int64(len(cfg.LayerTypes)) != cfg.Layers {
-			return Need{}, false
-		}
-		for _, layer := range cfg.LayerTypes {
-			var tokens int64
-			switch layer {
-			case "full_attention":
-				tokens = context
-			case "sliding_attention":
-				if cfg.SlidingWindow == nil || *cfg.SlidingWindow <= 0 {
-					return Need{}, false
-				}
-				tokens = min(*cfg.SlidingWindow, context)
-			case "linear_attention":
-			default:
-				return Need{}, false
+		total, err := needProduct([]int64{cfg.Layers, context})
+		return total, err == nil
+	}
+	if int64(len(cfg.LayerTypes)) != cfg.Layers {
+		return 0, false
+	}
+	var total int64
+	for _, layer := range cfg.LayerTypes {
+		var tokens int64
+		switch layer {
+		case "full_attention":
+			tokens = context
+		case "sliding_attention":
+			if cfg.SlidingWindow == nil || *cfg.SlidingWindow <= 0 {
+				return 0, false
 			}
-			if layerTokens > math.MaxInt64-tokens {
-				return Need{}, false
-			}
-			layerTokens += tokens
+			tokens = min(*cfg.SlidingWindow, context)
+		case "linear_attention":
+		default:
+			return 0, false
 		}
+		if total > math.MaxInt64-tokens {
+			return 0, false
+		}
+		total += tokens
 	}
-	if err != nil || heads <= 0 || dim <= 0 {
-		return Need{}, false
-	}
-	kvBytes, err := needProduct([]int64{2, layerTokens, heads, dim, dtypeBytes})
-	if err != nil {
-		return Need{}, false
-	}
+	return total, true
+}
+
+func weightsBytes(modelPath string, svc config.ServiceConfig) (int64, bool) {
 	files, err := layout.Weights(modelPath, featureGlobs(&svc))
 	if err != nil || len(files) == 0 {
-		return Need{}, false
+		return 0, false
 	}
-	var weightBytes int64
+	var total int64
 	for _, file := range files {
-		if file.Size <= 0 || weightBytes > math.MaxInt64-file.Size {
-			return Need{}, false
+		if file.Size <= 0 || total > math.MaxInt64-file.Size {
+			return 0, false
 		}
-		weightBytes += file.Size
+		total += file.Size
 	}
-	return Need{WeightsMiB: bytesToMiB(weightBytes), KVMiB: bytesToMiB(kvBytes), OverheadMiB: DefaultActivationOverheadMiB}, true
+	return total, true
 }
 
 func bytesToMiB(n int64) int64 {
