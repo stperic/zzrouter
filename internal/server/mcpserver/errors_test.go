@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/stperic/zzrouter/pkg/httperr"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stperic/zzrouter/pkg/utils"

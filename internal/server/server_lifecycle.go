@@ -74,7 +74,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
-	s.idempotency.Start(s.shutdownCtx)
+	s.idempotency.Start(ctx)
 
 	s.logNodeStart()
 	return s.startServing()

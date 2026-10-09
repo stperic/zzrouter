@@ -140,7 +140,7 @@ func (s *idempotencyStore) sweep() {
 	defer s.mu.Unlock()
 	now := s.now()
 	for front := s.completed.Front(); front != nil; front = s.completed.Front() {
-		entry := front.Value.(*idemEntry)
+		entry := entryOf(front)
 		if now.Before(entry.expiresAt) {
 			return
 		}
@@ -172,7 +172,7 @@ func (s *idempotencyStore) makeRoomLocked(entries, bodyBytes int) bool {
 		if front == nil {
 			return false
 		}
-		s.forgetLocked(front.Value.(*idemEntry))
+		s.forgetLocked(entryOf(front))
 	}
 	return true
 }
@@ -194,6 +194,12 @@ func (s *idempotencyStore) complete(entry *idemEntry, status int, body []byte, c
 	}
 	close(entry.inflight)
 	s.makeRoomLocked(0, 0)
+}
+
+// entryOf reads a completion-list element; the list holds only entries.
+func entryOf(e *list.Element) *idemEntry {
+	entry, _ := e.Value.(*idemEntry)
+	return entry
 }
 
 func (s *idempotencyStore) recordLocked(entry *idemEntry, body []byte) {
