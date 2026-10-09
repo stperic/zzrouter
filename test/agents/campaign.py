@@ -416,8 +416,9 @@ def direct_vision(R, node, provider, pick):
               f"{code} vision={vision_state(node, provider, pick['name'])} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
         chat(model, "Reply: ok", 16)  # a text run, launched before the projector exists
         ok, detail = deploy(node, provider, pick, ["vision"])
-        R.add("direct", node, sc, "projector added through the API", ok and vision_state(node, provider, pick["name"]) == "present",
-              f"vision={vision_state(node, provider, pick['name'])} {detail}")
+        # The text run above lacks the projector, so until it restarts the model cannot read images.
+        state = vision_state(node, provider, pick["name"])
+        R.add("direct", node, sc, "projector added through the API", ok and state == "available", f"vision={state} {detail}")
         code, d, ms = image_request(model)
         stale_ok = (code == 200 and "red" in answer(code, d).lower()) or (code in (400, 409) and "restart" in json.dumps(d).lower())
         R.add("direct", node, sc, "image to the run started before the projector", stale_ok,
