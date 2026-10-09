@@ -54,7 +54,24 @@ ANTH_TOOL = {"name": "get_weather", "description": "Get the current weather for 
 
 
 # ---------------------------------------------------------------- HTTP helpers
+# LOAD_RETRY_WINDOW bounds how long a probe waits on a load the server says is still running;
+# a big model's first load on vLLM compiles CUDA graphs for minutes.
+LOAD_RETRY_WINDOW = 900
+DEFAULT_RETRY_AFTER = 10
+
+
 def http(method, path, body=None, headers=None, timeout=600, raw=False):
+    """One API call; a load still running (503 model_load_timeout) is retried after Retry-After, as an agent would."""
+    start, deadline = time.time(), time.time() + LOAD_RETRY_WINDOW
+    while True:
+        code, out, ms, retry_after = _http_once(method, path, body, headers, timeout, raw)
+        loading = code == 503 and b"model_load_timeout" in (out if raw else json.dumps(out).encode())
+        if not loading or time.time() + retry_after > deadline:
+            return code, out, ms if not loading else int((time.time() - start) * 1000)
+        time.sleep(retry_after)
+
+
+def _http_once(method, path, body, headers, timeout, raw):
     h = {"X-API-Key": KEY}
     data = None
     if body is not None:
@@ -63,20 +80,22 @@ def http(method, path, body=None, headers=None, timeout=600, raw=False):
     h.update(headers or {})
     req = urllib.request.Request(COORD + path, data=data, method=method, headers=h)
     t = time.time()
+    retry_after = DEFAULT_RETRY_AFTER
     try:
         r = urllib.request.urlopen(req, timeout=timeout)
         code, out = r.status, r.read()
     except urllib.error.HTTPError as e:
         code, out = e.code, e.read()
+        retry_after = int(e.headers.get("Retry-After") or DEFAULT_RETRY_AFTER)
     except Exception as e:  # timeouts, resets
-        return 0, {"error": repr(e)}, int((time.time() - t) * 1000)
+        return 0, {"error": repr(e)}, int((time.time() - t) * 1000), 0
     ms = int((time.time() - t) * 1000)
     if raw:
-        return code, out, ms
+        return code, out, ms, retry_after
     try:
-        return code, json.loads(out), ms
+        return code, json.loads(out), ms, retry_after
     except ValueError:
-        return code, {"_raw": out[:500].decode("utf-8", "replace")}, ms
+        return code, {"_raw": out[:500].decode("utf-8", "replace")}, ms, retry_after
 
 
 def runs(node=None):
