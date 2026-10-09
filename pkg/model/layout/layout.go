@@ -49,8 +49,7 @@ func Complete(modelPath string) (bool, error) {
 	weights := make(map[string]bool)
 	var indexes []string
 	for _, f := range files {
-		switch strings.ToLower(path.Ext(f.Path)) {
-		case ".safetensors", ".bin", ".npz":
+		if isTensorWeights(f.Path) {
 			weights[f.Path] = f.Size > 0
 		}
 		if strings.HasSuffix(f.Path, ".safetensors.index.json") || strings.HasSuffix(f.Path, ".bin.index.json") {
@@ -303,4 +302,42 @@ func featureFiles(dir string) (map[string]bool, error) {
 		}
 	}
 	return feature, nil
+}
+
+// Weights returns the selected weights and their sizes using the shared shard and feature rules.
+func Weights(modelPath string, excluded []string) ([]File, error) {
+	info, err := os.Stat(modelPath)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() && IsGGUF(modelPath) {
+		variant, ok := VariantOf(modelPath, excluded...)
+		if !ok {
+			return nil, ErrIncomplete
+		}
+		return variant.Files, nil
+	}
+	dir := modelPath
+	if !info.IsDir() {
+		dir = filepath.Dir(modelPath)
+	}
+	files, err := OnDisk(dir, excluded...)
+	if err != nil {
+		return nil, err
+	}
+	var weights []File
+	for _, file := range files {
+		if isTensorWeights(file.Path) {
+			weights = append(weights, file)
+		}
+	}
+	return weights, nil
+}
+
+func isTensorWeights(p string) bool {
+	switch strings.ToLower(path.Ext(p)) {
+	case ".safetensors", ".bin", ".npz":
+		return true
+	}
+	return false
 }

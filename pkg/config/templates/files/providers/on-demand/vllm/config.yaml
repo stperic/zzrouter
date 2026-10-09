@@ -148,4 +148,5 @@ runtime:
         failure:
           - pattern: "RuntimeError:"
             isRegex: false
-      timeout: 300s  # vLLM first-run compiles CUDA graphs (~2-3 min)
+      stall_timeout: 240s  # CUDA graph capture can be silent for over 100s.
+      timeout: 900s

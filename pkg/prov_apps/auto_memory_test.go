@@ -110,3 +110,42 @@ func TestAutoMemoryNumericAliasesRemainUnchanged(t *testing.T) {
 	assert.Equal(t, original, params)
 	assert.NotContains(t, params, "gpu-memory-utilization")
 }
+
+func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix GPU observation fixture")
+	}
+	isolateProviderRoot(t)
+	mgr, svc, dir := featureLaunchFixture(t)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 9500' ;;\nesac\n"), 0700))
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+	require.NoError(t, os.Truncate(filepath.Join(dir, "weights.gguf"), 1024*1024*1024))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"num_hidden_layers":32,"num_key_value_heads":8,"num_attention_heads":32,"hidden_size":4096,"torch_dtype":"float16"}`), 0600))
+	svc.Defaults.Metadata = &config.AppMetadata{ContextParam: "max-model-len"}
+	svc.Defaults.Parameters["max-model-len"] = "2048"
+	svc.Defaults.Parameters["memory-fraction"] = "auto"
+	mgr.memoryBudget = func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "memory-fraction"}, nil
+	}
+	mgr.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "later.gguf"), []byte("later weights"), 0600))
+		return Localized{Params: params}, nil
+	}
+	req := LaunchRequest{Provider: "vllm", Model: "variant"}
+	inst := instance.NewInstance("need-argv", "vllm", req.Model, 8100, 0, 0)
+	inst.Endpoint = "chat"
+	run, err := mgr.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
+	require.NoError(t, err)
+	assert.Contains(t, run.args, filepath.Join(dir, "weights.gguf"))
+	require.Contains(t, run.args, "--memory-fraction")
+	for i, arg := range run.args {
+		if arg == "--memory-fraction" {
+			require.Less(t, i+1, len(run.args))
+			assert.Equal(t, "0.3661", run.args[i+1])
+		}
+	}
+	assert.Equal(t, "0.3661", inst.Resolved().Parameters["memory-fraction"])
+	assert.Equal(t, "memory-fraction", inst.Resolved().AutoMemory)
+}

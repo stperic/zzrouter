@@ -23,9 +23,10 @@ package version
 // provider sync with assets, model defaults, variants and features, typed
 // install recipes, and the cluster update routes.
 // Protocol 2 adds failure_patterns, which older provider schemas reject.
+// Protocol 3 adds readiness_probe.stall_timeout, which older provider schemas reject.
 const (
-	ClusterProtocolVersion    = 2
-	MinClusterProtocolVersion = 2
+	ClusterProtocolVersion    = 3
+	MinClusterProtocolVersion = 3
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

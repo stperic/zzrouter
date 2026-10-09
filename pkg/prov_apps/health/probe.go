@@ -14,6 +14,7 @@ import (
 type ReadinessProbe struct {
 	FailureClassifier *httperr.Classifier `yaml:"-" json:"-"`
 	LogPatterns       LogPatterns         `yaml:"logPatterns" json:"log_patterns"`
+	StallTimeout      time.Duration       `yaml:"stall_timeout,omitempty" json:"stall_timeout,omitempty"`
 	Timeout           time.Duration       `yaml:"timeout" json:"timeout"`
 
 	// Serve, when set, is the authority on readiness: log patterns say the
@@ -52,6 +53,9 @@ func (rp *ReadinessProbe) Validate() error {
 	}
 	if rp.Serve != nil && rp.Serve.Path == "" {
 		return fmt.Errorf("readiness serve check must have a path")
+	}
+	if rp.StallTimeout < 0 {
+		return fmt.Errorf("readiness probe stall timeout must be non-negative")
 	}
 	if rp.Timeout <= 0 {
 		return fmt.Errorf("readiness probe timeout must be positive")

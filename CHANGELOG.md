@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add optional `readiness_probe.stall_timeout` to detect silent engine starts.
+  vLLM now allows 900s overall and fails after 240s without output; existing
+  installs receive these values through managed provider reconciliation.
+- Cluster protocol and minimum advance from 2 to 3: older workers reject
+  `readiness_probe.stall_timeout` during strict provider configuration loading.
+  Upgrade all peers together following
+  [the protocol maintenance procedure](docs/protocol_versioning.md).
+
+- Add opt-in node GPU memory reclamation through
+  `gpu.evict_idle_on_memory_pressure` in `node.yaml` (default off). Launches that
+  cannot fit stop eligible idle runs in activity order, wait briefly for memory
+  release, and retry admission once. Keep-alive expiry shares the eligibility
+  check and cannot claim a run with an active lease.
+
 - Derive Messages and Responses translations for all providers declaring
   Chat Completions without the corresponding native API. Shipped provider
   configs now declare native endpoints only, and reconciliation carries that to

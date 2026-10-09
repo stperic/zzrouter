@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
@@ -34,7 +34,8 @@ func (m *ProviderAppManager) StartOnDemandAsync(req LaunchRequest) error {
 	if err != nil {
 		return err
 	}
-	if _, _, err := m.resolveLaunch(&req); err != nil {
+	selection, err := m.resolveLaunch(&req)
+	if err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -46,7 +47,7 @@ func (m *ProviderAppManager) StartOnDemandAsync(req LaunchRequest) error {
 	m.mu.Unlock()
 	go func() {
 		defer m.onDemandStarts.Done()
-		if _, err := m.launchInstance(ctx, req); err != nil {
+		if _, err := m.launchInstance(ctx, req, selection); err != nil {
 			slog.Error("Failed to start on-demand model", "model", req.Model, "provider", req.Provider, "error", err)
 		}
 	}()
@@ -60,7 +61,11 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 	if err != nil {
 		return nil, err
 	}
-	return m.launchInstance(ctx, req)
+	selection, err := m.resolveLaunch(&req)
+	if err != nil {
+		return nil, err
+	}
+	return m.launchInstance(ctx, req, selection)
 }
 
 // prepareInstanceLaunch canonicalizes the name before any key is computed from it, so every alias
@@ -77,10 +82,10 @@ func (m *ProviderAppManager) prepareInstanceLaunch(ctx context.Context, req Laun
 	return req, nil
 }
 
-func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	// Providers without endpoint overlays share one chat instance.
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	if _, svcCfg, ok := m.resolveConfigKey(req.Provider); ok && !svcCfg.IsEndpointAware() {
+	if !selection.config.IsEndpointAware() {
 		endpoint = string(EndpointChat)
 	}
 	req.Endpoint = Endpoint(endpoint)
@@ -89,7 +94,7 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 		if run, ok := m.instances.GetByModelEndpoint(req.Model, endpoint); ok && !run.GetStatus().IsTerminal() {
 			return nil, fmt.Errorf("%w: smoke cannot reuse an existing run", ErrInstancesRunning)
 		}
-		return m.launchAdmittedInstance(ctx, req)
+		return m.launchAdmittedInstance(ctx, req, selection)
 	}
 	key := req.Provider + ":" + req.Model + ":" + endpoint
 	result, err, _ := m.launchGroup.Do(key, func() (any, error) {
@@ -106,7 +111,7 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 				}
 			}
 		}
-		return m.launchAdmittedInstance(ctx, req)
+		return m.launchAdmittedInstance(ctx, req, selection)
 	})
 	if err != nil {
 		return nil, err
@@ -119,20 +124,16 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 	return inst, nil
 }
 
-func (m *ProviderAppManager) launchAdmittedInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchAdmittedInstance(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	admitted, err := m.AdmitLocalModel(ctx, req.requestedModel)
 	if err != nil {
 		return nil, err
 	}
-	return m.launchInstanceLocked(admitted, req)
+	return m.launchInstanceLocked(admitted, req, selection)
 }
 
-func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	configKey, svcCfg, err := m.resolveLaunch(&req)
-	if err != nil {
 		return nil, err
 	}
 	if !req.installSmoke {
@@ -142,11 +143,11 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 		}
 		defer unlock()
 	}
-	budget, err := m.launchBudget(configKey)
+	budget, err := m.launchBudget(selection.key)
 	if err != nil {
 		return nil, err
 	}
-	inst, err := m.registerRun(ctx, req, svcCfg)
+	inst, err := m.registerRun(ctx, req, selection.config)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +168,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 			return m.queueRun(inst, req, blocker.ID)
 		}
 	}
-	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.admitRun(ctx, inst, req, selection)
 	if err != nil {
 		m.releaseRun(inst)
 		return nil, err
@@ -177,25 +178,32 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	return inst, nil
 }
 
+type launchSelection struct {
+	key    string
+	config config.ServiceConfig
+	model  process.ResolvedModel
+}
+
 // resolveLaunch resolves the provider config and freezes the runtime a
 // launch selects; toolkit reads happen under that runtime's gate.
-func (m *ProviderAppManager) resolveLaunch(req *LaunchRequest) (string, config.ServiceConfig, error) {
+func (m *ProviderAppManager) resolveLaunch(req *LaunchRequest) (launchSelection, error) {
 	configKey, svcCfg, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
-		return "", svcCfg, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
+		return launchSelection{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
-	_, selected, _, err := m.featureRuntime(svcCfg, req.Model, req.Runtime)
+	model := process.ResolveModel(svcCfg, req.Model)
+	_, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime)
 	if err != nil {
-		return "", svcCfg, err
+		return launchSelection{}, err
 	}
 	if selected == "" {
 		selected = svcCfg.Name
 	}
 	req.selectedRuntime = selected
 	if req.installSmoke && selected != req.Runtime {
-		return "", svcCfg, fmt.Errorf("smoke model does not use the runtime being installed")
+		return launchSelection{}, fmt.Errorf("smoke model does not use the runtime being installed")
 	}
-	return configKey, svcCfg, nil
+	return launchSelection{key: configKey, config: svcCfg, model: model}, nil
 }
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
@@ -284,7 +292,7 @@ type admittedRun struct {
 
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
-func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
+func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, selection launchSelection) (admittedRun, error) {
 	// Create log file. Sanitize model name for filesystem safety —
 	// strip every character outside [A-Za-z0-9._-] so a hostile or
 	// quirky model id (slashes, backslashes, ..) cannot escape the
@@ -294,7 +302,7 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, fmt.Errorf("failed to create log file: %w", err)
 	}
 	inst.SetLogFilePath(logPath)
-	run, err := m.prepareRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.prepareRun(ctx, inst, req, selection)
 	if err == nil && !inst.Admit() {
 		err = fmt.Errorf("run %s stopped before it was admitted", inst.ID)
 	}
@@ -313,15 +321,15 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 }
 
 // prepareRun resolves a run's parameters, checks its memory fit and builds argv.
-func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
+func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, selection launchSelection) (admittedRun, error) {
 	endpoint := inst.Endpoint
-	features, err := m.modelLaunchParameters(svcCfg, req, endpoint)
+	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
 	if err == nil {
-		err = m.admitMemory(ctx, configKey, instance.Resolved{Parameters: features.Params, Environment: features.Environment})
+		err = m.admitMemory(ctx, selection.key, features)
 	}
 	var prepared preparedLaunch
 	if err == nil {
-		prepared, err = m.prepareLaunchFeatures(features, configKey, endpoint, req, inst.Port)
+		prepared, err = m.prepareLaunchFeatures(features, selection.key, endpoint, inst.Port)
 	}
 	if err != nil {
 		return admittedRun{}, err
@@ -405,7 +413,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req LaunchR
 // tryAdmit admits a queued run unless an admitted run is still starting.
 // Config is resolved again: it may have changed while the run waited.
 func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instance, req LaunchRequest) (admittedRun, *instance.Instance, error) {
-	configKey, svcCfg, err := m.resolveLaunch(&req)
+	selection, err := m.resolveLaunch(&req)
 	if err != nil {
 		return admittedRun{}, nil, err
 	}
@@ -423,7 +431,7 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 	if blocker, err := m.startingBlocker(inst.ID); err != nil || blocker != nil {
 		return admittedRun{}, blocker, err
 	}
-	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.admitRun(ctx, inst, req, selection)
 	return run, nil, err
 }
 
@@ -503,7 +511,7 @@ func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, err
 	return nil, nil //nolint:nilnil // no blocker is not an error
 }
 
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, resolved instance.Resolved) error {
+func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) error {
 	budget, err := m.launchBudget(provider)
 	if err != nil || budget == nil {
 		return err
@@ -511,7 +519,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 	if budget.Kind != "fraction_total" {
 		return nil
 	}
-	env, err := process.ChildEnvironment(resolved.Environment)
+	env, err := process.ChildEnvironment(features.Environment)
 	if err != nil {
 		return err
 	}
@@ -522,7 +530,20 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 			visible[key] = value
 		}
 	}
-	devices, err := gpu.MemorySnapshotContext(ctx)
+	need := process.Need{}
+	if features.Params[budget.Parameter] == "auto" {
+		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
+	}
+	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
+	var fit *process.MemoryFitError
+	if !m.evictIdleOnMemoryPressure || !errors.As(err, &fit) || !m.reclaimFor(ctx, fit) {
+		return err
+	}
+	return m.checkMemory(ctx, *budget, need, features.Params, visible)
+}
+
+func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string) error {
+	devices, err := m.memorySnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 	}
@@ -535,7 +556,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 			owners[pid] = run.ID
 		}
 	}
-	return process.AdmitMemoryBudget(*budget, resolved.Parameters, visible, devices, owners)
+	return process.AdmitMemoryBudget(budget, need, params, visible, devices, owners)
 }
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.
@@ -658,45 +679,80 @@ const defaultReadinessTimeout = 120 * time.Second
 const serveCheckPollInterval = 2 * time.Second
 
 func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.ReadinessWriter, probe *health.ReadinessProbe) {
+	absoluteDeadline := utils.Now().Add(probe.Timeout)
 	timer := time.NewTimer(probe.Timeout)
 	defer timer.Stop()
+	poll := time.NewTimer(serveCheckPollInterval)
+	defer poll.Stop()
+	poll.Stop()
+	var pollC <-chan time.Time
+	if probe.Serve != nil && len(probe.LogPatterns.Success) == 0 {
+		poll.Reset(0)
+		pollC = poll.C
+	}
+	readyDetail := ""
 
-	select {
-	case sig := <-rw.Signal:
-		if sig.Ready {
-			slog.Info("readiness probe matched", "instance", inst.ID, "pattern", sig.Pattern)
-			// The log says the process started. For engines that listen
-			// before loading weights, only the serve check knows whether
-			// that means anything yet.
-			ready, detail := m.awaitServes(inst, probe.Serve, timer.C, rw.Signal)
-			if !ready {
-				m.failNotReady(inst, probe.Timeout)
+	for {
+		if inst.GetStatus() != instance.StatusStarting {
+			return
+		}
+		now := utils.Now()
+		deadline := absoluteDeadline
+		if probe.StallTimeout > 0 {
+			stallDeadline := rw.LastOutputAt().Add(probe.StallTimeout)
+			if stallDeadline.Before(deadline) {
+				deadline = stallDeadline
+			}
+		}
+		if !now.Before(deadline) {
+			reason := fmt.Sprintf("not ready within %s", probe.Timeout)
+			if deadline.Before(absoluteDeadline) {
+				reason = fmt.Sprintf("no output for %s while starting; last line: %s", probe.StallTimeout, rw.LastLine())
+			}
+			m.failNotReady(inst, reason)
+			return
+		}
+		if readyDetail != "" {
+			inst.MarkRunning()
+			inst.SetStartedAtIfZero()
+			inst.UpdateLastUsed()
+			m.emitEvent(Event{
+				Type: EventInstanceRunning, Provider: inst.Provider,
+				Instance: inst.ID, Model: inst.Model,
+				Message: fmt.Sprintf("Ready (%s)", readyDetail), Time: utils.Now(),
+			})
+			return
+		}
+		timer.Reset(deadline.Sub(now))
+		select {
+		case sig := <-rw.Signal:
+			if sig.Failed {
+				m.failReadiness(inst, sig)
 				return
 			}
-			if detail == "" {
-				detail = fmt.Sprintf("log: %s", sig.Pattern)
+			if sig.Ready {
+				slog.Info("readiness probe matched", "instance", inst.ID, "pattern", sig.Pattern)
+				if probe.Serve == nil {
+					readyDetail = fmt.Sprintf("log: %s", sig.Pattern)
+				} else {
+					poll.Reset(0)
+					pollC = poll.C
+				}
 			}
-			if inst.GetStatus() == instance.StatusStarting {
-				inst.MarkRunning()
-				inst.SetStartedAtIfZero()
-				inst.UpdateLastUsed()
-				m.emitEvent(Event{
-					Type: EventInstanceRunning, Provider: inst.Provider,
-					Instance: inst.ID, Model: inst.Model,
-					Message: fmt.Sprintf("Ready (%s)", detail), Time: utils.Now(),
-				})
+		case <-pollC:
+			// A serve request must not outlive the current startup window.
+			ctx, cancel := context.WithDeadline(inst.Context(), deadline)
+			if m.healthMon.Serves(ctx, inst, probe.Serve) {
+				readyDetail = fmt.Sprintf("served %s", probe.Serve.Path)
 			}
-		} else if sig.Failed {
-			m.failReadiness(inst, sig)
+			cancel()
+			poll.Reset(serveCheckPollInterval)
+		case <-timer.C:
+		case <-inst.LeftStarting():
+			return
+		case <-inst.Context().Done():
+			return
 		}
-	case <-timer.C:
-		// Readiness owns the startup window, so it is also what ends it.
-		// The health monitor deliberately ignores failures while an
-		// instance is starting; if nobody failed it here, a launch that
-		// never came up would sit in `starting` forever.
-		m.failNotReady(inst, probe.Timeout)
-	case <-inst.Context().Done():
-		// Instance stopped
 	}
 }
 
@@ -720,51 +776,18 @@ func (m *ProviderAppManager) failReadiness(inst *instance.Instance, sig health.R
 // while an instance is starting, precisely so a slow load isn't mistaken
 // for a broken one, which leaves nobody else to notice a launch that
 // simply never arrives. A no-op once the instance moved on.
-func (m *ProviderAppManager) failNotReady(inst *instance.Instance, timeout time.Duration) {
+func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string) {
 	if inst.GetStatus() != instance.StatusStarting {
 		return
 	}
-	slog.Warn("instance never became ready", "instance", inst.ID, "timeout", timeout)
-	inst.MarkFailed(fmt.Sprintf("not ready within %s", timeout))
+	slog.Warn("instance never became ready", "instance", inst.ID, "reason", reason)
+	inst.MarkFailed(reason)
 	m.emitEvent(Event{
 		Type: EventInstanceFailed, Provider: inst.Provider,
 		Instance: inst.ID, Model: inst.Model,
-		Message: fmt.Sprintf("Not ready within %s", timeout),
+		Message: reason,
 		Cause:   obsruns.FailureReadiness, Time: utils.Now(),
 	})
-}
-
-// awaitServes polls the provider's serve check until the engine answers,
-// the readiness deadline fires, or the instance goes away. A nil check
-// means the provider offers no proof beyond its log line, so the caller's
-// signal stands.
-func (m *ProviderAppManager) awaitServes(inst *instance.Instance, check *health.ServeCheck, deadline <-chan time.Time, failures <-chan health.ReadinessSignal) (ready bool, detail string) {
-	if check == nil {
-		return true, ""
-	}
-
-	ticker := time.NewTicker(serveCheckPollInterval)
-	defer ticker.Stop()
-
-	for {
-		if m.healthMon.Serves(inst.Context(), inst, check) {
-			return true, fmt.Sprintf("served %s", check.Path)
-		}
-		select {
-		case sig := <-failures:
-			m.failReadiness(inst, sig)
-			return false, ""
-		case <-inst.LeftStarting():
-			return false, ""
-		case <-ticker.C:
-		case <-deadline:
-			slog.Warn("engine never served before readiness deadline",
-				"instance", inst.ID, "path", check.Path)
-			return false, ""
-		case <-inst.Context().Done():
-			return false, ""
-		}
-	}
 }
 
 // StopInstance gracefully stops an instance and removes it from the registry.
@@ -1053,7 +1076,12 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 
 	// Map readiness probe from config
 	if rp := rc.ReadinessProbe; rp != nil && (len(rp.LogPatterns.Success)+len(rp.LogPatterns.Failure) > 0 || rp.Serve != nil) {
-		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout), FailureClassifier: &svcCfg.Runtime.FailurePatterns}
+		stall, err := rp.StallDuration()
+		if err != nil {
+			slog.Warn("invalid readiness probe config, skipping", "error", err)
+			return hc
+		}
+		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout), StallTimeout: stall, FailureClassifier: &svcCfg.Runtime.FailurePatterns}
 		for _, p := range rp.LogPatterns.Success {
 			probe.LogPatterns.Success = append(probe.LogPatterns.Success, health.PatternMatcher{
 				Pattern: p.Pattern,
@@ -1152,13 +1180,13 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 //
 // Split out from LaunchInstance so the parameters-to-argv contract can be
 // tested without starting a process.
-func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint, model string, port int, params map[string]string) (process.Launch, map[string]string, error) {
+func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
 	if err := process.ValidateParameters(params); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	var files map[string]string
 	if m.localizeParams != nil {
-		local, err := m.localizeParams(provider, endpoint, model, params)
+		local, err := m.localizeParams(provider, endpoint, model.Name, params)
 		if err != nil {
 			return process.Launch{}, nil, fmt.Errorf("%w: on node %q: %w", ErrParameterValidation, m.localNodename(), err)
 		}
@@ -1203,16 +1231,16 @@ func (m *ProviderAppManager) PreviewLaunch(req LaunchRequest, port int) (LaunchP
 // "would a restart launch differently" asks the same question a launch
 // answers.
 func (m *ProviderAppManager) prepareLaunch(svcCfg config.ServiceConfig, configKey, endpoint string, req LaunchRequest, port int) (preparedLaunch, error) {
-	features, err := m.modelLaunchParameters(svcCfg, req, endpoint)
+	features, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), req, endpoint)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	return m.prepareLaunchFeatures(features, configKey, endpoint, req, port)
+	return m.prepareLaunchFeatures(features, configKey, endpoint, port)
 }
 
-func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, req LaunchRequest, port int) (preparedLaunch, error) {
+func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, port int) (preparedLaunch, error) {
 	params, env, svcCfg := features.Params, features.Environment, features.Config
-	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, req.Model, port, params)
+	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, params)
 	if err != nil {
 		return preparedLaunch{}, err
 	}

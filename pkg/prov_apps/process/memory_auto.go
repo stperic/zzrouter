@@ -13,7 +13,7 @@ const (
 	DefaultAutoMemorySafetyMarginMiB int64 = 2048
 	// DefaultAutoMemorySafetyMarginFraction scales the reserve on larger GPUs.
 	DefaultAutoMemorySafetyMarginFraction = 0.05
-	// autoFractionScale rounds down to the four decimals the engine is given.
+	// autoFractionScale is the four decimals the engine is given.
 	autoFractionScale = 10000
 )
 
@@ -39,4 +39,17 @@ func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owner
 		fraction = math.Min(fraction, room)
 	}
 	return fraction, nil
+}
+
+// DefaultAutoHeadroomFraction adds 10 percent for allocator variation beyond the estimated need.
+const DefaultAutoHeadroomFraction = 0.10
+
+func needFraction(need Need, selected []gpu.MemoryDevice) float64 {
+	perDevice := float64(need.WeightsMiB+need.KVMiB)/float64(len(selected)) + float64(need.OverheadMiB)
+	required := math.Ceil(perDevice + perDevice*DefaultAutoHeadroomFraction)
+	fraction := 0.0
+	for _, device := range selected {
+		fraction = math.Max(fraction, math.Ceil(required/float64(device.TotalMiB)*autoFractionScale)/autoFractionScale)
+	}
+	return fraction
 }

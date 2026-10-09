@@ -783,6 +783,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "stall_timeout": {
+          "type": "string"
+        },
         "timeout": {
           "type": "string"
         },

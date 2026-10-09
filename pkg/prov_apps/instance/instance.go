@@ -138,6 +138,8 @@ type Instance struct {
 
 	// Active request counter (atomic)
 	activeRequests int64 `json:"-"`
+	// Reservations keep later victims idle while earlier stops drain.
+	idleStopClaimed bool `json:"-"`
 
 	// Concurrency semaphore: nil = unlimited, buffered chan = gated.
 	// Initialized at most once via InitConcurrencyLimit (guarded by concurrencyOnce).
@@ -227,6 +229,17 @@ func (i *Instance) IsHealthy() bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.Status == StatusRunning
+}
+
+// Evictable reports whether a running or unhealthy run has no active leases and no stop claimed.
+func (i *Instance) Evictable() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.evictableLocked()
+}
+
+func (i *Instance) evictableLocked() bool {
+	return (i.Status == StatusRunning || i.Status == StatusUnhealthy) && i.GetActiveRequests() == 0 && !i.idleStopClaimed
 }
 
 // IsRunning returns true if the instance is running or unhealthy.

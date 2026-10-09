@@ -69,6 +69,9 @@ func (p *OnDemandProvider) IsAutoDiscovery() bool { return p.Enabled == nil }
 // pool, and a valid execution type. Command may be empty for template
 // entries awaiting configurator fill.
 func (p *OnDemandProvider) Validate() error {
+	if _, err := p.Runtime.HealthCheck.ReadinessProbe.StallDuration(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := p.Runtime.FailurePatterns.Compile(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}

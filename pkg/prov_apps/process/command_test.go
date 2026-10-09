@@ -53,7 +53,7 @@ func TestBuild_ModelPlaceholderStripsVariantSuffix(t *testing.T) {
 			},
 		},
 	}
-	launch, err := NewCommandBuilder(cfg).Build("Qwen/Qwen2.5#qwen2.5-q4.gguf", 8080, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen/Qwen2.5#qwen2.5-q4.gguf"), 8080, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Qwen/Qwen2.5", argAfter(t, launch.Args, "--alias"),
 		"${MODEL} must strip the #variant suffix")
@@ -75,7 +75,7 @@ func TestBuild_PointsEngineAtLocalWeights(t *testing.T) {
 			},
 		},
 	}
-	launch, err := NewCommandBuilder(cfg).Build("mlx-community/Qwen3-4bit", 8090, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "mlx-community/Qwen3-4bit"), 8090, nil)
 	require.NoError(t, err)
 
 	want := filepath.Join(root, "mlx-community", "Qwen3-4bit")
@@ -98,7 +98,7 @@ func TestBuild_MissingWeightsFailsLaunch(t *testing.T) {
 			},
 		},
 	}
-	_, err := NewCommandBuilder(cfg).Build("org/never-downloaded", 8000, nil)
+	_, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/never-downloaded"), 8000, nil)
 	require.ErrorIs(t, err, ErrModelNotLocal)
 }
 
@@ -122,19 +122,22 @@ func TestBuild_WireModel(t *testing.T) {
 	}
 
 	t.Run("name engines keep the canonical name", func(t *testing.T) {
-		launch, err := NewCommandBuilder(newCfg(config.WireModelName)).Build("org/model", 8000, nil)
+		cfg := newCfg(config.WireModelName)
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "org/model", launch.WireModel)
 	})
 
 	t.Run("unset defaults to name", func(t *testing.T) {
-		launch, err := NewCommandBuilder(newCfg("")).Build("org/model", 8000, nil)
+		cfg := newCfg("")
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "org/model", launch.WireModel)
 	})
 
 	t.Run("path engines are addressed by path", func(t *testing.T) {
-		launch, err := NewCommandBuilder(newCfg(config.WireModelPath)).Build("org/model", 8000, nil)
+		cfg := newCfg(config.WireModelPath)
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(root, "org", "model"), launch.WireModel)
 	})
@@ -226,7 +229,7 @@ func TestBuild_VariantRunsItsBasesWeights(t *testing.T) {
 		},
 		Models: map[string]config.ModelSpec{"Qwen3.8-27B-Q8_0+agent": {From: "Qwen3.8-27B-Q8_0"}},
 	}
-	launch, err := NewCommandBuilder(cfg).Build("Qwen3.8-27B-Q8_0+agent", 8080, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen3.8-27B-Q8_0+agent"), 8080, nil)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(root, "Qwen3.8-27B-Q8_0"), argAfter(t, launch.Args, "--model"))
 	assert.Equal(t, "Qwen3.8-27B-Q8_0+agent", argAfter(t, launch.Args, "--alias"))

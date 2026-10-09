@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"errors"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"maps"
 	"strings"
 	"testing"
@@ -300,7 +301,7 @@ func TestBuildLaunch_LocalizerOutputReachesArgv(t *testing.T) {
 		out["template"] = "/node/local/t.jinja"
 		return Localized{Params: out, Files: map[string]string{"template": "digest"}}, nil
 	})
-	launch, files, err := m.buildLaunch(svc, "vllm", string(EndpointChat), "llama3", 8100, map[string]string{"template": "t.jinja"})
+	launch, files, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"template": "t.jinja"})
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(launch.Args, " "), "--template /node/local/t.jinja")
 	assert.NotContains(t, launch.Args, "t.jinja")
@@ -315,7 +316,7 @@ func TestBuildLaunch_ValidatesBeforeLocalizing(t *testing.T) {
 		called = true
 		return Localized{Params: params}, nil
 	})
-	_, _, err := m.buildLaunch(svc, "vllm", string(EndpointChat), "llama3", 8100, map[string]string{"key;inject": "v"})
+	_, _, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"key;inject": "v"})
 	require.ErrorIs(t, err, ErrParameterValidation)
 	assert.False(t, called)
 }

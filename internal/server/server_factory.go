@@ -249,6 +249,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		prov_apps.WithParamLocalizer(assetParamLocalizer(s.configStore)),
 		prov_apps.WithRuntimeChecks(providerRuntimeChecks(s.configStore)),
 		prov_apps.WithMemoryBudget(providerMemoryBudget(s.configStore)),
+		prov_apps.WithIdleMemoryEviction(cfg.GPU.EvictIdleOnMemoryPressure),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize provider manager: %w", err)

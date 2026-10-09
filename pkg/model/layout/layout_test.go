@@ -129,3 +129,13 @@ func TestVariantOf(t *testing.T) {
 	_, ok = VariantOf(filepath.Join(dir, "m-q8-00001-of-00002.gguf"))
 	assert.False(t, ok)
 }
+
+func TestWeightsExcludesFeaturesAndMetadata(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.safetensors", "b.safetensors", "projector.safetensors", "config.json", "tokenizer.json"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("contents"), 0600))
+	}
+	files, err := Weights(dir, []string{"projector.safetensors"})
+	require.NoError(t, err)
+	require.Equal(t, []File{{Path: "a.safetensors", Size: 8}, {Path: "b.safetensors", Size: 8}}, files)
+}

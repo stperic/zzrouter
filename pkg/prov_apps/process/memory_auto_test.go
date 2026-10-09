@@ -43,7 +43,7 @@ func TestAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 			}
 			declared := budget
 			declared.AutoSafetyMarginMiB = tc.margin
-			err := AdmitMemoryBudget(declared, params, tc.visibility, tc.devices, nil)
+			err := AdmitMemoryBudget(declared, Need{}, params, tc.visibility, tc.devices, nil)
 			if tc.fail {
 				require.Error(t, err)
 				assert.Equal(t, "auto", params["budget"])
@@ -54,7 +54,7 @@ func TestAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 		})
 	}
 	numeric := map[string]string{"budget": "0.5"}
-	require.NoError(t, AdmitMemoryBudget(budget, numeric, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil))
+	require.NoError(t, AdmitMemoryBudget(budget, Need{}, numeric, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil))
 	assert.Equal(t, "0.5", numeric["budget"], "a numeric budget is checked, never rewritten")
 }
 
@@ -63,12 +63,12 @@ func TestAutoMemoryBesideOutsideHolder(t *testing.T) {
 	held := int64(25 * 1024)
 	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97249, FreeMiB: 71649, Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: &held}}}}
 	parameters := map[string]string{budget.Parameter: "auto"}
-	require.NoError(t, AdmitMemoryBudget(budget, parameters, nil, devices, nil))
+	require.NoError(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, nil))
 	assert.Equal(t, "0.6867", parameters[budget.Parameter])
 	for _, fraction := range []string{"0.95", "0.99"} {
 		parameters[budget.Parameter] = fraction
 		var refusal *MemoryFitError
-		require.ErrorAs(t, AdmitMemoryBudget(budget, parameters, nil, devices, nil), &refusal)
+		require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, nil), &refusal)
 		assert.Equal(t, int64(71649), refusal.FreeMiB)
 		require.Len(t, refusal.Holders, 1)
 		assert.Equal(t, "other_or_untracked", refusal.Holders[0].Ownership)
@@ -83,7 +83,7 @@ func TestAutoMemoryWithoutHeadroomNamesTheHolder(t *testing.T) {
 	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97887, FreeMiB: 4000, Processes: []gpu.MemoryProcess{{PID: 7, MemoryMiB: &held}}}}
 	parameters := map[string]string{budget.Parameter: "auto"}
 	var refusal *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(budget, parameters, nil, devices, map[int]string{7: "run-qwen"}), &refusal)
+	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, map[int]string{7: "run-qwen"}), &refusal)
 	assert.Equal(t, "auto", parameters[budget.Parameter])
 	assert.Equal(t, int64(4000), refusal.FreeMiB)
 	assert.Contains(t, refusal.Error(), "zzRouter run run-qwen (pid 7")

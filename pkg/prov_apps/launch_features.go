@@ -25,6 +25,10 @@ import (
 // LocalizeModelFeatures supplies present file features without replacing any
 // configured key, including an explicit auto or false opt-out.
 func LocalizeModelFeatures(svc config.ServiceConfig, model string, params map[string]string) (Localized, error) {
+	return localizeModelFeatures(svc, process.ResolveModel(svc, model).Directory(), params)
+}
+
+func localizeModelFeatures(svc config.ServiceConfig, dir string, params map[string]string) (Localized, error) {
 	out := Localized{Params: params}
 	hasFiles := false
 	for _, f := range svc.Features {
@@ -32,11 +36,7 @@ func LocalizeModelFeatures(svc config.ServiceConfig, model string, params map[st
 			hasFiles = true
 		}
 	}
-	if !hasFiles || model == "" {
-		return out, nil
-	}
-	dir, ok := process.ModelDirectory(svc, model)
-	if !ok {
+	if !hasFiles || dir == "" {
 		return out, nil
 	}
 	manifest, err := integrity.ReadManifest(dir)
@@ -118,7 +118,7 @@ func LocalizeModelFeatures(svc config.ServiceConfig, model string, params map[st
 	return out, nil
 }
 
-func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model string, selected ...string) (config.ServiceConfig, string, []string, error) {
+func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model process.ResolvedModel, selected string) (config.ServiceConfig, string, []string, error) {
 	runtimeKey := ""
 	var excluded []string
 	hasRuntime := false
@@ -130,8 +130,8 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model stri
 	if !hasRuntime {
 		return svc, runtimeKey, excluded, nil
 	}
-	dir, local := process.ModelDirectory(svc, model)
-	if !local {
+	dir := model.Directory()
+	if dir == "" {
 		return svc, runtimeKey, excluded, nil
 	}
 	for _, name := range slices.Sorted(maps.Keys(svc.Features)) {
@@ -139,10 +139,7 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model stri
 		if feature.Runtime == "" {
 			continue
 		}
-		explicit := ""
-		if len(selected) > 0 {
-			explicit = selected[0]
-		}
+		explicit := selected
 		if explicit != "" && feature.Runtime != explicit {
 			continue
 		}
@@ -200,6 +197,7 @@ func wireEndpoints(svc config.ServiceConfig) []string {
 // construction. Preview and live preparation share this resolution.
 type LaunchParameters struct {
 	autoMemory           string
+	model                process.ResolvedModel
 	ExecutionEnvironment process.EnvironmentTransform
 	Executable           string
 	Params               map[string]string
@@ -210,7 +208,7 @@ type LaunchParameters struct {
 	RuntimeKey           string
 }
 
-func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, req LaunchRequest, endpoint string) (LaunchParameters, error) {
+func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req LaunchRequest, endpoint string) (LaunchParameters, error) {
 	if req.Runtime != "" && req.DisposablePlanID == "" && !req.installSmoke {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
@@ -219,14 +217,14 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, req
 	if selected == "" {
 		selected = req.selectedRuntime
 	}
-	svc, key, excluded, err := m.featureRuntime(svc, req.Model, selected)
+	svc, key, excluded, err := m.featureRuntime(svc, model, selected)
 	if err != nil {
 		return LaunchParameters{}, err
 	}
 	for _, name := range excluded {
 		delete(params, name)
 	}
-	features, err := LocalizeModelFeatures(svc, req.Model, params)
+	features, err := localizeModelFeatures(svc, model.Directory(), params)
 	if err != nil {
 		return LaunchParameters{}, err
 	}
@@ -298,7 +296,7 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, req
 	if err != nil {
 		return LaunchParameters{}, err
 	}
-	return LaunchParameters{autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+	return LaunchParameters{model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
 }
 
 // ResolveLaunchParameters resolves this node's tiers and selected feature
@@ -308,7 +306,7 @@ func (m *ProviderAppManager) ResolveLaunchParameters(req LaunchRequest) (LaunchP
 	if !ok {
 		return LaunchParameters{}, ErrProviderNotFound
 	}
-	return m.modelLaunchParameters(svc, req, string(EndpointOrDefault(req.Endpoint)))
+	return m.modelLaunchParameters(svc, process.ResolveModel(svc, req.Model), req, string(EndpointOrDefault(req.Endpoint)))
 }
 
 // ExecutionCommand locates the effective managed executable for this launch.
