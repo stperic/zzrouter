@@ -388,16 +388,18 @@ def image_request(model):
 
 
 def refused_for_images(code, d):
-    return code == 400 and any(w in json.dumps(d).lower() for w in ("image", "vision"))
+    return code == 400 and any(w in json.dumps(d).lower() for w in ("image", "vision", "multimodal"))
 
 
 def direct_image_to_text(R, node, provider, name):
     """An image to a model that cannot read one is a clear 400, never a guess about pixels it never saw."""
     stop_runs(node)
+    state = vision_state(node, provider, name)
     code, d, ms = image_request(f"{name}@{node}")
     R.add("direct", node, f"{provider}:text", "image to a text-only model refused", refused_for_images(code, d),
-          f"{code} vision={vision_state(node, provider, name)} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
-    R.add("direct", node, f"{provider}:text", "no run left by the refusal", code == 200 or not runs(node), [r["model"] for r in runs(node)])
+          f"{code} vision={state} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
+    if state in ("unsupported", "available"):  # known before the request: refused without a launch
+        R.add("direct", node, f"{provider}:text", "refused before any launch", not runs(node), [r["model"] for r in runs(node)])
 
 
 def direct_vision(R, node, provider, pick):
