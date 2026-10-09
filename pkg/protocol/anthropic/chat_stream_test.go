@@ -3,9 +3,12 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -313,4 +316,18 @@ func TestChatStream_CapturedEngineTermination(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChatStream_FailSuppressesSuccess(t *testing.T) {
+	var out bytes.Buffer
+	stream := NewChatStream(&out, "m")
+	_, err := stream.Write([]byte(`data: {"choices":[{"delta":{"content":"partial"}}]}` + "\n\n"))
+	require.NoError(t, err)
+	_, err = stream.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`))
+	require.NoError(t, err)
+	stream.Fail(httperr.Error{Status: http.StatusBadGateway, Message: "cut"})
+	require.NoError(t, stream.Close())
+	assert.Equal(t, 1, strings.Count(out.String(), "event: error\n"))
+	assert.Contains(t, out.String(), `"message":"cut"`)
+	assert.NotContains(t, out.String(), "message_stop")
 }

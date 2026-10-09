@@ -243,7 +243,7 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 	}
 
 	if streaming {
-		streamWithUsageInject(req.Context(), w, resp, p.normalizers, providerType, meta, recorder)
+		streamWithUsageInject(req, w, resp, p.normalizers, providerType, meta, recorder)
 		return
 	}
 	writeNormalizedBody(w, resp, p.normalizers, providerType, meta, recorder)

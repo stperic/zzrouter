@@ -969,7 +969,7 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 	if isStreaming {
-		streamWithUsageInject(c.Request.Context(), c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+		streamWithUsageInject(c.Request, c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
 		return
 	}
 	captureNonStreamingMetrics(resp, recorder)

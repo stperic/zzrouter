@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -20,6 +22,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
+	"github.com/stretchr/testify/assert"
 )
 
 // nilAppsConfig is a test helper that returns a nil-returning appsConfig accessor.
@@ -753,40 +756,23 @@ func (m *mockFlusher) Flush() {
 func TestStreamNDJSON(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	flusher := &mockFlusher{ResponseRecorder: recorder}
-
-	// Simulate NDJSON input
-	input := `{"status":"pulling"}
-{"status":"verifying"}
-{"status":"done"}`
-
-	err := streamNDJSON(flusher, flusher, strings.NewReader(input))
-	if err != nil {
-		t.Errorf("streamNDJSON() error = %v", err)
-	}
-
-	// Should have flushed after each line
-	if flusher.flushed != 3 {
-		t.Errorf("flushed = %d, want 3", flusher.flushed)
-	}
-
-	// Output should contain all lines
-	output := recorder.Body.String()
-	if !strings.Contains(output, "pulling") {
-		t.Error("output should contain 'pulling'")
-	}
-	if !strings.Contains(output, "done") {
-		t.Error("output should contain 'done'")
-	}
+	c, _ := gin.CreateTestContext(flusher)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/pull", nil)
+	httperr.AttachResponder(newOllamaResponder())(c)
+	input := "{\"status\":\"pulling\"}\n{\"status\":\"verifying\"}\n{\"status\":\"success\"}\n"
+	writeOllamaResponse(c, &http.Response{StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": {"application/x-ndjson"}}, Body: io.NopCloser(strings.NewReader(input))})
+	assert.Equal(t, input, recorder.Body.String())
+	assert.Greater(t, flusher.flushed, 0)
 }
 
 func TestStreamResponseWithFlush_NonFlushable(t *testing.T) {
-	// Test with a ResponseRecorder which does implement Flusher
-	input := strings.NewReader("test data")
 	w := httptest.NewRecorder()
-	err := streamResponseWithFlush(w, input)
-	if err != nil {
-		t.Errorf("streamResponseWithFlush() error = %v", err)
-	}
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/blobs/digest", nil)
+	writeOllamaResponse(c, &http.Response{StatusCode: http.StatusOK,
+		Header: http.Header{}, Body: io.NopCloser(strings.NewReader("test data"))})
+	assert.Equal(t, "test data", w.Body.String())
 }
 
 // ============================================================================

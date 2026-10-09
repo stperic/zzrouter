@@ -23,6 +23,7 @@ const (
 type Result struct {
 	Outcome Outcome
 	Err     error
+	MidLine bool // the stream stopped inside a line, so an ending must start a new one
 }
 
 // Failure reports the error the caller must end the stream with. Only Truncated asks for one:
@@ -60,7 +61,8 @@ func terminal(frame []byte) (done, failed bool) {
 	if !bytes.Contains(frame, []byte(`"finish_reason"`)) &&
 		!bytes.Contains(frame, []byte(`"done"`)) &&
 		!bytes.Contains(frame, []byte(`"type"`)) &&
-		!bytes.Contains(frame, []byte(`"error"`)) {
+		!bytes.Contains(frame, []byte(`"error"`)) &&
+		!bytes.Contains(frame, []byte(`"status"`)) {
 		return false, false
 	}
 	var object map[string]json.RawMessage
@@ -78,7 +80,7 @@ func terminal(frame []byte) (done, failed bool) {
 	case "message_stop", "response.completed", "response.incomplete":
 		return true, false
 	}
-	if bytes.Equal(object["done"], []byte("true")) {
+	if bytes.Equal(object["done"], []byte("true")) || bytes.Equal(object["status"], []byte(`"success"`)) {
 		return true, false
 	}
 	var choices []struct {

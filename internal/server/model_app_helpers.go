@@ -252,8 +252,10 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 			scrubForUpstream(pr.Out.Header, backend.Engine())
 		},
 		FlushInterval: -1,
+		Transport:     s.httpStreamingClient.Transport,
 	}
 
+	var metered *wire.MeteredBody
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		if !quiet {
 			utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
@@ -329,14 +331,14 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 			}
 		} else {
+			// A broken relay may append an error beyond the upstream's declared length.
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = -1
 			// Meter raw bytes first because transforms read the live recorder.
-			resp.Body = wire.NewMeteredBody(req.Context(), resp.Body, recorder)
+			metered = wire.NewMeteredBody(req.Context(), resp.Body, recorder)
+			resp.Body = metered
 			if transform := wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, recorder).Func(); transform != nil {
 				resp.Body = newNormalizingReader(resp.Body, transform)
-				// The rewrite changes the body's length, so the engine's
-				// declared one would cut the client off mid-stream.
-				resp.Header.Del("Content-Length")
-				resp.ContentLength = -1
 			}
 		}
 		return nil
@@ -350,7 +352,21 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	if !quiet {
 		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path)
 	}
-	proxy.ServeHTTP(w, req)
+	client := &proxyStreamWriter{ResponseWriter: w}
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				// Only an observed upstream read failure can replace the proxy's abort.
+				if v != http.ErrAbortHandler || metered == nil || metered.Result().Err == nil || client.err != nil || req.Context().Err() != nil {
+					panic(v)
+				}
+			}
+			if metered != nil && client.err == nil {
+				endBrokenStream(w, req, metered.Result())
+			}
+		}()
+		proxy.ServeHTTP(client, req)
+	}()
 	if !quiet {
 		slog.Info("Request forwarded successfully to instance", "id", inst.ID)
 	}
@@ -503,3 +519,22 @@ func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Inst
 	}
 	return inst, found
 }
+
+// proxyStreamWriter distinguishes client write failures from upstream read failures.
+type proxyStreamWriter struct {
+	http.ResponseWriter
+	err error
+}
+
+func (w *proxyStreamWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		w.err = err
+	}
+	return n, err
+}
+
+func (w *proxyStreamWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

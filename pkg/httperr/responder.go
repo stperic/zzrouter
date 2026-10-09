@@ -118,6 +118,11 @@ type InBandStreamer interface {
 	StreamError(w http.ResponseWriter, e Error)
 }
 
+// StreamEnder reports a broken relay in band without a success terminator.
+type StreamEnder interface {
+	EndStream(w http.ResponseWriter, e Error)
+}
+
 // Error is one error zzRouter reports in its own voice. Each dialect
 // renders the fields it has a place for.
 type Error struct {

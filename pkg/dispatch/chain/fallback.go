@@ -469,9 +469,10 @@ func (p *Proxy) tryDeployment(
 				Duration:       time.Since(start),
 				Outcome:        pfallback.OutcomeNonRetriable,
 			})
-			wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers())
+			result := wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers())
 			_ = resp.Body.Close()
 			cancel()
+			p.deps.EndBrokenStream(c.Writer, c.Request, result)
 			return attempts, true
 		}
 
@@ -520,7 +521,7 @@ func (p *Proxy) tryDeployment(
 		fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
 		fullAttempts = append(fullAttempts, attempts...)
 		chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
-		wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, wire.RoutingMetadata{
+		result := wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, wire.RoutingMetadata{
 			Provider:             dep.App,
 			Deployment:           dep.Name,
 			Node:                 depNode,
@@ -537,6 +538,7 @@ func (p *Proxy) tryDeployment(
 		}, recorder, p.deps.Normalizers())
 		_ = resp.Body.Close()
 		cancel()
+		p.deps.EndBrokenStream(c.Writer, c.Request, result)
 		return attempts, true
 	}
 

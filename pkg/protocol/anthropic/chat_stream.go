@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // A Chat Completions stream chunk as the translation reads it.
@@ -327,4 +329,14 @@ func (s *ChatStream) raw(event string, data []byte) {
 		return
 	}
 	_, s.err = fmt.Fprintf(s.out, "event: %s\ndata: %s\n\n", event, data)
+}
+
+// Fail ends a translated relay using the same error frame as native Messages.
+func (s *ChatStream) Fail(e httperr.Error) {
+	if s.finished {
+		return
+	}
+	s.finished = true
+	s.buf = nil
+	s.err = writeStreamError(s.out, e)
 }

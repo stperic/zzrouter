@@ -33,6 +33,8 @@ func streamOutcomeCases() []struct {
 		{"anthropic", "event: message_stop\n\n", Completed},
 		{"anthropic_json", "data: {\"type\":\"message_stop\"}\n\n", Completed},
 		{"ollama", "{\"done\":true}\n", Completed},
+		{"ollama_pull", "{\"status\":\"success\"}\n", Completed},
+		{"ollama_progress", "{\"status\":\"pulling\"}\n", Truncated},
 		{"responses", "data: {\"type\":\"response.completed\"}\n\n", Completed},
 		{"responses_event", "event: response.completed\n\n", Completed},
 		{"responses_incomplete", "data: {\"type\":\"response.incomplete\"}\n\n", Completed},

@@ -186,7 +186,7 @@ func TestMessagesCompat_ErrorsSpeakAnthropic(t *testing.T) {
 	assert.True(t, strings.Contains(msg, "document"), msg)
 }
 
-// The fallback copy path synthesizes DONE on EOF; it must not hide truncation.
+// Fallback must report truncation before translation finalizes.
 func TestMessagesCompat_TruncatedFallbackStreamReturnsError(t *testing.T) {
 	backends := map[string]*serviceBackend{"mlxish": {wire: compatWire, status: http.StatusOK,
 		reply: `data: {"id":"cut","choices":[{"delta":{"content":"partial"}}]}` + "\n\n", contentType: "text/event-stream"}}
@@ -196,6 +196,8 @@ func TestMessagesCompat_TruncatedFallbackStreamReturnsError(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "event: error\n")
 	assert.NotContains(t, w.Body.String(), "event: message_stop\n")
 	assert.NotContains(t, w.Body.String(), `"stop_reason":"end_turn"`)
+	assert.Contains(t, w.Body.String(), "The upstream stream ended before completing.")
+	assert.Equal(t, 1, strings.Count(w.Body.String(), "event: error\n"))
 }
 
 // Claude Code sends its context as system turns inside messages, which

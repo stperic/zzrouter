@@ -4,11 +4,8 @@
 package server
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -250,82 +247,4 @@ func (s *Server) splitModelRef(modelName string) (identity, provider, node strin
 func (s *Server) modelIdentity(modelName string) string {
 	identity, _, _ := s.splitModelRef(modelName)
 	return identity
-}
-
-// streamResponseWithFlush streams response body with immediate flushing for real-time updates
-// This is the industry-standard approach for streaming responses:
-// - For NDJSON (Ollama API): Decodes and flushes each JSON object immediately
-// - For binary/unknown: Falls back to optimized io.Copy
-// - For non-flushing writers: Uses io.Copy (automatically optimized by Go runtime)
-func streamResponseWithFlush(w http.ResponseWriter, body io.Reader) error {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		// No flushing support - use standard io.Copy (highly optimized)
-		_, err := io.Copy(w, body)
-		return err
-	}
-
-	// Try to detect if this is NDJSON by reading first few bytes
-	// Most Ollama API responses are NDJSON (newline-delimited JSON)
-	buf := make([]byte, 1)
-	firstByte := make([]byte, 0, 1024)
-
-	// Peek at first character to detect JSON
-	n, err := body.Read(buf)
-	if err != nil && err != io.EOF {
-		return err
-	}
-	if n > 0 {
-		firstByte = append(firstByte, buf[0])
-
-		// If starts with '{', likely NDJSON - use line-by-line streaming
-		if buf[0] == '{' {
-			return streamNDJSON(w, flusher, io.MultiReader(bytes.NewReader(firstByte), body))
-		}
-	}
-
-	// Not JSON or unknown format - use io.Copy for maximum throughput
-	// io.Copy uses 32KB buffer and can leverage zero-copy optimizations
-	if len(firstByte) > 0 {
-		// Write the peeked byte first
-		if _, err := w.Write(firstByte); err != nil {
-			return err
-		}
-		flusher.Flush()
-	}
-
-	_, err = io.Copy(w, body)
-	return err
-}
-
-// streamNDJSON streams newline-delimited JSON with immediate flushing after each line
-// This is the correct approach for Ollama API streaming (deploy progress, chat tokens, etc.)
-// Each line is a complete JSON object that should be delivered immediately
-func streamNDJSON(w io.Writer, flusher http.Flusher, body io.Reader) error {
-	// Use bufio.Scanner to read line-by-line
-	// This is more efficient than manual buffering and handles line boundaries correctly
-	scanner := bufio.NewScanner(body)
-
-	// Increase buffer size for large JSON objects (default 64KB, max 1MB)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
-	for scanner.Scan() {
-		// Write the complete JSON line
-		line := scanner.Bytes()
-		if _, err := w.Write(line); err != nil {
-			return err
-		}
-
-		// Write the newline that scanner stripped
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return err
-		}
-
-		// Flush immediately so client receives this JSON object right away
-		// This is critical for real-time progress updates and chat streaming
-		flusher.Flush()
-	}
-
-	return scanner.Err()
 }

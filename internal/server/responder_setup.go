@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	anthropicproto "github.com/stperic/zzrouter/pkg/protocol/anthropic"
 	openaiproto "github.com/stperic/zzrouter/pkg/protocol/openai"
@@ -119,4 +120,22 @@ func writeJSONBody(w http.ResponseWriter, status int, contentType string, body a
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+func endBrokenStream(w http.ResponseWriter, req *http.Request, res wire.Result) {
+	e, failed := res.Failure()
+	if !failed {
+		return
+	}
+	ender, ok := w.(httperr.StreamEnder)
+	if !ok {
+		ender, ok = dialectOf(req).(httperr.StreamEnder)
+	}
+	if !ok {
+		panic(http.ErrAbortHandler)
+	}
+	if res.MidLine {
+		_, _ = w.Write([]byte("\n"))
+	}
+	ender.EndStream(w, e)
 }

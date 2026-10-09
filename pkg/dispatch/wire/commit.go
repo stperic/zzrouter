@@ -15,13 +15,13 @@ import (
 
 // Commit writes a previously-detached backend response to the client.
 // Used after proxy.ForwardDetached confirms a successful status code.
-func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
-	CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
+func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) Result {
+	return CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
 }
 
 // CommitWithRouting writes the response with routing metadata headers and optional in-body usage.
 // Metrics are captured before the response is shaped, so the ledger settles from the state it saw.
-func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
+func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) Result {
 	streaming := IsStreaming(resp)
 
 	if !streaming {
@@ -87,6 +87,7 @@ func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Re
 				}
 			}
 		}
+		return result
 	} else {
 		bodyBytes, err := io.ReadAll(resp.Body)
 		if err == nil && len(bodyBytes) > 0 {
@@ -101,6 +102,7 @@ func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Re
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(bodyBytes)
 	}
+	return Result{}
 }
 
 // MaybeInjectRoutingMetadata applies the canonical gate that decides

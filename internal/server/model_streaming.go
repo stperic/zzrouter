@@ -401,7 +401,8 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		servingNode = s.GetNodename()
 	}
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
-	copyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	endBrokenStream(w, req, result)
 }
 
 // capacityErrorMessage returns a standardized capacity error message for

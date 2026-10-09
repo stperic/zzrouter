@@ -17,6 +17,7 @@ type streamMeter struct {
 	done     bool
 	failed   bool
 	finished bool
+	midLine  bool
 	result   Result
 }
 
@@ -28,6 +29,9 @@ func (m *streamMeter) next(chunk []byte) []byte {
 
 func (m *streamMeter) tail() []byte {
 	frame := m.framer.flush()
+	if len(frame) > 0 {
+		m.midLine = frame[len(frame)-1] != '\n'
+	}
 	m.observe(frame)
 	return frame
 }
@@ -61,7 +65,7 @@ func (m *streamMeter) finish(readErr error, clientGone bool) Result {
 		return m.result
 	}
 	m.tail()
-	m.result = Result{Outcome: Truncated}
+	m.result = Result{Outcome: Truncated, MidLine: m.midLine}
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		m.result.Err = readErr
 	}

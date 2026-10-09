@@ -3,9 +3,12 @@ package server
 import (
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -483,32 +486,23 @@ func TestResponsesStreamWriter_MidStreamErrorChunk(t *testing.T) {
 	require.True(t, failedAt >= 0)
 	assert.False(t, strings.Contains(body[failedAt:], "response.output_text.delta"),
 		"no further deltas may emit after response.failed")
-	assert.True(t, strings.HasSuffix(body, "data: [DONE]\n\n"))
+	assert.NotContains(t, body, "[DONE]")
 }
 
-// TestResponsesStreamWriter_PartialFrameThenReconnect — a real client
-// disconnect between two halves of an SSE frame leaves the buffer with
-// a half-frame; Close must drain the partial without panic and emit
-// response.completed once the upstream has finished sending. The
-// trailing buffered data falls through `\n\n`-appended draining; if
-// the partial is incomplete JSON, handleChunk's json.Unmarshal is
-// expected to silently return.
+// A cut relay reports failure before Close can finalize buffered data.
 func TestResponsesStreamWriter_PartialFrameThenClose(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	sw := newResponsesStreamWriter(c.Writer, "m", nil)
-
-	// Send a complete frame, then a half frame, then Close (no [DONE]).
-	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}`+"\n\n")
-	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"con`)
-	// No second Write delivering the rest. Client gone.
+	resp := &http.Response{StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": {"text/event-stream"}},
+		Body:   io.NopCloser(strings.NewReader(`data: {"choices":[{"delta":{"content":"a"}}]}` + "\n\n" + `data: {"choices":[{"delta":{"con`))}
+	streamWithUsageInject(c.Request, sw, resp, NewResponseNormalizers(), "engine", wire.RoutingMetadata{}, nil)
 	sw.Close()
-
-	body := rec.Body.String()
-	assert.True(t, strings.Contains(body, "event: response.output_text.delta"),
-		"first complete frame must have produced a delta")
-	assert.True(t, strings.Contains(body, "event: response.completed"),
-		"Close must finalize even when upstream cut mid-frame")
+	assert.Contains(t, rec.Body.String(), "event: response.output_text.delta")
+	assert.Contains(t, rec.Body.String(), "event: response.failed")
+	assert.NotContains(t, rec.Body.String(), "event: response.completed")
 }
 
 func TestResponsesStreamWriter_ToolCallEmitsArguments(t *testing.T) {

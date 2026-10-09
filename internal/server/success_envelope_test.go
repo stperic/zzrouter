@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,7 +149,7 @@ func TestStreamWithUsageInject_NoInjectClosureWhenInjectUsageFalse(t *testing.T)
 
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "noinject")
-	streamWithUsageInject(context.Background(), w, resp, NewResponseNormalizers(), "noinject",
+	streamWithUsageInject(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil), w, resp, NewResponseNormalizers(), "noinject",
 		wire.RoutingMetadata{Provider: "noinject", InjectUsage: false}, recorder)
 
 	require.Equal(t, http.StatusOK, w.Code)

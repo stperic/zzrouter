@@ -1,18 +1,6 @@
-// Success-path response shaping shared by ProxyClient.ForwardToBackend
-// and Server.proxyToRemoteNode. Both sites buffer + optionally
-// normalize a 2xx body, inject the zzrouter routing-metadata block
-// (cost + timing + node + provider), and write the result with
-// correct framing. The streaming path mirrors that pattern with
-// per-chunk SSE-usage injection.
-//
-// proxyToOllamaProvider in ollama_helpers.go does NOT use these —
-// the Ollama-direct path doesn't inject routing metadata (the cost-
-// truth contract bypasses local-only providers) and falls back to
-// streamResponseWithFlush for streaming. Keep them separate.
 package server
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -62,7 +50,7 @@ func writeNormalizedBody(
 // stream transform: provider normalizer, usage injection, model restore, strip.
 // Stage order and its invariants live in wire.NewStreamTransform.
 func streamWithUsageInject(
-	ctx context.Context,
+	req *http.Request,
 	w http.ResponseWriter,
 	resp *http.Response,
 	normalizers *ResponseNormalizers,
@@ -71,6 +59,7 @@ func streamWithUsageInject(
 	recorder *llm.InferenceRecorder,
 ) {
 	w.WriteHeader(resp.StatusCode)
-	copyStream(ctx, w, resp.Body, recorder,
+	result := wire.CopyStream(req.Context(), w, resp.Body, recorder,
 		wire.NewStreamTransform(normalizers.Stream(provider), meta, recorder).Func())
+	endBrokenStream(w, req, result)
 }

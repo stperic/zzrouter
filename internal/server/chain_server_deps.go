@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
@@ -118,4 +119,8 @@ func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response
 
 func (d *chainServerDeps) FailureClassifier(app string) *httperr.Classifier {
 	return d.s.failureClassifier(app)
+}
+
+func (*chainServerDeps) EndBrokenStream(w http.ResponseWriter, req *http.Request, res wire.Result) {
+	endBrokenStream(w, req, res)
 }
