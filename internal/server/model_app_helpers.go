@@ -13,7 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
+	"time"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -192,7 +192,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	if err != nil {
 		if errors.Is(err, instance.ErrAtCapacity) {
 			failBeforeBackend(w, req, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
+				Message: capacityErrorMessage(inst), Code: "capacity_exceeded", RetryAfter: capacityRetryAfter})
 			return
 		}
 		slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
@@ -280,14 +280,14 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	}
 }
 
-// capacityRetryAfterSeconds is the Retry-After for a full instance: slots
+// capacityRetryAfter is the Retry-After for a full instance: slots
 // free as soon as an in-flight request finishes.
-const capacityRetryAfterSeconds = 5
+const capacityRetryAfter = 5 * time.Second
 
 // failBeforeBackend reports a failure that happens before any backend
 // byte. A streaming request whose dialect streams failures in band gets
 // it inside a fresh 200 stream (a bare status leaves OpenWebUI stuck);
-// everything else gets the status with the capacity retry delay.
+// everything else gets the status.
 func failBeforeBackend(w http.ResponseWriter, req *http.Request, e httperr.Error) {
 	d := dialectOf(req)
 	if streamer, inBand := d.(httperr.InBandStreamer); inBand && isStreamingRequest(req) {
@@ -295,7 +295,6 @@ func failBeforeBackend(w http.ResponseWriter, req *http.Request, e httperr.Error
 		streamer.StreamError(w, e)
 		return
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds))
 	d.WriteError(w, req, e)
 }
 

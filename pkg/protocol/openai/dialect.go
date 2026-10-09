@@ -15,6 +15,7 @@ import (
 
 // WriteError renders e as {"error":{...}} beside any e.Extra members.
 func (r *Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	if r.opaque {
 		w.WriteHeader(e.Status)
 		return

@@ -725,6 +725,10 @@ func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts 
 	}
 }
 
+// modelLoadingRetryAfter is how long to tell a caller to wait while an
+// on-demand model starts: a cold start takes tens of seconds.
+const modelLoadingRetryAfter = 60 * time.Second
+
 // writeExhaustedResponse writes a 503 when all deployments are exhausted.
 func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt) {
 	if len(attempts) > 0 {
@@ -747,14 +751,15 @@ func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempt
 
 	message := fmt.Sprintf("No available deployments for model %q. All backends are unavailable, in cooldown, or lack sufficient resources.", groupName)
 	code := "model_not_available"
+	var retryAfter time.Duration
 
 	if hasOnDemandPending {
 		message = fmt.Sprintf("Model %q is starting up. Please retry in a few seconds.", groupName)
 		code = "model_loading"
-		c.Header("Retry-After", "60")
+		retryAfter = modelLoadingRetryAfter
 	}
 
-	writeError(c, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Message: message, Code: code})
+	writeError(c, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Message: message, Code: code, RetryAfter: retryAfter})
 }
 
 // writeError writes e in the dialect of c's route group. Every routed

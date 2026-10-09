@@ -20,7 +20,7 @@ import (
 // as the status its SDK retries.
 func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 	capacity := httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-		Message: "instance at capacity", Code: "capacity_exceeded"}
+		Message: "instance at capacity", Code: "capacity_exceeded", RetryAfter: capacityRetryAfter}
 
 	streaming := func(path string) *http.Request {
 		req := httptest.NewRequest(http.MethodPost, path, nil)

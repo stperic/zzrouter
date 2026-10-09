@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -28,10 +29,10 @@ type loadFailure struct {
 	errType string // OpenAI error.type
 	code    string // machine-readable error.code
 	message string
-	// retryAfterSecs, when non-zero, is advertised as Retry-After. Set
+	// retryAfter, when positive, is advertised as Retry-After. Set
 	// only where retrying is genuinely the right move — a model still
 	// coming up, not one that cannot come up.
-	retryAfterSecs int
+	retryAfter time.Duration
 	// cause is the error this was built from, kept so the chain survives
 	// classification. Without it errors.Is against anything underneath
 	// (context.DeadlineExceeded, a transport error) silently stops
@@ -76,19 +77,19 @@ func newLoadFailure(executorStatus int, message string) *loadFailure {
 // retrying the one case where retrying works.
 func loadStillWarming(message string) *loadFailure {
 	return &loadFailure{
-		status:         http.StatusServiceUnavailable,
-		errType:        "api_error",
-		code:           "model_load_timeout",
-		message:        message,
-		retryAfterSecs: modelWarmupRetryAfterSecs,
+		status:     http.StatusServiceUnavailable,
+		errType:    "api_error",
+		code:       "model_load_timeout",
+		message:    message,
+		retryAfter: modelWarmupRetryAfter,
 	}
 }
 
-// modelWarmupRetryAfterSecs is how long to tell a caller to wait before
+// modelWarmupRetryAfter is how long to tell a caller to wait before
 // asking again for a model that is still coming up. Short enough that an
 // agent's retry lands near the moment the instance goes ready, long
 // enough not to invite a hot loop against a model that takes minutes.
-const modelWarmupRetryAfterSecs = 5
+const modelWarmupRetryAfter = 5 * time.Second
 
 // loadInternal is for states that mean zzRouter lost track of its own
 // instance — a genuine server fault, unlike the rest.

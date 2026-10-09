@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -80,12 +79,6 @@ func newResponderSet() *responderSet {
 		dispatcher: d,
 	}
 }
-
-// intSeconds renders a positive int as its decimal string form.
-// Shared between the three dialect responders for Retry-After
-// formatting. Kept in this file because it is the only spot where a
-// small numeric helper is used by more than one responder_*.go file.
-func intSeconds(n int) string { return strconv.Itoa(n) }
 
 func newOpenAIResponder() *openaiproto.Responder {
 	return openaiproto.New(

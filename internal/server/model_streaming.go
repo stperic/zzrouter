@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -181,18 +180,13 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		// label equal to the body's error.type on every branch.
 		*req = *proxy.SetErrorTypeOnRequest(req, lf.errType)
 		recordErrorOnContext(req.Context(), lf.code, lf.message)
-		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code}
+		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code, RetryAfter: lf.retryAfter}
 		if sseStarted {
 			// Already committed to 200: the error can only travel inside
 			// the stream. Same type/code/message as the header path, so a
 			// caller reading error.code gets one answer either way.
 			streamer.StreamError(w, failure)
 			return err
-		}
-		// Only meaningful on the header path: once the stream is
-		// committed there is no header left to set.
-		if lf.retryAfterSecs > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(lf.retryAfterSecs))
 		}
 		dialect.WriteError(w, req, failure)
 		return err

@@ -32,7 +32,7 @@ const idempotencyMaxBytes = 32 << 20
 const idempotencyMaxEntryBytes = 1 << 20
 
 // idempotencyStoreFullRetryAfter is short because in-flight entries complete within idempotencyWaitTimeout.
-const idempotencyStoreFullRetryAfter = "1"
+const idempotencyStoreFullRetryAfter = time.Second
 
 // idempotencySweepInterval releases expired replies within minutes without frequent wakeups.
 const idempotencySweepInterval = 5 * time.Minute
@@ -266,13 +266,13 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 
 		entry, first := s.acquire(key, bodyHash)
 		if entry == nil {
-			c.Header("Retry-After", idempotencyStoreFullRetryAfter)
 			respondSurfaceError(c, httperr.Error{
-				Status:  http.StatusServiceUnavailable,
-				Title:   "Idempotency Store Full",
-				Type:    "api_error",
-				Code:    string(openai.ErrorCodeIdempotencyStoreFull),
-				Message: "idempotency store is full with requests still in flight; retry shortly",
+				Status:     http.StatusServiceUnavailable,
+				Title:      "Idempotency Store Full",
+				Type:       "api_error",
+				Code:       string(openai.ErrorCodeIdempotencyStoreFull),
+				Message:    "idempotency store is full with requests still in flight; retry shortly",
+				RetryAfter: idempotencyStoreFullRetryAfter,
 			})
 			c.Abort()
 			return

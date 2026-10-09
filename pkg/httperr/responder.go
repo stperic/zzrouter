@@ -2,6 +2,8 @@ package httperr
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -143,6 +145,20 @@ type Error struct {
 	// the body, such as the zzrouter quota block. Clients ignore members
 	// they do not know.
 	Extra map[string]any
+	// RetryAfter, when positive, is sent as a Retry-After header in whole seconds, rounded up.
+	RetryAfter time.Duration
+}
+
+// SetRetryAfter writes d as a Retry-After header in whole seconds, rounded up; d <= 0 writes nothing.
+func SetRetryAfter(h http.Header, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	secs := d / time.Second
+	if d%time.Second != 0 {
+		secs++
+	}
+	h.Set("Retry-After", strconv.FormatInt(int64(secs), 10))
 }
 
 // Error returns the actionable message while retaining structured wire fields.

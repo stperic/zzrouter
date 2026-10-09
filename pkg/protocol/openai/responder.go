@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -169,9 +170,7 @@ func (r *Responder) RequestTooLarge(c *gin.Context, detail string) {
 // TooManyRequests implements httperr.Responder. Sets Retry-After as
 // delta-seconds when a positive value is provided.
 func (r *Responder) TooManyRequests(c *gin.Context, detail string, retryAfterSeconds int) {
-	if retryAfterSeconds > 0 {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
-	}
+	httperr.SetRetryAfter(c.Writer.Header(), time.Duration(retryAfterSeconds)*time.Second)
 	r.writeEnvelope(c, http.StatusTooManyRequests,
 		ErrorTypeRateLimit, ErrorCodeRateLimitExceeded, detail, "")
 }
