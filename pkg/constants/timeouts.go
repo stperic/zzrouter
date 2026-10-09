@@ -36,6 +36,12 @@ const (
 // --------------------------------------------------------------------------------------
 
 const (
+	// ClusterDialTimeout bounds unreachable peers without limiting generation time.
+	ClusterDialTimeout = 10 * time.Second
+
+	// ClusterTLSHandshakeTimeout bounds peers that connect but never finish mTLS.
+	ClusterTLSHandshakeTimeout = 10 * time.Second
+
 	// ClusterHealthCheckTimeout is for quick health checks during discovery
 	// Used for: Initial cluster node detection, fast-fail scenarios
 	ClusterHealthCheckTimeout = 2 * time.Second
@@ -272,6 +278,12 @@ const (
 // --------------------------------------------------------------------------------------
 
 const (
+	// DefaultFirstByteTimeout allows minutes of cold prefill for a large context.
+	DefaultFirstByteTimeout = 10 * time.Minute
+
+	// DefaultStreamIdleTimeout ends stalled engines while continuous token streams stay unbounded.
+	DefaultStreamIdleTimeout = 2 * time.Minute
+
 	// StreamingTimeout is for streaming operations
 	// Used for: SSE connections, log streaming
 	StreamingTimeout = 5 * time.Minute

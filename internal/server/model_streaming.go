@@ -5,15 +5,12 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,10 +20,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
-	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -182,18 +177,13 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		// label equal to the body's error.type on every branch.
 		*req = *proxy.SetErrorTypeOnRequest(req, lf.errType)
 		recordErrorOnContext(req.Context(), lf.code, lf.message)
-		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code}
+		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code, RetryAfter: lf.retryAfter}
 		if sseStarted {
 			// Already committed to 200: the error can only travel inside
 			// the stream. Same type/code/message as the header path, so a
 			// caller reading error.code gets one answer either way.
 			streamer.StreamError(w, failure)
 			return err
-		}
-		// Only meaningful on the header path: once the stream is
-		// committed there is no header left to set.
-		if lf.retryAfterSecs > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(lf.retryAfterSecs))
 		}
 		dialect.WriteError(w, req, failure)
 		return err
@@ -329,59 +319,30 @@ func getInstanceBackendNode(inst *instance.Instance) string {
 // stream through streamer. Only called from HandleLocalModel after the
 // SSE preamble, which only an in-band streamer opens.
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
-	// Concurrency gating: acquire a slot before streaming.
-	if err := inst.AcquireConcurrency(req.Context()); err != nil {
-		if errors.Is(err, instance.ErrAtCapacity) {
-			streamer.StreamError(w, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
+	lease, err := s.openInstance(req, inst)
+	if err != nil {
+		if failure, ok := renderAdmissionError(err); ok {
+			streamer.StreamError(w, failure)
 		}
-		// Context cancelled = client disconnected, nothing to write.
 		return
 	}
-	defer inst.ReleaseConcurrency()
-
-	// Only update activity for local instances, applying any per-request
-	// keep_alive override parsed at the handler edge (see
-	// CtxKeyRequestHints).
-	if getInstanceBackendNode(inst) == constants.Localhost {
-		ov, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-		_ = s.providers.appMgr.Instances().UpdateActivity(inst.ID, ov)
-	}
+	defer lease.Release()
 
 	body, answerAs := s.instanceRequest(req, inst)
-	rec, _ := req.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	rec := requestRecorder(req.Context(), model, inst.Provider)
 	rec.SetUpstreamRequestData(body)
 	backendNode := getInstanceBackendNode(inst)
 	rec.SetServer(backendNode, inst.Port)
-	backendURL := fmt.Sprintf("http://%s:%d%s", backendNode, inst.Port, req.URL.Path)
 
-	// In-flight saturation: cold-load streaming dispatches via
-	// httpStreamingClient.Do directly, not through proxyToInstance, so
-	// it needs its own Inc/Dec wrap. Without this, every cold-load
-	// streaming request would be invisible to saturation alerts.
-	model, _ := req.Context().Value(CtxKeyModel).(string)
 	inflightToken := proxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
 		inst.Provider, model, backendNode)
 	defer proxy.DecInflight(req.Context(), inflightToken)
 
-	// Create a streaming context derived from request context. This
-	// ensures the backend request is cancelled if the client disconnects
-	// but removes any timeout (streaming can run indefinitely).
-	streamCtx, cancel := context.WithCancel(req.Context())
-	defer cancel()
-
-	backendReq, _ := http.NewRequestWithContext(streamCtx, req.Method, backendURL, bytes.NewReader(body))
-	backendReq.Header = upstreamHeaders(req.Header, backend.Engine())
-	backendReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpStreamingClient.Do(backendReq)
+	resp, err := s.sendToInstance(req, lease, body)
 	if err != nil {
-		// Same cause the header path calls api_error/backend_unreachable
-		// (proxy_client.go): the backend was unreachable, which is upstream
-		// visible rather than a zzRouter fault.
-		streamer.StreamError(w, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-			Message: fmt.Sprintf("Backend error: %v", err), Code: "backend_unreachable"})
+		streamer.StreamError(w, instanceSendFailure(rec, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -403,11 +364,4 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
 	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 	endBrokenStream(w, req, result)
-}
-
-// capacityErrorMessage returns a standardized capacity error message for
-// a given instance.
-func capacityErrorMessage(inst *instance.Instance) string {
-	return fmt.Sprintf("This model's provider (%s) is at capacity (%d concurrent). Please retry shortly.",
-		inst.Provider, inst.ConcurrencyLimit())
 }

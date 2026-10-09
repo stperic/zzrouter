@@ -1,72 +1,54 @@
 package fallback
 
 import (
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
+	"net/http"
+	"os"
 	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestIsRetriable_HTTPStatus(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		want       bool
-	}{
-		{"429 rate limit", 429, true},
-		{"402 quota", 402, true},
-		{"503 unavailable", 503, true},
-		{"504 timeout", 504, true},
-		{"400 bad request", 400, false},
-		{"401 unauthorized", 401, false},
-		{"403 forbidden", 403, false},
-		{"404 not found", 404, false},
-		{"422 unprocessable", 422, false},
-		{"200 success", 200, false},
-		{"500 internal error", 500, false},
-		{"502 bad gateway", 502, false},
+func TestReplaySafeClassification(t *testing.T) {
+	type testCase struct {
+		name, method  string
+		err           error
+		status        int
+		written, want bool
 	}
-
+	tests := []testCase{
+		{"dial refused", "POST", &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}, 0, false, true},
+		{"DNS", "POST", &net.DNSError{Err: "no such host", Name: "missing.test"}, 0, false, true},
+		{"TLS handshake", "POST", tls.RecordHeaderError{Msg: "invalid TLS header"}, 0, false, true},
+		{"unreachable", "POST", fmt.Errorf("wrapped: %w", ErrUnreachable), 0, true, true},
+		{"reset written", "POST", syscall.ECONNRESET, 0, true, false},
+		{"read OpError written", "POST", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, 0, true, false},
+		{"pipe written", "POST", syscall.EPIPE, 0, true, false},
+		{"write OpError written", "POST", &net.OpError{Op: "write", Err: syscall.EPIPE}, 0, true, false},
+		{"timeout written", "POST", os.ErrDeadlineExceeded, 0, true, false},
+		{"429", "POST", nil, 429, true, true},
+		{"402", "POST", nil, 402, true, true},
+		{"503", "POST", nil, 503, true, true},
+		{"504", "POST", nil, 504, true, false},
+		{"GET reset", "GET", &net.OpError{Op: "read", Err: syscall.ECONNRESET}, 0, true, true},
+		{"GET timeout", "GET", os.ErrDeadlineExceeded, 0, true, true},
+		{"any error unwritten", "POST", errors.New("request preparation failed"), 0, false, true},
+		{"error precedes status", "POST", syscall.ECONNRESET, 429, true, false},
+		{"unknown written", "POST", errors.New("unknown failure"), 0, true, false},
+	}
+	for _, status := range []int{200, 400, 401, 403, 404, 422, 500, 502} {
+		tests = append(tests, testCase{fmt.Sprint(status), "POST", nil, status, true, false})
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete} {
+		tests = append(tests, testCase{method + " 504", method, nil, 504, true, true})
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := IsRetriable(tt.statusCode, nil)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.want, ReplaySafe(tt.method, tt.err, tt.status, tt.written))
 		})
 	}
-}
-
-func TestIsRetriable_TransportErrors(t *testing.T) {
-	t.Run("connection refused", func(t *testing.T) {
-		err := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
-		assert.True(t, IsRetriable(0, err))
-	})
-
-	t.Run("DNS error", func(t *testing.T) {
-		err := &net.DNSError{Err: "no such host", Name: "example.com"}
-		assert.True(t, IsRetriable(0, err))
-	})
-
-	t.Run("connection reset", func(t *testing.T) {
-		assert.True(t, IsRetriable(0, syscall.ECONNRESET))
-	})
-
-	t.Run("broken pipe", func(t *testing.T) {
-		assert.True(t, IsRetriable(0, syscall.EPIPE))
-	})
-
-	t.Run("nil error", func(t *testing.T) {
-		assert.False(t, IsRetriable(200, nil))
-	})
-
-	t.Run("generic error is not retriable", func(t *testing.T) {
-		assert.False(t, IsRetriable(0, errors.New("something else")))
-	})
-}
-
-func TestIsRetriable_ErrorTakesPrecedence(t *testing.T) {
-	// When there's a transport error, it's retriable regardless of status code
-	err := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
-	assert.True(t, IsRetriable(400, err))
 }

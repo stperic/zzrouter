@@ -40,12 +40,12 @@ func (m *streamMeter) observe(frame []byte) {
 	if m.finished || len(frame) == 0 {
 		return
 	}
-	if !m.first {
-		m.recorder.RecordFirstToken()
-		m.first = true
-	}
 	usageSeen := false
 	for line := range bytes.SplitSeq(frame, []byte("\n")) {
+		if !m.first && contentBearing(line) {
+			m.recorder.RecordFirstToken()
+			m.first = true
+		}
 		done, failed := terminal(line)
 		m.done = m.done || done
 		m.failed = m.failed || failed

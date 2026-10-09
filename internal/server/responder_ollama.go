@@ -12,6 +12,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -54,9 +55,7 @@ func (*ollamaResponder) RequestTooLarge(c *gin.Context, detail string) {
 }
 
 func (*ollamaResponder) TooManyRequests(c *gin.Context, detail string, retryAfterSeconds int) {
-	if retryAfterSeconds > 0 {
-		c.Header("Retry-After", intSeconds(retryAfterSeconds))
-	}
+	httperr.SetRetryAfter(c.Writer.Header(), time.Duration(retryAfterSeconds)*time.Second)
 	OllamaError(c, http.StatusTooManyRequests, detail)
 }
 
@@ -83,6 +82,7 @@ func (*ollamaResponder) GatewayTimeout(c *gin.Context, _ string) {
 
 // WriteError renders the flat shape with an optional machine code.
 func (*ollamaResponder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	writeJSONBody(w, e.Status, "application/json", flatError(e))
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net"
 	"net/url"
@@ -142,9 +141,12 @@ type Instance struct {
 
 	// Concurrency semaphore: nil = unlimited, buffered chan = gated.
 	// Initialized at most once via InitConcurrencyLimit (guarded by concurrencyOnce).
-	concurrencyOnce sync.Once     `json:"-"`
-	concurrencySem  chan struct{} `json:"-"`
-	queueTimeout    time.Duration `json:"-"`
+	concurrencyOnce   sync.Once     `json:"-"`
+	concurrencySem    chan struct{} `json:"-"`
+	queueTimeout      time.Duration `json:"-"`
+	queueMu           sync.Mutex    `json:"-"`
+	waiters           int           `json:"-"`
+	maxQueuedRequests int           `json:"-"`
 
 	// IdleExpiry receives the instance ID when the keep-alive timer fires.
 	// The manager listens on this to auto-stop idle instances.
@@ -573,16 +575,6 @@ func (i *Instance) resetKeepAliveTimerLocked() {
 
 // --- Active request tracking (atomic) ---
 
-// IncrementActiveRequests atomically increments the active request counter.
-func (i *Instance) IncrementActiveRequests() int64 {
-	return atomic.AddInt64(&i.activeRequests, 1)
-}
-
-// DecrementActiveRequests atomically decrements the active request counter.
-func (i *Instance) DecrementActiveRequests() int64 {
-	return atomic.AddInt64(&i.activeRequests, -1)
-}
-
 // GetActiveRequests returns the current number of active requests.
 func (i *Instance) GetActiveRequests() int64 {
 	return atomic.LoadInt64(&i.activeRequests)
@@ -590,77 +582,24 @@ func (i *Instance) GetActiveRequests() int64 {
 
 // --- Concurrency gating ---
 
-// InitConcurrencyLimit initializes the per-instance concurrency semaphore.
-// max <= 0 means unlimited (no gating). A negative queueTimeout
-// (constants.QueueUntilCallerDeadline) queues for as long as the caller
-// waits. Thread-safe; subsequent calls are no-ops.
-func (i *Instance) InitConcurrencyLimit(max int, queueTimeout time.Duration) {
-	if max <= 0 {
+// ConcurrencyConfig is an instance's admission policy. A zero MaxConcurrentRequests means
+// unlimited; a negative QueueTimeout waits as long as the caller does.
+type ConcurrencyConfig struct {
+	MaxConcurrentRequests int
+	MaxQueuedRequests     int // 0 = never queue: refuse whenever no slot is free
+	QueueTimeout          time.Duration
+}
+
+// InitConcurrencyLimit sets the admission policy once; later calls are no-ops.
+func (i *Instance) InitConcurrencyLimit(cfg ConcurrencyConfig) {
+	if cfg.MaxConcurrentRequests <= 0 {
 		return
 	}
 	i.concurrencyOnce.Do(func() {
-		i.concurrencySem = make(chan struct{}, max)
-		i.queueTimeout = queueTimeout
+		i.concurrencySem = make(chan struct{}, cfg.MaxConcurrentRequests)
+		i.queueTimeout = cfg.QueueTimeout
+		i.maxQueuedRequests = cfg.MaxQueuedRequests
 	})
-}
-
-// AcquireConcurrency blocks until a concurrency slot is available, the context
-// is cancelled, or the queue timeout expires. Returns nil on success.
-// If the semaphore is nil (unlimited), returns immediately.
-// On success, also increments the active request counter.
-func (i *Instance) AcquireConcurrency(ctx context.Context) error {
-	if i.concurrencySem == nil {
-		i.IncrementActiveRequests()
-		return nil
-	}
-	// Fast path: try non-blocking acquire first (avoids timer allocation)
-	select {
-	case i.concurrencySem <- struct{}{}:
-		i.IncrementActiveRequests()
-		return nil
-	default:
-	}
-	// No slot available. A zero timeout rejects at the door; a negative one
-	// holds the caller until its own context ends, which is the only bound
-	// that matches what the caller will actually sit through.
-	if i.queueTimeout == 0 {
-		return ErrAtCapacity
-	}
-	if i.queueTimeout < 0 {
-		select {
-		case i.concurrencySem <- struct{}{}:
-			i.IncrementActiveRequests()
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	timer := time.NewTimer(i.queueTimeout)
-	defer timer.Stop()
-	select {
-	case i.concurrencySem <- struct{}{}:
-		i.IncrementActiveRequests()
-		return nil
-	case <-timer.C:
-		return ErrAtCapacity
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// ReleaseConcurrency releases a concurrency slot and decrements the active
-// request counter. Must be called exactly once for each successful AcquireConcurrency.
-func (i *Instance) ReleaseConcurrency() {
-	if n := i.DecrementActiveRequests(); n < 0 {
-		// Self-heal + log: a mismatched release is a programming error that
-		// should not cause the idle reaper to see negative counts.
-		atomic.StoreInt64(&i.activeRequests, 0)
-		slog.Warn("ReleaseConcurrency called without matching Acquire", "instance", i.ID, "corrected_from", n)
-	}
-	if i.concurrencySem == nil {
-		return
-	}
-	<-i.concurrencySem
 }
 
 // ConcurrencyLimit returns the max concurrent requests (0 = unlimited).

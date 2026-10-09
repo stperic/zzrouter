@@ -102,7 +102,7 @@ func TestClassifyLoadFailure(t *testing.T) {
 // Retrying is only advertised where it can work: a model still coming
 // up says come back, a model that cannot load says nothing of the kind.
 func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
-	assert.Positive(t, classifyLoadFailure(loadStillWarming("warming")).retryAfterSecs,
+	assert.Positive(t, classifyLoadFailure(loadStillWarming("warming")).retryAfter,
 		"a still-loading model must tell the caller to come back")
 
 	for name, err := range map[string]error{
@@ -111,7 +111,7 @@ func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
 		"our own fault": loadInternal("instance disappeared"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Zero(t, classifyLoadFailure(err).retryAfterSecs,
+			assert.Zero(t, classifyLoadFailure(err).retryAfter,
 				"retrying this cannot succeed, so do not invite it")
 		})
 	}
@@ -196,7 +196,7 @@ func TestClassifyLoadFailureEngineClass(t *testing.T) {
 			assert.Equal(t, want.Status, failure.status)
 			assert.Equal(t, want.Code, failure.code)
 			assert.Equal(t, want.Message, failure.message)
-			assert.Zero(t, failure.retryAfterSecs)
+			assert.Zero(t, failure.retryAfter)
 			assert.ErrorIs(t, failure, wrapped)
 		}
 	}

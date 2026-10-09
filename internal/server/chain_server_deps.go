@@ -14,7 +14,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
-	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -73,6 +72,7 @@ func (d *chainServerDeps) InjectUsageMetadata() bool {
 
 // ===== Runtime =====
 
+// ProxyForwardDetached preserves the send error and its request-write evidence.
 func (d *chainServerDeps) ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
 	return d.s.proxy.ForwardDetached(ctx, method, url, headers, up, body)
 }
@@ -94,24 +94,37 @@ func (d *chainServerDeps) AppInstance(model string) (*instance.Instance, bool) {
 	return d.s.providers.appMgr.GetInstanceByModel(model)
 }
 
-func (d *chainServerDeps) InstanceRequest(req *http.Request, inst *instance.Instance, body []byte) []byte {
+func (d *chainServerDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	return d.s.openInstance(req, inst)
+}
+
+func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte {
 	req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
-	prepared, _ := d.s.instanceRequest(req, inst)
+	prepared, _ := d.s.instanceRequest(req, lease.Instance())
 	return prepared
 }
 
-func (d *chainServerDeps) NewLoadExecutor() chain.LoadExecutor {
-	// Each call returns a fresh adapter closure. The underlying Server-
-	// side LoadExecutor is constructed per call to match the pre-
-	// extraction behaviour of fallback_proxy's startModelAsync.
-	return func(ctx context.Context, model, provider string) error {
-		exec := d.s.newLoadExecutor()
-		_, err := exec.LoadLocalModel(ctx, &LoadModelRequest{
-			ModelName: model,
-			Provider:  provider,
-		})
+func (d *chainServerDeps) StartOnDemand(model, provider string) error {
+	ctx := context.Background()
+	prepared, response, err := d.s.newLoadExecutor().prepareLocalLoad(ctx, &LoadModelRequest{ModelName: model, Provider: provider})
+	if err != nil {
 		return err
 	}
+	if response != nil {
+		if response.InstanceID != "" && response.StatusCode == http.StatusConflict {
+			return nil
+		}
+		message := response.Error
+		if response.Details != "" {
+			message += ": " + response.Details
+		}
+		return newLoadFailure(response.StatusCode, message)
+	}
+	result, err := d.s.buildInstanceConfig(ctx, prepared.requestedModel, prepared.Provider, prepared.Endpoint, prepared.Parameters, prepared.Environment)
+	if err != nil {
+		return err
+	}
+	return d.s.providers.appMgr.StartOnDemandAsync(result.LaunchReq)
 }
 
 func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response) {

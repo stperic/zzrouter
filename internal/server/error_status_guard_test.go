@@ -1,15 +1,22 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // sentinelStatus is the decision record: every error prov_apps exports
@@ -99,5 +106,23 @@ func TestProviderSentinels_EveryExportedErrorHasARow(t *testing.T) {
 		if !declared[name] {
 			t.Errorf("sentinelStatus names prov_apps.%s, which %s no longer declares", name, errorsFile)
 		}
+	}
+}
+
+func TestAdmissionStatusGuard(t *testing.T) {
+	for _, reason := range []error{instance.ErrQueueFull, instance.ErrQueueWaitExpired} {
+		admission := &instance.AdmissionError{Reason: reason, RetryAfter: 1500 * time.Millisecond}
+		failure, ok := renderAdmissionError(fmt.Errorf("wrapped: %w", admission))
+		require.True(t, ok)
+		assert.Equal(t, http.StatusServiceUnavailable, failure.Status)
+		assert.Equal(t, admission.RetryAfter, failure.RetryAfter)
+		w := httptest.NewRecorder()
+		req := routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+		failBeforeBackend(w, req, failure)
+		assert.Equal(t, "2", w.Header().Get("Retry-After"))
+	}
+	for _, err := range []error{context.Canceled, context.DeadlineExceeded, instance.ErrAtCapacity} {
+		_, ok := renderAdmissionError(err)
+		assert.False(t, ok)
 	}
 }

@@ -18,6 +18,7 @@ const (
 
 // LaunchRequest contains the parameters needed to launch a provider instance.
 type LaunchRequest struct {
+	requestedModel   string
 	installSmoke     bool
 	selectedRuntime  string
 	Runtime          string

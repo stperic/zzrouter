@@ -15,15 +15,16 @@ type DeploymentStrategy interface {
 
 // Candidate carries deployment info plus runtime metadata needed for selection.
 type Candidate struct {
-	Name       string
-	Model      string
-	App        string
-	Node       string
-	Priority   int
-	Timeout    time.Duration
-	OnDemand   bool
-	Tags       []string
-	MaxRetries int
+	Name     string
+	Model    string
+	App      string
+	Node     string
+	Priority int
+	Timeout  time.Duration
+	OnDemand bool
+	Tags     []string
+	// MaxRetries is nil when unset (DefaultMaxRetries applies); 0 means no retry.
+	MaxRetries *int
 }
 
 // StrategyRegistry maps strategy names to implementations.

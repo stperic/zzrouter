@@ -8,6 +8,8 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeCapacityExceeded":          "capacity_exceeded",
+		"CodeQueueWaitExpired":          "queue_wait_expired",
 		"CodeReleaseManifestMissing":    "release_manifest_missing",
 		"CodeProtocolCutoverRequired":   "protocol_cutover_required",
 		"CodeJobNotFound":               "job_not_found",

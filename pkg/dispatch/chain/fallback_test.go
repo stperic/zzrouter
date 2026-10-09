@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"testing/synctest"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -42,8 +46,9 @@ func init() {
 // ProxyForwardDetached + Backend. Everything else returns
 // defaults safe for the tests below.
 type fakeDeps struct {
-	classifier *httperr.Classifier
-	nodeName   string
+	classifier  *httperr.Classifier
+	nodeName    string
+	nodeMetrics map[string]*mesh.ResourceMetrics
 
 	// forward maps targetURL → canned response. Missing key returns a 404.
 	forward map[string]func() (*http.Response, error)
@@ -61,13 +66,15 @@ type fakeDeps struct {
 	// Counters (atomic, in case the code ever parallelizes retries).
 	forwardCalls        atomic.Int32
 	trackRateLimitCalls atomic.Int32
-	loadExecutorCalls   atomic.Int32
+	onDemandStartCalls  atomic.Int32
 	injectUsageMetadata bool
+	onDemandErrors      map[string]error
 
 	// requestDefaults maps model → request defaults; forwarded records
 	// the last body sent.
-	requestDefaults map[string]map[string]any
-	forwarded       []byte
+	requestDefaults  map[string]map[string]any
+	forwarded        []byte
+	forwardedContext context.Context
 	// forwardedTo records the upstream of each forward, in order.
 	forwardedTo []backend.Upstream
 }
@@ -85,8 +92,8 @@ func newFakeDeps() *fakeDeps {
 func (f *fakeDeps) NodeName() string                              { return f.nodeName }
 func (f *fakeDeps) IsLocalNode(node string) bool                  { return node == f.nodeName }
 func (f *fakeDeps) ClusterURL(node string) string                 { return f.clusterURLs[node] }
-func (f *fakeDeps) NodeMetrics(node string) *mesh.ResourceMetrics { return nil }
-func (f *fakeDeps) NodeCacheReady() bool                          { return false }
+func (f *fakeDeps) NodeMetrics(node string) *mesh.ResourceMetrics { return f.nodeMetrics[node] }
+func (f *fakeDeps) NodeCacheReady() bool                          { return f.nodeMetrics != nil }
 
 // ===== ProviderConfig =====
 
@@ -107,9 +114,15 @@ func (f *fakeDeps) RequestDefaults(_, model, _ string) map[string]any {
 func (f *fakeDeps) ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
 	f.forwardCalls.Add(1)
 	f.forwarded = body
+	f.forwardedContext = ctx
 	f.forwardedTo = append(f.forwardedTo, up)
 	if fn, ok := f.forward[url]; ok {
-		return fn()
+		resp, err := fn()
+		var sendErr *pfallback.RequestError
+		if err != nil && !errors.As(err, &sendErr) {
+			err = &pfallback.RequestError{Err: err, WroteRequest: true}
+		}
+		return resp, err
 	}
 	return &http.Response{
 		StatusCode: http.StatusNotFound,
@@ -139,18 +152,21 @@ func (f *fakeDeps) ValidateModel(_ context.Context, model string) error {
 	return f.validationErrors[model]
 }
 
-func (f *fakeDeps) InstanceRequest(_ *http.Request, inst *instance.Instance, body []byte) []byte {
+func (f *fakeDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	return inst.Acquire(req.Context(), nil)
+}
+
+func (f *fakeDeps) InstanceBody(_ *http.Request, lease *instance.Lease, body []byte) []byte {
+	inst := lease.Instance()
 	if inst.WireModel != "" {
 		return wire.SetModelIfPresent(body, inst.WireModel)
 	}
 	return body
 }
 
-func (f *fakeDeps) NewLoadExecutor() LoadExecutor {
-	return func(ctx context.Context, model, provider string) error {
-		f.loadExecutorCalls.Add(1)
-		return nil
-	}
+func (f *fakeDeps) StartOnDemand(model, provider string) error {
+	f.onDemandStartCalls.Add(1)
+	return f.onDemandErrors[provider]
 }
 
 func (f *fakeDeps) TrackProviderRateLimit(app string, resp *http.Response) {
@@ -247,10 +263,6 @@ func TestProxyWithFallback_ExhaustedWithNoCandidates(t *testing.T) {
 		"no candidates means no forwards should have been attempted")
 }
 
-// TestProxyWithFallback_ExhaustedOnDemandPending verifies that when
-// every candidate is on-demand and not running, the response carries
-// the model_loading code + Retry-After header, and NewLoadExecutor
-// fired for each skipped candidate.
 func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 	deps := newFakeDeps()
 	p := newProxyWithFake(deps)
@@ -275,10 +287,7 @@ func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "model_loading", errObj["code"])
 	assert.Equal(t, "60", w.Header().Get("Retry-After"))
-	// NewLoadExecutor was invoked once per skipped candidate via
-	// startModelAsync. It's spawned as a goroutine so we can't deterministically
-	// observe it in the hot path; asserting >= 0 here is a no-op, but the
-	// existence of the call-path is gated by the forwardCalls == 0 check.
+	assert.Equal(t, int32(1), deps.onDemandStartCalls.Load())
 	assert.Equal(t, int32(0), deps.forwardCalls.Load(),
 		"on-demand-only candidates should not be forwarded, only skipped")
 }
@@ -353,8 +362,8 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 		GroupName:    "group-q",
 		Strategy:     "priority",
 		Candidates: []pfallback.Candidate{
-			{Name: "dep-a", App: "provider-a", Model: "m", MaxRetries: 0},
-			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: 0},
+			{Name: "dep-a", App: "provider-a", Model: "m"},
+			{Name: "dep-b", App: "provider-b", Model: "m"},
 		},
 	}
 
@@ -363,9 +372,8 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected fallback to second deployment to succeed; body=%s", w.Body.String())
 
-	// With MaxRetries=0 the zero-value triggers DefaultMaxRetries=1 inside
-	// tryDeployment (chain/fallback.go:147-148), so dep-a is hit twice
-	// (retry=0, retry=1, both 429) before falling to dep-b. Total
+	// MaxRetries unset means DefaultMaxRetries=1, so dep-a is hit twice
+	// (first attempt and one retry, both 429) before falling to dep-b. Total
 	// ProxyForwardDetached calls: 2 on dep-a + 1 on dep-b = 3.
 	assert.Equal(t, int32(3), deps.forwardCalls.Load())
 	// TrackProviderRateLimit fires on every response (retriable or
@@ -375,6 +383,61 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 	// Success commit carries the winning provider header.
 	assert.Equal(t, "provider-b", w.Header().Get("X-zzrouter-Provider"))
 }
+
+// proxyTwoRetriable runs a two-deployment group where both deployments answer
+// 429 and returns how many times each upstream URL was forwarded to.
+func proxyTwoRetriable(t *testing.T, first, second *int) map[string]int {
+	t.Helper()
+	urlA := "http://10.0.0.1:9000/v1/chat/completions"
+	urlB := "http://10.0.0.2:9000/v1/chat/completions"
+
+	deps := newFakeDeps()
+	deps.endpoints["provider-a"] = "http://10.0.0.1:9000"
+	deps.endpoints["provider-b"] = "http://10.0.0.2:9000"
+	counts := map[string]int{}
+	for _, u := range []string{urlA, urlB} {
+		deps.forward[u] = func() (*http.Response, error) {
+			counts[u]++
+			return cannedJSON(http.StatusTooManyRequests, `{"error":"rate limited"}`), nil
+		}
+	}
+
+	p := newProxyWithFake(deps)
+	c, _ := buildGinCtx(t, `{"model":"group-r","stream":false}`)
+	rec := llm.NewInferenceRecorder(c.Request.Context(), "group-r", "")
+	resolved := &resolver.Resolved{
+		OriginalName: "group-r",
+		GroupName:    "group-r",
+		Strategy:     "priority",
+		Candidates: []pfallback.Candidate{
+			{Name: "dep-a", App: "provider-a", Model: "m", MaxRetries: first},
+			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: second},
+		},
+	}
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-r"}`), rec, "group-r", false)
+	return counts
+}
+
+// TestZeroMaxRetriesIsHonoured: an explicit max_retries 0 means no retry,
+// so each deployment is tried exactly once.
+func TestZeroMaxRetriesIsHonoured(t *testing.T) {
+	counts := proxyTwoRetriable(t, intPtr(0), intPtr(0))
+
+	assert.Equal(t, 1, counts["http://10.0.0.1:9000/v1/chat/completions"], "dep-a tried once")
+	assert.Equal(t, 1, counts["http://10.0.0.2:9000/v1/chat/completions"], "dep-b tried once")
+}
+
+// TestUnsetMaxRetriesUsesDefault: an unset max_retries (nil) gets
+// DefaultMaxRetries retries on top of the first attempt.
+func TestUnsetMaxRetriesUsesDefault(t *testing.T) {
+	counts := proxyTwoRetriable(t, nil, nil)
+
+	want := 1 + pfallback.DefaultMaxRetries
+	assert.Equal(t, want, counts["http://10.0.0.1:9000/v1/chat/completions"], "dep-a tried 1+default times")
+	assert.Equal(t, want, counts["http://10.0.0.2:9000/v1/chat/completions"], "dep-b tried 1+default times")
+}
+
+func intPtr(n int) *int { return &n }
 
 func TestBuildRouteWireFields_SplitsAttemptsByOutcome(t *testing.T) {
 	attempts := []pfallback.Attempt{
@@ -562,7 +625,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 			assert.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 			assert.Zero(t, deps.forwardCalls.Load())
-			assert.Zero(t, deps.loadExecutorCalls.Load())
+			assert.Zero(t, deps.onDemandStartCalls.Load())
 
 			// The reserved name cannot poison an otherwise usable group.
 			deps.endpoints["ollama"] = "http://safe"
@@ -575,7 +638,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", false)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, int32(1), deps.forwardCalls.Load(), "only the safe replica received a request")
-			assert.Zero(t, deps.loadExecutorCalls.Load())
+			assert.Zero(t, deps.onDemandStartCalls.Load())
 		})
 	}
 }
@@ -628,4 +691,102 @@ func (r chainCutBody) Read(p []byte) (int, error) {
 
 func (*fakeDeps) BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte {
 	return func(body []byte) []byte { return wire.MaybeInjectRoutingMetadata(body, meta, recorder) }
+}
+
+func TestProxyWithFallback_DialFailureRetriesAndCoolsDown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deps := newFakeDeps()
+		deps.endpoints["failed"] = "http://failed.test"
+		deps.endpoints["next"] = "http://next.test"
+		deps.forward["http://failed.test/v1/chat/completions"] = func() (*http.Response, error) {
+			return nil, &pfallback.RequestError{Err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}}
+		}
+		deps.forward["http://next.test/v1/chat/completions"] = func() (*http.Response, error) {
+			return cannedJSON(http.StatusOK, `{"choices":[]}`), nil
+		}
+		c, w := buildGinCtx(t, `{"model":"group"}`)
+		p := newProxyWithFake(deps)
+		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
+			{Name: "failed", App: "failed", Model: "m", MaxRetries: intPtr(1)},
+			{Name: "next", App: "next", Model: "m"},
+		}), []byte(`{"model":"group"}`), nil, "group", false)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.EqualValues(t, 3, deps.forwardCalls.Load())
+		assert.True(t, p.cooldowns.InCooldown("failed"))
+		assert.True(t, p.providerCooldowns.InCooldown("failed"))
+	})
+}
+
+func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
+	for _, status := range []int{0, http.StatusGatewayTimeout} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			deps := newFakeDeps()
+			deps.endpoints["failed"] = "http://failed.test"
+			deps.forward["http://failed.test/v1/chat/completions"] = func() (*http.Response, error) {
+				if status != 0 {
+					return cannedJSON(status, `{"error":{"message":"timeout"}}`), nil
+				}
+				return nil, &net.OpError{Op: "read", Err: syscall.ECONNRESET}
+			}
+			c, w := buildGinCtx(t, `{"model":"group"}`)
+			p := newProxyWithFake(deps)
+			p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
+				{Name: "failed", App: "failed", Model: "m"},
+				{Name: "next", App: "failed", Model: "m"},
+			}), []byte(`{"model":"group"}`), nil, "group", false)
+			want := status
+			if want == 0 {
+				want = http.StatusBadGateway
+				assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
+			}
+			assert.Equal(t, want, w.Code)
+			assert.EqualValues(t, 1, deps.forwardCalls.Load())
+			assert.True(t, p.cooldowns.InCooldown("failed"), "not replayed, but the replica failed after the request left")
+			assert.True(t, p.providerCooldowns.InCooldown("failed"))
+		})
+	}
+}
+
+// Replicas of one group can serve different models; each is sized by its own, not by the first.
+func TestFilterByMemorySizesEachReplicaByItsOwnModel(t *testing.T) {
+	deps := newFakeDeps()
+	deps.nodeMetrics = map[string]*mesh.ResourceMetrics{"small-gpu": {GPUMemoryFreeMB: 8 << 10}, "big-gpu": {GPUMemoryFreeMB: 8 << 10}}
+	p := newProxyWithFake(deps)
+	candidates := []pfallback.Candidate{
+		{Name: "large", App: "vllm", Model: "meta-llama/Llama-3.1-70B-Instruct", Node: "big-gpu"},
+		{Name: "small", App: "vllm", Model: "Qwen/Qwen2.5-0.5B-Instruct", Node: "small-gpu"},
+	}
+
+	kept := p.filterByMemory(candidates)
+
+	require.Len(t, kept, 1)
+	assert.Equal(t, "small", kept[0].Name, "the 70B replica does not fit 8 GiB; the 0.5B one does")
+}
+
+func TestChainOnDemandRefusalCarriesCause(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			deps := newFakeDeps()
+			deps.onDemandErrors = map[string]error{"disabled": errors.New("provider not enabled: disabled")}
+			p := newProxyWithFake(deps)
+			c, w := buildGinCtx(t, `{"model":"group"}`)
+			candidates := []pfallback.Candidate{{Name: "refused", Model: "m", App: "disabled", OnDemand: true}}
+			if pending {
+				candidates = append(candidates, pfallback.Candidate{Name: "pending", Model: "m", App: "enabled", OnDemand: true})
+			}
+			_, attempts := p.separateOnDemand(candidates)
+			assert.ErrorIs(t, attempts[0].Err, deps.onDemandErrors["disabled"])
+			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: candidates}
+			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			require.Equal(t, http.StatusServiceUnavailable, w.Code)
+			if pending {
+				assert.Contains(t, w.Body.String(), `"code":"model_loading"`)
+				assert.Equal(t, "60", w.Header().Get("Retry-After"))
+			} else {
+				assert.Contains(t, w.Body.String(), "provider not enabled: disabled")
+				assert.Contains(t, w.Body.String(), `"code":"model_not_available"`)
+				assert.Empty(t, w.Header().Get("Retry-After"))
+			}
+		})
+	}
 }

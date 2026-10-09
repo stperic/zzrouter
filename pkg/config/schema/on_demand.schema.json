@@ -198,6 +198,7 @@
           "minimum": 0
         },
         "queue_timeout": {
+          "description": "Slot wait duration; absent uses 30s, 0s fails fast, caller waits until the caller context ends.",
           "type": "string"
         },
         "execution": {

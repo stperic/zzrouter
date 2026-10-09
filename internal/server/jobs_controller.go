@@ -48,8 +48,8 @@ const (
 	proxyResponseHeaderTimeout = 30 * time.Second
 	// peerProbeTimeout bounds fan-out so callers can retry an incomplete lookup.
 	peerProbeTimeout = 2 * time.Second
-	// jobLookupRetryAfterSeconds spaces retries when a possible owner did not answer.
-	jobLookupRetryAfterSeconds = 5
+	// jobLookupRetryAfter spaces retries when a possible owner did not answer.
+	jobLookupRetryAfter = 5 * time.Second
 )
 
 // JobsProxy bundles the coord-side dependencies needed to forward
@@ -319,7 +319,7 @@ func (c *JobsController) locatePeerJob(ctx *gin.Context, id string) (owner strin
 			fmt.Sprintf("job not found on this node or any reachable peer; jobs live in memory on the node that runs them and are evicted %s after completion", jobs.DefaultCompletedTTL),
 			ProblemOpts{Code: string(httperr.CodeJobNotFound)})
 	} else {
-		ctx.Header("Retry-After", strconv.Itoa(jobLookupRetryAfterSeconds))
+		httperr.SetRetryAfter(ctx.Writer.Header(), jobLookupRetryAfter)
 		RespondWithProblemOpts(ctx, http.StatusServiceUnavailable, "Service Unavailable",
 			"a peer that may own the job did not answer; retry after the indicated delay",
 			ProblemOpts{Code: string(httperr.CodeNodeUnreachable)})

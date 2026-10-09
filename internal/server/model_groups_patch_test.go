@@ -210,3 +210,26 @@ func TestApplyPatch_LeavesCurrentUnmutatedOnError(t *testing.T) {
 	assert.Equal(t, beforeReplicas, g.Replicas[0].Name, "input must not be aliased into output on error")
 	assert.Equal(t, modelgroup.StrategyPriority, g.Strategy)
 }
+
+func TestApplyReplicaPatch_MaxRetriesZeroSetsZeroAndNullResetsToUnset(t *testing.T) {
+	current := modelgroup.Replica{Name: "r1", Model: "m"}
+
+	out, err := applyReplicaPatch(current, json.RawMessage(`{"max_retries":0}`))
+	require.Nil(t, err)
+	require.NotNil(t, out.MaxRetries, "explicit 0 is a value, not unset")
+	assert.Equal(t, 0, *out.MaxRetries)
+
+	out, err = applyReplicaPatch(out, json.RawMessage(`{"max_retries":null}`))
+	require.Nil(t, err)
+	assert.Nil(t, out.MaxRetries, "null resets to unset (default)")
+
+	out, err = applyReplicaPatch(out, json.RawMessage(`{}`))
+	require.Nil(t, err)
+	assert.Nil(t, out.MaxRetries, "absent leaves unset unchanged")
+}
+
+func TestApplyReplicaPatch_MaxRetriesRejectsNonInteger(t *testing.T) {
+	_, err := applyReplicaPatch(modelgroup.Replica{Name: "r1"}, json.RawMessage(`{"max_retries":1.5}`))
+	require.NotNil(t, err)
+	assert.Equal(t, "max_retries", err.Key)
+}

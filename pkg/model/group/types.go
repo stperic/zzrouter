@@ -102,8 +102,9 @@ type Replica struct {
 	// GPUMemoryRequired is the GPU memory needed for on-demand models (informational).
 	GPUMemoryRequired string `yaml:"gpu_memory_required,omitempty"`
 
-	// MaxRetries is the number of retries on this replica before falling back (default 1).
-	MaxRetries int `yaml:"max_retries,omitempty"`
+	// MaxRetries is the number of retries on this replica before falling back.
+	// nil = default (1); 0 = no retry.
+	MaxRetries *int `yaml:"max_retries,omitempty"`
 
 	// Tags are labels for tag-based routing (e.g., ["high-vram", "quantized"]).
 	Tags []string `yaml:"tags,omitempty"`

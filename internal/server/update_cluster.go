@@ -385,7 +385,7 @@ func (s *Server) cancelUpdateRollout(id string) error {
 }
 
 // updatePreflightRetryAfter gives an unreachable peer one health-probe cycle to come back.
-const updatePreflightRetryAfter = "5"
+const updatePreflightRetryAfter = 5 * time.Second
 
 func (c *UpdateController) clusterApply(ctx *gin.Context, req updateApplyRequest) {
 	if req.Version == nil {
@@ -407,7 +407,7 @@ func (c *UpdateController) clusterApply(ctx *gin.Context, req updateApplyRequest
 	}
 	peers, err := c.server.selectUpdateNodes([]string{"all"})
 	if err != nil {
-		ctx.Header("Retry-After", updatePreflightRetryAfter)
+		httperr.SetRetryAfter(ctx.Writer.Header(), updatePreflightRetryAfter)
 		RespondWithProblemOpts(ctx, http.StatusServiceUnavailable, "Service Unavailable", err.Error(), ProblemOpts{Code: string(httperr.CodeNodeUnreachable)})
 		return
 	}
@@ -420,9 +420,9 @@ func (c *UpdateController) clusterApply(ctx *gin.Context, req updateApplyRequest
 		var wire httperr.Error
 		if errors.As(err, &wire) {
 			if wire.Code == string(httperr.CodeNodeUnreachable) {
-				ctx.Header("Retry-After", updatePreflightRetryAfter)
+				wire.RetryAfter = updatePreflightRetryAfter
 			}
-			RespondToError(ctx, err)
+			respondSurfaceError(ctx, wire)
 		} else if errors.Is(err, update.ErrApplyInFlight) {
 			RespondToError(ctx, newProblemError(http.StatusConflict, "Conflict", err.Error()))
 		} else {

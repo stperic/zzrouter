@@ -16,9 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	modelsync "github.com/stperic/zzrouter/pkg/model/sync"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -103,11 +105,14 @@ func (e *SyncExecutor) acquireSlot() bool {
 
 func (e *SyncExecutor) releaseSlot() { <-e.sem }
 
+// syncSlotRetryAfter is short: a sync slot frees when one model sync finishes its step.
+const syncSlotRetryAfter = 5 * time.Second
+
 // withSlot acquires a concurrency slot, runs fn, and releases the slot.
 // Writes 429 + Retry-After and skips fn when the semaphore is full.
 func (e *SyncExecutor) withSlot(c *gin.Context, fn func()) {
 	if !e.acquireSlot() {
-		c.Header("Retry-After", "5")
+		httperr.SetRetryAfter(c.Writer.Header(), syncSlotRetryAfter)
 		RespondWithProblem(c, http.StatusTooManyRequests, "Too Many Requests", "sync executor is at capacity; retry shortly")
 		return
 	}

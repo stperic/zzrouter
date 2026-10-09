@@ -144,9 +144,19 @@ func (b streamTestBody) Close() error {
 func instanceStreamTestServer() (*Server, *instance.Instance) {
 	s := &Server{config: &config.NodeConfig{}, node: &NodeIdentity{name: "test-node"}}
 	s.inference.normalizers = NewResponseNormalizers()
-	// A remote health host avoids touching the local lifecycle manager.
+	// The health host names the fake transport's engine.
 	inst := &instance.Instance{ID: "test", Provider: "engine", HealthURL: "http://engine.test/health", Port: 80}
+	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 	return s, inst
+}
+
+// assertLeaseReturned checks a broken relay gave its slot back to a cap-1 instance.
+func assertLeaseReturned(t *testing.T, inst *instance.Instance) {
+	t.Helper()
+	assert.Zero(t, inst.GetActiveRequests())
+	lease, err := inst.Acquire(context.Background(), nil)
+	require.NoError(t, err)
+	lease.Release()
 }
 
 func TestStreamFromInstance_CutStreamEndsWithDialectError(t *testing.T) {
@@ -160,6 +170,7 @@ func TestStreamFromInstance_CutStreamEndsWithDialectError(t *testing.T) {
 			assert.True(t, closed)
 			assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
 			assert.NotContains(t, rec.Body.String(), "[DONE]")
+			assertLeaseReturned(t, inst)
 		})
 	}
 }
@@ -176,6 +187,7 @@ func TestProxyToInstance_CutStreamEndsWithDialectError(t *testing.T) {
 			assert.True(t, closed)
 			assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
 			assert.NotContains(t, rec.Body.String(), "[DONE]")
+			assertLeaseReturned(t, inst)
 		})
 	}
 }

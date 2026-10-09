@@ -257,7 +257,7 @@ func TestStreamMeter_TTFTWaitsForWholeFrame(t *testing.T) {
 	rec := llm.NewInferenceRecorder(t.Context(), "m", "openai")
 	time.Sleep(2 * time.Millisecond)
 	reader := &checkingReader{
-		reader: &pieceReader{pieces: []string{"data:", " [DONE]\n\n"}},
+		reader: &pieceReader{pieces: []string{"data:", ` {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}` + "\n\n"}},
 		beforeRead: func(reads int) {
 			if reads == 1 {
 				assert.Zero(t, rec.Snapshot().TTFTMs)

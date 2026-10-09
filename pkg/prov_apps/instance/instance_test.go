@@ -166,150 +166,118 @@ func TestInstance_ActiveRequests(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 
 	assert.Equal(t, int64(0), inst.GetActiveRequests())
-	assert.Equal(t, int64(1), inst.IncrementActiveRequests())
-	assert.Equal(t, int64(2), inst.IncrementActiveRequests())
-	assert.Equal(t, int64(2), inst.GetActiveRequests())
-	assert.Equal(t, int64(1), inst.DecrementActiveRequests())
+	first := acquireTestLease(t, inst)
 	assert.Equal(t, int64(1), inst.GetActiveRequests())
+	second := acquireTestLease(t, inst)
+	assert.Equal(t, int64(2), inst.GetActiveRequests())
+	first.Release()
+	assert.Equal(t, int64(1), inst.GetActiveRequests())
+	second.Release()
+	assert.Equal(t, int64(0), inst.GetActiveRequests())
 }
 
 func TestInstance_ConcurrencyGating(t *testing.T) {
 	t.Run("unlimited_when_not_initialized", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 0, 10)
 		assert.Equal(t, 0, inst.ConcurrencyLimit())
-		// Should always succeed immediately
-		err := inst.AcquireConcurrency(context.Background())
-		assert.NoError(t, err)
-		inst.ReleaseConcurrency() // no-op, should not panic
+		acquireTestLease(t, inst).Release()
 	})
 
 	t.Run("unlimited_when_zero", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(0, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 0, MaxQueuedRequests: 100, QueueTimeout: 0})
 		assert.Equal(t, 0, inst.ConcurrencyLimit())
-		err := inst.AcquireConcurrency(context.Background())
-		assert.NoError(t, err)
+		acquireTestLease(t, inst).Release()
 	})
 
 	t.Run("single_slot_reject", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 0) // queue_timeout=0 → reject immediately
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 
-		// First acquire succeeds
-		err := inst.AcquireConcurrency(context.Background())
-		require.NoError(t, err)
-
-		// Second acquire is rejected immediately
-		err = inst.AcquireConcurrency(context.Background())
-		assert.ErrorIs(t, err, ErrAtCapacity)
-
-		// Release frees the slot
-		inst.ReleaseConcurrency()
-
-		// Now it succeeds again
-		err = inst.AcquireConcurrency(context.Background())
-		assert.NoError(t, err)
-		inst.ReleaseConcurrency()
+		first := acquireTestLease(t, inst)
+		lease, err := inst.Acquire(context.Background(), nil)
+		assert.ErrorIs(t, err, ErrQueueFull)
+		assert.Nil(t, lease)
+		first.Release()
+		acquireTestLease(t, inst).Release()
 	})
 
 	t.Run("multi_slot", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(2, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 2, MaxQueuedRequests: 100, QueueTimeout: 0})
 		assert.Equal(t, 2, inst.ConcurrencyLimit())
 
-		// Two acquires succeed
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
-
-		// Third is rejected
-		err := inst.AcquireConcurrency(context.Background())
-		assert.ErrorIs(t, err, ErrAtCapacity)
-
-		// Release one, now third succeeds
-		inst.ReleaseConcurrency()
-		assert.NoError(t, inst.AcquireConcurrency(context.Background()))
-
-		inst.ReleaseConcurrency()
-		inst.ReleaseConcurrency()
+		first := acquireTestLease(t, inst)
+		second := acquireTestLease(t, inst)
+		lease, err := inst.Acquire(context.Background(), nil)
+		assert.ErrorIs(t, err, ErrQueueFull)
+		assert.Nil(t, lease)
+		first.Release()
+		third := acquireTestLease(t, inst)
+		second.Release()
+		third.Release()
 	})
 
 	t.Run("queue_timeout_succeeds", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 100*time.Millisecond)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 100 * time.Millisecond})
 
-		// Fill the slot
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
-
-		// Release after 20ms in background
+		first := acquireTestLease(t, inst)
 		go func() {
 			time.Sleep(20 * time.Millisecond)
-			inst.ReleaseConcurrency()
+			first.Release()
 		}()
-
-		// Should succeed within the 100ms timeout
-		err := inst.AcquireConcurrency(context.Background())
-		assert.NoError(t, err)
-		inst.ReleaseConcurrency()
+		acquireTestLease(t, inst).Release()
 	})
 
 	t.Run("queue_timeout_expires", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 20*time.Millisecond)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 20 * time.Millisecond})
 
-		// Fill the slot
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
-
-		// Should timeout
-		err := inst.AcquireConcurrency(context.Background())
-		assert.ErrorIs(t, err, ErrAtCapacity)
-
-		inst.ReleaseConcurrency()
+		first := acquireTestLease(t, inst)
+		activity := inst.GetLastActivity()
+		lease, err := inst.Acquire(context.Background(), nil)
+		assert.ErrorIs(t, err, ErrQueueWaitExpired)
+		assert.Nil(t, lease)
+		assert.Equal(t, int64(1), inst.GetActiveRequests())
+		assert.Equal(t, activity, inst.GetLastActivity())
+		first.Release()
 	})
 
 	t.Run("context_cancellation", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 5*time.Second) // long timeout
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 5 * time.Second})
 
-		// Fill the slot
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
-
-		// Cancel context immediately
+		first := acquireTestLease(t, inst)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-
-		err := inst.AcquireConcurrency(ctx)
+		lease, err := inst.Acquire(ctx, nil)
 		assert.ErrorIs(t, err, context.Canceled)
-
-		inst.ReleaseConcurrency()
+		assert.Nil(t, lease)
+		first.Release()
 	})
 
 	t.Run("tracks_active_requests", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(2, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 2, MaxQueuedRequests: 100, QueueTimeout: 0})
 
 		assert.Equal(t, int64(0), inst.GetActiveRequests())
-
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
+		first := acquireTestLease(t, inst)
 		assert.Equal(t, int64(1), inst.GetActiveRequests())
-
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
+		second := acquireTestLease(t, inst)
 		assert.Equal(t, int64(2), inst.GetActiveRequests())
-
-		inst.ReleaseConcurrency()
+		first.Release()
 		assert.Equal(t, int64(1), inst.GetActiveRequests())
-
-		inst.ReleaseConcurrency()
+		second.Release()
 		assert.Equal(t, int64(0), inst.GetActiveRequests())
 	})
 
 	t.Run("tracks_active_requests_unlimited", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 0, 10)
-		// No InitConcurrencyLimit — unlimited mode
 
-		require.NoError(t, inst.AcquireConcurrency(context.Background()))
+		lease := acquireTestLease(t, inst)
 		assert.Equal(t, int64(1), inst.GetActiveRequests())
-
-		inst.ReleaseConcurrency()
+		lease.Release()
 		assert.Equal(t, int64(0), inst.GetActiveRequests())
 	})
 
@@ -317,30 +285,30 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 		const slots = 3
 		const goroutines = 50
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(slots, 5*time.Second)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: slots, MaxQueuedRequests: 100, QueueTimeout: 5 * time.Second})
 
 		var wg sync.WaitGroup
-		errCount := int64(0)
+		var errCount atomic.Int64
 		for range goroutines {
 			wg.Go(func() {
-				if err := inst.AcquireConcurrency(context.Background()); err != nil {
-					atomic.AddInt64(&errCount, 1)
+				lease, err := inst.Acquire(context.Background(), nil)
+				if err != nil {
+					errCount.Add(1)
 					return
 				}
-				// Simulate brief work
 				time.Sleep(time.Millisecond)
-				inst.ReleaseConcurrency()
+				lease.Release()
 			})
 		}
 		wg.Wait()
 
-		assert.Equal(t, int64(0), errCount, "all goroutines should eventually acquire a slot")
+		assert.Equal(t, int64(0), errCount.Load(), "all goroutines should eventually acquire a slot")
 		assert.Equal(t, int64(0), inst.GetActiveRequests(), "all requests should be released")
 	})
 
 	t.Run("toinfo_includes_limit", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 8090, 0, 10)
-		inst.InitConcurrencyLimit(1, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 
 		info := inst.ToInfo("node1")
 		assert.Equal(t, 1, info.MaxConcurrentRequests)
@@ -349,15 +317,26 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 func TestInstance_ActiveRequests_Concurrent(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
+	leases := make([]*Lease, 100)
 
 	var wg sync.WaitGroup
-	for range 100 {
+	for n := range leases {
 		wg.Go(func() {
-			inst.IncrementActiveRequests()
+			lease, err := inst.Acquire(context.Background(), nil)
+			if assert.NoError(t, err) {
+				leases[n] = lease
+			}
 		})
 	}
 	wg.Wait()
 	assert.Equal(t, int64(100), inst.GetActiveRequests())
+	for _, lease := range leases {
+		if lease != nil {
+			wg.Go(lease.Release)
+		}
+	}
+	wg.Wait()
+	assert.Equal(t, int64(0), inst.GetActiveRequests())
 }
 
 func TestInstance_TryLog(t *testing.T) {

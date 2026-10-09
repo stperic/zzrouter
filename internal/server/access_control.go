@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -407,7 +406,7 @@ func (a *AccessControl) writeQuotaDenial(c *gin.Context, d control.Decision) {
 		// moment — the boundary at which spend resets to zero.
 		nextReset := quota.NextPeriodStart(d.PeriodStart, quota.ParsePeriod(d.BudgetPeriod))
 		retryAfterSec := quotaRetryAfterSeconds(d)
-		c.Header("Retry-After", strconv.FormatInt(retryAfterSec, 10))
+		e.RetryAfter = time.Duration(retryAfterSec) * time.Second
 		e.Extra = map[string]any{"zzrouter": gin.H{
 			"scope":               d.Scope,
 			"entity_id":           d.EntityID,
@@ -425,7 +424,7 @@ func (a *AccessControl) writeQuotaDenial(c *gin.Context, d control.Decision) {
 	// next_reset_at), with limit_kind to distinguish the trip cause.
 	case control.DenyRPM, control.DenyTPM, control.DenyConcurrency:
 		limitKind, retryAfterSec := throttleRetryHint(d)
-		c.Header("Retry-After", strconv.FormatInt(retryAfterSec, 10))
+		e.RetryAfter = time.Duration(retryAfterSec) * time.Second
 		e.Extra = map[string]any{"zzrouter": gin.H{
 			"scope":               d.Scope,
 			"entity_id":           d.EntityID,
