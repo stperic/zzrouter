@@ -70,8 +70,8 @@ func (e *MemoryFitError) Unwrap() error {
 const maxMemoryDevices = 64
 
 // AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses. auto becomes the
-// model's need when it is known, else the free fraction left after a safety margin; it is written to
-// parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
+// model's need when it is known, which must fit beside the safety margin, else the free fraction left
+// after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
 func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
 	if budget.Kind != "fraction_total" {
 		return nil
@@ -97,8 +97,12 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if err != nil {
 		return err
 	}
+	sized := auto && need.Total() > 0
 	switch {
-	case auto && need.Total() > 0:
+	case sized:
+		if budget.AutoSafetyMarginMiB < 0 {
+			return fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
+		}
 		fraction = needFraction(need, selected)
 	case auto:
 		if fraction, err = autoFraction(budget, selected, owners); err != nil {
@@ -107,6 +111,9 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	}
 	for _, device := range selected {
 		required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
+		if sized {
+			required += safetyMargin(budget, device)
+		}
 		if required > device.FreeMiB {
 			return memoryFitError(budget.Parameter, device, required, owners)
 		}

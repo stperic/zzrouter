@@ -28,10 +28,7 @@ func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owner
 		if device.TotalMiB <= 0 || device.FreeMiB > device.TotalMiB {
 			return 0, fmt.Errorf("%w: auto requires valid GPU totals on %s", ErrMemoryObservation, device.UUID)
 		}
-		margin := budget.AutoSafetyMarginMiB
-		if margin == 0 {
-			margin = max(DefaultAutoMemorySafetyMarginMiB, int64(math.Ceil(float64(device.TotalMiB)*DefaultAutoMemorySafetyMarginFraction)))
-		}
+		margin := safetyMargin(budget, device)
 		room := math.Floor(float64(device.FreeMiB-margin)/float64(device.TotalMiB)*autoFractionScale) / autoFractionScale
 		if room <= 0 {
 			return 0, memoryFitError(budget.Parameter, device, margin+1, owners)
@@ -39,6 +36,15 @@ func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owner
 		fraction = math.Min(fraction, room)
 	}
 	return fraction, nil
+}
+
+// safetyMargin is the free memory auto leaves untouched: engines use some outside their own budget
+// (lab, vLLM: CUDA context and sampler warm-up, about 2.2 GiB beyond gpu-memory-utilization).
+func safetyMargin(budget schema.MemoryBudget, device gpu.MemoryDevice) int64 {
+	if budget.AutoSafetyMarginMiB > 0 {
+		return budget.AutoSafetyMarginMiB
+	}
+	return max(DefaultAutoMemorySafetyMarginMiB, int64(math.Ceil(float64(device.TotalMiB)*DefaultAutoMemorySafetyMarginFraction)))
 }
 
 // DefaultAutoHeadroomFraction adds 10 percent for allocator variation beyond the estimated need.

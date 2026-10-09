@@ -172,11 +172,13 @@ func TestMemoryNeedDecidesFit(t *testing.T) {
 	params := map[string]string{"budget": "auto"}
 	var fit *MemoryFitError
 	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 40000}}, nil), &fit)
-	assert.Equal(t, int64(68260), fit.RequiredMiB, "the shortfall eviction must cover is the sized need, at the four decimals the engine gets")
+	assert.Equal(t, int64(68260+5000), fit.RequiredMiB, "the shortfall eviction must cover is the sized need plus the margin")
 	assert.Equal(t, "auto", params["budget"], "a refused attempt leaves auto for the retry")
 
-	// Fits in free memory although free-minus-margin (2048 MiB) would leave too little room.
-	assert.Equal(t, "0.3300", admitNeed(t, Need{WeightsMiB: 952, OverheadMiB: 2048}, 10000, 4000))
+	// Lab: a need that fits free memory but not beside the margin OOMed vLLM outside its budget.
+	params = map[string]string{"budget": "auto"}
+	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, Need{WeightsMiB: 952, OverheadMiB: 2048}, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 4000}}, nil), &fit)
+	assert.Equal(t, "0.3300", admitNeed(t, Need{WeightsMiB: 952, OverheadMiB: 2048}, 10000, 5400))
 }
 
 func TestMemoryNeedRoundsFractionUp(t *testing.T) {
