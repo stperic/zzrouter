@@ -102,7 +102,6 @@ func newAliasLoadExecutor(t *testing.T) (*LoadExecutor, *prov_apps.ProviderAppMa
 				Endpoint: prov_apps.Endpoint(endpoint),
 			})
 		},
-		func() {},                     // invalidateCache
 		func() string { return "n1" }, // getNodename
 		nil,                           // refreshResourceMetrics
 	)

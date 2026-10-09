@@ -123,7 +123,7 @@ func TestVariantConflict_RejectsPublicationFromBeforeInvalidation(t *testing.T) 
 	c := New(Config{AppsConfig: func() *config.AppsConfig { return cfg }, Registry: func() *modelregistry.Registry { return nil }})
 	generation := c.generation
 	c.Invalidate()
-	require.False(t, c.publishModelItems([]map[string]any{{"name": "FAST", "node": "worker"}}, generation, nil))
+	require.False(t, c.publishModelItems([]map[string]any{{"name": "FAST", "node": "worker"}}, generation, nil, localModelSnapshot{}))
 	require.NoError(t, c.CheckVariantConflict(t.Context(), "fast"))
 	assert.False(t, c.valid)
 }
