@@ -6005,8 +6005,9 @@ paths:
         and reads every peer's protocol window. Missing manifests return 409
         release_manifest_missing. A target outside the running coordinator's window,
         or a minimum that strands an unselected peer, returns 409
-        protocol_cutover_required. An unreadable peer window returns 503
-        node_unreachable with Retry-After. Refusal persists nothing and sends no
+        protocol_cutover_required. An unreadable window on a selected node or the
+        coordinator returns 503 node_unreachable with Retry-After; an unselected peer
+        that cannot be read is not updated and is listed in unchecked_peers. Refusal persists nothing and sends no
         update commands. A node sleeping after acceptance stays pending until reconnect. Cancel through
         DELETE /jobs/{id}; already accepted node work may finish. Each node downloads
         and verifies the signed release itself, then confirms health or rolls back.
@@ -6074,6 +6075,10 @@ paths:
                           nodes:
                             type: array
                             items: { $ref: '#/components/schemas/NodeUpdate' }
+                          unchecked_peers:
+                            type: array
+                            items: { type: string }
+                            description: Unselected peers whose protocol could not be read; not updated.
         '400':
           description: Invalid node selector or strict request body.
           content:
@@ -6101,7 +6106,7 @@ paths:
         '503':
           description: >
             Update control not initialized (explicit updates work with enabled=false),
-            a selected or unselected peer's protocol window could not be read
+            a selected node's or the coordinator's protocol window could not be read
             (`code` is `node_unreachable`), or the idempotency store is full with
             requests still in flight (`code` is `idempotency_store_full`). Honor
             Retry-After.

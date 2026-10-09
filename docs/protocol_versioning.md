@@ -42,8 +42,11 @@ The serial rollout API fetches the exact target's manifest and verifies it throu
 the update verifier before accepting a job. A missing manifest returns HTTP 409
 `release_manifest_missing`; verification failures follow the existing update
 failure path. It reads every peer's current protocol window, including peers
-outside the selected nodes. An unreadable window returns HTTP 503
-`node_unreachable` with `Retry-After`.
+outside the selected nodes. An unreadable window on a selected node or the
+coordinator returns HTTP 503 `node_unreachable` with `Retry-After`. An unselected
+peer that cannot be read (a sleeping worker) does not block the rollout: it is
+not updated, the rollout lists it in `unchecked_peers`, and the protocol gate
+decides whether it rejoins when it reconnects.
 
 A target protocol outside the running coordinator's accepted window, or a target
 minimum above an unselected peer's protocol, returns HTTP 409

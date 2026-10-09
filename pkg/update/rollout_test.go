@@ -335,7 +335,7 @@ func TestRolloutPreflightRefusesStrandedPeer(t *testing.T) {
 }
 
 func TestRolloutPreflightUnknownWindowIs503(t *testing.T) {
-	for _, node := range []string{"worker", "unselected"} {
+	for _, node := range []string{"worker", "coord"} {
 		t.Run(node, func(t *testing.T) {
 			r, f, _ := newRolloutFixture(t)
 			f.windowErrors = map[string]error{node: ErrNodeUnavailable}
@@ -344,6 +344,22 @@ func TestRolloutPreflightUnknownWindowIs503(t *testing.T) {
 			require.ErrorContains(t, err, node)
 		})
 	}
+}
+
+// A peer that is down and not being updated cannot be stranded by this release: the rollout goes on
+// and names it, and the protocol gate decides when it reconnects.
+func TestRolloutPreflightSkipsUnreachableUnselectedPeer(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	f.windowErrors = map[string]error{"asleep": ErrNodeUnavailable}
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker", "coord"}, []string{"worker", "asleep"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"asleep"}, record.UncheckedPeers)
+	for _, n := range record.Nodes {
+		require.NotEqual(t, "asleep", n.Node)
+	}
+	var persisted []Rollout
+	require.NoError(t, readJSON(r.path, &persisted))
+	require.Equal(t, []string{"asleep"}, persisted[0].UncheckedPeers)
 }
 
 func TestRolloutPreflightAllowsCompatible(t *testing.T) {

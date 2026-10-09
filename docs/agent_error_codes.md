@@ -165,7 +165,7 @@ peers means the local registry is the complete lookup.
 |---|---|---|---|
 | `release_manifest_missing` | 409 | The exact target release has no signed `release.json` protocol manifest. No rollout was accepted. | Choose a release publishing the manifest, or perform an operator-managed upgrade. |
 | `protocol_cutover_required` | 409 | The target protocol is outside the coordinator's accepted window, or its minimum would strand an unselected peer. No rollout was accepted. | Follow [the protocol cutover procedure](protocol_versioning.md); current protocol values live in `pkg/version/protocol.go`. |
-| `node_unreachable` | 503 | A selected or unselected peer's current protocol window could not be read. No rollout was accepted. | Restore connectivity, honor `Retry-After`, and retry. |
+| `node_unreachable` | 503 | A selected node's or the coordinator's protocol window could not be read. No rollout was accepted. An unreadable unselected peer does not refuse; it is listed in `unchecked_peers`. | Restore connectivity, honor `Retry-After`, and retry. |
 
 ## MCP tools
 
