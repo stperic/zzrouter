@@ -1268,9 +1268,8 @@ func (w *responsesStreamWriter) emitEvent(name string, payload map[string]any) {
 	}
 }
 
-// Close flushes any buffered SSE frame and emits the terminal
-// response.completed event when the upstream forgot to send `[DONE]`.
-// Idempotent.
+// Close flushes any buffered SSE frame and completes a turn the relay judged
+// complete without `[DONE]`; a cut one already got response.failed. Idempotent.
 func (w *responsesStreamWriter) Close() {
 	if w.buf.Len() > 0 {
 		w.buf.Write([]byte("\n\n"))

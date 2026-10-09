@@ -115,24 +115,17 @@ func TestChatStream_ToolTurn(t *testing.T) {
 	}
 }
 
-// An engine that stops before the turn ends (no finish reason, no
-// [DONE]) is reported as an error, not as a complete turn; one that
-// finished needs no [DONE]; Close after [DONE] adds nothing.
-func TestChatStream_CloseEndsACutStream(t *testing.T) {
-	cut := `data: {"id":"c2","choices":[{"delta":{"content":"par"}}]}` + "\n\n" + `data: {"id":"c2","choices":[{"delta":{"content":"tial"}}]}`
-	events := translateStream(t, cut, 0, true)
-	assert.Equal(t, []string{"message_start", "content_block_start", "content_block_delta", "content_block_delta",
-		"content_block_stop", "error"}, names(events), "a final frame without its blank line still counts")
-	assert.Equal(t, "api_error", events[5].Data["error"].(map[string]any)["type"])
-
+// A finished engine needs no [DONE], a final frame without its blank
+// line still counts, and Close after [DONE] adds nothing.
+func TestChatStream_CloseEndsACompletedTurn(t *testing.T) {
 	finished := `data: {"id":"c2","choices":[{"delta":{"content":"all"},"finish_reason":"stop"}]}`
-	assert.Equal(t, "message_stop", lastName(translateStream(t, finished, 0, true)), "a finish reason ends the turn without [DONE]")
+	events := translateStream(t, finished, 0, true)
+	assert.Equal(t, []string{"message_start", "content_block_start", "content_block_delta", "content_block_stop",
+		"message_delta", "message_stop"}, names(events))
 
 	once := translateStream(t, toolStream, 0, true)
 	assert.Equal(t, "message_stop", lastName(once))
 	assert.Equal(t, 1, strings.Count(strings.Join(names(once), " "), "message_stop"))
-
-	assert.Equal(t, []string{"error"}, names(translateStream(t, "", 0, true)), "a silent engine did not answer")
 }
 
 func lastName(events []sseEvent) string { return events[len(events)-1].Name }
@@ -226,11 +219,13 @@ func TestChatStream_InterleavedToolArguments(t *testing.T) {
 	}
 }
 
-func TestChatStream_DoneWithoutFinishReasonIsTruncated(t *testing.T) {
-	engine := `data: {"choices":[{"delta":{"content":"partial"}}]}` + "\n\ndata: [DONE]\n\n"
-	events := translateStream(t, engine, 0, true)
-	assert.Equal(t, "error", events[len(events)-1].Name)
-	assert.NotContains(t, names(events), "message_stop")
+// [DONE] is the engine's own claim that the turn is over, as the relay counts it.
+func TestChatStream_DoneWithoutFinishReasonCompletes(t *testing.T) {
+	engine := `data: {"choices":[{"delta":{"content":"all"}}]}` + "\n\ndata: [DONE]\n\n"
+	events := translateStream(t, engine, 0, false)
+	assert.NotContains(t, names(events), "error")
+	require.Equal(t, "message_stop", lastName(events))
+	assert.Equal(t, "end_turn", events[len(events)-2].Data["delta"].(map[string]any)["stop_reason"])
 }
 
 func TestChatStream_FirstToolStreamsBeforeCompletion(t *testing.T) {

@@ -35,11 +35,6 @@ type chatChunk struct {
 // sseDone ends a Chat Completions stream.
 const sseDone = "[DONE]"
 
-// truncatedMessage is what a client is told when the engine's stream
-// stopped before the turn did; once the stream is open, an error event
-// is the only way left to say so.
-const truncatedMessage = "the engine's stream ended before the turn did"
-
 // streamCall tracks a tool call. Later calls wait while the first streams,
 // because a Messages block cannot reopen after it closes.
 type streamCall struct {
@@ -57,8 +52,8 @@ type streamContent struct {
 
 // ChatStream translates a Chat Completions SSE stream into a Messages
 // SSE stream. Write takes the engine's bytes in any chunking; Close ends
-// the Messages stream if the engine did not. It is not safe for
-// concurrent use.
+// a completed turn, and Fail a broken one. It is not safe for concurrent
+// use.
 type ChatStream struct {
 	out   io.Writer
 	model string
@@ -66,8 +61,6 @@ type ChatStream struct {
 
 	started  bool
 	finished bool
-	// ended is set by a finish reason; DONE alone may be synthesized on EOF.
-	ended bool
 	// open is the kind of the block being streamed ("" when none),
 	// openCall the call it belongs to, and index the Messages index of
 	// the next block.
@@ -105,18 +98,11 @@ func (s *ChatStream) Write(p []byte) (int, error) {
 	return len(p), s.err
 }
 
-// Close ends the Messages stream. One the engine cut short ends with an
-// error event, not as if the turn were complete.
+// Close ends a turn the relay judged complete; a cut one gets Fail first.
 func (s *ChatStream) Close() error {
 	if len(bytes.TrimSpace(s.buf)) > 0 {
 		s.frame(s.buf)
 		s.buf = nil
-	}
-	if !s.ended && !s.finished {
-		s.flushCalls()
-		s.closeBlock()
-		s.emit("error", envelope(ErrorTypeAPI, truncatedMessage))
-		s.finished = true
 	}
 	s.finish()
 	return s.err
@@ -138,10 +124,7 @@ func (s *ChatStream) frame(frame []byte) {
 	}
 	data := bytes.TrimSpace(bytes.Join(lines, []byte("\n")))
 	if string(data) == sseDone {
-		// The proxy may synthesize DONE on EOF; only a finish reason completes a turn.
-		if s.ended {
-			s.finish()
-		}
+		s.finish()
 		return
 	}
 	var chunk chatChunk
@@ -183,7 +166,6 @@ func (s *ChatStream) chunk(c chatChunk) {
 	}
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
 		s.stop = stopReason(*choice.FinishReason)
-		s.ended = true
 	}
 }
 
