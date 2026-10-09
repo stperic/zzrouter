@@ -83,6 +83,12 @@ OpenAI-compatible server), stays `unknown` and is never refused. Providers that
 declare features derive `/v1/models` `capabilities.vision` from `present`;
 providers that declare none keep the name-based guess.
 
+Stopping or restarting a run answers, and a run's job completes, only after the
+catalog is published on the serving node and acknowledged by the coordinator; a
+publication failure returns 503 or fails the job. An inference request waits on the
+run itself, never on that publication, and background changes (a crash, idle expiry)
+stay announcements.
+
 Inference uses the catalog cache's exact model-or-source/provider/node index,
 without scanning the full model list for each replica.
 

@@ -227,6 +227,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.appsConfig,
 		prov_apps.WithHTTPClient(s.httpClient),
 		prov_apps.WithJobsRegistry(s.jobs),
+		prov_apps.WithCatalogPublication(s.publishCatalog),
 		prov_apps.WithCatalogChanged(func() {
 			if s.model.Cache != nil {
 				s.model.Cache.Invalidate()

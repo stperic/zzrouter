@@ -105,7 +105,7 @@ func (s *Server) refreshResourceMetrics() func() {
 
 // newRunsExecutor wires a RunsExecutor with narrow deps from Server.
 func (s *Server) newRunsExecutor() *RunsExecutor {
-	return NewRunsExecutor(
+	e := NewRunsExecutor(
 		s.providers.appMgr,
 		s.node.Nodename,
 		func() *pkgConfig.AppsConfig { return s.appsConfig },
@@ -114,6 +114,8 @@ func (s *Server) newRunsExecutor() *RunsExecutor {
 		s.logsHandlers.getInstanceLogLines,
 		s.refreshResourceMetrics(),
 	)
+	e.publishCatalog = s.publishCatalog
+	return e
 }
 
 // newLoadExecutor wires a LoadExecutor with narrow deps from Server.

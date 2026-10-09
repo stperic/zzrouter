@@ -58,6 +58,18 @@ const watcherHeartbeatInterval = 30 * time.Second
 // post-readiness should use DELETE /runs/:id directly; DELETE /jobs/:id
 // on a terminal handle is a no-op (clean by pkg/jobs semantics).
 func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h jobs.Handle) {
+	result := errors.New("instance readiness interrupted")
+	defer func() {
+		// The job's terminal event is what a caller waits on, so the catalog reflects the run first.
+		if m.publishCatalog != nil && m.shutdownCtx.Err() == nil {
+			result = errors.Join(result, m.publishCatalog())
+		}
+		if result != nil {
+			h.Fail(result)
+		} else {
+			h.Done()
+		}
+	}()
 	// Opening Progress: agents subscribing immediately see a "launching"
 	// (or "queued") event even before the first status transition. Meta MUST be set
 	// before Progress — jobs.Handle.Meta patches the sidecar for the
@@ -93,7 +105,7 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			// exits so inst.wg decrements, StopInstance's wait unblocks,
 			// and the server-Stop drain proceeds cleanly.
 			go m.detachedStop(inst.ID, inst.Provider)
-			h.Fail(errors.New("cancelled"))
+			result = errors.New("cancelled")
 			return
 
 		case <-inst.Context().Done():
@@ -101,14 +113,14 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			// not via job cancel). No need to call StopInstance — the
 			// caller already did. Just emit terminal and exit so
 			// inst.WaitForGoroutines unblocks.
-			h.Fail(errors.New("instance stopped"))
+			result = errors.New("instance stopped")
 			return
 
 		case <-m.shutdownCtx.Done():
 			// Manager is shutting down. runInstanceLifecycle owns process
 			// teardown; we just emit Fail so subscribers get a terminal
 			// event instead of an indefinite hang.
-			h.Fail(errors.New("manager shutdown"))
+			result = errors.New("manager shutdown")
 			return
 
 		case <-heartbeat.C:
@@ -131,13 +143,13 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			status := inst.GetStatus()
 			switch status {
 			case instance.StatusRunning:
+				result = nil
 				h.Meta(jobs.Meta{
 					"phase":      "running",
 					"elapsed_ms": utils.Now().Sub(startedAt).Milliseconds(),
 					"port":       inst.Port,
 					"health_url": inst.HealthURL,
 				})
-				h.Done()
 				return
 
 			case instance.StatusFailed:
@@ -147,14 +159,14 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 				// not co-synchronized).
 				info := inst.ToInfo("")
 				h.Meta(jobs.Meta{"failure": info.Failure})
-				h.Fail(fmt.Errorf("instance failed: %s", info.ErrorMessage))
+				result = fmt.Errorf("instance failed: %s", info.ErrorMessage)
 				return
 
 			case instance.StatusStopped:
 				// Reached Stopped without passing through Running —
 				// e.g., process crashed during startup then the reaper
 				// set Stopped before the health monitor saw a success.
-				h.Fail(errors.New("instance stopped before becoming healthy"))
+				result = errors.New("instance stopped before becoming healthy")
 				return
 			}
 			// StatusStarting / StatusUnhealthy / StatusRestarting /

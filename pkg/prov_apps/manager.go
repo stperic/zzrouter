@@ -76,6 +76,7 @@ type ProviderAppManager struct {
 	// are dropped via the default branch in emitEvent.
 	auditEvents    chan Event
 	catalogChanged func()
+	publishCatalog func() error
 
 	// idleExpiry receives instance IDs when keep-alive timers fire.
 	// The idleReaper goroutine listens and auto-stops expired instances.
@@ -492,6 +493,11 @@ func (m *ProviderAppManager) idleReaper() {
 // WithCatalogChanged invalidates serving metadata after lifecycle changes.
 func WithCatalogChanged(fn func()) Option {
 	return func(m *ProviderAppManager) { m.catalogChanged = fn }
+}
+
+// WithCatalogPublication supplies the publication a run job completes after.
+func WithCatalogPublication(fn func() error) Option {
+	return func(m *ProviderAppManager) { m.publishCatalog = fn }
 }
 
 func (m *ProviderAppManager) logEvent(e Event) {
