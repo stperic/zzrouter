@@ -101,7 +101,9 @@ func TestIdempotency_FailureIsNotReplayed(t *testing.T) {
 	store := newIdempotencyStore()
 	calls := &atomic.Int64{}
 	r := gin.New()
-	r.POST("/runs", store.middleware(), func(c *gin.Context) {
+	r.POST("/runs", func(c *gin.Context) {
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+	}, store.middleware(), func(c *gin.Context) {
 		if calls.Add(1) == 1 {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wait for readiness"})
 			return
@@ -323,4 +325,154 @@ func TestIdempotency_SkipPredicate_DecisionMatrix(t *testing.T) {
 			assert.Equal(t, tc.want, got, "body=%s", tc.body)
 		})
 	}
+}
+
+// idemRequest sends one request with an arbitrary verb and target, for the
+// tests that vary method or query against one router.
+func idemRequest(r *gin.Engine, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// 9. Method is part of the key — the same Idempotency-Key, path and body
+// under PUT must run the handler again, not replay the POST's response.
+func TestIdempotency_KeyIncludesMethod(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newIdempotencyStore()
+	calls := &atomic.Int64{}
+	setup := func(c *gin.Context) {
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+	}
+	handler := func(c *gin.Context) {
+		n := calls.Add(1)
+		c.JSON(http.StatusAccepted, gin.H{"n": n})
+	}
+	r := gin.New()
+	r.POST("/runs", setup, store.middleware(), handler)
+	r.PUT("/runs", setup, store.middleware(), handler)
+
+	body := `{"model_name":"x"}`
+	headers := map[string]string{"Idempotency-Key": "abc"}
+	w1 := idemRequest(r, "POST", "/runs", body, headers)
+	require.Equal(t, http.StatusAccepted, w1.Code)
+	w2 := idemRequest(r, "PUT", "/runs", body, headers)
+	require.Equal(t, http.StatusAccepted, w2.Code)
+	assert.EqualValues(t, 2, calls.Load(),
+		"PUT with the same key must run the handler, not replay the POST")
+	assert.NotEqual(t, w1.Body.String(), w2.Body.String())
+}
+
+// 10. Query is part of the key. Different query values run separately;
+// the same query in another parameter order is the same request and replays.
+func TestIdempotency_KeyIncludesQuery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newIdempotencyStore()
+	calls := &atomic.Int64{}
+	r := gin.New()
+	r.POST("/runs", func(c *gin.Context) {
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+	}, store.middleware(), func(c *gin.Context) {
+		n := calls.Add(1)
+		c.JSON(http.StatusAccepted, gin.H{"n": n})
+	})
+
+	body := `{"model_name":"x"}`
+	headers := map[string]string{"Idempotency-Key": "abc"}
+	idemRequest(r, "POST", "/runs?a=1", body, headers)
+	idemRequest(r, "POST", "/runs?a=2", body, headers)
+	assert.EqualValues(t, 2, calls.Load(),
+		"a different query value must not replay the other request's response")
+
+	headers2 := map[string]string{"Idempotency-Key": "abc-2"}
+	w1 := idemRequest(r, "POST", "/runs?a=1&b=2", body, headers2)
+	w2 := idemRequest(r, "POST", "/runs?b=2&a=1", body, headers2)
+	require.Equal(t, http.StatusAccepted, w1.Code)
+	assert.Equal(t, w1.Body.String(), w2.Body.String(),
+		"the same query in another order must replay")
+	assert.EqualValues(t, 3, calls.Load(),
+		"the reordered query must not run the handler again")
+}
+
+// 11. Anonymous callers share one principal, so nothing is recorded:
+// two identical keyed requests with no principal both run the handler.
+func TestIdempotency_AnonymousNotRecorded(t *testing.T) {
+	r, _, calls := makeIdemRouter("", 0)
+	body := `{"model_name":"x"}`
+	headers := map[string]string{"Idempotency-Key": "abc"}
+
+	w1 := doPOST(r, body, headers)
+	w2 := doPOST(r, body, headers)
+	require.Equal(t, http.StatusAccepted, w1.Code)
+	require.Equal(t, http.StatusAccepted, w2.Code)
+	assert.EqualValues(t, 2, calls.Load(),
+		"anonymous requests must not replay each other")
+}
+
+// 12. A handler that panics must still release its duplicates and forget
+// its entry. The duplicate gets a 500 at once, and a retry runs again.
+func TestIdempotency_PanicReleasesWaiters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newIdempotencyStore()
+	calls := &atomic.Int64{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.POST("/runs", func(c *gin.Context) {
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+	}, store.middleware(), func(c *gin.Context) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+			panic("boom")
+		}
+		c.JSON(http.StatusAccepted, gin.H{"ok": true})
+	})
+
+	body := `{"model_name":"x"}`
+	headers := map[string]string{"Idempotency-Key": "panic"}
+
+	var original sync.WaitGroup
+	original.Add(1)
+	go func() {
+		defer original.Done()
+		idemRequest(r, "POST", "/runs", body, headers)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("original handler was never entered")
+	}
+
+	dupCode := make(chan int, 1)
+	start := time.Now()
+	go func() {
+		dupCode <- idemRequest(r, "POST", "/runs", body, headers).Code
+	}()
+	// Let the duplicate reach its in-flight wait before the original panics.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	select {
+	case code := <-dupCode:
+		assert.Equal(t, http.StatusInternalServerError, code,
+			"a duplicate of a request that ended without a response must not replay")
+		assert.Less(t, time.Since(start), 2*time.Second,
+			"a panicked original must release its duplicates well before idempotencyWaitTimeout")
+	case <-time.After(5 * time.Second):
+		t.Fatal("duplicate was not released after the original panicked")
+	}
+	original.Wait()
+
+	w3 := idemRequest(r, "POST", "/runs", body, headers)
+	assert.Equal(t, http.StatusAccepted, w3.Code,
+		"the panicked entry must be forgotten, so a retry runs the handler again")
+	assert.EqualValues(t, 2, calls.Load())
 }

@@ -43,14 +43,14 @@ const idempotencyWaitTimeout = 30 * time.Second
 // http.Header — already canonicalized by Go.
 const idempotencyHeader = "Idempotency-Key"
 
-// idemKey scopes idempotency entries to (principal, path, header value).
-// Principal isolation lets two virtual keys use the same Idempotency-Key
-// string without collision; path isolation lets a single store back
-// multiple routes (e.g. /model-groups/:name + /model-groups/:name/replicas/:replica)
-// without one route's recorded response replaying for a different route.
+// idemKey scopes idempotency entries to (principal, method, path, canonical
+// query, header value), so one store backs every route and verb without a
+// recorded response replaying for a different request.
 type idemKey struct {
 	principal string
+	method    string
 	path      string
+	query     string
 	value     string
 }
 
@@ -108,6 +108,12 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			c.Next()
 			return
 		}
+		principal := PrincipalFromContext(c)
+		if principal == "" {
+			// Anonymous callers share one principal, so recording would let one replay another's response.
+			c.Next()
+			return
+		}
 
 		// Read + restore body so the handler can re-bind it. Gin's
 		// BindJSON drains c.Request.Body once; we replace it.
@@ -124,11 +130,14 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 		bodyHash := sha256.Sum256(body)
 
 		key := idemKey{
-			principal: PrincipalFromContext(c),
+			principal: principal,
+			method:    c.Request.Method,
 			// c.Request.URL.Path (resolved path) — not c.FullPath() (route
 			// template) — so PATCH /model-groups/fast-chat and PATCH
 			// /model-groups/code-gen scope separately under the same key.
-			path:  c.Request.URL.Path,
+			path: c.Request.URL.Path,
+			// Encode sorts keys, so ?a=1&b=2 and ?b=2&a=1 are the same request.
+			query: c.Request.URL.Query().Encode(),
 			value: headerVal,
 		}
 
@@ -151,23 +160,25 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			// First request: wrap writer, run handler, snapshot result.
 			w := &capturingWriter{ResponseWriter: c.Writer}
 			c.Writer = w
-			c.Next()
-
-			entry.statusCode = w.status()
-			entry.responseJSON = w.body()
-			entry.contentType = w.contentType()
+			defer close(entry.inflight)
 			// A failure is not an outcome to keep: replaying a 503 "wait for
 			// readiness" for 24h makes the advised retry useless. Forget it
 			// before waking duplicates, so no later request can find it;
 			// duplicates already waiting hold the entry and see the failure.
-			if entry.statusCode < 200 || entry.statusCode >= 300 {
-				s.mu.Lock()
-				if s.m[key] == entry {
-					delete(s.m, key)
+			// Runs before the close above (LIFO); a panic leaves statusCode 0.
+			defer func() {
+				if entry.statusCode < 200 || entry.statusCode >= 300 {
+					s.mu.Lock()
+					if s.m[key] == entry {
+						delete(s.m, key)
+					}
+					s.mu.Unlock()
 				}
-				s.mu.Unlock()
-			}
-			close(entry.inflight)
+			}()
+			c.Next()
+			entry.statusCode = w.status()
+			entry.responseJSON = w.body()
+			entry.contentType = w.contentType()
 			return
 		}
 		s.mu.Unlock()
@@ -199,6 +210,11 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			return
 		case <-c.Request.Context().Done():
 			c.AbortWithStatus(499) // client closed; gin/nginx convention
+			return
+		}
+		if entry.statusCode == 0 {
+			InternalNodeError(c, "the original request under this Idempotency-Key ended without a response; retry it")
+			c.Abort()
 			return
 		}
 		if entry.contentType != "" {
