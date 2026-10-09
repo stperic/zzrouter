@@ -254,6 +254,7 @@ func (e *LoadExecutor) prepareLocalLoad(ctx context.Context, req *LoadModelReque
 	// Normalize and validate provider
 	normalizedProvider, err := e.normalizeAndValidateProvider(req.Provider)
 	if err != nil {
+		//nolint:nilerr // an unknown or disabled provider is the caller's 400, carried in the response
 		return nil, &LoadModelResponse{
 			StatusCode: http.StatusBadRequest,
 			Error:      err.Error(),
@@ -331,7 +332,7 @@ func (e *LoadExecutor) stopLocalLoad(ctx context.Context, req *LoadModelRequest)
 }
 
 // doLoadLocalModel performs the actual model loading (called by singleflight)
-func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) { //nolint:gocyclo,cyclop // Existing-instance reuse, provider API loads and local launches share one load flow.
+func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) {
 	// Start model load span
 	ctx, span := llm.StartModelLoadSpan(ctx, req.ModelName, req.Provider)
 	defer span.End()

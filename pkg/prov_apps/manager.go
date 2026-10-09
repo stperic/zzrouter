@@ -424,8 +424,8 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 
 // setShutdownCtx derives the manager's lifetime context, and the background-start context under it.
 func (m *ProviderAppManager) setShutdownCtx(parent context.Context) {
-	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)
-	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx)
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)    //nolint:gosec // G118: Stop calls the stored cancel
+	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx) //nolint:gosec // G118: Stop calls the stored cancel
 }
 
 // eventLoop drains the audit channel and logs all provider events.

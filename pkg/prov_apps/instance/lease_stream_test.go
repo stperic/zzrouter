@@ -53,7 +53,7 @@ func TestFirstByteDeadline(t *testing.T) {
 		})}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://engine.test", nil)
 		require.NoError(t, err)
-		_, err = client.Do(req)
+		_, err = client.Do(req) //nolint:bodyclose // the send times out: no body
 		require.ErrorIs(t, err, ErrFirstByteTimeout)
 		require.ErrorIs(t, context.Cause(ctx), ErrFirstByteTimeout)
 		require.NoError(t, parent.Err())
@@ -201,7 +201,7 @@ func TestFirstByteDeadlineHTTP(t *testing.T) {
 	ctx, _ := lease.watchStream(parent, testFirstByteTimeout, testStreamIdleTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	require.NoError(t, err)
-	_, err = srv.Client().Do(req)
+	_, err = srv.Client().Do(req) //nolint:bodyclose // the send times out: no body
 	require.ErrorIs(t, err, ErrFirstByteTimeout)
 	lease.Release()
 	assertStreamSlotFree(t, inst)
@@ -221,7 +221,7 @@ func TestStreamIdleDeadlineHTTP(t *testing.T) {
 	ctx, wrap := lease.watchStream(parent, testFirstByteTimeout, testStreamIdleTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
 	require.NoError(t, err)
-	resp, err := srv.Client().Do(req)
+	resp, err := srv.Client().Do(req) //nolint:bodyclose // closed below through its watch wrapper
 	require.NoError(t, err)
 	body := wrap(resp.Body)
 	w := httptest.NewRecorder()

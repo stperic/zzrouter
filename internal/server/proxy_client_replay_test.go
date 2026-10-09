@@ -100,7 +100,7 @@ func TestForwardDetachedWriteEvidence(t *testing.T) {
 		t.Run(hook, func(t *testing.T) {
 			transport := &replayTraceTransport{hook: hook}
 			p := NewProxyClient(&http.Client{Transport: transport}, nil, nil, nil, nil, nil, nil)
-			_, err := p.ForwardDetached(t.Context(), http.MethodPost, "http://engine.test/v1/chat/completions", nil, backend.Engine(), []byte(`{}`))
+			_, err := p.ForwardDetached(t.Context(), http.MethodPost, "http://engine.test/v1/chat/completions", nil, backend.Engine(), []byte(`{}`)) //nolint:bodyclose // every hook fails the send: no body
 			var sent *fallback.RequestError
 			require.ErrorAs(t, err, &sent)
 			assert.Equal(t, hook != "dial", sent.WroteRequest)
