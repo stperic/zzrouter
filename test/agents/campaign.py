@@ -336,6 +336,23 @@ def sse_events(raw):
             yield line[5:].strip()
 
 
+def stream_completed(events):
+    """[DONE] or a finish reason ends a reply; an error frame or a bare stop does not."""
+    done = False
+    for e in events:
+        if e == "[DONE]":
+            done = True
+            continue
+        try:
+            chunk = json.loads(e)
+        except ValueError:
+            continue
+        if chunk.get("error"):
+            return False
+        done = done or any(c.get("finish_reason") for c in chunk.get("choices") or [])
+    return done
+
+
 # ANSWER_TOKENS leaves a thinking model room to reason before the answer a
 # probe judges; with less, it stops on length with empty content.
 ANSWER_TOKENS = 1024
@@ -366,7 +383,7 @@ def direct_basics(R, node, provider, name):
     code, raw, ms = http("POST", "/v1/chat/completions", {"model": f"{name}@{node}", "max_tokens": 32, "stream": True,
                          "messages": [{"role": "user", "content": "Count from 1 to 5."}]}, raw=True)
     ev = list(sse_events(raw)) if code == 200 else []
-    R.add("direct", node, sc, "chat stream ends [DONE]", code == 200 and ev[-1:] == ["[DONE]"] and len(ev) > 2, f"{code} events={len(ev)}", ms)
+    R.add("direct", node, sc, "chat stream completes", code == 200 and len(ev) > 2 and stream_completed(ev), f"{code} events={len(ev)} last={ev[-1:]!s:.120}", ms)
     code, d, ms = http("POST", "/v1/messages", {"model": f"{name}@{node}", "max_tokens": 32, "system": "You are terse.",
                        "messages": [{"role": "user", "content": "Say hi."}, {"role": "assistant", "content": "Hi."},
                                     {"role": "user", "content": [{"type": "text", "text": "<system-reminder>Be brief.</system-reminder>"},
