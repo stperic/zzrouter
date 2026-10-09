@@ -440,31 +440,6 @@ func TestAppsConfig_ThreeMeaningRule(t *testing.T) {
 // YAML Helper Tests
 // ============================================================================
 
-func TestIsYAMLStructure(t *testing.T) {
-	tests := []struct {
-		value    string
-		expected bool
-	}{
-		{"[1, 2, 3]", true},
-		{"{key: value}", true},
-		{"123", true},
-		{"45.67", true},
-		{"9GB", false},
-		{"16MB", false},
-		{"hello", false},
-		{"true", false}, // Not a structure
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.value, func(t *testing.T) {
-			got := isYAMLStructure(tt.value)
-			if got != tt.expected {
-				t.Errorf("isYAMLStructure(%q) = %v, want %v", tt.value, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestEnsureParameterQuotes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -494,12 +469,17 @@ func TestEnsureParameterQuotes(t *testing.T) {
 		{
 			name:     "preserve objects",
 			input:    "  key: {a: b}",
-			expected: "  key: {a: b}",
+			expected: `key: {a: "b"}`,
 		},
 		{
 			name:     "preserve booleans",
 			input:    "  key: true",
 			expected: "  key: true",
+		},
+		{
+			name:     "preserve literal regex escape",
+			input:    `key: (?i)[^\n]*buffer`,
+			expected: `key: "(?i)[^\\n]*buffer"`,
 		},
 		{
 			name:     "preserve null",
@@ -511,8 +491,9 @@ func TestEnsureParameterQuotes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := string(ensureParameterQuotes([]byte(tt.input)))
-			if got != tt.expected {
-				t.Errorf("ensureParameterQuotes(%q) = %q, want %q", tt.input, got, tt.expected)
+			expected := strings.TrimSpace(tt.expected) + "\n"
+			if got != expected {
+				t.Errorf("ensureParameterQuotes(%q) = %q, want %q", tt.input, got, expected)
 			}
 		})
 	}

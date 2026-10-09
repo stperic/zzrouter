@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -1076,40 +1075,35 @@ func atomicWriteYAML(path string, data []byte) error {
 	return utils.AtomicWriteFile(path, data, 0o600)
 }
 
-// ensureParameterQuotes adds quotes to parameter values that don't have them
-// IMPORTANT: Prevents re-quoting already quoted values to avoid exponential growth bug
+// ensureParameterQuotes preserves YAML escapes and block scalars while quoting strings.
 func ensureParameterQuotes(data []byte) []byte {
-	lines := strings.Split(string(data), "\n")
-	for i, line := range lines {
-		parts := strings.SplitN(line, ": ", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		// Skip empty, already-quoted, structural (arrays/objects), booleans, null, and pure numbers
-		if value == "" || value[0] == '"' || value[0] == '\'' || value[0] == '[' || value[0] == '{' ||
-			value == "true" || value == "false" || value == "null" || isYAMLStructure(value) {
-			continue
-		}
-
-		// Add quotes to unquoted string values
-		indent := strings.TrimSuffix(parts[0], key)
-		lines[i] = fmt.Sprintf("%s%s: \"%s\"", indent, key, value)
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return data
 	}
-	return []byte(strings.Join(lines, "\n"))
-}
-
-// isYAMLStructure checks if value is a YAML structure (array, object, number only)
-func isYAMLStructure(value string) bool {
-	if strings.HasPrefix(value, "[") || strings.HasPrefix(value, "{") {
-		return true
+	var quote func(*yaml.Node)
+	quote = func(node *yaml.Node) {
+		if node.Kind == yaml.MappingNode {
+			for i := 1; i < len(node.Content); i += 2 {
+				value := node.Content[i]
+				if value.Kind == yaml.ScalarNode && value.Tag == "!!str" && value.Style == 0 {
+					value.Style = yaml.DoubleQuotedStyle
+				}
+			}
+		}
+		for _, child := range node.Content {
+			quote(child)
+		}
 	}
-	// Check if it's a pure number (no units)
-	_, err := strconv.ParseFloat(value, 64)
-	return err == nil && !strings.Contains(value, "GB") && !strings.Contains(value, "MB")
+	quote(&document)
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
+		return data
+	}
+	_ = encoder.Close()
+	return out.Bytes()
 }
 
 // FixWindowsPathsInYAML fixes Windows paths in YAML that cause escape character errors
