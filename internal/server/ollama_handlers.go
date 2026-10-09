@@ -32,7 +32,7 @@ import (
 type OllamaHandlers struct {
 	ollama                OllamaService
 	ollamaDaemon          func() (*backend.Resolved, error)
-	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte)
+	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error)
 	handleRoute           func(*gin.Context, RoutingConfig)
 	appMgr                *prov_apps.ProviderAppManager
 	appsConfig            func() *pkgConfig.AppsConfig
@@ -127,7 +127,7 @@ func (h *OllamaHandlers) handleOllamaVersion(c *gin.Context) {
 			"Ollama endpoint not resolved on this node; check /zzrouter/v1/providers/ollama")
 		return
 	}
-	h.proxyToOllamaProvider(c, daemon, "/api/version", nil)
+	h.proxyToOllamaProvider(c, daemon, "/api/version", nil, nil)
 }
 
 // handleOllamaMe proxies POST /api/me to the upstream Ollama daemon. The
@@ -144,7 +144,7 @@ func (h *OllamaHandlers) handleOllamaMe(c *gin.Context) {
 		return
 	}
 	body, _ := c.GetRawData()
-	h.proxyToOllamaProvider(c, daemon, "/api/me", body)
+	h.proxyToOllamaProvider(c, daemon, "/api/me", body, nil)
 }
 
 // handleOllamaTags lists Ollama-backed models only. Queries ModelService
@@ -317,7 +317,7 @@ func (h *OllamaHandlers) proxyShowToUpstream(c *gin.Context, modelName string) b
 	if err != nil {
 		return false
 	}
-	h.proxyToOllamaProvider(c, daemon, "/api/show", body)
+	h.proxyToOllamaProvider(c, daemon, "/api/show", body, nil)
 	return true
 }
 

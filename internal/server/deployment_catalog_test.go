@@ -122,7 +122,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 				require.Equal(t, want, after.FeatureState("vision"))
 				require.Equal(t, feature == "projector", reader.narrowToVision(t.Context(), &resolver.Resolved{ModelName: modelName, Provider: provider, Node: location}))
 				require.Equal(t, "completed", target.model.Downloads.GetDownloadStatus("catalog-download").Status)
-				target.invalidateModelCache()
+				require.NoError(t, target.publishCatalog())
 				after, err = reader.model.Cache.LookupTarget(t.Context(), modelName, provider, location)
 				require.NoError(t, err)
 				require.NotNil(t, after)

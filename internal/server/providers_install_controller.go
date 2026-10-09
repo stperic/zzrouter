@@ -229,6 +229,9 @@ func (ctrl *ProvidersController) UninstallProvider(c *gin.Context) {
 		respondFinalizeErr(c, "disable failed", err)
 		return
 	}
+	if !publishOr503(c, ctrl.publishCatalog) {
+		return
+	}
 	respondSuccess(c, "Provider uninstalled", gin.H{"status": "uninstalled", "provider": name})
 }
 
@@ -279,12 +282,9 @@ func (ctrl *ProvidersController) AddProviderInstance(c *gin.Context) {
 		return
 	}
 
-	// Deliberately do NOT call ctrl.registrar.FinalizeOnboarding here.
-	// AddProviderInstance is itself the terminal hook of the
-	// external-connect session: the factory constructs the Provider with
-	// Enabled=true, the store persists it, and the OnChange listener
-	// chain reconciles everything. Calling FinalizeOnboarding on top
-	// would be a redundant second mutation of the same flag.
+	if !publishOr503(c, ctrl.publishCatalog) {
+		return
+	}
 
 	c.JSON(http.StatusCreated, gin.H{
 		"data": gin.H{

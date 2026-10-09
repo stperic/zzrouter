@@ -126,6 +126,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		func() *pkgConfig.AppsConfig { return s.appsConfig }, s.configStore,
 		s.FinalizeOnboarding, s.FinalizeOffboarding, s.publishSelfSnapshot,
 	)
+	providersExec.publishCatalog = s.publishCatalog
+
 	router.POST("/providers/:name/install/authority", providersExec.HandleInternalInstallAuthority)
 	router.GET("/providers", providersExec.HandleInternalListProviders)
 	router.GET("/providers/:name", providersExec.HandleInternalGetProvider)
@@ -218,17 +220,6 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// These endpoints allow worker nodes to sync models from master node
 	// over the internal LAN instead of downloading from the internet.
 	// Security: Cluster key required, path validation, SHA256 verification
-	// refreshIndex fires when a cross-node sync completes on this node.
-	// Invalidates the cluster-join ModelCache, which cascades to the
-	// Registry scan cache, then publishes the new model to readers
-	// before completion becomes visible.
-	var refreshIndex func() error
-	if s.model.Cache != nil {
-		refreshIndex = func() error {
-			_, err := s.RescanLocal()
-			return err
-		}
-	}
 
 	getEndpoints := func() []*mesh.Endpoint {
 		if s.cluster.coordinator == nil {
@@ -254,7 +245,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		mtlsClientFn,
 		s.config.Cluster.BindPort,
 		func() context.Context { return s.shutdownCtx },
-		refreshIndex,
+		s.publishCatalog,
 		getEndpoints,
 	).WithJobs(s.jobs)
 	syncExecutor.ensureFeatures = s.providers.appMgr.EnsureModelFeatures

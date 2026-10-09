@@ -4,7 +4,9 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -55,11 +57,63 @@ func writeOllamaResponse(c *gin.Context, resp *http.Response) {
 	}
 }
 
+// writeOllamaMutation holds completion until the updated catalog is published.
+func writeOllamaMutation(c *gin.Context, resp *http.Response, publish func() error) (err error) {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || publish == nil {
+		writeOllamaResponse(c, resp)
+		return nil
+	}
+	defer func() {
+		if err != nil {
+			err = newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())
+			if c.Writer.Written() {
+				_ = json.NewEncoder(c.Writer).Encode(gin.H{"error": err.Error()})
+				c.Writer.Flush()
+			} else {
+				RespondToErrorOllama(c, err)
+			}
+		}
+	}()
+	var pending []byte
+	streaming := isStreamingResponse(resp)
+	if streaming {
+		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
+		c.Status(resp.StatusCode)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			if pending != nil {
+				if _, err = c.Writer.Write(append(pending, '\n')); err != nil {
+					return err
+				}
+				c.Writer.Flush()
+			}
+			pending = append([]byte(nil), scanner.Bytes()...)
+		}
+		if err = scanner.Err(); err != nil {
+			return err
+		}
+		if pending != nil {
+			pending = append(pending, '\n')
+		}
+	} else if pending, err = io.ReadAll(resp.Body); err != nil {
+		return err
+	}
+	if err = publish(); err != nil {
+		return err
+	}
+	if !streaming {
+		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
+		c.Status(resp.StatusCode)
+	}
+	return streamResponseWithFlush(c.Writer, bytes.NewReader(pending))
+}
+
 // proxyToOllamaProvider forwards a request to an Ollama daemon and streams
 // the response back. Non-streaming responses go through the body-normalizer
 // registry (like MLX's reasoning→content fix); no Ollama normalizer is
 // registered today, so the hot path stays allocation-free.
-func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved, path string, body []byte) {
+func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved, path string, body []byte, publish func() error) {
 	targetURL := strings.TrimRight(daemon.Endpoint, "/") + path
 
 	// Preserve the original HTTP method (e.g., DELETE for /api/delete)
@@ -79,6 +133,11 @@ func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved,
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if publish != nil {
+		_ = writeOllamaMutation(c, resp, publish)
+		return
+	}
 
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 

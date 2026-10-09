@@ -33,6 +33,7 @@ import (
 
 // ProvidersExecutor handles direct local provider operations.
 type ProvidersExecutor struct {
+	publishCatalog   func() error
 	mgr              *prov_apps.ProviderAppManager
 	nodeName         string
 	getLocalAppsInfo func() []prov_apps.LocalProviderInfo
@@ -99,6 +100,9 @@ func (e *ProvidersExecutor) afterLifecycle(hook func() error) func() error {
 		}
 		if e.republishState != nil {
 			e.republishState()
+		}
+		if e.publishCatalog != nil {
+			err = errors.Join(err, e.publishCatalog())
 		}
 		return err
 	}
@@ -234,13 +238,13 @@ func (e *ProvidersExecutor) HandleInternalUpdateProvider(c *gin.Context) {
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 		if enabled {
-			if err := e.finalizeOn(name); err != nil {
+			if err := e.afterLifecycle(func() error { return e.finalizeOn(name) })(); err != nil {
 				respondFinalizeErr(c, "enable failed", err)
 				return
 			}
 			actions = append(actions, "enabled")
 		} else {
-			if err := e.finalizeOff(name); err != nil {
+			if err := e.afterLifecycle(func() error { return e.finalizeOff(name) })(); err != nil {
 				respondFinalizeErr(c, "disable failed", err)
 				return
 			}

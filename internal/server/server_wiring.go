@@ -7,9 +7,10 @@ package server
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/fallback"
@@ -45,6 +46,7 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 			return s.cluster.listener.CoordinatorURL()
 		},
 	).WithSyncWait(s.awaitProviderSync).WithCatalog(s.catalogWeights)
+	executor.publishCatalog = s.publishCatalog
 	executor.installAuthority = s.checkNodeInstallAuthority
 	return executor
 }
@@ -149,10 +151,9 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 		},
 		func(app string) bool { return isCloudProvider(s.appsConfig, app) },
 		s.configStore,
-		s.model.Cache.RefreshCacheSync,
+		s.publishCatalog,
 		getResourceMetrics,
 	)
-	executor.invalidateCache = s.model.Cache.Invalidate
 	executor.inventoryStatus = s.providerInventoryStatus
 	if s.providers.appMgr != nil {
 		executor.modelDetails = s.providers.appMgr.ModelFeatureDetails
@@ -176,24 +177,23 @@ func (s *Server) newOllamaService() OllamaService {
 		s.httpClient,
 		s.cluster.router != nil,
 		s.dispatchOllamaInference,
-		s.invalidateModelCache,
+		s.publishCatalog,
 	)
 }
 
-// invalidateModelCache forces a fresh source rescan and warms the
-// catalog so subsequent /v1/models calls see the result without a
-// per-call scan. Used by the post-pull hook on /api/pull. The eager
-// refresh mirrors RescanLocal's pattern: pure Invalidate alone
-// has been observed to leave the catalog stale until a future
-// ListModels triggers the rescan, which loses the unification
-// guarantee for agents calling /v1/* immediately after /api/pull.
-func (s *Server) invalidateModelCache() {
-	if _, err := s.RescanLocal(); err != nil {
-		// The pull already succeeded; a rescan failure here just means
-		// the model won't appear on /v1/models until the next periodic
-		// scan or explicit /zzrouter/v1/models/scan call.
-		slog.Warn("post-pull model rescan failed", "error", err)
+func (s *Server) publishCatalog() error {
+	_, err := s.RescanLocal()
+	return err
+}
+
+func publishOr503(c *gin.Context, publish func() error) bool {
+	if publish != nil {
+		if err := publish(); err != nil {
+			ServiceUnavailable(c, err.Error())
+			return false
+		}
 	}
+	return true
 }
 
 // newDeploymentsExecutor wires a DeploymentsExecutor with narrow deps from Server.
@@ -205,11 +205,10 @@ func (s *Server) newDeploymentsExecutor() *DeploymentsExecutor {
 		s.buildIncompatibleDeployError,
 		s.model.Downloads,
 		s.model.Registry,
-		s.model.AutoRoute,
 		s.ollamaDaemon,
 		func() *pkgConfig.AppsConfig { return s.appsConfig },
 		s.configStore,
-		s.model.Cache.RefreshCacheSync,
+		s.publishCatalog,
 		s.jobs,
 	)
 	e.ensureFeatures = s.providers.appMgr.EnsureModelFeatures

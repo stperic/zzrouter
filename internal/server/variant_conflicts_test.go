@@ -362,7 +362,7 @@ func TestVariants_WorkerRescanReleasesRemovedWeightsConflict(t *testing.T) {
 	}
 }
 
-func TestVariants_WorkerPartialDeletionInvalidatesConflict(t *testing.T) {
+func TestVariants_WorkerPartialDeletionPublishesConflict(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
 	addConflictingWeights(t, s, variantChat)
@@ -382,11 +382,11 @@ func TestVariants_WorkerPartialDeletionInvalidatesConflict(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
 	assert.Equal(t, 2, result.Deleted)
 	require.Len(t, result.Errors, 1)
-	assert.Equal(t, false, s.model.Cache.GetCacheStats()["valid"])
+	assert.Equal(t, true, s.model.Cache.GetCacheStats()["valid"])
 	require.NoError(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat))
 }
 
-func TestRemoteRescanInvalidatesCoordinatorEvidenceOnSuccess(t *testing.T) {
+func TestRemoteRescanKeepsCoordinatorPublishedEvidence(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusInternalServerError} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			s := variantNode(t)
@@ -402,7 +402,7 @@ func TestRemoteRescanInvalidatesCoordinatorEvidenceOnSuccess(t *testing.T) {
 			c.Request = httptest.NewRequest("POST", "/zzrouter/v1/models/scan?node=remote", nil)
 			service.handleRescanModels(c)
 			require.Equal(t, status, w.Code, w.Body.String())
-			assert.Equal(t, status >= http.StatusBadRequest, s.model.Cache.GetCacheStats()["valid"])
+			assert.Equal(t, true, s.model.Cache.GetCacheStats()["valid"])
 		})
 	}
 }

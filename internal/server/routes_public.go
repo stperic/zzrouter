@@ -30,9 +30,6 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// a subset of these and are registered on their own engine on a worker,
 	// so that subset is built by a function both roles call.
 	s.bindCompatServices(routingRouter)
-	s.services.Model.SetOnModelDelete(func(modelName string) {
-		s.model.AutoRoute.SyncAfterDelete(modelName)
-	})
 	s.services.Search = NewModelSearchService(func() *pkgConfig.AppsConfig { return s.appsConfig }, s.model.Pricing)
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
 	s.services.Load = NewLoadService(s, routingRouter).
@@ -172,7 +169,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// runs every listener, returns the per-listener ReloadReport.
 	// Route is registered even when s.configStore is nil so
 	// disabled-feature probes get 503 rather than a silent 404.
-	registerConfigReloadRoute(router, s.configStore)
+	registerConfigReloadRoute(router, s.configStore, s.publishCatalog)
 
 	// Update: Auto-update management
 	// Lazy getter: setupRoutes runs before the scheduler is constructed
@@ -208,6 +205,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		}
 
 		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc)
+		providersController.publishCatalog = s.publishCatalog
 		providersController.RegisterPublicRoutes(router)
 	}
 

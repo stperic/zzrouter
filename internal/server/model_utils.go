@@ -74,10 +74,7 @@ func (s *Server) RescanLocal() (map[string]any, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultCacheRefreshTimeout)
 	defer cancel()
-	// Invalidate the cluster-join ModelCache; this cascades to the
-	// Registry scan cache so the refresh re-scans all sources.
-	// Using cache.Invalidate rather than registry.Rescan keeps the
-	// single-invalidation-entry-point contract.
+	// Cache invalidation also drops the registry scan evidence.
 	if s.model.Cache != nil {
 		s.model.Cache.Invalidate()
 		if err := s.model.Cache.RefreshCacheSync(ctx); err != nil {
@@ -92,7 +89,10 @@ func (s *Server) RescanLocal() (map[string]any, error) {
 		}
 	}
 
-	models, _ := s.model.Registry.ListModels()
+	models, err := s.model.Registry.ListModels()
+	if err != nil {
+		return nil, err
+	}
 
 	return map[string]any{
 		"message":      "Rescan completed",
