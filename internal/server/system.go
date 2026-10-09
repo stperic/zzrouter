@@ -104,14 +104,15 @@ type SystemExecutor struct {
 	getSystemInfo        func() map[string]any
 	getPoolStats         func() *connectivity.ConnectionPoolStats
 	invalidateCache      func()
+	refreshCacheSync     func(context.Context) error
 	refreshEndpoints     func()           // Coord-side broadcast re-probe; nil on workers
 	refreshEndpointByURL func(url string) // Coord-side narrowed re-probe; nil on workers
 	markEndpointDown     func(url string) // Coord-side force DOWN; nil on workers
 }
 
 // NewSystemExecutor creates a new system executor
-func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats, invalidateCache func(), refreshEndpoints func(), refreshEndpointByURL func(string), markEndpointDown func(url string)) *SystemExecutor {
-	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats, invalidateCache: invalidateCache, refreshEndpoints: refreshEndpoints, refreshEndpointByURL: refreshEndpointByURL, markEndpointDown: markEndpointDown}
+func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats, invalidateCache func(), refreshCacheSync func(context.Context) error, refreshEndpoints func(), refreshEndpointByURL func(string), markEndpointDown func(url string)) *SystemExecutor {
+	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats, invalidateCache: invalidateCache, refreshCacheSync: refreshCacheSync, refreshEndpoints: refreshEndpoints, refreshEndpointByURL: refreshEndpointByURL, markEndpointDown: markEndpointDown}
 }
 
 // HandleInternalGetSystemInfo handles GET /zzrouter/internal/system (internal API)
@@ -192,9 +193,13 @@ func (e *SystemExecutor) HandleInternalRefreshCache(c *gin.Context) {
 		e.refreshEndpoints()
 	}
 
+	if err := e.refreshCacheSync(c.Request.Context()); err != nil {
+		ServiceUnavailable(c, err.Error())
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "success",
-		"message": "Cache invalidated successfully",
+		"message": "Cache refreshed successfully",
 	})
 }
 

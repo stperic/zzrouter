@@ -649,7 +649,12 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 		"files_failed", result.FilesFailed)
 
 	if result.Success && e.refreshIndex != nil {
-		_ = e.refreshIndex()
+		if err := e.refreshIndex(); err != nil {
+			if handle != nil {
+				handle.Fail(err)
+			}
+			return
+		}
 	}
 
 	if handle != nil {

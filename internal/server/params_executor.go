@@ -101,6 +101,7 @@ func validateEnvValue(key, value string) error {
 // ParamsExecutor handles direct local parameter operations.
 // All config mutations are serialized by the AppsConfigStore.
 type ParamsExecutor struct {
+	publishCatalog   func() error
 	installAuthority func(context.Context, string, pkgConfig.ServiceConfig) error
 	appsConfig       func() *pkgConfig.AppsConfig
 	backend          *backend.Resolver
@@ -576,6 +577,9 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 	// fan-out by the time the mutation returns, so this waits on it
 	// rather than starting anything.
 	sync := e.awaitSync.await(c)
+	if !publishOr503(c, e.publishCatalog) {
+		return
+	}
 	runs := e.runs.report(c.Request.Context(), provider, sync, restart)
 
 	// Respond with refreshed resolved view + new ETag.

@@ -28,7 +28,8 @@ type DownloadTracker struct {
 	cancelFuncs        map[string]context.CancelFunc // Cancel functions for stopping downloads
 	generations        map[string]uint64             // Generation counter per key; prevents stale goroutines from overwriting newer downloads
 	mu                 sync.RWMutex
-	onCompleteCallback func() // Callback fired when a download transitions to completed
+	completionMu       sync.Mutex // Serialize publication without blocking status readers.
+	onCompleteCallback func() error
 
 	// Persistence fields
 	stateFilePath string      // Path to downloads.json
@@ -71,11 +72,10 @@ func NewDownloadTrackerWithPersistence(stateFilePath string) *DownloadTracker {
 }
 
 // SetOnCompleteCallback sets the callback fired when a download transitions
-// to completed. The callback runs in its own goroutine (so the tracker lock
-// is not held across arbitrary caller code) and is invoked once per
-// completion event — no debounce. Consumers that need coalescing should
-// do it on their side.
-func (dt *DownloadTracker) SetOnCompleteCallback(callback func()) {
+// to completed. The callback runs synchronously without the tracker lock
+// and is invoked once per completion event, before completed is visible.
+// No debounce. Consumers that need coalescing should do it on their side.
+func (dt *DownloadTracker) SetOnCompleteCallback(callback func() error) {
 	dt.mu.Lock()
 	defer dt.mu.Unlock()
 	dt.onCompleteCallback = callback
@@ -149,7 +149,11 @@ func extractQuantizationFromFilename(filename string) string {
 // download's generation. The generation check prevents a stale
 // goroutine (from a previous download that was stopped) from
 // overwriting a newer download's state.
-func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
+func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) error {
+	if status == string(constants.StatusCompleted) {
+		dt.completionMu.Lock()
+		defer dt.completionMu.Unlock()
+	}
 	dt.mu.Lock()
 
 	isTerminal := false
@@ -157,16 +161,27 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 		// Reject writes from stale goroutines (generation mismatch)
 		if download.Generation != gen {
 			dt.mu.Unlock()
-			return
+			return nil
 		}
 
 		// Don't overwrite terminal states (cancelled, failed, completed)
 		if IsTerminalStatus(download.Status) {
 			dt.mu.Unlock()
-			return
+			return nil
 		}
 
-		wasCompleted := download.Status == string(constants.StatusCompleted)
+		if status == string(constants.StatusCompleted) && dt.onCompleteCallback != nil {
+			cb := dt.onCompleteCallback
+			dt.mu.Unlock()
+			if err := cb(); err != nil {
+				return err
+			}
+			dt.mu.Lock()
+			if dt.downloads[key] != download || IsTerminalStatus(download.Status) {
+				dt.mu.Unlock()
+				return nil
+			}
+		}
 
 		download.Status = status
 		download.CurrentFile = currentFile
@@ -186,36 +201,22 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 		}
 
 		isTerminal = IsTerminalStatus(status)
-
-		// Fire the completion callback on the completed-transition edge.
-		// No debounce: the caller's cache-invalidation path must not be
-		// gated on a timer, and two consecutive completions correctly
-		// invalidate twice. Run in its own goroutine so the tracker lock
-		// isn't held across callback code.
-		if status == string(constants.StatusCompleted) && !wasCompleted && dt.onCompleteCallback != nil {
-			cb := dt.onCompleteCallback
-			go cb()
-		}
 	}
-
 	dt.mu.Unlock()
 
 	dt.schedulePersist(isTerminal)
+	return nil
 }
 
 // CompleteDownload marks a download as completed
 func (dt *DownloadTracker) CompleteDownload(key string) {
-	dt.mu.Lock()
-
-	if download, exists := dt.downloads[key]; exists {
-		download.Status = string(constants.StatusCompleted)
-		download.Progress = 100
-		download.UpdatedAt = utils.Now()
+	if download := dt.GetDownloadStatus(key); download != nil {
+		if err := dt.UpdateDownloadFullGen(key, download.Generation, string(constants.StatusCompleted), "", download.FilesDownloaded, download.FilesTotal, 100, download.Downloaded, download.TotalSize, 0); err != nil {
+			if err := dt.UpdateDownloadFullGen(key, download.Generation, string(constants.StatusFailed), err.Error(), download.FilesDownloaded, download.FilesTotal, download.Progress, download.Downloaded, download.TotalSize, 0); err != nil {
+				slog.Warn("Failed to record download failure", "download", key, "error", err)
+			}
+		}
 	}
-
-	dt.mu.Unlock()
-
-	dt.schedulePersist(true)
 }
 
 // FailDownload marks a download as failed

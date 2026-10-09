@@ -20,11 +20,11 @@ import (
 )
 
 // InternalExecutor handles direct execution against local providers
-// Routing remains with the caller; local mutations invalidate catalog evidence.
+// Routing remains with the caller; local mutations publish catalog evidence.
 type InternalExecutor struct {
+	publishCatalog     func() error
 	modelDetails       func(string, string, map[string]any) map[string]any
 	inventoryStatus    func(context.Context, map[string]string) []cache.InventoryUnavailable
-	invalidateCache    func()
 	registry           *modelregistry.Registry
 	getNodename        func() string
 	ollamaDaemon       func() (*backend.Resolved, error)
@@ -32,7 +32,6 @@ type InternalExecutor struct {
 	getHFConnector     func() *huggingface.Connector
 	isCloudProvider    func(string) bool
 	configStore        *pkgConfig.AppsConfigStore
-	refreshCacheSync   func(context.Context) error
 	getResourceMetrics func() any
 }
 
@@ -45,7 +44,7 @@ func NewInternalExecutor(
 	getHFConnector func() *huggingface.Connector,
 	isCloudProvider func(string) bool,
 	configStore *pkgConfig.AppsConfigStore,
-	refreshCacheSync func(context.Context) error,
+	publishCatalog func() error,
 	getResourceMetrics func() any,
 ) *InternalExecutor {
 	return &InternalExecutor{
@@ -56,7 +55,7 @@ func NewInternalExecutor(
 		getHFConnector:     getHFConnector,
 		isCloudProvider:    isCloudProvider,
 		configStore:        configStore,
-		refreshCacheSync:   refreshCacheSync,
+		publishCatalog:     publishCatalog,
 		getResourceMetrics: getResourceMetrics,
 	}
 }
@@ -244,13 +243,9 @@ func (e *InternalExecutor) HandleInternalDeleteModels(c *gin.Context) {
 
 	utils.LogDebugf("[InternalAPI] Deleted %d models, %d errors", deleted, len(errors))
 
-	// Every node has admission evidence, including workers. A partial deletion
-	// also changes that evidence.
 	if deleted > 0 {
-		if e.invalidateCache != nil {
-			e.invalidateCache()
-		} else {
-			e.registry.InvalidateScanCache()
+		if !publishOr503(c, e.publishCatalog) {
+			return
 		}
 	}
 
@@ -299,9 +294,6 @@ func (e *InternalExecutor) deleteLocal(c *gin.Context, req *DeleteModelsRequest)
 			} else {
 				modelsToDelete = append(modelsToDelete, cloudModelNames...)
 
-				if err := e.refreshCacheSync(c.Request.Context()); err != nil {
-					slog.Warn("Cache refresh after cloud model removal failed", "error", err)
-				}
 				slog.Info("Cloud models removed", "count", len(cloudModelNames))
 			}
 		}
@@ -385,10 +377,8 @@ func (e *InternalExecutor) HandleInternalRescanModels(c *gin.Context) {
 		InternalNodeError(c, "model registry not initialized")
 		return
 	}
-	if e.invalidateCache != nil {
-		e.invalidateCache()
-	} else {
-		e.registry.InvalidateScanCache()
+	if !publishOr503(c, e.publishCatalog) {
+		return
 	}
 
 	models, err := e.GetLocalModels(c.Request.Context())

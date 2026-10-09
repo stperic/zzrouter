@@ -232,9 +232,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 				s.model.Cache.Invalidate()
 			}
 			s.publishSelfSnapshot()
-			if s.cluster.signaler != nil {
-				s.cluster.signaler.NotifyCacheRefresh()
-			}
+			s.notifyCoordinatorAsync()
 		}),
 		prov_apps.WithNodename(s.node.Nodename),
 		prov_apps.WithInstallPolicy(cfg.Providers.InstallPolicyFile),
@@ -359,7 +357,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 		// Wire Cache — must happen after NodeCache is built. AutoRoute is
 		// set via SetAutoRoute below (breaks the construction cycle:
-		// autoroute.New needs Cache.GetAllModels and Cache.Invalidate).
+		// autoroute.New needs Cache.GetAllModels).
 		s.model.Cache = cache.New(cache.Config{
 			InventoryStatus: s.providerInventoryStatus,
 			ModelDetails: func(provider, model string, details map[string]any) map[string]any {
@@ -410,22 +408,16 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			},
 		})
 
-		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.Invalidate, s.model.Cache.GetAllModels)
+		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.GetAllModels)
 		s.model.Cache.SetAutoRoute(s.model.AutoRoute)
 
 		// Set callback to invalidate/refresh cache when downloads complete
-		s.model.Downloads.SetOnCompleteCallback(func() {
-			if cfg.Cluster.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
-			} else {
-				s.model.Cache.Invalidate()
-			}
-		})
+		s.model.Downloads.SetOnCompleteCallback(s.publishCatalog)
 
 		// Workers notify the coord that its per-endpoint snapshot is stale.
 		s.SetOnFinalizeCallback(func(_ string) {
 			if s.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
+				s.notifyCoordinatorAsync()
 			}
 		})
 

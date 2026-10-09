@@ -32,6 +32,7 @@ type ProviderRegistrar interface {
 }
 
 type ProvidersController struct {
+	publishCatalog   func() error
 	appsService      *AppsService                  // runtime status: list, get, enable/disable (always available)
 	versionsService  *ProviderVersionsService      // upstream release reporting (nil on workers: checks are coordinator-side)
 	providersService *ProvidersService             // lifecycle: install, upgrade, uninstall (nil on workers)
@@ -456,6 +457,9 @@ func (ctrl *ProvidersController) VerifyProvider(c *gin.Context) {
 		// MUST report the drift rather than lying with a 200.
 		if err := ctrl.registrar.FinalizeOnboarding(name); err != nil {
 			respondFinalizeErr(c, "verify succeeded but finalize failed", err)
+			return
+		}
+		if !publishOr503(c, ctrl.publishCatalog) {
 			return
 		}
 		respondSuccess(c, "Provider verified", gin.H{

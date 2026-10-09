@@ -69,7 +69,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 
 	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.isLocalNodeCompatible)
 	hostsExecutor.eligibleProviders = s.eligibleDeployProviders
-	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
+	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
 
 	// ========================================================================
 	// SYSTEM - Health and version for cluster monitoring
@@ -126,6 +126,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		func() *pkgConfig.AppsConfig { return s.appsConfig }, s.configStore,
 		s.FinalizeOnboarding, s.FinalizeOffboarding, s.publishSelfSnapshot,
 	)
+	providersExec.publishCatalog = s.publishCatalog
+
 	router.POST("/providers/:name/install/authority", providersExec.HandleInternalInstallAuthority)
 	router.GET("/providers", providersExec.HandleInternalListProviders)
 	router.GET("/providers/:name", providersExec.HandleInternalGetProvider)
@@ -218,17 +220,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// These endpoints allow worker nodes to sync models from master node
 	// over the internal LAN instead of downloading from the internet.
 	// Security: Cluster key required, path validation, SHA256 verification
-	// refreshIndex fires when a cross-node sync completes on this node.
-	// Invalidates the cluster-join ModelCache, which cascades to the
-	// Registry scan cache, so the new model propagates to readers on
-	// the next query.
-	var refreshIndex func() error
-	if s.model.Cache != nil {
-		refreshIndex = func() error {
-			s.model.Cache.Invalidate()
-			return nil
-		}
-	}
+
 	getEndpoints := func() []*mesh.Endpoint {
 		if s.cluster.coordinator == nil {
 			return nil
@@ -253,7 +245,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		mtlsClientFn,
 		s.config.Cluster.BindPort,
 		func() context.Context { return s.shutdownCtx },
-		refreshIndex,
+		s.publishCatalog,
 		getEndpoints,
 	).WithJobs(s.jobs)
 	syncExecutor.ensureFeatures = s.providers.appMgr.EnsureModelFeatures

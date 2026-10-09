@@ -17,7 +17,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
-	"github.com/stperic/zzrouter/pkg/model/autoroute"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
@@ -76,11 +75,10 @@ type DeploymentsExecutor struct {
 	buildIncompatibleError func(string, string, string) string
 	downloads              *modelregistry.DownloadTracker
 	registry               *modelregistry.Registry
-	autoRoute              *autoroute.Manager
 	ollamaDaemon           func() (*backend.Resolved, error)
 	appsConfig             func() *pkgConfig.AppsConfig
 	configStore            *pkgConfig.AppsConfigStore
-	refreshCacheSync       func(context.Context) error
+	publishCatalog         func() error
 	jobs                   *jobs.Registry
 	ensureFeatures         func(context.Context, string, string, []string, []string, func(string)) error
 
@@ -100,11 +98,10 @@ func NewDeploymentsExecutor(
 	buildIncompatibleError func(string, string, string) string,
 	downloads *modelregistry.DownloadTracker,
 	registry *modelregistry.Registry,
-	autoRoute *autoroute.Manager,
 	ollamaDaemon func() (*backend.Resolved, error),
 	appsConfig func() *pkgConfig.AppsConfig,
 	configStore *pkgConfig.AppsConfigStore,
-	refreshCacheSync func(context.Context) error,
+	publishCatalog func() error,
 	jobsReg *jobs.Registry,
 ) *DeploymentsExecutor {
 	return &DeploymentsExecutor{
@@ -114,11 +111,10 @@ func NewDeploymentsExecutor(
 		buildIncompatibleError: buildIncompatibleError,
 		downloads:              downloads,
 		registry:               registry,
-		autoRoute:              autoRoute,
 		ollamaDaemon:           ollamaDaemon,
 		appsConfig:             appsConfig,
 		configStore:            configStore,
-		refreshCacheSync:       refreshCacheSync,
+		publishCatalog:         publishCatalog,
 		jobs:                   jobsReg,
 		jobKeys:                make(map[string]string),
 	}
@@ -381,12 +377,13 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
 				return
 			default:
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
+				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+					status, currentFile = string(constants.StatusFailed), err.Error()
+					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
+					}
+				}
 				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
-
-			if status == string(constants.StatusCompleted) && e.autoRoute != nil {
-				e.autoRoute.SyncAfterPull()
 			}
 		}
 
@@ -471,12 +468,13 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
 				return
 			default:
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
+				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+					status, currentFile = string(constants.StatusFailed), err.Error()
+					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
+					}
+				}
 				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
-
-			if status == string(constants.StatusCompleted) && e.autoRoute != nil {
-				e.autoRoute.SyncAfterPull()
 			}
 		}
 
@@ -630,13 +628,11 @@ func (e *DeploymentsExecutor) registerCloudModel(c *gin.Context, providerName, m
 		return
 	}
 
-	if err := e.refreshCacheSync(c.Request.Context()); err != nil {
-		slog.Warn("Cache refresh after cloud model registration failed", "error", err)
+	if !publishOr503(c, e.publishCatalog) {
+		return
 	}
 
 	slog.Info("Cloud model registered", "provider", providerName, "model", modelName)
-
-	e.autoRoute.SyncAfterPull()
 
 	c.JSON(http.StatusOK, e.newDeploymentResult(
 		downloadKey, modelName, providerName,

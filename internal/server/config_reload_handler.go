@@ -18,7 +18,7 @@ import (
 //   - 409 Conflict when any listener flagged RequiresRestart.
 //   - 422 Unprocessable Entity when any listener Rejected the change.
 //   - 500 Internal Server Error if the disk read fails.
-func registerConfigReloadRoute(router *gin.RouterGroup, store *pkgConfig.AppsConfigStore) {
+func registerConfigReloadRoute(router *gin.RouterGroup, store *pkgConfig.AppsConfigStore, publishCatalog func() error) {
 	router.POST("/config/reload", func(c *gin.Context) {
 		if store == nil {
 			ServiceUnavailable(c, "provider config is not loaded on this node")
@@ -27,6 +27,9 @@ func registerConfigReloadRoute(router *gin.RouterGroup, store *pkgConfig.AppsCon
 		report, err := store.Reload()
 		if err != nil {
 			InternalNodeError(c, err.Error())
+			return
+		}
+		if !publishOr503(c, publishCatalog) {
 			return
 		}
 		status := http.StatusOK

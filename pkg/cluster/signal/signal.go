@@ -19,8 +19,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // errCoordNotWired means the caller can't reach the coordinator yet —
@@ -47,7 +45,7 @@ type Config struct {
 }
 
 // Signaler emits worker→coord notifications. Lifecycle-gated via
-// Start/Stop so in-flight notify goroutines drain before server shutdown.
+// Start/Stop so in-flight notifications drain before server shutdown.
 type Signaler struct {
 	cfg Config
 
@@ -73,8 +71,8 @@ func (s *Signaler) Start(ctx context.Context) {
 	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx)
 }
 
-// Stop cancels the lifecycle ctx and waits for in-flight notify
-// goroutines to exit. Bounded by ctx. Safe to call repeatedly.
+// Stop cancels the lifecycle ctx and waits for in-flight notifications
+// to exit. Bounded by ctx. Safe to call repeatedly.
 func (s *Signaler) Stop(ctx context.Context) {
 	s.lifecycleMu.Lock()
 	cancel := s.lifeCancel
@@ -98,26 +96,34 @@ func (s *Signaler) Stop(ctx context.Context) {
 	}
 }
 
-// NotifyCacheRefresh fires one refresh ping to the coordinator with
+// NotifyCacheRefresh waits for coordinator catalog publication with
 // bounded retries. No-op on coordinator nodes or pre-Start. Tracked
-// via the wait group so Stop blocks until in-flight goroutines exit.
+// via the wait group so Stop blocks until in-flight notifications exit.
 //
 // The body carries {"node_url": workerURL} so the coord can narrow
 // its refresh to just this sender instead of broadcasting to every
 // endpoint. Empty body is still accepted on the coord side for
 // compatibility with pre-narrowing workers.
-func (s *Signaler) NotifyCacheRefresh() {
+func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
 	if s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
-		return
+		return nil
 	}
 	s.lifecycleMu.Lock()
-	ctx := s.lifeCtx
-	if ctx == nil {
+	lifeCtx := s.lifeCtx
+	if lifeCtx == nil {
 		s.lifecycleMu.Unlock()
-		return
+		return nil
 	}
 	s.notifyWG.Add(1)
 	s.lifecycleMu.Unlock()
+	defer s.notifyWG.Done()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(lifeCtx, cancel)
+	defer stop()
+	if lifeCtx.Err() != nil {
+		cancel()
+	}
 
 	body := []byte("{}")
 	if s.cfg.WorkerPublicURL != nil {
@@ -128,43 +134,43 @@ func (s *Signaler) NotifyCacheRefresh() {
 		}
 	}
 
-	go func() {
-		defer s.notifyWG.Done()
-		defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
-
-		const (
-			maxRetries  = 3
-			perAttempt  = 10 * time.Second
-			initBackoff = 1 * time.Second
-		)
-		backoff := initBackoff
-		for attempt := range maxRetries {
-			if attempt > 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				backoff *= 2
+	const (
+		maxRetries  = 3
+		perAttempt  = 10 * time.Second
+		initBackoff = 1 * time.Second
+	)
+	backoff := initBackoff
+	var err error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
 			}
-			callCtx, cancel := context.WithTimeout(ctx, perAttempt)
-			err := s.doCoordPost(callCtx, "/zzrouter/v1/internal/models/refresh", body)
-			cancel()
-			if err == nil {
-				slog.Info("[Worker] Master cache refresh notification sent successfully")
-				return
-			}
-			if errors.Is(err, errCoordNotWired) {
-				slog.Debug("[Worker] Skipping master notify", "reason", err)
-				return
-			}
-			slog.Warn("[Worker] Master notify attempt failed", "attempt", attempt, "err", err)
-			if ctx.Err() != nil {
-				return
-			}
+			backoff *= 2
 		}
-		slog.Warn("[Worker] Failed to notify master after attempts", "max_retries", maxRetries)
-	}()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		callCtx, cancel := context.WithTimeout(ctx, perAttempt)
+		err = s.doCoordPost(callCtx, "/zzrouter/v1/internal/models/refresh", body)
+		cancel()
+		if err == nil {
+			slog.Info("[Worker] Master cache refresh notification sent successfully")
+			return nil
+		}
+		if errors.Is(err, errCoordNotWired) {
+			slog.Debug("[Worker] Skipping master notify", "reason", err)
+			return err
+		}
+		slog.Warn("[Worker] Master notify attempt failed", "attempt", attempt, "err", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	slog.Warn("[Worker] Failed to notify master after attempts", "max_retries", maxRetries)
+	return err
 }
 
 // SendGoodbye POSTs a synchronous goodbye to the coord so it can mark
