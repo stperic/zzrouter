@@ -10,10 +10,50 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDownload_CompletesMetadataOnlyDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "google", "gemma-4-E2B-it")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	held := []string{".gitattributes", "README.md", "chat_template.jinja", "config.json", "generation_config.json"}
+	for _, name := range held {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600))
+	}
+	manifest, err := integrity.CreateManifest(t.Context(), dir, "google/gemma-4-E2B-it", "")
+	require.NoError(t, err)
+	require.NoError(t, integrity.WriteManifest(dir, manifest))
+	hfc := &Connector{modelsDir: root, downloadBase: "https://hub.test/"}
+	models, err := hfc.ScanModels()
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.True(t, models[0].Incomplete)
+	var fetched []string
+	original := http.DefaultTransport
+	http.DefaultTransport = resumeTransport(func(req *http.Request) (*http.Response, error) {
+		fetched = append(fetched, filepath.Base(req.URL.Path))
+		return &http.Response{StatusCode: http.StatusOK, ContentLength: 2, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = original })
+	missing := []string{"model.safetensors", "tokenizer.json", "tokenizer_config.json", "processor_config.json"}
+	req := metadata.DownloadRequest{Repo: "google/gemma-4-E2B-it"}
+	for _, name := range append(held, missing...) {
+		req.Files = append(req.Files, metadata.DownloadFile{TreeFileEntry: metadata.TreeFileEntry{Name: name, Size: 2}})
+	}
+	require.NoError(t, hfc.Download(t.Context(), req, nil))
+	assert.Equal(t, missing, fetched)
+	models, err = hfc.ScanModels()
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.False(t, models[0].Incomplete)
+	manifest, err = integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	require.Len(t, manifest.Files, len(req.Files))
+}
 
 func TestFetchResumesWithRegistryAuth(t *testing.T) {
 

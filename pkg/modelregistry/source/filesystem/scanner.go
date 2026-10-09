@@ -69,7 +69,10 @@ func ScanModels(modelsDir string) ([]*metadata.ModelMetadata, error) {
 		if err != nil {
 			return nil //nolint:nilerr // best-effort scan: skip entries whose info is unreadable
 		}
-		models = appendModel(models, AnalyzeModelFile(modelsDir, path, info))
+		md := AnalyzeModelFile(modelsDir, path, info)
+		complete, err := layout.Complete(path)
+		md.Incomplete = !complete || err != nil
+		models = appendModel(models, md)
 		addedFiles[path] = true
 		return nil
 	})

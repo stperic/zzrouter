@@ -13,6 +13,8 @@ import "time"
 // references held by readers remain safe to read after an
 // invalidation but will reflect the pre-invalidation snapshot.
 type CachedModel struct {
+	// Incomplete marks entries lacking required weights.
+	Incomplete bool           `json:"incomplete,omitempty"`
 	Name       string         `json:"name"`
 	Model      string         `json:"model"`                 // Duplicate for Ollama compatibility
 	SourceID   string         `json:"source_id,omitempty"`   // Ollama model name for filtering

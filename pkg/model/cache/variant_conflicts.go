@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -49,12 +51,63 @@ func variantNameKey(name string) string {
 	}, name)
 }
 
-func buildVariantConflicts(models []*CachedModel, cfg *config.AppsConfig) map[string]*config.ModelNameConflictError {
-	conflicts := make(map[string]*config.ModelNameConflictError)
-	if cfg == nil {
-		return conflicts
+// buildModelRefusals indexes the names admission refuses: a name whose every copy lacks its weights,
+// and, overriding that, a configured variant name that real weights carry.
+func buildModelRefusals(models []*CachedModel, cfg *config.AppsConfig) map[string]error {
+	refusals := make(map[string]error)
+	servable := make(map[string]bool)
+	for _, m := range models {
+		for _, key := range admissionKeys(m) {
+			if !m.Incomplete {
+				servable[key] = true
+			} else if refusals[key] == nil {
+				refusals[key] = fmt.Errorf("%w: %s (re-download to repair)", layout.ErrIncomplete, m.Name)
+			}
+		}
 	}
+	for key := range servable {
+		delete(refusals, key)
+	}
+	variants := configuredVariants(cfg)
+	for _, m := range models {
+		if m.IsCloud || m.VariantOf != "" {
+			continue
+		}
+		keys := admissionKeys(m)
+		for _, key := range keys {
+			if name, reserved := variants[key]; reserved {
+				conflict := &config.ModelNameConflictError{Model: name, Node: m.Node}
+				for _, k := range keys {
+					refusals[k] = conflict
+				}
+				break
+			}
+		}
+	}
+	return refusals
+}
+
+// admissionKeys are the normalized names a request can use to reach m.
+func admissionKeys(m *CachedModel) []string {
+	aliases := []string{m.Name, utils.FormatModelName(m.Name), m.SourceID}
+	if strings.EqualFold(m.Format, "gguf") && !strings.EqualFold(path.Ext(m.Name), ".gguf") {
+		aliases = append(aliases, m.Name+".gguf", utils.FormatModelName(m.Name)+".gguf")
+	}
+	keys := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		if alias != "" {
+			keys = append(keys, variantNameKey(alias))
+		}
+	}
+	return keys
+}
+
+// configuredVariants maps each on-demand variant's normalized name to its configured spelling.
+func configuredVariants(cfg *config.AppsConfig) map[string]string {
 	names := make(map[string]string)
+	if cfg == nil {
+		return names
+	}
 	cfg.RangeApps(func(_ string, sc config.ServiceConfig) bool {
 		if sc.Mode == constants.AppModeOnDemand {
 			for name := range sc.Variants() {
@@ -63,28 +116,7 @@ func buildVariantConflicts(models []*CachedModel, cfg *config.AppsConfig) map[st
 		}
 		return true
 	})
-	for _, m := range models {
-		if m.IsCloud || m.VariantOf != "" {
-			continue
-		}
-		aliases := []string{m.Name, utils.FormatModelName(m.Name), m.SourceID}
-		if strings.EqualFold(m.Format, "gguf") && !strings.EqualFold(path.Ext(m.Name), ".gguf") {
-			aliases = append(aliases, m.Name+".gguf", utils.FormatModelName(m.Name)+".gguf")
-		}
-		for _, alias := range aliases {
-			name, exists := names[variantNameKey(alias)]
-			if !exists {
-				continue
-			}
-			conflict := &config.ModelNameConflictError{Model: name, Node: m.Node}
-			for _, identity := range aliases {
-				if identity != "" {
-					conflicts[variantNameKey(identity)] = conflict
-				}
-			}
-		}
-	}
-	return conflicts
+	return names
 }
 
 type variantAdmissionKey struct{}
@@ -102,10 +134,8 @@ func WithVariantAdmission(ctx context.Context) context.Context {
 	return context.WithValue(ctx, variantAdmissionKey{}, &variantAdmission{results: make(map[*Cache]map[string]error)})
 }
 
-// CheckVariantConflict consults the published conflict index without catalog or
-// filesystem I/O. Catalog mutation events rebuild it; cold launches also check
-// unpublished local weights before starting an engine.
-func (mc *Cache) CheckVariantConflict(ctx context.Context, model string) error {
+// CheckModelAdmission reads published refusals for incomplete weights and reserved names.
+func (mc *Cache) CheckModelAdmission(ctx context.Context, model string) error {
 	key := variantNameKey(model)
 	if memo, ok := ctx.Value(variantAdmissionKey{}).(*variantAdmission); ok {
 		memo.mu.Lock()
@@ -113,7 +143,7 @@ func (mc *Cache) CheckVariantConflict(ctx context.Context, model string) error {
 		if err, exists := memo.results[mc][key]; exists {
 			return err
 		}
-		err, confirmed := mc.checkVariantConflict(key)
+		err, confirmed := mc.checkModelAdmission(key)
 		if !confirmed {
 			return err
 		}
@@ -123,16 +153,16 @@ func (mc *Cache) CheckVariantConflict(ctx context.Context, model string) error {
 		memo.results[mc][key] = err
 		return err
 	}
-	err, _ := mc.checkVariantConflict(key)
+	err, _ := mc.checkModelAdmission(key)
 	return err
 }
 
-func (mc *Cache) checkVariantConflict(key string) (error, bool) {
+func (mc *Cache) checkModelAdmission(key string) (error, bool) {
 	mc.mu.RLock()
-	conflict, valid := mc.variantConflicts[key], mc.valid
+	refusal, valid := mc.modelRefusals[key], mc.valid
 	mc.mu.RUnlock()
-	if conflict != nil {
-		return conflict, true
+	if refusal != nil {
+		return refusal, true
 	}
 	if !valid {
 		mc.mu.Lock()
@@ -142,7 +172,7 @@ func (mc *Cache) checkVariantConflict(key string) (error, bool) {
 		}
 		mc.mu.Unlock()
 		if warn {
-			slog.Warn("Variant admission catalog unavailable; continuing without conflict evidence")
+			slog.Warn("Model admission catalog unavailable; continuing without file evidence")
 		}
 	}
 	return nil, valid

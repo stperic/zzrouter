@@ -77,7 +77,7 @@ type Cache struct {
 	// consult it for validity decisions.
 	admissionModels            []*CachedModel
 	localSnapshot              localModelSnapshot
-	variantConflicts           map[string]*pkgConfig.ModelNameConflictError
+	modelRefusals              map[string]error
 	generation                 uint64
 	admissionUnavailableLogged bool
 	models                     []*CachedModel
@@ -324,13 +324,16 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 	}
 	models = append(models, expandVariants(models, cfg)...)
 	mc.admissionModels = models
-	mc.variantConflicts = buildVariantConflicts(models, cfg)
+	mc.modelRefusals = buildModelRefusals(models, cfg)
 	mc.models = models
 	mc.indexByTarget = make(map[modelTarget]*CachedModel, len(models))
 	mc.indexByNode = make(map[modelNode]*CachedModel, len(models))
 	mc.indexByName = make(map[string]*CachedModel, len(models))
 	mc.indexBySuffix = make(map[string]*CachedModel, len(models))
 	for _, m := range models {
+		if m.Incomplete {
+			continue
+		}
 		for _, name := range []string{m.Name, m.SourceID} {
 			if name == "" {
 				continue
@@ -419,7 +422,7 @@ func (mc *Cache) ReloadConfig(fresh *pkgConfig.AppsConfig) pkgConfig.ReloadDispo
 	evidence := mc.admissionModels
 	mc.invalidateLocked()
 	mc.admissionModels = evidence
-	mc.variantConflicts = buildVariantConflicts(evidence, fresh)
+	mc.modelRefusals = buildModelRefusals(evidence, fresh)
 	mc.mu.Unlock()
 	return pkgConfig.DispositionApplied
 }
@@ -429,7 +432,7 @@ func (mc *Cache) invalidateLocked() {
 	mc.admissionUnavailableLogged = false
 	mc.admissionModels = nil
 	mc.localSnapshot = localModelSnapshot{}
-	clear(mc.variantConflicts)
+	clear(mc.modelRefusals)
 	// Retain the last snapshot only as evidence for failed nodes on the next publish.
 	clear(mc.indexByTarget)
 	clear(mc.indexByNode)
@@ -840,6 +843,7 @@ func (mc *Cache) modelItems(items []map[string]any) []*CachedModel {
 			Size:       extractInt64Field(item, "size"),
 			Digest:     extractStringField(item, "digest"),
 		}
+		cm.Incomplete, _ = item["incomplete"].(bool)
 		if isCloud, ok := item["is_cloud"].(bool); ok {
 			cm.IsCloud = isCloud
 		}
