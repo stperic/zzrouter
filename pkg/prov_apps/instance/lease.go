@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -25,7 +26,10 @@ type Lease struct {
 
 // Acquire waits for a slot within the queue timeout and stamps activity with hints.
 func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (*Lease, error) {
-	if err := i.acquireSlot(ctx); err != nil {
+	start := utils.Now()
+	err := i.acquireSlot(ctx)
+	proxy.RecordAdmissionWait(ctx, i.Provider, i.Model, admissionOutcome(err), utils.Now().Sub(start))
+	if err != nil {
 		return nil, err
 	}
 	atomic.AddInt64(&i.activeRequests, 1)
@@ -54,6 +58,21 @@ func (e *AdmissionError) Unwrap() error { return e.Reason }
 
 func admissionError(reason error) *AdmissionError {
 	return &AdmissionError{Reason: reason, RetryAfter: AdmissionRetryAfter}
+}
+
+// admissionOutcome names how a slot request ended, for the admission wait histogram. Anything
+// that is not an admission refusal or success is the caller giving up (a context error).
+func admissionOutcome(err error) string {
+	switch {
+	case err == nil:
+		return proxy.AdmissionAdmitted
+	case errors.Is(err, ErrQueueFull):
+		return proxy.AdmissionQueueFull
+	case errors.Is(err, ErrQueueWaitExpired):
+		return proxy.AdmissionWaitExpired
+	default:
+		return proxy.AdmissionCancelled
+	}
 }
 
 func (i *Instance) acquireSlot(ctx context.Context) error {
