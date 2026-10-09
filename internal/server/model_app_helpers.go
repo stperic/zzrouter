@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strconv"
 
@@ -183,10 +182,6 @@ func (s *Server) findCapableProvider(modelName string) (string, string, error) {
 	return provider, canonical, nil
 }
 
-// forwardToInstance forwards request to a running instance via reverse proxy
-// Handles both local and remote instances using getInstanceBackendNode
-// proxyToInstance is the shared implementation for forwarding requests to running instances.
-// When quiet is true, request/response logging is suppressed (used for the fast path).
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
 	// Concurrency gating: acquire a slot before proxying
 	if err := inst.AcquireConcurrency(req.Context()); err != nil {
@@ -234,141 +229,59 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 		req.Body = io.NopCloser(bytes.NewReader(body))
 		req.ContentLength = int64(len(body))
 	}
-	// Read out here rather than inside ModifyResponse: whether the caller
-	// asked to see usage is a property of the request, and the response
-	// closure has no business reaching back into the inbound context for
-	// it.
-	suppressUsage := suppressUsageFrameFromContext(req.Context())
 
-	// Create reverse proxy
-	// FlushInterval = -1 flushes immediately after every write to the client.
-	// Required for SSE (text/event-stream) and chunked JSON streaming.
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(targetURL)
-			pr.Out.Host = targetURL.Host
-			// An engine zzRouter launched takes no credential: the caller's
-			// key is for zzRouter, and the engine must not be able to log it.
-			scrubForUpstream(pr.Out.Header, backend.Engine())
-		},
-		FlushInterval: -1,
-		Transport:     s.httpStreamingClient.Transport,
+	proxyReq := req.Clone(req.Context())
+	proxyReq.URL.Scheme = targetURL.Scheme
+	proxyReq.URL.Host = targetURL.Host
+	proxyReq.Host = targetURL.Host
+	proxyReq.RequestURI = ""
+	proxyReq.Close = false
+	proxyReq.Header = upstreamHeaders(req.Header, backend.Engine())
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+		proxyReq.Header.Del(header)
 	}
-
-	var metered *wire.MeteredBody
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		if !quiet {
-			utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
-				resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, resp.TransferEncoding)
-		}
-
-		resp.Header.Set("X-Accel-Buffering", "no")
-		// Same normalization ForwardToBackend does: drop the engine's own
-		// identity before stamping ours. A local instance was answering
-		// with the engine's Server header and no node at all, so the one
-		// header agents use to confirm where a request ran was missing on
-		// exactly the path that serves local models.
-		stripUpstreamIdentifyingHeaders(resp.Header)
-		resp.Header.Set(constants.HeaderServingProvider, inst.Provider)
-		// Translate the loopback sentinel to the real coord hostname so
-		// agents see a stable cluster identity. For genuinely-remote
-		// instances the field already carries the worker node name.
-		servingNode := getInstanceBackendNode(inst)
-		if servingNode == constants.Localhost {
-			servingNode = s.GetNodename()
-		}
-		resp.Header.Set(constants.HeaderServingNode, servingNode)
-
-		// Backend errors: rewrite to the surface-appropriate envelope
-		// before the reverse proxy flushes to the client. /api/*
-		// (Ollama-native) keeps the upstream's flat {"error":"..."}
-		// shape; /v1/* (OpenAI-compat) gets the closed-vocab normalizer.
-		// applyRewrittenError handles the response-mutation idiom that
-		// httputil.ReverseProxy.ModifyResponse requires.
-		if resp.StatusCode >= 400 {
-			applyRewrittenError(req, resp, inst.FailureClassifier)
-			return nil
-		}
-
-		if resp.Header.Get("Content-Type") == "text/event-stream" {
-			resp.Header.Set("Cache-Control", "no-cache")
-			resp.Header.Set("Connection", "keep-alive")
-		}
-		if len(resp.TransferEncoding) > 0 {
-			resp.Header.Set("Cache-Control", "no-cache")
-			resp.Header.Set("Connection", "keep-alive")
-			if !quiet {
-				utils.LogDebugf("Detected chunked transfer encoding")
-			}
-		}
-
-		// Local providers have no marginal cost — surface that via the
-		// cost-truth contract's "zzrouter, 0" pair rather than omitting
-		// the cost block (which would be ambiguous with "we forgot to
-		// record"). Set on the meta directly so it can't get clobbered
-		// by recordProxyMetrics' SetExtendedUsage(_,_,0,"") overwrite
-		// during captureNonStreamingMetrics.
-		meta := s.localRoutingMetadata(req, inst, servingNode, restoreModel)
-		meta.SuppressUsageFrame = suppressUsage
-
-		if !isStreamingResponse(resp) {
-			captureNonStreamingMetrics(resp, recorder)
-			if normalize := s.inference.normalizers.Body(inst.Provider); normalize != nil {
-				if err := applyBodyNormalizer(resp, normalize); err != nil && !quiet {
-					utils.LogDebugf("Body normalizer failed for %s: %v", inst.Provider, err)
-				}
-			}
-			// Inject the root zzrouter block. Local-provider responses
-			// end up here without going through
-			// ProxyClient.ForwardToBackend, so this is the inject point
-			// that gives them parity with cloud-routed inference
-			// responses.
-			if body, err := io.ReadAll(resp.Body); err == nil {
-				_ = resp.Body.Close()
-				body = wire.MaybeInjectRoutingMetadata(body, meta, recorder)
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-				resp.ContentLength = int64(len(body))
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-			}
-		} else {
-			// A broken relay may append an error beyond the upstream's declared length.
-			resp.Header.Del("Content-Length")
-			resp.ContentLength = -1
-			// Meter raw bytes first because transforms read the live recorder.
-			metered = wire.NewMeteredBody(req.Context(), resp.Body, recorder)
-			resp.Body = metered
-			if transform := wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, recorder).Func(); transform != nil {
-				resp.Body = newNormalizingReader(resp.Body, transform)
-			}
-		}
-		return nil
-	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
-		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
-		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"})
-	}
-
 	if !quiet {
 		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path)
 	}
-	client := &proxyStreamWriter{ResponseWriter: w}
-	func() {
-		defer func() {
-			if v := recover(); v != nil {
-				// Only an observed upstream read failure can replace the proxy's abort.
-				if v != http.ErrAbortHandler || metered == nil || metered.Result().Err == nil || client.err != nil || req.Context().Err() != nil {
-					panic(v)
-				}
-			}
-			if metered != nil && client.err == nil {
-				endBrokenStream(w, req, metered.Result())
-			}
-		}()
-		proxy.ServeHTTP(client, req)
-	}()
+	resp, err := s.httpStreamingClient.Do(proxyReq)
+	if err != nil {
+		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
+		recordWireError(recorder, "backend_unreachable", err)
+		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"})
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
 	if !quiet {
-		slog.Info("Request forwarded successfully to instance", "id", inst.ID)
+		utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
+			resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, resp.TransferEncoding)
+	}
+
+	mergeUpstreamHeaders(w.Header(), resp.Header)
+	stripUpstreamIdentifyingHeaders(w.Header())
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set(constants.HeaderServingProvider, inst.Provider)
+	servingNode := backendNode
+	if servingNode == constants.Localhost {
+		servingNode = s.GetNodename()
+	}
+	w.Header().Set(constants.HeaderServingNode, servingNode)
+	if resp.StatusCode >= 400 {
+		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
+		writeRewrittenError(w, req, resp, inst.FailureClassifier)
+		return
+	}
+
+	meta := s.localRoutingMetadata(req, inst, servingNode, restoreModel)
+	meta.SuppressUsageFrame = suppressUsageFrameFromContext(req.Context())
+	if !isStreamingResponse(resp) {
+		failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(s.inference.normalizers, inst.Provider, meta, recorder), recorder))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	result := streamWithUsageInject(req, w, resp, s.inference.normalizers, inst.Provider, meta, recorder)
+	if result.Outcome == wire.ClientGone {
+		panic(http.ErrAbortHandler)
 	}
 }
 
@@ -519,22 +432,3 @@ func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Inst
 	}
 	return inst, found
 }
-
-// proxyStreamWriter distinguishes client write failures from upstream read failures.
-type proxyStreamWriter struct {
-	http.ResponseWriter
-	err error
-}
-
-func (w *proxyStreamWriter) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	if err == nil && n != len(p) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		w.err = err
-	}
-	return n, err
-}
-
-func (w *proxyStreamWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

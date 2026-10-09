@@ -211,10 +211,6 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 
 	streaming := isStreamingResponse(resp)
 
-	if !streaming {
-		captureNonStreamingMetrics(resp, recorder)
-	}
-
 	mergeUpstreamHeaders(w.Header(), resp.Header)
 	stripUpstreamIdentifyingHeaders(w.Header())
 	w.Header().Set(constants.HeaderServingProvider, providerType)
@@ -246,7 +242,7 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 		streamWithUsageInject(req, w, resp, p.normalizers, providerType, meta, recorder)
 		return
 	}
-	writeNormalizedBody(w, resp, p.normalizers, providerType, meta, recorder)
+	failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(p.normalizers, providerType, meta, recorder), recorder))
 }
 
 // ForwardDetached sends a request to a backend but does NOT write to the client.

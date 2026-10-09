@@ -21,7 +21,7 @@ import (
 // the wire shape — integration tests exercising the success path
 // won't necessarily catch it (they assert content, not framing).
 
-func TestWriteNormalizedBody_StripsTransferEncodingAndSetsLength(t *testing.T) {
+func TestRelayBuffered_StripsTransferEncodingAndSetsLength(t *testing.T) {
 	body := `{"id":"chatcmpl-1","choices":[{"message":{"content":"hi"}}]}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -36,8 +36,8 @@ func TestWriteNormalizedBody_StripsTransferEncodingAndSetsLength(t *testing.T) {
 	w.Header().Set("Transfer-Encoding", "chunked") // simulate a prior maps.Copy
 	recorder := llm.NewInferenceRecorder(t.Context(), "model-x", "openrouter")
 
-	writeNormalizedBody(w, resp, NewResponseNormalizers(), "openrouter",
-		wire.RoutingMetadata{Provider: "openrouter"}, recorder)
+	wire.RelayBuffered(w, resp, normalizedBody(NewResponseNormalizers(), "openrouter",
+		wire.RoutingMetadata{Provider: "openrouter"}, recorder), recorder)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, w.Header().Get("Transfer-Encoding"),
@@ -49,7 +49,7 @@ func TestWriteNormalizedBody_StripsTransferEncodingAndSetsLength(t *testing.T) {
 		"recorder body must equal what was written")
 }
 
-func TestWriteNormalizedBody_NormalizerRespected(t *testing.T) {
+func TestRelayBuffered_NormalizerRespected(t *testing.T) {
 	body := `{"original":"yes"}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -64,15 +64,15 @@ func TestWriteNormalizedBody_NormalizerRespected(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "test-provider")
-	writeNormalizedBody(w, resp, regs, "test-provider",
-		wire.RoutingMetadata{Provider: "test-provider"}, recorder)
+	wire.RelayBuffered(w, resp, normalizedBody(regs, "test-provider",
+		wire.RoutingMetadata{Provider: "test-provider"}, recorder), recorder)
 
 	assert.Contains(t, w.Body.String(), `"normalized":"yes"`)
 	assert.NotContains(t, w.Body.String(), `"original":"yes"`,
 		"normalizer return must replace, not append")
 }
 
-func TestWriteNormalizedBody_NormalizerReturnsNil_KeepsOriginal(t *testing.T) {
+func TestRelayBuffered_NormalizerReturnsNil_KeepsOriginal(t *testing.T) {
 	// A normalizer that returns nil signals "no rewrite needed" —
 	// the original body must pass through. Pre-extraction inline
 	// code did `if rewritten := norm(b); rewritten != nil { b = rewritten }`;
@@ -90,13 +90,13 @@ func TestWriteNormalizedBody_NormalizerReturnsNil_KeepsOriginal(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "noop")
-	writeNormalizedBody(w, resp, regs, "noop",
-		wire.RoutingMetadata{Provider: "noop"}, recorder)
+	wire.RelayBuffered(w, resp, normalizedBody(regs, "noop",
+		wire.RoutingMetadata{Provider: "noop"}, recorder), recorder)
 
 	assert.Contains(t, w.Body.String(), `"original":"kept"`)
 }
 
-func TestWriteNormalizedBody_NoNormalizerRegistered(t *testing.T) {
+func TestRelayBuffered_NoNormalizerRegistered(t *testing.T) {
 	body := `{"plain":"untouched"}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -106,8 +106,8 @@ func TestWriteNormalizedBody_NoNormalizerRegistered(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "no-such-provider")
-	writeNormalizedBody(w, resp, NewResponseNormalizers(), "no-such-provider",
-		wire.RoutingMetadata{Provider: "no-such-provider"}, recorder)
+	wire.RelayBuffered(w, resp, normalizedBody(NewResponseNormalizers(), "no-such-provider",
+		wire.RoutingMetadata{Provider: "no-such-provider"}, recorder), recorder)
 
 	assert.Contains(t, w.Body.String(), `"plain":"untouched"`)
 	// Content-Length matches whatever wire.MaybeInjectRoutingMetadata
@@ -117,22 +117,17 @@ func TestWriteNormalizedBody_NoNormalizerRegistered(t *testing.T) {
 	assert.NotEmpty(t, w.Header().Get("Content-Length"))
 }
 
-func TestWriteNormalizedBody_ReadErrorWritesStatusOnly(t *testing.T) {
-	// io.ReadAll error path: WriteHeader is called with the upstream
-	// status, no body written. Pre-extraction this was an explicit
-	// branch; helper must preserve.
-	resp := &http.Response{
-		StatusCode: http.StatusServiceUnavailable,
-		Header:     http.Header{},
-		Body:       errReader{},
-	}
+func TestRelayBuffered_ReadErrorAnswersBadGateway(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: errReader{}}
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "p")
-	writeNormalizedBody(w, resp, NewResponseNormalizers(), "p",
-		wire.RoutingMetadata{}, recorder)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Empty(t, w.Body.Bytes(), "no body should be written on read error")
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	result := wire.RelayBuffered(w, resp, normalizedBody(NewResponseNormalizers(), "p", wire.RoutingMetadata{}, recorder), recorder)
+	assert.Equal(t, wire.Truncated, result.Outcome)
+	assert.Empty(t, w.Body.Bytes())
+	failBrokenBody(w, req, result)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Contains(t, w.Body.String(), `"error":`)
 }
 
 func TestStreamWithUsageInject_NoInjectClosureWhenInjectUsageFalse(t *testing.T) {
@@ -165,7 +160,7 @@ func TestStreamWithUsageInject_NoInjectClosureWhenInjectUsageFalse(t *testing.T)
 }
 
 // errReader returns an error on Read. Used to exercise the read-error
-// branch of writeNormalizedBody without poking unsafe internals.
+// branch of RelayBuffered without poking unsafe internals.
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }

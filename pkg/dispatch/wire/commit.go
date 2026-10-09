@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -13,20 +12,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
-// Commit writes a previously-detached backend response to the client.
-// Used after proxy.ForwardDetached confirms a successful status code.
-func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) Result {
-	return CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
+func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry, shape func([]byte) []byte) Result {
+	return CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms, shape)
 }
 
-// CommitWithRouting writes the response with routing metadata headers and optional in-body usage.
-// Metrics are captured before the response is shaped, so the ledger settles from the state it saw.
-func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) Result {
+func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry, shape func([]byte) []byte) Result {
 	streaming := IsStreaming(resp)
-
-	if !streaming {
-		CaptureNonStreamingMetrics(resp, recorder)
-	}
 
 	// Both branches rewrite the body, so the upstream's framing is dropped:
 	// a streamed rewrite under the engine's Content-Length is cut off.
@@ -88,21 +79,8 @@ func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Re
 			}
 		}
 		return result
-	} else {
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err == nil && len(bodyBytes) > 0 {
-			if bodyNorm := norms.Body(meta.Provider); bodyNorm != nil {
-				if rewritten := bodyNorm(bodyBytes); rewritten != nil {
-					bodyBytes = rewritten
-				}
-			}
-			bodyBytes = MaybeInjectRoutingMetadata(bodyBytes, meta, recorder)
-		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyBytes)
 	}
-	return Result{}
+	return RelayBuffered(w, resp, shape, recorder)
 }
 
 // MaybeInjectRoutingMetadata applies the canonical gate that decides

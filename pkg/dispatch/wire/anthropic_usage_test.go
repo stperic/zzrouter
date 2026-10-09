@@ -2,7 +2,6 @@ package wire
 
 import (
 	"context"
-	"io"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -92,15 +91,14 @@ func TestCopyStream_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
 	assert.Equal(t, int64(55), captured.TokensCached)
 }
 
-func TestMeteredBody_AnthropicStreamMergesStartAndDelta(t *testing.T) {
+func TestCopyStream_AnthropicStreamMergesStartAndDelta(t *testing.T) {
 	stream := readFixture(t, "anthropic_messages_llamacpp_stream.sse")
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "Qwen3.8-27B-Q8_0", "llamacpp")
 
-	got, err := io.ReadAll(NewMeteredBody(context.Background(), io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
-	require.NoError(t, err)
-
-	assert.Equal(t, stream, string(got))
+	w := httptest.NewRecorder()
+	CopyStream(t.Context(), w, iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
+	assert.Equal(t, stream, w.Body.String())
 	assert.Equal(t, int64(59), captured.TokensIn)
 	assert.Equal(t, int64(20), captured.TokensOut)
 	assert.Equal(t, int64(55), captured.TokensCached)
@@ -118,7 +116,7 @@ func TestCopyStream_NoDoneOnTruncatedNamedEventStream(t *testing.T) {
 
 // A message_delta that repeats input_tokens without the cache counts
 // must not shrink the total message_start reported.
-func TestMeteredBody_PartialDeltaDoesNotShrinkInput(t *testing.T) {
+func TestCopyStream_PartialDeltaDoesNotShrinkInput(t *testing.T) {
 	stream := "event: message_start\n" +
 		`data: {"type":"message_start","message":{"usage":{"input_tokens":4,"cache_read_input_tokens":55}}}` + "\n\n" +
 		"event: message_delta\n" +
@@ -126,8 +124,7 @@ func TestMeteredBody_PartialDeltaDoesNotShrinkInput(t *testing.T) {
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "llamacpp")
 
-	_, err := io.ReadAll(NewMeteredBody(context.Background(), io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
-	require.NoError(t, err)
+	CopyStream(t.Context(), httptest.NewRecorder(), iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
 
 	assert.Equal(t, int64(59), captured.TokensIn)
 	assert.Equal(t, int64(20), captured.TokensOut)

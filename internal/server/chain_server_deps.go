@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -121,6 +122,14 @@ func (d *chainServerDeps) FailureClassifier(app string) *httperr.Classifier {
 	return d.s.failureClassifier(app)
 }
 
-func (*chainServerDeps) EndBrokenStream(w http.ResponseWriter, req *http.Request, res wire.Result) {
-	endBrokenStream(w, req, res)
+func (*chainServerDeps) FinishRelay(w http.ResponseWriter, req *http.Request, resp *http.Response, res wire.Result) {
+	if isStreamingResponse(resp) {
+		endBrokenStream(w, req, res)
+	} else {
+		failBrokenBody(w, req, res)
+	}
+}
+
+func (d *chainServerDeps) BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte {
+	return normalizedBody(d.s.inference.normalizers, meta.Provider, meta, recorder)
 }

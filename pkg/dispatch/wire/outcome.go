@@ -8,18 +8,18 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
-// Outcome is how a relayed stream ended.
+// Outcome is how a relay ended.
 type Outcome int
 
 const (
 	Unknown        Outcome = iota // not finished yet: a zero Result is never a success
-	Completed                     // the upstream sent its protocol's terminal frame
-	Truncated                     // no terminal frame: EOF too early, or a read error (Err set)
+	Completed                     // the whole body or terminal stream frame arrived
+	Truncated                     // incomplete body or stream, with the read error in Err
 	UpstreamFailed                // the upstream ended the stream itself with an in-band error
 	ClientGone                    // the client stopped reading
 )
 
-// Result is a relayed stream's outcome and the read error behind it, if any.
+// Result is a relay's outcome and the error behind it, if any.
 type Result struct {
 	Outcome Outcome
 	Err     error

@@ -139,3 +139,9 @@ func endBrokenStream(w http.ResponseWriter, req *http.Request, res wire.Result) 
 	}
 	ender.EndStream(w, e)
 }
+
+func failBrokenBody(w http.ResponseWriter, req *http.Request, res wire.Result) {
+	if e, failed := res.Failure(); failed {
+		dialectOf(req).WriteError(w, req, e)
+	}
+}

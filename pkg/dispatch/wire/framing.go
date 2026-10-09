@@ -20,14 +20,10 @@ import (
 // ensures optimal performance for streaming without excessive memory use.
 const StreamBufferSize = 32 * 1024
 
-// IsStreaming returns true if the HTTP response indicates a streaming
-// format. Checks for NDJSON (Ollama), SSE (OpenAI), or chunked transfer
-// encoding.
 func IsStreaming(resp *http.Response) bool {
 	contentType := resp.Header.Get("Content-Type")
 	return contentType == "application/x-ndjson" ||
-		strings.Contains(contentType, "text/event-stream") ||
-		resp.Header.Get("Transfer-Encoding") == "chunked"
+		strings.Contains(contentType, "text/event-stream")
 }
 
 // connectionHeaders is the RFC 9110 §7.6.1 set that describes one

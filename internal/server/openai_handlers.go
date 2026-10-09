@@ -972,6 +972,5 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 		streamWithUsageInject(c.Request, c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
 		return
 	}
-	captureNonStreamingMetrics(resp, recorder)
-	writeNormalizedBody(c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+	failBrokenBody(c.Writer, c.Request, wire.RelayBuffered(c.Writer, resp, normalizedBody(s.inference.normalizers, provider, meta, recorder), recorder))
 }
