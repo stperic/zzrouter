@@ -61,7 +61,7 @@ func TestCommit_NonStreamingInjectsProviderOnInferenceResponse(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "ollama")
 	norms := normalizer.NewRegistry()
 
-	Commit(w, resp, "ollama", rec, norms)
+	Commit(context.Background(), w, resp, "ollama", rec, norms)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "ollama", w.Header().Get("X-zzrouter-Provider"))
@@ -87,7 +87,7 @@ func TestCommitWithRouting_InjectsZzrouterBlockAndHeaders(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1"}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1"}, rec, norms)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "openai", w.Header().Get("X-zzrouter-Provider"))
@@ -130,7 +130,7 @@ func TestCommitWithRouting_NoTransferEncodingOnRewrittenBody(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	Commit(w, resp, "openai", rec, norms)
+	Commit(context.Background(), w, resp, "openai", rec, norms)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, w.Header().Get("Transfer-Encoding"),
@@ -154,7 +154,7 @@ func TestCommitWithRouting_BodyNormalizerRuns(t *testing.T) {
 		return []byte(strings.Replace(string(b), `"content":""`, `"content":"thinking"`, 1))
 	})
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "mlx", Deployment: "dep-x"}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "mlx", Deployment: "dep-x"}, rec, norms)
 
 	out := w.Body.String()
 	assert.Contains(t, out, `"content":"thinking"`,
@@ -176,7 +176,7 @@ func TestCommitWithRouting_StreamingPreservesFraming(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1"}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1"}, rec, norms)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "openai", w.Header().Get("X-zzrouter-Provider"))
@@ -204,7 +204,7 @@ func TestCommitWithRouting_SyntheticUsageChunkOnMissingUsage(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1", InjectUsage: true}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1", InjectUsage: true}, rec, norms)
 
 	out := w.Body.String()
 	// Synthetic chunk carries zz_* fields.
@@ -232,7 +232,7 @@ func TestCommitWithRouting_TokensPerSecReachesBody(t *testing.T) {
 	norms := normalizer.NewRegistry()
 
 	_ = utils.SetClock(utils.FixedClock(now.Add(time.Second)))
-	CommitWithRouting(w, resp, RoutingMetadata{
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 		Provider: "openrouter", Deployment: "openai/gpt-4", Node: "node-1",
 	}, rec, norms)
 
@@ -254,7 +254,7 @@ func TestCommitWithRouting_TokensPerSecOmittedBelowFloor(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openrouter")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 		Provider: "openrouter", Deployment: "openai/gpt-4",
 	}, rec, norms)
 
@@ -277,7 +277,7 @@ func TestCommitWithRouting_OpenRouterCostFlowsToBody(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openrouter")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 		Provider:    "openrouter",
 		Deployment:  "openai/gpt-4",
 		Node:        "node-1",
@@ -305,7 +305,7 @@ func TestCommitWithRouting_UsageChunkInjectedWhenPresent(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1", InjectUsage: true}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "openai", Deployment: "dep-a", Node: "node-1", InjectUsage: true}, rec, norms)
 
 	out := w.Body.String()
 	// zz_* fields injected INTO the usage chunk (not as a separate
@@ -326,7 +326,7 @@ func TestCommitWithRouting_RouteAgentHeaders(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 		Provider:     "openai",
 		Deployment:   "r-primary",
 		GroupName:    "fast-chat",
@@ -353,7 +353,7 @@ func TestCommitWithRouting_OmitsRouteHeadersWhenEmpty(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "openai"}, rec, norms)
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "openai"}, rec, norms)
 
 	for _, h := range []string{"X-zzrouter-Route", "X-zzrouter-Strategy", "X-zzrouter-Fallback-Count", "X-zzrouter-Replica"} {
 		assert.Empty(t, w.Header().Get(h), "%s must be omitted when its source value is empty", h)
@@ -368,7 +368,7 @@ func TestCommitWithRouting_FallbackCountReflectsAttemptCount(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "openai")
 	norms := normalizer.NewRegistry()
 
-	CommitWithRouting(w, resp, RoutingMetadata{
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 		Provider:   "openai",
 		Deployment: "r3",
 		FallbackChain: []FallbackAttempt{
@@ -396,7 +396,7 @@ func TestCommitWithRouting_StreamingRestoresClientModel(t *testing.T) {
 			w := httptest.NewRecorder()
 			rec := llm.NewInferenceRecorder(context.Background(), "route-x", "ollama")
 
-			CommitWithRouting(w, resp, RoutingMetadata{
+			CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
 				Provider:    "ollama",
 				Deployment:  "ollama-node-a",
 				GroupName:   "route-x",
@@ -420,7 +420,40 @@ func TestCommitWithRouting_StreamingLeavesModelAloneWhenUnknown(t *testing.T) {
 	w := httptest.NewRecorder()
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "ollama")
 
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: "ollama"}, rec, normalizer.NewRegistry())
+	CommitWithRouting(context.Background(), w, resp, RoutingMetadata{Provider: "ollama"}, rec, normalizer.NewRegistry())
 
 	assert.Contains(t, w.Body.String(), `"model":"m"`)
+}
+
+func TestCommitWithRouting_SyntheticUsageOnlyOnCompleted(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reader    io.Reader
+		completed bool
+	}{
+		{"completed", strings.NewReader("data: [DONE]\n\n"), true},
+		{"eof", strings.NewReader("data: {}\n\n"), false},
+		{"read_error", newCutReader("data: {}\n\n"), false},
+		{"in_band_error", strings.NewReader("event: error\n\n"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := buildSSEResp("")
+			resp.Body = io.NopCloser(tc.reader)
+			defer func() { _ = resp.Body.Close() }()
+			w := httptest.NewRecorder()
+			CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
+				Provider: "openai", Deployment: "dep-a", InjectUsage: true,
+			}, nil, normalizer.NewRegistry())
+			assert.Equal(t, tc.completed, strings.Contains(w.Body.String(), `"zz_provider"`))
+		})
+	}
+	t.Run("client_gone", func(t *testing.T) {
+		w := &failingWriter{failAfter: 0}
+		resp := buildSSEResp("data: [DONE]\n\n")
+		defer func() { _ = resp.Body.Close() }()
+		CommitWithRouting(context.Background(), w, resp, RoutingMetadata{
+			Provider: "openai", Deployment: "dep-a", InjectUsage: true,
+		}, nil, normalizer.NewRegistry())
+		assert.Equal(t, 1, w.writes)
+	})
 }

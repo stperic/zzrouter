@@ -93,11 +93,3 @@ func SendSSEComment(w http.ResponseWriter, text string) {
 		f.Flush()
 	}
 }
-
-// SendSSEDone sends the stream termination marker.
-func SendSSEDone(w http.ResponseWriter) {
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-}

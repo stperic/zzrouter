@@ -12,6 +12,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -61,6 +62,7 @@ func writeNormalizedBody(
 // stream transform: provider normalizer, usage injection, model restore, strip.
 // Stage order and its invariants live in wire.NewStreamTransform.
 func streamWithUsageInject(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	normalizers *ResponseNormalizers,
@@ -69,6 +71,6 @@ func streamWithUsageInject(
 	recorder *llm.InferenceRecorder,
 ) {
 	w.WriteHeader(resp.StatusCode)
-	copyStreamWithMetrics(w, resp.Body, recorder,
+	copyStream(ctx, w, resp.Body, recorder,
 		wire.NewStreamTransform(normalizers.Stream(provider), meta, recorder).Func())
 }

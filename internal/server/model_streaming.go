@@ -396,19 +396,12 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		return
 	}
 
-	// Metered and shaped exactly like the warm path. This used to be
-	// CopyWithFlush, which is CopyWithMetrics with a nil recorder: a
-	// cold load that outran ModelLoadGrace streamed its whole answer
-	// while the inference log recorded no tokens and no cost, and the
-	// terminal usage frame reached callers who never asked for it.
-	// Same local instances, same surface, opposite behaviour from its
-	// sibling in proxyToInstance.
 	servingNode := backendNode
 	if servingNode == constants.Localhost {
 		servingNode = s.GetNodename()
 	}
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
-	copyStreamWithMetrics(w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	copyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 }
 
 // capacityErrorMessage returns a standardized capacity error message for

@@ -2,6 +2,7 @@ package wire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,31 +15,13 @@ import (
 
 // Commit writes a previously-detached backend response to the client.
 // Used after proxy.ForwardDetached confirms a successful status code.
-func Commit(w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
+func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
+	CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
 }
 
-// CommitWithRouting writes the response plus routing metadata headers
-// and optional in-body usage injection. Streaming and non-streaming
-// responses both flow through this function.
-//
-// Ordering invariant — capture metrics → inject response → fire
-// RecordCompletion hook → bridge settles ledger. The response inject
-// runs synchronously inside this function before the hook fires, so
-// the ledger settle path observes the same recorder state the
-// response did.
-//
-// Other invariants preserved from pre-extraction
-// (commitDetachedResponseWithRouting):
-//   - Headers (including X-zzrouter-*) are set BEFORE WriteHeader.
-//   - Non-streaming path re-sets Content-Length to match rewritten bytes.
-//   - Streaming path may emit a synthetic final usage chunk when
-//     InjectUsage is true and the upstream did not include one;
-//     note that CopyWithMetrics may synthesize a [DONE] sentinel before
-//     returning, so the synthetic usage chunk can currently follow
-//     [DONE] in the happy path — pre-existing ordering behavior is
-//     preserved verbatim.
-func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
+// CommitWithRouting writes the response with routing metadata headers and optional in-body usage.
+// Metrics are captured before the response is shaped, so the ledger settles from the state it saw.
+func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
 	streaming := IsStreaming(resp)
 
 	if !streaming {
@@ -77,14 +60,10 @@ func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingM
 	if streaming {
 		st := NewStreamTransform(norms.Stream(meta.Provider), meta, recorder)
 		w.WriteHeader(resp.StatusCode)
-		CopyWithMetrics(w, resp.Body, recorder, st.Func())
+		result := CopyStream(ctx, w, resp.Body, recorder, st.Func())
 
-		// If the provider didn't include a usage block in any streaming
-		// chunk, emit a synthetic final chunk so clients (e.g. Open WebUI)
-		// can still display routing metadata via the zz_* fields.
-		// Skipped when the caller did not ask for usage: synthesising the
-		// very frame the strip above removes would hand it back.
-		if meta.InjectUsage && !st.UsageSeen() && meta.Deployment != "" && !meta.SuppressUsageFrame {
+		// A completed stream without usage still needs its requested routing metadata.
+		if result.Outcome == Completed && meta.InjectUsage && !st.UsageSeen() && meta.Deployment != "" && !meta.SuppressUsageFrame {
 			usage := map[string]any{
 				"zz_provider": meta.Provider,
 				"zz_model":    meta.Deployment,

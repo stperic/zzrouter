@@ -72,6 +72,6 @@ var (
 	mergeUpstreamHeaders       = wire.MergeUpstreamHeaders
 	sendSSEComment             = wire.SendSSEComment
 	forceUsageReporting        = wire.ForceUsageReporting
-	copyStreamWithMetrics      = wire.CopyWithMetrics
+	copyStream                 = wire.CopyStream
 	captureNonStreamingMetrics = wire.CaptureNonStreamingMetrics
 )

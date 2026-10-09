@@ -74,7 +74,7 @@ func TestParseUsageExtended_BothVocabulariesReadAsChat(t *testing.T) {
 	assert.Equal(t, int64(3), u.Out)
 }
 
-func TestCopyWithMetrics_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
+func TestCopyStream_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
 	stream := readFixture(t, "anthropic_messages_llamacpp_stream.sse")
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "Qwen3.8-27B-Q8_0", "llamacpp")
@@ -83,7 +83,7 @@ func TestCopyWithMetrics_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	// One byte per read puts message_start and message_delta in
 	// separate frames, as a live upstream does.
-	CopyWithMetrics(w, iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
+	CopyStream(context.Background(), w, iotest.OneByteReader(strings.NewReader(stream)), rec, nil)
 
 	assert.Equal(t, stream, w.Body.String(),
 		"an Anthropic stream must reach the client byte for byte, with no [DONE] appended")
@@ -92,12 +92,12 @@ func TestCopyWithMetrics_AnthropicStreamMetersAndPassesThrough(t *testing.T) {
 	assert.Equal(t, int64(55), captured.TokensCached)
 }
 
-func TestMeteringReader_AnthropicStreamMergesStartAndDelta(t *testing.T) {
+func TestMeteredBody_AnthropicStreamMergesStartAndDelta(t *testing.T) {
 	stream := readFixture(t, "anthropic_messages_llamacpp_stream.sse")
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "Qwen3.8-27B-Q8_0", "llamacpp")
 
-	got, err := io.ReadAll(NewMeteringReader(io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
+	got, err := io.ReadAll(NewMeteredBody(context.Background(), io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
 	require.NoError(t, err)
 
 	assert.Equal(t, stream, string(got))
@@ -108,17 +108,17 @@ func TestMeteringReader_AnthropicStreamMergesStartAndDelta(t *testing.T) {
 
 // A stream cut before its terminal event still gets no [DONE]: the
 // client speaks a protocol that has no such frame.
-func TestCopyWithMetrics_NoDoneOnTruncatedNamedEventStream(t *testing.T) {
+func TestCopyStream_NoDoneOnTruncatedNamedEventStream(t *testing.T) {
 	stream := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4}}}\n\n"
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Type", "text/event-stream")
-	CopyWithMetrics(w, strings.NewReader(stream), nil, nil)
+	CopyStream(context.Background(), w, strings.NewReader(stream), nil, nil)
 	assert.NotContains(t, w.Body.String(), "[DONE]")
 }
 
 // A message_delta that repeats input_tokens without the cache counts
 // must not shrink the total message_start reported.
-func TestMeteringReader_PartialDeltaDoesNotShrinkInput(t *testing.T) {
+func TestMeteredBody_PartialDeltaDoesNotShrinkInput(t *testing.T) {
 	stream := "event: message_start\n" +
 		`data: {"type":"message_start","message":{"usage":{"input_tokens":4,"cache_read_input_tokens":55}}}` + "\n\n" +
 		"event: message_delta\n" +
@@ -126,7 +126,7 @@ func TestMeteringReader_PartialDeltaDoesNotShrinkInput(t *testing.T) {
 	captured := captureCompletion(t)
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "llamacpp")
 
-	_, err := io.ReadAll(NewMeteringReader(io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
+	_, err := io.ReadAll(NewMeteredBody(context.Background(), io.NopCloser(iotest.OneByteReader(strings.NewReader(stream))), rec))
 	require.NoError(t, err)
 
 	assert.Equal(t, int64(59), captured.TokensIn)

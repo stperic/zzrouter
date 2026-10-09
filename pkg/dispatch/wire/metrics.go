@@ -338,7 +338,7 @@ func SetErrorFromStatus(recorder *llm.InferenceRecorder, statusCode int) {
 // pairs that used to live in proxy_client.go and chain/fallback.go.
 //
 // Calling this on a path that ALSO reaches the wire layer's
-// CaptureNonStreamingMetrics or CopyWithMetrics would double-emit the
+// CaptureNonStreamingMetrics or CopyStream would double-emit the
 // operation_duration histogram (and double-fire the inference log
 // bridge — settling spend twice). Use only on pre-byte-copy aborts
 // where no further metric path runs. Safe no-op when recorder is nil.

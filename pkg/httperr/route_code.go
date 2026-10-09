@@ -32,4 +32,6 @@ const (
 	// CodeUpstreamShape is a successful transport whose body did not match
 	// the shape this endpoint expected, which signals peer version skew.
 	CodeUpstreamShape RouteErrorCode = "upstream_shape"
+
+	CodeUpstreamStreamInterrupted RouteErrorCode = "upstream_stream_interrupted"
 )
