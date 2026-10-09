@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stperic/zzrouter/pkg/download"
 )
 
 // Files recorded one at a time, from concurrent downloads, all land in the
@@ -42,7 +44,7 @@ func TestCreateManifest_KeepsFeaturesAndSkipsPartials(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "w.gguf"), []byte("w"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "mmproj.gguf"), []byte("p"), 0o600))
-	partial, err := CreatePartial(filepath.Join(dir, "next.gguf"))
+	partial, err := download.CreatePartial(filepath.Join(dir, "next.gguf"))
 	require.NoError(t, err)
 	require.NoError(t, partial.Close())
 	require.NoError(t, RecordFiles(dir, "org/m", "", FileChecksum{RelativePath: "mmproj.gguf", Size: 1, Feature: "vision"}))
@@ -59,9 +61,9 @@ func TestCreateManifest_KeepsFeaturesAndSkipsPartials(t *testing.T) {
 // Two downloads of one file write into different partials.
 func TestCreatePartial_IsUnique(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "w.gguf")
-	a, err := CreatePartial(dest)
+	a, err := download.CreatePartial(dest)
 	require.NoError(t, err)
-	b, err := CreatePartial(dest)
+	b, err := download.CreatePartial(dest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 	assert.NotEqual(t, a.Name(), b.Name())

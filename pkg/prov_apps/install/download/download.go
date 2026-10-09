@@ -7,7 +7,6 @@ package download
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
+	filedownload "github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
@@ -51,7 +51,7 @@ func NewClient(timeout time.Duration) *http.Client {
 	}
 }
 
-var fetchTransport = &http.Transport{
+var fetchTransport http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
 		Timeout:   30 * time.Second,
@@ -119,56 +119,16 @@ func Fetch(ctx context.Context, rawURL, destDir string, progress func(downloaded
 		return nil, err
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("download failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
-	}
-
-	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0640)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create file: %w", err)
-	}
-	defer func() { _ = out.Close() }()
-
-	// Clean up partial file on error
-	success := false
-	defer func() {
-		if !success {
-			_ = os.Remove(destPath)
-		}
-	}()
-
-	var written int64
-	total := resp.ContentLength
-	buf := make([]byte, 32*1024)
-
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			nn, writeErr := out.Write(buf[:n])
-			if writeErr != nil {
-				return nil, writeErr
-			}
-			written += int64(nn)
-
+	result, err := filedownload.Fetch(client, req, destPath, filedownload.Options{
+		Mode: 0o640,
+		Progress: func(done, total int64) {
 			if progress != nil && total > 0 {
-				pct := int(written * 100 / total)
-				progress(written, total, pct)
+				progress(done, total, int(done*100/total))
 			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
-			}
-			return nil, readErr
-		}
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	success = true
-	return &Result{FilePath: destPath, Size: written}, nil
+	return &Result{FilePath: destPath, Size: result.Size}, nil
 }

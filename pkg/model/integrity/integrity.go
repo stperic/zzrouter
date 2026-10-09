@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -60,15 +61,7 @@ const (
 const ManifestFileName = ".zzrouter-manifest.json"
 
 // partialSuffix marks a file still being downloaded into a model directory.
-const partialSuffix = ".zzpart"
-
-// CreatePartial creates the file a download writes dest into until it is
-// complete. It sits beside dest, so the final rename never crosses a
-// filesystem, and its name is unique, so two downloads of one file never
-// write into each other.
-func CreatePartial(dest string) (*os.File, error) {
-	return os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*"+partialSuffix)
-}
+const partialSuffix = download.PartialSuffix
 
 // IsBookkeeping reports whether name is the manifest (or a write of it) or
 // a download in progress, which no walk of a model directory counts as
