@@ -201,6 +201,9 @@ const (
 	// dependencies, unrecoverable routing bugs.
 	ErrorCodeInternalError ErrorCode = "internal_error"
 
+	ErrorCodeCapacityExceeded ErrorCode = "capacity_exceeded"
+	ErrorCodeQueueWaitExpired ErrorCode = "queue_wait_expired"
+
 	// ErrorCodeUpstreamError is emitted on 502 when a backend
 	// returned a response that could not be parsed or the
 	// connection to the backend failed.
@@ -258,6 +261,7 @@ const (
 // sorted for deterministic enumeration.
 var allErrorCodes = []ErrorCode{
 	ErrorCodeBackendUnavailable,
+	ErrorCodeCapacityExceeded,
 	ErrorCodeContentFilter,
 	ErrorCodeContextLengthExceeded,
 	ErrorCodeDraining,
@@ -277,6 +281,7 @@ var allErrorCodes = []ErrorCode{
 	ErrorCodeModelInventoryUnavailable,
 	ErrorCodeProviderNotRunning,
 	ErrorCodeNoDefaultBackend,
+	ErrorCodeQueueWaitExpired,
 	ErrorCodeRateLimitExceeded,
 	ErrorCodeRequestTooLarge,
 	ErrorCodeUnknownURL,

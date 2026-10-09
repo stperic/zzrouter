@@ -185,18 +185,18 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("unlimited_when_zero", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(0, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 0, MaxQueuedRequests: 100, QueueTimeout: 0})
 		assert.Equal(t, 0, inst.ConcurrencyLimit())
 		acquireTestLease(t, inst).Release()
 	})
 
 	t.Run("single_slot_reject", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 
 		first := acquireTestLease(t, inst)
 		lease, err := inst.Acquire(context.Background(), nil)
-		assert.ErrorIs(t, err, ErrAtCapacity)
+		assert.ErrorIs(t, err, ErrQueueFull)
 		assert.Nil(t, lease)
 		first.Release()
 		acquireTestLease(t, inst).Release()
@@ -204,13 +204,13 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("multi_slot", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(2, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 2, MaxQueuedRequests: 100, QueueTimeout: 0})
 		assert.Equal(t, 2, inst.ConcurrencyLimit())
 
 		first := acquireTestLease(t, inst)
 		second := acquireTestLease(t, inst)
 		lease, err := inst.Acquire(context.Background(), nil)
-		assert.ErrorIs(t, err, ErrAtCapacity)
+		assert.ErrorIs(t, err, ErrQueueFull)
 		assert.Nil(t, lease)
 		first.Release()
 		third := acquireTestLease(t, inst)
@@ -220,7 +220,7 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("queue_timeout_succeeds", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 100*time.Millisecond)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 100 * time.Millisecond})
 
 		first := acquireTestLease(t, inst)
 		go func() {
@@ -232,12 +232,12 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("queue_timeout_expires", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 20*time.Millisecond)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 20 * time.Millisecond})
 
 		first := acquireTestLease(t, inst)
 		activity := inst.GetLastActivity()
 		lease, err := inst.Acquire(context.Background(), nil)
-		assert.ErrorIs(t, err, ErrAtCapacity)
+		assert.ErrorIs(t, err, ErrQueueWaitExpired)
 		assert.Nil(t, lease)
 		assert.Equal(t, int64(1), inst.GetActiveRequests())
 		assert.Equal(t, activity, inst.GetLastActivity())
@@ -246,7 +246,7 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("context_cancellation", func(t *testing.T) {
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(1, 5*time.Second)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 5 * time.Second})
 
 		first := acquireTestLease(t, inst)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -259,7 +259,7 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("tracks_active_requests", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(2, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 2, MaxQueuedRequests: 100, QueueTimeout: 0})
 
 		assert.Equal(t, int64(0), inst.GetActiveRequests())
 		first := acquireTestLease(t, inst)
@@ -285,7 +285,7 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 		const slots = 3
 		const goroutines = 50
 		inst := NewInstance("id", "vllm", "m", 0, 0, 10)
-		inst.InitConcurrencyLimit(slots, 5*time.Second)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: slots, MaxQueuedRequests: 100, QueueTimeout: 5 * time.Second})
 
 		var wg sync.WaitGroup
 		var errCount atomic.Int64
@@ -308,7 +308,7 @@ func TestInstance_ConcurrencyGating(t *testing.T) {
 
 	t.Run("toinfo_includes_limit", func(t *testing.T) {
 		inst := NewInstance("id", "mlx", "m", 8090, 0, 10)
-		inst.InitConcurrencyLimit(1, 0)
+		inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 
 		info := inst.ToInfo("node1")
 		assert.Equal(t, 1, info.MaxConcurrentRequests)

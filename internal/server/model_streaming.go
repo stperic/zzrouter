@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -324,9 +323,8 @@ func getInstanceBackendNode(inst *instance.Instance) string {
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
 	lease, err := s.openInstance(req, inst)
 	if err != nil {
-		if errors.Is(err, instance.ErrAtCapacity) {
-			streamer.StreamError(w, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
+		if failure, ok := renderAdmissionError(err); ok {
+			streamer.StreamError(w, failure)
 		}
 		return
 	}
@@ -387,11 +385,4 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
 	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 	endBrokenStream(w, req, result)
-}
-
-// capacityErrorMessage returns a standardized capacity error message for
-// a given instance.
-func capacityErrorMessage(inst *instance.Instance) string {
-	return fmt.Sprintf("This model's provider (%s) is at capacity (%d concurrent). Please retry shortly.",
-		inst.Provider, inst.ConcurrencyLimit())
 }

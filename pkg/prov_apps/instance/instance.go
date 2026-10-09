@@ -141,9 +141,12 @@ type Instance struct {
 
 	// Concurrency semaphore: nil = unlimited, buffered chan = gated.
 	// Initialized at most once via InitConcurrencyLimit (guarded by concurrencyOnce).
-	concurrencyOnce sync.Once     `json:"-"`
-	concurrencySem  chan struct{} `json:"-"`
-	queueTimeout    time.Duration `json:"-"`
+	concurrencyOnce   sync.Once     `json:"-"`
+	concurrencySem    chan struct{} `json:"-"`
+	queueTimeout      time.Duration `json:"-"`
+	queueMu           sync.Mutex    `json:"-"`
+	waiters           int           `json:"-"`
+	maxQueuedRequests int           `json:"-"`
 
 	// IdleExpiry receives the instance ID when the keep-alive timer fires.
 	// The manager listens on this to auto-stop idle instances.
@@ -579,17 +582,23 @@ func (i *Instance) GetActiveRequests() int64 {
 
 // --- Concurrency gating ---
 
-// InitConcurrencyLimit initializes the per-instance concurrency semaphore.
-// max <= 0 means unlimited (no gating). A negative queueTimeout
-// (constants.QueueUntilCallerDeadline) queues for as long as the caller
-// waits. Thread-safe; subsequent calls are no-ops.
-func (i *Instance) InitConcurrencyLimit(max int, queueTimeout time.Duration) {
-	if max <= 0 {
+// ConcurrencyConfig is an instance's admission policy. A zero MaxConcurrentRequests means
+// unlimited; a negative QueueTimeout waits as long as the caller does.
+type ConcurrencyConfig struct {
+	MaxConcurrentRequests int
+	MaxQueuedRequests     int // 0 = never queue: refuse whenever no slot is free
+	QueueTimeout          time.Duration
+}
+
+// InitConcurrencyLimit sets the admission policy once; later calls are no-ops.
+func (i *Instance) InitConcurrencyLimit(cfg ConcurrencyConfig) {
+	if cfg.MaxConcurrentRequests <= 0 {
 		return
 	}
 	i.concurrencyOnce.Do(func() {
-		i.concurrencySem = make(chan struct{}, max)
-		i.queueTimeout = queueTimeout
+		i.concurrencySem = make(chan struct{}, cfg.MaxConcurrentRequests)
+		i.queueTimeout = cfg.QueueTimeout
+		i.maxQueuedRequests = cfg.MaxQueuedRequests
 	})
 }
 

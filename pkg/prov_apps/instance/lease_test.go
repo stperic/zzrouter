@@ -25,7 +25,7 @@ func acquireTestLease(t *testing.T, inst *Instance) *Lease {
 
 func TestLease_ReleaseExactlyOnce(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 0)
-	inst.InitConcurrencyLimit(1, 0)
+	inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 	lease, err := inst.Acquire(context.Background(), nil)
 	require.NoError(t, err)
 	require.Same(t, inst, lease.Instance())
@@ -51,7 +51,7 @@ func TestLease_ReleaseExactlyOnce(t *testing.T) {
 	require.NoError(t, err, "Release must free the slot")
 	defer next.Release()
 	blocked, err := inst.Acquire(context.Background(), nil)
-	assert.ErrorIs(t, err, ErrAtCapacity, "Release must free exactly one slot")
+	assert.ErrorIs(t, err, ErrQueueFull, "Release must free exactly one slot")
 	assert.Nil(t, blocked)
 	assert.Equal(t, int64(1), inst.GetActiveRequests())
 }
@@ -59,7 +59,7 @@ func TestLease_ReleaseExactlyOnce(t *testing.T) {
 func TestLease_ConcurrentAcquireNeverExceedsCap(t *testing.T) {
 	const limit = 3
 	inst := NewInstance("id", "p", "m", 0, 0, 0)
-	inst.InitConcurrencyLimit(limit, -1)
+	inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: limit, MaxQueuedRequests: 100, QueueTimeout: -1})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"time"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -190,9 +189,8 @@ func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*inst
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
 	lease, err := s.openInstance(req, inst)
 	if err != nil {
-		if errors.Is(err, instance.ErrAtCapacity) {
-			failBeforeBackend(w, req, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded", RetryAfter: capacityRetryAfter})
+		if failure, ok := renderAdmissionError(err); ok {
+			failBeforeBackend(w, req, failure)
 			return
 		}
 		slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
@@ -279,10 +277,6 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 		panic(http.ErrAbortHandler)
 	}
 }
-
-// capacityRetryAfter is the Retry-After for a full instance: slots
-// free as soon as an in-flight request finishes.
-const capacityRetryAfter = 5 * time.Second
 
 // failBeforeBackend reports a failure that happens before any backend
 // byte. A streaming request whose dialect streams failures in band gets

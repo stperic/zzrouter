@@ -14,16 +14,16 @@ import (
 func TestAcquire_QueuePolicy(t *testing.T) {
 	t.Run("zero timeout rejects at the door", func(t *testing.T) {
 		i := NewInstance("id", "mlx", "m", 0, 0, 0)
-		i.InitConcurrencyLimit(1, 0)
+		i.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 		acquireTestLease(t, i)
 		lease, err := i.Acquire(context.Background(), nil)
-		assert.ErrorIs(t, err, ErrAtCapacity)
+		assert.ErrorIs(t, err, ErrQueueFull)
 		assert.Nil(t, lease)
 	})
 
-	t.Run("the default waits for the slot and takes it", func(t *testing.T) {
+	t.Run("a bounded wait takes the slot", func(t *testing.T) {
 		i := NewInstance("id", "mlx", "m", 0, 0, 0)
-		i.InitConcurrencyLimit(1, constants.QueueUntilCallerDeadline)
+		i.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: constants.DefaultQueueWait})
 		first := acquireTestLease(t, i)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -52,7 +52,7 @@ func TestAcquire_QueuePolicy(t *testing.T) {
 
 	t.Run("the caller's deadline is the bound", func(t *testing.T) {
 		i := NewInstance("id", "mlx", "m", 0, 0, 0)
-		i.InitConcurrencyLimit(1, constants.QueueUntilCallerDeadline)
+		i.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: constants.QueueUntilCallerDeadline})
 		acquireTestLease(t, i)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)

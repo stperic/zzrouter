@@ -26,7 +26,7 @@ func localGroupInstance(t *testing.T, deps *fakeDeps, queueTimeout time.Duration
 	t.Helper()
 	inst := instance.NewInstance("run", "engine", "m", 8081, time.Minute, 1)
 	inst.SetStatus(instance.StatusRunning)
-	inst.InitConcurrencyLimit(1, queueTimeout)
+	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: queueTimeout})
 	deps.instances = map[string]*instance.Instance{"m": inst}
 	t.Cleanup(inst.Cancel)
 	return inst
@@ -37,38 +37,42 @@ func leaseGroup(candidates []pfallback.Candidate) *resolver.Resolved {
 }
 
 func TestGroupRespectsInstanceCap(t *testing.T) {
-	deps := newFakeDeps()
-	inst := localGroupInstance(t, deps, 0)
-	held, err := inst.Acquire(t.Context(), nil)
-	require.NoError(t, err)
-	defer held.Release()
-	var localCalls atomic.Int32
-	deps.forward["http://localhost:8081/v1/chat/completions"] = func() (*http.Response, error) {
-		localCalls.Add(1)
-		return cannedJSON(http.StatusOK, `{"model":"m","choices":[]}`), nil
-	}
-	deps.endpoints["next"] = "http://next.test"
-	deps.forward["http://next.test/v1/chat/completions"] = func() (*http.Response, error) {
-		assert.EqualValues(t, 1, inst.GetActiveRequests(), "the original lease is still held")
-		return cannedJSON(http.StatusOK, `{"model":"m","choices":[]}`), nil
-	}
-	p := newProxyWithFake(deps)
-	c, w := buildGinCtx(t, `{"model":"group"}`)
-	resolved := leaseGroup([]pfallback.Candidate{
-		{Name: "busy", App: "engine", Model: "m", OnDemand: true},
-		{Name: "free", App: "next", Model: "m"},
-	})
+	for _, wait := range []time.Duration{0, 10 * time.Millisecond} {
+		t.Run(wait.String(), func(t *testing.T) {
+			deps := newFakeDeps()
+			inst := localGroupInstance(t, deps, wait)
+			held, err := inst.Acquire(t.Context(), nil)
+			require.NoError(t, err)
+			defer held.Release()
+			var localCalls atomic.Int32
+			deps.forward["http://localhost:8081/v1/chat/completions"] = func() (*http.Response, error) {
+				localCalls.Add(1)
+				return cannedJSON(http.StatusOK, `{"model":"m","choices":[]}`), nil
+			}
+			deps.endpoints["next"] = "http://next.test"
+			deps.forward["http://next.test/v1/chat/completions"] = func() (*http.Response, error) {
+				assert.EqualValues(t, 1, inst.GetActiveRequests(), "the original lease is still held")
+				return cannedJSON(http.StatusOK, `{"model":"m","choices":[]}`), nil
+			}
+			p := newProxyWithFake(deps)
+			c, w := buildGinCtx(t, `{"model":"group"}`)
+			resolved := leaseGroup([]pfallback.Candidate{
+				{Name: "busy", App: "engine", Model: "m", OnDemand: true},
+				{Name: "free", App: "next", Model: "m"},
+			})
 
-	provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
 
-	assert.Equal(t, "next", provider)
-	assert.Zero(t, localCalls.Load(), "a held slot must prevent sending to this instance")
-	assert.EqualValues(t, 1, deps.forwardCalls.Load())
-	assert.Equal(t, "2", w.Header().Get("X-zzrouter-Fallback-Count"), "capacity is recorded once before the next replica")
-	assert.Contains(t, w.Body.String(), `"outcome":"retriable"`)
-	assert.False(t, p.cooldowns.InCooldown("busy"))
-	assert.False(t, p.providerCooldowns.InCooldown("engine"))
-	assert.EqualValues(t, 1, inst.GetActiveRequests())
+			assert.Equal(t, "next", provider)
+			assert.Zero(t, localCalls.Load(), "a held slot must prevent sending to this instance")
+			assert.EqualValues(t, 1, deps.forwardCalls.Load())
+			assert.Equal(t, "2", w.Header().Get("X-zzrouter-Fallback-Count"), "capacity is recorded once before the next replica")
+			assert.Contains(t, w.Body.String(), `"outcome":"retriable"`)
+			assert.False(t, p.cooldowns.InCooldown("busy"))
+			assert.False(t, p.providerCooldowns.InCooldown("engine"))
+			assert.EqualValues(t, 1, inst.GetActiveRequests())
+		})
+	}
 }
 
 type observedLeaseBody struct {

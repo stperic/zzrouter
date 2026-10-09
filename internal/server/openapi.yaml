@@ -9925,7 +9925,13 @@ components:
     # place to update the envelope shape when OpenAI publishes a new
     # revision. See pkg/openaicompat/version.go for the upgrade protocol.
     AnthropicError:
-      description: An error in the Anthropic envelope; `error.type` follows the status.
+      description: >
+        An error in the Anthropic envelope; error.type follows the status.
+        Instance overload is 503 with code capacity_exceeded or queue_wait_expired.
+      headers:
+        Retry-After:
+          description: Suggested delay in delta-seconds for instance overload.
+          schema: { type: integer }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/AnthropicError' }
@@ -9962,7 +9968,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/OpenAIError' }
     OpenAIRateLimit:
-      description: Per-key or global rate limit exceeded.
+      description: Caller quota or rate limit exceeded. Instance overload uses 503.
       headers:
         Retry-After:
           description: Suggested delay in delta-seconds before retrying.
@@ -9985,6 +9991,13 @@ components:
         Service unavailable: feature disabled, draining, or no default backend
         configured. Also emitted with `code: idempotency_store_full` and
         Retry-After when every recorded idempotent request is still in flight.
+        Instance overload returns 503 with Retry-After and code capacity_exceeded
+        (queue full or disabled) or queue_wait_expired (slot wait expired).
+        OpenAI streams already opened carry the code in band inside HTTP 200.
+      headers:
+        Retry-After:
+          description: Suggested delay in delta-seconds before retrying.
+          schema: { type: integer }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/OpenAIError' }
@@ -10043,7 +10056,13 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/OllamaError' }
     OllamaUnavailable:
-      description: Service unavailable , feature disabled, draining, or no default backend configured.
+      description: >
+        Service unavailable: feature disabled, draining, or no default backend configured.
+        Instance overload is 503 with code capacity_exceeded or queue_wait_expired.
+      headers:
+        Retry-After:
+          description: Suggested delay in delta-seconds for instance overload.
+          schema: { type: integer }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/OllamaError' }
@@ -10587,6 +10606,9 @@ components:
                 overloaded_error]
             message:
               type: string
+            code:
+              type: string
+              description: Machine-readable discriminator, including instance overload codes.
         request_id:
           type: string
     OpenAIError:
@@ -10648,6 +10670,9 @@ components:
         error:
           type: string
           description: Human-readable, sanitized description of the failure.
+        code:
+          type: string
+          description: Machine-readable discriminator, including instance overload codes.
 
     OpenAIErrorCode:
       type: string
@@ -10688,6 +10713,8 @@ components:
         - idempotency_key_conflict
         - idempotency_store_full
         - idempotency_wait_timeout
+        - capacity_exceeded
+        - queue_wait_expired
 
     HealthResponse:
       type: object

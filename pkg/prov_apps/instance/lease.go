@@ -2,6 +2,7 @@ package instance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,34 +27,73 @@ func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (*Lea
 	return &Lease{instance: i}, nil
 }
 
+// AdmissionRetryAfter is the delay a refused caller is told to wait: slots free as soon as an
+// in-flight request finishes.
+const AdmissionRetryAfter = 5 * time.Second
+
+// Reasons an instance refuses a request; both are AdmissionError reasons.
+var (
+	ErrQueueFull        = errors.New("instance request queue is full")
+	ErrQueueWaitExpired = errors.New("instance request queue wait expired")
+)
+
+// AdmissionError is an instance refusing a request before it was sent: busy, not broken.
+type AdmissionError struct {
+	Reason     error
+	RetryAfter time.Duration
+}
+
+func (e *AdmissionError) Error() string { return e.Reason.Error() }
+func (e *AdmissionError) Unwrap() error { return e.Reason }
+
+func admissionError(reason error) *AdmissionError {
+	return &AdmissionError{Reason: reason, RetryAfter: AdmissionRetryAfter}
+}
+
 func (i *Instance) acquireSlot(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if i.concurrencySem == nil {
 		return nil
 	}
+	i.queueMu.Lock()
 	select {
 	case i.concurrencySem <- struct{}{}:
+		i.queueMu.Unlock()
 		return nil
 	default:
 	}
-	// Zero refuses at the door; negative waits as long as the caller does.
-	if i.queueTimeout == 0 {
-		return ErrAtCapacity
+	if i.queueTimeout == 0 || i.waiters >= i.maxQueuedRequests {
+		i.queueMu.Unlock()
+		return admissionError(ErrQueueFull)
 	}
-	if i.queueTimeout < 0 {
-		select {
-		case i.concurrencySem <- struct{}{}:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	i.waiters++
+	i.queueMu.Unlock()
+	defer func() {
+		i.queueMu.Lock()
+		i.waiters--
+		i.queueMu.Unlock()
+	}()
+
+	var expired <-chan time.Time
+	if i.queueTimeout > 0 {
+		timer := time.NewTimer(i.queueTimeout)
+		defer timer.Stop()
+		expired = timer.C
 	}
-	timer := time.NewTimer(i.queueTimeout)
-	defer timer.Stop()
 	select {
 	case i.concurrencySem <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-i.concurrencySem
+			return err
+		}
 		return nil
-	case <-timer.C:
-		return ErrAtCapacity
+	case <-expired:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return admissionError(ErrQueueWaitExpired)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

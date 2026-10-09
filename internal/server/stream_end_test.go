@@ -146,7 +146,7 @@ func instanceStreamTestServer() (*Server, *instance.Instance) {
 	s.inference.normalizers = NewResponseNormalizers()
 	// The health host names the fake transport's engine.
 	inst := &instance.Instance{ID: "test", Provider: "engine", HealthURL: "http://engine.test/health", Port: 80}
-	inst.InitConcurrencyLimit(1, 0)
+	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})
 	return s, inst
 }
 

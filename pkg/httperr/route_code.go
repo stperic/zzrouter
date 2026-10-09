@@ -8,6 +8,8 @@ package httperr
 type RouteErrorCode string
 
 const (
+	CodeCapacityExceeded        RouteErrorCode = "capacity_exceeded"
+	CodeQueueWaitExpired        RouteErrorCode = "queue_wait_expired"
 	CodeReleaseManifestMissing  RouteErrorCode = "release_manifest_missing"
 	CodeProtocolCutoverRequired RouteErrorCode = "protocol_cutover_required"
 	// CodeJobNotFound means no local job exists and every peer confirmed absence.

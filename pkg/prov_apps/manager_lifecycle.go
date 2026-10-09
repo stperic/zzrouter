@@ -226,7 +226,11 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req LaunchRequest,
 
 	// Initialize concurrency limiter from provider config
 	if svcCfg.Runtime != nil && svcCfg.Runtime.MaxConcurrentRequests > 0 {
-		inst.InitConcurrencyLimit(svcCfg.Runtime.MaxConcurrentRequests, svcCfg.Runtime.GetQueueTimeout())
+		inst.InitConcurrencyLimit(instance.ConcurrencyConfig{
+			MaxConcurrentRequests: svcCfg.Runtime.MaxConcurrentRequests,
+			MaxQueuedRequests:     svcCfg.Runtime.QueueDepth(),
+			QueueTimeout:          svcCfg.Runtime.GetQueueTimeout(),
+		})
 	}
 
 	// Wire keep-alive expiry to the manager's idle reaper

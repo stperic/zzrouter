@@ -28,12 +28,12 @@ type AppRuntimeConfig struct {
 	API             *APIConfig         `yaml:"api,omitempty"` // For external API apps
 
 	// Concurrency gating for on-demand instances.
-	// 0 or omitted = unlimited (backward compatible). Only meaningful for on-demand providers;
+	// 0 or omitted = unlimited. Only meaningful for on-demand providers;
 	// external/service providers (e.g. Ollama) manage their own concurrency.
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests,omitempty"`
 	// QueueTimeout bounds how long a request waits for a concurrency slot.
-	// Absent = constants.QueueUntilCallerDeadline (wait as long as the caller
-	// does), "0s" = reject immediately, "30s" = wait up to 30s.
+	// Absent = constants.DefaultQueueWait, "0s" = reject immediately,
+	// "caller" = wait as long as the caller does.
 	QueueTimeout string `yaml:"queue_timeout,omitempty"`
 
 	// Models listing configuration (for cloud search)
@@ -341,19 +341,27 @@ func (prc *AppRuntimeConfig) IsKeepAliveIndefinite() bool {
 	return duration < 0
 }
 
-// GetQueueTimeout parses queue_timeout and returns a time.Duration.
-// An absent value means constants.QueueUntilCallerDeadline; "0s" means
-// reject immediately. An unparseable value (e.g. "30" with no unit) falls
-// back to the default rather than to fail-fast — a typo shouldn't quietly
-// turn a queue into a 429.
+// GetQueueTimeout parses queue_timeout. An unparseable or negative value falls back to the
+// bounded default rather than to fail-fast: a typo should not turn a queue into refusals.
 func (prc *AppRuntimeConfig) GetQueueTimeout() time.Duration {
-	if prc.QueueTimeout == "" {
+	switch prc.QueueTimeout {
+	case "":
+		return constants.DefaultQueueWait
+	case "caller":
 		return constants.QueueUntilCallerDeadline
 	}
 	d, err := time.ParseDuration(prc.QueueTimeout)
-	if err != nil {
-		slog.Warn("Invalid queue_timeout, using the caller's deadline", "value", prc.QueueTimeout, "error", err)
-		return constants.QueueUntilCallerDeadline
+	if err != nil || d < 0 {
+		slog.Warn("Invalid queue_timeout, using bounded default", "value", prc.QueueTimeout)
+		return constants.DefaultQueueWait
 	}
 	return d
+}
+
+// QueueDepth is how many requests may wait for a slot; an unlimited instance never queues.
+func (prc *AppRuntimeConfig) QueueDepth() int {
+	if prc.MaxConcurrentRequests <= 0 {
+		return 0
+	}
+	return constants.DefaultQueueDepthFactor * prc.MaxConcurrentRequests
 }

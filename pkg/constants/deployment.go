@@ -37,10 +37,13 @@ func (s Status) IsTerminal() bool {
 		s == StatusSkipped
 }
 
-// QueueUntilCallerDeadline is the queue_timeout value meaning "hold the
-// caller until its own request context ends" rather than "wait this long".
-// It is the default when a provider declares no queue_timeout: a single-slot
-// engine has nothing to gain from failing a caller that is still waiting,
-// and the caller's deadline is the only bound that reflects what the caller
-// will actually accept. A provider that wants fail-fast writes "0s".
+// DefaultQueueWait bounds how long a request waits for a slot when the provider sets no
+// queue_timeout, so a caller with no deadline of its own cannot wait forever.
+const DefaultQueueWait = 30 * time.Second
+
+// DefaultQueueDepthFactor caps waiters at two full batches of the instance's concurrency;
+// more would only wait out DefaultQueueWait and fail.
+const DefaultQueueDepthFactor = 2
+
+// QueueUntilCallerDeadline is queue_timeout "caller": wait as long as the caller's own context.
 const QueueUntilCallerDeadline = time.Duration(-1)
