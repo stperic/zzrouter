@@ -177,6 +177,11 @@ func TestMCPWireObjectSubschemas(t *testing.T) {
 				require.NotContains(t, output.(map[string]any)["properties"], "data")
 				properties := output.(map[string]any)["properties"].(map[string]any)
 				switch tool["name"] {
+				case "zz_chat":
+					input := tool["inputSchema"].(map[string]any)
+					require.Equal(t, "boolean", input["properties"].(map[string]any)["tools"].(map[string]any)["type"])
+					require.NotContains(t, input["required"], "message")
+					require.ElementsMatch(t, []any{"verified", "parser_missing", "truncated", "inconclusive"}, properties["tool_call"].(map[string]any)["enum"])
 				case "zz_overview":
 					require.Contains(t, properties, "unhealthy_nodes")
 					require.NotContains(t, properties, "enabled_providers")

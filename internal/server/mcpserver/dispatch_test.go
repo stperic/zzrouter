@@ -107,6 +107,8 @@ func TestDispatchErrorsAndCap(t *testing.T) {
 		status, problemStatus                 int
 	}{
 		{"problem", `{"type":"https://api.zzrouter.com/problems/bad-request","title":"Bad Request","status":400,"code":"bad_parameter","detail":"Fix provider parameters","errors":[{"key":"ctx","code":"out_of_range","message":"too large"},{"key":"gpu","code":"unknown_flag","message":"unknown"}]}`, "application/problem+json; charset=utf-8", "bad_parameter", "Fix provider parameters", 400, 400},
+		{"OpenAI code", `{"error":{"type":"invalid_request_error","code":"engine_specific_code","message":"Fix the engine"}}`, "application/json; charset=utf-8", "engine_specific_code", "Fix the engine", 400, 400},
+		{"OpenAI without code", `{"error":{"type":"invalid_request_error","code":null,"message":"Fix the engine"}}`, "application/json", "bad_request", "Fix the engine", 400, 400},
 		{"excerpt", strings.Repeat("x", errorExcerptBytes+20), "text/plain", "bad_gateway", strings.Repeat("x", errorExcerptBytes), 502, 502},
 		{"large problem", `{"status":400,"code":"bad_parameter","detail":"Fix provider parameters"}` + strings.Repeat(" ", MaxResponseBytes), "application/problem+json", "bad_parameter", "", 400, 400},
 		{"large excerpt", strings.Repeat("x", MaxResponseBytes+1), "text/plain", "bad_gateway", "", 502, 502},

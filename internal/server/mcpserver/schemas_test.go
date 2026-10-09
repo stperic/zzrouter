@@ -27,6 +27,7 @@ func TestStableOutputSchemasValidateIDs(t *testing.T) {
 		{"run", objectSchema[runOutput]{}, `{"run_id":"r","job_id":"j"}`, `{"job_id":"j"}`},
 		{"download", objectSchema[downloadOutput]{}, `{"deployment_id":"d","nodes":[{"node":"worker","job_id":"j"}]}`, `{"deployment_id":7}`},
 		{"chat", objectSchema[chatOutput]{}, `{"reply":"hello","model":"m","usage":{"total_tokens":4}}`, `{"reply":"hello","model":"m","usage":{"total_tokens":"4"}}`},
+		{"probe", objectSchema[chatOutput]{}, `{"reply":"","model":"m","usage":{},"tool_call":"verified"}`, `{"reply":"","model":"m","usage":{},"tool_call":"refused"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := tc.schema.MarshalJSON()

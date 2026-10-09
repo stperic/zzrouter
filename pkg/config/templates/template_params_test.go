@@ -22,6 +22,38 @@ var templateKeys = map[string]string{
 	"mlx":      "chat-template",
 }
 
+func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	file := filepath.Join(dir, "on-demand", "vllm", "schema.yaml")
+	live, err := os.ReadFile(file)
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(live)
+	require.NoError(t, err)
+	for _, key := range []string{"enable-auto-tool-choice", "tool-call-parser", "reasoning-parser"} {
+		delete(declared.Parameters, key)
+	}
+	old, err := yaml.Marshal(declared)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, old, 0o600))
+	changed, err := templates.ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Contains(t, changed, "on-demand/vllm/schema.yaml")
+	updated, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.Equal(t, live, updated)
+	declared, err = schema.LoadYAMLSchema(updated)
+	require.NoError(t, err)
+	merged, errs := schema.Merge("vllm", declared)
+	require.Empty(t, errs)
+	for key, kind := range map[string]schema.ParamKind{"enable-auto-tool-choice": schema.ParamBool, "tool-call-parser": schema.ParamString, "reasoning-parser": schema.ParamString} {
+		require.Equal(t, kind, merged.Parameters[key].Kind)
+		require.Empty(t, merged.Parameters[key].Enum)
+		_, inSpine := schema.Lookup("vllm", key)
+		require.False(t, inSpine, "missing-feature flags belong in YAML")
+	}
+}
+
 // mlx_lm.server takes the template's text, not a path.
 func TestMLXTakesTheTemplateByContent(t *testing.T) {
 	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")

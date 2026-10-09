@@ -129,6 +129,16 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 				return &toolError{problem: p, line: line}
 			}
 		}
+		var upstream utils.OpenAIError
+		if mediaType == "application/json" && json.Unmarshal(rec.body.Bytes(), &upstream) == nil && upstream.Error.Message != "" {
+			code := ""
+			if upstream.Error.Code != nil {
+				code = *upstream.Error.Code
+			}
+			failure := newToolError(rec.statusCode(), toolErrorCode(code), upstream.Error.Message, nil)
+			failure.line = fmt.Sprintf("HTTP %d %s: %s", rec.statusCode(), failure.problem.Code, upstream.Error.Message)
+			return failure
+		}
 		excerpt := strings.TrimSpace(string(rec.body.Bytes()[:min(rec.body.Len(), errorExcerptBytes)]))
 		failure := newToolError(rec.statusCode(), "", fmt.Sprintf("HTTP %d: %s", rec.statusCode(), excerpt), nil)
 		failure.problem.Detail = excerpt
