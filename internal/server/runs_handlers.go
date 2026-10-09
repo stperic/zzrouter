@@ -22,7 +22,7 @@ import (
 //nolint:unparam // returned LaunchMode is the public contract, not dead code
 func parseLaunchMode(mode string) (instance.LaunchMode, error) {
 	switch strings.ToLower(mode) {
-	case "native":
+	case string(instance.LaunchModeNative):
 		return instance.LaunchModeNative, nil
 	default:
 		return "", fmt.Errorf("invalid launch mode: %s (must be 'native')", mode)

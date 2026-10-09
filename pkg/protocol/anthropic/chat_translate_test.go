@@ -103,7 +103,6 @@ func TestToChatRequest_Refusals(t *testing.T) {
 	for name, tc := range map[string]struct{ body, param string }{
 		"not json":        {`{`, "body"},
 		"bad role":        {`{"model":"m","messages":[{"role":"tool","content":"x"}]}`, "messages.0.role"},
-		"context image":   {`{"model":"m","messages":[{"role":"ctx","content":[{"type":"image"}]}]}`, "messages.0.content.0"},
 		"document block":  {`{"model":"m","messages":[{"role":"user","content":[{"type":"document"}]}]}`, "messages.0.content.0"},
 		"image no source": {`{"model":"m","messages":[{"role":"user","content":[{"type":"image"}]}]}`, "messages.0.content.0.source"},
 		"system image":    {`{"model":"m","system":[{"type":"image"}],"messages":[]}`, "system"},
@@ -163,25 +162,13 @@ func TestCountTokens(t *testing.T) {
 	assert.Error(t, err, "no usage, no count")
 }
 
-// Claude Code 2.1.154 on sends system, ctx and msg turns inside messages;
-// each is a system message where it stands.
-func TestToChatRequest_ContextRoles(t *testing.T) {
-	got, err := ToChatRequest([]byte(`{"model":"m","messages":[
-	  {"role":"user","content":"hi"},
-	  {"role":"system","content":"agent prompt"},
-	  {"role":"ctx","content":[{"type":"text","text":"cwd: /x"}]},
-	  {"role":"msg","content":"note"},
-	  {"role":"assistant","content":"ok"}]}`))
-	require.NoError(t, err)
-	var out map[string]any
-	require.NoError(t, json.Unmarshal(got.Body, &out))
-	assert.Equal(t, []any{
-		map[string]any{"role": "user", "content": "hi"},
-		map[string]any{"role": "system", "content": "agent prompt"},
-		map[string]any{"role": "system", "content": "cwd: /x"},
-		map[string]any{"role": "system", "content": "note"},
-		map[string]any{"role": "assistant", "content": "ok"},
-	}, out["messages"])
+// The translator sees only user and assistant turns: context turns are
+// folded before it (FoldContextTurns), so a stray one is a caller error.
+func TestToChatRequest_ContextRoleIsNotATurn(t *testing.T) {
+	_, err := ToChatRequest([]byte(`{"model":"m","messages":[{"role":"ctx","content":"c"}]}`))
+	var terr *TranslateError
+	require.ErrorAs(t, err, &terr)
+	assert.Equal(t, "messages.0.role", terr.Param)
 }
 
 func TestTranslate_Edges(t *testing.T) {

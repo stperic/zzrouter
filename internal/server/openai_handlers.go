@@ -927,6 +927,17 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// A coordinator that resolved the model to a node but not to a provider
+	// (an explicit @node whose catalog entry is not current) learns it from
+	// the worker, which resolved the model again and served it. Without it
+	// the reply and the inference log name no provider and pricing misses.
+	if provider == "" {
+		if provider = resp.Header.Get(constants.HeaderServingProvider); provider != "" {
+			recorder.SetProvider(provider)
+			s.stashServingProvider(c, provider)
+		}
+	}
+
 	// Backend errors (non-2xx) are rewritten into the request's dialect
 	// before reaching the client. Errors come back as non-streaming JSON
 	// regardless of whether the original request asked for SSE. The same

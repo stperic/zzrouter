@@ -59,8 +59,8 @@ type searchInput struct {
 	Provider string `json:"provider,omitempty" jsonschema:"Search registry, such as huggingface or ollama. Default all."`
 }
 type filesInput struct {
-	pageInput
-	ModelID string `json:"model_id" jsonschema:"HuggingFace org/repo identifier from zz_model_search. Returns GGUF files only."`
+	Model    string `json:"model" jsonschema:"HuggingFace org/repo, a zz_model_search result's model."`
+	Provider string `json:"provider,omitempty" jsonschema:"Optional provider whose feature files (a vision projector) to identify; omit for every enabled provider."`
 }
 type runsInput struct {
 	pageInput
@@ -76,7 +76,7 @@ type retryInput struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key; reuse it when retrying the same operation."`
 }
 type previewInput struct {
-	ModelName   string            `json:"model_name" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
+	Model       string            `json:"model" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
 	Provider    string            `json:"provider" jsonschema:"Enabled provider name to preview."`
 	Node        string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint    string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -85,7 +85,7 @@ type previewInput struct {
 }
 type startInput struct {
 	retryInput
-	ModelName  string            `json:"model_name" jsonschema:"Exact local model name from zz_models."`
+	Model      string            `json:"model" jsonschema:"Exact local model name from zz_models."`
 	Provider   string            `json:"provider" jsonschema:"Enabled provider name to launch."`
 	Node       string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint   string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -99,12 +99,13 @@ type restartInput struct {
 }
 type downloadInput struct {
 	retryInput
-	Model    string `json:"model" jsonschema:"Registry model identifier from zz_model_search."`
-	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address. Omit for REST's default placement."`
-	Registry string `json:"registry,omitempty" jsonschema:"Registry such as huggingface or ollama."`
-	Provider string `json:"provider,omitempty" jsonschema:"Optional provider to resolve the download format."`
-	File     string `json:"file,omitempty" jsonschema:"Exact GGUF filename from zz_model_files for a HuggingFace download."`
-	Format   string `json:"format,omitempty" jsonschema:"Optional model format, such as gguf or safetensors."`
+	Model    string   `json:"model" jsonschema:"Registry model identifier from zz_model_search."`
+	Node     string   `json:"node,omitempty" jsonschema:"Optional target node name, never an address. Omit for REST's default placement."`
+	Registry string   `json:"registry,omitempty" jsonschema:"Registry such as huggingface or ollama."`
+	Provider string   `json:"provider,omitempty" jsonschema:"Optional provider to resolve the download format."`
+	File     string   `json:"file,omitempty" jsonschema:"A variant's file from zz_model_files; a split variant's file fetches every shard."`
+	Features []string `json:"features,omitempty" jsonschema:"Features whose files to fetch beside the weights, such as [vision] for a projector zz_model_files lists. Omit for provider defaults; [] for none."`
+	Format   string   `json:"format,omitempty" jsonschema:"Optional model format, such as gguf or safetensors."`
 }
 type cancelInput struct {
 	JobID        string `json:"job_id,omitempty" jsonschema:"Job id to cancel. Supply exactly one of job_id or deployment_id."`
@@ -125,7 +126,7 @@ type installInput struct {
 	Runtime       string `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
 type paramsInput struct {
-	Provider string `json:"provider" jsonschema:"Provider name whose resolved parameters to read."`
+	Provider string `json:"provider" jsonschema:"Provider whose parameters to read or change. zz_params_get lists every parameter it accepts, with type and description, under accepts."`
 	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Model    string `json:"model,omitempty" jsonschema:"Optional model name for model-tier resolution."`
 }
@@ -144,6 +145,8 @@ type logsInput struct {
 	pageInput
 	RunID string `json:"run_id,omitempty" jsonschema:"Run id for a log snapshot. Omit to list available run-log files on the coordinator."`
 	Lines int    `json:"lines,omitempty" jsonschema:"Last N run-log lines. Default 200, capped at 1000. Never follows a stream."`
+	Node  string `json:"node,omitempty" jsonschema:"Node the run ran on. Needed only for a stopped run, whose log stays on that node."`
+	Grep  string `json:"grep,omitempty" jsonschema:"Literal text to find anywhere in the run log, including startup lines long scrolled out of the last N; returns the matching lines instead of the last N."`
 }
 type updateInput struct {
 	Nodes []string `json:"nodes,omitempty" jsonschema:"Optional node names for status, or [all]. Omit for coordinator."`
@@ -166,7 +169,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	read := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
 	write := &mcp.ToolAnnotations{DestructiveHint: new(bool)}
 	destructive := &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)}
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_nodes", Description: "Find node names or inspect one node. Returns roles, health, providers and hardware; use a node name in model and run tools.", Annotations: read}, []string{"listNodes", "getNode"}, dispatcher.nodes)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_nodes", Description: "Find node names or inspect one node. Returns OS, roles, health, providers and hardware; use a node name in model and run tools. Memory, GPU and disk *_gb values are GiB (1024^3 bytes); compare them with a model's size_bytes divided by 1073741824.", Annotations: read}, []string{"listNodes", "getNode"}, dispatcher.nodes)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_models", Description: "Check available models before searching or downloading. The filter tests both local name and source_id, case-insensitively: exact (QWEN2.5 matches qwen2.5), the complete segment after the final / (QWEN2.5 matches org/qwen2.5), or a glob (*qwen2.5* matches org/qwen2.5-instruct). Matches are independent per entry; an exact hit does not suppress suffix hits. A partial name needs a glob. Returns names, formats, sizes and existing details.wire_endpoints and details.features when reported; these are serving capabilities, not a guessed model type. Select a local name for zz_run_preview.", Annotations: read}, []string{"listModels"}, dispatcher.models)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
@@ -177,11 +180,11 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. A bare name works when one node holds it; otherwise pass node. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, with follow forced off. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, or every line matching grep across the whole log, with follow forced off. A stopped run's log stays readable with the node it ran on. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_provider_install", Description: "Check prerequisites with preflight_only=true, then install with false; managed=false means no zzRouter-owned copy is installed and does not forbid installing. Successful installation enables the provider during finalization, before the job completes. Follow with zz_job, then zz_providers. If installation is not needed, use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query; cloud setup uses POST /zzrouter/v1/providers/{name}/verify after credentials are configured.", Annotations: write}, []string{"createProviderInstallPreflight", "createProviderInstall"}, dispatcher.install)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters"}, dispatcher.params)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model, and in accepts every parameter it takes with type and description. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters", "getProviderSchema"}, dispatcher.params)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_set", Description: "Apply a tiered merge-patch to provider parameters or environment. Returns resolved values and affected runs; restart_affected starts needed restarts. Follow with zz_job for runs.restart_job_id, then zz_params_get.", Annotations: write}, []string{"patchProviderParameters"}, dispatcher.patch)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_status", Description: "Read update status for selected nodes. Returns availability, version, progress and errors; call zz_update_check to refresh availability, then zz_update_apply when an update is wanted.", Annotations: read}, []string{"getUpdateStatus"}, dispatcher.updateStatus)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_check", Description: "Check for a newer release on the coordinator. Returns availability, release and skipped reason; read zz_update_status or use zz_update_apply when an update is wanted.", Annotations: &mcp.ToolAnnotations{DestructiveHint: new(bool), IdempotentHint: true}}, []string{"createUpdateCheck"}, dispatcher.updateCheck)
@@ -333,7 +336,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 }
 
 func (d dispatcher) nodes(ctx context.Context, in nodesInput) (agentOutput, error) {
-	fields := "name cluster_role health_status providers cpu memory gpu version last_error"
+	fields := "name os cluster_role health_status providers cpu memory gpu disk version last_error"
 	if in.Node != "" {
 		return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, routePrefix(string(nodesRoute)+"/"), in.Node, "", "", fields, "Node status retrieved; use its name as a selector.")
 	}
@@ -345,15 +348,21 @@ func (d dispatcher) models(ctx context.Context, in modelsInput) (agentOutput, er
 }
 
 func (d dispatcher) search(ctx context.Context, in searchInput) (agentOutput, error) {
-	return d.list(ctx, searchRoute.path(), in.pageInput, url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}, "results", "id name model_id provider size downloads likes pipeline_tag url", "matches")
+	return d.list(ctx, searchRoute.path(), in.pageInput, url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}, "results", "id:model name provider size downloads likes pipeline_tag url", "matches")
 }
 
 func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, error) {
-	return d.list(ctx, filesRoute.path(), in.pageInput, url.Values{"id": {in.ModelID}}, "variants", "file quantization bits size_bytes size_human recommended recommendation_reason", "files")
+	out, err := d.object(ctx, request{method: http.MethodGet, path: filesRoute.path(), query: url.Values{"id": {in.Model}, "provider": {in.Provider}}}, "variants features", "Pass a variant's file to zz_model_download; add features: [vision] to also fetch a listed vision file.")
+	if err != nil {
+		return out, err
+	}
+	out.fields["variants"] = compactObjects(out.fields["variants"], "file shards quantization bits size_bytes size_human recommended recommendation_reason")
+	out.fields["features"] = compactObjects(out.fields["features"], "feature file size_bytes size_human")
+	return out, nil
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port status error_message failure parameters_status"
+	fields := "id:run_id provider model node port status waiting_on error_message failure parameters_status"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err
@@ -371,10 +380,7 @@ func (d dispatcher) preview(ctx context.Context, in previewInput) (agentOutput, 
 }
 
 func (d dispatcher) start(ctx context.Context, in startInput) (agentOutput, error) {
-	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: struct {
-		startInput
-		LaunchMode string `json:"launch_mode"`
-	}{in, "native"}, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port", "Run launch accepted; follow with zz_job.")
+	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: in, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port", "Run launch accepted; follow with zz_job.")
 }
 
 func (d dispatcher) childObject(ctx context.Context, req request, prefix routePrefix, id, suffix, node, fields, summary string) (agentOutput, error) {
@@ -399,6 +405,9 @@ func (d dispatcher) stop(ctx context.Context, in runInput) (agentOutput, error) 
 
 func (d dispatcher) download(ctx context.Context, in downloadInput) (agentOutput, error) {
 	body := map[string]any{"model": in.Model, "registry": in.Registry, "provider": in.Provider, "file": in.File, "format": in.Format}
+	if in.Features != nil {
+		body["features"] = in.Features
+	}
 	if in.Node != "" {
 		body["nodes"] = []string{in.Node}
 	}
@@ -443,7 +452,18 @@ func (d dispatcher) install(ctx context.Context, in installInput) (agentOutput, 
 }
 
 func (d dispatcher) params(ctx context.Context, in paramsInput) (agentOutput, error) {
-	return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use a tiered merge-patch to change them.")
+	out, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; accepts lists every parameter the provider takes. Use a tiered merge-patch to change them.")
+	if err != nil {
+		return out, err
+	}
+	// What is set and what can be set answer one question: how to change a launch.
+	// The schema is the coordinator's: config is identical on every node.
+	schema, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, providersRoute, in.Provider, "/schema", "", "parameters", "")
+	if err != nil {
+		return out, err
+	}
+	out.fields["accepts"] = schema.fields["parameters"]
+	return out, nil
 }
 
 func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, error) {
@@ -495,7 +515,14 @@ func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error)
 	if in.Lines < 1 {
 		return agentOutput{}, fmt.Errorf("lines must be positive")
 	}
-	return d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}}, routePrefix(string(runsRoute)+"/"), in.RunID, "/logs", "", "log_file total_lines lines truncated", "Run log snapshot retrieved; use errors to adjust parameters or provider setup.")
+	q := url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}
+	if in.Grep != "" {
+		q.Set("grep", in.Grep)
+	}
+	if in.Node != "" {
+		q.Set("node", in.Node)
+	}
+	return d.childObject(ctx, request{method: http.MethodGet, query: q}, routePrefix(string(runsRoute)+"/"), in.RunID, "/logs", "", "log_file total_lines lines truncated filtered", "Run log snapshot retrieved; use errors to adjust parameters or provider setup.")
 }
 
 func (d dispatcher) updateStatus(ctx context.Context, in updateInput) (agentOutput, error) {

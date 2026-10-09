@@ -165,7 +165,10 @@ func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
 			c := newWorkerCache(t)
 			var calls atomic.Int32
 			c.registry = func() *modelregistry.Registry { calls.Add(1); return nil }
+			// An overtaken refresh is refreshed again, up to a bound, within one attempt.
+			perAttempt := int32(1)
 			if changed {
+				perAttempt = maxOvertakenRefreshes
 				c.clusterClient = func() mesh.ClusterClient { c.mu.Lock(); c.invalidateLocked(); c.mu.Unlock(); return nil }
 			} else {
 				c.node = &fakeNode{}
@@ -183,13 +186,13 @@ func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
 				})
 			}
 			requests.Wait()
-			require.Equal(t, int32(1), calls.Load(), "failed refresh is not retried per request")
+			require.Equal(t, perAttempt, calls.Load(), "failed refresh is not retried per request")
 			c.mu.Lock()
 			c.lastAttempt = time.Now().Add(-inventoryRetryInterval)
 			c.mu.Unlock()
 			_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
 			require.Error(t, err)
-			require.Equal(t, int32(2), calls.Load(), "expiry retries the failing refresh")
+			require.Equal(t, 2*perAttempt, calls.Load(), "expiry retries the failing refresh")
 			c.node = &fakeNode{name: "worker-1"}
 			c.clusterClient = func() mesh.ClusterClient { return nil }
 			c.Invalidate()

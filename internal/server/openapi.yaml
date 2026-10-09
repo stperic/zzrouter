@@ -736,9 +736,15 @@ paths:
         their existing behavior. A memory snapshot cannot reserve against other
         workloads changing memory after the check.
 
+        While another run on the node is still claiming GPU memory, the
+        launch is accepted and queued: the run stays `starting` with
+        `waiting_on` naming that run, and is measured once it is ready. A
+        refusal at that point fails the run and its job with the same 409
+        detail.
+
         Returns 202 immediately with a pkg/jobs handle ID. Subscribe to
-        launch progress (launching → waiting-for-health → running/failed)
-        via `GET /zzrouter/v1/jobs/{job_id}/stream?node={node}`.
+        launch progress (queued → launching → waiting-for-health →
+        running/failed) via `GET /zzrouter/v1/jobs/{job_id}/stream?node={node}`.
 
         Cancel an in-flight launch with `DELETE /zzrouter/v1/jobs/{job_id}` ,
         this terminates the process. Once the run reaches Running the job
@@ -916,6 +922,10 @@ paths:
         A run whose log file has not appeared yet is waited on briefly
         rather than 404'd immediately, since a just-launched instance
         creates its file a moment after the run exists.
+
+        A stopped run's log stays on the node it ran on and is still
+        read here, as a snapshot (`follow` does not apply): pass `node`
+        for a run that ran on a worker.
       parameters:
         - in: query
           name: follow
@@ -4837,16 +4847,61 @@ paths:
           required: true
           description: HuggingFace repository identifier (owner/repository).
           schema: { type: string }
+        - in: query
+          name: provider
+          required: false
+          description: Provider whose feature file declarations identify feature files. Omit for every enabled provider; an unconfigured one is a 400.
+          schema: { type: string }
       summary: List available Hugging Face model variants for a repo
       description: |
-        Quantisation variants available for a HuggingFace repo, so a caller
-        can pick a file size before downloading.
+        The loadable GGUF weights in a HuggingFace repo, so a caller can pick
+        a quantization and size before downloading. A split set is one
+        variant: `shards` counts its files, `size_bytes` is their total, and
+        its `file` (the first shard) is what a deployment's `file` takes to
+        fetch them all. An incomplete set is not offered. Files a provider
+        declares for a feature (a vision projector) are never variants; each
+        feature's preferred file is listed under `features`, fetched by a
+        deployment requesting that feature.
 
         The repo id goes in the `id` query parameter rather than the path,
         because HuggingFace ids contain a slash and path-escaping
         round-trips badly through some proxies and SDKs.
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      model_id: { type: string }
+                      variants:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            file: { type: string }
+                            shards: { type: integer }
+                            quantization: { type: string }
+                            bits: { type: integer }
+                            size_bytes: { type: integer, format: int64 }
+                            size_human: { type: string }
+                            recommended: { type: boolean }
+                            recommendation_reason: { type: string }
+                      features:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            feature: { type: string }
+                            file: { type: string }
+                            size_bytes: { type: integer, format: int64 }
+                            size_human: { type: string }
+                      non_gguf_files: { type: integer }
+                      total_size_bytes: { type: integer, format: int64 }
         '400':
           description: Missing or malformed `id`.
           content:
@@ -10894,6 +10949,11 @@ components:
         error_message:
           type: string
           description: Bounded redacted failure summary, preserving the first specific cause.
+        waiting_on:
+          type: string
+          description: |
+            Set while a `starting` run is queued: the run still claiming GPU
+            memory that this one is admitted after. Absent once admitted.
         failure:
           type: object
           description: Optional diagnostic snapshot captured by the failed run lifecycle; does not require a logs request.
@@ -11019,10 +11079,10 @@ components:
           minimum: 0
         memory:
           type: object
-          description: RAM summary populated when the worker reported resources on last probe.
+          description: RAM summary populated when the worker reported resources on last probe. Every `*_gb` value on a node (memory, GPU, disk) is GiB, 1024^3 bytes.
           properties:
-            total_gb:     { type: number }
-            available_gb: { type: number }
+            total_gb:     { type: number, description: GiB }
+            available_gb: { type: number, description: GiB }
             used_percent: { type: number }
         metadata:
           type: object
@@ -11154,7 +11214,7 @@ components:
 
     LaunchRunRequest:
       type: object
-      required: [provider, launch_mode]
+      required: [provider]
       description: |
         Either `model` or `model_name` must be set. `model_name` wins
         when both are present; `model` is preferred for parity with
@@ -11163,9 +11223,9 @@ components:
         runtime: { type: string, description: Declared runtime for disposable launch; must match this model's applicable runtime. }
         disposable_plan_id: { type: string, pattern: '^[a-f0-9]{64}$', description: Verified disposable install plan. A normal running instance is never returned as its proof. }
         provider:    { type: string }
-        launch_mode: { type: string, enum: [native] }
-        model:       { type: string, description: "Preferred , alias of model_name" }
-        model_name:  { type: string, description: "Legacy field; still accepted" }
+        launch_mode: { type: string, enum: [native], description: The only mode; omitted means native. }
+        model:       { type: string, description: The model name, as in `/v1/*`. }
+        model_name:  { type: string, description: Same as `model`. }
         node:        { type: string }
         endpoint:
           type: string
@@ -11188,11 +11248,20 @@ components:
 
     PreviewRunRequest:
       type: object
+      description: |
+        Either `model` or `model_name` must be set, as for POST /runs.
+        Unknown fields are refused.
       properties:
-        provider: { type: string }
-        model:    { type: string }
-        node:     { type: string }
+        provider:   { type: string }
+        model:      { type: string, description: The model name, as in `/v1/*`. }
+        model_name: { type: string, description: Same as `model`. }
+        node:       { type: string }
+        endpoint:   { type: string, enum: [chat, embeddings, reranking] }
+        force:      { type: boolean }
         parameters:
+          type: object
+          additionalProperties: { type: string }
+        environment:
           type: object
           additionalProperties: { type: string }
 

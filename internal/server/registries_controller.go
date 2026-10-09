@@ -2,11 +2,16 @@ package server
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
@@ -17,11 +22,13 @@ import (
 // regex-parsing filenames.
 type RegistriesController struct {
 	registry func() *modelregistry.Registry
+	apps     func() *pkgConfig.AppsConfig
 }
 
-// NewRegistriesController creates the controller.
-func NewRegistriesController(reg func() *modelregistry.Registry) *RegistriesController {
-	return &RegistriesController{registry: reg}
+// NewRegistriesController creates the controller. apps supplies the feature
+// file declarations that tell a projector from weights.
+func NewRegistriesController(reg func() *modelregistry.Registry, apps func() *pkgConfig.AppsConfig) *RegistriesController {
+	return &RegistriesController{registry: reg, apps: apps}
 }
 
 // RegisterPublicRoutes wires the /registries/* surface.
@@ -29,12 +36,13 @@ func (ctrl *RegistriesController) RegisterPublicRoutes(router *gin.RouterGroup) 
 	router.GET("/registries/huggingface/variants", ctrl.ListHuggingFaceVariants)
 }
 
-// GGUFVariant is one pickable GGUF file in a HuggingFace repo, with the
-// parsed metadata an agent needs to choose between quantizations without
-// scraping filenames. `File` is the exact string to echo back to
-// POST /pulls's `file` field.
+// GGUFVariant is one loadable set of GGUF weights in a HuggingFace repo: a
+// single file, or every shard of a split one, grouped the way downloads and
+// launches group them. `File` is the exact string to pass as a deployment's
+// `file`; it fetches every shard.
 type GGUFVariant struct {
 	File                 string `json:"file"`
+	Shards               int    `json:"shards"`
 	Quantization         string `json:"quantization"`
 	Bits                 int    `json:"bits"`
 	SizeBytes            int64  `json:"size_bytes"`
@@ -43,12 +51,22 @@ type GGUFVariant struct {
 	RecommendationReason string `json:"recommendation_reason,omitempty"`
 }
 
+// FeatureFile is the file a deployment requesting Feature would fetch beside
+// the weights (a vision projector, say). It is never a weights choice.
+type FeatureFile struct {
+	Feature   string `json:"feature"`
+	File      string `json:"file"`
+	SizeBytes int64  `json:"size_bytes"`
+	SizeHuman string `json:"size_human"`
+}
+
 // HuggingFaceVariantsResponse is the response envelope. Counts (not lists)
 // for non-GGUF files keeps the payload focused on the decision-making
 // surface while still signalling "this repo has docs/configs too".
 type HuggingFaceVariantsResponse struct {
 	ModelID        string        `json:"model_id"`
 	Variants       []GGUFVariant `json:"variants"`
+	Features       []FeatureFile `json:"features"`
 	NonGGUFFiles   int           `json:"non_gguf_files"`
 	TotalSizeBytes int64         `json:"total_size_bytes"`
 }
@@ -81,34 +99,78 @@ func (ctrl *RegistriesController) ListHuggingFaceVariants(c *gin.Context) {
 		return
 	}
 
-	resp := buildVariantsResponse(modelID, files)
+	features, ok := featureFileGlobs(ctrl.apps(), c.Query("provider"))
+	if !ok {
+		BadRequest(c, fmt.Sprintf("provider %q is not configured; list providers with GET /zzrouter/v1/providers", c.Query("provider")))
+		return
+	}
+	resp := buildVariantsResponse(modelID, files, features)
 	respondSuccess(c, "HuggingFace variants retrieved", resp)
 }
 
 // buildVariantsResponse is pure — no HTTP, no registry — for easy testing.
-func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry) HuggingFaceVariantsResponse {
-	out := HuggingFaceVariantsResponse{ModelID: modelID}
+// features maps a feature name to its declared file globs, in preference order.
+func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry, features map[string][]string) HuggingFaceVariantsResponse {
+	out := HuggingFaceVariantsResponse{ModelID: modelID, Variants: []GGUFVariant{}, Features: []FeatureFile{}}
+	var all, weights []layout.File
+	var featureGlobs []string
+	for _, globs := range features {
+		featureGlobs = append(featureGlobs, globs...)
+	}
 	for _, f := range files {
 		out.TotalSizeBytes += f.Size
-		if !isGGUF(f.Name) {
+		if !layout.IsGGUF(f.Name) {
 			out.NonGGUFFiles++
 			continue
 		}
-		quant, bits := parseQuant(f.Name)
+		file := layout.File{Path: f.Name, Size: f.Size}
+		all = append(all, file)
+		if !layout.Matches(f.Name, featureGlobs) {
+			weights = append(weights, file)
+		}
+	}
+	for _, v := range layout.GGUFVariants(weights) {
+		quant, bits := parseQuant(path.Base(v.Files[0].Path))
 		out.Variants = append(out.Variants, GGUFVariant{
-			File:         f.Name,
+			File:         v.Files[0].Path,
+			Shards:       len(v.Files),
 			Quantization: quant,
 			Bits:         bits,
-			SizeBytes:    f.Size,
-			SizeHuman:    humanizeBytes(f.Size),
+			SizeBytes:    v.Size(),
+			SizeHuman:    humanizeBytes(v.Size()),
 		})
+	}
+	for _, name := range slices.Sorted(maps.Keys(features)) {
+		if f, ok := layout.FirstMatch(all, features[name]); ok {
+			out.Features = append(out.Features, FeatureFile{Feature: name, File: f.Path, SizeBytes: f.Size, SizeHuman: humanizeBytes(f.Size)})
+		}
 	}
 	markRecommended(out.Variants)
 	return out
 }
 
-func isGGUF(name string) bool {
-	return strings.HasSuffix(strings.ToLower(name), ".gguf")
+// featureFileGlobs collects declared feature files from the named provider,
+// or from every enabled provider when none is named, reporting false for a
+// named provider that is not configured. A feature declared by several
+// providers keeps the first provider's globs, in name order.
+func featureFileGlobs(cfg *pkgConfig.AppsConfig, provider string) (map[string][]string, bool) {
+	declared := map[string]map[string]pkgConfig.Feature{}
+	cfg.RangeApps(func(name string, sc pkgConfig.ServiceConfig) bool {
+		if (provider == "" && sc.IsEnabled()) || name == provider {
+			declared[name] = sc.Features
+		}
+		return true
+	})
+	out := map[string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		for feature, decl := range declared[name] {
+			if _, seen := out[feature]; !seen && len(decl.Files) > 0 {
+				out[feature] = decl.Files
+			}
+		}
+	}
+	_, named := declared[provider]
+	return out, provider == "" || named
 }
 
 // quantPattern matches the last quant tag in a filename (Q4_K_M, IQ3_XS,
@@ -198,11 +260,11 @@ func humanizeBytes(n int64) string {
 	)
 	switch {
 	case n >= gb:
-		return fmt.Sprintf("%.1f GB", float64(n)/float64(gb))
+		return fmt.Sprintf("%.1f GiB", float64(n)/float64(gb))
 	case n >= mb:
-		return fmt.Sprintf("%.1f MB", float64(n)/float64(mb))
+		return fmt.Sprintf("%.1f MiB", float64(n)/float64(mb))
 	case n >= kb:
-		return fmt.Sprintf("%.1f KB", float64(n)/float64(kb))
+		return fmt.Sprintf("%.1f KiB", float64(n)/float64(kb))
 	default:
 		return fmt.Sprintf("%d B", n)
 	}

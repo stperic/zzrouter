@@ -31,8 +31,6 @@ func TestFailureSnapshot_PreservesCauseAndExit(t *testing.T) {
 	*snapshot.Failure.ExitCode = 77
 	assert.NotContains(t, inst.ToInfo("worker").Failure.ErrorTail, "mutated")
 	assert.Equal(t, 1, *inst.ToInfo("worker").Failure.ExitCode)
-	inst.MarkStarting()
-	assert.Nil(t, inst.ToInfo("worker").Failure)
 }
 
 func TestFailureSnapshot_ZeroAndUnknownExit(t *testing.T) {

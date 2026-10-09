@@ -197,3 +197,44 @@ func TestMessagesCompat_TruncatedFallbackStreamReturnsError(t *testing.T) {
 	assert.NotContains(t, w.Body.String(), "event: message_stop\n")
 	assert.NotContains(t, w.Body.String(), `"stop_reason":"end_turn"`)
 }
+
+// Claude Code sends its context as system turns inside messages, which
+// chat templates such as Qwen3's refuse after the first message. Native
+// and translated engines alike receive it folded into the user turn.
+func TestMessagesRoute_FoldsContextTurnsForEveryEngine(t *testing.T) {
+	const claudeCodeTurn = `{"model":"claude","max_tokens":8,"system":"sys","messages":[
+	  {"role":"user","content":[{"type":"text","text":"Say hi"}]},
+	  {"role":"system","content":[{"type":"text","text":"# Environment"}]}]}`
+	for name, wire := range map[string][]string{
+		"native":     {"chat_completions", messagesEndpoint},
+		"translated": compatWire,
+	} {
+		t.Run(name, func(t *testing.T) {
+			backends := map[string]*serviceBackend{"engine": {wire: wire, status: http.StatusOK, reply: chatReplyJSON}}
+			s := newServiceGroupNode(t, []string{"engine"}, backends)
+
+			w := postAsAdmin(t, s, "/v1/messages", claudeCodeTurn)
+
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
+			hits := backends["engine"].requests()
+			require.Len(t, hits, 1)
+			var sent struct {
+				Messages []struct {
+					Role    string          `json:"role"`
+					Content json.RawMessage `json:"content"`
+				} `json:"messages"`
+			}
+			require.NoError(t, json.Unmarshal(hits[0].Body, &sent))
+			var roles []string
+			for _, m := range sent.Messages {
+				roles = append(roles, m.Role)
+			}
+			if name == "native" {
+				assert.Equal(t, []string{"user"}, roles)
+			} else {
+				assert.Equal(t, []string{"system", "user"}, roles, "only the leading system prompt")
+			}
+			assert.Contains(t, string(sent.Messages[len(sent.Messages)-1].Content), "# Environment")
+		})
+	}
+}

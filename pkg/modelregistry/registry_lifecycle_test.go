@@ -2,6 +2,8 @@ package modelregistry
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -122,4 +124,20 @@ func TestRegistryStop_RaceFreeUnderConcurrentSpawns(t *testing.T) {
 	// stopMu guard would surface here as wg.Add concurrent with
 	// wg.Wait → "WaitGroup is reused before previous Wait has
 	// returned" panic.
+}
+
+// Deleting a split GGUF removes every shard and nothing else.
+func TestDeleteGGUFVariant_RemovesEveryShard(t *testing.T) {
+	t.Parallel()
+	r := newTestRegistry(t)
+	dir := t.TempDir()
+	for _, name := range []string{"m-q4-00001-of-00002.gguf", "m-q4-00002-of-00002.gguf", "m-q2.gguf"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644))
+	}
+
+	require.NoError(t, r.deleteGGUFVariant(filepath.Join(dir, "m-q4-00001-of-00002.gguf")))
+	left, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, left, 1)
+	assert.Equal(t, "m-q2.gguf", left[0].Name())
 }

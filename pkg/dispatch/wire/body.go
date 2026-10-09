@@ -3,6 +3,10 @@ package wire
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
+	"mime"
+	"mime/multipart"
 	"strings"
 )
 
@@ -142,6 +146,59 @@ func RewriteModelInBody(body []byte, newModel string) []byte {
 		return body
 	}
 	return rewritten
+}
+
+// RewriteRequestModel names newModel as a request body's model, in the
+// encoding contentType says it was sent in: a multipart upload (audio,
+// image edits) keeps its boundary, anything else is JSON.
+func RewriteRequestModel(body []byte, contentType, newModel string) []byte {
+	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && strings.HasPrefix(mediaType, "multipart/") {
+		return RewriteModelInMultipart(body, params["boundary"], newModel)
+	}
+	return RewriteModelInBody(body, newModel)
+}
+
+// RewriteModelInMultipart replaces the value of the "model" form field in a
+// multipart body, keeping its boundary so the request's Content-Type still
+// describes it and copying every other part as sent. Returns the original
+// body unchanged if it cannot be parsed (best-effort, like the JSON form).
+func RewriteModelInMultipart(body []byte, boundary, newModel string) []byte {
+	var out bytes.Buffer
+	w := multipart.NewWriter(&out)
+	if err := w.SetBoundary(boundary); err != nil {
+		return body
+	}
+	r := multipart.NewReader(bytes.NewReader(body), boundary)
+	for parts := 0; ; parts++ {
+		part, err := r.NextRawPart()
+		if errors.Is(err, io.EOF) && parts > 0 {
+			break
+		}
+		if err != nil {
+			return body
+		}
+		dst, err := w.CreatePart(part.Header)
+		if err != nil {
+			return body
+		}
+		if part.FormName() == "model" && part.FileName() == "" {
+			// An encoded field would need re-encoding; such clients are rare
+			// enough to forward as sent.
+			if part.Header.Get("Content-Transfer-Encoding") != "" {
+				return body
+			}
+			_, err = io.WriteString(dst, newModel)
+		} else {
+			_, err = io.Copy(dst, part)
+		}
+		if err != nil {
+			return body
+		}
+	}
+	if err := w.Close(); err != nil {
+		return body
+	}
+	return out.Bytes()
 }
 
 // SetDefaultFields sets each top-level field of defaults the body does

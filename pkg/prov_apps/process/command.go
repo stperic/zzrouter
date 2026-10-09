@@ -141,22 +141,8 @@ func ValidateVariantModel(sc *config.ServiceConfig, model string) error {
 // logicalWeightsName uses the same complete GGUF identity as scans and launches.
 // Feature files and incomplete shard sets do not reserve weights names.
 func logicalWeightsName(path string, excluded ...string) string {
-	if layout.Matches(filepath.Base(path), excluded) {
-		return ""
-	}
-	if variants := layout.GGUFVariants([]layout.File{{Path: filepath.Base(path)}}); len(variants) == 1 {
-		return variants[0].Name
-	}
-	files, err := layout.OnDisk(filepath.Dir(path), excluded...)
-	if err != nil {
-		return ""
-	}
-	for _, variant := range layout.GGUFVariants(files) {
-		for _, file := range variant.Files {
-			if filepath.Join(filepath.Dir(path), filepath.FromSlash(file.Path)) == path {
-				return variant.Name
-			}
-		}
+	if v, ok := layout.VariantOf(path, excluded...); ok {
+		return v.Name
 	}
 	return ""
 }

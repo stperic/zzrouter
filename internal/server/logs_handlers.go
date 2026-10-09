@@ -127,7 +127,16 @@ func (l *LogsHandlers) handleGetInstanceLogs(c *gin.Context) {
 	// Not local - find on cluster and route
 	instanceData := l.findInstanceOnCluster(instanceID)
 	if instanceData == nil {
-		NotFound(c, fmt.Sprintf("Instance not found: Instance %s not found", instanceID))
+		// A stopped run is gone from every registry, but its log stays on its node.
+		if node := c.Query("node"); node != "" && !l.isLocalNode(node) {
+			l.routeInstanceLogsToCluster(c, node, instanceID, lines, false)
+			return
+		}
+		if path := stoppedRunLog(l.appMgr, instanceID); path != "" {
+			l.getInstanceLogLines(c, path, lines, filter)
+			return
+		}
+		NotFound(c, fmt.Sprintf("Instance not found: no run %s here; a stopped run's log is read with node set to the node it ran on", instanceID))
 		return
 	}
 
@@ -565,4 +574,20 @@ func mergeClusterLogQuery(incoming url.Values, lines int, follow bool) url.Value
 	out.Set("lines", fmt.Sprintf("%d", lines))
 	out.Set("follow", fmt.Sprintf("%t", follow))
 	return out
+}
+
+// stoppedRunLog returns the log file a stopped run left on this node, or ""
+// when there is none. A live run's log is found through its instance.
+func stoppedRunLog(appMgr *prov_apps.ProviderAppManager, instanceID string) string {
+	if appMgr == nil || appMgr.LogManager() == nil {
+		return ""
+	}
+	path := appMgr.LogManager().GetLogPath(instanceID)
+	if path == "" {
+		return ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
 }

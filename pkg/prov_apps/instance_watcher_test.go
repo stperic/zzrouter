@@ -178,6 +178,7 @@ func TestWatcher_InitialProgressFires(t *testing.T) {
 	m, reg := newWatcherTestMgr(t)
 
 	inst := instance.NewInstance("inst-5", "vllm", "m", 8104, time.Minute, 0)
+	require.True(t, inst.Admit(), "an inline launch is admitted before its job opens")
 	require.NoError(t, m.instances.Register(inst))
 	h, err := reg.Start(context.Background(), jobs.KindRun, "", nil)
 	require.NoError(t, err)
@@ -237,4 +238,43 @@ func TestKindRun_IDPrefix(t *testing.T) {
 	h, err := reg.Start(context.Background(), jobs.KindRun, "", nil)
 	require.NoError(t, err)
 	assert.Regexp(t, `^run_[a-f0-9]+$`, h.ID())
+}
+
+// A queued run's job says so and names what it waits on, then reports
+// "launching" once the run is admitted.
+func TestWatcher_QueuedThenAdmitted(t *testing.T) {
+	m, reg := newWatcherTestMgr(t)
+	inst := instance.NewInstance("inst-6", "vllm", "m", 8105, time.Minute, 0)
+	inst.SetWaitingOn("other-run")
+	require.NoError(t, m.instances.Register(inst))
+	h, err := reg.Start(context.Background(), jobs.KindRun, "", nil)
+	require.NoError(t, err)
+	sub, err := reg.Subscribe(h.ID(), jobs.SubscribeOptions{})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+	inst.TrackGoroutine()
+	go func() {
+		defer inst.GoroutineDone()
+		m.watchInstanceReadiness(inst, h)
+	}()
+
+	next := func(step string) jobs.Event {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case ev := <-sub.Events():
+				if ev.Step == step {
+					return ev
+				}
+			case <-deadline:
+				t.Fatalf("no %q event", step)
+			}
+		}
+	}
+	queuedEv := next("queued")
+	assert.Equal(t, "other-run", queuedEv.Meta["waiting_on"])
+	require.True(t, inst.Admit())
+	assert.Equal(t, "launching", next("launching").Meta["phase"])
+	inst.MarkRunning()
 }

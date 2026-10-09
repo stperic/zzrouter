@@ -74,7 +74,43 @@ type responsesRequest struct {
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
 	Background         *bool           `json:"background,omitempty"`
 	Reasoning          json.RawMessage `json:"reasoning,omitempty"`
+
+	// toolNames maps the chat tool names translateTools chose back to the
+	// Responses identity, for replies.
+	toolNames toolNames
 }
+
+// namespacedTool is a function the Responses request declared inside a
+// namespace tool: Codex groups each MCP server's tools that way and routes
+// a call on the pair.
+type namespacedTool struct{ Namespace, Name string }
+
+// toolNames maps a flattened chat tool name to its namespace and name.
+type toolNames map[string]namespacedTool
+
+// chatToolName is the chat-side name of a function in namespace, which
+// Chat Completions has no notion of.
+func chatToolName(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "__" + name
+}
+
+// setCallName names a function_call item for the client: a flattened name
+// gets its namespace and declared name back, anything else is as called.
+func (n toolNames) setCallName(item map[string]any, chatName string) {
+	if t, ok := n[chatName]; ok {
+		item["name"] = t.Name
+		item["namespace"] = t.Namespace
+		return
+	}
+	item["name"] = chatName
+}
+
+// hostedTools run on the API provider's side; an engine behind the shim
+// cannot execute them.
+var hostedTools = map[string]bool{"web_search": true, "web_search_preview": true, "file_search": true, "code_interpreter": true, "computer_use_preview": true}
 
 // translateError carries a structured 400 envelope back to handleResponses
 // so the caller can write it without rebuilding the OpenAI shape.
@@ -137,14 +173,25 @@ func translateResponsesRequest(body []byte) ([]byte, *responsesRequest, *transla
 	chat["messages"] = messages
 
 	if len(req.Tools) > 0 {
-		tools, terr := translateTools(req.Tools)
+		tools, names, terr := translateTools(req.Tools)
 		if terr != nil {
 			return nil, nil, terr
 		}
-		chat["tools"] = tools
+		if len(tools) > 0 {
+			chat["tools"] = tools
+		}
+		req.toolNames = names
 	}
-	if len(req.ToolChoice) > 0 {
-		chat["tool_choice"] = req.ToolChoice
+	if len(req.ToolChoice) > 0 && string(req.ToolChoice) != "null" {
+		choice, terr := translateToolChoice(req.ToolChoice)
+		if terr != nil {
+			return nil, nil, terr
+		}
+		// A choice with no tool left to choose (only hosted ones were
+		// offered) would make the engine refuse the request.
+		if _, hasTools := chat["tools"]; hasTools && choice != "" {
+			chat["tool_choice"] = choice
+		}
 	}
 	if req.ParallelToolCalls != nil {
 		chat["parallel_tool_calls"] = *req.ParallelToolCalls
@@ -247,6 +294,9 @@ func translateInputToMessages(input json.RawMessage, instructions string) ([]map
 			Content json.RawMessage `json:"content"`
 			CallID  string          `json:"call_id"`
 			Name    string          `json:"name"`
+			// Namespace qualifies Name for a function declared in a
+			// namespace tool.
+			Namespace string `json:"namespace"`
 			// function_call.arguments is a string per Responses spec.
 			Arguments string `json:"arguments"`
 			// function_call_output.output is a string per Responses spec.
@@ -268,7 +318,7 @@ func translateInputToMessages(input json.RawMessage, instructions string) ([]map
 				"id":   probe.CallID,
 				"type": "function",
 				"function": map[string]any{
-					"name":      probe.Name,
+					"name":      chatToolName(probe.Namespace, probe.Name),
 					"arguments": probe.Arguments,
 				},
 			}
@@ -401,20 +451,24 @@ func translateMessageContent(content json.RawMessage, idx int) (any, *translateE
 
 // translateTools converts Responses flat tool descriptors
 // {type, name, description, parameters} into Chat's nested form
-// {type:"function", function:{name, description, parameters}}. Built-in
-// tools (web_search, file_search, code_interpreter, computer_use) are
-// rejected — they require backend-side execution the shim cannot mediate.
-func translateTools(raw json.RawMessage) ([]map[string]any, *translateError) {
+// {type:"function", function:{name, description, parameters}}. A namespace
+// tool's functions are flattened to chat names (chatToolName) and the
+// returned toolNames maps them back. Hosted tools are withheld: the engine
+// cannot run them, and offering one is not demanding it (tool_choice is).
+func translateTools(raw json.RawMessage) ([]map[string]any, toolNames, *translateError) {
 	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, &translateError{
+		return nil, nil, &translateError{
 			Code:    "invalid_tools",
 			Param:   "tools",
 			Message: fmt.Sprintf("tools must be an array: %v", err),
 		}
 	}
 	out := make([]map[string]any, 0, len(items))
-	for i, t := range items {
+	names := toolNames{}
+	seen := map[string]string{}
+	var add func(param, namespace string, raw json.RawMessage) *translateError
+	add = func(param, namespace string, raw json.RawMessage) *translateError {
 		var probe struct {
 			Type        string          `json:"type"`
 			Name        string          `json:"name"`
@@ -422,25 +476,25 @@ func translateTools(raw json.RawMessage) ([]map[string]any, *translateError) {
 			Parameters  json.RawMessage `json:"parameters"`
 			// Already-nested {type:"function", function:{...}} is also
 			// accepted as a passthrough for clients that pre-translate.
-			Function json.RawMessage `json:"function"`
+			Function json.RawMessage   `json:"function"`
+			Tools    []json.RawMessage `json:"tools"`
 		}
-		if err := json.Unmarshal(t, &probe); err != nil {
-			return nil, &translateError{
-				Code:    "invalid_tools",
-				Param:   fmt.Sprintf("tools[%d]", i),
-				Message: fmt.Sprintf("tool entry is not a valid object: %v", err),
-			}
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			return &translateError{Code: "invalid_tools", Param: param, Message: fmt.Sprintf("tool entry is not a valid object: %v", err)}
 		}
-		switch probe.Type {
-		case "function":
-			if len(probe.Function) > 0 {
-				out = append(out, map[string]any{
-					"type":     "function",
-					"function": probe.Function,
-				})
-				continue
+		switch {
+		case probe.Type == "function" && len(probe.Function) > 0 && namespace == "":
+			out = append(out, map[string]any{"type": "function", "function": probe.Function})
+		case probe.Type == "function":
+			chatName := chatToolName(namespace, probe.Name)
+			if prev, dup := seen[chatName]; dup {
+				return &translateError{Code: "invalid_tools", Param: param, Message: fmt.Sprintf("tool name %q is also declared at %s", chatName, prev)}
 			}
-			fn := map[string]any{"name": probe.Name}
+			seen[chatName] = param
+			if namespace != "" {
+				names[chatName] = namespacedTool{Namespace: namespace, Name: probe.Name}
+			}
+			fn := map[string]any{"name": chatName}
 			if probe.Description != "" {
 				fn["description"] = probe.Description
 			}
@@ -448,21 +502,52 @@ func translateTools(raw json.RawMessage) ([]map[string]any, *translateError) {
 				fn["parameters"] = probe.Parameters
 			}
 			out = append(out, map[string]any{"type": "function", "function": fn})
-		case "web_search", "web_search_preview", "file_search", "code_interpreter", "computer_use_preview":
-			return nil, &translateError{
-				Code:    "unsupported_tool",
-				Param:   fmt.Sprintf("tools[%d].type", i),
-				Message: fmt.Sprintf("built-in tool %q requires backend-side execution which the translation shim does not provide", probe.Type),
+		case probe.Type == "namespace" && namespace == "":
+			for j, nested := range probe.Tools {
+				if terr := add(fmt.Sprintf("%s.tools[%d]", param, j), probe.Name, nested); terr != nil {
+					return terr
+				}
 			}
+		case hostedTools[probe.Type]:
 		default:
-			return nil, &translateError{
-				Code:    "unsupported_tool",
-				Param:   fmt.Sprintf("tools[%d].type", i),
-				Message: fmt.Sprintf("tool type %q is not supported", probe.Type),
-			}
+			return &translateError{Code: "unsupported_tool", Param: param + ".type", Message: fmt.Sprintf("tool type %q is not supported", probe.Type)}
+		}
+		return nil
+	}
+	for i, t := range items {
+		if terr := add(fmt.Sprintf("tools[%d]", i), "", t); terr != nil {
+			return nil, nil, terr
 		}
 	}
-	return out, nil
+	return out, names, nil
+}
+
+// translateToolChoice renders a Responses tool_choice for Chat: a mode
+// string passes, a named function takes its chat name, and a hosted tool,
+// which the engine was not offered, is refused.
+func translateToolChoice(raw json.RawMessage) (any, *translateError) {
+	var mode string
+	if json.Unmarshal(raw, &mode) == nil {
+		return mode, nil
+	}
+	var choice struct {
+		Type      string          `json:"type"`
+		Name      string          `json:"name"`
+		Namespace string          `json:"namespace"`
+		Function  json.RawMessage `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &choice); err != nil {
+		return nil, &translateError{Code: "invalid_tool_choice", Param: "tool_choice", Message: fmt.Sprintf("tool_choice must be a string or an object: %v", err)}
+	}
+	switch {
+	case hostedTools[choice.Type]:
+		return nil, &translateError{Code: "unsupported_tool", Param: "tool_choice.type",
+			Message: fmt.Sprintf("built-in tool %q requires backend-side execution which the translation shim does not provide", choice.Type)}
+	case choice.Type == "function" && len(choice.Function) == 0:
+		return map[string]any{"type": "function", "function": map[string]any{"name": chatToolName(choice.Namespace, choice.Name)}}, nil
+	default:
+		return raw, nil
+	}
 }
 
 // translateTextFormat folds the Responses `text.format` shape into Chat's
@@ -524,7 +609,7 @@ type chatToolCall struct {
 // than fanning out into separate choices/responses. We honor that by
 // flattening choices[0].message.tool_calls[] into output items in
 // order.
-func translateChatToResponses(chatJSON []byte, requestModel string) ([]byte, error) {
+func translateChatToResponses(chatJSON []byte, requestModel string, names toolNames) ([]byte, error) {
 	var env chatCompletionEnvelope
 	if err := json.Unmarshal(chatJSON, &env); err != nil {
 		return nil, fmt.Errorf("upstream chat envelope did not parse: %w", err)
@@ -560,14 +645,15 @@ func translateChatToResponses(chatJSON []byte, requestModel string) ([]byte, err
 		})
 	}
 	for _, tc := range choice.Message.ToolCalls {
-		output = append(output, map[string]any{
+		item := map[string]any{
 			"type":      "function_call",
 			"id":        "fc_" + tc.ID,
 			"call_id":   tc.ID,
-			"name":      tc.Function.Name,
 			"arguments": tc.Function.Arguments,
 			"status":    "completed",
-		})
+		}
+		names.setCallName(item, tc.Function.Name)
+		output = append(output, item)
 	}
 
 	status, incompleteReason := mapFinishToStatus(choice.FinishReason)
@@ -710,6 +796,7 @@ func translateUsage(raw json.RawMessage) map[string]any {
 // accumulating the arguments string.
 type responsesStreamWriter struct {
 	gin.ResponseWriter
+	toolNames       toolNames
 	model           string
 	respID          string
 	createdAt       int64
@@ -732,6 +819,13 @@ type responsesStreamWriter struct {
 	completedSent bool
 }
 
+// functionCallItem renders a streamed tool call as a Responses item.
+func (w *responsesStreamWriter) functionCallItem(st *toolItemState, status, args string) map[string]any {
+	item := map[string]any{"id": st.itemID, "type": "function_call", "status": status, "call_id": st.callID, "arguments": args}
+	w.toolNames.setCallName(item, st.name)
+	return item
+}
+
 type toolItemState struct {
 	itemID       string
 	callID       string
@@ -741,11 +835,12 @@ type toolItemState struct {
 	emittedAdded bool
 }
 
-func newResponsesStreamWriter(w gin.ResponseWriter, model string) *responsesStreamWriter {
+func newResponsesStreamWriter(w gin.ResponseWriter, model string, names toolNames) *responsesStreamWriter {
 	respID := "resp_" + strconv.FormatInt(utils.Now().UnixNano(), 36)
 	return &responsesStreamWriter{
 		ResponseWriter: w,
 		model:          model,
+		toolNames:      names,
 		respID:         respID,
 		createdAt:      utils.Now().Unix(),
 		toolItems:      map[int]*toolItemState{},
@@ -998,9 +1093,11 @@ func (w *responsesStreamWriter) handleToolCallDelta(idx int, id, name, args stri
 	if name != "" {
 		st.name = name
 	}
-	// Defer "added" until we have at least an id or name so the event
-	// carries non-empty identity.
-	if !st.emittedAdded && (st.callID != "" || st.name != "") {
+	// Defer "added" until the call has its name, so the event carries the
+	// identity (namespace included) the client dispatches on.
+	early := ""
+	if !st.emittedAdded && st.name != "" {
+		early = st.argsBuffered
 		st.emittedAdded = true
 		if st.itemID == "" {
 			st.itemID = "fc_" + strconv.Itoa(idx) + "_" + w.respID
@@ -1009,24 +1106,18 @@ func (w *responsesStreamWriter) handleToolCallDelta(idx int, id, name, args stri
 			"type":            "response.output_item.added",
 			"sequence_number": w.nextSeq(),
 			"output_index":    st.outputIdx,
-			"item": map[string]any{
-				"id":        st.itemID,
-				"type":      "function_call",
-				"status":    "in_progress",
-				"call_id":   st.callID,
-				"name":      st.name,
-				"arguments": "",
-			},
+			"item":            w.functionCallItem(st, "in_progress", ""),
 		})
 	}
-	if args != "" && st.emittedAdded {
-		st.argsBuffered += args
+	// Arguments that came before the name were held; they go out with it.
+	st.argsBuffered += args
+	if delta := early + args; delta != "" && st.emittedAdded {
 		w.emitEvent("response.function_call_arguments.delta", map[string]any{
 			"type":            "response.function_call_arguments.delta",
 			"sequence_number": w.nextSeq(),
 			"item_id":         st.itemID,
 			"output_index":    st.outputIdx,
-			"delta":           args,
+			"delta":           delta,
 		})
 	}
 }
@@ -1093,14 +1184,7 @@ func (w *responsesStreamWriter) finalize() {
 			"type":            "response.output_item.done",
 			"sequence_number": w.nextSeq(),
 			"output_index":    st.outputIdx,
-			"item": map[string]any{
-				"id":        st.itemID,
-				"type":      "function_call",
-				"status":    "completed",
-				"call_id":   st.callID,
-				"name":      st.name,
-				"arguments": st.argsBuffered,
-			},
+			"item":            w.functionCallItem(st, "completed", st.argsBuffered),
 		})
 	}
 	if w.completedSent {
@@ -1211,6 +1295,7 @@ func (w *responsesStreamWriter) Close() {
 // writer's state.
 type responsesBufferedWriter struct {
 	gin.ResponseWriter
+	toolNames toolNames
 	model     string
 	respID    string
 	status    int
@@ -1220,9 +1305,10 @@ type responsesBufferedWriter struct {
 	finalDone bool
 }
 
-func newResponsesBufferedWriter(w gin.ResponseWriter, model string) *responsesBufferedWriter {
+func newResponsesBufferedWriter(w gin.ResponseWriter, model string, names toolNames) *responsesBufferedWriter {
 	return &responsesBufferedWriter{
 		ResponseWriter: w,
+		toolNames:      names,
 		model:          model,
 		header:         http.Header{},
 		status:         http.StatusOK,
@@ -1278,7 +1364,7 @@ func (w *responsesBufferedWriter) Finalize() {
 		_, _ = w.ResponseWriter.Write(w.body.Bytes())
 		return
 	}
-	out, err := translateChatToResponses(w.body.Bytes(), w.model)
+	out, err := translateChatToResponses(w.body.Bytes(), w.model, w.toolNames)
 	if err != nil {
 		w.flushHeaders("application/json")
 		w.ResponseWriter.WriteHeader(http.StatusBadGateway)

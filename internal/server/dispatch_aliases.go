@@ -72,7 +72,6 @@ var (
 	isStreamingResponse        = wire.IsStreaming
 	mergeUpstreamHeaders       = wire.MergeUpstreamHeaders
 	sendSSEComment             = wire.SendSSEComment
-	rewriteModelInBody         = wire.RewriteModelInBody
 	forceUsageReporting        = wire.ForceUsageReporting
 	copyStreamWithMetrics      = wire.CopyWithMetrics
 	captureNonStreamingMetrics = wire.CaptureNonStreamingMetrics

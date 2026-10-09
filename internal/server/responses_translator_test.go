@@ -86,13 +86,86 @@ func TestTranslateResponsesRequest_RejectsBackground(t *testing.T) {
 	assert.Equal(t, "background", err.Param)
 }
 
-func TestTranslateResponsesRequest_RejectsBuiltinTools(t *testing.T) {
+// Hosted tools run on the API provider's side. Offering one (Codex always
+// offers web_search) leaves it out of what the engine sees; demanding one
+// through tool_choice is refused.
+func TestTranslateResponsesRequest_HostedTools(t *testing.T) {
 	for _, tt := range []string{"web_search", "file_search", "code_interpreter", "computer_use_preview"} {
-		body := []byte(`{"model":"m","input":"x","tools":[{"type":"` + tt + `"}]}`)
-		_, _, err := translateResponsesRequest(body)
+		body := []byte(`{"model":"m","input":"x","tools":[{"type":"` + tt + `"},{"type":"function","name":"add"}]}`)
+		out, _, err := translateResponsesRequest(body)
+		require.Nil(t, err, tt)
+		var chat map[string]any
+		require.NoError(t, json.Unmarshal(out, &chat))
+		require.Len(t, chat["tools"], 1, tt)
+
+		out, _, err = translateResponsesRequest([]byte(`{"model":"m","input":"x","tools":[{"type":"` + tt + `"}]}`))
+		require.Nil(t, err, tt)
+		var bare map[string]any
+		require.NoError(t, json.Unmarshal(out, &bare))
+		assert.NotContains(t, bare, "tools", "no empty tool list reaches the engine")
+
+		_, _, err = translateResponsesRequest([]byte(`{"model":"m","input":"x","tools":[{"type":"` + tt + `"}],"tool_choice":{"type":"` + tt + `"}}`))
 		require.NotNil(t, err, tt)
 		assert.Equal(t, "unsupported_tool", err.Code, tt)
 	}
+}
+
+// Codex sends each MCP server's tools as a namespace (captured from Codex
+// 0.161.0) and routes a call on namespace plus name. Chat has no
+// namespaces, so the engine sees flattened names and the client gets its
+// own pair back.
+func TestTranslateResponsesRequest_NamespaceTools(t *testing.T) {
+	body := []byte(`{"model":"m","input":[
+	  {"type":"message","role":"user","content":"run it"},
+	  {"type":"function_call","call_id":"c0","name":"js","namespace":"mcp__node_repl","arguments":"{}"},
+	  {"type":"function_call_output","call_id":"c0","output":"ok"}],
+	  "tools":[{"type":"function","name":"exec_command"},
+	    {"type":"namespace","name":"mcp__node_repl","description":"d","tools":[{"type":"function","name":"js","parameters":{"type":"object"}},{"type":"function","name":"js_reset"}]}],
+	  "tool_choice":{"type":"function","name":"js","namespace":"mcp__node_repl"}}`)
+	out, parsed, err := translateResponsesRequest(body)
+	require.Nil(t, err)
+	var chat struct {
+		Tools []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
+		Messages   []map[string]any `json:"messages"`
+		ToolChoice map[string]any   `json:"tool_choice"`
+	}
+	require.NoError(t, json.Unmarshal(out, &chat))
+	var names []string
+	for _, tool := range chat.Tools {
+		names = append(names, tool.Function.Name)
+	}
+	assert.Equal(t, []string{"exec_command", "mcp__node_repl__js", "mcp__node_repl__js_reset"}, names)
+	assert.Equal(t, map[string]any{"type": "function", "function": map[string]any{"name": "mcp__node_repl__js"}}, chat.ToolChoice)
+	replayed := chat.Messages[1]["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)
+	assert.Equal(t, "mcp__node_repl__js", replayed["name"], "a replayed call reaches the engine under the name it was offered")
+
+	reply, rerr := translateChatToResponses([]byte(`{"id":"chatcmpl-1","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[
+	  {"id":"c1","type":"function","function":{"name":"mcp__node_repl__js","arguments":"{}"}},
+	  {"id":"c2","type":"function","function":{"name":"exec_command","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`), "m", parsed.toolNames)
+	require.NoError(t, rerr)
+	var resp struct {
+		Output []map[string]any `json:"output"`
+	}
+	require.NoError(t, json.Unmarshal(reply, &resp))
+	assert.Equal(t, "js", resp.Output[0]["name"])
+	assert.Equal(t, "mcp__node_repl", resp.Output[0]["namespace"])
+	assert.Equal(t, "exec_command", resp.Output[1]["name"])
+	assert.NotContains(t, resp.Output[1], "namespace")
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	sw := newResponsesStreamWriter(c.Writer, "m", parsed.toolNames)
+	mustWrite(t, sw, `data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"mcp__node_repl__js","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n")
+	mustWrite(t, sw, "data: [DONE]\n\n")
+	assert.Equal(t, 2, strings.Count(rec.Body.String(), `"name":"js","namespace":"mcp__node_repl"`), "added and done both carry the pair")
+
+	_, _, err = translateResponsesRequest([]byte(`{"model":"m","input":"x","tools":[{"type":"function","name":"a__b"},{"type":"namespace","name":"a","tools":[{"type":"function","name":"b"}]}]}`))
+	require.NotNil(t, err, "two tools flattening to one name are refused")
+	assert.Equal(t, "invalid_tools", err.Code)
 }
 
 func TestTranslateResponsesRequest_FlatToolBecomesNested(t *testing.T) {
@@ -111,7 +184,7 @@ func TestTranslateResponsesRequest_FlatToolBecomesNested(t *testing.T) {
 
 func TestTranslateChatToResponses_TextOnly(t *testing.T) {
 	chat := []byte(`{"id":"chatcmpl-abc","created":123,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`)
-	out, err := translateChatToResponses(chat, "m")
+	out, err := translateChatToResponses(chat, "m", nil)
 	require.NoError(t, err)
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(out, &resp))
@@ -135,7 +208,7 @@ func TestTranslateChatToResponses_MultiToolCallsCollapse(t *testing.T) {
 	// LiteLLM bug #18226: multi-tool-call requests must collapse into
 	// one response.output[] with N function_call items, not fan out.
 	chat := []byte(`{"id":"x","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"f1","arguments":"{}"}},{"id":"b","type":"function","function":{"name":"f2","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
-	out, err := translateChatToResponses(chat, "m")
+	out, err := translateChatToResponses(chat, "m", nil)
 	require.NoError(t, err)
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(out, &resp))
@@ -149,7 +222,7 @@ func TestTranslateChatToResponses_MultiToolCallsCollapse(t *testing.T) {
 
 func TestTranslateChatToResponses_LengthFinishCarriesIncompleteDetails(t *testing.T) {
 	chat := []byte(`{"id":"x","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"truncated"},"finish_reason":"length"}]}`)
-	out, err := translateChatToResponses(chat, "m")
+	out, err := translateChatToResponses(chat, "m", nil)
 	require.NoError(t, err)
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(out, &resp))
@@ -161,7 +234,7 @@ func TestTranslateChatToResponses_LengthFinishCarriesIncompleteDetails(t *testin
 
 func TestTranslateChatToResponses_ContentFilterCarriesReason(t *testing.T) {
 	chat := []byte(`{"id":"x","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"blocked"},"finish_reason":"content_filter"}]}`)
-	out, err := translateChatToResponses(chat, "m")
+	out, err := translateChatToResponses(chat, "m", nil)
 	require.NoError(t, err)
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(out, &resp))
@@ -195,7 +268,7 @@ func TestTranslateUsage_PreservesCachedTokens(t *testing.T) {
 func TestResponsesStreamWriter_BasicTextStream(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	// Send three chat chunks: role-only, content delta, finish.
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`+"\n\n")
@@ -239,7 +312,7 @@ func TestResponsesStreamWriter_BasicTextStream(t *testing.T) {
 func TestResponsesStreamWriter_FrameSpanningWrites(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	frame := `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}` + "\n\n"
 	// Split the frame at byte 5 — the drainer must wait for \n\n.
@@ -255,7 +328,7 @@ func TestResponsesStreamWriter_FrameSpanningWrites(t *testing.T) {
 func TestResponsesStreamWriter_DeterministicToolItemOrder(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	// Open three tool calls in non-monotonic chat-side index order.
 	for _, n := range []string{"c", "a", "b"} {
@@ -280,7 +353,7 @@ func TestResponsesStreamWriter_DeterministicToolItemOrder(t *testing.T) {
 func TestResponsesStreamWriter_BufferOverflowEmitsFailed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	// Stream a large payload without any frame terminator.
 	junk := make([]byte, maxStreamBufBytes+1024)
@@ -299,7 +372,7 @@ func TestResponsesStreamWriter_BufferOverflowEmitsFailed(t *testing.T) {
 func TestResponsesBufferedWriter_TranslatesAndCapturesID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	bw := newResponsesBufferedWriter(c.Writer, "m")
+	bw := newResponsesBufferedWriter(c.Writer, "m", nil)
 
 	// Simulate the chat path writing a 200 with an OpenAI-shaped envelope.
 	bw.WriteHeader(200)
@@ -318,7 +391,7 @@ func TestResponsesBufferedWriter_TranslatesAndCapturesID(t *testing.T) {
 func TestResponsesBufferedWriter_PassesThroughUpstreamError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	bw := newResponsesBufferedWriter(c.Writer, "m")
+	bw := newResponsesBufferedWriter(c.Writer, "m", nil)
 
 	bw.WriteHeader(429)
 	mustWrite(t, bw, `{"error":{"type":"rate_limit_exceeded"}}`)
@@ -332,7 +405,7 @@ func TestResponsesBufferedWriter_PassesThroughUpstreamError(t *testing.T) {
 func TestResponsesBufferedWriter_GinInterfaceSurface(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	bw := newResponsesBufferedWriter(c.Writer, "m")
+	bw := newResponsesBufferedWriter(c.Writer, "m", nil)
 
 	assert.False(t, bw.Written())
 	mustWrite(t, bw, "hello")
@@ -357,7 +430,7 @@ func TestValidateWireEndpoints_RejectsNativePlusCompat(t *testing.T) {
 func TestResponsesStreamWriter_OutOfOrderToolIndices(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	// Open tool index 1 first, then 0, then 2 — args streamed interleaved.
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"second"}}]},"finish_reason":null}]}`+"\n\n")
@@ -390,7 +463,7 @@ func TestResponsesStreamWriter_OutOfOrderToolIndices(t *testing.T) {
 func TestResponsesStreamWriter_MidStreamErrorChunk(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`+"\n\n")
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"part"},"finish_reason":null}]}`+"\n\n")
@@ -423,7 +496,7 @@ func TestResponsesStreamWriter_MidStreamErrorChunk(t *testing.T) {
 func TestResponsesStreamWriter_PartialFrameThenClose(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	// Send a complete frame, then a half frame, then Close (no [DONE]).
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"a"},"finish_reason":null}]}`+"\n\n")
@@ -441,7 +514,7 @@ func TestResponsesStreamWriter_PartialFrameThenClose(t *testing.T) {
 func TestResponsesStreamWriter_ToolCallEmitsArguments(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	sw := newResponsesStreamWriter(c.Writer, "m")
+	sw := newResponsesStreamWriter(c.Writer, "m", nil)
 
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"add"}}]},"finish_reason":null}]}`+"\n\n")
 	mustWrite(t, sw, `data: {"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1"}}]},"finish_reason":null}]}`+"\n\n")
@@ -463,4 +536,21 @@ func mustWrite(t *testing.T, w io.Writer, chunk string) {
 	if _, err := w.Write([]byte(chunk)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+}
+
+// A chat stream may name a tool call after its id and first arguments.
+// The added event waits for the name, so it carries what the client
+// dispatches on, and the held arguments are not lost.
+func TestResponsesStreamWriter_NameAfterIDKeepsArguments(t *testing.T) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	sw := newResponsesStreamWriter(c.Writer, "m", toolNames{"ns__f": {Namespace: "ns", Name: "f"}})
+	mustWrite(t, sw, `data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"arguments":"{\"a\""}}]}}]}`+"\n\n")
+	mustWrite(t, sw, `data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"ns__f","arguments":":1}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n")
+	mustWrite(t, sw, "data: [DONE]\n\n")
+
+	body := rec.Body.String()
+	assert.NotContains(t, body, `"name":""`)
+	assert.Equal(t, 2, strings.Count(body, `"name":"f","namespace":"ns"`))
+	assert.Contains(t, body, `"arguments":"{\"a\":1}"`)
 }

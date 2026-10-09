@@ -55,7 +55,7 @@ func (m *ProviderAppManager) smokeInstalledRuntime(ctx context.Context, provider
 		if errors.As(err, &fit) {
 			return fmt.Errorf("smoke model does not fit this GPU: %w", err)
 		}
-		if err == nil || !(errors.Is(err, ErrAtCapacity) || errors.Is(err, ErrInstancesRunning)) {
+		if err == nil || !(errors.Is(err, ErrAtCapacity) || errors.Is(err, errAdmissionBusy) || errors.Is(err, ErrInstancesRunning)) {
 			break
 		}
 		lastBusy = err

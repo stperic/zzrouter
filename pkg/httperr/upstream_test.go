@@ -146,6 +146,36 @@ func TestNormalizeChatTemplateRefusal(t *testing.T) {
 	assert.Contains(t, string(out), `"code":"chat_template_rejected"`)
 }
 
+// vLLM launched without its tool-calling switches refuses every tools
+// request; the caller learns what to set instead of a bare engine error.
+func TestNormalizeToolCallingNotEnabled(t *testing.T) {
+	raw, err := os.ReadFile("testdata/tool_refusals/vllm.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Error json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &fixture))
+	body, err := json.Marshal(map[string]json.RawMessage{"error": fixture.Error})
+	require.NoError(t, err)
+	resp := &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}
+
+	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New())
+
+	assert.Equal(t, http.StatusBadRequest, failure.Status)
+	assert.Equal(t, httperr.CodeToolCallingNotEnabled, failure.Code)
+	assert.Contains(t, failure.Message, "--tool-call-parser")
+	assert.Contains(t, failure.Message, httperr.ToolCallingRemedy)
+	out, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"code":"tool_calling_not_enabled"`)
+
+	// The coordinator relays the worker's classified reply: once is enough.
+	again := &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(out))}
+	relayed := httperr.NormalizeUpstreamResponse(again, openaiproto.New())
+	assert.Equal(t, httperr.CodeToolCallingNotEnabled, relayed.Code)
+	assert.Equal(t, failure.Message, relayed.Message)
+}
+
 func TestChatTemplateRefusalReasonIsBounded(t *testing.T) {
 	for name, tc := range map[string]struct{ reason, want string }{
 		"empty": {"", "(no reason given)."},

@@ -60,7 +60,7 @@ type jobOutput struct {
 }
 
 func (out overviewOutput) summary() string {
-	return fmt.Sprintf("Cluster %s: %d nodes, %d unhealthy nodes.", out.Health, len(out.Nodes), len(out.UnhealthyNodes))
+	return fmt.Sprintf("Cluster %s: %d nodes, %d unhealthy nodes. zz_nodes gives a node's OS, GPU, memory and disk.", out.Health, len(out.Nodes), len(out.UnhealthyNodes))
 }
 func (out jobOutput) summary() string {
 	return fmt.Sprintf("Job %s: %s, %d%%.", out.JobID, out.State, out.Progress)

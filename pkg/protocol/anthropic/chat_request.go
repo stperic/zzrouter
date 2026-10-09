@@ -178,8 +178,6 @@ func chatMessages(req messagesRequest) ([]map[string]any, error) {
 			turn, err = userTurn(blocks, i)
 		case m.Role == "assistant":
 			turn, err = assistantTurn(blocks, i)
-		case contextRoles[m.Role]:
-			turn, err = contextTurn(blocks, i)
 		default:
 			err = refuse(fmt.Sprintf("messages.%d.role", i), "must be user or assistant, not %q", m.Role)
 		}
@@ -189,25 +187,6 @@ func chatMessages(req messagesRequest) ([]map[string]any, error) {
 		out = append(out, turn...)
 	}
 	return out, nil
-}
-
-// contextRoles are the roles Claude Code (2.1.154 on) puts in messages
-// besides user and assistant, carrying the harness's context mid-
-// conversation. Chat Completions takes a system message anywhere, so
-// each becomes one; a chat template that cannot render that is the
-// model default's to replace.
-var contextRoles = map[string]bool{"system": true, "ctx": true, "msg": true}
-
-// contextTurn renders a context-role turn as a system message.
-func contextTurn(blocks []block, idx int) ([]map[string]any, error) {
-	var texts []string
-	for j, b := range blocks {
-		if b.Type != blockText {
-			return nil, refuse(fmt.Sprintf("messages.%d.content.%d", idx, j), "a context message carries text, not %q", b.Type)
-		}
-		texts = append(texts, b.Text)
-	}
-	return []map[string]any{{"role": "system", "content": strings.Join(texts, textBlockSeparator)}}, nil
 }
 
 // systemText reads system as a string or as text blocks.

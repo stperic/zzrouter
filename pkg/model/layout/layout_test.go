@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,5 +74,26 @@ func TestFirstMatch_FollowsGlobOrder(t *testing.T) {
 	assert.Equal(t, "mmproj-BF16.gguf", f.Path)
 
 	_, ok = FirstMatch(files, []string{"*.safetensors"})
+	assert.False(t, ok)
+}
+
+// VariantOf finds the whole split set from any one shard, and refuses a
+// shard whose set is incomplete.
+func TestVariantOf(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"m-q4-00001-of-00002.gguf", "m-q4-00002-of-00002.gguf", "m-q8-00001-of-00002.gguf", "m-q2.gguf"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644))
+	}
+
+	v, ok := VariantOf(filepath.Join(dir, "m-q4-00002-of-00002.gguf"))
+	require.True(t, ok)
+	assert.Equal(t, "m-q4", v.Name)
+	assert.Len(t, v.Files, 2)
+
+	v, ok = VariantOf(filepath.Join(dir, "m-q2.gguf"))
+	require.True(t, ok)
+	assert.Equal(t, "m-q2", v.Name)
+
+	_, ok = VariantOf(filepath.Join(dir, "m-q8-00001-of-00002.gguf"))
 	assert.False(t, ok)
 }

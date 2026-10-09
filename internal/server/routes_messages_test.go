@@ -468,7 +468,7 @@ func TestResponsesStreamWriterDropsUpstreamLength(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Writer.Header().Set("Content-Length", "123")
 
-	w := newResponsesStreamWriter(c.Writer, "m")
+	w := newResponsesStreamWriter(c.Writer, "m", nil)
 	w.WriteHeader(http.StatusOK)
 
 	assert.Empty(t, rec.Header().Get("Content-Length"))

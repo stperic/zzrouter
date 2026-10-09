@@ -609,6 +609,11 @@ WaitForLogPath:
 			// Get fresh instance data
 			i, exists := e.appMgr.GetInstance(instanceID)
 			if !exists {
+				// Stopped: its log is a finished file, read as a snapshot.
+				if path := stoppedRunLog(e.appMgr, instanceID); path != "" {
+					e.getInstanceLogLines(c, path, lines, filter)
+					return
+				}
 				NotFound(c, fmt.Sprintf("instance '%s' not found", instanceID))
 				return
 			}

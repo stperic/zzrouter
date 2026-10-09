@@ -141,11 +141,13 @@ type ProviderAppManager struct {
 	runtimeChecks     install.RuntimeChecksResolver
 	installPolicyFile string
 	memoryBudget      func(provider string) (*schema.MemoryBudget, error)
-	memoryLaunchMu    sync.Mutex
-	servicesMu        sync.Mutex
-	services          map[string]*managedService
-	servicesStarted   atomic.Bool
-	servicesObserved  chan struct{}
+	// memoryAdmission holds one memory admission at a time. A one-slot
+	// channel, so a queued run that is stopped stops waiting for it.
+	memoryAdmission  chan struct{}
+	servicesMu       sync.Mutex
+	services         map[string]*managedService
+	servicesStarted  atomic.Bool
+	servicesObserved chan struct{}
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -293,12 +295,13 @@ func WithMemoryBudget(resolve func(provider string) (*schema.MemoryBudget, error
 // NewProviderAppManager creates a new manager from apps config.
 func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*ProviderAppManager, error) {
 	m := &ProviderAppManager{
-		appsConfig:  appsConfig,
-		instances:   instance.NewRegistry(),
-		versions:    newVersionCache(),
-		auditEvents: make(chan Event, defaultEventChannelSize),
-		idleExpiry:  make(chan string, defaultEventChannelSize),
-		services:    make(map[string]*managedService),
+		appsConfig:      appsConfig,
+		instances:       instance.NewRegistry(),
+		versions:        newVersionCache(),
+		auditEvents:     make(chan Event, defaultEventChannelSize),
+		idleExpiry:      make(chan string, defaultEventChannelSize),
+		memoryAdmission: make(chan struct{}, 1),
+		services:        make(map[string]*managedService),
 	}
 
 	// Options first so WithParentContext can supply the ctx parent.

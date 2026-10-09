@@ -13,12 +13,17 @@ package server
 // of scope here.
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
+	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/require"
 )
@@ -134,4 +139,55 @@ func TestIntegration_RunLogsBothGrepAndRegex(t *testing.T) {
 		"/zzrouter/v1/runs/"+id+"/logs?grep=x&regex=.%2A",
 		TestAdminKey, nil)
 	require.Equal(t, 400, resp.Code, "body=%s", string(resp.Body))
+}
+
+// writeStoppedRunLog leaves a run's log file behind with no run registered,
+// as a stop does.
+func writeStoppedRunLog(t *testing.T, server *Server, id string, lines ...string) {
+	t.Helper()
+	baseDir := server.providers.appMgr.LogManager().GetBaseDir()
+	require.NoError(t, os.MkdirAll(baseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseDir, id+".log"), []byte(strings.Join(lines, "\n")+"\n"), 0o644))
+}
+
+// A stopped run's log stays readable where it ran: an agent reads it for
+// evidence after the stop, on the public route and on a worker's internal one.
+func TestIntegration_StoppedRunLogsStayReadable(t *testing.T) {
+	server := createTestNodeWithDefaults(t)
+	writeStoppedRunLog(t, server, "it-stopped-1", "load ok", "offloaded 10/29 layers to GPU", "stopping")
+
+	resp := makeAuthRequest(t, server, "GET", "/zzrouter/v1/runs/it-stopped-1/logs?grep=offloaded", TestAdminKey, nil)
+	require.Equal(t, 200, resp.Code, "body=%s", string(resp.Body))
+	require.Contains(t, string(resp.Body), "offloaded 10/29 layers to GPU")
+	require.NotContains(t, string(resp.Body), "load ok")
+
+	c, rec := testGinContext("GET", "/zzrouter/v1/internal/runs/it-stopped-1/logs?grep=offloaded")
+	c.Params = gin.Params{{Key: "id", Value: "it-stopped-1"}}
+	server.newRunsExecutor().HandleInternalGetRunLogs(c)
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), "offloaded 10/29 layers to GPU")
+
+	missing := makeAuthRequest(t, server, "GET", "/zzrouter/v1/runs/it-never-ran/logs", TestAdminKey, nil)
+	require.Equal(t, 404, missing.Code)
+	require.Contains(t, string(missing.Body), "node set to the node it ran on", "the 404 says how to read a worker's stopped run")
+}
+
+// With node naming a worker, a run gone from every registry is read on that
+// worker, filter included.
+func TestStoppedRunLogsRouteToNamedNode(t *testing.T) {
+	var routed string
+	l := &LogsHandlers{
+		getClusterClient: func() mesh.ClusterClient { return nil },
+		isLocalNode:      func(n string) bool { return n == "coord" },
+		routeToClusterNode: func(_ context.Context, node, path, _ string, _ []byte, _ http.Header) (*mesh.Response, error) {
+			routed = node + " " + path
+			return &mesh.Response{StatusCode: 200, Body: []byte(`{"success":true}`)}, nil
+		},
+	}
+	c, rec := testGinContext("GET", "/zzrouter/v1/runs/r1/logs?node=worker-1&grep=offloaded")
+	c.Params = gin.Params{{Key: "id", Value: "r1"}}
+	l.handleGetInstanceLogs(c)
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+	require.Contains(t, routed, "worker-1 /zzrouter/v1/internal/runs/r1/logs?")
+	require.Contains(t, routed, "grep=offloaded")
 }

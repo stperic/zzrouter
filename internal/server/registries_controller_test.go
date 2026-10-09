@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseQuant(t *testing.T) {
@@ -77,7 +79,7 @@ func TestBuildVariantsResponse_FiltersNonGGUF(t *testing.T) {
 		{Name: "model.Q4_K_M.gguf", Size: 100_000_000},
 		{Name: "model.Q8_0.gguf", Size: 200_000_000},
 	}
-	resp := buildVariantsResponse("org/repo", files)
+	resp := buildVariantsResponse("org/repo", files, nil)
 	assert.Equal(t, "org/repo", resp.ModelID)
 	assert.Len(t, resp.Variants, 2)
 	assert.Equal(t, 2, resp.NonGGUFFiles)
@@ -90,12 +92,39 @@ func TestBuildVariantsResponse_FiltersNonGGUF(t *testing.T) {
 	}
 }
 
+// The listing groups files the way a download fetches them: a split set is
+// one choice with its total size, and a declared feature file is offered
+// as that feature, never as weights.
+func TestBuildVariantsResponse_GroupsShardsAndFeatures(t *testing.T) {
+	files := []metadata.TreeFileEntry{
+		{Name: "m-q5_k_m-00001-of-00002.gguf", Size: 3},
+		{Name: "m-q5_k_m-00002-of-00002.gguf", Size: 2},
+		{Name: "m-q8_0-00001-of-00002.gguf", Size: 9},
+		{Name: "m-q2_k.gguf", Size: 1},
+		{Name: "mmproj-BF16.gguf", Size: 7},
+		{Name: "mmproj-F16.gguf", Size: 6},
+	}
+	resp := buildVariantsResponse("org/m", files, map[string][]string{"vision": {"mmproj-F16.gguf", "mmproj-*.gguf"}})
+
+	require.Len(t, resp.Variants, 2, "the incomplete q8_0 set is not a choice")
+	byFile := map[string]GGUFVariant{}
+	for _, v := range resp.Variants {
+		byFile[v.File] = v
+	}
+	split := byFile["m-q5_k_m-00001-of-00002.gguf"]
+	assert.Equal(t, 2, split.Shards)
+	assert.Equal(t, int64(5), split.SizeBytes)
+	assert.Equal(t, "Q5_K_M", split.Quantization)
+	assert.Equal(t, 1, byFile["m-q2_k.gguf"].Shards)
+	assert.Equal(t, []FeatureFile{{Feature: "vision", File: "mmproj-F16.gguf", SizeBytes: 6, SizeHuman: "6 B"}}, resp.Features)
+}
+
 func TestHumanizeBytes(t *testing.T) {
 	cases := map[int64]string{
 		512:                    "512 B",
-		2048:                   "2.0 KB",
-		5 * 1024 * 1024:        "5.0 MB",
-		3 * 1024 * 1024 * 1024: "3.0 GB",
+		2048:                   "2.0 KiB",
+		5 * 1024 * 1024:        "5.0 MiB",
+		3 * 1024 * 1024 * 1024: "3.0 GiB",
 	}
 	for n, want := range cases {
 		assert.Equal(t, want, humanizeBytes(n))
@@ -104,7 +133,7 @@ func TestHumanizeBytes(t *testing.T) {
 
 func TestListHuggingFaceVariants_BadRequestBranches(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	ctrl := NewRegistriesController(func() *modelregistry.Registry { return nil })
+	ctrl := NewRegistriesController(func() *modelregistry.Registry { return nil }, func() *pkgConfig.AppsConfig { return nil })
 
 	t.Run("missing id", func(t *testing.T) {
 		w := httptest.NewRecorder()

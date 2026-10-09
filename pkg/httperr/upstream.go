@@ -53,15 +53,22 @@ func readCapped(r io.Reader) []byte {
 func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	raw := readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
-	message := upstreamMessage(raw)
+	message, code := upstreamError(raw)
 	failure := Error{Status: resp.StatusCode, Type: openaicompat.StatusToErrorType(resp.StatusCode), Message: utils.SanitizeErrorMessage(message)}
 	if failure.Message == "" {
 		failure.Message = fmt.Sprintf("backend returned status %d", resp.StatusCode)
 	}
-	if resp.StatusCode == http.StatusInternalServerError {
-		if unsupportedImage(message) {
-			failure.Code = "unsupported_input"
-		} else if reason, ok := templateRefusal(message); ok {
+	switch {
+	case refusalCodes[code]:
+		// The node that spoke to the engine classified it; a relay keeps that.
+		failure.Code = code
+	case resp.StatusCode == http.StatusBadRequest && strings.Contains(message, vllmToolChoiceRefusal):
+		failure.Code = CodeToolCallingNotEnabled
+		failure.Message = utils.SanitizeErrorMessage("this model's engine was launched without tool calling: " + message + " " + ToolCallingRemedy)
+	case resp.StatusCode == http.StatusInternalServerError && unsupportedImage(message):
+		failure.Code = CodeUnsupportedInput
+	case resp.StatusCode == http.StatusInternalServerError:
+		if reason, ok := templateRefusal(message); ok {
 			failure.Code = CodeChatTemplateRejected
 			failure.Message = utils.SanitizeErrorMessage("the model's chat template rejected this request: " + reason + " " + ChatTemplateRemedy)
 		}
@@ -86,29 +93,33 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	return failure
 }
 
-func upstreamMessage(raw []byte) string {
+// upstreamError returns an error body's message and, when it carries one as
+// a string, its code.
+func upstreamError(raw []byte) (message, code string) {
 	var envelope struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		return string(raw)
+		return string(raw), ""
 	}
 	var text string
 	if json.Unmarshal(envelope.Error, &text) == nil {
-		return text
+		return text, ""
 	}
 	var inner struct {
 		Message string `json:"message"`
 		Error   string `json:"error"`
+		Code    any    `json:"code"`
 	}
 	if json.Unmarshal(envelope.Error, &inner) == nil {
+		code, _ = inner.Code.(string)
 		if inner.Message != "" {
-			return inner.Message
+			return inner.Message, code
 		}
-		return inner.Error
+		return inner.Error, code
 	}
-	return envelope.Message
+	return envelope.Message, ""
 }
 
 // Match explicit capability refusals only. A server failure mentioning images
@@ -123,12 +134,30 @@ func unsupportedImage(message string) bool {
 	return false
 }
 
+// CodeUnsupportedInput: the engine refused an input kind it cannot read.
+const CodeUnsupportedInput = "unsupported_input"
+
+// refusalCodes are the classifications NormalizeUpstreamResponse makes.
+var refusalCodes = map[string]bool{CodeUnsupportedInput: true, CodeChatTemplateRejected: true, CodeToolCallingNotEnabled: true}
+
 // CodeChatTemplateRejected: the engine's chat template refused to render the
 // request (vLLM answers such refusals 400 itself).
 const CodeChatTemplateRejected = "chat_template_rejected"
 
 // ChatTemplateRemedy is what a caller can do about a template refusal.
 const ChatTemplateRemedy = "An admin can upload a chat template that accepts it and select it for this model; GET /zzrouter/v1 explains how under chat_templates."
+
+// CodeToolCallingNotEnabled: the engine serves the model but was launched
+// without the switches its tool calling needs.
+const CodeToolCallingNotEnabled = "tool_calling_not_enabled"
+
+// ToolCallingRemedy says how to launch the model with tool calling. Which
+// parser fits is per model family, and zzRouter ships no model knowledge.
+const ToolCallingRemedy = "Set the provider's tool-calling launch parameters for this model (for vLLM: enable-auto-tool-choice: \"true\" and the tool-call-parser for its family) with PATCH /zzrouter/v1/providers/{name}/parameters, then restart the run."
+
+// vLLM refuses a tools request this way when it was not launched with them:
+// https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/serving_chat.py
+const vllmToolChoiceRefusal = "--enable-auto-tool-choice"
 
 // llama.cpp prefixes a template's own raise_exception with this marker:
 // https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418

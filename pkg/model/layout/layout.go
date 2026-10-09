@@ -6,6 +6,7 @@ package layout
 
 import (
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -89,6 +90,28 @@ func GGUFVariants(files []File) []Variant {
 	return out
 }
 
+// VariantOf returns the complete variant the GGUF file at path belongs to,
+// its Files relative to path's directory. Feature files, excluded files and
+// shards of an incomplete set belong to none.
+func VariantOf(path string, excluded ...string) (Variant, bool) {
+	if Matches(filepath.Base(path), excluded) {
+		return Variant{}, false
+	}
+	files, err := InDir(filepath.Dir(path), excluded...)
+	if err != nil {
+		return Variant{}, false
+	}
+	base := filepath.Base(path)
+	for _, v := range GGUFVariants(files) {
+		for _, f := range v.Files {
+			if f.Path == base {
+				return v, true
+			}
+		}
+	}
+	return Variant{}, false
+}
+
 // Pick returns the variant hint names: one holding a file at that path,
 // then the first, by path, whose name contains it (both case-insensitive),
 // then the only variant when there is no hint.
@@ -151,17 +174,9 @@ func stem(p string) string {
 // relative to it, leaving out zzRouter's bookkeeping and every file its
 // manifest records as belonging to a feature, plus declared exclusion globs.
 func OnDisk(dir string, excluded ...string) ([]File, error) {
-	manifest, err := integrity.ReadManifest(dir)
+	feature, err := featureFiles(dir)
 	if err != nil {
 		return nil, err
-	}
-	feature := map[string]bool{}
-	if manifest != nil {
-		for _, f := range manifest.Files {
-			if f.Feature != "" {
-				feature[filepath.ToSlash(f.RelativePath)] = true
-			}
-		}
 	}
 	var out []File
 	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -184,4 +199,43 @@ func OnDisk(dir string, excluded ...string) ([]File, error) {
 		return nil
 	})
 	return out, err
+}
+
+// InDir lists the files directly in dir the way OnDisk does, without
+// descending. It is best effort: an unreadable manifest tags nothing and an
+// unreadable entry is skipped, so one bad file never hides its neighbours.
+func InDir(dir string, excluded ...string) ([]File, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	feature, _ := featureFiles(dir)
+	var out []File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || integrity.IsBookkeeping(name) || feature[name] || Matches(name, excluded) {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			out = append(out, File{Path: name, Size: info.Size()})
+		}
+	}
+	return out, nil
+}
+
+// featureFiles reads which files dir's manifest assigns to a feature.
+func featureFiles(dir string) (map[string]bool, error) {
+	manifest, err := integrity.ReadManifest(dir)
+	if err != nil {
+		return nil, err
+	}
+	feature := map[string]bool{}
+	if manifest != nil {
+		for _, f := range manifest.Files {
+			if f.Feature != "" {
+				feature[filepath.ToSlash(f.RelativePath)] = true
+			}
+		}
+	}
+	return feature, nil
 }

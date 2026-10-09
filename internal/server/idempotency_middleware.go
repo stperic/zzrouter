@@ -2,7 +2,8 @@
 // /runs/ensure. Agents that retry on HTTP timeout (without changing
 // the request body) attach a stable Idempotency-Key header; a duplicate
 // POST with the same key + same body returns the original 2xx response
-// instead of starting a second launch.
+// instead of starting a second launch. A failure is not recorded, so a
+// retry after one runs again.
 //
 // Out of scope: cross-restart persistence (in-memory only — agents
 // retry within seconds-to-minutes), worker-side dedupe (coord is the
@@ -155,6 +156,17 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			entry.statusCode = w.status()
 			entry.responseJSON = w.body()
 			entry.contentType = w.contentType()
+			// A failure is not an outcome to keep: replaying a 503 "wait for
+			// readiness" for 24h makes the advised retry useless. Forget it
+			// before waking duplicates, so no later request can find it;
+			// duplicates already waiting hold the entry and see the failure.
+			if entry.statusCode < 200 || entry.statusCode >= 300 {
+				s.mu.Lock()
+				if s.m[key] == entry {
+					delete(s.m, key)
+				}
+				s.mu.Unlock()
+			}
 			close(entry.inflight)
 			return
 		}

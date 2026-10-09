@@ -60,6 +60,10 @@ var (
 	// that is already installed by zzRouter. Callers should use upgrade or uninstall instead.
 	ErrProviderAlreadyInstalled = errors.New("provider is already installed; use upgrade or uninstall first")
 
+	// errAdmissionBusy refuses an install smoke launch that would have to
+	// queue behind another launch claiming GPU memory; the smoke retries.
+	errAdmissionBusy = errors.New("another launch on this node is still claiming GPU memory")
+
 	// ErrParameterValidation is returned when LaunchRequest.Parameters fail
 	// the per-provider validation schema. The wrapped raise site preserves
 	// the inner validator error for context via fmt.Errorf("%w: %w", ...).

@@ -348,7 +348,8 @@ type LaunchRunRequest struct {
 	Runtime          string `json:"runtime,omitempty"`
 	DisposablePlanID string `json:"disposable_plan_id,omitempty"`
 	Provider         string `json:"provider" binding:"required"`
-	LaunchMode       string `json:"launch_mode" binding:"required,oneof=native"`
+	// LaunchMode has one value; omitted means it.
+	LaunchMode string `json:"launch_mode" binding:"required,oneof=native"`
 	// Accepts `model` (OpenAI-compat, preferred) or `model_name`.
 	// UnmarshalJSON below promotes either into this field.
 	Model string `json:"model_name" binding:"required"`
@@ -390,15 +391,24 @@ func (r *LaunchRunRequest) UnmarshalJSON(data []byte) error {
 		ModelAlias string `json:"model"`
 		*raw
 	}{raw: (*raw)(r)}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&aux); err != nil {
+	if err := decodeStrict(data, &aux); err != nil {
 		return err
 	}
-	if r.Model == "" && aux.ModelAlias != "" {
+	if r.Model == "" {
 		r.Model = aux.ModelAlias
 	}
+	if r.LaunchMode == "" {
+		r.LaunchMode = string(instance.LaunchModeNative)
+	}
 	return nil
+}
+
+// decodeStrict decodes JSON refusing fields v does not define, the check a
+// custom UnmarshalJSON otherwise switches off.
+func decodeStrict(data []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(v)
 }
 
 // LaunchRunResponse represents the response from launching a run
@@ -539,7 +549,7 @@ func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*En
 
 	launchReq := &LaunchRunRequest{
 		Provider:   cm.Provider,
-		LaunchMode: "native",
+		LaunchMode: string(instance.LaunchModeNative),
 		Model:      cm.Name,
 		Endpoint:   endpoint,
 		AutoDeploy: true,

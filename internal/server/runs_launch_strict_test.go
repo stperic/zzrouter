@@ -55,3 +55,26 @@ func TestLaunchRunRequestNodeSelector(t *testing.T) {
 
 	assert.Equal(t, "worker-1", req.Node)
 }
+
+// launch_mode has one value, so a launch that omits it means it.
+func TestLaunchRunRequestDefaultsLaunchMode(t *testing.T) {
+	var req LaunchRunRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"vllm","model":"m"}`), &req))
+	assert.Equal(t, "native", req.LaunchMode)
+}
+
+// Preview takes the same model names as a launch: an agent that previews
+// with `model` and then launches with it must not be refused in between.
+func TestPreviewRequestAcceptsModelAliasAndStaysStrict(t *testing.T) {
+	var req PreviewRunRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"vllm","model":"m","node":"worker"}`), &req))
+	assert.Equal(t, "m", req.ModelName)
+	assert.Equal(t, "worker", req.Node)
+
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":"vllm","model":"alias","model_name":"m"}`), &req))
+	assert.Equal(t, "m", req.ModelName, "model_name wins, as for POST /runs")
+
+	err := json.Unmarshal([]byte(`{"provider":"vllm","model":"m","host":"192.0.2.10"}`), &req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "host")
+}

@@ -1,34 +1,19 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestMemoryStartupGateInternalLoadKeepsUnavailableStatus(t *testing.T) {
-	s := variantNode(t)
-	executor := s.newLoadExecutor()
-	executor.launchOnDemand = func(context.Context, string, string, string, map[string]string, map[string]string) (*instance.Instance, error) {
-		return nil, fmt.Errorf("another GPU-budgeted run is starting: %w", prov_apps.ErrAtCapacity)
-	}
-	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs/load")
-	c.Request = httptest.NewRequest("POST", "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"llamacpp"}`))
-	executor.HandleInternalLoadModel(c)
-	require.Equal(t, 503, response.Code, response.Body.String())
-	assert.Contains(t, response.Body.String(), "another GPU-budgeted run is starting")
-}
 
 func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
@@ -57,4 +42,19 @@ func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	assert.Contains(t, wire.Body.String(), "required 9500 MiB, currently free 6000 MiB")
 	assert.Equal(t, 503, classifyLoadFailure(process.ErrMemoryObservation).status)
 	assert.Equal(t, 400, classifyLoadFailure(process.ErrMemoryBudgetInvalid).status)
+}
+
+// A cold load that queued and was then refused answers like an inline
+// refusal: the run keeps its refusal, not just the text.
+func TestQueuedRefusalKeepsItsStatusForColdLoad(t *testing.T) {
+	s := variantNode(t)
+	inst := instance.NewInstance("queued-run", "llamacpp", qwenModel, 8640, time.Minute, 0)
+	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
+	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
+	inst.MarkRefused(fmt.Errorf("admission: %w", &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000}))
+	_, err := s.waitForLocalInstance(inst)
+	var lf *loadFailure
+	require.ErrorAs(t, err, &lf)
+	assert.Equal(t, 409, lf.status)
+	assert.Equal(t, "out_of_range", lf.code)
 }

@@ -11,6 +11,7 @@ import (
 
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
@@ -67,7 +68,9 @@ func requestRecorder(ctx context.Context, model, provider string) *llm.Inference
 		return nil
 	}
 	if rec, _ := ctx.Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder); rec != nil {
-		rec.SetProvider(provider)
+		if provider != "" {
+			rec.SetProvider(provider)
+		}
 		return rec
 	}
 	return llm.NewInferenceRecorder(ctx, model, provider)
@@ -404,7 +407,7 @@ func (s *Server) resolvedRequestBody(c *gin.Context, resolved *resolver.Resolved
 	if target == model {
 		return body
 	}
-	body = rewriteModelInBody(body, target)
+	body = wire.RewriteRequestModel(body, c.GetHeader("Content-Type"), target)
 	replaceRequestBody(c, body)
 	if clientModelFromContext(c.Request.Context()) == "" {
 		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), CtxKeyClientModel, model))
