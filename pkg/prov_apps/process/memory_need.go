@@ -33,6 +33,7 @@ type attentionConfig struct {
 	Dtype         string          `json:"dtype"`
 	LayerTypes    []string        `json:"layer_types"`
 	SlidingWindow *int64          `json:"sliding_window"`
+	UseSliding    *bool           `json:"use_sliding_window"`
 	KVLoRARank    json.RawMessage `json:"kv_lora_rank"`
 }
 
@@ -139,7 +140,8 @@ func (cfg attentionConfig) dtypeBytes() (int64, bool) {
 // concurrent sequence, sized by architecture-specific keys config.json does not standardise, so it makes the need unknown.
 func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 	if cfg.LayerTypes == nil {
-		if cfg.SlidingWindow != nil {
+		// use_sliding_window: false (Qwen2 family) declares a window it does not apply.
+		if cfg.SlidingWindow != nil && (cfg.UseSliding == nil || *cfg.UseSliding) {
 			return 0, false
 		}
 		total, err := needProduct([]int64{cfg.Layers, context})

@@ -212,3 +212,20 @@ func TestMemoryNeedSelectedGGUFShardsAndFeatures(t *testing.T) {
 	_, ok = ModelMemoryNeed(filepath.Join(dir, "part-00001-of-00002.gguf"), svc, params)
 	assert.False(t, ok)
 }
+
+func TestMemoryNeedDisabledSlidingWindowIsDense(t *testing.T) {
+	cfg := denseAttentionConfig()
+	dir, svc, params := needFixture(t, cfg)
+	dense, ok := ModelMemoryNeed(dir, svc, params)
+	require.True(t, ok)
+	cfg["sliding_window"] = 32768
+	cfg["use_sliding_window"] = false
+	dir, svc, params = needFixture(t, cfg)
+	need, ok := ModelMemoryNeed(dir, svc, params)
+	require.True(t, ok, "a declared but disabled window is a dense model")
+	assert.Equal(t, dense, need)
+	cfg["use_sliding_window"] = true
+	dir, svc, params = needFixture(t, cfg)
+	_, ok = ModelMemoryNeed(dir, svc, params)
+	assert.False(t, ok, "an enabled window without layer_types cannot be placed")
+}
