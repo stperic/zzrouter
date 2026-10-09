@@ -105,6 +105,9 @@ func (*Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.E
 	for k, v := range envelopeWithRequestID(e.Status, e.Message, w.Header().Get("X-Request-ID")) {
 		body[k] = v
 	}
+	if e.Code != "" {
+		body["error"].(map[string]any)["code"] = e.Code
+	}
 	data, _ := json.Marshal(body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)

@@ -32,7 +32,7 @@ import (
 // Owning them means a fix to a launch argument or a readiness probe reaches
 // existing installs on the next start. Without that, every engine-level fix
 // would need a bespoke migration, and installs would drift apart silently.
-var managedSpineKeys = []string{"execution", "health_check", "max_concurrent_requests", "queue_timeout"}
+var managedSpineKeys = []string{"execution", "failure_patterns", "health_check", "max_concurrent_requests", "queue_timeout"}
 
 // managedTopLevelKeys are managed sections that sit outside any section.
 //

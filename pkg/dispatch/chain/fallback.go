@@ -415,7 +415,14 @@ func (p *Proxy) tryDeployment(
 		// Classify errors before retry/cooldown; a capability refusal is not
 		// evidence that this deployment or provider is unhealthy.
 		if resp.StatusCode >= 400 {
-			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request))
+			classifier := p.deps.FailureClassifier(dep.App)
+			if inst != nil {
+				classifier = inst.FailureClassifier
+			}
+			if up.IsCluster() {
+				classifier = nil
+			}
+			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
 		}
 		// Inspect HTTP status before committing to client.
 		if pfallback.IsRetriable(resp.StatusCode, nil) {

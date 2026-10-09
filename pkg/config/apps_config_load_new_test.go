@@ -13,6 +13,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // TestNewShape_RoundTripViaInstall is the golden round-trip: install
@@ -114,7 +115,7 @@ func TestNewShape_BidirectionalRoundTrip(t *testing.T) {
 		require.NoErrorf(t, strictDecode(body, got), "re-decode %s", name)
 
 		setProviderName(got, name)
-		if diff := cmp.Diff(p, got, cmpopts.EquateEmpty()); diff != "" {
+		if diff := cmp.Diff(p, got, cmpopts.EquateEmpty(), cmpopts.IgnoreUnexported(httperr.FailurePattern{})); diff != "" {
 			t.Errorf("round-trip mismatch for %s (-orig +got):\n%s", name, diff)
 		}
 	}
@@ -290,4 +291,29 @@ func TestAddApp(t *testing.T) {
 func TestAllProviders_NilReceiver(t *testing.T) {
 	var cfg *AppsConfig
 	assert.Empty(t, cfg.AllProviders())
+}
+
+func TestFailurePatternsSurviveStoreWrites(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	store, err := NewAppsConfigStore(dir)
+	require.NoError(t, err)
+	original, ok := store.Config().LookupApp("llamacpp")
+	require.True(t, ok)
+	require.NoError(t, store.AddCloudModel("openrouter", "test-model"))
+	store, err = NewAppsConfigStore(dir)
+	require.NoError(t, err)
+	require.NoError(t, store.RemoveCloudModels(map[string][]string{"openrouter": {"test-model"}}))
+	store, err = NewAppsConfigStore(dir)
+	require.NoError(t, err)
+	saved, ok := store.Config().LookupApp("llamacpp")
+	require.True(t, ok)
+	assert.Empty(t, cmp.Diff(original.Runtime.FailurePatterns, saved.Runtime.FailurePatterns, cmpopts.IgnoreUnexported(httperr.FailurePattern{})))
+	require.NotNil(t, saved.Runtime.FailurePatterns.Match("error: failed to allocate CUDA0 buffer"))
+	for _, provider := range []string{"vllm", "llamacpp", "mlx", "ollama"} {
+		require.Error(t, store.Config().UpdateApp(provider, func(sc *ServiceConfig) error {
+			sc.Runtime.FailurePatterns[0].Class = "unknown"
+			return nil
+		}))
+	}
 }

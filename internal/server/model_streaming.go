@@ -295,8 +295,8 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 				slog.Info("Instance is now ready", "id", currentInstance.ID, "port", currentInstance.Port)
 				return currentInstance, nil
 			case instance.StatusFailed:
-				if refusal := currentInstance.Refusal(); refusal != nil {
-					return nil, classifyLoadFailure(refusal)
+				if cause := currentInstance.FailureCause(); cause != nil {
+					return nil, classifyLoadFailure(fmt.Errorf("instance %q failed to start: %w", currentInstance.ID, cause))
 				}
 				// GetErrorMessage takes the instance mutex; direct field
 				// access races with MarkFailed's write (Status atomic and
@@ -386,7 +386,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req))
+		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req), inst.FailureClassifier)
 		if rec != nil {
 			rec.SetError(failure.Type, failure.Message)
 			rec.RecordCompletion(0, 0)

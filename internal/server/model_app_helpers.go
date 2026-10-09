@@ -284,7 +284,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 		// applyRewrittenError handles the response-mutation idiom that
 		// httputil.ReverseProxy.ModifyResponse requires.
 		if resp.StatusCode >= 400 {
-			applyRewrittenError(req, resp)
+			applyRewrittenError(req, resp, inst.FailureClassifier)
 			return nil
 		}
 

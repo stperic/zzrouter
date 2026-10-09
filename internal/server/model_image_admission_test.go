@@ -113,7 +113,10 @@ func TestColdStreamClassifiesUpstreamErrors(t *testing.T) {
 			w := httptest.NewRecorder()
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
-			s.streamFromInstance(w, req, instanceFor(t, engine, "org/model", ""), dialectOf(req).(httperr.InBandStreamer))
+			inst := instanceFor(t, engine, "org/model", "")
+			inst.FailureClassifier = &httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}
+			require.NoError(t, inst.FailureClassifier.Compile())
+			s.streamFromInstance(w, req, inst, dialectOf(req).(httperr.InBandStreamer))
 			assert.Equal(t, 200, w.Code)
 			assert.Contains(t, w.Body.String(), `"type":"`+tc.typ+`"`)
 			assert.Contains(t, w.Body.String(), "[DONE]")
@@ -198,7 +201,7 @@ func TestImageAdmissionSourceAliasKeepsProviderAndNode(t *testing.T) {
 
 func TestResponsesTranslatedUnsupportedImageBeforeAndAfterStream(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		backends := map[string]*serviceBackend{"chat": {wire: []string{"chat_completions", "responses_compat"}, status: 500, reply: `{"error":{"message":"image input is not supported","type":"api_error"}}`}}
+		backends := map[string]*serviceBackend{"chat": {wire: []string{"chat_completions", "responses_compat"}, failures: httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}, status: 500, reply: `{"error":{"message":"image input is not supported","type":"api_error"}}`}}
 		s := newServiceGroupNode(t, []string{"chat"}, backends)
 		body := `{"model":"claude","input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`
 		if stream {
@@ -223,7 +226,9 @@ func TestResponsesTranslatedUnsupportedImageBeforeAndAfterStream(t *testing.T) {
 	c, _ := gin.CreateTestContext(raw)
 	writer := newResponsesStreamWriter(c.Writer, "org/model", nil)
 	writer.WriteHeader(200)
-	s.streamFromInstance(writer, req, instanceFor(t, engine, "org/model", ""), dialectOf(req).(httperr.InBandStreamer))
+	inst := instanceFor(t, engine, "org/model", "")
+	inst.FailureClassifier = &httperr.Classifier{{Pattern: "images are not supported", Class: httperr.FailureUnsupportedInput}}
+	s.streamFromInstance(writer, req, inst, dialectOf(req).(httperr.InBandStreamer))
 	writer.Close()
 	assert.Equal(t, 200, raw.Code)
 	assert.Contains(t, raw.Body.String(), "event: response.failed")

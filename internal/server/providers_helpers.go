@@ -57,9 +57,9 @@ func extractStatusCode(err error) int {
 	if errors.As(err, &re) {
 		return re.StatusCode
 	}
-	var memory *process.MemoryFitError
-	if errors.As(err, &memory) {
-		return http.StatusConflict
+	var classified *httperr.EngineFailure
+	if errors.As(err, &classified) {
+		return classified.HTTPError().Status
 	}
 	switch {
 	case errors.Is(err, prov_apps.ErrProviderNotFound),
@@ -99,15 +99,21 @@ func extractStatusCode(err error) int {
 // error, mapping sentinels (and RoutedError from cluster routing) to the
 // right HTTP status in one shot.
 func respondProviderErr(c *gin.Context, err error) {
-	var memory *process.MemoryFitError
-	if errors.As(err, &memory) {
-		RespondWithProblemOpts(c, http.StatusConflict, "GPU memory budget cannot fit", memory.Error(), ProblemOpts{
-			Code: string(httperr.CodeOutOfRange), Errors: []utils.ParamError{{
-				Key: memory.Parameter, Code: string(httperr.CodeOutOfRange), Got: memory, Max: memory.FreeMiB,
-				Want: "required_mib <= free_mib on each selected device", Message: memory.Error(),
-				Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads.",
-			}},
-		})
+	var classified *httperr.EngineFailure
+	if errors.As(err, &classified) {
+		failure := (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError()
+		var memory *process.MemoryFitError
+		if errors.As(err, &memory) {
+			RespondWithProblemOpts(c, failure.Status, "GPU memory budget cannot fit", failure.Message, ProblemOpts{
+				Code: failure.Code, Errors: []utils.ParamError{{
+					Key: memory.Parameter, Code: failure.Code, Got: memory, Max: memory.FreeMiB,
+					Want: "required_mib <= free_mib on each selected device", Message: failure.Message,
+					Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads.",
+				}},
+			})
+			return
+		}
+		RespondWithProblemOpts(c, failure.Status, http.StatusText(failure.Status), failure.Message, ProblemOpts{Code: failure.Code})
 		return
 	}
 	status := extractStatusCode(err)

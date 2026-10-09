@@ -136,6 +136,7 @@ func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 	for _, cause := range []error{
 		newLoadFailure(http.StatusNotFound, "Model file not found"),
 		newLoadFailure(http.StatusBadGateway, "instance 'x' failed to start: boom"),
+		fmt.Errorf("instance x failed: %w", &httperr.EngineFailure{Class: httperr.FailureMemory, Message: "allocation failed"}),
 		loadStillWarming("instance 'x' is still loading"),
 		loadInternal("instance 'x' disappeared"),
 		errors.New("something unclassified"),
@@ -184,4 +185,20 @@ func TestLoadFailureKeepsItsCause(t *testing.T) {
 	lf := classifyLoadFailure(sentinel)
 
 	assert.ErrorIs(t, lf, sentinel, "errors.Is must still reach the original cause")
+}
+
+func TestClassifyLoadFailureEngineClass(t *testing.T) {
+	for _, class := range []httperr.FailureClass{httperr.FailureMemory, httperr.FailureUnsupportedInput, httperr.FailureChatTemplateRejected, httperr.FailureToolCallingNotEnabled} {
+		cause := &httperr.EngineFailure{Class: class, Message: "declared failure"}
+		for _, wrapped := range []error{cause, newLoadFailure(http.StatusBadGateway, cause.Error()).withCause(cause), fmt.Errorf("cold load: %w", cause)} {
+			failure := classifyLoadFailure(wrapped)
+			want := (&httperr.EngineFailure{Class: class, Message: wrapped.Error()}).HTTPError()
+			assert.Equal(t, want.Status, failure.status)
+			assert.Equal(t, want.Code, failure.code)
+			assert.Equal(t, want.Message, failure.message)
+			assert.Zero(t, failure.retryAfterSecs)
+			assert.ErrorIs(t, failure, wrapped)
+		}
+	}
+	assert.Equal(t, http.StatusBadGateway, classifyLoadFailure(errors.New("CUDA out of memory")).status)
 }

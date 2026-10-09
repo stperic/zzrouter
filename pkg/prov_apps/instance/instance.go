@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -34,7 +35,7 @@ const defaultLogBufferSize = 100
 //     concurrent reader yet. Fields: ID, Provider, LaunchMode, Model,
 //     SourceRepo, SizeBytes, Processor, ContextLength, Port, HealthURL,
 //     Config, KeepAlive (initial), LogFilePath, LaunchCommand,
-//     IdleExpiry, Logs.
+//     IdleExpiry, Logs, FailureClassifier.
 //
 //  2. **Mu-protected mutable** — written by Set/Mark/Stamp/Update
 //     methods that take i.mu. Fields: Status, ErrorMessage, StartedAt,
@@ -48,10 +49,11 @@ const defaultLogBufferSize = 100
 // call site and keeps the write surface auditable if locking is ever
 // added.
 type Instance struct {
-	ID         string     `json:"id"`
-	Provider   string     `json:"provider"`
-	LaunchMode LaunchMode `json:"launch_mode"`
-	Model      string     `json:"model,omitempty"`
+	FailureClassifier *httperr.Classifier `json:"-"`
+	ID                string              `json:"id"`
+	Provider          string              `json:"provider"`
+	LaunchMode        LaunchMode          `json:"launch_mode"`
+	Model             string              `json:"model,omitempty"`
 
 	// StopUnconfirmed keeps a runtime occupied until its process reaper drains.
 	StopUnconfirmed atomic.Bool `json:"-"`
@@ -105,9 +107,9 @@ type Instance struct {
 
 	// admitted is set once the run's claim on memory is accounted for; a
 	// starting run that is not admitted is queued behind waitingOn.
-	admitted  bool
-	waitingOn string
-	refusal   error
+	admitted     bool
+	waitingOn    string
+	failureCause error
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
 
@@ -271,23 +273,16 @@ func (i *Instance) Admit() bool {
 	return true
 }
 
-// MarkRefused fails a queued run its admission refused, keeping the error
-// so callers classify it as they would an inline refusal. Like any failed
-// run it keeps its port until it is stopped or replaced.
-func (i *Instance) MarkRefused(err error) {
-	i.MarkFailed(err.Error())
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.Status == StatusFailed {
-		i.refusal, i.waitingOn = err, ""
-	}
+// MarkFailedError retains the typed cause before publishing the failed state.
+func (i *Instance) MarkFailedError(err error) {
+	i.markFailedWithExit(err.Error(), err, nil, "")
 }
 
-// Refusal returns the admission error of a refused queued run.
-func (i *Instance) Refusal() error {
+// FailureCause returns the typed error retained by a failed run.
+func (i *Instance) FailureCause() error {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.refusal
+	return i.failureCause
 }
 
 // Admitted reports whether the run's memory claim is accounted for.

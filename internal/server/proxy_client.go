@@ -46,6 +46,7 @@ func portFromURL(u *url.URL) int {
 // MCP, responses API). It owns the HTTP clients that reach upstreams and
 // the response normalizer registry.
 type ProxyClient struct {
+	failureClassifier   func(string) *httperr.Classifier
 	streamClient        *http.Client
 	clusterClient       func() *http.Client
 	normalizers         *ResponseNormalizers
@@ -80,7 +81,11 @@ func NewProxyClient(
 	onRateLimit func(provider string, resp *http.Response),
 	injectUsageMetadata func() bool,
 	localNode func() string,
+	failureClassifier func(string) *httperr.Classifier,
 ) *ProxyClient {
+	if failureClassifier == nil {
+		failureClassifier = func(string) *httperr.Classifier { return nil }
+	}
 	if injectUsageMetadata == nil {
 		injectUsageMetadata = func() bool { return false }
 	}
@@ -91,6 +96,7 @@ func NewProxyClient(
 		clusterClient = func() *http.Client { return nil }
 	}
 	return &ProxyClient{
+		failureClassifier:   failureClassifier,
 		streamClient:        streamClient,
 		clusterClient:       clusterClient,
 		normalizers:         normalizers,
@@ -194,7 +200,11 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 		if n := req.Header.Get(constants.HeaderServingNode); n != "" {
 			w.Header().Set(constants.HeaderServingNode, n)
 		}
-		writeRewrittenError(w, req, resp)
+		classifier := p.failureClassifier(providerType)
+		if up.IsCluster() {
+			classifier = nil
+		}
+		writeRewrittenError(w, req, resp, classifier)
 		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
 		return
 	}

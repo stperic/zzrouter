@@ -42,7 +42,8 @@ func init() {
 // ProxyForwardDetached + Backend. Everything else returns
 // defaults safe for the tests below.
 type fakeDeps struct {
-	nodeName string
+	classifier *httperr.Classifier
+	nodeName   string
 
 	// forward maps targetURL → canned response. Missing key returns a 404.
 	forward map[string]func() (*http.Response, error)
@@ -518,6 +519,9 @@ func TestProxyWithFallback_UnreachableReplicaFallsThrough(t *testing.T) {
 
 func TestProxyWithFallback_UnsupportedImageDoesNotRetryOrCooldown(t *testing.T) {
 	deps := newFakeDeps()
+	classifier := httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}
+	require.NoError(t, classifier.Compile())
+	deps.classifier = &classifier
 	deps.endpoints["ollama"] = "http://127.0.0.1:11434"
 	deps.forward["http://127.0.0.1:11434/v1/chat/completions"] = func() (*http.Response, error) {
 		return cannedJSON(http.StatusInternalServerError, `{"error":{"message":"image input is not supported","type":"api_error"}}`), nil
@@ -565,3 +569,5 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 		})
 	}
 }
+
+func (f *fakeDeps) FailureClassifier(app string) *httperr.Classifier { return f.classifier }

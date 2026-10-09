@@ -2,9 +2,11 @@ package health
 
 import (
 	"bytes"
+	"io"
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -164,5 +166,22 @@ func TestReadinessWriter_NoMatch(t *testing.T) {
 		t.Fatal("should not get a signal when no pattern matches")
 	default:
 		// expected
+	}
+}
+
+func TestReadinessWriterFailureAfterListener(t *testing.T) {
+	classifier := httperr.Classifier{{Pattern: "device allocation failed", Class: httperr.FailureMemory}}
+	require.NoError(t, classifier.Compile())
+	probe := &ReadinessProbe{FailureClassifier: &classifier, Serve: &ServeCheck{Path: "/check"}, LogPatterns: LogPatterns{Success: []PatternMatcher{{Pattern: "listening"}}, Failure: []PatternMatcher{{Pattern: "RuntimeError:"}}}}
+	writer := NewReadinessWriter(io.Discard, probe)
+	_, err := writer.Write([]byte("listening\nRuntimeError: device allocation failed\n"))
+	require.NoError(t, err)
+	assert.True(t, (<-writer.Signal).Ready)
+	select {
+	case signal := <-writer.Signal:
+		require.NotNil(t, signal.Cause)
+		assert.Equal(t, httperr.FailureMemory, signal.Cause.Class)
+	case <-time.After(time.Second):
+		t.Fatal("failure after listener was not classified")
 	}
 }

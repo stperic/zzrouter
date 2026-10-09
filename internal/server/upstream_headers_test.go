@@ -103,7 +103,7 @@ func TestUpstreamHeaders(t *testing.T) {
 // (Anthropic clients send ?beta=true).
 func TestForwardToBackend_SendsTheUpstreamsHeaders(t *testing.T) {
 	rt := &capturingRoundTripper{}
-	pc := NewProxyClient(&http.Client{Transport: rt}, nil, nil, nil, nil, nil)
+	pc := NewProxyClient(&http.Client{Transport: rt}, nil, nil, nil, nil, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages?beta=true", bytes.NewReader([]byte(`{}`)))
 	req.Header = callerRequestHeaders()
@@ -129,7 +129,7 @@ func TestForwardToBackend_SendsTheUpstreamsHeaders(t *testing.T) {
 func TestForwardDetached_ClusterGoesOverTheClusterClient(t *testing.T) {
 	plain, mtls := &capturingRoundTripper{}, &capturingRoundTripper{}
 	pc := NewProxyClient(&http.Client{Transport: plain},
-		func() *http.Client { return &http.Client{Transport: mtls} }, nil, nil, nil, nil)
+		func() *http.Client { return &http.Client{Transport: mtls} }, nil, nil, nil, nil, nil)
 
 	resp, err := pc.ForwardDetached(t.Context(), http.MethodPost, "https://w:9091/v1/chat/completions",
 		http.Header{}, backend.Cluster(), []byte(`{}`))
@@ -138,7 +138,7 @@ func TestForwardDetached_ClusterGoesOverTheClusterClient(t *testing.T) {
 	assert.NotNil(t, mtls.got)
 	assert.Nil(t, plain.got)
 
-	none := NewProxyClient(&http.Client{Transport: plain}, nil, nil, nil, nil, nil)
+	none := NewProxyClient(&http.Client{Transport: plain}, nil, nil, nil, nil, nil, nil)
 	_, err = none.ForwardDetached(t.Context(), http.MethodPost, "https://w:9091/v1/chat/completions", //nolint:bodyclose // no response on error
 		http.Header{}, backend.Cluster(), []byte(`{}`))
 	require.ErrorIs(t, err, errNoClusterClient)

@@ -177,7 +177,7 @@ func TestQueuedRefusalFailsRunWithItsError(t *testing.T) {
 	f.release(t, first)
 	eventually(t, func() bool { return second.GetStatus() == instance.StatusFailed }, "refused at admission")
 	var fit *process.MemoryFitError
-	require.ErrorAs(t, second.Refusal(), &fit)
+	require.ErrorAs(t, second.FailureCause(), &fit)
 	assert.Contains(t, second.GetErrorMessage(), "cannot fit")
 	assert.Zero(t, second.GetProcessID(), "a refused run never starts its engine")
 	require.NoError(t, f.mgr.StopInstance(t.Context(), second.ID))

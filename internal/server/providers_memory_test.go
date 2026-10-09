@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -51,10 +52,26 @@ func TestQueuedRefusalKeepsItsStatusForColdLoad(t *testing.T) {
 	inst := instance.NewInstance("queued-run", "llamacpp", qwenModel, 8640, time.Minute, 0)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
-	inst.MarkRefused(fmt.Errorf("admission: %w", &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000}))
+	inst.MarkFailedError(fmt.Errorf("admission: %w", &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000}))
 	_, err := s.waitForLocalInstance(inst)
 	var lf *loadFailure
 	require.ErrorAs(t, err, &lf)
 	assert.Equal(t, 409, lf.status)
 	assert.Equal(t, "out_of_range", lf.code)
+}
+
+func TestEngineFailureSurvivesColdLoad(t *testing.T) {
+	s := variantNode(t)
+	inst := instance.NewInstance("failed-run", "llamacpp", qwenModel, 8640, time.Minute, 0)
+	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
+	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
+	cause := &httperr.EngineFailure{Class: httperr.FailureMemory, Message: "device allocation failed"}
+	inst.MarkFailedError(cause)
+	_, err := s.waitForLocalInstance(inst)
+	require.ErrorIs(t, err, cause)
+	var lf *loadFailure
+	require.ErrorAs(t, err, &lf)
+	assert.Equal(t, http.StatusConflict, lf.status)
+	assert.Equal(t, string(httperr.CodeOutOfRange), lf.code)
+	assert.Contains(t, lf.message, inst.ID)
 }

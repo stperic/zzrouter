@@ -945,7 +945,7 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 	// proxyToInstance ModifyResponse, so the three sites can't drift.
 	if resp.StatusCode >= 400 {
 		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
-		writeRewrittenError(c.Writer, c.Request, resp)
+		writeRewrittenError(c.Writer, c.Request, resp, nil)
 		return
 	}
 

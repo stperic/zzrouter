@@ -234,6 +234,7 @@
             }
           }
         },
+        "failure_patterns": {"type": "array", "items": {"$ref": "#/$defs/failurePattern"}},
         "health_check": {
           "$ref": "#/$defs/healthCheck"
         }
@@ -244,6 +245,7 @@
     }
   },
   "$defs": {
+"failurePattern": {"type":"object","additionalProperties":false,"required":["pattern","class"],"properties":{"pattern":{"type":"string","minLength":1},"isRegex":{"type":"boolean"},"class":{"type":"string"}}},
     "requirements": {
       "type": "object",
       "additionalProperties": false,

@@ -50,7 +50,7 @@ func readCapped(r io.Reader) []byte {
 // NormalizeUpstreamResponse owns bounded error reading, status classification
 // and dialect conversion. Call before deciding whether an upstream is retriable.
 // It replaces and closes the consumed body and returns the class for open streams.
-func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
+func NormalizeUpstreamResponse(resp *http.Response, responder Responder, classifier *Classifier) Error {
 	raw := readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
 	message, code := upstreamError(raw)
@@ -58,24 +58,14 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder) Error {
 	if failure.Message == "" {
 		failure.Message = fmt.Sprintf("backend returned status %d", resp.StatusCode)
 	}
-	switch {
-	case refusalCodes[code]:
-		// The node that spoke to the engine classified it; a relay keeps that.
+	if class, ok := classForCode(code); ok {
 		failure.Code = code
-	case resp.StatusCode == http.StatusBadRequest && strings.Contains(message, vllmToolChoiceRefusal):
-		failure.Code = CodeToolCallingNotEnabled
-		failure.Message = utils.SanitizeErrorMessage("this model's engine was launched without tool calling: " + message + " " + ToolCallingRemedy)
-	case resp.StatusCode == http.StatusInternalServerError && unsupportedImage(message):
-		failure.Code = CodeUnsupportedInput
-	case resp.StatusCode == http.StatusInternalServerError:
-		if reason, ok := templateRefusal(message); ok {
-			failure.Code = CodeChatTemplateRejected
-			failure.Message = utils.SanitizeErrorMessage("the model's chat template rejected this request: " + reason + " " + ChatTemplateRemedy)
-		}
+		failure.Status = failureClasses[class].status
+		failure.Type = "invalid_request_error"
+	} else if cause := classifier.Match(message); cause != nil {
+		failure = cause.HTTPError()
 	}
-	// A refusal is the request's fault and retrying cannot change it.
 	if failure.Code != "" {
-		failure.Status, failure.Type = http.StatusBadRequest, "invalid_request_error"
 		raw, _ = json.Marshal(map[string]any{"error": map[string]string{"message": failure.Message, "type": failure.Type, "code": failure.Code}})
 		resp.Header.Del("Retry-After")
 	}
@@ -99,13 +89,15 @@ func upstreamError(raw []byte) (message, code string) {
 	var envelope struct {
 		Error   json.RawMessage `json:"error"`
 		Message string          `json:"message"`
+		Code    any             `json:"code"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
 		return string(raw), ""
 	}
 	var text string
 	if json.Unmarshal(envelope.Error, &text) == nil {
-		return text, ""
+		code, _ := envelope.Code.(string)
+		return text, code
 	}
 	var inner struct {
 		Message string `json:"message"`
@@ -120,64 +112,4 @@ func upstreamError(raw []byte) (message, code string) {
 		return inner.Error, code
 	}
 	return envelope.Message, ""
-}
-
-// Match explicit capability refusals only. A server failure mentioning images
-// (decoding, allocation, transport) is still a server failure.
-func unsupportedImage(message string) bool {
-	message = strings.ToLower(strings.TrimSpace(message))
-	for _, phrase := range []string{"image input is not supported", "image input not supported", "does not support image input", "does not support images", "images are not supported", "image inputs are not supported", "model does not support multimodal requests", "is not a multimodal model"} {
-		if strings.Contains(message, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-// CodeUnsupportedInput: the engine refused an input kind it cannot read.
-const CodeUnsupportedInput = "unsupported_input"
-
-// refusalCodes are the classifications NormalizeUpstreamResponse makes.
-var refusalCodes = map[string]bool{CodeUnsupportedInput: true, CodeChatTemplateRejected: true, CodeToolCallingNotEnabled: true}
-
-// CodeChatTemplateRejected: the engine's chat template refused to render the
-// request (vLLM answers such refusals 400 itself).
-const CodeChatTemplateRejected = "chat_template_rejected"
-
-// ChatTemplateRemedy is what a caller can do about a template refusal.
-const ChatTemplateRemedy = "An admin can upload a chat template that accepts it and select it for this model; GET /zzrouter/v1 explains how under chat_templates."
-
-// CodeToolCallingNotEnabled: the engine serves the model but was launched
-// without the switches its tool calling needs.
-const CodeToolCallingNotEnabled = "tool_calling_not_enabled"
-
-// ToolCallingRemedy says how to launch the model with tool calling. Which
-// parser fits is per model family, and zzRouter ships no model knowledge.
-const ToolCallingRemedy = "Set the provider's tool-calling launch parameters for this model (for vLLM: enable-auto-tool-choice: \"true\" and the tool-call-parser for its family) with PATCH /zzrouter/v1/providers/{name}/parameters, then restart the run."
-
-// vLLM refuses a tools request this way when it was not launched with them:
-// https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/serving_chat.py
-const vllmToolChoiceRefusal = "--enable-auto-tool-choice"
-
-// llama.cpp prefixes a template's own raise_exception with this marker:
-// https://github.com/ggml-org/llama.cpp/blob/c811cb8f0ac91b8ac72a32f970bdd45037f20da7/common/jinja/value.cpp#L418
-const llamacppTemplateRefusal = "Jinja Exception: "
-
-// maxRefusalReason bounds the template's own words: a reason is a sentence,
-// and the body it is cut from may run to the 64 KiB read cap.
-const maxRefusalReason = 300
-
-func templateRefusal(message string) (string, bool) {
-	_, reason, ok := strings.Cut(message, llamacppTemplateRefusal)
-	if !ok {
-		return "", false
-	}
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return "(no reason given).", true
-	}
-	if r := []rune(reason); len(r) > maxRefusalReason {
-		reason = string(r[:maxRefusalReason]) + "..."
-	}
-	return reason, true
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -25,12 +26,20 @@ type FailureInfo struct {
 	Signal    string   `json:"signal,omitempty"`
 	ErrorTail []string `json:"error_tail,omitempty"`
 	Truncated bool     `json:"truncated"`
+	cause     *httperr.EngineFailure
 	specific  bool
 }
 
 // MarkFailedWithExit records process exit details without losing an earlier cause.
 func (i *Instance) MarkFailedWithExit(reason string, exitCode *int, signal string) {
-	failure, summary := CaptureFailure(i.LogFilePath, reason, exitCode, signal)
+	i.markFailedWithExit(reason, nil, exitCode, signal)
+}
+
+func (i *Instance) markFailedWithExit(reason string, cause error, exitCode *int, signal string) {
+	failure, summary := CaptureFailure(i.LogFilePath, reason, exitCode, signal, i.FailureClassifier)
+	if cause == nil && failure.cause != nil {
+		cause = failure.cause
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.Status == StatusStopping || i.Status == StatusStopped {
@@ -53,6 +62,9 @@ func (i *Instance) MarkFailedWithExit(reason string, exitCode *int, signal strin
 		i.failure.ErrorTail = failure.ErrorTail
 	}
 	i.failure.Truncated = i.failure.Truncated || failure.Truncated
+	if cause != nil && i.failureCause == nil {
+		i.failureCause, i.waitingOn = cause, ""
+	}
 	i.setStatusLocked(StatusFailed)
 	if i.FailedAt.IsZero() {
 		i.FailedAt = utils.Now()
@@ -60,8 +72,8 @@ func (i *Instance) MarkFailedWithExit(reason string, exitCode *int, signal strin
 }
 
 // CaptureFailure returns the bounded, redacted diagnostics shared by process owners.
-func CaptureFailure(path, reason string, exitCode *int, signal string) (*FailureInfo, string) {
-	tail, truncated := failureTail(path)
+func CaptureFailure(path, reason string, exitCode *int, signal string, classifier *httperr.Classifier) (*FailureInfo, string) {
+	tail, truncated := failureTail(path, classifier)
 	summary := diagnosticText(reason)
 	specific := false
 	// Exception messages carry more information than traceback or liveness markers.
@@ -76,7 +88,7 @@ func CaptureFailure(path, reason string, exitCode *int, signal string) (*Failure
 		summary = summary[:failureSummaryBytes]
 		truncated = true
 	}
-	failure := &FailureInfo{ErrorTail: tail, Truncated: truncated, specific: specific}
+	failure := &FailureInfo{ErrorTail: tail, Truncated: truncated, specific: specific, cause: classifier.Match(strings.Join(tail, "\n"))}
 	if exitCode != nil {
 		code := *exitCode
 		failure.ExitCode = &code
@@ -100,7 +112,7 @@ func cloneFailure(f *FailureInfo) *FailureInfo {
 	return &copy
 }
 
-func failureTail(path string) ([]string, bool) {
+func failureTail(path string, classifier *httperr.Classifier) ([]string, bool) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, false
@@ -127,7 +139,7 @@ func failureTail(path string) ([]string, bool) {
 	errorLine := regexp.MustCompile(`(?i)error|exception|traceback|fatal|failed`)
 	payloadLine := regexp.MustCompile(`(?i)prompt|messages|request.?body|payload|environment|headers|non-default args`)
 	for _, line := range strings.Split(text, "\n") {
-		if !errorLine.MatchString(line) || payloadLine.MatchString(line) {
+		if (!errorLine.MatchString(line) && classifier.Match(line) == nil) || payloadLine.MatchString(line) {
 			continue
 		}
 		line = diagnosticText(line)

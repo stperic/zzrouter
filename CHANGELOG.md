@@ -7,6 +7,13 @@
   configs now declare native endpoints only, and reconciliation carries that to
   existing installs. An explicit `*_compat` entry still loads and means the same
   thing. Catalogs and running snapshots report the same effective endpoints.
+- Provider-declared engine failure classes now cover startup, process exit and
+  inference. Memory exhaustion returns 409 `out_of_range`; input, template and
+  tool-calling refusals return their specific 400 codes. Generic server errors
+  keep their status. Existing installs receive the declarations through reconcile.
+- Cluster protocol and minimum advance from 1 to 2: older provider schemas
+  reject `runtime.failure_patterns`. Upgrade all peers together following
+  [the protocol maintenance procedure](docs/protocol_versioning.md).
 
 - Removed `model_defaults`, the release-managed per-model-family tier. No
   release shipped data in it after 0.1.0. Per-family settings belong in the

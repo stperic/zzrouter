@@ -19,6 +19,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -102,6 +103,7 @@ func TestMessagesThroughInstance_PassesStreamAndMeters(t *testing.T) {
 // what reached it and answers status with reply as contentType (JSON when
 // empty), or with a Messages body naming its own model when reply is empty.
 type serviceBackend struct {
+	failures    httperr.Classifier
 	wire        []string
 	status      int
 	reply       string
@@ -146,11 +148,12 @@ func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serv
 		t.Cleanup(engine.Close)
 		require.NoError(t, s.appsConfig.AddApp(name, pkgConfig.ServiceConfig{
 			Enabled: &enabled, Name: name, Mode: "service", Protocol: pkgConfig.ProtocolOpenAI,
-			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL},
+			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL, FailurePatterns: b.failures},
 			Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: b.wire},
 		}))
 		replicas = append(replicas, modelgroup.Replica{Name: name, App: name, Model: name + "-model", Priority: i + 1})
 	}
+	s.providers.appMgr.ReloadConfig(s.appsConfig)
 	require.NoError(t, s.model.Groups.Set("claude", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: replicas}))
 	return s
 }
