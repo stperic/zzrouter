@@ -27,31 +27,33 @@ func callMCPWireTool(t *testing.T, s *Server, name string, args map[string]any) 
 func TestMCPAPICatalogEligibility(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	for _, tc := range []struct {
-		method, path string
-		allowed      bool
+		method, path, operationID string
+		allowed                   bool
 	}{
-		{"GET", "/zzrouter/v1/server/routes", true},
-		{"GET", "/zzrouter/v1/server/logs", true},
-		{"GET", "/zzrouter/v1/providers/llamacpp/status", true},
-		{"PATCH", "/zzrouter/v1/providers/llamacpp/parameters", true},
-		{"PUT", "/zzrouter/v1/providers/llamacpp/parameters", false},
-		{"GET", "/zzrouter/v1/runs/id/logs", false},
-		{"GET", "/zzrouter/v1/jobs/id/stream", false},
-		{"GET", "/zzrouter/v1/model-groups/events", false},
-		{"GET", "/zzrouter/v1/spend/events", false},
-		{"GET", "/zzrouter/v1/internal/version", false},
-		{"POST", "/zzrouter/v1/mcp", false},
-		{"GET", "/health", false},
-		{"POST", "/zzrouter/v1/server/routes", false},
-		{"GET", "/zzrouter/v1/nonexistent", false},
+		{"GET", "/zzrouter/v1/server/routes", "listServerRoutes", true},
+		{"GET", "/zzrouter/v1/server/logs", "listServerLogs", true},
+		{"GET", "/zzrouter/v1/providers/llamacpp/status", "getProviderStatus", true},
+		{"PATCH", "/zzrouter/v1/providers/llamacpp/parameters", "patchProviderParameters", true},
+		{"GET", "/zzrouter/v1/jobs/run_1", "getJob", true},
+		{"PUT", "/zzrouter/v1/providers/llamacpp/parameters", "", false},
+		{"GET", "/zzrouter/v1/runs/id/logs", "", false},
+		{"GET", "/zzrouter/v1/jobs/id/stream", "", false},
+		{"GET", "/zzrouter/v1/model-groups/events", "", false},
+		{"GET", "/zzrouter/v1/spend/events", "", false},
+		{"GET", "/zzrouter/v1/internal/version", "", false},
+		{"POST", "/zzrouter/v1/mcp", "", false},
+		{"GET", "/health", "", false},
+		{"POST", "/zzrouter/v1/server/routes", "", false},
+		{"GET", "/zzrouter/v1/nonexistent", "", false},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
-			err := s.eligibleAPIRoute(tc.method, tc.path)
+			operationID, err := s.eligibleAPIRoute(tc.method, tc.path)
 			if tc.allowed {
 				require.NoError(t, err)
 			} else {
 				require.Error(t, err)
 			}
+			require.Equal(t, tc.operationID, operationID)
 		})
 	}
 	// A static streaming route must outrank a parameter route with the same shape.
@@ -62,22 +64,38 @@ func TestMCPAPICatalogEligibility(t *testing.T) {
 	engine.GET("/zzrouter/v1/internal", func(*gin.Context) {})
 	engine.POST("/zzrouter/v1/mcp/child", func(*gin.Context) {})
 	server := &Server{engine: engine}
-	require.Error(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/internal"))
-	require.Error(t, server.eligibleAPIRoute("POST", "/zzrouter/v1/mcp/child"))
-	require.NoError(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/example/ordinary"))
-	require.Error(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/example/stream"))
-	require.NoError(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/files/nested/file"))
-	require.Error(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/example/ordinary/extra"))
-	require.Error(t, server.eligibleAPIRoute("GET", "/zzrouter/v1/example/"))
+	for _, tc := range []struct {
+		method, path string
+		allowed      bool
+	}{
+		{"GET", "/zzrouter/v1/internal", false},
+		{"POST", "/zzrouter/v1/mcp/child", false},
+		{"GET", "/zzrouter/v1/example/ordinary", true},
+		{"GET", "/zzrouter/v1/example/stream", false},
+		{"GET", "/zzrouter/v1/files/nested/file", true},
+		{"GET", "/zzrouter/v1/example/ordinary/extra", false},
+		{"GET", "/zzrouter/v1/example/", false},
+	} {
+		// Routes the spec does not describe stay eligible with no operationId.
+		operationID, err := server.eligibleAPIRoute(tc.method, tc.path)
+		require.Equal(t, tc.allowed, err == nil, "%s %s: %v", tc.method, tc.path, err)
+		require.Empty(t, operationID)
+	}
 }
 
 func TestMCPAPIGetOutsideCuratedTools(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	result := callMCPWireTool(t, s, "zz_api_get", map[string]any{"path": "/zzrouter/v1/server/routes"})
 	require.NotEqual(t, true, result["isError"], result)
+	require.NotContains(t, result["structuredContent"], "task_tools")
 	response := result["structuredContent"].(map[string]any)["response"].(map[string]any)
 	require.Positive(t, response["count"])
 	require.NotEmpty(t, response["routes"])
+	// The real catalog names the operation and the registered bindings name its tools.
+	covered := callMCPWireTool(t, s, "zz_api_get", map[string]any{"path": "/zzrouter/v1/nodes"})
+	require.NotEqual(t, true, covered["isError"], covered)
+	require.Equal(t, []any{"zz_nodes", "zz_overview"}, covered["structuredContent"].(map[string]any)["task_tools"])
+	require.Contains(t, covered["content"].([]any)[0].(map[string]any)["text"], "zz_nodes or zz_overview serves this route")
 	for _, args := range []map[string]any{
 		{"path": "/zzrouter/v1/internal"},
 		{"path": "/zzrouter/v1/internal/version"},
@@ -144,6 +162,9 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 		}
 		require.ElementsMatch(t, tc.parameters, names)
 	}
+	jobs := callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": "GET getJob latest state"})["structuredContent"].(map[string]any)["operations"].([]any)
+	require.Len(t, jobs, 1)
+	require.Equal(t, []any{"zz_job"}, jobs[0].(map[string]any)["task_tools"])
 	first := callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": ""})["structuredContent"]
 	require.Len(t, first.(map[string]any)["operations"], mcpserver.DefaultAPISearchLimit)
 	require.Equal(t, first, callMCPWireTool(t, s, "zz_api_search", map[string]any{"query": ""})["structuredContent"])

@@ -153,7 +153,7 @@ func TestToolErrorNonProblemFailuresAreProblems(t *testing.T) {
 			d.cfg.SearchAPI = func(string, int) ([]map[string]any, error) { return nil, errors.New("invalid embedded spec") }
 		}},
 		{"catalog refusal", "zz_api_get", string(codeInvalidInput), 400, map[string]any{"path": "/zzrouter/v1/mcp"}, func(d *dispatcher) {
-			d.cfg.EligibleAPIRoute = func(string, string) error { return errors.New("catalog refused route") }
+			d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "", errors.New("catalog refused route") }
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -230,7 +230,7 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 	}
 	d, _ := problemFixture(t)
 	d.cfg.SearchAPI = func(string, int) ([]map[string]any, error) { return nil, errors.New("spec unavailable") }
-	d.cfg.EligibleAPIRoute = func(string, string) error { return nil }
+	d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "", nil }
 	client, ctx := toolClient(t, d)
 	listed, err := client.ListTools(ctx, nil)
 	require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestToolErrorInternalFailures(t *testing.T) {
 	failure := requireToolError(t, d.call(context.Background(), request{jsonBody: make(chan int)}, &out))
 	require.Equal(t, 500, failure.problem.Status)
 	require.Equal(t, string(codeInternal), failure.problem.Code)
-	_, err := newDispatcher(context.Background(), d.cfg)
+	_, err := newDispatcher(context.Background(), d.cfg, nil)
 	failure = requireToolError(t, err)
 	require.Equal(t, 500, failure.problem.Status)
 	require.Equal(t, string(codeInternal), failure.problem.Code)
@@ -355,7 +355,7 @@ func TestToolErrorCallbacksKeepWrappedProblems(t *testing.T) {
 			wrapped := fmt.Errorf("callback: %w", failure)
 			d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("callback error dispatched") })
 			d.cfg.SearchAPI = func(string, int) ([]map[string]any, error) { return nil, wrapped }
-			d.cfg.EligibleAPIRoute = func(string, string) error { return wrapped }
+			d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "", wrapped }
 			args := map[string]any{"query": "runs"}
 			if name == "zz_api_get" {
 				args = map[string]any{"path": "/zzrouter/v1/models"}

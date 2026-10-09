@@ -31,6 +31,8 @@ func (valueFree) Value(any) any { return nil }
 type dispatcher struct {
 	cfg   Config
 	outer *outerRequest
+	// bindings is the registered tool-to-operationId map, read only after registration.
+	bindings map[string][]string
 }
 
 type routePrefix string

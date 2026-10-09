@@ -175,25 +175,6 @@ type ginRouteInfo struct {
 	Path   string
 }
 
-// normalizeGinPath rewrites gin's route patterns into OpenAPI's
-// {param} placeholder syntax.
-func normalizeGinPath(path string) string {
-	// Fast path: nothing special to rewrite.
-	if !strings.ContainsAny(path, ":*") {
-		return path
-	}
-	segments := strings.Split(path, "/")
-	for i, seg := range segments {
-		switch {
-		case strings.HasPrefix(seg, "*"):
-			segments[i] = "{" + seg[1:] + "}"
-		case strings.HasPrefix(seg, ":"):
-			segments[i] = "{" + seg[1:] + "}"
-		}
-	}
-	return strings.Join(segments, "/")
-}
-
 // TestOpenAPIDrift_V1_RoutesMatchSpec is the main drift assertion.
 // It spins up a test server to walk its registered routes, parses
 // the embedded openapi.yaml, and diffs the two sets.

@@ -53,8 +53,9 @@ func catalogRoute(r gin.RouteInfo) RouteSpec {
 	return RouteSpec{Method: r.Method, Path: r.Path, Surface: surfaceForPath(r.Path), Auth: authTierForPath(r.Path), Streaming: streamingForPath(r.Method, r.Path), Async: asyncForPath(r.Method, r.Path), Retired: isRetiredRoute(r.Handler)}
 }
 
-// eligibleAPIRoute uses the same mounted-route facts as the public catalog.
-func (s *Server) eligibleAPIRoute(method, path string) error {
+// eligibleAPIRoute uses the same mounted-route facts as the public catalog
+// and returns the operationId the embedded spec gives the matched route.
+func (s *Server) eligibleAPIRoute(method, path string) (string, error) {
 	var selected gin.RouteInfo
 	best := ""
 	for _, route := range s.engine.Routes() {
@@ -66,13 +67,28 @@ func (s *Server) eligibleAPIRoute(method, path string) error {
 		}
 	}
 	if best == "" {
-		return fmt.Errorf("route %s %s is not mounted; use zz_api_search", method, path)
+		return "", fmt.Errorf("route %s %s is not mounted; use zz_api_search", method, path)
 	}
 	route := catalogRoute(selected)
 	if route.Auth != "admin" || route.Surface != "admin" || route.Retired || route.Streaming != "" {
-		return fmt.Errorf("route %s %s is unavailable: auth=%s retired=%t streaming=%s", method, path, route.Auth, route.Retired, route.Streaming)
+		return "", fmt.Errorf("route %s %s is unavailable: auth=%s retired=%t streaming=%s", method, path, route.Auth, route.Retired, route.Streaming)
 	}
-	return nil
+	return openAPIOperationID(method, normalizeGinPath(selected.Path))
+}
+
+// normalizeGinPath rewrites gin's route patterns into OpenAPI's
+// {param} placeholder syntax.
+func normalizeGinPath(path string) string {
+	if !strings.ContainsAny(path, ":*") {
+		return path
+	}
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, "*") || strings.HasPrefix(seg, ":") {
+			segments[i] = "{" + seg[1:] + "}"
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 // catalogPathMatch preserves Gin's static, parameter, then catch-all precedence.

@@ -76,7 +76,7 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 	tool.InputSchema = objectSchema[In]{}
 	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		var out Out
-		d, err := newDispatcher(ctx, cfg)
+		d, err := newDispatcher(ctx, cfg, bindings)
 		if err == nil {
 			out, err = handler(d, ctx, in)
 		}
