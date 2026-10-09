@@ -13,12 +13,12 @@ import (
 func TestInventoryEvidencePublishesWithCatalogGeneration(t *testing.T) {
 	c := newWorkerCache(t)
 	failure := InventoryUnavailable{Node: "worker-1", Provider: "generic", Reason: "stopped", Service: &prov_apps.ProviderServiceStatus{Supervisor: "zzRouter", Managed: true}}
-	require.True(t, c.publishModelItems(nil, c.generation, []InventoryUnavailable{failure}))
+	require.True(t, c.publishModelItems(nil, c.generation, []InventoryUnavailable{failure}, localModelSnapshot{}))
 	oldGeneration := c.generation
 	c.Invalidate()
-	require.False(t, c.publishModelItems(nil, oldGeneration, []InventoryUnavailable{failure}))
+	require.False(t, c.publishModelItems(nil, oldGeneration, []InventoryUnavailable{failure}, localModelSnapshot{}))
 	require.Empty(t, c.UnavailableInventories("worker-1", "generic"), "stale source evidence cannot reappear")
-	require.True(t, c.publishModelItems(nil, c.generation, []InventoryUnavailable{failure}))
+	require.True(t, c.publishModelItems(nil, c.generation, []InventoryUnavailable{failure}, localModelSnapshot{}))
 	got := c.UnavailableInventories("WORKER-1", "generic")
 	require.Len(t, got, 1)
 	got[0].Service.Supervisor = "changed"
@@ -28,7 +28,7 @@ func TestInventoryEvidencePublishesWithCatalogGeneration(t *testing.T) {
 	c.registry = nil // These admissions cannot populate, probe or scan.
 	c.appsConfig = nil
 	require.Len(t, c.UnavailableInventories("worker-1", "generic"), 1)
-	require.True(t, c.publishModelItems(nil, c.generation, nil))
+	require.True(t, c.publishModelItems(nil, c.generation, nil, localModelSnapshot{}))
 	require.Empty(t, c.UnavailableInventories("worker-1", "generic"), "successful refresh clears failure evidence")
 }
 
@@ -64,7 +64,7 @@ func TestPinnedLookupDoesNotBorrowAnotherNodesProvider(t *testing.T) {
 	require.True(t, c.publishModelItems([]map[string]any{
 		{"name": "shared", "assigned_app": "a", "node": "one"},
 		{"name": "shared", "assigned_app": "b", "node": "two"},
-	}, c.generation, nil))
+	}, c.generation, nil, localModelSnapshot{}))
 	got, found := c.LookupByNode("SHARED", "ONE")
 	require.True(t, found)
 	require.Equal(t, "a", got.Provider)

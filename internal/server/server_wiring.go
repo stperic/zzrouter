@@ -121,7 +121,6 @@ func (s *Server) newLoadExecutor() *LoadExecutor {
 		s.model.Registry,
 		s.backend.Resolve,
 		s.launchOnDemandContainerWithParams,
-		s.model.Cache.Invalidate,
 		s.node.Nodename,
 		s.refreshResourceMetrics(),
 	)
@@ -152,10 +151,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 		getResourceMetrics,
 	)
 	executor.invalidateCache = s.model.Cache.Invalidate
-	executor.inventoryStatus = s.providerInventoryStatus
-	if s.providers.appMgr != nil {
-		executor.modelDetails = s.providers.appMgr.ModelFeatureDetails
-	}
+	executor.modelCache = s.model.Cache
 	return executor
 }
 

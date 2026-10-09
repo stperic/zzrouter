@@ -75,6 +75,7 @@ type Cache struct {
 	// lastUpdated is retained for /stats observability only; reads never
 	// consult it for validity decisions.
 	admissionModels            []*CachedModel
+	localSnapshot              localModelSnapshot
 	variantConflicts           map[string]*pkgConfig.ModelNameConflictError
 	generation                 uint64
 	admissionUnavailableLogged bool
@@ -100,6 +101,11 @@ type Cache struct {
 	// critical section is two scalars.
 	reloadMu     sync.Mutex
 	lastReloadFP [32]byte
+}
+
+type localModelSnapshot struct {
+	models      []map[string]any
+	unavailable []InventoryUnavailable
 }
 
 // Config bundles Cache dependencies. Named fields beat a 10-arg
@@ -421,6 +427,7 @@ func (mc *Cache) invalidateLocked() {
 	mc.generation++
 	mc.admissionUnavailableLogged = false
 	mc.admissionModels = nil
+	mc.localSnapshot = localModelSnapshot{}
 	clear(mc.variantConflicts)
 	// Retain the last snapshot only as evidence for failed nodes on the next publish.
 	clear(mc.indexByTarget)
@@ -596,6 +603,19 @@ func (mc *Cache) ListModels(ctx context.Context, host, repo, app, model string) 
 	return filtered, nil
 }
 
+// LocalModelSnapshot preserves the worker wire body from the same publication as admission.
+func (mc *Cache) LocalModelSnapshot(ctx context.Context) ([]map[string]any, []InventoryUnavailable, error) {
+	if err := mc.ensurePopulated(ctx); err != nil {
+		return nil, nil, err
+	}
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	if !mc.valid {
+		return nil, nil, errCatalogChanged
+	}
+	return mc.localSnapshot.models, mc.localSnapshot.unavailable, nil
+}
+
 // ---------------------------------------------------------------------------
 // Refresh / population
 // ---------------------------------------------------------------------------
@@ -627,7 +647,7 @@ func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
 	mc.mu.RLock()
 	generation := mc.generation
 	mc.mu.RUnlock()
-	localItems, localUnavailable, err := mc.buildLocalAndCloudItems(ctx)
+	localItems, local, err := mc.buildLocalAndCloudItems(ctx)
 	if err != nil {
 		return err
 	}
@@ -650,7 +670,7 @@ func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
 	allItems = append(allItems, localItems...)
 	allItems = append(allItems, workerItems...)
 
-	if !mc.publishModelItems(allItems, generation, append(localUnavailable, workerUnavailable...)) {
+	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
 		return errCatalogChanged
 	}
 
@@ -664,18 +684,18 @@ func (mc *Cache) warmLocalCache() {
 	mc.mu.RLock()
 	generation := mc.generation
 	mc.mu.RUnlock()
-	localItems, unavailable, err := mc.buildLocalAndCloudItems(mc.currentCtx())
+	localItems, local, err := mc.buildLocalAndCloudItems(mc.currentCtx())
 	if err != nil {
 		slog.Warn("Cache warm failed", "error", err)
 		return
 	}
-	if !mc.publishModelItems(localItems, generation, unavailable) {
+	if !mc.publishModelItems(localItems, generation, local.unavailable, local) {
 		return
 	}
 	slog.Info("Local model cache warmed (worker models loading async)", "local_models", len(localItems))
 }
 
-func (mc *Cache) buildLocalAndCloudItems(ctx context.Context) ([]map[string]any, []InventoryUnavailable, error) {
+func (mc *Cache) buildLocalAndCloudItems(ctx context.Context) ([]map[string]any, localModelSnapshot, error) {
 	reg := mc.registry()
 	var localModels []*metadata.ModelMetadata
 	var failures map[string]string
@@ -683,22 +703,24 @@ func (mc *Cache) buildLocalAndCloudItems(ctx context.Context) ([]map[string]any,
 		var err error
 		localModels, failures, err = reg.ModelSnapshot(ctx)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to list local models: %w", err)
+			return nil, localModelSnapshot{}, fmt.Errorf("failed to list local models: %w", err)
 		}
 	}
 
 	hostname := mc.node.Nodename()
 	if hostname == "" {
-		return nil, nil, fmt.Errorf("hostname not configured - cannot populate cache (set Node.Name in config)")
+		return nil, localModelSnapshot{}, fmt.Errorf("hostname not configured - cannot populate cache (set Node.Name in config)")
 	}
 
 	items := make([]map[string]any, 0, len(localModels)+8)
 	for _, m := range localModels {
 		items = append(items, m.ToOllamaFormat(hostname))
 	}
-	items = append(items, mc.getCloudAppModels()...)
-	items = EnrichLocalItems(items, mc.appsConfig(), mc.modelDetails)
-	return items, mc.localUnavailable(ctx, failures), nil
+	cfg := mc.appsConfig()
+	items = EnrichLocalItems(items, cfg, mc.modelDetails)
+	local := localModelSnapshot{models: items, unavailable: mc.localUnavailable(ctx, failures)}
+	items = append(items, EnrichLocalItems(mc.getCloudAppModels(), cfg, mc.modelDetails)...)
+	return items, local, nil
 }
 
 func (mc *Cache) getCloudAppModels() []map[string]any {
@@ -842,7 +864,7 @@ func (mc *Cache) populateModelCacheFromItems(items []map[string]any) {
 	mc.updateModelCache(mc.modelItems(items))
 }
 
-func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable) bool {
+func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable, local localModelSnapshot) bool {
 	models := mc.modelItems(items)
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
@@ -868,6 +890,7 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 		}
 	}
 	mc.updateModelCacheLocked(models)
+	mc.localSnapshot = local
 	mc.inventoryUnavailable = make(map[providerNode]InventoryUnavailable, len(unavailable))
 	for _, failure := range unavailable {
 		mc.inventoryUnavailable[providerNode{failure.Node, failure.Provider}] = cloneInventory(failure)

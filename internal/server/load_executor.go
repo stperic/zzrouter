@@ -52,7 +52,6 @@ type LoadExecutor struct {
 	registry          modelLister
 	resolveBackend    func(string) (*backend.Resolved, bool)
 	launchOnDemand    func(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instance.Instance, error)
-	invalidateCache   func()
 	getNodename       func() string
 	// refreshResourceMetrics triggers an immediate re-probe of live
 	// GPU memory/utilization after a load completes so the next
@@ -153,7 +152,6 @@ func NewLoadExecutor(
 	registry modelLister,
 	resolveBackend func(string) (*backend.Resolved, bool),
 	launchOnDemand func(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instance.Instance, error),
-	invalidateCache func(),
 	getNodename func() string,
 	refreshResourceMetrics func(),
 ) *LoadExecutor {
@@ -163,7 +161,6 @@ func NewLoadExecutor(
 		registry:               registry,
 		resolveBackend:         resolveBackend,
 		launchOnDemand:         launchOnDemand,
-		invalidateCache:        invalidateCache,
 		getNodename:            getNodename,
 		refreshResourceMetrics: refreshResourceMetrics,
 	}
@@ -427,9 +424,6 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 		}
 		return nil, fmt.Errorf("failed to launch model: %w", err)
 	}
-
-	// Invalidate cache after launching model (routing table will update on next query)
-	e.invalidateCache()
 
 	loadDuration := time.Since(startTime).Milliseconds()
 	utils.LogDebugf("[LoadExecutor] Model launch initiated: %s on port %d (instance %s, status: %s)",
