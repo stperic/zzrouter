@@ -759,7 +759,7 @@ def scenarios(node, provider):
     if cell.get("text"):
         out.append({
             "id": "find-run",
-            "prompt": f"On node {node}, find {describe(ROLES['text'])} for the {provider} provider with the model search, pick a build "
+            "prompt": f"On node {node}, find {describe(ROLES['text'])} for the {provider} provider (the model search, unless it is already on the node), pick a build "
                       f"that fits the node, download it to {node} if it is not there yet, start it with {provider}, smoke-test it "
                       f"with one chat, then stop it." + tail(provider) + " JSON keys: model, downloaded (bool), reply, stopped (bool).",
             "check": check_find_run,
@@ -819,7 +819,9 @@ def check_inventory(ctx):
 
 def check_find_run(ctx):
     rj = ctx["rj"] or {}
-    return [("searched the registry", bool(tool_calls(ctx, "zz_model_search", True)), len(tool_calls(ctx, "zz_model_search"))),
+    # A model already on the node is found in its catalog; searching the registry for it would be wasted work.
+    found = tool_calls(ctx, "zz_model_search", True) or (rj.get("downloaded") is False and tool_calls(ctx, "zz_models", True))
+    return [("found the model (registry, or the catalog when already local)", bool(found), len(tool_calls(ctx, "zz_model_search"))),
             ("started a run", bool(tool_calls(ctx, "zz_run_start", True)), len(tool_calls(ctx, "zz_run_start"))),
             ("chat answered", bool(tool_calls(ctx, "zz_chat", True)), rj.get("reply")),
             ("stopped", bool(tool_calls(ctx, "zz_run_stop", True)) and rj.get("stopped") is True, rj),
