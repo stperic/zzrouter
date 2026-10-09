@@ -106,8 +106,12 @@ per node. Follow a launch's `deploy_job_id` too when present. Keep the
 cancels by `job_id`. After launch succeeds, use `zz_chat` for one short smoke
 test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
 pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are
-removed, so a later run lookup returns 404 by design. Launch job results omit
-the serving node's local probe URL because it is not a coordinator-facing URL.
+removed, so a later run lookup returns 404 by design; its detail says where the
+run's log stays readable. Launch job results omit the serving node's local probe
+URL because it is not a coordinator-facing URL. A launch that stopped idle runs
+to free GPU memory names them (`run_id`, `model`, `freed_mib`) in
+`evicted_runs`, both in its `zz_job` result and in `zz_runs`, and a lookup of an
+evicted run names the run that evicted it while that run is live.
 
 `zz_chat` accepts `model`, optional `node`, and `message` for plain chat. Plain
 chat uses 64 reply tokens by default, with `max_tokens` capped at 256. Set

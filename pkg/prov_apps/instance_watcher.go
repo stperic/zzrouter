@@ -64,6 +64,9 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 		if m.publishCatalog != nil && m.shutdownCtx.Err() == nil {
 			result = errors.Join(result, m.publishCatalog())
 		}
+		if evicted := inst.EvictedRuns(); len(evicted) > 0 {
+			h.Meta(jobs.Meta{"evicted_runs": evicted})
+		}
 		if result != nil {
 			h.Fail(result)
 		} else {

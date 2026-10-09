@@ -26,8 +26,9 @@ func TestRecord_NilSafety(t *testing.T) {
 // silently — Prometheus treats label values as opaque strings.
 func TestStopReasonAndFailureCause_ClosedEnums(t *testing.T) {
 	wantReasons := map[StopReason]string{
-		StopReasonUser:  "user",
-		StopReasonCrash: "crash",
+		StopReasonUser:           "user",
+		StopReasonCrash:          "crash",
+		StopReasonMemoryPressure: "memory_pressure",
 	}
 	for v, want := range wantReasons {
 		if string(v) != want {

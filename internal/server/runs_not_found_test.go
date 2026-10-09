@@ -1,0 +1,62 @@
+package server
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// A run id no node lists answers a 404 that says what the caller can still
+// do, and names the live run that evicted it when one did.
+func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	live := instance.InstanceInfo{ID: "gemma", Model: "google/gemma-4-E2B-it", Node: "localai", Status: instance.StatusRunning,
+		EvictedRuns: []instance.EvictedRun{{RunID: "qwen", Model: "Qwen/Qwen2.5-0.5B-Instruct", FreedMiB: 2048}}}
+	internal := gin.New()
+	internal.GET("/zzrouter/v1/internal/runs", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"instances": []instance.InstanceInfo{live}})
+	})
+	internal.GET("/zzrouter/v1/internal/runs/:id", func(c *gin.Context) {
+		if c.Param("id") != live.ID {
+			NotFound(c, "instance not found")
+			return
+		}
+		c.JSON(http.StatusOK, live)
+	})
+	public := gin.New()
+	ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+	public.GET("/runs/:id", ctrl.GetRun)
+	get := func(id string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs/"+id, nil))
+		return rec
+	}
+
+	rec := get("qwen")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+	assert.Equal(t, "run not found: qwen was stopped on node localai to free 2048 MiB of GPU memory for run gemma (google/gemma-4-E2B-it). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
+
+	rec = get("typo")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+	assert.Equal(t, "run not found: typo. A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/typo/logs?node=<node it ran on>", problem.Detail)
+
+	rec = get("gemma")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	var found struct {
+		Data instance.InstanceInfo `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &found))
+	assert.Equal(t, live, found.Data, "a live run answers unchanged, evicted_runs included")
+}

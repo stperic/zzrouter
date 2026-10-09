@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -144,6 +147,7 @@ func TestMemoryAdmissionQueuesBehindStartingRun(t *testing.T) {
 	assert.Equal(t, instance.StatusStarting, second.GetStatus())
 	assert.Never(t, second.Admitted, queueHoldWindow, 10*time.Millisecond, "measured only once the first claim is visible")
 	assert.Equal(t, first.ID, second.ToInfo("").WaitingOn)
+	assert.Empty(t, first.ToInfo("").EvictedRuns, "nothing was evicted")
 
 	f.release(t, first, second)
 	assert.Empty(t, second.WaitingOn())
@@ -218,4 +222,34 @@ func TestStopQueuedRunWhileAdmissionBusy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), queueHoldWindow)
 	defer cancel()
 	require.NoError(t, f.mgr.StopInstance(ctx, inst.ID), "the waiter gives up the slot wait when stopped")
+}
+
+// A launch that evicts an idle run names it on its own run record and in
+// its job result, so the caller learns of the eviction where it looks.
+func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
+	f := newQueueFixture(t)
+	reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(reg.Stop)
+	f.mgr.jobsRegistry = reg
+	f.mgr.evictIdleOnMemoryPressure = true
+	idle := instance.NewInstance("idle", "generic", "idle-model", 0, -1, 10)
+	idle.SetStatus(instance.StatusRunning)
+	idle.SetProcessInfo(9000001, 0, nil)
+	require.NoError(t, f.mgr.instances.Register(idle))
+	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		free := int64(1000)
+		if idle.GetStatus() == instance.StatusStopped {
+			free = 6000
+		}
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
+	}
+
+	inst := f.launch(t, "big")
+	want := []instance.EvictedRun{{RunID: idle.ID, Model: idle.Model, FreedMiB: 5000}}
+	assert.Equal(t, want, inst.ToInfo("").EvictedRuns)
+	f.release(t, inst)
+	ev := subscribeTerminal(t, reg, inst.StreamJobID, 5*time.Second)
+	assert.Equal(t, jobs.PhaseDone, ev.Phase)
+	assert.Equal(t, want, ev.Meta["evicted_runs"])
 }

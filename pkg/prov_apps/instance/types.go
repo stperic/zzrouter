@@ -83,7 +83,8 @@ type InstanceInfo struct {
 	LastActivity          string            `json:"last_activity,omitempty"`
 	LastHealthCheck       string            `json:"last_health_check,omitempty"`
 	ErrorMessage          string            `json:"error_message,omitempty"`
-	WaitingOn             string            `json:"waiting_on,omitempty"` // run a queued launch waits for
+	WaitingOn             string            `json:"waiting_on,omitempty"`   // run a queued launch waits for
+	EvictedRuns           []EvictedRun      `json:"evicted_runs,omitempty"` // idle runs this launch stopped for GPU memory
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`
@@ -97,6 +98,14 @@ type InstanceInfo struct {
 	// config (an external daemon's model) or the node predates the field;
 	// either way it reads as unknown.
 	ParametersStatus *ParametersStatus `json:"parameters_status,omitempty"`
+}
+
+// EvictedRun is an idle run a launch stopped to fit its GPU memory budget.
+type EvictedRun struct {
+	RunID string `json:"run_id"`
+	Model string `json:"model"`
+	// FreedMiB is the GPU memory the driver attributed to the run when it was stopped.
+	FreedMiB int64 `json:"freed_mib"`
 }
 
 // Resolved is what one launch computed from config: the values its

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,6 +109,7 @@ type Instance struct {
 	// starting run that is not admitted is queued behind waitingOn.
 	admitted     bool
 	waitingOn    string
+	evictedRuns  []EvictedRun
 	failureCause error
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
@@ -319,6 +321,20 @@ func (i *Instance) WaitingOn() string {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.waitingOn
+}
+
+// SetEvictedRuns records the idle runs this launch stopped to be admitted.
+func (i *Instance) SetEvictedRuns(runs []EvictedRun) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.evictedRuns = slices.Clone(runs)
+}
+
+// EvictedRuns returns the idle runs this launch stopped to be admitted.
+func (i *Instance) EvictedRuns() []EvictedRun {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return slices.Clone(i.evictedRuns)
 }
 
 // MarkRunning transitions to running state.
@@ -757,6 +773,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		KeepAlive:             i.KeepAlive.String(),
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
+		EvictedRuns:           slices.Clone(i.evictedRuns),
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),

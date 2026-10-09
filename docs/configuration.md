@@ -46,6 +46,10 @@ release, checking every 100 ms with a 64 MiB tolerance, then retries once.
 The existing fit error remains the refusal when reclamation is disabled or
 insufficient. Keep-alive expiry still uses the same eligibility rule.
 
+The launch reports what it stopped: its run's `evicted_runs` and its run job's
+`meta.evicted_runs` list each run id, model and the MiB it held. A lookup of an
+evicted run answers 404 naming the live run that evicted it.
+
 ## Parameter tiers
 
 Effective launch settings resolve from provider defaults, model-family defaults,
