@@ -101,8 +101,11 @@ type Runtime interface {
 	// call-site (isModelRunning vs. port resolution for on-demand).
 	AppInstance(model string) (*instance.Instance, bool)
 
-	// InstanceRequest prepares body for the same instance used to resolve the target.
-	InstanceRequest(req *http.Request, inst *instance.Instance, body []byte) []byte
+	// LeaseInstance shares local request admission with the direct instance paths.
+	LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error)
+
+	// InstanceBody prepares each attempt through the host's instance request path.
+	InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte
 
 	// NewLoadExecutor returns a function that the Proxy calls (under
 	// singleflight) to kick off an async on-demand model start. The

@@ -94,9 +94,13 @@ func (d *chainServerDeps) AppInstance(model string) (*instance.Instance, bool) {
 	return d.s.providers.appMgr.GetInstanceByModel(model)
 }
 
-func (d *chainServerDeps) InstanceRequest(req *http.Request, inst *instance.Instance, body []byte) []byte {
+func (d *chainServerDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	return d.s.openInstance(req, inst)
+}
+
+func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte {
 	req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
-	prepared, _ := d.s.instanceRequest(req, inst)
+	prepared, _ := d.s.instanceRequest(req, lease.Instance())
 	return prepared
 }
 

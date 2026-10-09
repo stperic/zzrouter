@@ -208,14 +208,19 @@ func (p *Proxy) ProxyWithFallback(
 		}
 
 		rctx.attemptsSoFar = attempts
-		depAttempt, committed := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)
+		depAttempt, disposition := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)
 		attempts = append(attempts, depAttempt...)
 
 		if p.loadTracker != nil {
 			p.loadTracker.Release(dep.Name)
 		}
 
-		if committed {
+		if disposition == attemptClientGone {
+			p.recordFallbackMetrics(recorder, attempts, firstDeployment)
+			return ""
+		}
+
+		if disposition == attemptCommitted {
 			p.recordFallbackMetrics(recorder, attempts, firstDeployment)
 			// Match the proxy's own local/remote test (deps.IsLocalNode)
 			// so the metric tracks reality. A deployment tagged with the
@@ -312,8 +317,24 @@ type routeMetaCtx struct {
 	steeringApplied    []string
 }
 
-// tryDeployment attempts a single deployment with retries. Returns the
-// attempts and whether a response was committed to the client.
+// attemptDisposition is what the chain does after one attempt.
+type attemptDisposition uint8
+
+const (
+	attemptRetry attemptDisposition = iota
+	attemptNextReplica
+	attemptCommitted
+	attemptClientGone
+)
+
+// attemptOutcome is one attempt's record and the chain's next move.
+type attemptOutcome struct {
+	attempt     pfallback.Attempt
+	disposition attemptDisposition
+}
+
+// tryDeployment attempts one deployment, retrying it with backoff while no lease is held, and
+// reports how the chain should go on.
 func (p *Proxy) tryDeployment(
 	c *gin.Context,
 	dep pfallback.Candidate,
@@ -322,228 +343,180 @@ func (p *Proxy) tryDeployment(
 	resolved *resolver.Resolved,
 	maxRetries int,
 	rctx routeMetaCtx,
-) ([]pfallback.Attempt, bool) {
+) ([]pfallback.Attempt, attemptDisposition) {
 	var attempts []pfallback.Attempt
-
-	// Rewrite model name in body to match deployment's actual model
-	// name (the client sends the group alias, but the backend needs the
-	// real model name).
+	// The client sent the group alias; the backend needs the replica's own model name.
 	if dep.Model != resolved.OriginalName {
 		body = wire.RewriteRequestModel(body, c.Request.Header.Get("Content-Type"), dep.Model)
 	}
-	// The replica's own request defaults (a variant's, say), as a direct
-	// request for that model would get them.
 	body = wire.SetDefaultFields(body, p.deps.RequestDefaults(dep.App, dep.Model, c.Request.URL.Path))
 	for retry := 0; retry <= maxRetries; retry++ {
-		start := utils.Now()
-
-		targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
-		if err != nil {
-			slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				Err:            err,
-				Duration:       time.Since(start),
-				Outcome:        pfallback.OutcomeRetriable,
-			})
-			break // Can't retry if we can't resolve the target.
+		attemptMeta := rctx
+		attemptMeta.attemptsSoFar = append(append([]pfallback.Attempt{}, rctx.attemptsSoFar...), attempts...)
+		outcome := p.tryOnce(c, dep, body, recorder, resolved, attemptMeta)
+		attempts = append(attempts, outcome.attempt)
+		if outcome.disposition != attemptRetry {
+			return attempts, outcome.disposition
 		}
 
-		attemptBody := body
-		if inst != nil {
-			attemptBody = p.deps.InstanceRequest(c.Request, inst, body)
-		}
-		recorder.SetUpstreamRequestData(attemptBody)
-
-		var attemptCtx context.Context
-		var cancel context.CancelFunc
-		if dep.Timeout > 0 {
-			attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
-		} else {
-			attemptCtx, cancel = context.WithCancel(c.Request.Context())
-		}
-
-		resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, attemptBody)
-
-		if err != nil {
-			cancel()
-			duration := time.Since(start)
-
-			if pfallback.IsRetriable(0, err) {
-				attempts = append(attempts, pfallback.Attempt{
-					DeploymentName: dep.Name,
-					Err:            err,
-					Duration:       duration,
-					Outcome:        pfallback.OutcomeRetriable,
-				})
-
-				if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, 0, err); shouldRetry {
-					utils.LogDebugf("[Fallback] %q transport error (retry %d/%d, backoff %s): %v", dep.Name, retry+1, maxRetries, backoff, err)
-					select {
-					case <-time.After(backoff):
-					case <-c.Request.Context().Done():
-						return attempts, false
-					}
-					continue
-				}
-
-				// Retries exhausted for this deployment.
-				p.cooldowns.SetCooldown(dep.Name, pfallback.DefaultCooldownDuration, pfallback.ReasonTransport)
-				p.providerCooldowns.SetCooldown(dep.App, pfallback.DefaultCooldownDuration, pfallback.ReasonTransport)
-				utils.LogDebugf("[Fallback] %q transport error (retries exhausted): %v", dep.Name, err)
-				return attempts, false
+		a := outcome.attempt
+		if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, a.StatusCode, a.Err); shouldRetry {
+			utils.LogDebugf("[Fallback] %q retry %d/%d (status %d, backoff %s): %v", dep.Name, retry+1, maxRetries, a.StatusCode, backoff, a.Err)
+			select {
+			case <-time.After(backoff):
+			case <-c.Request.Context().Done():
+				return attempts, attemptClientGone
 			}
-
-			// Non-retriable transport error — give up entirely.
-			utils.LogDebugf("[Fallback] %q transport error (non-retriable): %v", dep.Name, err)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				Err:            err,
-				Duration:       duration,
-				Outcome:        pfallback.OutcomeNonRetriable,
-			})
-			// Tag the recorder so OTel emission carries error_type
-			// before we hand back to the caller. The wire layer is
-			// not entered on this path (no resp), so without this
-			// the recorder would be dropped silently.
-			wire.RecordPreByteCopyError(recorder, "fallback_exhausted", err.Error())
-			writeError(c, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-				Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"})
-			return attempts, true
+			continue
 		}
 
-		// Classify errors before retry/cooldown; a capability refusal is not
-		// evidence that this deployment or provider is unhealthy.
-		if resp.StatusCode >= 400 {
-			classifier := p.deps.FailureClassifier(dep.App)
-			if inst != nil {
-				classifier = inst.FailureClassifier
-			}
-			if up.IsCluster() {
-				classifier = nil
-			}
-			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+		cooldownDur, reason := pfallback.CooldownForStatus(a.StatusCode), pfallback.ReasonForStatus(a.StatusCode)
+		if a.Err != nil {
+			cooldownDur, reason = pfallback.DefaultCooldownDuration, pfallback.ReasonTransport
 		}
-		// Inspect HTTP status before committing to client.
-		if pfallback.IsRetriable(resp.StatusCode, nil) {
-			// Track rate limit headers (429 responses often include Retry-After).
-			p.trackRateLimitHeaders(resp, dep)
+		p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
+		p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
+		utils.LogDebugf("[Fallback] %q retries exhausted (status %d, cooldown %s): %v", dep.Name, a.StatusCode, cooldownDur, a.Err)
+		return attempts, attemptNextReplica
+	}
+	return attempts, attemptNextReplica
+}
 
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			cancel()
-
-			duration := time.Since(start)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				StatusCode:     resp.StatusCode,
-				Duration:       duration,
-				Outcome:        pfallback.OutcomeRetriable,
-			})
-
-			if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, resp.StatusCode, nil); shouldRetry {
-				utils.LogDebugf("[Fallback] %q returned %d (retry %d/%d, backoff %s)", dep.Name, resp.StatusCode, retry+1, maxRetries, backoff)
-				select {
-				case <-time.After(backoff):
-				case <-c.Request.Context().Done():
-					return attempts, false
-				}
-				continue
-			}
-
-			// Retries exhausted for this deployment.
-			cooldownDur := pfallback.CooldownForStatus(resp.StatusCode)
-			reason := pfallback.ReasonForStatus(resp.StatusCode)
-			p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
-			p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
-			utils.LogDebugf("[Fallback] %q returned %d (retries exhausted, cooldown %s), trying next", dep.Name, resp.StatusCode, cooldownDur)
-			return attempts, false
-		}
-
-		if resp.StatusCode >= 400 {
-			// Non-retriable error — commit error response to client.
-			utils.LogDebugf("[Fallback] %q returned %d (non-retriable), returning to client", dep.Name, resp.StatusCode)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				StatusCode:     resp.StatusCode,
-				Duration:       time.Since(start),
-				Outcome:        pfallback.OutcomeNonRetriable,
-			})
-			result := wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers(), p.deps.BufferedShape(wire.RoutingMetadata{Provider: dep.App}, recorder))
-			_ = resp.Body.Close()
-			cancel()
-			p.deps.FinishRelay(c.Writer, c.Request, resp, result)
-			return attempts, true
-		}
-
-		// Success.
-		duration := time.Since(start)
-		utils.LogDebugf("[Fallback] %q returned %d: committing to client", dep.Name, resp.StatusCode)
-		attempts = append(attempts, pfallback.Attempt{
-			DeploymentName: dep.Name,
-			StatusCode:     resp.StatusCode,
-			Duration:       duration,
-			Outcome:        pfallback.OutcomeSuccess,
-		})
-
-		p.cooldowns.ClearCooldown(dep.Name)
-		p.providerCooldowns.ClearCooldown(dep.App)
-
-		// Track rate limit headers from the response (proactive cooldown).
-		p.trackRateLimitHeaders(resp, dep)
-
-		// Update recorder with the winning deployment info (latency is
-		// recorded via InferenceLogBridge.OnInferenceComplete). Guarded
-		// so that test fakes and any future caller passing a nil
-		// recorder do not crash here; recordFallbackMetrics at the
-		// caller enforces the same contract.
-		if recorder != nil {
-			recorder.SetProvider(dep.App)
-			recorder.SetModelGroup(resolved.GroupName, dep.Name)
-			if dep.Node != "" {
-				recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)
-			} else {
-				recorder.SetRouting(llm.RoutingDecisionLocal, p.deps.NodeName())
-			}
-		}
-
-		// Determine node for routing metadata — skip for cloud providers
-		// (node is irrelevant).
-		depNode := ""
-		if resolved, ok := p.deps.Backend(dep.App); !ok || !resolved.Cloud {
-			depNode = dep.Node
-			if depNode == "" {
-				depNode = p.deps.NodeName()
-			}
-		}
-
-		injectUsage := p.deps.InjectUsageMetadata()
-		fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
-		fullAttempts = append(fullAttempts, attempts...)
-		chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
-		meta := wire.RoutingMetadata{
-			Provider:             dep.App,
-			Deployment:           dep.Name,
-			Node:                 depNode,
-			InjectUsage:          injectUsage,
-			ClientModel:          rctx.clientModel,
-			GroupName:            rctx.groupName,
-			StrategyUsed:         rctx.strategyUsed,
-			FallbackChain:        chain,
-			Skipped:              skipped,
-			SteeringApplied:      rctx.steeringApplied,
-			DecisionLatencyMs:    utils.Now().Sub(rctx.decisionStart).Milliseconds(),
-			SuppressBodyMetadata: wire.SuppressBodyFromVerbose(c.Query("verbose")),
-			SuppressUsageFrame:   rctx.suppressUsageFrame,
-		}
-		result := wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, meta, recorder, p.deps.Normalizers(), p.deps.BufferedShape(meta, recorder))
-		_ = resp.Body.Close()
-		cancel()
-		p.deps.FinishRelay(c.Writer, c.Request, resp, result)
-		return attempts, true
+// tryOnce makes one attempt. A local instance is leased for the whole attempt, body relay
+// included, and released before the caller backs off.
+func (p *Proxy) tryOnce(
+	c *gin.Context,
+	dep pfallback.Candidate,
+	body []byte,
+	recorder *llm.InferenceRecorder,
+	resolved *resolver.Resolved,
+	rctx routeMetaCtx,
+) attemptOutcome {
+	start := utils.Now()
+	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
+	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
+	if err != nil {
+		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
+		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+		return outcome
 	}
 
-	return attempts, false
+	if inst != nil {
+		lease, err := p.deps.LeaseInstance(c.Request, inst)
+		if err != nil {
+			outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptClientGone
+			}
+			return outcome
+		}
+		defer lease.Release()
+		body = p.deps.InstanceBody(c.Request, lease, body)
+	}
+	recorder.SetUpstreamRequestData(body)
+
+	var attemptCtx context.Context
+	var cancel context.CancelFunc
+	if dep.Timeout > 0 {
+		attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
+	} else {
+		attemptCtx, cancel = context.WithCancel(c.Request.Context())
+	}
+	defer cancel()
+	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
+	if err != nil {
+		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+		if pfallback.IsRetriable(0, err) {
+			outcome.disposition = attemptRetry
+			return outcome
+		}
+		outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptCommitted
+		wire.RecordPreByteCopyError(recorder, "fallback_exhausted", err.Error())
+		writeError(c, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
+			Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"})
+		return outcome
+	}
+
+	// Classify before retry/cooldown: a capability refusal is not evidence the deployment is unhealthy.
+	if resp.StatusCode >= 400 {
+		classifier := p.deps.FailureClassifier(dep.App)
+		if inst != nil {
+			classifier = inst.FailureClassifier
+		}
+		if up.IsCluster() {
+			classifier = nil
+		}
+		httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+	}
+	outcome.attempt.StatusCode = resp.StatusCode
+	if pfallback.IsRetriable(resp.StatusCode, nil) {
+		p.trackRateLimitHeaders(resp, dep)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		outcome.attempt.Duration, outcome.disposition = time.Since(start), attemptRetry
+		return outcome
+	}
+
+	outcome.attempt.Duration, outcome.disposition = time.Since(start), attemptCommitted
+	var result wire.Result
+	if resp.StatusCode >= 400 {
+		outcome.attempt.Outcome = pfallback.OutcomeNonRetriable
+		result = wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers(), p.deps.BufferedShape(wire.RoutingMetadata{Provider: dep.App}, recorder))
+	} else {
+		outcome.attempt.Outcome = pfallback.OutcomeSuccess
+		p.cooldowns.ClearCooldown(dep.Name)
+		p.providerCooldowns.ClearCooldown(dep.App)
+		p.trackRateLimitHeaders(resp, dep)
+		result = p.commitSuccess(c, dep, resp, recorder, resolved, rctx, outcome.attempt)
+	}
+	_ = resp.Body.Close()
+	cancel()
+	p.deps.FinishRelay(c.Writer, c.Request, resp, result)
+	return outcome
+}
+
+// commitSuccess relays a successful response with the route's metadata.
+func (p *Proxy) commitSuccess(c *gin.Context, dep pfallback.Candidate, resp *http.Response, recorder *llm.InferenceRecorder, resolved *resolver.Resolved, rctx routeMetaCtx, attempt pfallback.Attempt) wire.Result {
+	// Test fakes pass a nil recorder.
+	if recorder != nil {
+		recorder.SetProvider(dep.App)
+		recorder.SetModelGroup(resolved.GroupName, dep.Name)
+		if dep.Node != "" {
+			recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)
+		} else {
+			recorder.SetRouting(llm.RoutingDecisionLocal, p.deps.NodeName())
+		}
+	}
+
+	// A cloud provider has no node.
+	depNode := ""
+	if resolved, ok := p.deps.Backend(dep.App); !ok || !resolved.Cloud {
+		depNode = dep.Node
+		if depNode == "" {
+			depNode = p.deps.NodeName()
+		}
+	}
+
+	injectUsage := p.deps.InjectUsageMetadata()
+	fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
+	fullAttempts = append(fullAttempts, attempt)
+	chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
+	meta := wire.RoutingMetadata{
+		Provider:             dep.App,
+		Deployment:           dep.Name,
+		Node:                 depNode,
+		InjectUsage:          injectUsage,
+		ClientModel:          rctx.clientModel,
+		GroupName:            rctx.groupName,
+		StrategyUsed:         rctx.strategyUsed,
+		FallbackChain:        chain,
+		Skipped:              skipped,
+		SteeringApplied:      rctx.steeringApplied,
+		DecisionLatencyMs:    utils.Now().Sub(rctx.decisionStart).Milliseconds(),
+		SuppressBodyMetadata: wire.SuppressBodyFromVerbose(c.Query("verbose")),
+		SuppressUsageFrame:   rctx.suppressUsageFrame,
+	}
+	return wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, meta, recorder, p.deps.Normalizers(), p.deps.BufferedShape(meta, recorder))
 }
 
 // separateOnDemand splits out on-demand deployments that aren't running.

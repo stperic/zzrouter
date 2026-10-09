@@ -139,7 +139,12 @@ func (f *fakeDeps) ValidateModel(_ context.Context, model string) error {
 	return f.validationErrors[model]
 }
 
-func (f *fakeDeps) InstanceRequest(_ *http.Request, inst *instance.Instance, body []byte) []byte {
+func (f *fakeDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	return inst.Acquire(req.Context(), nil)
+}
+
+func (f *fakeDeps) InstanceBody(_ *http.Request, lease *instance.Lease, body []byte) []byte {
+	inst := lease.Instance()
 	if inst.WireModel != "" {
 		return wire.SetModelIfPresent(body, inst.WireModel)
 	}
