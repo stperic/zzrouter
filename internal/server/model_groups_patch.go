@@ -293,7 +293,7 @@ func applyReplicaPatch(current modelgroup.Replica, raw json.RawMessage) (modelgr
 	if perr := patchIntField(patch.Priority, "priority", &out.Priority); perr != nil {
 		return current, perr
 	}
-	if perr := patchIntField(patch.MaxRetries, "max_retries", &out.MaxRetries); perr != nil {
+	if perr := patchIntPtrField(patch.MaxRetries, "max_retries", &out.MaxRetries); perr != nil {
 		return current, perr
 	}
 	if perr := patchBoolField(patch.OnDemand, "on_demand", &out.OnDemand); perr != nil {
@@ -357,12 +357,39 @@ func patchIntField(raw json.RawMessage, key string, dest *int) *utils.ParamError
 		*dest = 0
 		return nil
 	}
+	n, perr := decodeIntField(raw, key)
+	if perr != nil {
+		return perr
+	}
+	*dest = n
+	return nil
+}
+
+// patchIntPtrField is patchIntField for optional ints: null deletes the key
+// (nil = unset), and 0 is a real value.
+func patchIntPtrField(raw json.RawMessage, key string, dest **int) *utils.ParamError {
+	if len(raw) == 0 {
+		return nil
+	}
+	if isJSONNull(raw) {
+		*dest = nil
+		return nil
+	}
+	n, perr := decodeIntField(raw, key)
+	if perr != nil {
+		return perr
+	}
+	*dest = &n
+	return nil
+}
+
+// decodeIntField validates a non-null JSON number as an integer.
+func decodeIntField(raw json.RawMessage, key string) (int, *utils.ParamError) {
 	var n float64
 	if err := json.Unmarshal(raw, &n); err != nil || n != float64(int64(n)) {
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "int", Message: key + " must be an integer"}
+		return 0, &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "int", Message: key + " must be an integer"}
 	}
-	*dest = int(n)
-	return nil
+	return int(n), nil
 }
 
 func patchBoolField(raw json.RawMessage, key string, dest *bool) *utils.ParamError {

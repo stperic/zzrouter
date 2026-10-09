@@ -319,7 +319,7 @@ func TestErrorBodyDrainBounded(t *testing.T) {
 			Body: io.NopCloser(countingReader{r: io.LimitReader(zeroReader{}, huge), read: &read})}, nil
 	}
 	c, _ := buildGinCtx(t, `{"model":"group"}`)
-	resolved := leaseGroup([]pfallback.Candidate{{Name: "far", App: "far", Model: "m", MaxRetries: 1}})
+	resolved := leaseGroup([]pfallback.Candidate{{Name: "far", App: "far", Model: "m", MaxRetries: intPtr(1)}})
 
 	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
 

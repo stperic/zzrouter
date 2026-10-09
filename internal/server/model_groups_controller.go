@@ -269,7 +269,7 @@ type replicaResponse struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 	CooldownSeconds   float64        `json:"cooldown_seconds,omitempty"`
@@ -411,7 +411,7 @@ type replicaRequest struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 }
@@ -574,7 +574,7 @@ type replicaUpsertRequest struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 }

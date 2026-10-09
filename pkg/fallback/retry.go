@@ -20,6 +20,14 @@ const (
 	jitterFraction = 0.1
 )
 
+// RetryLimit is how many times this candidate is retried before the next one; unset means DefaultMaxRetries.
+func (c Candidate) RetryLimit() int {
+	if c.MaxRetries == nil {
+		return DefaultMaxRetries
+	}
+	return *c.MaxRetries
+}
+
 // ShouldRetry returns whether the request should be retried on the same deployment,
 // and the backoff duration to wait before retrying.
 // attempt is 0-indexed (0 = first retry after initial failure).

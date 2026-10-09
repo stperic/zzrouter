@@ -360,8 +360,8 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 		GroupName:    "group-q",
 		Strategy:     "priority",
 		Candidates: []pfallback.Candidate{
-			{Name: "dep-a", App: "provider-a", Model: "m", MaxRetries: 0},
-			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: 0},
+			{Name: "dep-a", App: "provider-a", Model: "m"},
+			{Name: "dep-b", App: "provider-b", Model: "m"},
 		},
 	}
 
@@ -370,9 +370,8 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected fallback to second deployment to succeed; body=%s", w.Body.String())
 
-	// With MaxRetries=0 the zero-value triggers DefaultMaxRetries=1 inside
-	// tryDeployment (chain/fallback.go:147-148), so dep-a is hit twice
-	// (retry=0, retry=1, both 429) before falling to dep-b. Total
+	// MaxRetries unset means DefaultMaxRetries=1, so dep-a is hit twice
+	// (first attempt and one retry, both 429) before falling to dep-b. Total
 	// ProxyForwardDetached calls: 2 on dep-a + 1 on dep-b = 3.
 	assert.Equal(t, int32(3), deps.forwardCalls.Load())
 	// TrackProviderRateLimit fires on every response (retriable or
@@ -382,6 +381,61 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 	// Success commit carries the winning provider header.
 	assert.Equal(t, "provider-b", w.Header().Get("X-zzrouter-Provider"))
 }
+
+// proxyTwoRetriable runs a two-deployment group where both deployments answer
+// 429 and returns how many times each upstream URL was forwarded to.
+func proxyTwoRetriable(t *testing.T, first, second *int) map[string]int {
+	t.Helper()
+	urlA := "http://10.0.0.1:9000/v1/chat/completions"
+	urlB := "http://10.0.0.2:9000/v1/chat/completions"
+
+	deps := newFakeDeps()
+	deps.endpoints["provider-a"] = "http://10.0.0.1:9000"
+	deps.endpoints["provider-b"] = "http://10.0.0.2:9000"
+	counts := map[string]int{}
+	for _, u := range []string{urlA, urlB} {
+		deps.forward[u] = func() (*http.Response, error) {
+			counts[u]++
+			return cannedJSON(http.StatusTooManyRequests, `{"error":"rate limited"}`), nil
+		}
+	}
+
+	p := newProxyWithFake(deps)
+	c, _ := buildGinCtx(t, `{"model":"group-r","stream":false}`)
+	rec := llm.NewInferenceRecorder(c.Request.Context(), "group-r", "")
+	resolved := &resolver.Resolved{
+		OriginalName: "group-r",
+		GroupName:    "group-r",
+		Strategy:     "priority",
+		Candidates: []pfallback.Candidate{
+			{Name: "dep-a", App: "provider-a", Model: "m", MaxRetries: first},
+			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: second},
+		},
+	}
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-r"}`), rec, "group-r", false)
+	return counts
+}
+
+// TestZeroMaxRetriesIsHonoured: an explicit max_retries 0 means no retry,
+// so each deployment is tried exactly once.
+func TestZeroMaxRetriesIsHonoured(t *testing.T) {
+	counts := proxyTwoRetriable(t, intPtr(0), intPtr(0))
+
+	assert.Equal(t, 1, counts["http://10.0.0.1:9000/v1/chat/completions"], "dep-a tried once")
+	assert.Equal(t, 1, counts["http://10.0.0.2:9000/v1/chat/completions"], "dep-b tried once")
+}
+
+// TestUnsetMaxRetriesUsesDefault: an unset max_retries (nil) gets
+// DefaultMaxRetries retries on top of the first attempt.
+func TestUnsetMaxRetriesUsesDefault(t *testing.T) {
+	counts := proxyTwoRetriable(t, nil, nil)
+
+	want := 1 + pfallback.DefaultMaxRetries
+	assert.Equal(t, want, counts["http://10.0.0.1:9000/v1/chat/completions"], "dep-a tried 1+default times")
+	assert.Equal(t, want, counts["http://10.0.0.2:9000/v1/chat/completions"], "dep-b tried 1+default times")
+}
+
+func intPtr(n int) *int { return &n }
 
 func TestBuildRouteWireFields_SplitsAttemptsByOutcome(t *testing.T) {
 	attempts := []pfallback.Attempt{

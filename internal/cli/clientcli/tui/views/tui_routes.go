@@ -380,10 +380,15 @@ func (f *routeFormState) buildDeployRequest(g *pkgClient.ModelGroupResponse) (st
 		f.statusMsg = "Priority must be a number"
 		return "", nil
 	}
-	maxRetries, err := strconv.Atoi(strings.TrimSpace(f.deployMaxRetries.Value()))
-	if err != nil {
-		f.statusMsg = "Max retries must be a number"
-		return "", nil
+	// An empty field leaves max_retries unset (the server default applies).
+	var maxRetries *int
+	if s := strings.TrimSpace(f.deployMaxRetries.Value()); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			f.statusMsg = "Max retries must be a number"
+			return "", nil
+		}
+		maxRetries = &n
 	}
 
 	var tags []string

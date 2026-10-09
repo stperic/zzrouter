@@ -202,10 +202,7 @@ func (p *Proxy) ProxyWithFallback(
 			p.loadTracker.Acquire(dep.Name)
 		}
 
-		maxRetries := dep.MaxRetries
-		if maxRetries <= 0 {
-			maxRetries = pfallback.DefaultMaxRetries
-		}
+		maxRetries := dep.RetryLimit()
 
 		rctx.attemptsSoFar = attempts
 		depAttempt, disposition := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)

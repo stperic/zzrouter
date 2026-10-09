@@ -97,7 +97,7 @@ func TestChainFirstByteTimeoutRetriesWithoutCompletingRecorder(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(chainDeadlineFrame + "data: [DONE]\n\n"))}, nil
 		}
-		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: 1}}), []byte(`{"model":"group","stream":true}`), rec, "group", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)}}), []byte(`{"model":"group","stream":true}`), rec, "group", false)
 		require.EqualValues(t, 2, deps.forwardCalls.Load())
 		require.Len(t, completion, 1)
 		assert.Empty(t, completion[0].ErrorType)
@@ -121,7 +121,7 @@ func TestChainFirstByteTimeoutExhaustionAnswers504(t *testing.T) {
 			<-deps.forwardedContext.Done()
 			return nil, deps.forwardedContext.Err()
 		}
-		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: 1}}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)}}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", false)
 		assert.Equal(t, http.StatusGatewayTimeout, w.Code)
 		assert.Contains(t, w.Body.String(), `"code":"upstream_timeout"`)
 		require.Len(t, completion, 1)

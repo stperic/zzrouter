@@ -43,3 +43,22 @@ func TestShouldRetry_ZeroMaxRetries(t *testing.T) {
 	ok, _ := ShouldRetry(0, 0, 503, nil)
 	assert.False(t, ok, "should not retry when maxRetries is 0")
 }
+
+func TestRetryLimit(t *testing.T) {
+	three := 3
+	zero := 0
+	tests := []struct {
+		name string
+		max  *int
+		want int
+	}{
+		{name: "unset uses default", max: nil, want: DefaultMaxRetries},
+		{name: "explicit zero means no retry", max: &zero, want: 0},
+		{name: "explicit value", max: &three, want: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Candidate{MaxRetries: tt.max}.RetryLimit())
+		})
+	}
+}

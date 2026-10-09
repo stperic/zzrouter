@@ -12,6 +12,7 @@ import (
 	route_events "github.com/stperic/zzrouter/pkg/observability/route_events"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 const validModelGroupsYAML = `
@@ -505,4 +506,27 @@ func TestGroupStoreConcurrentSavesPersistLatestState(t *testing.T) {
 	loaded := NewGroupStore()
 	require.NoError(t, loaded.LoadFromFile(path))
 	assert.Equal(t, store.List(), loaded.List(), "the final disk snapshot must include the latest mutation")
+}
+
+// TestMaxRetriesYAMLRoundTripKeepsZero: an explicit max_retries 0 must survive
+// a save/load cycle as 0, distinct from an unset (nil) value.
+func TestMaxRetriesYAMLRoundTripKeepsZero(t *testing.T) {
+	zero := 0
+	in := ModelGroup{
+		Strategy: StrategyPriority,
+		Replicas: []Replica{
+			{Name: "explicit-zero", Model: "m", App: "a", MaxRetries: &zero},
+			{Name: "unset", Model: "m", App: "b"},
+		},
+	}
+	data, err := yaml.Marshal(&in)
+	require.NoError(t, err)
+
+	var out ModelGroup
+	require.NoError(t, yaml.Unmarshal(data, &out))
+	require.Len(t, out.Replicas, 2)
+
+	require.NotNil(t, out.Replicas[0].MaxRetries, "explicit 0 must not be dropped")
+	assert.Equal(t, 0, *out.Replicas[0].MaxRetries)
+	assert.Nil(t, out.Replicas[1].MaxRetries, "unset stays nil")
 }
