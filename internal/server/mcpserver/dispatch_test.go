@@ -51,7 +51,9 @@ func TestDispatchRemoteAddr(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	var out any
-	require.ErrorContains(t, d.call(context.Background(), request{method: "POST", path: routePrefix("/zzrouter/v1/cluster/pair").path()}, &out), "HTTP 401")
+	failure := requireToolError(t, d.call(context.Background(), request{method: "POST", path: routePrefix("/zzrouter/v1/cluster/pair").path()}, &out))
+	require.Equal(t, http.StatusUnauthorized, failure.problem.Status)
+	require.Equal(t, "unauthorized", failure.problem.Code)
 }
 
 func TestDispatchHeaderAllowlist(t *testing.T) {
@@ -93,20 +95,25 @@ func TestDispatchStreamingRefused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	var out any
-	require.ErrorContains(t, d.call(ctx, request{method: "GET", path: routePrefix("/zzrouter/v1/jobs/abc/stream").path()}, &out), "streaming route")
+	failure := requireToolError(t, d.call(ctx, request{method: "GET", path: routePrefix("/zzrouter/v1/jobs/abc/stream").path()}, &out))
+	require.Equal(t, http.StatusBadRequest, failure.problem.Status)
+	require.Equal(t, string(codeStreamingRefused), failure.problem.Code)
 	require.False(t, called)
 }
 
 func TestDispatchErrorsAndCap(t *testing.T) {
 	for _, tc := range []struct {
-		name, body, contentType, want string
-		status                        int
+		name, body, contentType, code, detail string
+		status, problemStatus                 int
 	}{
-		{"problem", `{"code":"bad_parameter","detail":"Fix provider parameters","errors":[{"key":"ctx","message":"too large"},{"key":"gpu","message":"unknown"}]}`, "application/problem+json; charset=utf-8", "HTTP 400 bad_parameter: Fix provider parameters\nctx: too large\ngpu: unknown", 400},
-		{"excerpt", strings.Repeat("x", errorExcerptBytes+20), "text/plain", "HTTP 502: " + strings.Repeat("x", errorExcerptBytes), 502},
-		{"large problem", `{"code":"bad_parameter","detail":"Fix provider parameters"}` + strings.Repeat(" ", MaxResponseBytes), "application/problem+json", "HTTP 400 bad_parameter: Fix provider parameters", 400},
-		{"large excerpt", strings.Repeat("x", MaxResponseBytes+1), "text/plain", "HTTP 502: " + strings.Repeat("x", errorExcerptBytes), 502},
-		{"cap", strings.Repeat("x", MaxResponseBytes+1), "application/json", "REST response exceeds the 1 MiB cap; narrow the query and retry", 200},
+		{"problem", `{"type":"https://api.zzrouter.com/problems/bad-request","title":"Bad Request","status":400,"code":"bad_parameter","detail":"Fix provider parameters","errors":[{"key":"ctx","code":"out_of_range","message":"too large"},{"key":"gpu","code":"unknown_flag","message":"unknown"}]}`, "application/problem+json; charset=utf-8", "bad_parameter", "Fix provider parameters", 400, 400},
+		{"excerpt", strings.Repeat("x", errorExcerptBytes+20), "text/plain", "bad_gateway", strings.Repeat("x", errorExcerptBytes), 502, 502},
+		{"large problem", `{"status":400,"code":"bad_parameter","detail":"Fix provider parameters"}` + strings.Repeat(" ", MaxResponseBytes), "application/problem+json", "bad_parameter", "", 400, 400},
+		{"large excerpt", strings.Repeat("x", MaxResponseBytes+1), "text/plain", "bad_gateway", "", 502, 502},
+		{"cap", strings.Repeat("x", MaxResponseBytes+1), "application/json", string(codeResponseTooLarge), "", 200, 502},
+		{"invalid problem", `null`, "application/problem+json", "bad_gateway", "null", 502, 502},
+		{"malformed problem", `{`, "application/problem+json", "bad_gateway", "{", 502, 502},
+		{"nonstandard status", "upstream failed", "text/plain", string(codeUpstream), "upstream failed", 599, 599},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
@@ -114,14 +121,23 @@ func TestDispatchErrorsAndCap(t *testing.T) {
 				w.WriteHeader(tc.status)
 				_, err := w.Write([]byte(tc.body))
 				if len(tc.body) > MaxResponseBytes {
-					require.ErrorContains(t, err, "response cap exceeded")
+					failure := requireToolError(t, err)
+					require.Equal(t, string(codeResponseTooLarge), failure.problem.Code)
 				} else {
 					require.NoError(t, err)
 				}
 			})
 			var out any
-			err := d.call(context.Background(), request{method: "GET", path: routePrefix("/test").path()}, &out)
-			require.EqualError(t, err, tc.want)
+			failure := requireToolError(t, d.call(context.Background(), request{method: "GET", path: routePrefix("/test").path()}, &out))
+			require.Equal(t, tc.problemStatus, failure.problem.Status)
+			require.Equal(t, tc.code, failure.problem.Code)
+			if tc.detail != "" {
+				require.Equal(t, tc.detail, failure.problem.Detail)
+			}
+			if tc.name == "problem" {
+				require.Len(t, failure.problem.Errors, 2)
+				require.Equal(t, "out_of_range", failure.problem.Errors[0].Code)
+			}
 		})
 	}
 	t.Run("exact cap", func(t *testing.T) {

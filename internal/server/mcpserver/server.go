@@ -3,7 +3,6 @@ package mcpserver
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -50,19 +49,25 @@ func IsDispatch(ctx context.Context) bool { return ctx.Value(dispatchKey) == tru
 func newDispatcher(ctx context.Context, cfg Config) (dispatcher, error) {
 	outer, ok := ctx.Value(outerKey).(*outerRequest)
 	if !ok || outer == nil {
-		return dispatcher{}, fmt.Errorf("MCP request metadata is unavailable; retry through the public MCP endpoint")
+		return dispatcher{}, newToolError(http.StatusInternalServerError, codeInternal, "MCP request metadata is unavailable; retry through the public MCP endpoint", nil)
 	}
 	return dispatcher{cfg, outer}, nil
 }
 
-// New builds a stateless handler serving both supported protocol eras.
-func New(cfg Config) http.Handler {
+func newServer(cfg Config) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "zzrouter", Version: version.Current.String()}, &mcp.ServerOptions{Instructions: instructions, SetCacheable: func(_ context.Context, req mcp.Request, cache *mcp.Cacheable) {
 		if _, ok := req.(*mcp.ListToolsRequest); ok {
 			cache.TTLMs = int(toolsListTTL.Milliseconds())
 		}
 	}})
+	s.AddReceivingMiddleware(toolErrorMiddleware)
 	registerTools(s, cfg)
+	return s
+}
+
+// New builds a stateless handler serving both supported protocol eras.
+func New(cfg Config) http.Handler {
+	s := newServer(cfg)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
 		Stateless: true, JSONResponse: true, CrossOriginProtection: http.NewCrossOriginProtection(),
 		MaxRequestBodyBytes: MaxRequestBytes, PropagateRequestCancellation: true,

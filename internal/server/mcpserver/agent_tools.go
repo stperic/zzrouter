@@ -198,7 +198,7 @@ func (in pageInput) values() (url.Values, error) {
 		in.Limit = DefaultListLimit
 	}
 	if in.Limit < 1 || in.Limit > MaxListLimit || in.Offset < 0 {
-		return nil, fmt.Errorf("limit must be 1 to %d and offset must be nonnegative", MaxListLimit)
+		return nil, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("limit must be 1 to %d and offset must be nonnegative", MaxListLimit), nil)
 	}
 	return url.Values{"limit": {strconv.Itoa(in.Limit)}, "offset": {strconv.Itoa(in.Offset)}}, nil
 }
@@ -212,7 +212,7 @@ func childPath(prefix routePrefix, id, suffix string) (requestPath, error) {
 	return path, err
 }
 
-func jsonBody(input any, omit ...string) ([]byte, error) {
+func jsonBody(input any, omit []string) ([]byte, error) {
 	raw, err := json.Marshal(input)
 	if err != nil || len(omit) == 0 {
 		return raw, err
@@ -304,7 +304,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	if nested != "" {
 		data, ok := response.Data.(map[string]any)
 		if !ok {
-			return agentOutput{}, fmt.Errorf("decode %s results: expected object", label)
+			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s results: expected object", label), nil)
 		}
 		total, _ := data["total"].(float64)
 		if pagination, ok := data["pagination"].(map[string]any); ok {
@@ -314,7 +314,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	}
 	items, ok := response.Data.([]any)
 	if !ok && response.Data != nil {
-		return agentOutput{}, fmt.Errorf("decode %s list: expected array", label)
+		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s list: expected array", label), nil)
 	}
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	offset, _ := strconv.Atoi(query.Get("offset"))
@@ -328,7 +328,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	for _, item := range items[:min(len(items), limit)] {
 		object, ok := item.(map[string]any)
 		if !ok {
-			return agentOutput{}, fmt.Errorf("decode %s item: expected object", label)
+			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s item: expected object", label), nil)
 		}
 		out = append(out, selectFields(object, fields))
 	}
@@ -420,12 +420,12 @@ func (d dispatcher) download(ctx context.Context, in downloadInput) (agentOutput
 
 func (d dispatcher) cancelJob(ctx context.Context, in cancelInput) (agentOutput, error) {
 	if (in.JobID == "") == (in.DeploymentID == "") {
-		return agentOutput{}, fmt.Errorf("supply exactly one of job_id or deployment_id")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "supply exactly one of job_id or deployment_id", nil)
 	}
 	prefix, id := jobsRoute, in.JobID
 	if in.DeploymentID != "" {
 		if in.Node != "" {
-			return agentOutput{}, fmt.Errorf("deployment cancellation covers all its nodes; omit node")
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "deployment cancellation covers all its nodes; omit node", nil)
 		}
 		prefix, id = routePrefix(string(deploymentsRoute)+"/"), in.DeploymentID
 	}
@@ -468,7 +468,7 @@ func (d dispatcher) params(ctx context.Context, in paramsInput) (agentOutput, er
 
 func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, error) {
 	if in.Patch == nil {
-		return agentOutput{}, fmt.Errorf("patch must be a merge-patch object")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "patch must be a merge-patch object", nil)
 	}
 	q := url.Values{"node": {in.Node}, "model": {in.Model}}
 	if in.RestartAffected {
@@ -485,7 +485,7 @@ func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error)
 		in.MaxTokens = DefaultChatTokens
 	}
 	if in.MaxTokens < 1 {
-		return agentOutput{}, fmt.Errorf("max_tokens must be positive")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "max_tokens must be positive", nil)
 	}
 	var reply struct {
 		Model   string `json:"model"`
@@ -500,7 +500,7 @@ func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error)
 		return agentOutput{}, err
 	}
 	if len(reply.Choices) == 0 {
-		return agentOutput{}, fmt.Errorf("chat response has no choices; inspect zz_logs")
+		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "chat response has no choices; inspect zz_logs", nil)
 	}
 	return agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}, nil
 }
@@ -513,7 +513,7 @@ func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error)
 		in.Lines = DefaultLogLines
 	}
 	if in.Lines < 1 {
-		return agentOutput{}, fmt.Errorf("lines must be positive")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "lines must be positive", nil)
 	}
 	q := url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}
 	if in.Grep != "" {

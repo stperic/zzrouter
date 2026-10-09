@@ -312,7 +312,7 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			c.Abort()
 			return
 		case <-c.Request.Context().Done():
-			c.AbortWithStatus(499) // client closed; gin/nginx convention
+			c.AbortWithStatus(httperr.StatusClientClosedRequest)
 			return
 		}
 		if entry.statusCode == 0 {

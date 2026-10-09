@@ -89,6 +89,29 @@ func TestMCPWireResultTypes(t *testing.T) {
 	}
 }
 
+func TestToolErrorOverWire(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	for _, version := range []string{"2026-07-28", "2025-06-18"} {
+		t.Run(version, func(t *testing.T) {
+			r := mcpWireRequest(t, "tools/call", version, map[string]any{"name": "zz_job", "arguments": map[string]any{"job_id": "missing"}})
+			r.Header.Set("X-Request-ID", "mcp-error-wire")
+			body := mcpWireResponse(t, s, r, http.StatusOK)
+			require.NotContains(t, body, "error")
+			result := body["result"].(map[string]any)
+			require.Equal(t, true, result["isError"])
+			problem := result["structuredContent"].(map[string]any)
+			require.EqualValues(t, http.StatusNotFound, problem["status"])
+			require.Equal(t, "not_found", problem["code"])
+			require.Equal(t, "mcp-error-wire.1", problem["request_id"])
+			require.NotEmpty(t, problem["type"])
+			require.Equal(t, "Not Found", problem["title"])
+			text := result["content"].([]any)[0].(map[string]any)
+			require.Equal(t, "text", text["type"])
+			require.Contains(t, text["text"], "HTTP 404 not_found:")
+		})
+	}
+}
+
 // https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching; https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 func TestMCPWireListContract(t *testing.T) {
 	s := createTestNodeWithDefaults(t)

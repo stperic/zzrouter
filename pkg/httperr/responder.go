@@ -102,6 +102,9 @@ type Responder interface {
 	NormalizeUpstreamError(status int, raw []byte) []byte
 }
 
+// StatusClientClosedRequest is nginx's 499: the caller went away before the answer, so nobody should retry on its behalf.
+const StatusClientClosedRequest = 499
+
 // InBandStreamer is the optional half of a Responder whose clients take
 // a failure on a streaming request inside a 200 stream rather than as a
 // status, the way http.Flusher is the optional half of a ResponseWriter.

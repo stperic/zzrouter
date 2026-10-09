@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -46,7 +49,7 @@ func (p routePrefix) path() requestPath { return requestPath{string(p)} }
 // pathSegment admits one identifier, never an encoded path or query.
 func pathSegment(prefix routePrefix, id string) (requestPath, error) {
 	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\\?#%") {
-		return requestPath{}, fmt.Errorf("invalid path identifier: use a nonempty id without /, \\, ?, #, %% or dot segments")
+		return requestPath{}, newToolError(http.StatusBadRequest, codeInvalidInput, "invalid path identifier: use a nonempty id without /, \\, ?, #, % or dot segments", nil)
 	}
 	return requestPath{string(prefix) + url.PathEscape(id)}, nil
 }
@@ -62,19 +65,19 @@ type request struct {
 
 func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	if input.jsonBody != nil {
-		body, err := jsonBody(input.jsonBody, input.omit...)
+		body, err := jsonBody(input.jsonBody, input.omit)
 		if err != nil {
-			return fmt.Errorf("encode tool input: %w", err)
+			return newToolError(http.StatusInternalServerError, codeInternal, fmt.Sprintf("encode tool input: %v", err), err)
 		}
 		input.body = body
 	}
 	req, err := http.NewRequestWithContext(ctx, input.method, input.path.value, bytes.NewReader(input.body))
 	if err != nil {
-		return fmt.Errorf("build REST request: %w", err)
+		return newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("build REST request: %v", err), err)
 	}
 	req.URL.RawQuery = input.query.Encode()
 	if d.cfg.Streaming(input.method, req.URL.Path) != "" && (d.cfg.SnapshotAllowed == nil || !d.cfg.SnapshotAllowed(req)) {
-		return fmt.Errorf("streaming route %s is unavailable to tools; use a snapshot endpoint", req.URL.Path)
+		return newToolError(http.StatusBadRequest, codeStreamingRefused, fmt.Sprintf("streaming route %s is unavailable to tools; use a snapshot endpoint", req.URL.Path), nil)
 	}
 	// A fresh cancellable context strips every outer value, including auth markers.
 	inner, cancel := context.WithCancel(valueFree{ctx})
@@ -102,46 +105,56 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	}
 	req.Header.Set("X-Request-ID", fmt.Sprintf("%s.%d", d.outer.requestID, d.outer.index.Add(1)))
 	if err := inner.Err(); err != nil {
-		return fmt.Errorf("REST request interrupted: %w", err)
+		return newToolError(httperr.StatusClientClosedRequest, codeInterrupted, fmt.Sprintf("REST request interrupted: %v", err), err)
 	}
 	rec := &bufferedResponse{header: make(http.Header), cancel: cancel}
 	d.cfg.Engine.ServeHTTP(rec, req)
-	mediaType, _, _ := mime.ParseMediaType(rec.header.Get("Content-Type"))
-	if mediaType == "application/problem+json" {
-		var p utils.ProblemDetails
-		if err := json.Unmarshal(rec.body.Bytes(), &p); err == nil {
-			msg := fmt.Sprintf("HTTP %d %s: %s", rec.statusCode(), p.Code, p.Detail)
-			for _, item := range p.Errors {
-				msg += "\n" + item.Key + ": " + item.Message
-			}
-			return fmt.Errorf("%s", msg)
-		}
-	}
+	// A REST failure is reported as itself, even when its body overflowed or the caller left.
 	if rec.statusCode() < http.StatusOK || rec.statusCode() >= http.StatusMultipleChoices {
+		mediaType, _, _ := mime.ParseMediaType(rec.header.Get("Content-Type"))
+		if mediaType == "application/problem+json" {
+			var p utils.ProblemDetails
+			if err := json.Unmarshal(rec.body.Bytes(), &p); err == nil && bytes.HasPrefix(bytes.TrimSpace(rec.body.Bytes()), []byte("{")) {
+				if p.Status == 0 {
+					p.Status = rec.statusCode()
+				}
+				defaults := utils.NewProblemDetails(p.Status, http.StatusText(p.Status), "", "")
+				p.Code = cmp.Or(p.Code, defaults.Code)
+				p.Type = cmp.Or(p.Type, defaults.Type)
+				p.Title = cmp.Or(p.Title, defaults.Title)
+				line := fmt.Sprintf("HTTP %d %s: %s", rec.statusCode(), p.Code, p.Detail)
+				for _, item := range p.Errors {
+					line += "\n" + item.Key + ": " + item.Message
+				}
+				return &toolError{problem: p, line: line}
+			}
+		}
 		excerpt := strings.TrimSpace(string(rec.body.Bytes()[:min(rec.body.Len(), errorExcerptBytes)]))
-		return fmt.Errorf("HTTP %d: %s", rec.statusCode(), excerpt)
+		failure := newToolError(rec.statusCode(), "", fmt.Sprintf("HTTP %d: %s", rec.statusCode(), excerpt), nil)
+		failure.problem.Detail = excerpt
+		return failure
 	}
-	if rec.overflow {
-		return fmt.Errorf("REST response exceeds the 1 MiB cap; narrow the query and retry")
+	if rec.err != nil {
+		return rec.err
 	}
 	if err := inner.Err(); err != nil {
-		return fmt.Errorf("REST request interrupted: %w", err)
+		return newToolError(httperr.StatusClientClosedRequest, codeInterrupted, fmt.Sprintf("REST request interrupted: %v", err), err)
 	}
 	if rec.statusCode() == http.StatusNoContent {
 		return nil
 	}
 	if err := json.Unmarshal(rec.body.Bytes(), out); err != nil {
-		return fmt.Errorf("decode REST response: %w", err)
+		return newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode REST response: %v", err), err)
 	}
 	return nil
 }
 
 type bufferedResponse struct {
-	header   http.Header
-	body     bytes.Buffer
-	status   int
-	overflow bool
-	cancel   context.CancelFunc
+	header http.Header
+	body   bytes.Buffer
+	status int
+	err    error
+	cancel context.CancelFunc
 }
 
 func (r *bufferedResponse) Header() http.Header { return r.header }
@@ -161,9 +174,9 @@ func (r *bufferedResponse) Write(p []byte) (int, error) {
 	r.WriteHeader(http.StatusOK)
 	if len(p) > MaxResponseBytes-r.body.Len() {
 		_, _ = r.body.Write(p[:MaxResponseBytes-r.body.Len()])
-		r.overflow = true
+		r.err = newToolError(http.StatusBadGateway, codeResponseTooLarge, "REST response exceeds the 1 MiB cap; narrow the query and retry", nil)
 		r.cancel()
-		return 0, fmt.Errorf("response cap exceeded")
+		return 0, r.err
 	}
 	return r.body.Write(p)
 }

@@ -122,8 +122,26 @@ The `zz_api` escape hatch itself admits only eligible public management routes.
 Both refuse internal, MCP, streaming, retired and unmounted
 routes and require literal paths without URL encoding or traversal. Put query
 parameters in `query`; use `content_type: "application/merge-patch+json"` for
-parameter merge patches. REST Problems appear as tool errors with their
-original status, code, detail and field errors.
+parameter merge patches.
+
+## Tool errors
+
+Application failures return `isError: true`. `content[0].text` keeps a human
+explanation, and `structuredContent` carries the RFC 9457 Problem Details
+object. REST Problems retain their `type`, `title`, `status`, `code`, `detail`,
+`instance`, `request_id`, `node` and per-key `errors[]` (including `key`, `code`,
+`got` and `want`). Branch on the problem's `code`, not the text.
+
+Non-problem REST error bodies use the HTTP status slug (such as `bad_gateway`)
+and a bounded body excerpt as `detail`. MCP validation, response limits,
+streaming refusal, response decode failures, interrupted requests and internal
+failures use the [MCP error codes](agent_error_codes.md#mcp-tools).
+SDK argument-schema and protocol failures retain the SDK's own error behavior;
+they do not acquire a synthetic problem from this middleware.
+
+A `zz_job` response describing a FAILED job is a successful state snapshot,
+with the job's error in its `error` field. Reaching the polling wait limit also
+returns a successful snapshot; call `zz_job` again while work is running.
 
 ## Conformance
 

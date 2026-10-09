@@ -2,6 +2,7 @@
 
 Stable `code` values an LLM agent will encounter when driving zzRouter.
 Codes are wire-stable: branch on them, do not parse `message`.
+MCP application/tool errors carry these codes in `structuredContent.code`.
 
 Two error envelopes are in play:
 
@@ -139,6 +140,32 @@ Errors use Problem Details. Common `title`/`code` pairs an agent will see:
 Agents do **not** need to pass `?node=` on `GET /zzrouter/v1/jobs/:id`
 or `…/stream` : the coordinator now fans out across peers and returns
 the first owner's response. A 404 means no peer claims the job.
+
+## MCP tools
+
+Application/tool failures carry `isError: true`, a human line in
+`content[0].text`, and an RFC 9457 Problem Details object in `structuredContent`.
+REST Problems keep all their fields, including `request_id`, `node` and
+per-key `errors[]`. Non-problem REST error bodies use the status slug from
+`utils.NewProblemDetails` (`bad_gateway` for 502), with a bounded excerpt as
+`detail`. MCP-specific codes are declared in
+`internal/server/mcpserver/errors.go`.
+
+| `structuredContent.code` | Status | Meaning | Recovery |
+|---|---|---|---|
+| `mcp_invalid_input` | 400 | Handler validation or route-catalog refusal before dispatch. | Fix the named input; use `zz_api_search` for eligible routes. |
+| `mcp_response_too_large` | 502 | REST response exceeded the tool's 1 MiB cap. | Narrow the query or reduce the result limit. |
+| `mcp_streaming_refused` | 400 | Route requires streaming and has no admitted snapshot form. | Use a snapshot endpoint. |
+| `mcp_response_decode_failed` | 502 | REST response could not be decoded or lacked the expected result shape. | Inspect the REST endpoint and provider logs. |
+| `mcp_request_interrupted` | 499 | Tool request or job wait was cancelled or exceeded its deadline. | Check job state before retrying a mutation; reuse its idempotency key where supported. |
+| `mcp_internal_error` | 500 | Request metadata, input encoding, route catalog or embedded OpenAPI search is unavailable or failed. | Retry through the public MCP endpoint; investigate persistent failures. |
+| `mcp_upstream_error` | Original HTTP status | Non-problem REST error used a nonstandard status without a known status slug. | Read `status` and the bounded `detail` excerpt. |
+
+SDK argument-schema and protocol failures keep the SDK's own error behavior;
+this middleware leaves errors outside the typed tool-error contract untouched.
+A FAILED job returned by `zz_job` is a successful state snapshot, with the
+job's failure in `error`, rather than an MCP tool error. Polling wait limits
+also return successful snapshots.
 
 ## Idempotency notes
 
