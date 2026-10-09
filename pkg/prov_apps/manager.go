@@ -15,6 +15,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -142,10 +143,12 @@ type ProviderAppManager struct {
 
 	// localizeParams turns configured parameter values into what this
 	// node's engine is given. Optional; nil passes them through.
-	localizeParams    ParamLocalizer
-	runtimeChecks     install.RuntimeChecksResolver
-	installPolicyFile string
-	memoryBudget      func(provider string) (*schema.MemoryBudget, error)
+	localizeParams            ParamLocalizer
+	runtimeChecks             install.RuntimeChecksResolver
+	installPolicyFile         string
+	memoryBudget              func(provider string) (*schema.MemoryBudget, error)
+	memorySnapshot            func(context.Context) ([]gpu.MemoryDevice, error)
+	evictIdleOnMemoryPressure bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
 	memoryAdmission  chan struct{}
@@ -297,6 +300,11 @@ func WithMemoryBudget(resolve func(provider string) (*schema.MemoryBudget, error
 	return func(m *ProviderAppManager) { m.memoryBudget = resolve }
 }
 
+// WithIdleMemoryEviction enables node-local reclamation of idle GPU runs.
+func WithIdleMemoryEviction(enabled bool) Option {
+	return func(m *ProviderAppManager) { m.evictIdleOnMemoryPressure = enabled }
+}
+
 // NewProviderAppManager creates a new manager from apps config.
 func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*ProviderAppManager, error) {
 	m := &ProviderAppManager{
@@ -306,6 +314,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		idleExpiry:      make(chan string, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
+		memorySnapshot:  gpu.MemorySnapshotContext,
 		services:        make(map[string]*managedService),
 	}
 
@@ -477,20 +486,19 @@ func (m *ProviderAppManager) idleReaper() {
 			if !exists {
 				continue
 			}
-			// Only stop if still running and idle (re-check in case activity arrived)
-			if !inst.IsRunning() || inst.GetActiveRequests() > 0 || !inst.ShouldUnload() {
+			activity := inst.GetLastActivity()
+			if !m.evictable(inst) || !inst.ShouldUnload() {
+				continue
+			}
+			release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: inst, Activity: activity}})
+			if !claimed {
 				continue
 			}
 			slog.Info("auto-stopping idle instance", "instance", id, "provider", inst.Provider, "model", inst.Model, "keep_alive", inst.GetKeepAlive())
-			// Bound the StopInstance call: a hung subprocess shouldn't
-			// wedge the reaper. Derive from shutdownCtx so a manager
-			// Stop also unblocks (the previous Background ctx couldn't
-			// be cancelled by anything).
-			stopCtx, stopCancel := context.WithTimeout(m.shutdownCtx, constants.ClusterActionTimeout)
-			if err := m.StopInstance(stopCtx, id); err != nil {
+			if err := m.stopClaimedIdle(m.shutdownCtx, inst); err != nil {
 				slog.Warn("failed to auto-stop idle instance", "instance", id, "error", err)
 			}
-			stopCancel()
+			release()
 		case <-m.shutdownCtx.Done():
 			return
 		}

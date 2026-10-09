@@ -21,6 +21,7 @@ const (
 	AdmissionQueueFull   = "queue_full"
 	AdmissionWaitExpired = "wait_expired"
 	AdmissionCancelled   = "cancelled"
+	AdmissionStopping    = "stopping"
 )
 
 // AdmissionMetrics holds the instance admission wait histogram.

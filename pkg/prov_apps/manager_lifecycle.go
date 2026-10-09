@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
@@ -530,7 +530,20 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 			visible[key] = value
 		}
 	}
-	devices, err := gpu.MemorySnapshotContext(ctx)
+	need := process.Need{}
+	if features.Params[budget.Parameter] == "auto" {
+		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
+	}
+	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
+	var fit *process.MemoryFitError
+	if !m.evictIdleOnMemoryPressure || !errors.As(err, &fit) || !m.reclaimFor(ctx, fit) {
+		return err
+	}
+	return m.checkMemory(ctx, *budget, need, features.Params, visible)
+}
+
+func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string) error {
+	devices, err := m.memorySnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 	}
@@ -543,11 +556,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 			owners[pid] = run.ID
 		}
 	}
-	need := process.Need{}
-	if features.Params[budget.Parameter] == "auto" {
-		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
-	}
-	return process.AdmitMemoryBudget(*budget, need, features.Params, visible, devices, owners)
+	return process.AdmitMemoryBudget(budget, need, params, visible, devices, owners)
 }
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.

@@ -25,14 +25,25 @@ type Lease struct {
 }
 
 // Acquire waits for a slot within the queue timeout and stamps activity with hints.
-func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (*Lease, error) {
+func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (_ *Lease, err error) {
 	start := utils.Now()
-	err := i.acquireSlot(ctx)
-	proxy.RecordAdmissionWait(ctx, i.Provider, i.Model, admissionOutcome(err), utils.Now().Sub(start))
+	defer func() {
+		proxy.RecordAdmissionWait(ctx, i.Provider, i.Model, admissionOutcome(err), utils.Now().Sub(start))
+	}()
+	err = i.acquireSlot(ctx)
 	if err != nil {
 		return nil, err
 	}
+	i.mu.Lock()
+	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
+		i.mu.Unlock()
+		if i.concurrencySem != nil {
+			<-i.concurrencySem
+		}
+		return nil, admissionError(ErrStopping)
+	}
 	atomic.AddInt64(&i.activeRequests, 1)
+	i.mu.Unlock()
 	i.StampActivityWithHints(hints)
 	return &Lease{instance: i}, nil
 }
@@ -41,10 +52,11 @@ func (i *Instance) Acquire(ctx context.Context, hints *keepalive.Override) (*Lea
 // in-flight request finishes.
 const AdmissionRetryAfter = 5 * time.Second
 
-// Reasons an instance refuses a request; both are AdmissionError reasons.
+// Reasons an instance refuses a request; each is an AdmissionError reason.
 var (
 	ErrQueueFull        = errors.New("instance request queue is full")
 	ErrQueueWaitExpired = errors.New("instance request queue wait expired")
+	ErrStopping         = errors.New("instance is stopping")
 )
 
 // AdmissionError is an instance refusing a request before it was sent: busy, not broken.
@@ -70,6 +82,8 @@ func admissionOutcome(err error) string {
 		return proxy.AdmissionQueueFull
 	case errors.Is(err, ErrQueueWaitExpired):
 		return proxy.AdmissionWaitExpired
+	case errors.Is(err, ErrStopping):
+		return proxy.AdmissionStopping
 	default:
 		return proxy.AdmissionCancelled
 	}

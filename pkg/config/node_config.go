@@ -26,6 +26,9 @@ type NodeConfig struct {
 	// Model repository configuration
 	Models ModelsConfig `mapstructure:"models" yaml:"models,omitempty"`
 
+	// GPU controls node-local memory pressure policy.
+	GPU GPUConfig `mapstructure:"gpu" yaml:"gpu,omitempty"`
+
 	// Cache configuration
 	Cache CacheConfig `mapstructure:"cache" yaml:"cache,omitempty"`
 
@@ -74,6 +77,11 @@ type NodeConfig struct {
 	// run as a service reads a different file than the operator's CLI
 	// does, and without this there is nothing to compare.
 	SourcePath string `mapstructure:"-" yaml:"-"`
+}
+
+// GPUConfig holds policy for GPU memory owned by this node.
+type GPUConfig struct {
+	EvictIdleOnMemoryPressure bool `mapstructure:"evict_idle_on_memory_pressure" yaml:"evict_idle_on_memory_pressure,omitempty"`
 }
 
 // CoordinatorConfig holds settings that only apply when this node is a

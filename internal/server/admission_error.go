@@ -18,9 +18,12 @@ func renderAdmissionError(err error) (httperr.Error, bool) {
 	}
 	code := httperr.CodeCapacityExceeded
 	message := "This model's request queue is full. Please retry shortly."
-	if errors.Is(admission, instance.ErrQueueWaitExpired) {
+	switch {
+	case errors.Is(admission, instance.ErrQueueWaitExpired):
 		code = httperr.CodeQueueWaitExpired
 		message = "The wait for this model's request slot expired. Please retry shortly."
+	case errors.Is(admission, instance.ErrStopping):
+		message = "This model's run is stopping. Please retry shortly."
 	}
 	return httperr.Error{
 		Status:     http.StatusServiceUnavailable,
