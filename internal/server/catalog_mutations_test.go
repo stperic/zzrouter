@@ -199,7 +199,9 @@ func TestCatalogMutationWorkerWaitsForAcknowledgement(t *testing.T) {
 	})}
 	target.cluster.signaler.Stop(context.Background())
 	target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
-	target.cluster.signaler.Start(t.Context())
+	signalCtx, cancelSignal := context.WithCancel(context.Background())
+	t.Cleanup(cancelSignal)
+	target.cluster.signaler.Start(signalCtx)
 	c, rec := mutationContext(t, http.MethodDelete, "/zzrouter/v1/internal/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
 	go func() { target.newInternalExecutor().HandleInternalDeleteModels(c); close(returned) }()
 	t.Cleanup(func() {

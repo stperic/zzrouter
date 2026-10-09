@@ -537,11 +537,6 @@ func (mc *Cache) populationCurrent() (bool, error) {
 // gathering, so the refresh's result was not published.
 var errCatalogChanged = errors.New("model catalog changed during refresh")
 
-// maxOvertakenRefreshes bounds how often a read refreshes again after being
-// overtaken; invalidations come from discrete events (a run stops, a
-// download lands), so a few attempts outrun them.
-const maxOvertakenRefreshes = 3
-
 // ensurePopulated serializes initial population and retries of degraded catalogs.
 func (mc *Cache) ensurePopulated(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -557,11 +552,6 @@ func (mc *Cache) ensurePopulated(ctx context.Context) error {
 	}
 	attempted := utils.Now()
 	err := mc.RefreshCacheSync(ctx)
-	// An invalidation that overtook the refresh made its result stale, not
-	// wrong: refresh again from the newer evidence instead of failing the read.
-	for retry := 1; retry < maxOvertakenRefreshes && errors.Is(err, errCatalogChanged); retry++ {
-		err = mc.RefreshCacheSync(ctx)
-	}
 	if err != nil {
 		err = fmt.Errorf("cache miss and refresh failed: %w", err)
 		mc.mu.Lock()
@@ -643,17 +633,30 @@ func (mc *Cache) RefreshAsync() {
 	}
 }
 
-// RefreshCacheSync refreshes cache from local registry and cluster workers.
-// ctx bounds the worker broadcast — callers on the hot read path pass the
-// request ctx so cancellation unwinds the refresh; background callers
-// (RefreshAsync, Start) pass the lifecycle ctx so Stop cancels them.
+// RefreshCacheSync publishes the catalog. A refresh an invalidation overtakes is stale, not wrong, so it
+// refreshes again from the newer state until one publishes, a build fails, or ctx ends.
+// ctx bounds the worker broadcast: the hot read path passes the request ctx, background callers
+// (RefreshAsync, Start) the lifecycle ctx so Stop cancels them.
 func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if published, err := mc.refreshOnce(ctx); err != nil || published {
+			return err
+		}
+	}
+}
+
+// refreshOnce builds the catalog from the local registry and cluster workers and publishes it unless
+// an invalidation overtook the build.
+func (mc *Cache) refreshOnce(ctx context.Context) (bool, error) {
 	mc.mu.RLock()
 	generation := mc.generation
 	mc.mu.RUnlock()
 	localItems, local, err := mc.buildLocalAndCloudItems(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	workerItems, workerResources, workerUnavailable := mc.fetchWorkerData(ctx)
@@ -674,14 +677,14 @@ func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
 	allItems = append(allItems, localItems...)
 	allItems = append(allItems, workerItems...)
 
-	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
-		return errCatalogChanged
+	if ctx.Err() != nil || !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
+		return false, nil
 	}
 
 	if mc.autoRoute != nil {
 		mc.autoRoute.SyncAllFromCache()
 	}
-	return nil
+	return true, nil
 }
 
 func (mc *Cache) warmLocalCache() {

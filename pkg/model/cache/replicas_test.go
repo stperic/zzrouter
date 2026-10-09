@@ -160,50 +160,38 @@ func TestLookupReplicasNamesPrecedeSourceAliases(t *testing.T) {
 }
 
 func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
-	for _, changed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "local build error", true: "generation changed"}[changed], func(t *testing.T) {
-			c := newWorkerCache(t)
-			var calls atomic.Int32
-			c.registry = func() *modelregistry.Registry { calls.Add(1); return nil }
-			// An overtaken refresh is refreshed again, up to a bound, within one attempt.
-			perAttempt := int32(1)
-			if changed {
-				perAttempt = maxOvertakenRefreshes
-				c.clusterClient = func() mesh.ClusterClient { c.mu.Lock(); c.invalidateLocked(); c.mu.Unlock(); return nil }
-			} else {
-				c.node = &fakeNode{}
-			}
-			_, first := c.LookupReplicas(t.Context(), "unknown", "", "")
-			require.Error(t, first)
-			require.False(t, c.valid, "failed refresh must not claim a populated catalog")
-			require.True(t, c.lastUpdated.IsZero(), "no successful publication armed the interval")
-			require.False(t, c.lastAttempt.IsZero())
-			var requests sync.WaitGroup
-			for range 20 {
-				requests.Go(func() {
-					_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
-					require.ErrorIs(t, err, first, "backoff must preserve lookup failure for anonymous cloud admission")
-				})
-			}
-			requests.Wait()
-			require.Equal(t, perAttempt, calls.Load(), "failed refresh is not retried per request")
-			c.mu.Lock()
-			c.lastAttempt = time.Now().Add(-inventoryRetryInterval)
-			c.mu.Unlock()
+	c := newWorkerCache(t)
+	var calls atomic.Int32
+	c.registry = func() *modelregistry.Registry { calls.Add(1); return nil }
+	c.node = &fakeNode{}
+	_, first := c.LookupReplicas(t.Context(), "unknown", "", "")
+	require.Error(t, first)
+	require.False(t, c.valid, "failed refresh must not claim a populated catalog")
+	require.True(t, c.lastUpdated.IsZero(), "no successful publication armed the interval")
+	require.False(t, c.lastAttempt.IsZero())
+	var requests sync.WaitGroup
+	for range 20 {
+		requests.Go(func() {
 			_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
-			require.Error(t, err)
-			require.Equal(t, 2*perAttempt, calls.Load(), "expiry retries the failing refresh")
-			c.node = &fakeNode{name: "worker-1"}
-			c.clusterClient = func() mesh.ClusterClient { return nil }
-			c.Invalidate()
-			before := calls.Load()
-			replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "")
-			require.NoError(t, err, "invalidation clears backoff and permits immediate recovery")
-			require.Empty(t, replicas)
-			require.Equal(t, before+1, calls.Load())
-			require.True(t, c.valid)
+			require.ErrorIs(t, err, first, "backoff must preserve lookup failure for anonymous cloud admission")
 		})
 	}
+	requests.Wait()
+	require.EqualValues(t, 1, calls.Load(), "failed refresh is not retried per request")
+	c.mu.Lock()
+	c.lastAttempt = time.Now().Add(-inventoryRetryInterval)
+	c.mu.Unlock()
+	_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+	require.Error(t, err)
+	require.EqualValues(t, 2, calls.Load(), "expiry retries the failing refresh")
+	c.node = &fakeNode{name: "worker-1"}
+	c.Invalidate()
+	before := calls.Load()
+	replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+	require.NoError(t, err, "invalidation clears backoff and permits immediate recovery")
+	require.Empty(t, replicas)
+	require.Equal(t, before+1, calls.Load())
+	require.True(t, c.valid)
 }
 
 type cacheSyncHook func()
