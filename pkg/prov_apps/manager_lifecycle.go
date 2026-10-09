@@ -679,45 +679,80 @@ const defaultReadinessTimeout = 120 * time.Second
 const serveCheckPollInterval = 2 * time.Second
 
 func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.ReadinessWriter, probe *health.ReadinessProbe) {
+	absoluteDeadline := utils.Now().Add(probe.Timeout)
 	timer := time.NewTimer(probe.Timeout)
 	defer timer.Stop()
+	poll := time.NewTimer(serveCheckPollInterval)
+	defer poll.Stop()
+	poll.Stop()
+	var pollC <-chan time.Time
+	if probe.Serve != nil && len(probe.LogPatterns.Success) == 0 {
+		poll.Reset(0)
+		pollC = poll.C
+	}
+	readyDetail := ""
 
-	select {
-	case sig := <-rw.Signal:
-		if sig.Ready {
-			slog.Info("readiness probe matched", "instance", inst.ID, "pattern", sig.Pattern)
-			// The log says the process started. For engines that listen
-			// before loading weights, only the serve check knows whether
-			// that means anything yet.
-			ready, detail := m.awaitServes(inst, probe.Serve, timer.C, rw.Signal)
-			if !ready {
-				m.failNotReady(inst, probe.Timeout)
+	for {
+		if inst.GetStatus() != instance.StatusStarting {
+			return
+		}
+		now := utils.Now()
+		deadline := absoluteDeadline
+		if probe.StallTimeout > 0 {
+			stallDeadline := rw.LastOutputAt().Add(probe.StallTimeout)
+			if stallDeadline.Before(deadline) {
+				deadline = stallDeadline
+			}
+		}
+		if !now.Before(deadline) {
+			reason := fmt.Sprintf("not ready within %s", probe.Timeout)
+			if deadline.Before(absoluteDeadline) {
+				reason = fmt.Sprintf("no output for %s while starting; last line: %s", probe.StallTimeout, rw.LastLine())
+			}
+			m.failNotReady(inst, reason)
+			return
+		}
+		if readyDetail != "" {
+			inst.MarkRunning()
+			inst.SetStartedAtIfZero()
+			inst.UpdateLastUsed()
+			m.emitEvent(Event{
+				Type: EventInstanceRunning, Provider: inst.Provider,
+				Instance: inst.ID, Model: inst.Model,
+				Message: fmt.Sprintf("Ready (%s)", readyDetail), Time: utils.Now(),
+			})
+			return
+		}
+		timer.Reset(deadline.Sub(now))
+		select {
+		case sig := <-rw.Signal:
+			if sig.Failed {
+				m.failReadiness(inst, sig)
 				return
 			}
-			if detail == "" {
-				detail = fmt.Sprintf("log: %s", sig.Pattern)
+			if sig.Ready {
+				slog.Info("readiness probe matched", "instance", inst.ID, "pattern", sig.Pattern)
+				if probe.Serve == nil {
+					readyDetail = fmt.Sprintf("log: %s", sig.Pattern)
+				} else {
+					poll.Reset(0)
+					pollC = poll.C
+				}
 			}
-			if inst.GetStatus() == instance.StatusStarting {
-				inst.MarkRunning()
-				inst.SetStartedAtIfZero()
-				inst.UpdateLastUsed()
-				m.emitEvent(Event{
-					Type: EventInstanceRunning, Provider: inst.Provider,
-					Instance: inst.ID, Model: inst.Model,
-					Message: fmt.Sprintf("Ready (%s)", detail), Time: utils.Now(),
-				})
+		case <-pollC:
+			// A serve request must not outlive the current startup window.
+			ctx, cancel := context.WithDeadline(inst.Context(), deadline)
+			if m.healthMon.Serves(ctx, inst, probe.Serve) {
+				readyDetail = fmt.Sprintf("served %s", probe.Serve.Path)
 			}
-		} else if sig.Failed {
-			m.failReadiness(inst, sig)
+			cancel()
+			poll.Reset(serveCheckPollInterval)
+		case <-timer.C:
+		case <-inst.LeftStarting():
+			return
+		case <-inst.Context().Done():
+			return
 		}
-	case <-timer.C:
-		// Readiness owns the startup window, so it is also what ends it.
-		// The health monitor deliberately ignores failures while an
-		// instance is starting; if nobody failed it here, a launch that
-		// never came up would sit in `starting` forever.
-		m.failNotReady(inst, probe.Timeout)
-	case <-inst.Context().Done():
-		// Instance stopped
 	}
 }
 
@@ -741,51 +776,18 @@ func (m *ProviderAppManager) failReadiness(inst *instance.Instance, sig health.R
 // while an instance is starting, precisely so a slow load isn't mistaken
 // for a broken one, which leaves nobody else to notice a launch that
 // simply never arrives. A no-op once the instance moved on.
-func (m *ProviderAppManager) failNotReady(inst *instance.Instance, timeout time.Duration) {
+func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string) {
 	if inst.GetStatus() != instance.StatusStarting {
 		return
 	}
-	slog.Warn("instance never became ready", "instance", inst.ID, "timeout", timeout)
-	inst.MarkFailed(fmt.Sprintf("not ready within %s", timeout))
+	slog.Warn("instance never became ready", "instance", inst.ID, "reason", reason)
+	inst.MarkFailed(reason)
 	m.emitEvent(Event{
 		Type: EventInstanceFailed, Provider: inst.Provider,
 		Instance: inst.ID, Model: inst.Model,
-		Message: fmt.Sprintf("Not ready within %s", timeout),
+		Message: reason,
 		Cause:   obsruns.FailureReadiness, Time: utils.Now(),
 	})
-}
-
-// awaitServes polls the provider's serve check until the engine answers,
-// the readiness deadline fires, or the instance goes away. A nil check
-// means the provider offers no proof beyond its log line, so the caller's
-// signal stands.
-func (m *ProviderAppManager) awaitServes(inst *instance.Instance, check *health.ServeCheck, deadline <-chan time.Time, failures <-chan health.ReadinessSignal) (ready bool, detail string) {
-	if check == nil {
-		return true, ""
-	}
-
-	ticker := time.NewTicker(serveCheckPollInterval)
-	defer ticker.Stop()
-
-	for {
-		if m.healthMon.Serves(inst.Context(), inst, check) {
-			return true, fmt.Sprintf("served %s", check.Path)
-		}
-		select {
-		case sig := <-failures:
-			m.failReadiness(inst, sig)
-			return false, ""
-		case <-inst.LeftStarting():
-			return false, ""
-		case <-ticker.C:
-		case <-deadline:
-			slog.Warn("engine never served before readiness deadline",
-				"instance", inst.ID, "path", check.Path)
-			return false, ""
-		case <-inst.Context().Done():
-			return false, ""
-		}
-	}
 }
 
 // StopInstance gracefully stops an instance and removes it from the registry.
@@ -1074,7 +1076,12 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 
 	// Map readiness probe from config
 	if rp := rc.ReadinessProbe; rp != nil && (len(rp.LogPatterns.Success)+len(rp.LogPatterns.Failure) > 0 || rp.Serve != nil) {
-		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout), FailureClassifier: &svcCfg.Runtime.FailurePatterns}
+		stall, err := rp.StallDuration()
+		if err != nil {
+			slog.Warn("invalid readiness probe config, skipping", "error", err)
+			return hc
+		}
+		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout), StallTimeout: stall, FailureClassifier: &svcCfg.Runtime.FailurePatterns}
 		for _, p := range rp.LogPatterns.Success {
 			probe.LogPatterns.Success = append(probe.LogPatterns.Success, health.PatternMatcher{
 				Pattern: p.Pattern,

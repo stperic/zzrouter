@@ -603,3 +603,34 @@ func TestReconcileManagedSpineAddsFailurePatterns(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, changed)
 }
+
+func TestReconcileVllmReadinessStall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, InstallDefaults(dir))
+	rel := "on-demand/vllm/config.yaml"
+	file := filepath.Join(dir, filepath.FromSlash(rel))
+	raw, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	readiness := doc["runtime"].(map[string]any)["health_check"].(map[string]any)["readiness_probe"].(map[string]any)
+	require.Equal(t, "240s", readiness["stall_timeout"])
+	require.Equal(t, "900s", readiness["timeout"])
+	delete(readiness, "stall_timeout")
+	readiness["timeout"] = "300s"
+	stale, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, stale, 0600))
+	changed, err := ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Contains(t, changed, rel)
+	repaired, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(repaired, &doc))
+	readiness = doc["runtime"].(map[string]any)["health_check"].(map[string]any)["readiness_probe"].(map[string]any)
+	require.Equal(t, "240s", readiness["stall_timeout"])
+	require.Equal(t, "900s", readiness["timeout"])
+	changed, err = ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Empty(t, changed)
+}

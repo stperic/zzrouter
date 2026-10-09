@@ -181,7 +181,8 @@ type HealthcheckConfig struct {
 
 // ProbeConfig represents a health probe configuration (readiness or liveness)
 type ProbeConfig struct {
-	LogPatterns         LogPatternsConfig `yaml:"logPatterns,omitempty"`         // Log patterns to match
+	LogPatterns         LogPatternsConfig `yaml:"logPatterns,omitempty"` // Log patterns to match
+	StallTimeout        string            `yaml:"stall_timeout,omitempty"`
 	Timeout             string            `yaml:"timeout,omitempty"`             // Timeout for readiness probe
 	InitialDelaySeconds int               `yaml:"initialDelaySeconds,omitempty"` // Initial delay for liveness probe
 
@@ -190,6 +191,21 @@ type ProbeConfig struct {
 	// which for lazily-loading engines happens long before the weights are
 	// usable. When set, readiness waits for this request to succeed.
 	Serve *ServeCheckConfig `yaml:"serve,omitempty"`
+}
+
+// StallDuration parses the optional startup silence window.
+func (pc *ProbeConfig) StallDuration() (time.Duration, error) {
+	if pc == nil || pc.StallTimeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(pc.StallTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("readiness_probe.stall_timeout: %w", err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("readiness_probe.stall_timeout must be positive")
+	}
+	return d, nil
 }
 
 // ServeCheckConfig is a request that only succeeds once the engine can

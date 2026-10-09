@@ -169,3 +169,12 @@ func TestLocalProtocolWindowRejectsOutsidePeers(t *testing.T) {
 		t.Fatal("an older coordinator admitted a newer worker")
 	}
 }
+
+func TestStallTimeoutProtocolCutover(t *testing.T) {
+	if ClusterProtocolVersion != 3 || MinClusterProtocolVersion != 3 {
+		t.Fatalf("stall_timeout requires protocol 3/3, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(2); err == nil {
+		t.Fatal("protocol 2 worker admitted despite rejecting stall_timeout")
+	}
+}
