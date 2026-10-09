@@ -645,14 +645,6 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 		return candidates
 	}
 
-	// All candidates in a model group resolve to the same underlying
-	// model, so one estimate covers all deployments.
-	modelName := candidates[0].Model
-	estimate := modelregistry.EstimateModelMemory(modelName, "", "")
-	if estimate == nil || estimate.MinMemoryMB <= 0 {
-		return candidates // Can't estimate — pass through.
-	}
-
 	localHostname := p.deps.NodeName()
 
 	result := make([]pfallback.Candidate, 0, len(candidates))
@@ -660,6 +652,13 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 		// Already-running models have memory allocated — pass through.
 		if c.Node == "" && p.isModelRunning(c.Model) {
 			result = append(result, c)
+			continue
+		}
+
+		// Replicas of one group may serve different models, so each is sized by its own.
+		estimate := modelregistry.EstimateModelMemory(c.Model, "", "")
+		if estimate == nil || estimate.MinMemoryMB <= 0 {
+			result = append(result, c) // Can't estimate — pass through.
 			continue
 		}
 
@@ -684,7 +683,7 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 
 		if availableMB < estimate.MinMemoryMB {
 			slog.Info("[Fallback] Skipping deployment: insufficient memory",
-				"deployment", c.Name, "node", nodeName, "model", modelName,
+				"deployment", c.Name, "node", nodeName, "model", c.Model,
 				"required_mb", estimate.MinMemoryMB, "available_mb", availableMB)
 			continue
 		}
