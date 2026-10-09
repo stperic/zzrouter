@@ -68,17 +68,10 @@ requirements:
     max: "3.14"
 capabilities:
   formats: [safetensors, pytorch, hf_transformers]
-  # vLLM serves /v1/responses for single-turn requests (multi-turn
-  # via previous_response_id is incomplete : vllm-project/vllm#33089).
-  # Listed so the router passes through; clients hitting multi-turn
-  # bugs surface them upstream rather than getting a translated
-  # answer that drifts from native vLLM behavior.
-  # The Anthropic Messages API is translated (messages_compat), which
-  # works on every vLLM. vLLM now serves /v1/messages itself, but its
-  # native endpoint rejects the system/ctx/msg turns Claude Code sends
-  # from 2.1.154 (vllm-project/vllm#44000, seen on 0.20.1); declare
-  # messages instead only on a vLLM verified to accept them.
-  wire_endpoints: [chat_completions, completions, embeddings, responses, messages_compat]
+  # responses is native (multi-turn previous_response_id is incomplete: vllm-project/vllm#33089).
+  # messages is left out so it is translated: native /v1/messages rejects the turns Claude Code
+  # sends (vllm-project/vllm#44000, seen on 0.20.1).
+  wire_endpoints: [chat_completions, completions, embeddings, responses]
 
 defaults:
   parameters:

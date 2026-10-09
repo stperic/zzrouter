@@ -120,7 +120,7 @@ capabilities:
   default_variant: "Q4_K_M"
   # Wire endpoints llama-server natively serves. /v1/responses absent :
   # see ggml-org/llama.cpp#14702. Router uses translation shim for it.
-  wire_endpoints: [chat_completions, completions, embeddings, messages, responses_compat]
+  wire_endpoints: [chat_completions, completions, embeddings, messages]
 
 defaults:
   parameters:

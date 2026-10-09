@@ -6912,9 +6912,10 @@ paths:
         `capabilities.wire_endpoints` decides how the request is served:
         `messages` (an engine that speaks the API, such as llama-server)
         passes the body and the reply, streamed or not, through verbatim;
-        `messages_compat` (an engine that speaks only Chat Completions,
-        such as mlx_lm.server or vLLM) translates the request to Chat
-        Completions and the reply, streamed or not, back to Messages.
+        `messages_compat` is derived when the provider declares
+        `chat_completions` without native `messages`, including external
+        and cloud providers. It translates the request to Chat Completions
+        and the reply, streamed or not, back to Messages.
         Server tools and `document` blocks have no Chat Completions form:
         the former are left out, the latter refused. Tokens, including
         cache reads, are metered and settled against the caller's key like

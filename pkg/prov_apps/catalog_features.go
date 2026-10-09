@@ -48,7 +48,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 		cfg := inst.SnapshotConfig()
 		if cfg.Provider == provider && cfg.Model == model && inst.IsRunning() {
 			if eps := inst.Resolved().WireEndpoints; eps != nil {
-				out["wire_endpoints"] = slices.Clone(eps)
+				out["wire_endpoints"] = eps
 				snapshot := inst.Resolved()
 				for name, f := range svc.Features {
 					if states[name] != "present" {
@@ -57,7 +57,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 					if len(f.Files) > 0 && (snapshot.Parameters[f.Flag] == "" || snapshot.Parameters[f.Flag] == "false") {
 						states[name] = "available"
 					}
-					if f.Runtime != "" && !slices.Equal(eps, f.WireEndpoints) {
+					if f.Runtime != "" && !slices.Equal(eps, config.EffectiveWireEndpoints(f.WireEndpoints)) {
 						states[name] = "available"
 					}
 				}

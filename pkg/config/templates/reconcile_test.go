@@ -5,7 +5,6 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -413,28 +412,6 @@ func TestShippedAssetsAreAddressable(t *testing.T) {
 	require.NoError(t, err)
 	for provider, total := range perProvider {
 		assert.LessOrEqual(t, total, assets.MaxProviderBytes, provider)
-	}
-}
-
-// Every engine the release launches serves the Anthropic Messages API,
-// natively or through the translation, so an Anthropic-API agent can use
-// any model the cluster runs. Which way is the engine's own declaration.
-func TestEveryShippedEngineServesMessages(t *testing.T) {
-	entries, err := fs.ReadDir(AppsFS, providersRoot+"/on-demand")
-	require.NoError(t, err)
-	require.NotEmpty(t, entries)
-	for _, e := range entries {
-		body, err := fs.ReadFile(AppsFS, providersRoot+"/on-demand/"+e.Name()+"/config.yaml")
-		require.NoError(t, err, e.Name())
-		var doc struct {
-			Capabilities struct {
-				WireEndpoints []string `yaml:"wire_endpoints"`
-			} `yaml:"capabilities"`
-		}
-		require.NoError(t, yaml.Unmarshal(body, &doc), e.Name())
-		wire := doc.Capabilities.WireEndpoints
-		assert.True(t, slices.Contains(wire, "messages") || slices.Contains(wire, "messages_compat"),
-			"%s declares neither messages nor messages_compat: %v", e.Name(), wire)
 	}
 }
 

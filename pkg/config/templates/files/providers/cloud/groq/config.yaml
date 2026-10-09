@@ -16,4 +16,4 @@ runtime:
     timeout: 10s
     retries: 3
 capabilities:
-  wire_endpoints: [chat_completions, completions, responses_compat]
+  wire_endpoints: [chat_completions, completions]

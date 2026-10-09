@@ -16,8 +16,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
-// compatWire is what a Chat-only engine behind messages_compat declares.
-var compatWire = []string{"chat_completions", messagesCompatEndpoint}
+// compatWire declares the native API from which translations are derived.
+var compatWire = []string{"chat_completions"}
 
 const chatReplyJSON = `{"id":"c9","choices":[{"finish_reason":"stop","message":{"content":"Hello."}}],
   "usage":{"prompt_tokens":12,"completion_tokens":3}}`
