@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -58,15 +57,9 @@ func writeNormalizedBody(
 	_, _ = w.Write(bodyBytes)
 }
 
-// streamWithUsageInject writes a streaming 2xx response with the
-// optional per-provider stream normalizer and SSE usage-chunk
-// injection. The inject closure pulls cost+timing from the recorder
-// snapshot at chunk time so per-chunk metadata reflects the latest
-// captured state.
-//
-// When meta.InjectUsage is false, the closure is not allocated —
-// streams pass through with only the stream normalizer applied (or
-// untransformed if no normalizer is registered).
+// streamWithUsageInject writes a streaming 2xx response through the shared
+// stream transform: provider normalizer, usage injection, model restore, strip.
+// Stage order and its invariants live in wire.NewStreamTransform.
 func streamWithUsageInject(
 	w http.ResponseWriter,
 	resp *http.Response,
@@ -75,30 +68,7 @@ func streamWithUsageInject(
 	meta wire.RoutingMetadata,
 	recorder *llm.InferenceRecorder,
 ) {
-	streamNorm := normalizers.Stream(provider)
-	var inject func([]byte) []byte
-	if meta.InjectUsage {
-		inject = func(chunk []byte) []byte {
-			return wire.InjectUsageIntoSSEChunk(chunk, wire.MetadataWithSnapshot(meta, recorder))
-		}
-	}
-	// Every chunk carries the model, so the caller's spelling is restored
-	// per chunk rather than once — the same contract the non-streaming
-	// body gets from MaybeInjectRoutingMetadata.
-	var restore func([]byte) []byte
-	if meta.ClientModel != "" {
-		restore = func(chunk []byte) []byte {
-			return wire.RewriteModelInStreamChunk(chunk, meta.ClientModel)
-		}
-	}
-	// Last in the chain: CopyWithMetrics feeds the recorder from the raw
-	// chunk before any transform runs, so the tokens in the frame this drops
-	// are already counted.
-	var strip func([]byte) []byte
-	if meta.SuppressUsageFrame {
-		strip = wire.StripUsageOnlyFrames
-	}
 	w.WriteHeader(resp.StatusCode)
 	copyStreamWithMetrics(w, resp.Body, recorder,
-		composeStreamTransforms(streamNorm, normalizer.ChainChunks(inject, restore, strip)))
+		wire.NewStreamTransform(normalizers.Stream(provider), meta, recorder).Func())
 }

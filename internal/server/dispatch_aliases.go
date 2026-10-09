@@ -46,12 +46,11 @@ var (
 	NewResponseNormalizers = normalizer.NewRegistry
 
 	// Function-value aliases preserve server-local call-site spelling.
-	// Callers pre-extraction used `applyBodyNormalizer`, `newNormalizingReader`,
-	// `composeStreamTransforms`; the generic helpers now live in
+	// Callers pre-extraction used `applyBodyNormalizer` and `newNormalizingReader`;
+	// the generic helpers now live in
 	// pkg/dispatch/normalizer with capitalized names.
-	applyBodyNormalizer     = normalizer.ApplyBody
-	newNormalizingReader    = normalizer.NewStreamReader
-	composeStreamTransforms = normalizer.ComposeStream
+	applyBodyNormalizer  = normalizer.ApplyBody
+	newNormalizingReader = normalizer.NewStreamReader
 )
 
 // ===== pkg/dispatch/affinity re-exports =====

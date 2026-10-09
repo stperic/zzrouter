@@ -335,7 +335,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 			// transform still has to be recorded — that asymmetry is why
 			// local streaming inference never reached the inference log.
 			resp.Body = wire.NewMeteringReader(resp.Body, recorder)
-			if transform := s.localStreamTransform(meta, inst.Provider, recorder); transform != nil {
+			if transform := wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, recorder).Func(); transform != nil {
 				resp.Body = newNormalizingReader(resp.Body, transform)
 				// The rewrite changes the body's length, so the engine's
 				// declared one would cut the client off mid-stream.

@@ -75,61 +75,16 @@ func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingM
 	}
 
 	if streaming {
-		var inner func([]byte) []byte
-		usageSeen := false
-		if meta.InjectUsage {
-			inner = func(chunk []byte) []byte {
-				// Test for a real usage OBJECT, not the substring: the
-				// copier offers every chunk, so being called proves
-				// nothing, and `"usage":null` rides along on every delta
-				// frame OpenAI and vLLM emit. A substring test goes true
-				// on frame one and the synthetic-metadata fallback below
-				// would then never fire on a provider that sends no usage
-				// at all -- which is the case it exists for.
-				if ChunkHasUsageObject(chunk) {
-					usageSeen = true
-				}
-				// Build per-chunk metadata from the live recorder
-				// snapshot so the terminal usage frame can carry cost
-				// + timing values that were populated by the parser
-				// before this chunk was forwarded.
-				return InjectUsageIntoSSEChunk(chunk, MetadataWithSnapshot(meta, recorder))
-			}
-		}
-		// Restoring the caller's model id is not metadata: it rides on
-		// every frame, so it must not sit behind the InjectUsage gate
-		// above. Without it a model-group stream answered in the
-		// replica's model name, which is not the id the caller sent and
-		// not one the catalog lists.
-		//
-		// Frames reach this transform whole: CopyWithMetrics re-aligns
-		// its reads to line boundaries, so one split across two TCP
-		// segments arrives rejoined rather than as truncated JSON the
-		// rewrite would pass through untouched.
-		var restore func([]byte) []byte
-		if meta.ClientModel != "" {
-			restore = func(chunk []byte) []byte {
-				return RewriteModelInStreamChunk(chunk, meta.ClientModel)
-			}
-		}
-		// Last in the chain, so usageSeen above and the recorder (which
-		// CopyWithMetrics feeds from the raw chunk before any transform)
-		// both still observe the frame this drops.
-		var strip func([]byte) []byte
-		if meta.SuppressUsageFrame {
-			strip = StripUsageOnlyFrames
-		}
-		transform := normalizer.ComposeStream(norms.Stream(meta.Provider),
-			normalizer.ChainChunks(inner, restore, strip))
+		st := NewStreamTransform(norms.Stream(meta.Provider), meta, recorder)
 		w.WriteHeader(resp.StatusCode)
-		CopyWithMetrics(w, resp.Body, recorder, transform)
+		CopyWithMetrics(w, resp.Body, recorder, st.Func())
 
 		// If the provider didn't include a usage block in any streaming
 		// chunk, emit a synthetic final chunk so clients (e.g. Open WebUI)
 		// can still display routing metadata via the zz_* fields.
 		// Skipped when the caller did not ask for usage: synthesising the
 		// very frame the strip above removes would hand it back.
-		if meta.InjectUsage && !usageSeen && meta.Deployment != "" && !meta.SuppressUsageFrame {
+		if meta.InjectUsage && !st.UsageSeen() && meta.Deployment != "" && !meta.SuppressUsageFrame {
 			usage := map[string]any{
 				"zz_provider": meta.Provider,
 				"zz_model":    meta.Deployment,

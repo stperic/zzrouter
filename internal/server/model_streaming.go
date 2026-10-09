@@ -19,6 +19,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
@@ -407,7 +408,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		servingNode = s.GetNodename()
 	}
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
-	copyStreamWithMetrics(w, resp.Body, rec, s.localStreamTransform(meta, inst.Provider, rec))
+	copyStreamWithMetrics(w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 }
 
 // capacityErrorMessage returns a standardized capacity error message for
