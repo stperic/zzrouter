@@ -31,10 +31,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Proxy routes a request through a chain of candidate deployments with
-// pre-stream fallback. When a deployment returns a retriable error
-// (transport-level or HTTP 429/5xx) before the first byte is sent to the
-// client, the proxy transparently retries with the next candidate.
+// Proxy routes requests through candidate deployments with replay-safe fallback.
 type Proxy struct {
 	deps              ServerDeps
 	cooldowns         *pfallback.CooldownManager
@@ -254,7 +251,7 @@ func (p *Proxy) ProxyWithFallback(
 	wireChain, wireSkipped := buildRouteWireFields(attempts, rctx.preFilterSkip)
 	routing.SetRouteSpanAttrs(c.Request.Context(),
 		rctx.groupName, "", rctx.strategyUsed, len(wireChain), len(wireSkipped))
-	p.writeExhaustedResponse(c, resolved.GroupName, attempts, recorder)
+	p.writeExhaustedResponse(c, resolved.GroupName, attempts)
 	return ""
 }
 
@@ -328,6 +325,7 @@ const (
 type attemptOutcome struct {
 	attempt     pfallback.Attempt
 	disposition attemptDisposition
+	backoff     time.Duration
 }
 
 // tryDeployment attempts one deployment, retrying it with backoff while no lease is held, and
@@ -350,14 +348,14 @@ func (p *Proxy) tryDeployment(
 	for retry := 0; retry <= maxRetries; retry++ {
 		attemptMeta := rctx
 		attemptMeta.attemptsSoFar = append(append([]pfallback.Attempt{}, rctx.attemptsSoFar...), attempts...)
-		outcome := p.tryOnce(c, dep, body, recorder, resolved, attemptMeta)
+		outcome := p.tryOnce(c, dep, body, recorder, resolved, attemptMeta, retry, maxRetries)
 		attempts = append(attempts, outcome.attempt)
 		if outcome.disposition != attemptRetry {
 			return attempts, outcome.disposition
 		}
 
 		a := outcome.attempt
-		if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, a.StatusCode, a.Err); shouldRetry {
+		if backoff := outcome.backoff; backoff > 0 {
 			utils.LogDebugf("[Fallback] %q retry %d/%d (status %d, backoff %s): %v", dep.Name, retry+1, maxRetries, a.StatusCode, backoff, a.Err)
 			select {
 			case <-time.After(backoff):
@@ -388,6 +386,7 @@ func (p *Proxy) tryOnce(
 	recorder *llm.InferenceRecorder,
 	resolved *resolver.Resolved,
 	rctx routeMetaCtx,
+	retry, maxRetries int,
 ) attemptOutcome {
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
@@ -428,47 +427,53 @@ func (p *Proxy) tryOnce(
 	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
 	if err != nil {
 		if cause := context.Cause(attemptCtx); errors.Is(cause, instance.ErrFirstByteTimeout) {
-			err = cause
+			err = errors.Join(err, cause)
 		}
-		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
 		if errors.Is(err, instance.ErrFirstByteTimeout) {
+			err = &pfallback.RequestError{Err: err, WroteRequest: true}
 			outcome.attempt.StatusCode = http.StatusGatewayTimeout
 		}
-		if pfallback.IsRetriable(0, err) {
-			outcome.disposition = attemptRetry
-			return outcome
+		outcome.attempt.Err = err
+	} else {
+		if wrap != nil {
+			resp.Body = wrap(resp.Body)
 		}
+		// A capability refusal is not evidence the deployment is unhealthy.
+		if resp.StatusCode >= 400 {
+			classifier := p.deps.FailureClassifier(dep.App)
+			if inst != nil {
+				classifier = inst.FailureClassifier
+			}
+			if up.IsCluster() {
+				classifier = nil
+			}
+			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+		}
+		outcome.attempt.StatusCode = resp.StatusCode
+	}
+	outcome.attempt.Duration = time.Since(start)
+	decision, backoff := pfallback.ShouldRetry(c.Request.Method, err, outcome.attempt.StatusCode, retry, maxRetries)
+	if decision != pfallback.StopRetry {
+		if resp != nil {
+			p.trackRateLimitHeaders(resp, dep)
+			_ = resp.Body.Close()
+		}
+		outcome.disposition, outcome.backoff = attemptRetry, backoff
+		return outcome
+	}
+	if err != nil {
 		outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptCommitted
-		wire.RecordPreByteCopyError(recorder, "fallback_exhausted", err.Error())
-		writeError(c, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-			Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"})
+		failure := httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
+			Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"}
+		if errors.Is(err, instance.ErrFirstByteTimeout) {
+			failure.Status, failure.Code = http.StatusGatewayTimeout, string(httperr.CodeUpstreamTimeout)
+		}
+		wire.RecordPreByteCopyError(recorder, failure.Code, err.Error())
+		writeError(c, failure)
 		return outcome
 	}
 
-	if wrap != nil {
-		resp.Body = wrap(resp.Body)
-	}
-
-	// Classify before retry/cooldown: a capability refusal is not evidence the deployment is unhealthy.
-	if resp.StatusCode >= 400 {
-		classifier := p.deps.FailureClassifier(dep.App)
-		if inst != nil {
-			classifier = inst.FailureClassifier
-		}
-		if up.IsCluster() {
-			classifier = nil
-		}
-		httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
-	}
-	outcome.attempt.StatusCode = resp.StatusCode
-	if pfallback.IsRetriable(resp.StatusCode, nil) {
-		p.trackRateLimitHeaders(resp, dep)
-		_ = resp.Body.Close()
-		outcome.attempt.Duration, outcome.disposition = time.Since(start), attemptRetry
-		return outcome
-	}
-
-	outcome.attempt.Duration, outcome.disposition = time.Since(start), attemptCommitted
+	outcome.disposition = attemptCommitted
 	var result wire.Result
 	if resp.StatusCode >= 400 {
 		outcome.attempt.Outcome = pfallback.OutcomeNonRetriable
@@ -743,20 +748,14 @@ func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts 
 const modelLoadingRetryAfter = 60 * time.Second
 
 // writeExhaustedResponse writes a 503 when all deployments are exhausted.
-func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt, recorder *llm.InferenceRecorder) {
+func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt) {
 	if len(attempts) > 0 {
-		allConflicts, allTimeouts := true, true
+		allConflicts := true
 		for _, attempt := range attempts {
 			allConflicts = allConflicts && errors.Is(attempt.Err, config.ErrModelNameConflict)
-			allTimeouts = allTimeouts && errors.Is(attempt.Err, instance.ErrFirstByteTimeout)
 		}
 		if allConflicts {
 			writeError(c, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "model_name_conflict", Message: attempts[0].Err.Error()})
-			return
-		}
-		if allTimeouts {
-			wire.RecordPreByteCopyError(recorder, string(httperr.CodeUpstreamTimeout), instance.ErrFirstByteTimeout.Error())
-			writeError(c, httperr.Error{Status: http.StatusGatewayTimeout, Type: "api_error", Code: string(httperr.CodeUpstreamTimeout), Message: "The model instances did not begin responding in time."})
 			return
 		}
 	}

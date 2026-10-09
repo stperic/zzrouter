@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"testing/synctest"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -111,7 +115,12 @@ func (f *fakeDeps) ProxyForwardDetached(ctx context.Context, method, url string,
 	f.forwardedContext = ctx
 	f.forwardedTo = append(f.forwardedTo, up)
 	if fn, ok := f.forward[url]; ok {
-		return fn()
+		resp, err := fn()
+		var sendErr *pfallback.RequestError
+		if err != nil && !errors.As(err, &sendErr) {
+			err = &pfallback.RequestError{Err: err, WroteRequest: true}
+		}
+		return resp, err
 	}
 	return &http.Response{
 		StatusCode: http.StatusNotFound,
@@ -689,4 +698,58 @@ func (r chainCutBody) Read(p []byte) (int, error) {
 
 func (*fakeDeps) BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte {
 	return func(body []byte) []byte { return wire.MaybeInjectRoutingMetadata(body, meta, recorder) }
+}
+
+func TestProxyWithFallback_DialFailureRetriesAndCoolsDown(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		deps := newFakeDeps()
+		deps.endpoints["failed"] = "http://failed.test"
+		deps.endpoints["next"] = "http://next.test"
+		deps.forward["http://failed.test/v1/chat/completions"] = func() (*http.Response, error) {
+			return nil, &pfallback.RequestError{Err: &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}}
+		}
+		deps.forward["http://next.test/v1/chat/completions"] = func() (*http.Response, error) {
+			return cannedJSON(http.StatusOK, `{"choices":[]}`), nil
+		}
+		c, w := buildGinCtx(t, `{"model":"group"}`)
+		p := newProxyWithFake(deps)
+		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
+			{Name: "failed", App: "failed", Model: "m", MaxRetries: intPtr(1)},
+			{Name: "next", App: "next", Model: "m"},
+		}), []byte(`{"model":"group"}`), nil, "group", false)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.EqualValues(t, 3, deps.forwardCalls.Load())
+		assert.True(t, p.cooldowns.InCooldown("failed"))
+		assert.True(t, p.providerCooldowns.InCooldown("failed"))
+	})
+}
+
+func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
+	for _, status := range []int{0, http.StatusGatewayTimeout} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			deps := newFakeDeps()
+			deps.endpoints["failed"] = "http://failed.test"
+			deps.forward["http://failed.test/v1/chat/completions"] = func() (*http.Response, error) {
+				if status != 0 {
+					return cannedJSON(status, `{"error":{"message":"timeout"}}`), nil
+				}
+				return nil, &net.OpError{Op: "read", Err: syscall.ECONNRESET}
+			}
+			c, w := buildGinCtx(t, `{"model":"group"}`)
+			p := newProxyWithFake(deps)
+			p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
+				{Name: "failed", App: "failed", Model: "m"},
+				{Name: "next", App: "failed", Model: "m"},
+			}), []byte(`{"model":"group"}`), nil, "group", false)
+			want := status
+			if want == 0 {
+				want = http.StatusBadGateway
+				assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
+			}
+			assert.Equal(t, want, w.Code)
+			assert.EqualValues(t, 1, deps.forwardCalls.Load())
+			assert.False(t, p.cooldowns.InCooldown("failed"))
+			assert.False(t, p.providerCooldowns.InCooldown("failed"))
+		})
+	}
 }

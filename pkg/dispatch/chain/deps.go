@@ -1,8 +1,4 @@
-// Package chain provides the deployment-chain proxy that routes requests
-// through a sequence of candidate backends with pre-stream fallback +
-// retry. A deployment that returns a retriable error (transport-level or
-// HTTP 429/5xx) before the first byte is sent to the client is
-// transparently replaced by the next candidate in the chain.
+// Package chain routes requests through candidate backends with replay-safe retries.
 //
 // The package is "gin-tolerant" — ProxyWithFallback consumes a
 // *gin.Context for the hot request path because the exhausted-deployment
@@ -86,7 +82,7 @@ type Runtime interface {
 	// ProxyForwardDetached sends the outbound request to the backend
 	// but does NOT begin writing to the client. The caller inspects the
 	// response status and decides whether to commit or fall back.
-	// up decides what of the caller's headers travel.
+	// Failed sends preserve write evidence in fallback.RequestError.
 	ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error)
 
 	// Normalizers returns the response-normalizer registry used by the

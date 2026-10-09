@@ -1,6 +1,7 @@
 package fallback
 
 import (
+	"errors"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -28,20 +29,32 @@ func (c Candidate) RetryLimit() int {
 	return *c.MaxRetries
 }
 
-// ShouldRetry returns whether the request should be retried on the same deployment,
-// and the backoff duration to wait before retrying.
-// attempt is 0-indexed (0 = first retry after initial failure).
-func ShouldRetry(attempt int, maxRetries int, statusCode int, err error) (bool, time.Duration) {
+// RetryDecision determines whether and where the chain may send again.
+type RetryDecision uint8
+
+const (
+	// StopRetry ends the chain with this attempt's result.
+	StopRetry RetryDecision = iota
+	// RetryReplica retries the same deployment after backoff.
+	RetryReplica
+	// NextReplica moves on after exhausting this deployment's retries.
+	NextReplica
+)
+
+// ShouldRetry owns replay safety and the retry budget for both replica choices.
+func ShouldRetry(method string, err error, status, attempt, maxRetries int) (RetryDecision, time.Duration) {
+	wroteRequest := true
+	var sendErr *RequestError
+	if errors.As(err, &sendErr) {
+		wroteRequest = sendErr.WroteRequest
+	}
+	if !ReplaySafe(method, err, status, wroteRequest) {
+		return StopRetry, 0
+	}
 	if attempt >= maxRetries {
-		return false, 0
+		return NextReplica, 0
 	}
-
-	if !IsRetriable(statusCode, err) {
-		return false, 0
-	}
-
-	backoff := calcBackoff(attempt)
-	return true, backoff
+	return RetryReplica, calcBackoff(attempt)
 }
 
 // calcBackoff computes exponential backoff with jitter.

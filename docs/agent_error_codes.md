@@ -31,7 +31,9 @@ live only in `runtime.failure_patterns`.
 | `rate_limit_exceeded` | 429 | Per-key RPM/TPM cap or budget reservation rejected the request. | Honor `Retry-After` if present; back off. Check `/zzrouter/v1/keys/:id/usage` for current budget. |
 | `invalid_request_error` (type) | 400 | Generic validation failure. `param` names the offending field. | Read `param`; fix and retry. |
 | `upstream_stream_interrupted` | 502 | The upstream stream ended before completing. | Treat the partial answer as incomplete; retry the request if appropriate. |
-| `backend_error` (type) | 502/503/504 | Upstream provider failed. | Retry with exponential backoff; if persistent, the model's `runtime.status` may be wrong : call `/zzrouter/v1/runs` to redeploy. |
+| `backend_error` (type) | 502/503/504 | Upstream provider failed. | Check whether replay is safe before retrying a billed or side-effecting request; if persistent, inspect `runtime.status`. |
+| `fallback_exhausted` | 502 | A transport failure could have occurred after the upstream ran the request. The group stops without replaying it. | Check upstream execution before resubmitting a billed or side-effecting request. |
+| `upstream_timeout` | 504 | The model instance did not begin responding within its first-byte budget. The group stops without replaying it. | Check upstream execution before resubmitting; it may still be processing the request. |
 | `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details identify managed runs and outside holders by PID. |
 | `unsupported_input` | 400 | The `unsupported_input` class: the engine refused an input kind. | Use a model supporting that input, or remove it from the request. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `chat_completions` without native `responses` automatically derive `responses_compat` and translate supported Responses requests to Chat Completions. |
@@ -41,6 +43,8 @@ live only in `runtime.failure_patterns`.
 Instance overload uses 503 and `Retry-After` in OpenAI, Anthropic and Ollama responses; 429 remains caller quota exhaustion. OpenAI failures after a stream opens carry the same code in band inside HTTP 200, where no new HTTP headers can be sent.
 
 For limited instances, omitted `queue_timeout` waits at most 30 seconds; `"0s"` fails fast and `"caller"` explicitly waits until the caller context ends. At most twice `max_concurrent_requests` requests wait; the next one is refused at once with `capacity_exceeded`. Unlimited instances do not queue.
+
+Group retries for POST and other non-idempotent methods require evidence that no request was written (including dial, DNS and TLS handshake failures), an unreachable deployment, or an upstream refusal with 429, 402 or 503. Written resets, broken pipes, timeouts and upstream 504 responses stop the chain. GET, HEAD, OPTIONS, PUT and DELETE retain broader transport and 504 retries.
 
 The same engine codes reach the management surface when a launch fails.
 Anthropic errors carry the code in `error.code`; Ollama errors retain their flat

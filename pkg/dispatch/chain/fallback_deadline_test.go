@@ -55,11 +55,13 @@ func TestChainLocalStreamUsesLeaseDeadline(t *testing.T) {
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: chainStallBody{deps.forwardedContext, strings.NewReader(chainDeadlineFrame)}}, nil
 				}
 				p := newProxyWithFake(deps)
-				result := p.tryOnce(c, dep, []byte(`{"model":"group","stream":true}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()})
+				result := p.tryOnce(c, dep, []byte(`{"model":"group","stream":true}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now()}, 0, 1)
 				if firstByte {
 					assert.ErrorIs(t, result.attempt.Err, instance.ErrFirstByteTimeout)
 					assert.Equal(t, http.StatusGatewayTimeout, result.attempt.StatusCode)
-					assert.Equal(t, attemptRetry, result.disposition)
+					assert.Equal(t, attemptCommitted, result.disposition)
+					assert.Equal(t, http.StatusGatewayTimeout, w.Code)
+					assert.Contains(t, w.Body.String(), `"code":"upstream_timeout"`)
 				} else {
 					assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
 					assert.NotContains(t, w.Body.String(), "[DONE]")
@@ -78,35 +80,7 @@ type chainDeadlineHook func(llm.InferenceLogData)
 
 func (f chainDeadlineHook) OnInferenceComplete(d llm.InferenceLogData) { f(d) }
 
-func TestChainFirstByteTimeoutRetriesWithoutCompletingRecorder(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		deps := newFakeDeps()
-		inst := localGroupInstance(t, deps, 0)
-		c, w := buildGinCtx(t, `{"model":"group","stream":true}`)
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*constants.DefaultFirstByteTimeout)
-		defer cancel()
-		c.Request = c.Request.WithContext(ctx)
-		var completion []llm.InferenceLogData
-		llm.SetInferenceLogHook(chainDeadlineHook(func(d llm.InferenceLogData) { completion = append(completion, d) }))
-		defer llm.SetInferenceLogHook(nil)
-		rec := llm.NewInferenceRecorder(ctx, "group", "engine")
-		deps.forward["http://localhost:8081/v1/chat/completions"] = func() (*http.Response, error) {
-			if deps.forwardCalls.Load() == 1 {
-				<-deps.forwardedContext.Done()
-				return nil, deps.forwardedContext.Err()
-			}
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(chainDeadlineFrame + "data: [DONE]\n\n"))}, nil
-		}
-		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)}}), []byte(`{"model":"group","stream":true}`), rec, "group", false)
-		require.EqualValues(t, 2, deps.forwardCalls.Load())
-		require.Len(t, completion, 1)
-		assert.Empty(t, completion[0].ErrorType)
-		assert.Contains(t, w.Body.String(), "data: [DONE]")
-		assert.Zero(t, inst.GetActiveRequests())
-	})
-}
-
-func TestChainFirstByteTimeoutExhaustionAnswers504(t *testing.T) {
+func TestChainFirstByteTimeoutIsNotRetried(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		deps := newFakeDeps()
 		inst := localGroupInstance(t, deps, 0)
@@ -121,7 +95,15 @@ func TestChainFirstByteTimeoutExhaustionAnswers504(t *testing.T) {
 			<-deps.forwardedContext.Done()
 			return nil, deps.forwardedContext.Err()
 		}
-		newProxyWithFake(deps).ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)}}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", false)
+		deps.endpoints["next"] = "http://next.test"
+		p := newProxyWithFake(deps)
+		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
+			{Name: "local", App: "engine", Model: "m", OnDemand: true, MaxRetries: intPtr(1)},
+			{Name: "next", App: "next", Model: "m"},
+		}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", false)
+		assert.EqualValues(t, 1, deps.forwardCalls.Load(), "no same-replica retry or second replica")
+		assert.False(t, p.cooldowns.InCooldown("local"))
+		assert.False(t, p.providerCooldowns.InCooldown("engine"))
 		assert.Equal(t, http.StatusGatewayTimeout, w.Code)
 		assert.Contains(t, w.Body.String(), `"code":"upstream_timeout"`)
 		require.Len(t, completion, 1)

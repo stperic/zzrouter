@@ -73,6 +73,7 @@ func (d *chainServerDeps) InjectUsageMetadata() bool {
 
 // ===== Runtime =====
 
+// ProxyForwardDetached preserves the send error and its request-write evidence.
 func (d *chainServerDeps) ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
 	return d.s.proxy.ForwardDetached(ctx, method, url, headers, up, body)
 }
