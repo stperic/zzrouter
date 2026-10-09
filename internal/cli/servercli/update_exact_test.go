@@ -44,6 +44,12 @@ func (b *failedPrivilegedBackend) Status(_ context.Context, _ string) (update.Up
 	run, err := b.handoff.LastRun()
 	return update.UpdateStatus{CurrentVersion: version.MustParseVersion("1.0.0"), Operation: run}, err
 }
+func (b *failedPrivilegedBackend) Manifest(_ context.Context, target string) (update.ReleaseManifest, error) {
+	return update.ReleaseManifest{Version: target, ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion}, nil
+}
+func (b *failedPrivilegedBackend) Window(context.Context, string) (version.ProtocolWindow, error) {
+	return version.LocalProtocolWindow(), nil
+}
 func (b *failedPrivilegedBackend) Apply(ctx context.Context, _ string, target string) (string, error) {
 	b.calls.Add(1)
 	req := &update.Request{Action: update.ActionApply, TargetVersion: target, JobID: "accepted-operation", RequestedAt: b.clock.Now()}
@@ -59,7 +65,7 @@ func TestPrivilegedFailureStopsClusterRollout(t *testing.T) {
 	r, err := update.NewRollouts(filepath.Join(t.TempDir(), "rollout.json"), "coord", b, registry, clk)
 	require.NoError(t, err)
 	defer r.Stop()
-	_, err = r.Submit("2.0.0", []string{"worker", "coord"})
+	_, err = r.Submit(context.Background(), "2.0.0", []string{"worker", "coord"}, nil)
 	require.NoError(t, err)
 	require.NoError(t, r.Start(context.Background()))
 	require.Eventually(t, func() bool { return b.calls.Load() == 1 }, time.Second, time.Millisecond)

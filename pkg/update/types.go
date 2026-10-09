@@ -68,6 +68,23 @@ type ReleaseInfo struct {
 	Draft bool `json:"draft"`
 }
 
+// ReleaseManifest is release.json: the cluster protocol window a release speaks.
+type ReleaseManifest struct {
+	Version            string `json:"version"`
+	ClusterProtocol    int    `json:"cluster_protocol"`
+	MinClusterProtocol int    `json:"min_cluster_protocol"`
+}
+
+// asset returns the named release asset, or nil.
+func (r *ReleaseInfo) asset(name string) *ReleaseAsset {
+	for i := range r.Assets {
+		if r.Assets[i].Name == name {
+			return &r.Assets[i]
+		}
+	}
+	return nil
+}
+
 // ReleaseAsset represents a single file attached to a release
 type ReleaseAsset struct {
 	// Name is the filename

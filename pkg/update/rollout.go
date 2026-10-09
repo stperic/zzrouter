@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
+	"github.com/stperic/zzrouter/pkg/version"
 )
 
 // ErrNodeUnavailable leaves an offline node pending until it reconnects.
@@ -23,6 +26,8 @@ const rolloutHistoryLimit = 20
 
 // RolloutBackend executes version-only commands through the node transport.
 type RolloutBackend interface {
+	Manifest(context.Context, string) (ReleaseManifest, error)
+	Window(context.Context, string) (version.ProtocolWindow, error)
 	Status(context.Context, string) (UpdateStatus, error)
 	Apply(context.Context, string, string) (string, error)
 }
@@ -32,6 +37,7 @@ type NodeUpdate struct {
 	Node                string     `json:"node"`
 	State               string     `json:"state"`
 	FromVersion         string     `json:"from_version,omitempty"`
+	WaitingSince        *time.Time `json:"waiting_since,omitempty"` // bounds a node that never starts
 	StartedAt           *time.Time `json:"started_at,omitempty"`
 	OperationID         string     `json:"operation_id,omitempty"`
 	PreviousOperationID string     `json:"previous_operation_id,omitempty"`
@@ -110,20 +116,12 @@ func (r *Rollouts) Start(ctx context.Context) error {
 func (r *Rollouts) Stop() { r.mu.Lock(); r.stopped = true; r.cancel(); r.mu.Unlock(); r.wg.Wait() }
 
 // Submit persists before any node command, refusing concurrent rollouts.
-func (r *Rollouts) Submit(target string, nodes []string) (Rollout, error) {
+func (r *Rollouts) Submit(ctx context.Context, target string, nodes, peers []string) (Rollout, error) {
 	if err := ValidateVersion(target); err != nil {
 		return Rollout{}, err
 	}
 	if len(nodes) == 0 || len(nodes) > 64 {
 		return Rollout{}, fmt.Errorf("select between 1 and 64 nodes")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.stopped {
-		return Rollout{}, context.Canceled
-	}
-	if len(r.records) > 0 && r.records[0].State == "running" {
-		return Rollout{}, ErrApplyInFlight
 	}
 	ordered := slices.Clone(nodes)
 	slices.Sort(ordered)
@@ -134,6 +132,22 @@ func (r *Rollouts) Submit(target string, nodes []string) (Rollout, error) {
 	}
 	if i := slices.Index(ordered, r.local); i >= 0 {
 		ordered = append(slices.Delete(ordered, i, i+1), r.local)
+	}
+	// Network I/O stays outside mu so a slow peer cannot block Cancel or Stop.
+	manifest, err := r.backend.Manifest(ctx, target)
+	if err != nil {
+		return Rollout{}, err
+	}
+	if err := r.preflight(ctx, manifest, ordered, peers); err != nil {
+		return Rollout{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return Rollout{}, context.Canceled
+	}
+	if len(r.records) > 0 && r.records[0].State == "running" {
+		return Rollout{}, ErrApplyInFlight
 	}
 	h, err := r.jobs.StartDetached(jobs.KindUpdate, "", jobs.Meta{"version": target})
 	if err != nil {
@@ -156,6 +170,26 @@ func (r *Rollouts) Submit(target string, nodes []string) (Rollout, error) {
 	r.handle = h
 	h.Meta(jobs.Meta{"nodes": cloneRollout(record).Nodes})
 	return cloneRollout(record), nil
+}
+
+func (r *Rollouts) preflight(ctx context.Context, manifest ReleaseManifest, selected, peers []string) error {
+	coordinator := version.LocalProtocolWindow()
+	if err := coordinator.Check(manifest.ClusterProtocol); err != nil {
+		return httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s protocol %d is outside coordinator %q window [%d, %d]; use a coordinated protocol cutover", manifest.Version, manifest.ClusterProtocol, r.local, coordinator.Min, coordinator.Max)}
+	}
+	nodes := append(slices.Clone(peers), selected...)
+	nodes = append(nodes, r.local)
+	slices.Sort(nodes)
+	for _, node := range slices.Compact(nodes) {
+		window, err := r.backend.Window(ctx, node)
+		if err != nil || window.Min < 1 || window.Max < window.Min {
+			return httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeNodeUnreachable), Message: fmt.Sprintf("node %q protocol window could not be read; release %s requires [%d, %d]", node, manifest.Version, manifest.MinClusterProtocol, manifest.ClusterProtocol)}
+		}
+		if !slices.Contains(selected, node) && window.Max < manifest.MinClusterProtocol {
+			return httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s minimum protocol %d would strand unselected node %q with protocol %d (window [%d, %d]); use a coordinated protocol cutover", manifest.Version, manifest.MinClusterProtocol, node, window.Max, window.Min, window.Max)}
+		}
+	}
+	return ctx.Err()
 }
 
 // Cancel persists the decision before acknowledging cancellation. Accepted node work may finish.
@@ -198,9 +232,11 @@ func (r *Rollouts) History() []Rollout {
 func cloneRollout(v Rollout) Rollout {
 	v.Nodes = slices.Clone(v.Nodes)
 	for i := range v.Nodes {
-		if v.Nodes[i].StartedAt != nil {
-			t := *v.Nodes[i].StartedAt
-			v.Nodes[i].StartedAt = &t
+		for _, p := range []**time.Time{&v.Nodes[i].WaitingSince, &v.Nodes[i].StartedAt} {
+			if *p != nil {
+				t := **p
+				*p = &t
+			}
 		}
 	}
 	return v
@@ -277,6 +313,15 @@ func (r *Rollouts) step(ctx context.Context) {
 
 func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h jobs.Handle) {
 	node := record.Nodes[i]
+	if node.WaitingSince == nil {
+		waiting := r.clock.Now()
+		changed, err := r.change(record.JobID, func(v *Rollout) { v.Nodes[i].WaitingSince = &waiting })
+		if err != nil {
+			h.Progress(0, "retrying rollout persistence: "+err.Error(), jobs.Bytes{})
+			return
+		}
+		node = changed.Nodes[i]
+	}
 	observation, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	status, err := r.backend.Status(observation, node.Node)
@@ -284,8 +329,16 @@ func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h job
 		return
 	}
 	if errors.Is(err, ErrNodeUnavailable) {
-		if node.StartedAt != nil && r.clock.Since(*node.StartedAt) > rolloutApplyTimeout {
-			r.fail(record.JobID, i, "node did not return healthy after update", h)
+		since := node.WaitingSince
+		if node.StartedAt != nil {
+			since = node.StartedAt
+		}
+		if r.clock.Since(*since) > rolloutApplyTimeout {
+			msg := "node did not return healthy after update"
+			if node.StartedAt == nil {
+				msg = "node was unreachable and never started the update"
+			}
+			r.fail(record.JobID, i, msg, h)
 		}
 		return
 	}

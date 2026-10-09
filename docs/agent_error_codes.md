@@ -136,9 +136,24 @@ Errors use Problem Details. Common `title`/`code` pairs an agent will see:
 
 ### Cross-node job lookup
 
-Agents do **not** need to pass `?node=` on `GET /zzrouter/v1/jobs/:id`
-or `…/stream` : the coordinator now fans out across peers and returns
-the first owner's response. A 404 means no peer claims the job.
+Agents do **not** need to pass `?node=` on `GET /zzrouter/v1/jobs/:id`,
+`GET …/stream`, or `DELETE /zzrouter/v1/jobs/:id`: the coordinator checks
+its local registry, then probes peers and returns the first owner's response.
+Only definite 404 replies from every peer establish absence. No configured
+peers means the local registry is the complete lookup.
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `job_not_found` | 404 | No local job exists and every peer confirmed absence. Jobs live in memory on the node that runs them and are evicted after the completed-job retention window; `detail` gives the duration from `jobs.DefaultCompletedTTL`. | Check the job ID. An evicted job cannot be recovered by retrying the lookup. |
+| `node_unreachable` | 503 | A peer that may own the job did not answer definitively, so absence is unconfirmed. | Honor `Retry-After` and retry the lookup. |
+
+### Cluster update rollout preflight
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `release_manifest_missing` | 409 | The exact target release has no signed `release.json` protocol manifest. No rollout was accepted. | Choose a release publishing the manifest, or perform an operator-managed upgrade. |
+| `protocol_cutover_required` | 409 | The target protocol is outside the coordinator's accepted window, or its minimum would strand an unselected peer. No rollout was accepted. | Follow [the protocol cutover procedure](protocol_versioning.md); current protocol values live in `pkg/version/protocol.go`. |
+| `node_unreachable` | 503 | A selected or unselected peer's current protocol window could not be read. No rollout was accepted. | Restore connectivity, honor `Retry-After`, and retry. |
 
 ## Idempotency notes
 

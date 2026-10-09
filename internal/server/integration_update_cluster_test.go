@@ -17,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -24,8 +26,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type pausedUpdates struct{}
+type pausedUpdates struct {
+	manifest      *update.ReleaseManifest
+	manifestError error
+	windowError   error
+}
 
+func (p pausedUpdates) Manifest(_ context.Context, target string) (update.ReleaseManifest, error) {
+	if p.manifestError != nil {
+		return update.ReleaseManifest{}, p.manifestError
+	}
+	if p.manifest != nil {
+		return *p.manifest, nil
+	}
+	return update.ReleaseManifest{Version: target, ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion}, nil
+}
+func (p pausedUpdates) Window(context.Context, string) (version.ProtocolWindow, error) {
+	return version.LocalProtocolWindow(), p.windowError
+}
 func (pausedUpdates) Status(context.Context, string) (update.UpdateStatus, error) {
 	return update.UpdateStatus{}, update.ErrNodeUnavailable
 }
@@ -163,7 +181,7 @@ func TestUpdateWireVersionOnlyAndUnsupportedPeer(t *testing.T) {
 			}
 			engine := gin.New()
 			engine.GET("/zzrouter/v1/internal/version", func(c *gin.Context) {
-				c.JSON(200, version.VersionInfo{ClusterProtocol: version.ClusterProtocolVersion, Capabilities: capabilities})
+				c.JSON(200, version.VersionInfo{ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion, Capabilities: capabilities})
 			})
 			engine.POST("/zzrouter/v1/internal/update/apply", func(c *gin.Context) {
 				var body map[string]any
@@ -291,4 +309,67 @@ func TestIntegrationUpdateRemoteWorkerOwnsSettingsAndRelease(t *testing.T) {
 	require.ErrorContains(t, errors.New(status.Operation.Error), "checksums.txt.sigstore.json")
 	require.False(t, status.Operation.Success)
 	require.Nil(t, coord.updateScheduler.GetStatus().Operation, "coordinator performed the worker's install")
+}
+
+func TestUpdateRolloutPreflightResponses(t *testing.T) {
+	target := "2.0.0"
+	for _, tc := range []struct {
+		name    string
+		backend pausedUpdates
+		status  int
+		code    httperr.RouteErrorCode
+	}{
+		{"cutover", pausedUpdates{manifest: &update.ReleaseManifest{Version: target, ClusterProtocol: version.ClusterProtocolVersion + 1, MinClusterProtocol: version.MinClusterProtocolVersion}}, http.StatusConflict, httperr.CodeProtocolCutoverRequired},
+		{"unreachable", pausedUpdates{windowError: update.ErrNodeUnavailable}, http.StatusServiceUnavailable, httperr.CodeNodeUnreachable},
+		{"missing manifest", pausedUpdates{manifestError: httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeReleaseManifestMissing), Message: "release has no release.json"}}, http.StatusConflict, httperr.CodeReleaseManifestMissing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, err := jobs.NewRegistry(jobs.Config{NodeName: "coord", Clock: clock.System()})
+			require.NoError(t, err)
+			t.Cleanup(registry.Stop)
+			path := filepath.Join(t.TempDir(), "rollouts.json")
+			owner, err := update.NewRollouts(path, "coord", tc.backend, registry, clock.System())
+			require.NoError(t, err)
+			t.Cleanup(owner.Stop)
+			sched := update.NewSchedulerIn(t.TempDir(), &config.UpdateConfig{}, clock.System())
+			t.Cleanup(sched.Stop)
+			s := &Server{node: &NodeIdentity{name: "coord"}, updateRollouts: owner, updateScheduler: sched}
+			controller := NewUpdateController(func() *update.Scheduler { return sched })
+			controller.server = s
+			engine := gin.New()
+			engine.POST("/update/apply", controller.HandleApplyNow)
+			out := httptest.NewRecorder()
+			engine.ServeHTTP(out, httptest.NewRequest(http.MethodPost, "/update/apply", bytes.NewBufferString(`{"version":"2.0.0"}`)))
+			require.Equal(t, tc.status, out.Code, out.Body.String())
+			var problem struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, json.Unmarshal(out.Body.Bytes(), &problem))
+			require.Equal(t, string(tc.code), problem.Code)
+			if tc.status == http.StatusServiceUnavailable {
+				retry, err := strconv.Atoi(out.Header().Get("Retry-After"))
+				require.NoError(t, err)
+				require.Positive(t, retry)
+			}
+			_, err = os.Stat(path)
+			require.True(t, os.IsNotExist(err))
+			require.Empty(t, owner.History())
+		})
+	}
+}
+
+func TestUpdateVersionQueryReadsProtocolWindow(t *testing.T) {
+	engine := gin.New()
+	engine.GET("/zzrouter/v1/internal/version", func(c *gin.Context) {
+		c.JSON(http.StatusOK, version.VersionInfo{ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion})
+	})
+	client := &updateWireClient{engine: engine}
+	peer, err := queryUpdateVersion(context.Background(), client, "worker")
+	require.NoError(t, err)
+	require.Equal(t, version.ClusterProtocolVersion, peer.ClusterProtocol)
+	require.Equal(t, version.MinClusterProtocolVersion, peer.MinClusterProtocol)
+	require.Equal(t, []string{"/zzrouter/v1/internal/version"}, client.requests)
+	client.unavailable = true
+	_, err = queryUpdateVersion(context.Background(), client, "worker")
+	require.ErrorIs(t, err, update.ErrNodeUnavailable)
 }

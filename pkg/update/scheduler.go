@@ -528,33 +528,13 @@ func (s *Scheduler) applyUpdate(ctx context.Context, release *ReleaseInfo, h job
 	}
 	downloadRecorder.RecordDownloadResult(UpdateStatusSuccess, downloadResult.Size, downloadResult.Resumed)
 
-	// Download checksums
-	checksumAsset := s.checker.GetChecksumAsset(release)
-	_, err = s.downloader.DownloadChecksums(ctx, checksumAsset)
-	if err != nil {
-		s.recordUpdate(fromVersion, release.Version, false, err.Error(), s.clock.Since(startTime))
-		return fmt.Errorf("checksums download failed: %w", err)
-	}
-
-	bundlePath, err := s.downloader.DownloadBundle(ctx, bundleAsset)
-	if err != nil {
-		s.recordUpdate(fromVersion, release.Version, false, err.Error(), s.clock.Since(startTime))
-		return fmt.Errorf("signature bundle download failed: %w", err)
-	}
-
-	// Verify
 	s.setState(StateVerifying)
 	if h != nil {
 		h.Progress(100, "verifying", jobs.Bytes{})
 	}
-	verifyResult, err := s.verifier.Verify(downloadResult, bundlePath, release.Version.String())
-	if err != nil {
+	if err := s.verifier.verifyRelease(ctx, s.downloader, release, downloadResult); err != nil {
 		s.recordUpdate(fromVersion, release.Version, false, err.Error(), s.clock.Since(startTime))
-		return fmt.Errorf("verification failed: %w", err)
-	}
-	if !verifyResult.Valid {
-		s.recordUpdate(fromVersion, release.Version, false, verifyResult.Error, s.clock.Since(startTime))
-		return fmt.Errorf("verification failed: %s", verifyResult.Error)
+		return err
 	}
 
 	// Install

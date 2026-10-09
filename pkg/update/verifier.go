@@ -2,6 +2,7 @@ package update
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"fmt"
 	"io"
@@ -14,6 +15,24 @@ import (
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/version"
 )
+
+func (v *Verifier) verifyRelease(ctx context.Context, d *Downloader, release *ReleaseInfo, download *DownloadResult) error {
+	if _, err := d.DownloadChecksums(ctx, release.asset("checksums.txt")); err != nil {
+		return fmt.Errorf("checksums download failed: %w", err)
+	}
+	bundlePath, err := d.DownloadBundle(ctx, release.asset("checksums.txt.sigstore.json"))
+	if err != nil {
+		return fmt.Errorf("signature bundle download failed: %w", err)
+	}
+	result, err := v.Verify(download, bundlePath, release.Version.String())
+	if err != nil {
+		return fmt.Errorf("verification failed: %w", err)
+	}
+	if !result.Valid {
+		return fmt.Errorf("verification failed: %s", result.Error)
+	}
+	return nil
+}
 
 // The public trust material was authenticated through Sigstore TUF before embedding.
 //
