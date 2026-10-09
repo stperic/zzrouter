@@ -258,8 +258,9 @@ def plan(nodes, only_providers=()):
 
 
 def catalog(node, provider=None):
+    """The models a node can serve; an incomplete download is not one of them."""
     _, d, _ = http("GET", f"/zzrouter/v1/models?node={node}&limit=500&refresh=true")
-    return {m["name"]: m for m in d.get("data") or [] if provider in (None, m.get("assigned_app"))}
+    return {m["name"]: m for m in d.get("data") or [] if provider in (None, m.get("assigned_app")) and not m.get("incomplete")}
 
 
 def vision_state(node, provider, name):
