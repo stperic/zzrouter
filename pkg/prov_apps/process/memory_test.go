@@ -2,6 +2,7 @@ package process
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
@@ -9,6 +10,48 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMemoryFitErrorAttributesDescendants(t *testing.T) {
+	parents := map[int32]int32{44: 43, 43: 42, 99: 1, 1: 0, 100: 101, 101: 100}
+	read := parentPID
+	t.Cleanup(func() { parentPID = read })
+	parentPID = func(pid int32) (int32, error) {
+		parent, ok := parents[pid]
+		if !ok {
+			return 0, os.ErrPermission
+		}
+		return parent, nil
+	}
+	for _, tc := range []struct {
+		name string
+		pid  int
+		run  string
+	}{
+		{name: "run process", pid: 42, run: "run-owned"},
+		{name: "child", pid: 43, run: "run-owned"},
+		{name: "grandchild", pid: 44, run: "run-owned"},
+		{name: "unrelated", pid: 99},
+		{name: "unreadable", pid: 98},
+		{name: "cycle", pid: 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			held := int64(3000)
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000, Processes: []gpu.MemoryProcess{{PID: tc.pid, MemoryMiB: &held}}}
+			failure := memoryFitError("budget", device, 9500, map[int]string{42: "run-owned"})
+			require.Len(t, failure.Holders, 1)
+			holder := failure.Holders[0]
+			assert.Equal(t, tc.pid, holder.PID)
+			assert.Equal(t, tc.run, holder.Run)
+			if tc.run != "" {
+				assert.Equal(t, "zzrouter", holder.Ownership)
+				assert.Contains(t, failure.Error(), "held by zzRouter run run-owned")
+			} else {
+				assert.Equal(t, "other_or_untracked", holder.Ownership)
+				assert.Contains(t, failure.Error(), "held by a process zzRouter does not manage")
+			}
+		})
+	}
+}
 
 func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "devices"}
