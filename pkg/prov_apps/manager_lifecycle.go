@@ -304,7 +304,13 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	inst.SetResolved(prepared.resolved)
 	// An incomplete download reaches the engine as a corrupt-tensor crash
 	// tens of seconds in; catching it here names the actual problem.
-	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath); err != nil {
+	var featurePaths []string
+	for _, feature := range prepared.config.Features {
+		if path := prepared.parameters.Params[feature.Flag]; len(feature.Files) > 0 && path != "" {
+			featurePaths = append(featurePaths, path)
+		}
+	}
+	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths...); err != nil {
 		return admittedRun{}, err
 	}
 	if err := ctx.Err(); err != nil {

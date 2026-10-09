@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 )
 
@@ -25,17 +27,32 @@ var ErrModelIncomplete = errors.New("model weights incomplete")
 // download finish" would cost more than the launch itself. Models with no
 // manifest (Ollama pulls, hand-placed files) pass through — the manifest is
 // evidence when present, not a requirement.
-func VerifyLocalWeights(ctx context.Context, modelPath string) error {
+func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths ...string) error {
 	if modelPath == "" {
 		return nil
 	}
+	modelPath = filepath.Clean(modelPath)
 
 	dir, ok := manifestDir(modelPath)
 	if !ok {
 		return nil
 	}
 
-	complete, err := integrity.NewIntegrityVerifier().QuickVerify(ctx, dir)
+	paths := append([]string{modelPath}, featurePaths...)
+	info, statErr := os.Stat(modelPath)
+	if layout.IsGGUF(modelPath) {
+		variant, ok := layout.VariantOf(modelPath)
+		if !ok {
+			return fmt.Errorf("%w: %s (re-download to repair)", ErrModelIncomplete, modelPath)
+		}
+		for _, f := range variant.Files {
+			paths = append(paths, filepath.Join(filepath.Dir(modelPath), filepath.FromSlash(f.Path)))
+		}
+	}
+	complete, err := integrity.NewIntegrityVerifier().QuickVerify(ctx, dir, func(f integrity.FileChecksum) bool {
+		p := filepath.Join(dir, f.RelativePath)
+		return slices.Contains(paths, p) || (statErr == nil && info.IsDir() && f.Feature == "" && strings.HasPrefix(p, modelPath+string(filepath.Separator)))
+	})
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", dir, err)
 	}

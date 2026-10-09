@@ -154,7 +154,7 @@ func TestModelCacheE2E_SharedToCache(t *testing.T) {
 		cachePath := filepath.Join(workerCacheDir, testModelName, testFormat)
 
 		// QuickVerify should pass (metadata check only)
-		valid, err := verifier.QuickVerify(ctx, cachePath)
+		valid, err := verifier.QuickVerify(ctx, cachePath, nil)
 		require.NoError(t, err)
 		assert.True(t, valid, "Cache should pass quick verification")
 
@@ -190,7 +190,7 @@ func TestModelCacheE2E_SharedToCache(t *testing.T) {
 		verifier.InvalidateCache(cachePath)
 
 		// QuickVerify should fail (size mismatch)
-		valid, err := verifier.QuickVerify(ctx, cachePath)
+		valid, err := verifier.QuickVerify(ctx, cachePath, nil)
 		require.NoError(t, err)
 		assert.False(t, valid, "Corrupted cache should fail quick verification")
 
@@ -551,7 +551,7 @@ func TestModelCacheE2E_WorkerFirstUseFromShared(t *testing.T) {
 		verifier := modelcache.NewIntegrityVerifier()
 
 		// QuickVerify should pass (fast path)
-		valid, err := verifier.QuickVerify(ctx, cachePath)
+		valid, err := verifier.QuickVerify(ctx, cachePath, nil)
 		require.NoError(t, err)
 		assert.True(t, valid, "Cache should pass quick verification")
 
@@ -574,7 +574,7 @@ func TestModelCacheE2E_WorkerFirstUseFromShared(t *testing.T) {
 		verifier.InvalidateCache(cachePath)
 
 		// QuickVerify should fail
-		valid, err := verifier.QuickVerify(ctx, cachePath)
+		valid, err := verifier.QuickVerify(ctx, cachePath, nil)
 		require.NoError(t, err)
 		assert.False(t, valid, "Corrupted cache should fail quick verification")
 
