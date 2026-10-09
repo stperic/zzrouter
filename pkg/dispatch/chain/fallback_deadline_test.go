@@ -102,8 +102,8 @@ func TestChainFirstByteTimeoutIsNotRetried(t *testing.T) {
 			{Name: "next", App: "next", Model: "m"},
 		}), []byte(`{"model":"group","stream":true}`), llm.NewInferenceRecorder(ctx, "group", "engine"), "group", false)
 		assert.EqualValues(t, 1, deps.forwardCalls.Load(), "no same-replica retry or second replica")
-		assert.False(t, p.cooldowns.InCooldown("local"))
-		assert.False(t, p.providerCooldowns.InCooldown("engine"))
+		assert.True(t, p.cooldowns.InCooldown("local"), "a stalled replica is not replayed, but it is unhealthy")
+		assert.True(t, p.providerCooldowns.InCooldown("engine"))
 		assert.Equal(t, http.StatusGatewayTimeout, w.Code)
 		assert.Contains(t, w.Body.String(), `"code":"upstream_timeout"`)
 		require.Len(t, completion, 1)

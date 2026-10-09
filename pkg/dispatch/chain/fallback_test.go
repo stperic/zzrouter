@@ -749,8 +749,8 @@ func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
 			}
 			assert.Equal(t, want, w.Code)
 			assert.EqualValues(t, 1, deps.forwardCalls.Load())
-			assert.False(t, p.cooldowns.InCooldown("failed"))
-			assert.False(t, p.providerCooldowns.InCooldown("failed"))
+			assert.True(t, p.cooldowns.InCooldown("failed"), "not replayed, but the replica failed after the request left")
+			assert.True(t, p.providerCooldowns.InCooldown("failed"))
 		})
 	}
 }

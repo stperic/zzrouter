@@ -325,7 +325,9 @@ const (
 type attemptOutcome struct {
 	attempt     pfallback.Attempt
 	disposition attemptDisposition
-	backoff     time.Duration
+	// retry and backoff are set when disposition is attemptRetry.
+	retry   pfallback.RetryDecision
+	backoff time.Duration
 }
 
 // tryDeployment attempts one deployment, retrying it with backoff while no lease is held, and
@@ -355,26 +357,31 @@ func (p *Proxy) tryDeployment(
 		}
 
 		a := outcome.attempt
-		if backoff := outcome.backoff; backoff > 0 {
-			utils.LogDebugf("[Fallback] %q retry %d/%d (status %d, backoff %s): %v", dep.Name, retry+1, maxRetries, a.StatusCode, backoff, a.Err)
+		if outcome.retry == pfallback.RetryReplica {
+			utils.LogDebugf("[Fallback] %q retry %d/%d (status %d, backoff %s): %v", dep.Name, retry+1, maxRetries, a.StatusCode, outcome.backoff, a.Err)
 			select {
-			case <-time.After(backoff):
+			case <-time.After(outcome.backoff):
 			case <-c.Request.Context().Done():
 				return attempts, attemptClientGone
 			}
 			continue
 		}
-
-		cooldownDur, reason := pfallback.CooldownForStatus(a.StatusCode), pfallback.ReasonForStatus(a.StatusCode)
-		if a.Err != nil {
-			cooldownDur, reason = pfallback.DefaultCooldownDuration, pfallback.ReasonTransport
-		}
-		p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
-		p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
-		utils.LogDebugf("[Fallback] %q retries exhausted (status %d, cooldown %s): %v", dep.Name, a.StatusCode, cooldownDur, a.Err)
+		p.coolDown(dep, a)
 		return attempts, attemptNextReplica
 	}
 	return attempts, attemptNextReplica
+}
+
+// coolDown takes a failing deployment and its provider out of rotation, for a transport error or
+// for the status it answered.
+func (p *Proxy) coolDown(dep pfallback.Candidate, a pfallback.Attempt) {
+	cooldownDur, reason := pfallback.CooldownForStatus(a.StatusCode), pfallback.ReasonForStatus(a.StatusCode)
+	if a.Err != nil {
+		cooldownDur, reason = pfallback.DefaultCooldownDuration, pfallback.ReasonTransport
+	}
+	p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
+	p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
+	utils.LogDebugf("[Fallback] %q cooled down (status %d, %s): %v", dep.Name, a.StatusCode, cooldownDur, a.Err)
 }
 
 // tryOnce makes one attempt. A local instance is leased for the whole attempt, body relay
@@ -426,8 +433,12 @@ func (p *Proxy) tryOnce(
 	}
 	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
 	if err != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+			resp = nil
+		}
 		if cause := context.Cause(attemptCtx); errors.Is(cause, instance.ErrFirstByteTimeout) {
-			err = errors.Join(err, cause)
+			err = fmt.Errorf("%w: %w", cause, err)
 		}
 		if errors.Is(err, instance.ErrFirstByteTimeout) {
 			err = &pfallback.RequestError{Err: err, WroteRequest: true}
@@ -458,8 +469,12 @@ func (p *Proxy) tryOnce(
 			p.trackRateLimitHeaders(resp, dep)
 			_ = resp.Body.Close()
 		}
-		outcome.disposition, outcome.backoff = attemptRetry, backoff
+		outcome.disposition, outcome.retry, outcome.backoff = attemptRetry, decision, backoff
 		return outcome
+	}
+	// Not replayed, but a failure after the request left still marks the replica unhealthy.
+	if err != nil || outcome.attempt.StatusCode == http.StatusGatewayTimeout {
+		p.coolDown(dep, outcome.attempt)
 	}
 	if err != nil {
 		outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptCommitted

@@ -118,3 +118,48 @@ func TestPostWrittenTraceStopsChain(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
 }
+
+// A POST that never left (the first replica refuses the connection) is safe to send to the next.
+func TestPostRefusedDialMovesToNextReplica(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closed := "http://" + ln.Addr().String()
+	require.NoError(t, ln.Close())
+	var hits atomic.Int32
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"m","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(live.Close)
+
+	s, _ := instanceStreamTestServer()
+	s.model = &model.Subsystem{}
+	s.appsConfig = &config.AppsConfig{}
+	for name, endpoint := range map[string]string{"down": closed, "up": live.URL} {
+		require.NoError(t, s.appsConfig.AddApp(name, config.ServiceConfig{
+			Enabled: new(true), Mode: "service", Protocol: config.ProtocolOpenAI,
+			Runtime:      &config.AppRuntimeConfig{Endpoint: endpoint},
+			Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+		}))
+	}
+	s.backend = backend.NewResolver(func() *config.AppsConfig { return s.appsConfig })
+	s.proxy = NewProxyClient(&http.Client{}, nil, s.inference.normalizers, nil, nil, nil, nil)
+	strategies := fallback.NewStrategyRegistry()
+	strategies.Register(&fallback.PriorityStrategy{})
+	cooldowns := fallback.NewCooldownManager()
+	p := chain.New(newChainServerDeps(s), cooldowns, fallback.NewCooldownManager(), strategies, nil, nil, nil)
+	noRetry := 0
+	group := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: []fallback.Candidate{
+		{Name: "first", App: "down", Model: "m", Priority: 1, MaxRetries: &noRetry},
+		{Name: "second", App: "up", Model: "m", Priority: 2},
+	}}
+	c, w := streamEndContext(t, openaiproto.New())
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"hi"}]}`), nil, "group", false)
+
+	assert.EqualValues(t, 1, hits.Load(), "the refused POST never ran, so the next replica serves it")
+	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.True(t, cooldowns.InCooldown("first"), "a replica that refuses connections is cooled down")
+}
