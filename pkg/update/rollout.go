@@ -50,6 +50,9 @@ type Rollout struct {
 	Version string       `json:"version"`
 	State   string       `json:"state"`
 	Nodes   []NodeUpdate `json:"nodes"`
+	// UncheckedPeers are unselected peers whose protocol could not be read (a sleeping worker, say).
+	// They are not updated; the cluster protocol gate decides whether they rejoin.
+	UncheckedPeers []string `json:"unchecked_peers,omitempty"`
 }
 
 // Rollouts owns one serial loop and a bounded record of update jobs.
@@ -138,7 +141,8 @@ func (r *Rollouts) Submit(ctx context.Context, target string, nodes, peers []str
 	if err != nil {
 		return Rollout{}, err
 	}
-	if err := r.preflight(ctx, manifest, ordered, peers); err != nil {
+	unchecked, err := r.preflight(ctx, manifest, ordered, peers)
+	if err != nil {
 		return Rollout{}, err
 	}
 	r.mu.Lock()
@@ -153,7 +157,7 @@ func (r *Rollouts) Submit(ctx context.Context, target string, nodes, peers []str
 	if err != nil {
 		return Rollout{}, err
 	}
-	record := Rollout{JobID: h.ID(), Version: target, State: "running"}
+	record := Rollout{JobID: h.ID(), Version: target, State: "running", UncheckedPeers: unchecked}
 	for _, n := range ordered {
 		record.Nodes = append(record.Nodes, NodeUpdate{Node: n, State: "pending"})
 	}
@@ -172,24 +176,31 @@ func (r *Rollouts) Submit(ctx context.Context, target string, nodes, peers []str
 	return cloneRollout(record), nil
 }
 
-func (r *Rollouts) preflight(ctx context.Context, manifest ReleaseManifest, selected, peers []string) error {
+// preflight refuses a release that would strand a node, and returns the unselected peers it could
+// not check: a peer that is down cannot be stranded by an update it does not take.
+func (r *Rollouts) preflight(ctx context.Context, manifest ReleaseManifest, selected, peers []string) ([]string, error) {
 	coordinator := version.LocalProtocolWindow()
 	if err := coordinator.Check(manifest.ClusterProtocol); err != nil {
-		return httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s protocol %d is outside coordinator %q window [%d, %d]; use a coordinated protocol cutover", manifest.Version, manifest.ClusterProtocol, r.local, coordinator.Min, coordinator.Max)}
+		return nil, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s protocol %d is outside coordinator %q window [%d, %d]; use a coordinated protocol cutover", manifest.Version, manifest.ClusterProtocol, r.local, coordinator.Min, coordinator.Max)}
 	}
 	nodes := append(slices.Clone(peers), selected...)
 	nodes = append(nodes, r.local)
 	slices.Sort(nodes)
+	var unchecked []string
 	for _, node := range slices.Compact(nodes) {
 		window, err := r.backend.Window(ctx, node)
 		if err != nil || window.Min < 1 || window.Max < window.Min {
-			return httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeNodeUnreachable), Message: fmt.Sprintf("node %q protocol window could not be read; release %s requires [%d, %d]", node, manifest.Version, manifest.MinClusterProtocol, manifest.ClusterProtocol)}
+			if node != r.local && !slices.Contains(selected, node) {
+				unchecked = append(unchecked, node)
+				continue
+			}
+			return nil, httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeNodeUnreachable), Message: fmt.Sprintf("node %q protocol window could not be read; release %s requires [%d, %d]", node, manifest.Version, manifest.MinClusterProtocol, manifest.ClusterProtocol)}
 		}
 		if !slices.Contains(selected, node) && window.Max < manifest.MinClusterProtocol {
-			return httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s minimum protocol %d would strand unselected node %q with protocol %d (window [%d, %d]); use a coordinated protocol cutover", manifest.Version, manifest.MinClusterProtocol, node, window.Max, window.Min, window.Max)}
+			return nil, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeProtocolCutoverRequired), Message: fmt.Sprintf("release %s minimum protocol %d would strand unselected node %q with protocol %d (window [%d, %d]); use a coordinated protocol cutover", manifest.Version, manifest.MinClusterProtocol, node, window.Max, window.Min, window.Max)}
 		}
 	}
-	return ctx.Err()
+	return unchecked, ctx.Err()
 }
 
 // Cancel persists the decision before acknowledging cancellation. Accepted node work may finish.
