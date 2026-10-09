@@ -31,7 +31,7 @@ const (
 // Remedies the caller is told; shared by surfaces that report the class without a table lookup.
 const (
 	ChatTemplateRemedy = "An admin can upload a chat template that accepts it and select it for this model; GET /zzrouter/v1 explains how under chat_templates."
-	ToolCallingRemedy  = "Set the provider's tool-calling launch parameters for this model with PATCH /zzrouter/v1/providers/{name}/parameters, then restart the run."
+	ToolCallingRemedy  = `For vLLM, PATCH /zzrouter/v1/providers/{name}/parameters with {"models":{"{model}":{"parameters":{"enable-auto-tool-choice":true,"tool-call-parser":"{parser}"}}}} using the operator's per-family parser from the model publisher's serving instructions, then restart the run and probe again with zz_chat tools: true.`
 )
 
 // failureClasses is the one table: each class's status, code, message prefix and remedy.

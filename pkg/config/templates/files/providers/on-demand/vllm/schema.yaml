@@ -3,6 +3,15 @@
 # tensor-parallel-size, dtype). Everything here augments it.
 provider: vllm
 parameters:
+  enable-auto-tool-choice:
+    type: bool
+    description: Enable automatic tool calling
+  tool-call-parser:
+    type: string
+    description: Tool parser for this model family, from the model publisher's serving instructions
+  reasoning-parser:
+    type: string
+    description: Separates thinking text from content independently of tool calling; choose for this model family from the model publisher's serving instructions
   enable-chunked-prefill:
     type: bool
     description: Enable chunked prefill for long contexts

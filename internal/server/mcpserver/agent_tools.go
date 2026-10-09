@@ -21,6 +21,10 @@ const (
 	DefaultChatTokens = 64
 	// MaxChatTokens bounds the cost of this smoke-test surface.
 	MaxChatTokens = 256
+	// ToolProbeTokens leaves room for reasoning before a tool call while bounding probe cost.
+	ToolProbeTokens = 4096
+	probeFunction   = "lookup_weather"
+	probeMessage    = "What is the current weather in Paris? Call lookup_weather with city Paris to find out; do not guess."
 	// DefaultLogLines gives diagnostic context without dumping a whole log.
 	DefaultLogLines = 200
 	// MaxLogLines bounds line count before the dispatcher enforces its byte cap.
@@ -138,8 +142,9 @@ type patchInput struct {
 type chatInput struct {
 	Node      string `json:"node,omitempty" jsonschema:"Optional serving node name. Addresses the model as name@node."`
 	Model     string `json:"model" jsonschema:"Model name to smoke test through the coordinator."`
-	Message   string `json:"message" jsonschema:"One short user message."`
-	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum reply tokens. Default 64, capped at 256."`
+	Message   string `json:"message,omitempty" jsonschema:"One short user message for plain chat; ignored when tools is true."`
+	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum plain-chat reply tokens. Default 64, capped at 256; ignored for tools probes, which use 4096."`
+	Tools     bool   `json:"tools,omitempty" jsonschema:"Send one fixed harmless probe tool and report whether the model called it as structured tool_calls; uses its own fixed message even if message was supplied."`
 }
 type logsInput struct {
 	pageInput
@@ -179,7 +184,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. After zz_run_preview, start its exact local name with an enabled native provider. Returns run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job; follow the job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. A bare name works when one node holds it; otherwise pass node. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model through the coordinator; pass message for plain chat or tools: true for a fixed tool-calling probe. A bare name works when one node holds it; otherwise pass node. Returns reply, model, token usage and, for probes, tool_call: verified, parser_missing, truncated or inconclusive with next steps. Inspect zz_logs if it fails.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, or every line matching grep across the whole log, with follow forced off. A stopped run's log stays readable with the node it ran on. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
@@ -481,28 +486,90 @@ func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error)
 	if in.Node != "" {
 		in.Model += "@" + in.Node
 	}
-	if in.MaxTokens == 0 {
-		in.MaxTokens = DefaultChatTokens
+	tokens := ToolProbeTokens
+	if in.Tools {
+		in.Message = probeMessage
+	} else {
+		if in.Message == "" {
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "message is required for plain chat", nil)
+		}
+		if in.MaxTokens == 0 {
+			in.MaxTokens = DefaultChatTokens
+		}
+		if in.MaxTokens < 1 {
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "max_tokens must be positive", nil)
+		}
+		tokens = min(in.MaxTokens, MaxChatTokens)
 	}
-	if in.MaxTokens < 1 {
-		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "max_tokens must be positive", nil)
+	body := map[string]any{"model": in.Model, "messages": []map[string]string{{"role": "user", "content": in.Message}}, "stream": false, "max_tokens": tokens}
+	if in.Tools {
+		// Required or named choices can bypass the engine's tool parser through guided decoding.
+		body["tool_choice"] = "auto"
+		body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
+			"name": probeFunction, "description": "Look up the current weather in a city.",
+			"parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"city"}},
+		}}}
 	}
 	var reply struct {
-		Model   string `json:"model"`
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage map[string]any `json:"usage"`
+		Model   string         `json:"model"`
+		Choices []chatChoice   `json:"choices"`
+		Usage   map[string]any `json:"usage"`
 	}
-	if err := d.call(ctx, request{method: http.MethodPost, path: chatRoute.path(), jsonBody: map[string]any{"model": in.Model, "messages": []map[string]string{{"role": "user", "content": in.Message}}, "stream": false, "max_tokens": min(in.MaxTokens, MaxChatTokens)}, contentType: "application/json"}, &reply); err != nil {
+	if err := d.call(ctx, request{method: http.MethodPost, path: chatRoute.path(), jsonBody: body, contentType: "application/json"}, &reply); err != nil {
 		return agentOutput{}, err
 	}
 	if len(reply.Choices) == 0 {
 		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "chat response has no choices; inspect zz_logs", nil)
 	}
-	return agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}, nil
+	out := agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}
+	if in.Tools {
+		out.fields["tool_call"], out.text = reply.Choices[0].probeResult()
+	}
+	return out, nil
+}
+
+type toolCallOutcome string
+
+const (
+	toolCallVerified      toolCallOutcome = "verified"
+	toolCallParserMissing toolCallOutcome = "parser_missing"
+	toolCallTruncated     toolCallOutcome = "truncated"
+	toolCallInconclusive  toolCallOutcome = "inconclusive"
+)
+
+type chatChoice struct {
+	FinishReason string `json:"finish_reason"`
+	Message      struct {
+		Content   string `json:"content"`
+		ToolCalls []struct {
+			Function struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"message"`
+}
+
+func (choice chatChoice) probeResult() (toolCallOutcome, string) {
+	if choice.FinishReason == "length" {
+		return toolCallTruncated, "Tool probe truncated at its token budget; inspect zz_logs and the model publisher's reasoning settings, then probe again."
+	}
+	for _, call := range choice.Message.ToolCalls {
+		if call.Function.Name != probeFunction {
+			continue
+		}
+		var arguments string
+		var args map[string]json.RawMessage
+		var city string
+		// The OpenAI wire carries arguments as a JSON string; an object breaks SDK clients, so it does not verify.
+		if json.Unmarshal(call.Function.Arguments, &arguments) == nil && json.Unmarshal([]byte(arguments), &args) == nil && json.Unmarshal(args["city"], &city) == nil && strings.TrimSpace(city) != "" {
+			return toolCallVerified, "Tool calling verified by a structured probe call; use this model for tool requests."
+		}
+	}
+	if len(choice.Message.ToolCalls) == 0 && strings.Contains(choice.Message.Content, probeFunction) {
+		return toolCallParserMissing, "Tool probe appeared as text: set the provider's tool-calling parameters for this model with zz_params_set using the publisher's serving instructions, restart the run with zz_run_restart, then probe again."
+	}
+	return toolCallInconclusive, "Tool probe inconclusive; probe again or read the model publisher's model card for tool-calling support and serving instructions."
 }
 
 func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error) {

@@ -109,6 +109,31 @@ pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are
 removed, so a later run lookup returns 404 by design. Launch job results omit
 the serving node's local probe URL because it is not a coordinator-facing URL.
 
+`zz_chat` accepts `model`, optional `node`, and `message` for plain chat. Plain
+chat uses 64 reply tokens by default, with `max_tokens` capped at 256. Set
+`tools: true` to send one fixed harmless `lookup_weather` function requiring a
+string `city` argument through the same chat route with `tool_choice: "auto"`.
+The probe uses its own Paris weather message even if `message` was supplied,
+and a fixed 4096-token budget to leave room for reasoning; `max_tokens` does
+not change that budget. The tool is never executed.
+
+Both modes return `reply`, `model` and `usage`. A probe also returns the
+request-local `tool_call` outcome, with next steps in the text block:
+
+| `tool_call` | Evidence and next step |
+|---|---|
+| `verified` | The first choice contains a structured call naming the probe, with JSON arguments carrying a nonempty string `city`. Tool requests can use this model. |
+| `parser_missing` | No structured calls, but content names the probe. Use `zz_params_set` for this model's provider tool-calling parameters from the publisher's serving instructions, then `zz_run_restart` and probe again. |
+| `truncated` | The first choice finished with `length`, taking precedence over other evidence. Inspect logs and publisher reasoning settings, then probe again. |
+| `inconclusive` | No valid probe call. Probe again or read the model card. |
+
+Classified refusals remain tool errors with their REST `code`, including
+`tool_calling_not_enabled` and `chat_template_rejected`. The former's remedy
+names vLLM's boolean `enable-auto-tool-choice: true` and an operator-selected
+`tool-call-parser` from the publisher's per-family serving instructions; set
+them with `zz_params_set`, restart the run and probe again. Template refusals
+carry the existing template remedy. No probe result is stored on a run.
+
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
 and required flag.

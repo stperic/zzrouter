@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,8 +14,49 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
+
+func TestParametersPatch_ToolCallingRemedy(t *testing.T) {
+	cfg := DefaultTestNodeConfig()
+	cfg.SeedProvidersDir = true
+	server := createTestNode(t, cfg)
+	_, payload, ok := strings.Cut(httperr.ToolCallingRemedy, " with ")
+	require.True(t, ok)
+	payload, _, ok = strings.Cut(payload, " using ")
+	require.True(t, ok)
+	payload = strings.NewReplacer("{model}", "probe-model", "{parser}", "publisher-parser").Replace(payload)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal([]byte(payload), &body))
+	resp := makeAuthRequest(t, server, "PATCH", "/zzrouter/v1/providers/vllm/parameters", TestAdminKey, body)
+	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	svc, ok := server.configStore.Config().LookupApp("vllm")
+	require.True(t, ok)
+	params := pkgConfig.FlattenParameters(svc.Resolve("", "probe-model").Parameters)
+	require.Equal(t, "true", params["enable-auto-tool-choice"])
+	require.Equal(t, "publisher-parser", params["tool-call-parser"])
+	runtime := *svc.Runtime
+	runtime.Execution.Args = []string{"serve", "${MODEL}"}
+	svc.Runtime = &runtime
+	launch, err := process.NewCommandBuilder(&svc).Build("probe-model", 1234, params)
+	require.NoError(t, err)
+	assert.Contains(t, launch.Args, "--enable-auto-tool-choice")
+	assert.NotContains(t, launch.Args, "true", "a true bool renders as a bare flag")
+	index := slices.Index(launch.Args, "--tool-call-parser")
+	require.NotEqual(t, -1, index)
+	require.Less(t, index+1, len(launch.Args))
+	assert.Equal(t, "publisher-parser", launch.Args[index+1])
+
+	paramsBody := body["models"].(map[string]any)["probe-model"].(map[string]any)["parameters"].(map[string]any)
+	paramsBody["reasoning-parser"] = "publisher-reasoning-parser"
+	resp = makeAuthRequest(t, server, "PATCH", "/zzrouter/v1/providers/vllm/parameters", TestAdminKey, body)
+	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	paramsBody["enable-auto-tool-choice"] = "true"
+	resp = makeAuthRequest(t, server, "PATCH", "/zzrouter/v1/providers/vllm/parameters", TestAdminKey, body)
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
+	assert.Contains(t, string(resp.Body), `"code":"wrong_type"`)
+}
 
 // validatePatch happy path + every closed-enum rejection code exercised.
 // Keeps the §7.2 wire contract pinned — plan §12 step-9 expects these

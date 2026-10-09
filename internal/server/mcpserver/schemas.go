@@ -12,7 +12,10 @@ type objectSchema[T any] struct{}
 
 func (objectSchema[T]) MarshalJSON() ([]byte, error) {
 	// RawMessage is any JSON value, rather than its Go byte-slice representation.
-	schema, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{reflect.TypeFor[json.RawMessage](): {}}})
+	schema, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[json.RawMessage](): {},
+		reflect.TypeFor[toolCallOutcome](): {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -81,9 +84,10 @@ type downloadNode struct {
 	Error  string `json:"error,omitempty"`
 }
 type chatOutput struct {
-	Reply string `json:"reply"`
-	Model string `json:"model"`
-	Usage struct {
+	ToolCall toolCallOutcome `json:"tool_call,omitempty" jsonschema:"Request-local tool probe outcome: verified, parser_missing, truncated or inconclusive."`
+	Reply    string          `json:"reply"`
+	Model    string          `json:"model"`
+	Usage    struct {
 		PromptTokens     int `json:"prompt_tokens,omitempty"`
 		CompletionTokens int `json:"completion_tokens,omitempty"`
 		TotalTokens      int `json:"total_tokens,omitempty"`
