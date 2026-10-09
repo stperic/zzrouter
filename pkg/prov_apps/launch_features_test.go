@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,6 +43,52 @@ func landProjector(t *testing.T, dir, digest string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-projector.gguf"), []byte("projector"), 0600))
 	require.NoError(t, integrity.RecordFiles(dir, "vendor/model", "", integrity.FileChecksum{RelativePath: "a-projector.gguf", Size: 9, SHA256: digest, Feature: "vision"}))
+}
+
+func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
+	for _, scenario := range []string{"missing projector", "missing sibling", "vision enabled", "vision opted out", "enabled projector removed during preparation", "explicit missing projector"} {
+		t.Run(scenario, func(t *testing.T) {
+			m, svc, dir := featureLaunchFixture(t)
+			landProjector(t, dir, "digest")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "sibling.gguf"), []byte("sibling"), 0600))
+			require.NoError(t, integrity.RecordFiles(dir, "vendor/model", "",
+				integrity.FileChecksum{RelativePath: "weights.gguf", Size: 7},
+				integrity.FileChecksum{RelativePath: "sibling.gguf", Size: 7}))
+			req := LaunchRequest{Provider: "vllm", Model: "vendor/model#weights.gguf"}
+			if scenario == "missing projector" || scenario == "vision opted out" || scenario == "explicit missing projector" {
+				require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
+			}
+			if scenario == "vision opted out" {
+				req.Parameters = map[string]string{"mmproj": "false"}
+			}
+			if scenario == "explicit missing projector" {
+				req.Parameters = map[string]string{"mmproj": filepath.Join(dir, "a-projector.gguf")}
+			}
+			if scenario == "missing sibling" {
+				require.NoError(t, os.Remove(filepath.Join(dir, "sibling.gguf")))
+			}
+			if scenario == "enabled projector removed during preparation" {
+				m.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+					require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
+					return Localized{Params: params}, nil
+				}
+			}
+			inst := instance.NewInstance("selected-files", "vllm", req.Model, 8100, 0, 0)
+			inst.Endpoint = "chat"
+			run, err := m.prepareRun(t.Context(), inst, req, "vllm", svc)
+			if scenario == "enabled projector removed during preparation" || scenario == "explicit missing projector" {
+				require.ErrorIs(t, err, process.ErrModelIncomplete)
+				return
+			}
+			require.NoError(t, err)
+			require.Contains(t, run.args, filepath.Join(dir, "weights.gguf"))
+			if scenario == "missing projector" || scenario == "vision opted out" {
+				require.NotContains(t, run.args, "--mmproj")
+			} else {
+				require.Contains(t, run.args, filepath.Join(dir, "a-projector.gguf"))
+			}
+		})
+	}
 }
 
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {

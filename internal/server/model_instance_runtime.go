@@ -290,7 +290,7 @@ func (s *Server) resolveModelPathWithCache(ctx context.Context, model *metadata.
 	if modelcache.FileExists(cachePath) {
 		// Quick integrity check on cached model
 		if modelcache.HasManifest(cachePath) {
-			valid, err := s.model.Verifier.QuickVerify(context.WithoutCancel(ctx), cachePath)
+			valid, err := s.model.Verifier.QuickVerify(context.WithoutCancel(ctx), cachePath, nil)
 			if err != nil || !valid {
 				slog.Info("[Models] Cached model failed integrity check, will re-cache", "cache", cachePath)
 				// Invalidate and continue to re-copy

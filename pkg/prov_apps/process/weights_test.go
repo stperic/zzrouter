@@ -20,6 +20,36 @@ func writeModel(t *testing.T, dir, name, contents string) string {
 }
 
 func TestVerifyLocalWeights(t *testing.T) {
+	t.Run("only the launched GGUF set is required", func(t *testing.T) {
+		for _, missing := range []string{"mmproj-F16.gguf", "model-Q3_K_M.gguf", "Q4_K_M/model-Q4_K_M-00002-of-00002.gguf"} {
+			t.Run(missing, func(t *testing.T) {
+				root := t.TempDir()
+				t.Setenv("ZZROUTER_MODEL_DIR", root)
+				dir := filepath.Join(root, "org", "model")
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, "Q4_K_M"), 0o755))
+				shard := writeModel(t, dir, "Q4_K_M/model-Q4_K_M-00001-of-00002.gguf", "first shard")
+				writeModel(t, dir, "Q4_K_M/model-Q4_K_M-00002-of-00002.gguf", "second shard")
+				writeModel(t, dir, "model-Q3_K_M.gguf", "sibling weights")
+				writeModel(t, dir, "mmproj-F16.gguf", "projector")
+				manifest, err := integrity.CreateManifest(t.Context(), dir, "org/model", "")
+				require.NoError(t, err)
+				for i := range manifest.Files {
+					if manifest.Files[i].RelativePath == "mmproj-F16.gguf" {
+						manifest.Files[i].Feature = "vision"
+					}
+				}
+				require.NoError(t, integrity.WriteManifest(dir, manifest))
+				require.NoError(t, os.Remove(filepath.Join(dir, missing)))
+				err = VerifyLocalWeights(t.Context(), shard)
+				if missing == "Q4_K_M/model-Q4_K_M-00002-of-00002.gguf" {
+					require.ErrorIs(t, err, ErrModelIncomplete)
+				} else {
+					require.NoError(t, err)
+				}
+			})
+		}
+	})
+
 	t.Run("no manifest is not an error", func(t *testing.T) {
 		dir := t.TempDir()
 		writeModel(t, dir, "model.safetensors", "weights")
@@ -33,6 +63,17 @@ func TestVerifyLocalWeights(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, integrity.WriteManifest(dir, manifest))
 
+		require.NoError(t, VerifyLocalWeights(t.Context(), dir))
+	})
+
+	t.Run("directory weights do not require unused feature files", func(t *testing.T) {
+		dir := t.TempDir()
+		writeModel(t, dir, "model.safetensors", "weights")
+		require.NoError(t, integrity.WriteManifest(dir, &integrity.ModelManifest{Version: 1,
+			Files: []integrity.FileChecksum{
+				{RelativePath: "model.safetensors", Size: 7},
+				{RelativePath: "mmproj-F16.gguf", Size: 9, Feature: "vision"},
+			}}))
 		require.NoError(t, VerifyLocalWeights(t.Context(), dir))
 	})
 

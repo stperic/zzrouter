@@ -366,14 +366,14 @@ func TestQuickVerify(t *testing.T) {
 
 	// Quick verify should pass
 	verifier := NewIntegrityVerifier()
-	valid, err := verifier.QuickVerify(ctx, modelDir)
+	valid, err := verifier.QuickVerify(ctx, modelDir, nil)
 	require.NoError(t, err)
 	assert.True(t, valid)
 
 	// Change file size (quick verify checks size)
 	require.NoError(t, os.WriteFile(filepath.Join(modelDir, "model.bin"), []byte("longer content here"), 0644))
 
-	valid, err = verifier.QuickVerify(ctx, modelDir)
+	valid, err = verifier.QuickVerify(ctx, modelDir, nil)
 	require.NoError(t, err)
 	assert.False(t, valid)
 }
@@ -395,9 +395,30 @@ func TestQuickVerify_ContextCancellation(t *testing.T) {
 
 	// Should fail with context cancelled
 	verifier := NewIntegrityVerifier()
-	valid, err := verifier.QuickVerify(ctx, modelDir)
+	valid, err := verifier.QuickVerify(ctx, modelDir, nil)
 	require.Error(t, err)
 	assert.False(t, valid)
+}
+
+func TestQuickVerifySelectedFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "weights.gguf"), []byte("weights"), 0600))
+	require.NoError(t, WriteManifest(dir, &ModelManifest{Version: 1, Files: []FileChecksum{
+		{RelativePath: "weights.gguf", Size: 7},
+		{RelativePath: "missing.gguf", Size: 9},
+	}}))
+	verifier := NewIntegrityVerifier()
+	selected := func(f FileChecksum) bool { return f.RelativePath == "weights.gguf" }
+	valid, err := verifier.QuickVerify(t.Context(), dir, selected)
+	require.NoError(t, err)
+	require.True(t, valid)
+	valid, err = verifier.QuickVerify(t.Context(), dir, nil)
+	require.NoError(t, err)
+	require.False(t, valid)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "weights.gguf"), []byte("short"), 0600))
+	valid, err = verifier.QuickVerify(t.Context(), dir, selected)
+	require.NoError(t, err)
+	require.False(t, valid)
 }
 
 func TestHasManifest(t *testing.T) {
@@ -588,7 +609,7 @@ func TestQuickVerify_PathTraversalInManifest(t *testing.T) {
 
 	// QuickVerify should detect and reject path traversal
 	verifier := NewIntegrityVerifier()
-	valid, err := verifier.QuickVerify(ctx, modelDir)
+	valid, err := verifier.QuickVerify(ctx, modelDir, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid path")
 	assert.False(t, valid)
@@ -654,7 +675,7 @@ func TestQuickVerify_SymlinkReplacement(t *testing.T) {
 
 	// QuickVerify should detect symlink replacement
 	verifier := NewIntegrityVerifier()
-	valid, err := verifier.QuickVerify(ctx, modelDir)
+	valid, err := verifier.QuickVerify(ctx, modelDir, nil)
 	require.NoError(t, err)
 	assert.False(t, valid) // Symlink should fail validation
 }
