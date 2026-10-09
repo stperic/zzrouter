@@ -14,7 +14,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
-	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -105,18 +104,27 @@ func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease,
 	return prepared
 }
 
-func (d *chainServerDeps) NewLoadExecutor() chain.LoadExecutor {
-	// Each call returns a fresh adapter closure. The underlying Server-
-	// side LoadExecutor is constructed per call to match the pre-
-	// extraction behaviour of fallback_proxy's startModelAsync.
-	return func(ctx context.Context, model, provider string) error {
-		exec := d.s.newLoadExecutor()
-		_, err := exec.LoadLocalModel(ctx, &LoadModelRequest{
-			ModelName: model,
-			Provider:  provider,
-		})
+func (d *chainServerDeps) StartOnDemand(model, provider string) error {
+	ctx := context.Background()
+	prepared, response, err := d.s.newLoadExecutor().prepareLocalLoad(ctx, &LoadModelRequest{ModelName: model, Provider: provider})
+	if err != nil {
 		return err
 	}
+	if response != nil {
+		if response.InstanceID != "" && response.StatusCode == http.StatusConflict {
+			return nil
+		}
+		message := response.Error
+		if response.Details != "" {
+			message += ": " + response.Details
+		}
+		return newLoadFailure(response.StatusCode, message)
+	}
+	result, err := d.s.buildInstanceConfig(ctx, prepared.requestedModel, prepared.Provider, prepared.Endpoint, prepared.Parameters, prepared.Environment)
+	if err != nil {
+		return err
+	}
+	return d.s.providers.appMgr.StartOnDemandAsync(result.LaunchReq)
 }
 
 func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response) {

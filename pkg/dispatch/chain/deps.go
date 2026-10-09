@@ -103,22 +103,13 @@ type Runtime interface {
 	// InstanceBody prepares each attempt through the host's instance request path.
 	InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte
 
-	// NewLoadExecutor returns a function that the Proxy calls (under
-	// singleflight) to kick off an async on-demand model start. The
-	// returned function schedules the start and reports any immediate
-	// error; the actual start work continues in the load executor's own
-	// goroutine tree.
-	NewLoadExecutor() LoadExecutor
+	// StartOnDemand returns immediate refusals before the manager owns the launch.
+	StartOnDemand(model, provider string) error
 
 	// TrackProviderRateLimit consumes a backend response and updates the
 	// provider-level rate-limit snapshot used by the status API.
 	TrackProviderRateLimit(app string, resp *http.Response)
 }
-
-// LoadExecutor kicks off an on-demand local model start. Safe to call
-// repeatedly for the same model — the caller wraps invocations in
-// singleflight to dedupe concurrent starts.
-type LoadExecutor func(ctx context.Context, model, provider string) error
 
 // ServerDeps is the composed contract the Proxy requires from its host.
 // Splitting into three subsystem interfaces makes test fakes auditable

@@ -41,7 +41,12 @@ func TestLoadStopsBeforeRelaunchWhenProcessExitIsUnconfirmed(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
-			result, err := executor.doLoadLocalModel(ctx, &LoadModelRequest{Provider: aliasLoadProvider, ModelName: "model", Force: force})
+			prepared, response, err := executor.prepareLocalLoad(ctx, &LoadModelRequest{Provider: aliasLoadProvider, ModelName: "model", Force: force})
+			require.Nil(t, response)
+			var result *LoadModelResponse
+			if err == nil {
+				result, err = executor.doLoadLocalModel(ctx, prepared)
+			}
 			require.ErrorIs(t, err, context.Canceled)
 			assert.Nil(t, result)
 			assert.Zero(t, *launches)

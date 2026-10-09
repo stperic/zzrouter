@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -40,12 +39,6 @@ type Proxy struct {
 	loadTracker       *pfallback.LoadTracker
 	latencyTracker    *pfallback.LatencyTracker
 	healthChecker     *pfallback.HealthChecker
-
-	// startGroup dedupes concurrent on-demand model starts. Key is the
-	// model name (not (model, app)) — the pre-extraction behaviour was
-	// to collapse starts across providers serving the same logical
-	// model. Invariant #11.
-	startGroup singleflight.Group
 }
 
 // New constructs a Proxy wired to its dependency surface and the
@@ -86,13 +79,6 @@ func (p *Proxy) Start(ctx context.Context) {
 // Stop stops the health checker background probes. Accepts ctx for
 // signature consistency with other lifecycle-managed subsystems;
 // HealthChecker.Stop today is unconditional and does not consult it.
-//
-// KNOWN LIMITATION: startModelAsync goroutines spawned via go
-// p.startModelAsync(...) are tied to a context.Background() with a
-// 10-minute internal timeout — they are NOT cancelled by Stop. A Proxy
-// teardown will leave in-flight on-demand starts running until they
-// complete or time out. Wiring a Proxy-scoped context into these
-// goroutines is tracked as Slice 6 follow-up work.
 func (p *Proxy) Stop(_ context.Context) {
 	if p == nil {
 		return
@@ -559,14 +545,11 @@ func (p *Proxy) separateOnDemand(deps []pfallback.Candidate) ([]pfallback.Candid
 
 	for _, dep := range deps {
 		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model) {
-			// NOTE: startModelAsync is an owner-less goroutine — see
-			// Stop() docstring. Pre-existing behaviour, preserved
-			// verbatim in Slice 6.
-			go p.startModelAsync(dep.Model, dep.App)
-			utils.LogDebugf("[Fallback] Skipping %q: on-demand model not running, starting async", dep.Name)
+			err := p.deps.StartOnDemand(dep.Model, dep.App)
 			skipped = append(skipped, pfallback.Attempt{
 				DeploymentName: dep.Name,
 				Outcome:        pfallback.OutcomeOnDemandSkip,
+				Err:            err,
 			})
 			continue
 		}
@@ -715,28 +698,6 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 	return result
 }
 
-// startModelAsync triggers an async model start without blocking the
-// request. Uses singleflight to deduplicate concurrent starts for the
-// same model.
-//
-// LIFECYCLE NOTE: This goroutine is owner-less with respect to Proxy.Stop.
-// The internal context.Background() + 10min timeout is the only bound on
-// runtime. Preserved verbatim from the pre-extraction code. Wiring a
-// Proxy-scoped context is tracked as Slice 6 follow-up.
-func (p *Proxy) startModelAsync(model, app string) {
-	// Inner func always returns (nil, nil); outer error is always nil.
-	_, _, _ = p.startGroup.Do(model, func() (any, error) {
-		slog.Info("Starting on-demand model asynchronously", "model", model, "provider", app)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		exec := p.deps.NewLoadExecutor()
-		if err := exec(ctx, model, app); err != nil {
-			slog.Error("Failed to start on-demand model", "model", model, "error", err)
-		}
-		return nil, nil
-	})
-}
-
 // recordFallbackMetrics updates the inference recorder with fallback
 // routing data.
 func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts []pfallback.Attempt, firstDeployment string) {
@@ -775,13 +736,22 @@ func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempt
 	}
 	hasOnDemandPending := false
 	for _, a := range attempts {
-		if a.Outcome == pfallback.OutcomeOnDemandSkip {
+		if a.Outcome == pfallback.OutcomeOnDemandSkip && a.Err == nil {
 			hasOnDemandPending = true
 			break
 		}
 	}
 
 	message := fmt.Sprintf("No available deployments for model %q. All backends are unavailable, in cooldown, or lack sufficient resources.", groupName)
+	var refusals []error
+	for _, a := range attempts {
+		if a.Outcome == pfallback.OutcomeOnDemandSkip && a.Err != nil {
+			refusals = append(refusals, a.Err)
+		}
+	}
+	if len(refusals) > 0 {
+		message = fmt.Sprintf("No available deployments for model %q: %s", groupName, errors.Join(refusals...))
+	}
 	code := "model_not_available"
 	var retryAfter time.Duration
 

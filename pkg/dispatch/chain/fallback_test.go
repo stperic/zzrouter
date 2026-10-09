@@ -66,8 +66,9 @@ type fakeDeps struct {
 	// Counters (atomic, in case the code ever parallelizes retries).
 	forwardCalls        atomic.Int32
 	trackRateLimitCalls atomic.Int32
-	loadExecutorCalls   atomic.Int32
+	onDemandStartCalls  atomic.Int32
 	injectUsageMetadata bool
+	onDemandErrors      map[string]error
 
 	// requestDefaults maps model → request defaults; forwarded records
 	// the last body sent.
@@ -163,11 +164,9 @@ func (f *fakeDeps) InstanceBody(_ *http.Request, lease *instance.Lease, body []b
 	return body
 }
 
-func (f *fakeDeps) NewLoadExecutor() LoadExecutor {
-	return func(ctx context.Context, model, provider string) error {
-		f.loadExecutorCalls.Add(1)
-		return nil
-	}
+func (f *fakeDeps) StartOnDemand(model, provider string) error {
+	f.onDemandStartCalls.Add(1)
+	return f.onDemandErrors[provider]
 }
 
 func (f *fakeDeps) TrackProviderRateLimit(app string, resp *http.Response) {
@@ -264,10 +263,6 @@ func TestProxyWithFallback_ExhaustedWithNoCandidates(t *testing.T) {
 		"no candidates means no forwards should have been attempted")
 }
 
-// TestProxyWithFallback_ExhaustedOnDemandPending verifies that when
-// every candidate is on-demand and not running, the response carries
-// the model_loading code + Retry-After header, and NewLoadExecutor
-// fired for each skipped candidate.
 func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 	deps := newFakeDeps()
 	p := newProxyWithFake(deps)
@@ -292,10 +287,7 @@ func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "model_loading", errObj["code"])
 	assert.Equal(t, "60", w.Header().Get("Retry-After"))
-	// NewLoadExecutor was invoked once per skipped candidate via
-	// startModelAsync. It's spawned as a goroutine so we can't deterministically
-	// observe it in the hot path; asserting >= 0 here is a no-op, but the
-	// existence of the call-path is gated by the forwardCalls == 0 check.
+	assert.Equal(t, int32(1), deps.onDemandStartCalls.Load())
 	assert.Equal(t, int32(0), deps.forwardCalls.Load(),
 		"on-demand-only candidates should not be forwarded, only skipped")
 }
@@ -633,7 +625,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 			assert.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 			assert.Zero(t, deps.forwardCalls.Load())
-			assert.Zero(t, deps.loadExecutorCalls.Load())
+			assert.Zero(t, deps.onDemandStartCalls.Load())
 
 			// The reserved name cannot poison an otherwise usable group.
 			deps.endpoints["ollama"] = "http://safe"
@@ -646,7 +638,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", false)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, int32(1), deps.forwardCalls.Load(), "only the safe replica received a request")
-			assert.Zero(t, deps.loadExecutorCalls.Load())
+			assert.Zero(t, deps.onDemandStartCalls.Load())
 		})
 	}
 }
@@ -769,4 +761,32 @@ func TestFilterByMemorySizesEachReplicaByItsOwnModel(t *testing.T) {
 
 	require.Len(t, kept, 1)
 	assert.Equal(t, "small", kept[0].Name, "the 70B replica does not fit 8 GiB; the 0.5B one does")
+}
+
+func TestChainOnDemandRefusalCarriesCause(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			deps := newFakeDeps()
+			deps.onDemandErrors = map[string]error{"disabled": errors.New("provider not enabled: disabled")}
+			p := newProxyWithFake(deps)
+			c, w := buildGinCtx(t, `{"model":"group"}`)
+			candidates := []pfallback.Candidate{{Name: "refused", Model: "m", App: "disabled", OnDemand: true}}
+			if pending {
+				candidates = append(candidates, pfallback.Candidate{Name: "pending", Model: "m", App: "enabled", OnDemand: true})
+			}
+			_, attempts := p.separateOnDemand(candidates)
+			assert.ErrorIs(t, attempts[0].Err, deps.onDemandErrors["disabled"])
+			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: candidates}
+			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			require.Equal(t, http.StatusServiceUnavailable, w.Code)
+			if pending {
+				assert.Contains(t, w.Body.String(), `"code":"model_loading"`)
+				assert.Equal(t, "60", w.Header().Get("Retry-After"))
+			} else {
+				assert.Contains(t, w.Body.String(), "provider not enabled: disabled")
+				assert.Contains(t, w.Body.String(), `"code":"model_not_available"`)
+				assert.Empty(t, w.Header().Get("Retry-After"))
+			}
+		})
+	}
 }

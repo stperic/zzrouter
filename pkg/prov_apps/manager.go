@@ -88,6 +88,10 @@ type ProviderAppManager struct {
 	startOnce      sync.Once
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+	// startsCtx is shutdownCtx's child for background on-demand starts, cancelled first by Stop.
+	startsCtx      context.Context
+	startsCancel   context.CancelFunc
+	onDemandStarts sync.WaitGroup
 
 	// parentCtx ferries WithParentContext's value across the option-
 	// loop boundary; consumed by NewProviderAppManager to seed
@@ -314,9 +318,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
-	m.shutdownCtx = ctx
-	m.shutdownCancel = cancel
+	m.setShutdownCtx(parent)
 
 	// Defaults for anything not set by options
 	if m.httpClient == nil {
@@ -331,7 +333,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	// Create port pool manager
 	portMgr, err := port.NewAppPoolManager(appsConfig)
 	if err != nil {
-		cancel()
+		m.shutdownCancel()
 		return nil, err
 	}
 	m.ports = portMgr
@@ -408,9 +410,8 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		// Replace the background context with the caller's context so that
 		// the server's shutdown propagates to the manager's goroutines.
 		m.shutdownCancel()
-		childCtx, cancel := context.WithCancel(ctx)
-		m.shutdownCtx = childCtx
-		m.shutdownCancel = cancel
+		m.setShutdownCtx(ctx)
+		childCtx := m.shutdownCtx
 
 		go m.eventLoop()
 		go m.idleReaper()
@@ -419,6 +420,12 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		go m.observeServices(childCtx)
 		m.reconcileServices()
 	})
+}
+
+// setShutdownCtx derives the manager's lifetime context, and the background-start context under it.
+func (m *ProviderAppManager) setShutdownCtx(parent context.Context) {
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)
+	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx)
 }
 
 // eventLoop drains the audit channel and logs all provider events.

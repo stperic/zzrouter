@@ -21,39 +21,64 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// LaunchInstance creates and starts a new provider instance.
-// It allocates a port, builds the command from config, launches the process,
-// and starts health monitoring. The process runs until explicitly stopped.
-//
-// Concurrent callers for the same (provider, model) are coalesced through
-// launchGroup: the first caller runs the full launch flow, and subsequent
-// callers wait on the singleflight and receive the same *Instance back.
-// Before entering the launch flow, GetByModel is re-checked so a caller
-// that arrives after a terminal launch completes gets the live instance
-// without paying for another launch round-trip.
-func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
-	// stopping is set before Stop's drain, shutdown only after it.
-	if m.stopping.Load() || m.shutdown.Load() {
-		return nil, ErrShutdown
+// StartOnDemandAsync runs every check that can refuse the launch now, then launches in the
+// background on the manager's start context; Stop cancels and waits for it. Concurrent starts for
+// one provider and model share LaunchInstance's launchGroup.
+func (m *ProviderAppManager) StartOnDemandAsync(req LaunchRequest) error {
+	ctx := m.startsCtx
+	req, err := m.prepareInstanceLaunch(ctx, req)
+	if err != nil {
+		return err
 	}
+	ctx, err = m.AdmitLocalModel(ctx, req.requestedModel)
+	if err != nil {
+		return err
+	}
+	if _, _, err := m.resolveLaunch(&req); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.stopping.Load() || m.shutdown.Load() {
+		m.mu.Unlock()
+		return ErrShutdown
+	}
+	m.onDemandStarts.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.onDemandStarts.Done()
+		if _, err := m.launchInstance(ctx, req); err != nil {
+			slog.Error("Failed to start on-demand model", "model", req.Model, "provider", req.Provider, "error", err)
+		}
+	}()
+	return nil
+}
 
-	if err := m.ValidateModel(ctx, req.Model); err != nil {
+// LaunchInstance creates and starts a new provider instance. Concurrent callers for one
+// (provider, model, endpoint) are coalesced through launchGroup and get the same instance.
+func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+	req, err := m.prepareInstanceLaunch(ctx, req)
+	if err != nil {
 		return nil, err
 	}
+	return m.launchInstance(ctx, req)
+}
 
-	// Resolve the caller's name to the one the cache indexes this model
-	// under, BEFORE the singleflight key and the existing-instance
-	// check below are computed from it. Both are keyed by model name,
-	// so canonicalizing afterwards would leave every alias form with
-	// its own key -- which is how one model ended up loaded twice on
-	// one node, once as its repo id and once as its file stem.
-	requestedModel := req.Model
+// prepareInstanceLaunch canonicalizes the name before any key is computed from it, so every alias
+// of one model coalesces onto one launch instead of loading it twice.
+func (m *ProviderAppManager) prepareInstanceLaunch(ctx context.Context, req LaunchRequest) (LaunchRequest, error) {
+	if m.stopping.Load() || m.shutdown.Load() {
+		return req, ErrShutdown
+	}
+	if err := m.ValidateModel(ctx, req.Model); err != nil {
+		return req, err
+	}
+	req.requestedModel = req.Model
 	req.Model = m.CanonicalModelName(req.Model)
+	return req, nil
+}
 
-	// Collapse endpoint to "chat" when the provider's config declares no
-	// endpoints overlays — single instance per (provider, model) for
-	// vLLM / MLX / cloud providers. Providers that DO declare overlays
-	// keep their per-endpoint key, spawning separate instances.
+func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+	// Providers without endpoint overlays share one chat instance.
 	endpoint := string(EndpointOrDefault(req.Endpoint))
 	if _, svcCfg, ok := m.resolveConfigKey(req.Provider); ok && !svcCfg.IsEndpointAware() {
 		endpoint = string(EndpointChat)
@@ -64,18 +89,11 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 		if run, ok := m.instances.GetByModelEndpoint(req.Model, endpoint); ok && !run.GetStatus().IsTerminal() {
 			return nil, fmt.Errorf("%w: smoke cannot reuse an existing run", ErrInstancesRunning)
 		}
-		admitted, err := m.AdmitLocalModel(ctx, requestedModel)
-		if err != nil {
-			return nil, err
-		}
-		return m.launchInstanceLocked(admitted, req)
+		return m.launchAdmittedInstance(ctx, req)
 	}
 	key := req.Provider + ":" + req.Model + ":" + endpoint
 	result, err, _ := m.launchGroup.Do(key, func() (any, error) {
-		// Fast path: a previous caller may have completed their launch
-		// while we waited on the singleflight. Endpoint must match —
-		// returning a chat instance to an embeddings caller would route
-		// /v1/embeddings to a server that 501s.
+		// Recheck after coalescing because another caller may have registered the run.
 		if existing, found := m.instances.GetByModelEndpoint(req.Model, endpoint); found {
 			if req.Provider == "" || existing.Provider == req.Provider {
 				status := existing.GetStatus()
@@ -88,11 +106,7 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 				}
 			}
 		}
-		admitted, err := m.AdmitLocalModel(ctx, requestedModel)
-		if err != nil {
-			return nil, err
-		}
-		return m.launchInstanceLocked(admitted, req)
+		return m.launchAdmittedInstance(ctx, req)
 	})
 	if err != nil {
 		return nil, err
@@ -105,10 +119,14 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 	return inst, nil
 }
 
-// launchInstanceLocked is the inner body of LaunchInstance, held under
-// the launchGroup singleflight so only one per (provider, model) key
-// runs at a time. A run that must wait for another launch to claim its
-// GPU memory is accepted at once and admitted later by awaitAdmission.
+func (m *ProviderAppManager) launchAdmittedInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+	admitted, err := m.AdmitLocalModel(ctx, req.requestedModel)
+	if err != nil {
+		return nil, err
+	}
+	return m.launchInstanceLocked(admitted, req)
+}
+
 func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -893,7 +911,19 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	// Background starts end before the instance drain, so none registers a run after it.
+	m.startsCancel()
+	done := make(chan struct{})
+	go func() {
+		m.onDemandStarts.Wait()
+		close(done)
+	}()
 	var stopErr error
+	select {
+	case <-done:
+	case <-ctx.Done():
+		stopErr = ctx.Err()
+	}
 	for _, inst := range m.instances.ListAll() {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("provider manager shutdown interrupted by caller deadline",
@@ -934,6 +964,7 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	// Cancel shutdownCtx so eventLoop, idleReaper, and any in-flight
 	// detection exit promptly.
 	m.shutdownCancel()
+
 	if err := m.stopServices(ctx); err != nil && stopErr == nil {
 		stopErr = err
 	}

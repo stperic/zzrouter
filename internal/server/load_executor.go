@@ -169,18 +169,11 @@ func NewLoadExecutor(
 // LoadLocalModel loads a model on the local runs manager
 // Uses singleflight to prevent thundering herd when multiple clients request the same model
 func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) {
-	if e.appMgr != nil {
-		if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
-			return nil, err
-		}
+	prepared, response, err := e.prepareLocalLoad(ctx, req)
+	if err != nil || response != nil {
+		return response, err
 	}
-	// Resolve BEFORE the coalescing key and the existing-instance checks
-	// are computed from it: a launch registers the run under the resolved
-	// name, so an alias reaching those checks raw reads as "not running".
-	// On a copy -- the request is the caller's and it still reads it.
-	resolved := *req
-	resolved.requestedModel = req.ModelName
-	resolved.ModelName = e.canonicalModelName(req.ModelName)
+	resolved := *prepared
 
 	// Generate key for singleflight coalescing
 	// Include provider to differentiate same model on different providers
@@ -208,46 +201,18 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	return result.(*LoadModelResponse), nil //nolint:errcheck // singleflight Do returns the exact type its fn returned
 }
 
-// doLoadLocalModel performs the actual model loading (called by singleflight)
-func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) { //nolint:gocyclo,cyclop // Existing-instance reuse, provider API loads and local launches share one load flow.
-	// Start model load span
-	ctx, span := llm.StartModelLoadSpan(ctx, req.ModelName, req.Provider)
-	defer span.End()
-	startTime := utils.Now()
-
-	utils.LogDebugf("[LoadExecutor] doLoadLocalModel: model=%s, provider=%s, force=%v",
-		req.ModelName, req.Provider, req.Force)
-
-	// Check if provider app manager is available
-	if e.appMgr == nil {
-		err := fmt.Errorf("provider app manager not initialized")
-		llm.SetSpanError(span, err)
-		return nil, err
-	}
-
-	// Normalize and validate provider
-	normalizedProvider, err := e.normalizeAndValidateProvider(req.Provider)
-	if err != nil {
-		return &LoadModelResponse{
-			StatusCode: http.StatusBadRequest,
-			Error:      err.Error(),
-		}, nil
-	}
-
+func (e *LoadExecutor) existingLocalLoad(req *LoadModelRequest) *LoadModelResponse {
 	// Check if model is already starting/running
 	if existingInstance, found := e.appMgr.Instances().GetByModelEndpoint(req.ModelName, req.Endpoint); found {
 		status := existingInstance.GetStatus()
 		if !req.Force && (status == instance.StatusStarting || status == instance.StatusRunning) {
-			if normalizedProvider != "" && utils.NormalizeAppType(existingInstance.Provider) != normalizedProvider {
-				return &LoadModelResponse{StatusCode: http.StatusBadRequest, Error: fmt.Sprintf("model %q is held by provider %q; requested provider %q cannot reuse that run. Stop it before changing provider", req.ModelName, existingInstance.Provider, req.Provider)}, nil
+			if req.Provider != "" && utils.NormalizeAppType(existingInstance.Provider) != req.Provider {
+				return &LoadModelResponse{StatusCode: http.StatusBadRequest, Error: fmt.Sprintf("model %q is held by provider %q; requested provider %q cannot reuse that run. Stop it before changing provider", req.ModelName, existingInstance.Provider, req.Provider)}
 			}
 			detail := fmt.Sprintf("Instance %s is %s. Use --force to restart.", existingInstance.ID, status)
 			if status == instance.StatusRunning {
 				detail = fmt.Sprintf("Instance %s is running on port %d. Use --force to restart.", existingInstance.ID, existingInstance.Port)
 			}
-			// Return existing instance info with 409 status (allows reuse of running instance).
-			// JobID echoes the existing launch's handle so idempotent retries subscribe to
-			// the same stream (may be empty for instances that predate jobs wiring).
 			return &LoadModelResponse{
 				InstanceID: existingInstance.ID,
 				JobID:      existingInstance.StreamJobID,
@@ -260,16 +225,47 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 				StatusCode: http.StatusConflict,
 				Error:      fmt.Sprintf("Model '%s' is already %s", req.ModelName, status),
 				Details:    detail,
-			}, nil
-		}
-		// Force restart - stop existing instance
-		if err := e.appMgr.StopInstance(ctx, existingInstance.ID); err != nil && !errors.Is(err, prov_apps.ErrInstanceNotFound) {
-			return nil, err
+			}
 		}
 	}
 
-	// A variant's weights are its base's: that is what has to be on disk,
-	// and the provider is the one that defines the variant.
+	return nil
+}
+
+func (e *LoadExecutor) prepareLocalLoad(ctx context.Context, req *LoadModelRequest) (*LoadModelRequest, *LoadModelResponse, error) {
+	// Check if provider app manager is available
+	if e.appMgr == nil {
+		err := fmt.Errorf("provider app manager not initialized")
+		return nil, nil, err
+	}
+
+	requestedModel := req.requestedModel
+	if requestedModel == "" {
+		requestedModel = req.ModelName
+	}
+	if err := e.appMgr.ValidateModel(ctx, requestedModel); err != nil {
+		return nil, nil, err
+	}
+	resolved := *req
+	resolved.requestedModel = requestedModel
+	resolved.ModelName = e.canonicalModelName(requestedModel)
+	req = &resolved
+
+	// Normalize and validate provider
+	normalizedProvider, err := e.normalizeAndValidateProvider(req.Provider)
+	if err != nil {
+		return nil, &LoadModelResponse{
+			StatusCode: http.StatusBadRequest,
+			Error:      err.Error(),
+		}, nil
+	}
+
+	req.Provider = normalizedProvider
+	if response := e.existingLocalLoad(req); response != nil {
+		return nil, response, nil
+	}
+
+	// Variants use their base weights and the provider that defines them.
 	weights := req.ModelName
 	if owner, base, ok := e.appMgr.Variant(normalizedProvider, req.ModelName); ok {
 		weights, normalizedProvider = base, owner
@@ -279,10 +275,10 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 	if !req.Force {
 		models, err := e.registry.ListAllModels()
 		if err != nil {
-			return nil, fmt.Errorf("failed to query model registry: %w", err)
+			return nil, nil, fmt.Errorf("failed to query model registry: %w", err)
 		}
 		if matches := findMatchingModels(weights, models); len(matches) == 0 {
-			return &LoadModelResponse{
+			return nil, &LoadModelResponse{
 				StatusCode: http.StatusNotFound,
 				Error:      "Model file not found",
 				Details:    fmt.Sprintf("Model '%s' has not been downloaded", weights),
@@ -295,21 +291,61 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 		detectedProvider, err := e.autoDetectProvider(req.ModelName)
 		if err != nil {
 			if errors.Is(err, errAutoDetectModelNotFound) {
-				return &LoadModelResponse{
+				return nil, &LoadModelResponse{
 					StatusCode: http.StatusNotFound,
 					Error:      err.Error(),
 				}, nil
 			}
 			if errors.Is(err, errAutoDetectMultipleProviders) {
-				return &LoadModelResponse{
+				return nil, &LoadModelResponse{
 					StatusCode: http.StatusConflict,
 					Error:      "Multiple apps available",
 					Details:    err.Error(),
 				}, nil
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		normalizedProvider = detectedProvider
+	}
+
+	req.Provider = normalizedProvider
+	if !req.Force {
+		if response := e.existingLocalLoad(req); response != nil {
+			return nil, response, nil
+		}
+		if err := e.stopLocalLoad(ctx, req); err != nil {
+			return nil, nil, err
+		}
+	}
+	return req, nil, nil
+}
+
+func (e *LoadExecutor) stopLocalLoad(ctx context.Context, req *LoadModelRequest) error {
+	if existing, found := e.appMgr.Instances().GetByModelEndpoint(req.ModelName, req.Endpoint); found &&
+		(req.Force || existing.GetStatus().IsTerminal()) {
+		if err := e.appMgr.StopInstance(ctx, existing.ID); err != nil && !errors.Is(err, prov_apps.ErrInstanceNotFound) {
+			return err
+		}
+	}
+	return nil
+}
+
+// doLoadLocalModel performs the actual model loading (called by singleflight)
+func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) { //nolint:gocyclo,cyclop // Existing-instance reuse, provider API loads and local launches share one load flow.
+	// Start model load span
+	ctx, span := llm.StartModelLoadSpan(ctx, req.ModelName, req.Provider)
+	defer span.End()
+	startTime := utils.Now()
+
+	utils.LogDebugf("[LoadExecutor] doLoadLocalModel: model=%s, provider=%s, force=%v",
+		req.ModelName, req.Provider, req.Force)
+
+	normalizedProvider := req.Provider
+	if response := e.existingLocalLoad(req); response != nil {
+		return response, nil
+	}
+	if err := e.stopLocalLoad(ctx, req); err != nil {
+		return nil, err
 	}
 
 	// Check if provider has its own endpoint (service/external/cloud) and load via API
@@ -362,52 +398,6 @@ func (e *LoadExecutor) doLoadLocalModel(ctx context.Context, req *LoadModelReque
 			Node:       "", // Empty - routing layer sets the actual host
 			Message:    fmt.Sprintf("Model '%s' loaded successfully", req.ModelName),
 		}, nil
-	}
-
-	// Check if instance already exists (check again after potential force-stop above)
-	existingInstance, found := e.appMgr.Instances().GetByModelEndpoint(req.ModelName, req.Endpoint)
-	if found {
-		status := existingInstance.GetStatus()
-		switch status {
-		case instance.StatusRunning:
-			// Already running - return immediately. JobID may be empty
-			// (launch-job already terminal post-readiness; kept here
-			// purely for idempotent-subscribe dedupe if still within
-			// the jobs TTL window).
-			utils.LogDebugf("[LoadExecutor] Model %s already running on port %d (fast path)", req.ModelName, existingInstance.Port)
-			return &LoadModelResponse{
-				InstanceID: existingInstance.ID,
-				JobID:      existingInstance.StreamJobID,
-				Model:      existingInstance.Model,
-				Provider:   existingInstance.Provider,
-				Port:       existingInstance.Port,
-				Status:     string(status),
-				Node:       "", // Empty - routing layer sets the actual host
-				Message:    "Model already running",
-			}, nil
-
-		case instance.StatusStarting:
-			// Already starting - return the LIVE jobID so a retry
-			// subscribes to the SAME launch progress stream.
-			utils.LogDebugf("[LoadExecutor] Model %s is already starting on port %d", req.ModelName, existingInstance.Port)
-			return &LoadModelResponse{
-				InstanceID: existingInstance.ID,
-				JobID:      existingInstance.StreamJobID,
-				Model:      existingInstance.Model,
-				Provider:   existingInstance.Provider,
-				Port:       existingInstance.Port,
-				Status:     string(instance.StatusStarting),
-				Node:       "", // Empty - routing layer sets the actual host
-				Message:    "Model launch already in progress; subscribe to job_id",
-			}, nil
-
-		case instance.StatusFailed, instance.StatusStopped:
-			// Previous instance failed - clean it up and launch new one
-			utils.LogDebugf("[LoadExecutor] Previous instance in state %s, cleaning up...", status)
-			if err := e.appMgr.StopInstance(ctx, existingInstance.ID); err != nil && !errors.Is(err, prov_apps.ErrInstanceNotFound) {
-				return nil, err
-			}
-		}
 	}
 
 	// Launch new instance (async - returns immediately after process starts)
