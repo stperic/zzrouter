@@ -166,13 +166,17 @@ func TestMemoryNeedFallbackGeometryAndMoE(t *testing.T) {
 	assert.Equal(t, int64(2048), need.KVMiB)
 }
 
-func TestMemoryNeedRoomIsOnlyRefusal(t *testing.T) {
+func TestMemoryNeedDecidesFit(t *testing.T) {
+	// Lab, Qwen2.5-0.5B beside a running model: capping a known need at the room handed vLLM 0.0056 and it failed later.
 	need := Need{WeightsMiB: 50000, KVMiB: 10000, OverheadMiB: 2048}
-	assert.Equal(t, "0.3952", admitNeed(t, need, 10000, 6000))
 	params := map[string]string{"budget": "auto"}
 	var fit *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 2048}}, nil), &fit)
-	assert.Equal(t, "auto", params["budget"])
+	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 40000}}, nil), &fit)
+	assert.Equal(t, int64(68260), fit.RequiredMiB, "the shortfall eviction must cover is the sized need, at the four decimals the engine gets")
+	assert.Equal(t, "auto", params["budget"], "a refused attempt leaves auto for the retry")
+
+	// Fits in free memory although free-minus-margin (2048 MiB) would leave too little room.
+	assert.Equal(t, "0.3300", admitNeed(t, Need{WeightsMiB: 952, OverheadMiB: 2048}, 10000, 4000))
 }
 
 func TestMemoryNeedRoundsFractionUp(t *testing.T) {
