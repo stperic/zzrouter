@@ -145,6 +145,7 @@ Errors use Problem Details. Common `title`/`code` pairs an agent will see:
 | 400 with `provider %q is cloud-only` | Tried to launch a cloud-backed model via `/runs`. | Use `POST /zzrouter/v1/deployments` instead. |
 | 400 with `provider %q has no search.registry configured` | auto_deploy was requested but the provider can't infer a download source. | Either deploy explicitly via `/deployments` or pick a provider with a registry. |
 | 421 with `Location: <coord-url>` | Worker received a write that only the coordinator may serve (e.g. provider PATCH). | Retry against the URL in the `Location` header. |
+| 404 `not_found` with `run not found: <id>` | No node lists the run. A stopped run is removed, whoever stopped it; when a live run's `evicted_runs` names it, `detail` names that run and its node. | Read the run's log at `GET /zzrouter/v1/runs/{id}/logs?node=<node>`; relaunch if you still need the model. |
 
 ### Cross-node job lookup
 

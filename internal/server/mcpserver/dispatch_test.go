@@ -319,6 +319,17 @@ func TestDispatcherMissingMetadata(t *testing.T) {
 	}
 }
 
+func TestJobResultKeepsEvictedRuns(t *testing.T) {
+	evicted := []any{map[string]any{"run_id": "old", "model": "m", "freed_mib": float64(2048)}}
+	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"job_id": "run_job", "kind": "run", "phase": "done", "meta": map[string]any{"run_id": "new", "phase": "running", "evicted_runs": evicted},
+		}}))
+	})
+	result := callAgentTool(t, d, "zz_job", map[string]any{"job_id": "run_job"})["structuredContent"].(map[string]any)
+	require.Equal(t, map[string]any{"run_id": "new", "phase": "running", "evicted_runs": evicted}, result["result"])
+}
+
 func TestJobResultDropsLocalURLAndKeepsRunID(t *testing.T) {
 	for _, field := range []string{"run_id", "instance_id"} {
 		t.Run(field, func(t *testing.T) {

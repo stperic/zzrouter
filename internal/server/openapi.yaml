@@ -742,6 +742,10 @@ paths:
         refusal at that point fails the run and its job with the same 409
         detail.
 
+        A node with `gpu.evict_idle_on_memory_pressure` set stops idle runs
+        to make room instead of refusing. The launch names them in its run's
+        `evicted_runs` and in its job's `meta.evicted_runs`.
+
         Returns 202 immediately with a pkg/jobs handle ID. Subscribe to
         launch progress (queued → launching → waiting-for-health →
         running/failed) via `GET /zzrouter/v1/jobs/{job_id}/stream?node={node}`.
@@ -870,7 +874,10 @@ paths:
                       data: { $ref: '#/components/schemas/Run' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
-          description: Run not found
+          description: |
+            No node lists the run. A stopped run is removed, so `detail` says
+            where its log stays readable, and names the run that evicted it
+            and that run's node while that run is still live.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -10347,7 +10354,7 @@ components:
             total: { type: integer, format: int64 }
         meta:
           type: object
-          description: Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator.
+          description: Producer metadata. A run job's health_url is a node-local probe URL that may use the serving node's loopback and is not reachable from the coordinator. A run job's evicted_runs lists the idle runs its launch stopped to free GPU memory, shaped as the Run schema's evicted_runs.
           additionalProperties: true
 
     ProviderVersionsReport:
@@ -11102,6 +11109,23 @@ components:
           description: |
             Set while a `starting` run is queued: the run still claiming GPU
             memory that this one is admitted after. Absent once admitted.
+        evicted_runs:
+          type: array
+          description: |
+            The idle runs this launch stopped to fit its GPU memory budget,
+            when the node sets `gpu.evict_idle_on_memory_pressure`. Absent
+            when the launch stopped nothing. The run job's result carries
+            the same list.
+          items:
+            type: object
+            required: [run_id, model, freed_mib]
+            properties:
+              run_id: { type: string }
+              model:  { type: string }
+              freed_mib:
+                type: integer
+                format: int64
+                description: GPU memory the driver attributed to the run when it was stopped.
         failure:
           type: object
           description: Optional diagnostic snapshot captured by the failed run lifecycle; does not require a logs request.

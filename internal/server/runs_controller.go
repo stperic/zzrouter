@@ -114,7 +114,7 @@ func (ctrl *RunsController) GetRun(c *gin.Context) {
 	resp, err := ctrl.service.GetRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -144,7 +144,7 @@ func (ctrl *RunsController) GetRunHealth(c *gin.Context) {
 	resp, err := ctrl.service.GetRunHealth(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -207,7 +207,7 @@ func (ctrl *RunsController) StopRun(c *gin.Context) {
 	resp, err := ctrl.service.StopRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -227,7 +227,7 @@ func (ctrl *RunsController) RestartRun(c *gin.Context) {
 	resp, err := ctrl.service.RestartRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)

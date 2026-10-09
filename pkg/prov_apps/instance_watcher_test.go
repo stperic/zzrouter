@@ -65,6 +65,7 @@ func TestWatcher_ReachesRunning_EmitsDone(t *testing.T) {
 
 	ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
 	assert.Equal(t, jobs.PhaseDone, ev.Phase)
+	assert.NotContains(t, ev.Meta, "evicted_runs", "a launch that evicted nothing says nothing")
 }
 
 // TestWatcher_Failed_EmitsFail — the process crashed / health sustained

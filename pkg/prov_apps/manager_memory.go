@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
@@ -43,7 +44,7 @@ func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance
 	if err := stopCtx.Err(); err != nil {
 		return err
 	}
-	return m.StopInstance(stopCtx, inst.ID)
+	return m.stopInstance(stopCtx, inst.ID, obsruns.StopReasonMemoryPressure)
 }
 
 type memoryVictim struct {
@@ -52,7 +53,9 @@ type memoryVictim struct {
 	activity time.Time
 }
 
-func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) bool {
+// reclaimFor stops the least recently active idle runs covering fit's
+// shortfall and returns the runs it stopped.
+func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) []instance.EvictedRun {
 	sizes := make(map[string]int64)
 	for _, holder := range fit.Holders {
 		if holder.Ownership != "zzrouter" || holder.Run == "" {
@@ -74,7 +77,7 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 	}
 	shortfall := fit.RequiredMiB - fit.FreeMiB
 	if shortfall <= 0 || available < shortfall {
-		return false
+		return nil
 	}
 	sort.Slice(victims, func(i, j int) bool {
 		if victims[i].activity.Equal(victims[j].activity) {
@@ -92,15 +95,15 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 		}
 	}
 	if ctx.Err() != nil {
-		return false
+		return nil
 	}
 	release, claimed := instance.ClaimIdleStops(claims)
 	if !claimed {
-		return false
+		return nil
 	}
 	defer release()
 	var freed int64
-	stopped := false
+	var stopped []instance.EvictedRun
 	for _, victim := range victims[:len(claims)] {
 		if ctx.Err() != nil {
 			break
@@ -109,11 +112,11 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 			slog.Warn("failed to reclaim idle GPU run", "instance", victim.inst.ID, "device", fit.Device, "error", err)
 			continue
 		}
-		stopped = true
+		stopped = append(stopped, instance.EvictedRun{RunID: victim.inst.ID, Model: victim.inst.Model, FreedMiB: victim.mib})
 		freed += victim.mib
 		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.inst.ID, "provider", victim.inst.Provider, "model", victim.inst.Model, "device", fit.Device, "held_mib", victim.mib, "shortfall_mib", shortfall)
 	}
-	if stopped {
+	if len(stopped) > 0 {
 		m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
 	}
 	return stopped

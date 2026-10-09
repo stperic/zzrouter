@@ -33,6 +33,8 @@ type StopReason string
 const (
 	StopReasonUser  StopReason = "user"  // explicit StopInstance call
 	StopReasonCrash StopReason = "crash" // process exited unexpectedly
+	// StopReasonMemoryPressure: an idle run stopped to admit a launch's GPU memory budget.
+	StopReasonMemoryPressure StopReason = "memory_pressure"
 )
 
 // FailureCause classifies why a launch or running instance failed.

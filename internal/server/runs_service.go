@@ -225,6 +225,24 @@ func (s *RunsService) GetRun(ctx context.Context, req *GetRunRequest) (*instance
 	return &run, nil
 }
 
+// MissingRunDetail explains a run id no node lists, from what the cluster
+// knows: a stopped run is removed, its log stays on its node, and a live
+// run that evicted it names it.
+func (s *RunsService) MissingRunDetail(ctx context.Context, id, node string) string {
+	runs, err := s.ListRuns(ctx, &ListRunsRequest{Node: node})
+	if err == nil {
+		for _, run := range runs.Data {
+			for _, evicted := range run.EvictedRuns {
+				if evicted.RunID == id {
+					return fmt.Sprintf("run not found: %s was stopped on node %s to free %d MiB of GPU memory for run %s (%s). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/%s/logs?node=%s",
+						id, run.Node, evicted.FreedMiB, run.ID, run.Model, id, run.Node)
+				}
+			}
+		}
+	}
+	return fmt.Sprintf("run not found: %s. A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/%s/logs?node=<node it ran on>", id, id)
+}
+
 // applyFilters applies filtering to the runs list
 func (s *RunsService) applyFilters(instances []instance.InstanceInfo, req *ListRunsRequest) []instance.InstanceInfo {
 	if req.Status == "" {

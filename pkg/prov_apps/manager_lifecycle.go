@@ -325,7 +325,9 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	endpoint := inst.Endpoint
 	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
 	if err == nil {
-		err = m.admitMemory(ctx, selection.key, features)
+		var evicted []instance.EvictedRun
+		evicted, err = m.admitMemory(ctx, selection.key, features)
+		inst.SetEvictedRuns(evicted)
 	}
 	var prepared preparedLaunch
 	if err == nil {
@@ -511,17 +513,19 @@ func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, err
 	return nil, nil //nolint:nilnil // no blocker is not an error
 }
 
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) error {
+// admitMemory checks a launch's GPU memory budget, evicting idle runs when
+// the node allows it, and returns the runs it evicted.
+func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) ([]instance.EvictedRun, error) {
 	budget, err := m.launchBudget(provider)
 	if err != nil || budget == nil {
-		return err
+		return nil, err
 	}
 	if budget.Kind != "fraction_total" {
-		return nil
+		return nil, nil
 	}
 	env, err := process.ChildEnvironment(features.Environment)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	visible := make(map[string]string)
 	for _, entry := range env {
@@ -536,10 +540,14 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	}
 	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
 	var fit *process.MemoryFitError
-	if !m.evictIdleOnMemoryPressure || !errors.As(err, &fit) || !m.reclaimFor(ctx, fit) {
-		return err
+	if !m.evictIdleOnMemoryPressure || !errors.As(err, &fit) {
+		return nil, err
 	}
-	return m.checkMemory(ctx, *budget, need, features.Params, visible)
+	evicted := m.reclaimFor(ctx, fit)
+	if len(evicted) == 0 {
+		return nil, err
+	}
+	return evicted, m.checkMemory(ctx, *budget, need, features.Params, visible)
 }
 
 func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string) error {
@@ -792,7 +800,12 @@ func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string
 
 // StopInstance gracefully stops an instance and removes it from the registry.
 // Sequence: cancel monitor and keep-alive → terminate process → drain → cleanup.
-func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) (result error) {
+func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) error {
+	return m.stopInstance(ctx, id, obsruns.StopReasonUser)
+}
+
+// stopInstance is StopInstance with the reason its stopped event carries.
+func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason obsruns.StopReason) (result error) {
 	inst, ok := m.instances.Get(id)
 	if !ok {
 		return ErrInstanceNotFound
@@ -864,7 +877,7 @@ func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) (resul
 	m.emitEvent(Event{
 		Type: EventInstanceStopped, Provider: inst.Provider,
 		Instance: id, Model: inst.Model,
-		Message: "Instance stopped", Reason: obsruns.StopReasonUser,
+		Message: "Instance stopped", Reason: reason,
 		Time: utils.Now(),
 	})
 
