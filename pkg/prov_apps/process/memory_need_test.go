@@ -59,10 +59,18 @@ func TestMemoryNeedHybridTextConfig(t *testing.T) {
 	cfg := map[string]any{"text_config": map[string]any{"num_hidden_layers": 64, "num_key_value_heads": 4, "num_attention_heads": 24, "head_dim": 256, "hidden_size": 5120, "dtype": "bfloat16", "sliding_window": nil, "full_attention_interval": 4, "layer_types": layers}, "model_type": "synthetic_hybrid", "num_hidden_layers": 999}
 	dir, svc, params := needFixture(t, cfg)
 	params["max-model-len"] = "8192"
+	// vLLM needs one recurrent state per max-num-seqs sequence (lab, Qwen3.8-27B: 256 seqs, room for 105).
+	_, ok := ModelMemoryNeed(dir, svc, params)
+	assert.False(t, ok, "linear-attention state cannot be sized generically")
+
+	for i := range layers {
+		layers[i] = "full_attention"
+	}
+	dir, svc, params = needFixture(t, cfg)
+	params["max-model-len"] = "8192"
 	need, ok := ModelMemoryNeed(dir, svc, params)
-	require.True(t, ok)
-	assert.Equal(t, Need{WeightsMiB: 1024, KVMiB: 512, OverheadMiB: 2048}, need)
-	assert.Equal(t, "0.3943", admitNeed(t, need, 10000, 9500))
+	require.True(t, ok, "the same geometry without recurrent layers is sized")
+	assert.Equal(t, int64(2048), need.KVMiB, "text_config nesting and the dtype key are read")
 }
 
 func TestMemoryNeedSlidingAttention(t *testing.T) {

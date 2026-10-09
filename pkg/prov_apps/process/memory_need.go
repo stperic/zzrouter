@@ -12,7 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/layout"
 )
 
-// DefaultActivationOverheadMiB reserves 2 GiB per device for activations, CUDA graphs and linear-attention state.
+// DefaultActivationOverheadMiB reserves 2 GiB per device for activations and CUDA graphs.
 const DefaultActivationOverheadMiB int64 = 2048
 
 // Need is the model's weights, one context sequence's KV cache and per-device runtime overhead.
@@ -135,7 +135,8 @@ func (cfg attentionConfig) dtypeBytes() (int64, bool) {
 	return 0, false
 }
 
-// layerTokens sums the tokens each attention layer caches; linear-attention state is covered by the overhead.
+// layerTokens sums the tokens each attention layer caches. A linear-attention (recurrent) layer holds one state per
+// concurrent sequence, sized by architecture-specific keys config.json does not standardise, so it makes the need unknown.
 func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 	if cfg.LayerTypes == nil {
 		if cfg.SlidingWindow != nil {
@@ -158,7 +159,6 @@ func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 				return 0, false
 			}
 			tokens = min(*cfg.SlidingWindow, context)
-		case "linear_attention":
 		default:
 			return 0, false
 		}
