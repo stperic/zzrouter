@@ -23,11 +23,52 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/integrity"
 	modelsync "github.com/stperic/zzrouter/pkg/model/sync"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/require"
 )
+
+func TestIncompleteModel_ListRefuseAndDelete(t *testing.T) {
+	root := t.TempDir()
+	modelregistry.SetModelsRootDirOverride(root)
+	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
+	repos := []string{"google/gemma-4-E2B-it", "lmstudio-community/Qwen3.8-27B-MLX-4bit", "org/split-GGUF"}
+	for _, repo := range repos {
+		dir := filepath.Join(root, filepath.FromSlash(repo))
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		for _, name := range []string{"config.json", "generation_config.json", "chat_template.jinja", "README.md"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o600))
+		}
+		if repo == repos[0] {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("x"), 0o600))
+			manifest, err := integrity.CreateManifest(t.Context(), dir, repo, "")
+			require.NoError(t, err)
+			require.NoError(t, integrity.WriteManifest(dir, manifest))
+		}
+		if repo == repos[2] {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "m-00001-of-00002.gguf"), []byte("weights"), 0o600))
+		}
+	}
+	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator", SeedProvidersDir: true})
+	resp := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/models", TestAdminKey, nil)
+	require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
+	var listed struct {
+		Data []*cache.CachedModel `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(resp.Body, &listed))
+	require.Len(t, listed.Data, len(repos))
+	for _, model := range listed.Data {
+		require.True(t, model.Incomplete, model.Name)
+		resp = makeAuthRequest(t, s, http.MethodPost, "/v1/chat/completions", TestAdminKey, map[string]any{"model": model.Name, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
+		require.Equal(t, http.StatusConflict, resp.Code, string(resp.Body))
+		require.Contains(t, string(resp.Body), `"code":"model_incomplete"`)
+		resp = makeAuthRequest(t, s, http.MethodDelete, "/zzrouter/v1/models", TestAdminKey, DeleteModelsRequest{Models: []ModelToDelete{{Name: model.Name, Registry: "huggingface"}}})
+		require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
+		require.NoDirExists(t, filepath.Join(root, filepath.FromSlash(model.Name)))
+	}
+}
 
 func mutationNodes(t *testing.T, location string) (target, reader *Server, dir string) {
 	t.Helper()

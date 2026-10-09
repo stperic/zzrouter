@@ -313,7 +313,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 			featurePaths = append(featurePaths, path)
 		}
 	}
-	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths...); err != nil {
+	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths); err != nil {
 		return admittedRun{}, err
 	}
 	if err := ctx.Err(); err != nil {

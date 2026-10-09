@@ -242,7 +242,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// was started twice, the second time under its file stem. One
 		// canonicalizer, applied where the launch is keyed.
 		prov_apps.WithModelCanonicalizer(s.resolveCanonicalModelName),
-		prov_apps.WithModelValidator(s.checkCatalogVariantConflict),
+		prov_apps.WithModelValidator(s.checkCatalogModelAdmission),
 		prov_apps.WithModelSource(s.modelSource),
 		prov_apps.WithParamLocalizer(assetParamLocalizer(s.configStore)),
 		prov_apps.WithRuntimeChecks(providerRuntimeChecks(s.configStore)),

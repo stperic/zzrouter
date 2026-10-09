@@ -339,20 +339,20 @@ func TestVariants_WorkerRescanReleasesRemovedWeightsConflict(t *testing.T) {
 	defineVariants(t, s)
 	addConflictingWeights(t, s, variantChat)
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
-	require.ErrorIs(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat), config.ErrModelNameConflict)
+	require.ErrorIs(t, s.model.Cache.CheckModelAdmission(t.Context(), variantChat), config.ErrModelNameConflict)
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	for _, dir := range []string{root, filepath.Join(root, "owner", "weights")} {
 		require.NoError(t, os.Remove(filepath.Join(dir, strings.ToUpper(variantChat)+".gguf")))
 	}
 	// The old snapshot must still contain physical weights before the rescan.
-	require.ErrorIs(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat), config.ErrModelNameConflict)
+	require.ErrorIs(t, s.model.Cache.CheckModelAdmission(t.Context(), variantChat), config.ErrModelNameConflict)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/zzrouter/v1/internal/models/rescan", nil)
 	s.newInternalExecutor().HandleInternalRescanModels(c)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.NoError(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat))
+	require.NoError(t, s.model.Cache.CheckModelAdmission(t.Context(), variantChat))
 	require.NoError(t, s.providers.appMgr.ValidateModel(t.Context(), variantChat))
 	models, err := s.model.Cache.ListModels(t.Context(), "", "", "", variantChat)
 	require.NoError(t, err)
@@ -367,7 +367,7 @@ func TestVariants_WorkerPartialDeletionPublishesConflict(t *testing.T) {
 	defineVariants(t, s)
 	addConflictingWeights(t, s, variantChat)
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
-	require.ErrorIs(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat), config.ErrModelNameConflict)
+	require.ErrorIs(t, s.model.Cache.CheckModelAdmission(t.Context(), variantChat), config.ErrModelNameConflict)
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	paths := []string{filepath.Join(root, strings.ToUpper(variantChat)+".gguf"), filepath.Join(root, "owner", "weights", strings.ToUpper(variantChat)+".gguf"), filepath.Join(root, "missing.gguf")}
@@ -383,7 +383,7 @@ func TestVariants_WorkerPartialDeletionPublishesConflict(t *testing.T) {
 	assert.Equal(t, 2, result.Deleted)
 	require.Len(t, result.Errors, 1)
 	assert.Equal(t, true, s.model.Cache.GetCacheStats()["valid"])
-	require.NoError(t, s.model.Cache.CheckVariantConflict(t.Context(), variantChat))
+	require.NoError(t, s.model.Cache.CheckModelAdmission(t.Context(), variantChat))
 }
 
 func TestRemoteRescanKeepsCoordinatorPublishedEvidence(t *testing.T) {

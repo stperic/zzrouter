@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
 // A GGUF repo lists each weights variant once: a split set is one model
@@ -35,4 +36,49 @@ func TestScanModels_ListsWeightsVariantsOnly(t *testing.T) {
 		"M-Q4_K_M": "M-Q4_K_M.gguf",
 		"M-Q8_0":   "Q8_0/M-Q8_0-00001-of-00002.gguf",
 	}, got)
+}
+
+func TestScanModels_IncompleteWeightsRemainVisible(t *testing.T) {
+	root := t.TempDir()
+	cases := []struct {
+		repo     string
+		files    []string
+		manifest bool
+	}{
+		{"google/gemma-4-E2B-it", []string{".gitattributes", "README.md", "chat_template.jinja", "config.json", "generation_config.json"}, true},
+		{"lmstudio-community/Qwen3.8-27B-MLX-4bit", []string{"chat_template.jinja", "config.json", "generation_config.json", "README.md"}, false},
+		{"org/sharded", []string{"config.json", "model-00001-of-00002.safetensors", "model.safetensors.index.json"}, true},
+		{"org/complete", []string{"config.json", "model.safetensors"}, false},
+		{"org/split-GGUF", []string{".gitattributes", "m-00001-of-00002.gguf"}, false},
+	}
+	for _, c := range cases {
+		dir := filepath.Join(root, filepath.FromSlash(c.repo))
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		for _, name := range c.files {
+			body := "{}"
+			if name == "model.safetensors.index.json" {
+				body = `{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}`
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+		}
+		if c.manifest {
+			manifest, err := integrity.CreateManifest(t.Context(), dir, c.repo, "")
+			require.NoError(t, err)
+			require.NoError(t, integrity.WriteManifest(dir, manifest))
+		}
+	}
+	models, err := (&Connector{modelsDir: root}).ScanModels()
+	require.NoError(t, err)
+	require.Len(t, models, len(cases))
+	byName := map[string]*metadata.ModelMetadata{}
+	for _, m := range models {
+		byName[m.Name] = m
+	}
+	for _, c := range cases {
+		m := byName[c.repo]
+		require.NotNil(t, m, c.repo)
+		assert.Equal(t, c.repo != "org/complete", m.Incomplete, c.repo)
+		assert.Equal(t, m.Incomplete, m.ToOllamaFormat("node")["incomplete"] == true)
+	}
+	assert.Equal(t, metadata.FormatMLX, byName[cases[1].repo].Format)
 }

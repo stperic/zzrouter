@@ -15,6 +15,8 @@ import (
 // Internal format — converted to Ollama format at the API boundary via
 // ToOllamaFormat.
 type ModelMetadata struct {
+	// Incomplete marks entries lacking required weights.
+	Incomplete   bool      `json:"incomplete,omitempty"`
 	Name         string    `json:"name"`                   // Display name (e.g., "llama2-7b-chat")
 	FullPath     string    `json:"full_path"`              // Complete filesystem path
 	Format       string    `json:"format"`                 // GGUF, safetensors, hf_transformers, etc.
@@ -63,6 +65,9 @@ func (m *ModelMetadata) ToOllamaFormat(host string) map[string]any {
 		"source_repo":  m.SourceRepo,  // Where it came from (ollama, huggingface)
 		"source_id":    m.SourceID,    // Original ID
 		"assigned_app": m.AssignedApp, // What will run it (mlx, test, etc.)
+	}
+	if m.Incomplete {
+		response["incomplete"] = true
 	}
 
 	if m.Extra != nil {

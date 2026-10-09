@@ -91,6 +91,17 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 	}
 }
 
+func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
+	m, svc, dir := featureLaunchFixture(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "weights.gguf")))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o600))
+	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
+	inst := instance.NewInstance("incomplete", "vllm", req.Model, 8100, 0, 0)
+	inst.Endpoint = "chat"
+	_, err := m.prepareRun(t.Context(), inst, req, "vllm", svc)
+	require.ErrorIs(t, err, process.ErrModelIncomplete)
+}
+
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	req := LaunchRequest{Provider: "vllm", Model: "variant"}

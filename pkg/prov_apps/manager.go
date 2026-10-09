@@ -205,7 +205,7 @@ func WithModelValidator(fn func(context.Context, string) error) Option {
 func (m *ProviderAppManager) ValidateModel(ctx context.Context, model string) error {
 	if m.validateModel != nil {
 		if err := m.validateModel(ctx, model); err != nil {
-			if errors.Is(err, config.ErrModelNameConflict) {
+			if errors.Is(err, config.ErrModelNameConflict) || errors.Is(err, ErrModelIncomplete) {
 				return err
 			}
 			slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)

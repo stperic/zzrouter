@@ -48,6 +48,11 @@ weights selection and complete shard grouping across downloads, scans and
 launches. Feature files are excluded from weights, including declared globs on
 repositories whose manifest has not tagged them yet.
 
+Directories without weights or with missing indexed shards stay in the management
+catalog with `incomplete: true`, so they can be deleted by name or re-downloaded.
+They are excluded from serving lookups and refused by model admission. Launches
+check the same layout rule even without a manifest; metadata alone is insufficient.
+
 `restart: affected` schedules a chain that waits for successful deployment, then
 restarts affected stale runs on successful targets and waits for readiness.
 Follow deployment job IDs and `restart_job_id` through the jobs API; HTTP 202

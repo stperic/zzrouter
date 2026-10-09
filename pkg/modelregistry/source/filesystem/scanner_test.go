@@ -74,6 +74,23 @@ func TestScanModelsGroupsGGUFShards(t *testing.T) {
 	assert.Equal(t, map[string]int64{"qwen2.5-7b-instruct-q5_k_m": 5, "qwen2.5-7b-instruct-q3_k_m": 4}, got)
 }
 
+func TestScanModels_IncompleteIndexedWeights(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "model-00001.safetensors"), []byte("weights"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "model.safetensors.index.json"), []byte(`{"weight_map":{"a":"model-00001.safetensors","b":"model-00002.safetensors"}}`), 0o600))
+	models, err := ScanModels(root)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.True(t, models[0].Incomplete)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "model-00002.safetensors"), []byte("weights"), 0o600))
+	models, err = ScanModels(root)
+	require.NoError(t, err)
+	require.Len(t, models, 2)
+	for _, model := range models {
+		assert.False(t, model.Incomplete)
+	}
+}
+
 // A file the manifest assigns to a feature (a vision projector) is not a
 // model, and a manifest that cannot be read hides nothing: the weights
 // still list, grouped.

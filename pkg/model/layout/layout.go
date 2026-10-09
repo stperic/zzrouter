@@ -5,6 +5,8 @@
 package layout
 
 import (
+	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -16,6 +18,69 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 )
+
+// ErrIncomplete means a model lacks the weights needed to serve it.
+var ErrIncomplete = errors.New("model weights incomplete")
+
+// Complete reports whether weights and every indexed shard are present, excluding feature files.
+func Complete(modelPath string) (bool, error) {
+	info, err := os.Stat(modelPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() && IsGGUF(modelPath) {
+		_, ok := VariantOf(modelPath)
+		return ok, nil
+	}
+	if !info.IsDir() {
+		switch strings.ToLower(filepath.Ext(modelPath)) {
+		case ".safetensors", ".bin", ".npz":
+			return Complete(filepath.Dir(modelPath))
+		}
+		return info.Mode().IsRegular() && info.Size() > 0, nil
+	}
+	files, err := OnDisk(modelPath)
+	if err != nil {
+		return false, err
+	}
+	weights := make(map[string]bool)
+	var indexes []string
+	for _, f := range files {
+		switch strings.ToLower(path.Ext(f.Path)) {
+		case ".safetensors", ".bin", ".npz":
+			weights[f.Path] = f.Size > 0
+		}
+		if strings.HasSuffix(f.Path, ".safetensors.index.json") || strings.HasSuffix(f.Path, ".bin.index.json") {
+			indexes = append(indexes, f.Path)
+		}
+	}
+	for _, index := range indexes {
+		data, err := os.ReadFile(filepath.Join(modelPath, filepath.FromSlash(index)))
+		if err != nil {
+			return false, err
+		}
+		var shards struct {
+			Weights map[string]string `json:"weight_map"`
+		}
+		if err := json.Unmarshal(data, &shards); err != nil || len(shards.Weights) == 0 {
+			return false, nil
+		}
+		for _, shard := range shards.Weights {
+			if !fs.ValidPath(shard) || !weights[path.Join(path.Dir(index), shard)] {
+				return false, nil
+			}
+		}
+	}
+	for _, present := range weights {
+		if present {
+			return true, nil
+		}
+	}
+	return len(GGUFVariants(files)) > 0, nil
+}
 
 // File is one file of a repository, by its slash-separated path inside it.
 type File struct {
