@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -256,7 +257,7 @@ func (p *Proxy) ProxyWithFallback(
 	wireChain, wireSkipped := buildRouteWireFields(attempts, rctx.preFilterSkip)
 	routing.SetRouteSpanAttrs(c.Request.Context(),
 		rctx.groupName, "", rctx.strategyUsed, len(wireChain), len(wireSkipped))
-	p.writeExhaustedResponse(c, resolved.GroupName, attempts)
+	p.writeExhaustedResponse(c, resolved.GroupName, attempts, recorder)
 	return ""
 }
 
@@ -400,8 +401,9 @@ func (p *Proxy) tryOnce(
 		return outcome
 	}
 
+	var lease *instance.Lease
 	if inst != nil {
-		lease, err := p.deps.LeaseInstance(c.Request, inst)
+		lease, err = p.deps.LeaseInstance(c.Request, inst)
 		if err != nil {
 			outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -422,9 +424,19 @@ func (p *Proxy) tryOnce(
 		attemptCtx, cancel = context.WithCancel(c.Request.Context())
 	}
 	defer cancel()
+	var wrap func(io.ReadCloser) io.ReadCloser
+	if lease != nil && wire.StreamFromBody(body) {
+		attemptCtx, wrap = lease.WatchStream(attemptCtx)
+	}
 	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
 	if err != nil {
+		if cause := context.Cause(attemptCtx); errors.Is(cause, instance.ErrFirstByteTimeout) {
+			err = cause
+		}
 		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+		if errors.Is(err, instance.ErrFirstByteTimeout) {
+			outcome.attempt.StatusCode = http.StatusGatewayTimeout
+		}
 		if pfallback.IsRetriable(0, err) {
 			outcome.disposition = attemptRetry
 			return outcome
@@ -434,6 +446,10 @@ func (p *Proxy) tryOnce(
 		writeError(c, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
 			Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"})
 		return outcome
+	}
+
+	if wrap != nil {
+		resp.Body = wrap(resp.Body)
 	}
 
 	// Classify before retry/cooldown: a capability refusal is not evidence the deployment is unhealthy.
@@ -730,14 +746,20 @@ func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts 
 const modelLoadingRetryAfter = 60 * time.Second
 
 // writeExhaustedResponse writes a 503 when all deployments are exhausted.
-func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt) {
+func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt, recorder *llm.InferenceRecorder) {
 	if len(attempts) > 0 {
-		allConflicts := true
-		for _, a := range attempts {
-			allConflicts = allConflicts && errors.Is(a.Err, config.ErrModelNameConflict)
+		allConflicts, allTimeouts := true, true
+		for _, attempt := range attempts {
+			allConflicts = allConflicts && errors.Is(attempt.Err, config.ErrModelNameConflict)
+			allTimeouts = allTimeouts && errors.Is(attempt.Err, instance.ErrFirstByteTimeout)
 		}
 		if allConflicts {
 			writeError(c, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "model_name_conflict", Message: attempts[0].Err.Error()})
+			return
+		}
+		if allTimeouts {
+			wire.RecordPreByteCopyError(recorder, string(httperr.CodeUpstreamTimeout), instance.ErrFirstByteTimeout.Error())
+			writeError(c, httperr.Error{Status: http.StatusGatewayTimeout, Type: "api_error", Code: string(httperr.CodeUpstreamTimeout), Message: "The model instances did not begin responding in time."})
 			return
 		}
 	}

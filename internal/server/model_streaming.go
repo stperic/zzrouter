@@ -5,7 +5,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
-	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -331,39 +329,20 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	defer lease.Release()
 
 	body, answerAs := s.instanceRequest(req, inst)
-	rec, _ := req.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	rec := requestRecorder(req.Context(), model, inst.Provider)
 	rec.SetUpstreamRequestData(body)
 	backendNode := getInstanceBackendNode(inst)
 	rec.SetServer(backendNode, inst.Port)
-	backendURL := fmt.Sprintf("http://%s:%d%s", backendNode, inst.Port, req.URL.Path)
 
-	// In-flight saturation: cold-load streaming dispatches via
-	// httpStreamingClient.Do directly, not through proxyToInstance, so
-	// it needs its own Inc/Dec wrap. Without this, every cold-load
-	// streaming request would be invisible to saturation alerts.
-	model, _ := req.Context().Value(CtxKeyModel).(string)
 	inflightToken := proxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
 		inst.Provider, model, backendNode)
 	defer proxy.DecInflight(req.Context(), inflightToken)
 
-	// Create a streaming context derived from request context. This
-	// ensures the backend request is cancelled if the client disconnects
-	// but removes any timeout (streaming can run indefinitely).
-	streamCtx, cancel := context.WithCancel(req.Context())
-	defer cancel()
-
-	backendReq, _ := http.NewRequestWithContext(streamCtx, req.Method, backendURL, bytes.NewReader(body))
-	backendReq.Header = upstreamHeaders(req.Header, backend.Engine())
-	backendReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpStreamingClient.Do(backendReq)
+	resp, err := s.sendToInstance(req, lease, body)
 	if err != nil {
-		// Same cause the header path calls api_error/backend_unreachable
-		// (proxy_client.go): the backend was unreachable, which is upstream
-		// visible rather than a zzRouter fault.
-		streamer.StreamError(w, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-			Message: fmt.Sprintf("Backend error: %v", err), Code: "backend_unreachable"})
+		streamer.StreamError(w, instanceSendFailure(rec, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()

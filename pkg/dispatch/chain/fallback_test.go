@@ -66,8 +66,9 @@ type fakeDeps struct {
 
 	// requestDefaults maps model → request defaults; forwarded records
 	// the last body sent.
-	requestDefaults map[string]map[string]any
-	forwarded       []byte
+	requestDefaults  map[string]map[string]any
+	forwarded        []byte
+	forwardedContext context.Context
 	// forwardedTo records the upstream of each forward, in order.
 	forwardedTo []backend.Upstream
 }
@@ -107,6 +108,7 @@ func (f *fakeDeps) RequestDefaults(_, model, _ string) map[string]any {
 func (f *fakeDeps) ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
 	f.forwardCalls.Add(1)
 	f.forwarded = body
+	f.forwardedContext = ctx
 	f.forwardedTo = append(f.forwardedTo, up)
 	if fn, ok := f.forward[url]; ok {
 		return fn()

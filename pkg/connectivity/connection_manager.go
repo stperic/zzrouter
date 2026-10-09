@@ -134,7 +134,7 @@ func NewConnectionManager(opts ...ConnectionManagerOption) *ConnectionManager {
 		ExpectContinueTimeout: 1 * time.Second,
 		DisableKeepAlives:     false,
 		ForceAttemptHTTP2:     false,
-		ResponseHeaderTimeout: 0,
+		ResponseHeaderTimeout: 0, // Local stream silence is bounded by the lease; non-stream headers wait for generation.
 		DialContext: (&net.Dialer{
 			Timeout:   constants.ClusterHealthCheckTimeout,
 			KeepAlive: constants.HealthCheckInterval,

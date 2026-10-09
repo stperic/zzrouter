@@ -6,13 +6,11 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -22,6 +20,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -186,6 +185,58 @@ func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*inst
 	return inst.Acquire(req.Context(), hints)
 }
 
+// sendToInstance is the one way a request reaches a leased local run; a streaming one gets the
+// lease's first-byte and idle deadlines.
+func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte) (*http.Response, error) {
+	ctx := req.Context()
+	var wrap func(io.ReadCloser) io.ReadCloser
+	if wire.StreamFromBody(body) {
+		ctx, wrap = lease.WatchStream(ctx)
+	}
+	inst := lease.Instance()
+	proxyReq := req.Clone(ctx)
+	proxyReq.URL.Scheme = "http"
+	proxyReq.URL.Host = fmt.Sprintf("%s:%d", getInstanceBackendNode(inst), inst.Port)
+	proxyReq.Host = proxyReq.URL.Host
+	proxyReq.RequestURI = ""
+	proxyReq.Close = false
+	if body != nil {
+		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
+		proxyReq.ContentLength = int64(len(body))
+		proxyReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	}
+	proxyReq.Header = upstreamHeaders(req.Header, backend.Engine())
+	// Engine servers refuse a JSON body sent without its type; a multipart body always names its own.
+	if proxyReq.Header.Get("Content-Type") == "" {
+		proxyReq.Header.Set("Content-Type", "application/json")
+	}
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+		proxyReq.Header.Del(header)
+	}
+	resp, err := s.httpStreamingClient.Do(proxyReq)
+	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) {
+			return nil, cause
+		}
+		return nil, err
+	}
+	if wrap != nil {
+		resp.Body = wrap(resp.Body)
+	}
+	return resp, nil
+}
+
+func instanceSendFailure(recorder *llm.InferenceRecorder, err error) httperr.Error {
+	failure := httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"}
+	errType := "backend_unreachable"
+	if errors.Is(err, instance.ErrFirstByteTimeout) {
+		failure.Status, failure.Code, failure.Message = http.StatusGatewayTimeout, string(httperr.CodeUpstreamTimeout), "The model instance did not begin responding in time."
+		errType = failure.Code
+	}
+	recordWireError(recorder, errType, err)
+	return failure
+}
+
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
 	lease, err := s.openInstance(req, inst)
 	if err != nil {
@@ -198,14 +249,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	}
 	defer lease.Release()
 
-	// Build instance URL (handles local and remote instances)
 	backendNode := getInstanceBackendNode(inst)
-	instanceURL := fmt.Sprintf("http://%s:%d", backendNode, inst.Port)
-	targetURL, err := url.Parse(instanceURL)
-	if err != nil {
-		writeError(w, req, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "invalid instance URL", Code: "invalid_instance_url"})
-		return
-	}
 
 	model, _ := req.Context().Value(CtxKeyModel).(string)
 	recorder := requestRecorder(req.Context(), model, inst.Provider)
@@ -217,30 +261,14 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	defer obsproxy.DecInflight(req.Context(), inflightToken)
 
 	body, restoreModel := s.instanceRequest(req, inst)
-	if body != nil {
-		recorder.SetUpstreamRequestData(body)
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
-	}
-
-	proxyReq := req.Clone(req.Context())
-	proxyReq.URL.Scheme = targetURL.Scheme
-	proxyReq.URL.Host = targetURL.Host
-	proxyReq.Host = targetURL.Host
-	proxyReq.RequestURI = ""
-	proxyReq.Close = false
-	proxyReq.Header = upstreamHeaders(req.Header, backend.Engine())
-	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
-		proxyReq.Header.Del(header)
-	}
+	recorder.SetUpstreamRequestData(body)
 	if !quiet {
-		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path)
+		slog.Info("Forwarding request to instance", "id", inst.ID, "host", backendNode, "port", inst.Port, "path", req.URL.Path)
 	}
-	resp, err := s.httpStreamingClient.Do(proxyReq)
+	resp, err := s.sendToInstance(req, lease, body)
 	if err != nil {
 		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
-		recordWireError(recorder, "backend_unreachable", err)
-		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"})
+		writeError(w, req, instanceSendFailure(recorder, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -300,19 +328,10 @@ func openEventStream(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// isStreamingRequest checks if the original request body has "stream": true.
+// isStreamingRequest reports whether the engine-facing body (translated already, if it was) streams.
 func isStreamingRequest(req *http.Request) bool {
-	body, ok := req.Context().Value(CtxKeyOriginalBody).([]byte)
-	if !ok {
-		return false
-	}
-	var r struct {
-		Stream bool `json:"stream"`
-	}
-	if json.Unmarshal(body, &r) == nil {
-		return r.Stream
-	}
-	return false
+	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+	return wire.StreamFromBody(body)
 }
 
 // extractTagsFromExtra extracts HuggingFace tags from model Extra metadata.

@@ -491,6 +491,14 @@ func ModelFromBody(body []byte) string {
 	return probe.Model
 }
 
+// StreamFromBody reports whether an engine-facing JSON body asks for a stream; absent means no.
+func StreamFromBody(body []byte) bool {
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	return json.Unmarshal(body, &probe) == nil && probe.Stream
+}
+
 // SSE framing tokens. Declared once so the parser and any future frame
 // handling agree on the exact bytes.
 var (

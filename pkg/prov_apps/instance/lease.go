@@ -3,11 +3,14 @@ package instance
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // Lease is one request's hold on an instance: its concurrency slot, its place in the
@@ -15,6 +18,9 @@ import (
 type Lease struct {
 	instance *Instance
 	once     sync.Once
+	mu       sync.Mutex
+	watch    *streamWatch
+	released bool
 }
 
 // Acquire waits for a slot within the queue timeout and stamps activity with hints.
@@ -104,6 +110,12 @@ func (i *Instance) acquireSlot(ctx context.Context) error {
 // keep_alive: a later request's hint must not be overwritten by an earlier one finishing.
 func (l *Lease) Release() {
 	l.once.Do(func() {
+		l.mu.Lock()
+		l.released = true
+		if l.watch != nil {
+			l.watch.stop()
+		}
+		l.mu.Unlock()
 		i := l.instance
 		// Re-arm expiry before the idle reaper can observe zero active requests.
 		i.StampActivityWithHints(nil)
@@ -117,4 +129,106 @@ func (l *Lease) Release() {
 // Instance returns the leased instance.
 func (l *Lease) Instance() *Instance {
 	return l.instance
+}
+
+// ErrFirstByteTimeout means the engine stayed silent through its prefill budget.
+var ErrFirstByteTimeout = streamTimeoutError("instance first body byte timeout")
+
+// ErrStreamIdle means an opened engine stream stopped producing bytes.
+var ErrStreamIdle = streamTimeoutError("instance stream idle timeout")
+
+type streamTimeoutError string
+
+func (e streamTimeoutError) Error() string { return string(e) }
+func (streamTimeoutError) Timeout() bool   { return true }
+func (streamTimeoutError) Temporary() bool { return false }
+
+// WatchStream bounds engine silence while allowing a continuously read stream to run indefinitely.
+// A lease carries one request, so it has one watch: later calls return the first one.
+func (l *Lease) WatchStream(ctx context.Context) (context.Context, func(io.ReadCloser) io.ReadCloser) {
+	return l.watchStream(ctx, constants.DefaultFirstByteTimeout, constants.DefaultStreamIdleTimeout)
+}
+
+func (l *Lease) watchStream(ctx context.Context, firstByte, idle time.Duration) (context.Context, func(io.ReadCloser) io.ReadCloser) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.watch == nil {
+		ctx, cancel := context.WithCancelCause(ctx)
+		w := &streamWatch{ctx: ctx, cancel: cancel, idle: idle, cause: ErrFirstByteTimeout, deadline: utils.Now().Add(firstByte)}
+		w.mu.Lock()
+		w.timer = time.AfterFunc(firstByte, w.expire)
+		w.mu.Unlock()
+		l.watch = w
+		if l.released {
+			w.stop()
+		}
+	}
+	w := l.watch
+	return w.ctx, func(body io.ReadCloser) io.ReadCloser { return &watchedBody{ReadCloser: body, watch: w} }
+}
+
+type streamWatch struct {
+	mu       sync.Mutex
+	ctx      context.Context
+	cancel   context.CancelCauseFunc
+	timer    *time.Timer
+	deadline time.Time
+	idle     time.Duration
+	cause    error
+	stopped  bool
+}
+
+func (w *streamWatch) expire() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped || w.ctx.Err() != nil {
+		return
+	}
+	// A dispatched callback may outlive Reset; only the current silence window can expire.
+	if remaining := w.deadline.Sub(utils.Now()); remaining > 0 {
+		w.timer.Reset(remaining)
+		return
+	}
+	w.stopped = true
+	w.cancel(w.cause)
+}
+
+func (w *streamWatch) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopLocked()
+}
+
+func (w *streamWatch) stopLocked() {
+	w.stopped = true
+	w.timer.Stop()
+	w.cancel(nil)
+}
+
+type watchedBody struct {
+	io.ReadCloser
+	watch *streamWatch
+}
+
+func (b *watchedBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	w := b.watch
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if cause := context.Cause(w.ctx); errors.Is(cause, ErrFirstByteTimeout) || errors.Is(cause, ErrStreamIdle) {
+		err = cause
+	}
+	if err != nil {
+		w.stopLocked()
+	} else if n > 0 && !w.stopped {
+		w.cause = ErrStreamIdle
+		w.deadline = utils.Now().Add(w.idle)
+		w.timer.Reset(w.idle)
+	}
+	return n, err
+}
+
+func (b *watchedBody) Close() error {
+	b.watch.stop()
+	return b.ReadCloser.Close()
 }
