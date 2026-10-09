@@ -842,8 +842,10 @@ def check_contention(ctx):
     rj = ctx["rj"] or {}
     starts = tool_calls(ctx, "zz_run_start") + tool_calls(ctx, "zz_job")
     refused = [c for c in starts if "cannot fit" in c["resp"]]
+    # With pressure eviction on, the second launch stops the idle first run instead of being refused.
+    evicted = [c for c in starts + tool_calls(ctx, "zz_runs") if '"evicted_runs"' in c["resp"]]
     out = [(">= 2 launches", len(tool_calls(ctx, "zz_run_start")) >= 2, len(tool_calls(ctx, "zz_run_start"))),
-           ("agent claims match zzRouter", bool(rj) and (rj.get("both_served") is True) == (not refused), rj),
+           ("agent claims match zzRouter", bool(rj) and (rj.get("both_served") is True) == (not refused and not evicted), rj),
            ("no runs left on node", not ctx["left"], ctx["left"])]
     if refused:
         out.append(("agent named the memory holder", bool(rj.get("holder")), rj.get("holder")))
