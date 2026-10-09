@@ -136,7 +136,10 @@ carry the existing template remedy. No probe result is stored on a run.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
-and required flag.
+and required flag. An operation a task tool uses carries `task_tools`, naming that
+tool (`getJob` carries `["zz_job"]`); the reply text says to call it instead. The
+names come from the operation IDs each tool declares, so a new tool marks its
+routes without another list.
 `zz_api_get` reads a GET route; `zz_api` handles other methods and carries a
 destructive hint. Its `idempotency_key` is forwarded to REST and replays only
 on operations whose OpenAPI parameters declare `Idempotency-Key`. These include
@@ -145,7 +148,10 @@ mutations (group, replica and owner release), and authenticated, non-streaming
 `POST /v1/chat/completions`, `POST /v1/completions` and `POST /v1/responses`.
 The `zz_api` escape hatch itself admits only eligible public management routes.
 Both refuse internal, MCP, streaming, retired and unmounted
-routes and require literal paths without URL encoding or traversal. Put query
+routes and require literal paths without URL encoding or traversal. A route a
+task tool uses is still served, because a tool may not expose every option of
+its route; the reply adds `task_tools` and text such as "zz_job serves this
+route; use it next." Failures carry no such hint. Put query
 parameters in `query`; use `content_type: "application/merge-patch+json"` for
 parameter merge patches.
 

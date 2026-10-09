@@ -14,7 +14,7 @@
 // vocabulary for /api/*, add an enum-drift assertion here mirroring
 // the OpenAI one.
 //
-// Shared helpers (loadOpenAPI, normalizeGinPath, rk, routeKey,
+// Shared helpers (loadOpenAPI, rk, routeKey,
 // equalStringSlices, sortedStrings) come from openapi_drift_v1_test.go
 // and are reused as-is — both tests are in the same package so the
 // unexported helpers are visible to both.

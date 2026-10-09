@@ -61,6 +61,19 @@ func (s *Server) registerOpenAPIRoutes() {
 	})
 }
 
+// openAPIOperationID reads one operation's id from the served document, empty when it has none.
+func openAPIOperationID(method, path string) (string, error) {
+	document, err := embeddedOpenAPI()
+	if err != nil {
+		return "", fmt.Errorf("parse embedded OpenAPI: %w", err)
+	}
+	paths, _ := document["paths"].(map[string]any)
+	item, _ := paths[path].(map[string]any)
+	operation, _ := item[strings.ToLower(method)].(map[string]any)
+	id, _ := operation["operationId"].(string)
+	return id, nil
+}
+
 // searchOpenAPI projects the served document directly, without a second operation index.
 func searchOpenAPI(query string, limit int) ([]map[string]any, error) {
 	document, err := embeddedOpenAPI()

@@ -314,7 +314,7 @@ func TestDispatcherMissingMetadata(t *testing.T) {
 		if value != nil {
 			ctx = context.WithValue(ctx, outerKey, value)
 		}
-		_, err := newDispatcher(ctx, Config{})
+		_, err := newDispatcher(ctx, Config{}, nil)
 		require.ErrorContains(t, err, "retry through the public MCP endpoint")
 	}
 }
