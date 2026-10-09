@@ -126,7 +126,7 @@ type installInput struct {
 	Runtime       string `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
 type paramsInput struct {
-	Provider string `json:"provider" jsonschema:"Provider name whose resolved parameters to read."`
+	Provider string `json:"provider" jsonschema:"Provider whose parameters to read or change. zz_params_get lists every parameter it accepts, with type and description, under accepts."`
 	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Model    string `json:"model,omitempty" jsonschema:"Optional model name for model-tier resolution."`
 }
