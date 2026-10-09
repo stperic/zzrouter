@@ -30,10 +30,10 @@ func (c *UpdateController) scheduler() *update.Scheduler {
 }
 
 // RegisterRoutes registers admin update reads and mutations.
-func (c *UpdateController) RegisterRoutes(router *gin.RouterGroup) {
+func (c *UpdateController) RegisterRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	router.GET("/update/status", c.HandleGetStatus)
 	router.POST("/update/check", c.HandleCheckNow)
-	router.POST("/update/apply", c.HandleApplyNow)
+	idempotent(router, "POST", "/update/apply", nil, c.HandleApplyNow)
 	router.POST("/update/rollback", c.HandleRollback)
 	router.GET("/update/history", c.HandleGetHistory)
 	router.GET("/update/settings", c.HandleUpdateSettings)

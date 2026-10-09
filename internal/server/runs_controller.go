@@ -22,7 +22,6 @@ type RunsController struct {
 	utility     *RunsUtilityService
 	nodes       NodeValidator
 	logs        RunLogHandler
-	idem        *idempotencyStore
 }
 
 // NewRunsController creates a new runs controller.
@@ -32,7 +31,6 @@ func NewRunsController(
 	utility *RunsUtilityService,
 	nodes NodeValidator,
 	logs RunLogHandler,
-	idem *idempotencyStore,
 ) *RunsController {
 	return &RunsController{
 		service:     service,
@@ -40,12 +38,11 @@ func NewRunsController(
 		utility:     utility,
 		nodes:       nodes,
 		logs:        logs,
-		idem:        idem,
 	}
 }
 
 // RegisterPublicRoutes registers public run routes.
-func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup) {
+func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	// Broadcast
 	router.GET("/runs", ctrl.ListRuns)
 
@@ -54,12 +51,10 @@ func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.GET("/runs/:id/logs", ctrl.GetRunLogs)
 	router.GET("/runs/:id/health", ctrl.GetRunHealth)
 	router.GET("/runs/:id/probes", ctrl.GetRunProbes)
-	// Launch + ensure carry agent retry weight; gate on Idempotency-Key
-	// so a retried timeout doesn't double-launch.
-	router.POST("/runs", ctrl.idem.middleware(), ctrl.LaunchRun)
-	router.POST("/runs/ensure", ctrl.idem.middleware(), ctrl.EnsureRun)
+	idempotent(router, "POST", "/runs", nil, ctrl.LaunchRun)
+	idempotent(router, "POST", "/runs/ensure", nil, ctrl.EnsureRun)
 	router.DELETE("/runs/:id", ctrl.StopRun)
-	router.POST("/runs/:id/restart", ctrl.RestartRun)
+	idempotent(router, "POST", "/runs/:id/restart", nil, ctrl.RestartRun)
 
 	// Load (Cache-aware)
 	router.POST("/runs/load", ctrl.LoadModel)

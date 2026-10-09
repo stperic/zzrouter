@@ -173,23 +173,7 @@ func TestIntegrationMCPWorkerNotMounted(t *testing.T) {
 
 func TestMCPOperationBindings(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
-	spec := loadOpenAPI(t)
-	type boundRoute struct{ method, path string }
-	operations := map[string]boundRoute{}
-	for path, methods := range spec.Paths {
-		for method, node := range methods {
-			if method == "parameters" {
-				continue
-			}
-			var operation struct {
-				ID string `yaml:"operationId"`
-			}
-			require.NoError(t, node.Decode(&operation))
-			if operation.ID != "" {
-				operations[operation.ID] = boundRoute{strings.ToUpper(method), path}
-			}
-		}
-	}
+	operations := mcpBoundOperations(t)
 	bindings := mcpserver.OperationBindings()
 	require.Equal(t, []string{"listRegistriesHuggingfaceVariants"}, bindings["zz_model_files"])
 	require.Equal(t, []string{"listProviders", "getProviderStatus"}, bindings["zz_providers"])

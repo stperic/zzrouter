@@ -1,14 +1,4 @@
-// package server — Idempotency-Key middleware for POST /runs and
-// /runs/ensure. Agents that retry on HTTP timeout (without changing
-// the request body) attach a stable Idempotency-Key header; a duplicate
-// POST with the same key + same body returns the original 2xx response
-// instead of starting a second launch. A failure is not recorded, so a
-// retry after one runs again.
-//
-// Out of scope: cross-restart persistence (in-memory only — agents
-// retry within seconds-to-minutes), worker-side dedupe (coord is the
-// only entry point for /runs; coord-forwarded requests carry
-// X-zzrouter-Cluster-Auth and bypass the gate).
+// Package server provides bounded replay for routes mounted through Server.idempotent.
 
 package server
 
@@ -91,6 +81,7 @@ type idempotencyStore struct {
 	maxBytes      int
 	maxEntryBytes int
 	now           func() time.Time
+	routes        map[string]struct{} // "METHOD /path" of every route this store guards
 
 	lifecycleMu sync.Mutex
 	cancel      context.CancelFunc
@@ -105,6 +96,7 @@ func newIdempotencyStore() *idempotencyStore {
 		maxBytes:      idempotencyMaxBytes,
 		maxEntryBytes: idempotencyMaxEntryBytes,
 		now:           utils.Now,
+		routes:        make(map[string]struct{}),
 	}
 }
 
@@ -217,20 +209,7 @@ func (s *idempotencyStore) forgetLocked(entry *idemEntry) {
 	}
 }
 
-// idempotencyMiddleware returns a gin handler that dedupes POSTs
-// carrying an Idempotency-Key header. Mount it on a per-route basis —
-// it captures the response body, which is heavier than blanket
-// middleware should be.
-func (s *idempotencyStore) middleware() gin.HandlerFunc {
-	return s.middlewareWithBodySkip(nil)
-}
-
-// middlewareWithBodySkip is like middleware but accepts a predicate that
-// inspects the raw request body and short-circuits dedup when it returns
-// true. Useful for routes whose response semantics make caching unsound
-// for some bodies — e.g. /v1/chat/completions with `stream:true` would
-// have its entire SSE event sequence buffered into the cache and replayed
-// instantly, breaking live-stream timing for clients.
+// middlewareWithBodySkip bypasses bodies whose response cannot be replayed safely.
 func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Cluster-internal forwarded requests are already deduped at

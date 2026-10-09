@@ -21,8 +21,8 @@ func NewDeploymentsController(service *DeploymentsService) *DeploymentsControlle
 }
 
 // RegisterPublicRoutes registers public deployment routes.
-func (ctrl *DeploymentsController) RegisterPublicRoutes(router *gin.RouterGroup) {
-	router.POST("/deployments", ctrl.Deploy)
+func (ctrl *DeploymentsController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
+	idempotent(router, "POST", "/deployments", nil, ctrl.Deploy)
 	router.GET("/deployments", ctrl.ListDeployments)
 	router.DELETE("/deployments", ctrl.StopAllDeployments)
 	router.GET("/deployments/:id", ctrl.GetDeployment)

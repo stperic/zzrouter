@@ -89,9 +89,17 @@ address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
 ## Follow jobs
 
-Start tools return IDs immediately. Reuse the same `idempotency_key` when
-retrying the same start request. Only a success is replayed: a retry after
-an error runs again. Call `zz_job` with each returned `job_id` and
+Job-starting tools return IDs immediately. `zz_run_start`, `zz_run_restart`,
+`zz_model_download`, `zz_provider_install` (including `preflight_only: true`)
+and `zz_update_apply` replay successful REST responses when retried with the
+same `idempotency_key`, body and query on the same route by the same caller.
+Replay uses a bounded, in-memory cache for up to 24 hours and does not survive
+server restarts. Only an accepted request is retained, and replay returns that acceptance:
+for a job-creating tool, the same `job_id`, even if that job later failed.
+A retry after an error runs again; after a failed job, use a new key.
+Use a fresh key to rerun preflight checks.
+
+Call `zz_job` with each returned `job_id` and
 `wait_seconds: 45`; if it is still running, call again. Downloads return jobs
 per node. Follow a launch's `deploy_job_id` too when present. Keep the
 `deployment_id` to cancel a download through `zz_job_cancel`; ordinary work
@@ -105,7 +113,13 @@ the serving node's local probe URL because it is not a coordinator-facing URL.
 returns methods, paths, operation IDs, summaries and each parameter's name, location
 and required flag.
 `zz_api_get` reads a GET route; `zz_api` handles other methods and carries a
-destructive hint. Both refuse internal, MCP, streaming, retired and unmounted
+destructive hint. Its `idempotency_key` is forwarded to REST and replays only
+on operations whose OpenAPI parameters declare `Idempotency-Key`. These include
+the job-starting routes above, `POST /runs/ensure`, model-group PUT/PATCH/DELETE
+mutations (group, replica and owner release), and authenticated, non-streaming
+`POST /v1/chat/completions`, `POST /v1/completions` and `POST /v1/responses`.
+The `zz_api` escape hatch itself admits only eligible public management routes.
+Both refuse internal, MCP, streaming, retired and unmounted
 routes and require literal paths without URL encoding or traversal. Put query
 parameters in `query`; use `content_type: "application/merge-patch+json"` for
 parameter merge patches. REST Problems appear as tool errors with their

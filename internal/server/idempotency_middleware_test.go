@@ -41,7 +41,7 @@ func makeIdemRouter(principal string, slowness time.Duration) (*gin.Engine, *ide
 		if principal != "" {
 			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: principal}})
 		}
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
 		if slowness > 0 {
 			time.Sleep(slowness)
@@ -107,7 +107,7 @@ func TestIdempotency_FailureIsNotReplayed(t *testing.T) {
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		if calls.Add(1) == 1 {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "wait for readiness"})
 			return
@@ -165,7 +165,7 @@ func TestIdempotency_PerPrincipalScoping(t *testing.T) {
 		// Principal comes from a request header for test purposes.
 		id := c.GetHeader("X-Test-Principal")
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: id}})
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
 		c.JSON(http.StatusAccepted, gin.H{"job_id": "J" + string(rune('0'+n))})
 	})
@@ -207,7 +207,7 @@ func TestIdempotency_ClusterForwardedBypass(t *testing.T) {
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
 		c.Set(string(CtxKeyClusterTrusted), true)
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		calls.Add(1)
 		c.JSON(http.StatusAccepted, gin.H{"ok": true})
 	})
@@ -233,11 +233,11 @@ func TestIdempotency_PerPathScoping(t *testing.T) {
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
 	}
 	r := gin.New()
-	r.POST("/a", setup, store.middleware(), func(c *gin.Context) {
+	r.POST("/a", setup, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		callsA.Add(1)
 		c.JSON(http.StatusOK, gin.H{"route": "a"})
 	})
-	r.POST("/b", setup, store.middleware(), func(c *gin.Context) {
+	r.POST("/b", setup, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		callsB.Add(1)
 		c.JSON(http.StatusOK, gin.H{"route": "b"})
 	})
@@ -358,8 +358,8 @@ func TestIdempotency_KeyIncludesMethod(t *testing.T) {
 		c.JSON(http.StatusAccepted, gin.H{"n": n})
 	}
 	r := gin.New()
-	r.POST("/runs", setup, store.middleware(), handler)
-	r.PUT("/runs", setup, store.middleware(), handler)
+	r.POST("/runs", setup, store.middlewareWithBodySkip(nil), handler)
+	r.PUT("/runs", setup, store.middlewareWithBodySkip(nil), handler)
 
 	body := `{"model_name":"x"}`
 	headers := map[string]string{"Idempotency-Key": "abc"}
@@ -381,7 +381,7 @@ func TestIdempotency_KeyIncludesQuery(t *testing.T) {
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
 		c.JSON(http.StatusAccepted, gin.H{"n": n})
 	})
@@ -431,7 +431,7 @@ func TestIdempotency_PanicReleasesWaiters(t *testing.T) {
 	r.Use(gin.Recovery())
 	r.POST("/runs", func(c *gin.Context) {
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-	}, store.middleware(), func(c *gin.Context) {
+	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		if calls.Add(1) == 1 {
 			close(entered)
 			<-release
@@ -499,8 +499,10 @@ func TestIdempotency_SharedStoreAcrossRoutes(t *testing.T) {
 		}
 	}
 	r := gin.New()
-	r.POST("/a", principal, store.middleware(), handler(aCalls))
-	r.POST("/b", principal, store.middleware(), handler(bCalls))
+	r.Use(principal)
+	server := &Server{idempotency: store}
+	server.idempotent(r.Group(""), "POST", "/a", nil, handler(aCalls))
+	server.idempotent(r.Group(""), "POST", "/b", nil, handler(bCalls))
 
 	body := `{"model_name":"x"}`
 	headers := map[string]string{"Idempotency-Key": "shared"}
@@ -518,22 +520,12 @@ func TestIdempotency_SharedStoreAcrossRoutes(t *testing.T) {
 	store.mu.Unlock()
 }
 
-// The store's caps only bound memory if every controller records into the one Server owns.
-func TestIdempotency_ControllersShareServerStore(t *testing.T) {
-	s := createTestNodeWithDefaults(t)
-	require.NotNil(t, s.idempotency)
-	require.NotNil(t, s.controllers.Runs)
-	require.NotNil(t, s.controllers.ModelGroups)
-	assert.Same(t, s.idempotency, s.controllers.Runs.idem)
-	assert.Same(t, s.idempotency, s.controllers.ModelGroups.idemStore)
-}
-
 func makeIdemStoreRouter(store *idempotencyStore, handler gin.HandlerFunc) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/runs", func(c *gin.Context) {
 		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-	}, store.middleware(), handler)
+	}, store.middlewareWithBodySkip(nil), handler)
 	return r
 }
 

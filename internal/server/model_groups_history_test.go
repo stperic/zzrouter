@@ -26,7 +26,7 @@ func mountModelGroupsWithLogStore(t *testing.T, yaml string) (*gin.Engine, *infe
 	logStore := inferencelog.NewStore(100, 0)
 	t.Cleanup(logStore.Stop)
 
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, logStore, nil, nil, "/model-groups/", newIdempotencyStore())
+	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, logStore, nil, nil, "/model-groups/")
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -34,7 +34,7 @@ func mountModelGroupsWithLogStore(t *testing.T, yaml string) (*gin.Engine, *infe
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")
-	ctrl.RegisterPublicRoutes(api)
+	ctrl.RegisterPublicRoutes(api, (&Server{idempotency: newIdempotencyStore()}).idempotent)
 	return r, logStore
 }
 

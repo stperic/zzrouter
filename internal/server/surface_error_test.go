@@ -159,7 +159,7 @@ func TestIdempotencyConflict_ShapeFollowsSurface(t *testing.T) {
 			// As mounted for real: the group's responder, then the store.
 			router.Use(httperr.AttachResponder(newResponderSet().dispatcher.For(tc.path)), func(c *gin.Context) {
 				c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-			}, store.middleware())
+			}, store.middlewareWithBodySkip(nil))
 			router.POST(tc.path, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 
 			first := httptest.NewRecorder()

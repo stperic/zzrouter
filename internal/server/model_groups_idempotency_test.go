@@ -24,7 +24,7 @@ func mountModelGroupsTestRouter(t *testing.T, yaml string) *gin.Engine {
 	require.NoError(t, store.LoadFromBytes([]byte(yaml)))
 	store.SetPath(filepath.Join(t.TempDir(), "model_groups.yaml"))
 
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, nil, nil, "/model-groups/", newIdempotencyStore())
+	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, nil, nil, "/model-groups/")
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -32,7 +32,7 @@ func mountModelGroupsTestRouter(t *testing.T, yaml string) *gin.Engine {
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")
-	ctrl.RegisterPublicRoutes(api)
+	ctrl.RegisterPublicRoutes(api, (&Server{idempotency: newIdempotencyStore()}).idempotent)
 	return r
 }
 

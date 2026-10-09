@@ -1023,6 +1023,7 @@ paths:
         instance's job_id so agents subscribe to the relaunch progress
         via `/jobs/{job_id}/stream`.
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/NodeParam'
       responses:
         '202':
@@ -1049,6 +1050,24 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Run not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >
+            The idempotency store is full with requests still in flight. Retry shortly; `code` is `idempotency_store_full`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: >
+            A duplicate of a request that is still in flight waited out its bound for the original to answer. Retry shortly; `code` is `idempotency_wait_timeout`.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1539,6 +1558,7 @@ paths:
         the SAME job_id (idempotent retry) for artifact installers. A busy typed
         runtime refuses a conflicting install until its current job terminates.
       parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
         - $ref: '#/components/parameters/NodeParam'
       requestBody:
         required: false
@@ -1571,6 +1591,24 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
           description: Provider already installed; set force=true to reinstall.
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >
+            The idempotency store is full with requests still in flight. Retry shortly; `code` is `idempotency_store_full`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: >
+            A duplicate of a request that is still in flight waited out its bound for the original to answer. Retry shortly; `code` is `idempotency_wait_timeout`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /zzrouter/v1/providers/{name}/verify:
     parameters:
@@ -2144,6 +2182,8 @@ paths:
         with the tracked Deployment record. Clients poll
         `GET /zzrouter/v1/deployments/{id}` until `status` reaches
         a terminal state.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -2173,6 +2213,25 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >
+            The idempotency store is full with requests still in flight. Retry shortly; `code` is `idempotency_store_full`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: >
+            A duplicate of a request that is still in flight waited out its bound for the original to answer. Retry shortly; `code` is `idempotency_wait_timeout`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
     delete:
       tags: [Deployments]
       operationId: deleteDeployments
@@ -4341,11 +4400,31 @@ paths:
 
         Run it before `POST /zzrouter/v1/providers/{name}/install`. A failed
         preflight is much cheaper to read than a failed install.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200': { description: OK }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: No provider by that name, or the target node is unknown.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >
+            The idempotency store is full with requests still in flight. Retry shortly; `code` is `idempotency_store_full`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: >
+            A duplicate of a request that is still in flight waited out its bound for the original to answer. Retry shortly; `code` is `idempotency_wait_timeout`.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -5950,6 +6029,8 @@ paths:
           `GET /zzrouter/v1/update/status`.
 
         A `409` means no update is pending; run the check first.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: false
         content:
@@ -6012,8 +6093,21 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: >
+            The Idempotency-Key on this request was recorded against a different body. Change the key or send the original body; `code` is `idempotency_key_conflict`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Update control not initialized. Explicit updates work with enabled=false.
+          description: >
+            Update control not initialized (explicit updates work with enabled=false), or the idempotency store is full with requests still in flight (`code` is `idempotency_store_full`; retry shortly).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: >
+            A duplicate of a request that is still in flight waited out its bound for the original to answer. Retry shortly; `code` is `idempotency_wait_timeout`.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -9751,32 +9845,23 @@ components:
       required: false
       schema: { type: string }
       description: >
-        Makes a retry safe. The first request under a given key is
-        executed and its response recorded; a retry carrying the same key
-        and the same body gets that recorded response back instead of a
-        second execution, for 24 hours. Retrying a launch after an HTTP
-        timeout is the case it exists for - without a key the first
-        launch may well have started.
+        Makes retries safe for authenticated callers on operations that declare
+        this header. A successful response is retained in a bounded in-memory
+        cache for up to 24 hours; retries with the same caller, method, resolved
+        path, query, key and body replay it without executing the operation again.
+        Entries may be evicted earlier and do not survive a server restart.
+        Responses larger than 1 MiB are not retained. Failures are not retained,
+        so retrying after an error can execute the operation again with the same key.
 
+        The same scoped key with a different body returns 422
+        (`idempotency_key_conflict`). A duplicate arriving while the original is
+        running waits for that attempt's result, or returns 504
+        (`idempotency_wait_timeout`) when the wait expires. Admission returns 503
+        (`idempotency_store_full`) if capacity is occupied by in-flight requests.
 
-        What is recorded is whatever the first attempt answered,
-        including a failure. A request that got a 502 from an upstream
-        replays that 502 for 24 hours under the same key, so a retry
-        meant to ride out a transient fault has to carry a new key.
-        Reuse a key to make a retry idempotent, not to make it hopeful.
-
-
-        The key is scoped to the caller, the resolved path and the key
-        value, so two keys can share a string and a key recorded against
-        one model group does not replay for another. Same key with a
-        different body is a 422, never a silent replay of the wrong
-        answer. A retry that arrives while the original is still running
-        waits for it and replays its result.
-
-
-        Streaming requests on the compatibility surface bypass the
-        mechanism: replaying a buffered stream instantly is not the same
-        response.
+        Compatibility requests with stream:true bypass replay because replaying
+        a buffered stream would break live timing. Anonymous requests also bypass
+        replay because they do not have an isolated caller identity.
 
     LimitParam:
       in: query

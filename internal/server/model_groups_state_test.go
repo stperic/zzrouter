@@ -34,7 +34,7 @@ func mountModelGroupsRouterWithTrackers(t *testing.T, yaml string) (*gin.Engine,
 		{DeploymentName: "r1", URL: "http://stub", Path: "/health"},
 	})
 
-	ctrl := NewModelGroupsController(store, cooldowns, load, latency, health, nil, nil, nil, "/model-groups/", newIdempotencyStore())
+	ctrl := NewModelGroupsController(store, cooldowns, load, latency, health, nil, nil, nil, "/model-groups/")
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -42,7 +42,7 @@ func mountModelGroupsRouterWithTrackers(t *testing.T, yaml string) (*gin.Engine,
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")
-	ctrl.RegisterPublicRoutes(api)
+	ctrl.RegisterPublicRoutes(api, (&Server{idempotency: newIdempotencyStore()}).idempotent)
 	return r, cooldowns, load, latency, health
 }
 
