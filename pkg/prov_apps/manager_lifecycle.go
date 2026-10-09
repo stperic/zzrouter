@@ -513,10 +513,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 			owners[pid] = run.ID
 		}
 	}
-	if err := process.ResolveAutoMemory(*budget, resolved.Parameters, visible, devices); err != nil {
-		return err
-	}
-	return process.CheckMemoryBudget(*budget, resolved.Parameters, visible, devices, owners)
+	return process.AdmitMemoryBudget(*budget, resolved.Parameters, visible, devices, owners)
 }
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.

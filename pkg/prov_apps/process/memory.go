@@ -68,17 +68,25 @@ func (e *MemoryFitError) Unwrap() error {
 // maxMemoryDevices bounds device selection before any observation or allocation.
 const maxMemoryDevices = 64
 
-// CheckMemoryBudget compares a resolved fraction-of-total budget on each selected GPU.
-func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
+// AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses, first replacing
+// auto in parameters with the free fraction those GPUs have room for. A budget that cannot fit is a
+// MemoryFitError naming who holds the memory.
+func AdmitMemoryBudget(budget schema.MemoryBudget, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
 	if budget.Kind != "fraction_total" {
 		return nil
 	}
-	fraction, err := strconv.ParseFloat(parameters[budget.Parameter], 64)
-	if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
-		return fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+	auto := parameters[budget.Parameter] == "auto"
+	var fraction float64
+	if !auto {
+		var err error
+		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
+		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
+			return fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+		}
 	}
 	count := 1
 	if value := parameters[budget.DeviceCountParameter]; value != "" {
+		var err error
 		count, err = strconv.Atoi(value)
 		if err != nil || count < 1 || count > maxMemoryDevices {
 			return fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
@@ -88,22 +96,33 @@ func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[s
 	if err != nil {
 		return err
 	}
+	if auto {
+		if fraction, err = autoFraction(budget, selected, owners); err != nil {
+			return err
+		}
+		parameters[budget.Parameter] = strconv.FormatFloat(fraction, 'f', 4, 64)
+	}
 	for _, device := range selected {
 		required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
 		if required <= device.FreeMiB {
 			continue
 		}
-		failure := &MemoryFitError{Parameter: budget.Parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
-		for _, process := range device.Processes {
-			holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
-			if run := owners[process.PID]; run != "" {
-				holder.Run, holder.Ownership = run, "zzrouter"
-			}
-			failure.Holders = append(failure.Holders, holder)
-		}
-		return failure
+		return memoryFitError(budget.Parameter, device, required, owners)
 	}
 	return nil
+}
+
+// memoryFitError names every process holding the device, marking zzRouter's own runs.
+func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners map[int]string) *MemoryFitError {
+	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
+	for _, process := range device.Processes {
+		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
+		if run := owners[process.PID]; run != "" {
+			holder.Run, holder.Ownership = run, "zzrouter"
+		}
+		failure.Holders = append(failure.Holders, holder)
+	}
+	return failure
 }
 
 func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, count int) ([]gpu.MemoryDevice, error) {
