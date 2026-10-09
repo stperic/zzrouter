@@ -776,6 +776,17 @@ def scenarios(node, provider):
             "pick": vision,
             "provider": provider,
         })
+    big = cell.get("big")
+    if big:
+        out.append({
+            "id": "tool-calling",
+            "prompt": f"On node {node}, make {big['name']} serve tool calls with {provider}: start it, prove tool calling with "
+                      "zzRouter's tool-call probe, and if the probe or a refusal says the engine needs tool-calling settings, "
+                      "set them for this model only, restart the run and probe again until it is verified. Then stop it."
+                      + tail(provider) + " JSON keys: verified (bool), settings_changed (object or null), stopped (bool).",
+            "check": check_tool_calling,
+            "expect_error": "tool_calling_not_enabled",
+        })
     if cell.get("text") and vision:
         param = memory_parameter(provider)
         a = cell["text"] if param else (cell.get("big") or cell["text"])
@@ -802,7 +813,7 @@ def tool_calls(ctx, name, ok=None):
 def check_inventory(ctx):
     rj = ctx["rj"] or {}
     want = set(LAB[ctx["node"]]["providers"])
-    got = {p.lower() for p in rj.get("providers") or []}
+    got = {(p if isinstance(p, str) else p.get("name") or p.get("provider") or "").lower() for p in rj.get("providers") or []}
     return [("RESULT line parsed", bool(rj), rj), ("local providers match", want <= got, f"want {want} got {got}")]
 
 
@@ -812,6 +823,16 @@ def check_find_run(ctx):
             ("started a run", bool(tool_calls(ctx, "zz_run_start", True)), len(tool_calls(ctx, "zz_run_start"))),
             ("chat answered", bool(tool_calls(ctx, "zz_chat", True)), rj.get("reply")),
             ("stopped", bool(tool_calls(ctx, "zz_run_stop", True)) and rj.get("stopped") is True, rj),
+            ("no runs left on node", not ctx["left"], ctx["left"])]
+
+
+def check_tool_calling(ctx):
+    rj = ctx["rj"] or {}
+    probes = [c for c in tool_calls(ctx, "zz_chat", True) if (c["args"] or {}).get("tools") is True]
+    verified = any('"verified"' in c["resp"] for c in probes)
+    return [("probed with tools", bool(probes), len(probes)),
+            ("probe verified tool calling", verified, [c["resp"][:160] for c in probes][-1:]),
+            ("agent claims match the probe", rj.get("verified") is verified, rj),
             ("no runs left on node", not ctx["left"], ctx["left"])]
 
 
