@@ -19,6 +19,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
@@ -395,19 +396,13 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		return
 	}
 
-	// Metered and shaped exactly like the warm path. This used to be
-	// CopyWithFlush, which is CopyWithMetrics with a nil recorder: a
-	// cold load that outran ModelLoadGrace streamed its whole answer
-	// while the inference log recorded no tokens and no cost, and the
-	// terminal usage frame reached callers who never asked for it.
-	// Same local instances, same surface, opposite behaviour from its
-	// sibling in proxyToInstance.
 	servingNode := backendNode
 	if servingNode == constants.Localhost {
 		servingNode = s.GetNodename()
 	}
 	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
-	copyStreamWithMetrics(w, resp.Body, rec, s.localStreamTransform(meta, inst.Provider, rec))
+	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	endBrokenStream(w, req, result)
 }
 
 // capacityErrorMessage returns a standardized capacity error message for

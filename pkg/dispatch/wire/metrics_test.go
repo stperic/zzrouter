@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -260,11 +261,7 @@ func TestSetErrorFromStatus_TagsErrorPath(t *testing.T) {
 	assert.Equal(t, "upstream_server_error", captured.ErrorType)
 }
 
-// TestCaptureNonStreamingMetrics_TagsErrorBody confirms the wire-layer
-// pre-pass: a non-2xx response tags the recorder before
-// recordProxyMetrics fires RecordCompletion, so the metric carries
-// error_type even when the body has no parseable usage fields.
-func TestCaptureNonStreamingMetrics_TagsErrorBody(t *testing.T) {
+func TestRelayBuffered_TagsErrorBody(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "p")
 	body := `{"error":{"message":"upstream is down","type":"server_error"}}`
 	resp := &http.Response{
@@ -278,16 +275,12 @@ func TestCaptureNonStreamingMetrics_TagsErrorBody(t *testing.T) {
 	llm.SetInferenceLogHook(hookFn(func(d llm.InferenceLogData) { captured = d }))
 	defer llm.SetInferenceLogHook(nil)
 
-	CaptureNonStreamingMetrics(resp, rec)
+	RelayBuffered(httptest.NewRecorder(), resp, nil, rec)
 	assert.Equal(t, "upstream_server_error", captured.ErrorType,
 		"5xx body without usage must still carry error_type label")
 }
 
-// TestCaptureNonStreamingMetrics_EmptyErrorBody covers the
-// ContentLength=0 short-circuit. RecordCompletion still has to fire so
-// the metric emits at all — silent drop on empty error bodies was the
-// pre-D2.4 bug class.
-func TestCaptureNonStreamingMetrics_EmptyErrorBody(t *testing.T) {
+func TestRelayBuffered_EmptyErrorBody(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "p")
 	resp := &http.Response{
 		StatusCode:    502,
@@ -304,23 +297,12 @@ func TestCaptureNonStreamingMetrics_EmptyErrorBody(t *testing.T) {
 	}))
 	defer llm.SetInferenceLogHook(nil)
 
-	CaptureNonStreamingMetrics(resp, rec)
+	RelayBuffered(httptest.NewRecorder(), resp, nil, rec)
 	assert.True(t, called, "empty 5xx must still fire RecordCompletion")
 	assert.Equal(t, "upstream_server_error", captured.ErrorType)
 }
 
-// TestCaptureNonStreamingMetrics_PopulatesResponseModel pins the
-// gen_ai.response.model integration end-to-end: the wire-layer
-// usage parser extracts the response.model from the body, calls
-// recorder.SetResponseModel, and the value flows through to the
-// inference log payload (and via the recorder to the OTel span +
-// gen_ai.client.* metrics).
-//
-// Closes the deferred half of the Phase 6 cold-review must-fix —
-// before this commit, the recorder API existed but no production
-// caller invoked it, so gen_ai.response.model landed empty on every
-// span.
-func TestCaptureNonStreamingMetrics_PopulatesResponseModel(t *testing.T) {
+func TestRelayBuffered_PopulatesResponseModel(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "gpt-4-turbo", "openai")
 	body := `{
 		"id":"chatcmpl-1",
@@ -340,17 +322,14 @@ func TestCaptureNonStreamingMetrics_PopulatesResponseModel(t *testing.T) {
 	llm.SetInferenceLogHook(hookFn(func(d llm.InferenceLogData) { captured = d }))
 	defer llm.SetInferenceLogHook(nil)
 
-	CaptureNonStreamingMetrics(resp, rec)
+	RelayBuffered(httptest.NewRecorder(), resp, nil, rec)
 	assert.Equal(t, "gpt-4-turbo-2024-04-09", captured.ResponseModel,
 		"wire-layer recordProxyMetrics must call SetResponseModel from the response body")
 	assert.Equal(t, "gpt-4-turbo", captured.Model,
 		"request.model on the inference log payload should still echo the request-side model")
 }
 
-// TestCaptureNonStreamingMetrics_OllamaResponseModel pins the same
-// contract for the Ollama wire shape, exercising the
-// ParseOllamaUsageExtended path in recordProxyMetrics.
-func TestCaptureNonStreamingMetrics_OllamaResponseModel(t *testing.T) {
+func TestRelayBuffered_OllamaResponseModel(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "llama3", "ollama")
 	body := `{"model":"llama3:latest","done":true,"prompt_eval_count":7,"eval_count":11}`
 	resp := &http.Response{
@@ -364,7 +343,7 @@ func TestCaptureNonStreamingMetrics_OllamaResponseModel(t *testing.T) {
 	llm.SetInferenceLogHook(hookFn(func(d llm.InferenceLogData) { captured = d }))
 	defer llm.SetInferenceLogHook(nil)
 
-	CaptureNonStreamingMetrics(resp, rec)
+	RelayBuffered(httptest.NewRecorder(), resp, nil, rec)
 	assert.Equal(t, "llama3:latest", captured.ResponseModel)
 	assert.Equal(t, int64(7), captured.TokensIn)
 	assert.Equal(t, int64(11), captured.TokensOut)

@@ -2,6 +2,8 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -126,4 +128,18 @@ func envelopeWithRequestID(status int, message, reqID string) map[string]any {
 		env["request_id"] = reqID
 	}
 	return env
+}
+
+// EndStream writes one Anthropic error event.
+func (*Responder) EndStream(w http.ResponseWriter, e httperr.Error) {
+	_ = writeStreamError(w, e)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func writeStreamError(w io.Writer, e httperr.Error) error {
+	data, _ := json.Marshal(Envelope(e.Status, e.Message))
+	_, err := fmt.Fprintf(w, "\nevent: error\ndata: %s\n\n", data)
+	return err
 }

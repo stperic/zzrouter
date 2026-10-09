@@ -118,6 +118,16 @@ func (f *fakeDeps) ProxyForwardDetached(ctx context.Context, method, url string,
 	}, nil
 }
 
+func (*fakeDeps) FinishRelay(w http.ResponseWriter, req *http.Request, resp *http.Response, res wire.Result) {
+	if e, failed := res.Failure(); failed {
+		if wire.IsStreaming(resp) {
+			httperr.FromRequest(req).(httperr.StreamEnder).EndStream(w, e)
+		} else {
+			httperr.FromRequest(req).WriteError(w, req, e)
+		}
+	}
+}
+
 func (f *fakeDeps) Normalizers() *normalizer.Registry { return normalizer.NewRegistry() }
 
 func (f *fakeDeps) AppInstance(model string) (*instance.Instance, bool) {
@@ -571,3 +581,51 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 }
 
 func (f *fakeDeps) FailureClassifier(app string) *httperr.Classifier { return f.classifier }
+
+func TestCommitWithRouting_CutStreamEndsWithDialectError(t *testing.T) {
+	deps := newFakeDeps()
+	deps.endpoints["engine"] = "http://engine.test"
+	deps.forward["http://engine.test/v1/chat/completions"] = func() (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK,
+			Header: http.Header{"Content-Type": {"text/event-stream"}},
+			Body:   io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"))}, nil
+	}
+	c, w := buildGinCtx(t, `{"model":"group","stream":true}`)
+	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
+		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", false)
+	assert.Contains(t, w.Body.String(), `"content":"partial"`)
+	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
+	assert.Equal(t, 1, strings.Count(w.Body.String(), `"error":`))
+	assert.NotContains(t, w.Body.String(), "[DONE]")
+}
+
+func TestCommitWithRouting_CutBodyAnswersBadGateway(t *testing.T) {
+	deps := newFakeDeps()
+	deps.endpoints["engine"] = "http://engine.test"
+	deps.forward["http://engine.test/v1/chat/completions"] = func() (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(chainCutBody{strings.NewReader(`{"choices":[`)})}, nil
+	}
+	c, w := buildGinCtx(t, `{"model":"group"}`)
+	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
+		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
+	assert.NotContains(t, w.Body.String(), "data:")
+}
+
+type chainCutBody struct{ io.Reader }
+
+func (r chainCutBody) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err == io.EOF {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
+}
+
+func (*fakeDeps) BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte {
+	return func(body []byte) []byte { return wire.MaybeInjectRoutingMetadata(body, meta, recorder) }
+}

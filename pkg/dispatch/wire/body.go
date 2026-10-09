@@ -94,7 +94,7 @@ type RoutingMetadata struct {
 	// be metered — a caller must not be able to opt out of being counted by
 	// sending include_usage:false. This flag is how the caller's wire
 	// contract is honoured anyway: they asked not to see usage, so they do
-	// not, while the recorder still counts it. CopyWithMetrics observes each
+	// not, while the recorder still counts it. CopyStream observes each
 	// chunk BEFORE the transforms run, so measurement happens upstream of
 	// suppression and is unaffected.
 	//
@@ -552,7 +552,7 @@ func RewriteModelInStreamChunk(chunk []byte, newModel string) []byte {
 // chunk — the `{"choices":[],"usage":{…}}` frame that include_usage adds.
 //
 // Used when usage was requested from the engine for metering but the caller
-// did not ask to see it. CopyWithMetrics observes each chunk before running
+// did not ask to see it. CopyStream observes each chunk before running
 // the transforms, so the tokens are already recorded by the time this drops
 // the frame.
 //
@@ -561,7 +561,7 @@ func RewriteModelInStreamChunk(chunk []byte, newModel string) []byte {
 // that would take the caller's last token with it.
 //
 // A line that does not parse is left alone, the same rule
-// RewriteModelInStreamChunk follows. CopyWithMetrics hands the transforms
+// RewriteModelInStreamChunk follows. CopyStream hands the transforms
 // whole lines, so that is a floor rather than an expected case: dropping a
 // fragment would delete half a frame its continuation still expects.
 func StripUsageOnlyFrames(chunk []byte) []byte {

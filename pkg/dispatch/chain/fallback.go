@@ -469,9 +469,10 @@ func (p *Proxy) tryDeployment(
 				Duration:       time.Since(start),
 				Outcome:        pfallback.OutcomeNonRetriable,
 			})
-			wire.Commit(c.Writer, resp, dep.App, recorder, p.deps.Normalizers())
+			result := wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers(), p.deps.BufferedShape(wire.RoutingMetadata{Provider: dep.App}, recorder))
 			_ = resp.Body.Close()
 			cancel()
+			p.deps.FinishRelay(c.Writer, c.Request, resp, result)
 			return attempts, true
 		}
 
@@ -520,7 +521,7 @@ func (p *Proxy) tryDeployment(
 		fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
 		fullAttempts = append(fullAttempts, attempts...)
 		chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
-		wire.CommitWithRouting(c.Writer, resp, wire.RoutingMetadata{
+		meta := wire.RoutingMetadata{
 			Provider:             dep.App,
 			Deployment:           dep.Name,
 			Node:                 depNode,
@@ -534,9 +535,11 @@ func (p *Proxy) tryDeployment(
 			DecisionLatencyMs:    utils.Now().Sub(rctx.decisionStart).Milliseconds(),
 			SuppressBodyMetadata: wire.SuppressBodyFromVerbose(c.Query("verbose")),
 			SuppressUsageFrame:   rctx.suppressUsageFrame,
-		}, recorder, p.deps.Normalizers())
+		}
+		result := wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, meta, recorder, p.deps.Normalizers(), p.deps.BufferedShape(meta, recorder))
 		_ = resp.Body.Close()
 		cancel()
+		p.deps.FinishRelay(c.Writer, c.Request, resp, result)
 		return attempts, true
 	}
 

@@ -4,12 +4,9 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // errModelRegistryUnavailable means the registry itself failed to
@@ -52,61 +51,69 @@ func (s *Server) ollamaDaemon() (*backend.Resolved, error) {
 func writeOllamaResponse(c *gin.Context, resp *http.Response) {
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 	c.Status(resp.StatusCode)
-	if err := streamResponseWithFlush(c.Writer, resp.Body); err != nil {
-		slog.Error("Stream error", "error", err)
+	if isStreamingResponse(resp) {
+		endBrokenStream(c.Writer, c.Request, wire.CopyStream(c.Request.Context(), c.Writer, resp.Body, nil, nil))
+	} else {
+		_, _ = io.Copy(c.Writer, resp.Body)
 	}
 }
 
 // writeOllamaMutation holds completion until the updated catalog is published.
-func writeOllamaMutation(c *gin.Context, resp *http.Response, publish func() error) (err error) {
+func writeOllamaMutation(c *gin.Context, resp *http.Response, publish func() error) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || publish == nil {
 		writeOllamaResponse(c, resp)
 		return nil
 	}
-	defer func() {
-		if err != nil {
-			err = newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())
-			if c.Writer.Written() {
-				_ = json.NewEncoder(c.Writer).Encode(gin.H{"error": err.Error()})
-				c.Writer.Flush()
-			} else {
-				RespondToErrorOllama(c, err)
-			}
-		}
-	}()
 	var pending []byte
 	streaming := isStreamingResponse(resp)
 	if streaming {
 		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 		c.Status(resp.StatusCode)
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			if pending != nil {
-				if _, err = c.Writer.Write(append(pending, '\n')); err != nil {
-					return err
-				}
-				c.Writer.Flush()
-			}
-			pending = append([]byte(nil), scanner.Bytes()...)
+		result := wire.CopyStream(c.Request.Context(), c.Writer, resp.Body, nil, func(frame []byte) []byte {
+			// Hold the last line until catalog publication makes success true.
+			frame = append(pending, frame...)
+			lines := bytes.TrimSuffix(frame, []byte("\n"))
+			split := bytes.LastIndexByte(lines, '\n') + 1
+			pending = append([]byte(nil), frame[split:]...)
+			return frame[:split]
+		})
+		if failure, failed := result.Failure(); failed {
+			endBrokenStream(c.Writer, c.Request, result)
+			return failure
 		}
-		if err = scanner.Err(); err != nil {
+		if result.Outcome == wire.ClientGone {
+			return result.Err
+		}
+		if result.Outcome == wire.UpstreamFailed {
+			_, err := c.Writer.Write(pending)
+			c.Writer.Flush()
 			return err
 		}
-		if pending != nil {
-			pending = append(pending, '\n')
+	} else {
+		var err error
+		pending, err = io.ReadAll(resp.Body)
+		if err != nil {
+			RespondToErrorOllama(c, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error()))
+			return err
 		}
-	} else if pending, err = io.ReadAll(resp.Body); err != nil {
-		return err
 	}
-	if err = publish(); err != nil {
+	if err := publish(); err != nil {
+		if streaming {
+			newOllamaResponder().EndStream(c.Writer, httperr.Error{
+				Status: http.StatusServiceUnavailable, Message: err.Error(),
+			})
+		} else {
+			RespondToErrorOllama(c, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error()))
+		}
 		return err
 	}
 	if !streaming {
 		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 		c.Status(resp.StatusCode)
 	}
-	return streamResponseWithFlush(c.Writer, bytes.NewReader(pending))
+	_, err := c.Writer.Write(pending)
+	c.Writer.Flush()
+	return err
 }
 
 // proxyToOllamaProvider forwards a request to an Ollama daemon and streams
@@ -139,11 +146,6 @@ func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved,
 		return
 	}
 
-	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
-
-	// A per-chunk stream normalizer for the NDJSON path would need
-	// streamResponseWithFlush to thread a transform; no Ollama stream fix
-	// needs it today.
 	if !isStreamingResponse(resp) {
 		if bodyNorm := s.inference.normalizers.Body("ollama"); bodyNorm != nil {
 			bodyBytes, readErr := io.ReadAll(resp.Body)
@@ -155,6 +157,7 @@ func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved,
 			if rewritten == nil {
 				rewritten = bodyBytes
 			}
+			mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 			c.Writer.Header().Set("Content-Length", strconv.Itoa(len(rewritten)))
 			c.Status(resp.StatusCode)
 			_, _ = c.Writer.Write(rewritten)
@@ -162,8 +165,5 @@ func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved,
 		}
 	}
 
-	c.Status(resp.StatusCode)
-	if err := streamResponseWithFlush(c.Writer, resp.Body); err != nil {
-		slog.Error("Stream error", "error", err)
-	}
+	writeOllamaResponse(c, resp)
 }

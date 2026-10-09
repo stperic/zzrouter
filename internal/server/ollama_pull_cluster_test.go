@@ -24,7 +24,7 @@ import (
 
 // chunkedSuccessRemote returns a stub worker that replies with a
 // chunked NDJSON success frame — the same encoding the worker's gin
-// writer produces when streamResponseWithFlush relays a non-streaming
+// writer produces when writeOllamaResponse relays a non-streaming
 // Ollama daemon response. This is the shape that pre-fix coord ate.
 func chunkedSuccessRemote(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()

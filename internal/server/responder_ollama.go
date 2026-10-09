@@ -10,6 +10,7 @@ package server
 // responder therefore does not expose a code or type vocabulary.
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -99,4 +100,12 @@ func flatError(e httperr.Error) map[string]any {
 
 func (*ollamaResponder) NormalizeUpstreamError(status int, raw []byte) []byte {
 	return ollamaSurfaceErrorBody(status, raw)
+}
+
+// EndStream writes one Ollama error line; a blank line before it would fail the Ollama client's JSON parse.
+func (*ollamaResponder) EndStream(w http.ResponseWriter, e httperr.Error) {
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": e.Message})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

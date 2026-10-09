@@ -39,16 +39,6 @@ func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Re
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// applyRewrittenError mutates a *http.Response in place with the
-// surface-appropriate rewritten error envelope. Used by the
-// httputil.ReverseProxy.ModifyResponse hook in proxyToInstance — that
-// API mutates the response struct rather than writing to a separate
-// writer.
-//
-// Closes the original resp.Body and replaces it with a bytes.Reader
-// over the rewritten body. Stale upstream Content-Encoding is
-// stripped; Content-Length + ContentLength are sized to the new body.
-// The response consumer closes the replacement body.
 func applyRewrittenError(req *http.Request, resp *http.Response, classifier *httperr.Classifier) {
 	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req), classifier)
 }

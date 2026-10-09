@@ -162,7 +162,7 @@ func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 				} `json:"error"`
 			}
 			require.NoError(t, json.Unmarshal(hdr.Body.Bytes(), &fromHeader))
-			frame, _, _ := strings.Cut(sse.Body.String(), "\n\n")
+			frame, _, _ := strings.Cut(strings.TrimLeft(sse.Body.String(), "\n"), "\n\n")
 			payload := strings.TrimPrefix(frame, "data: ")
 			require.NoError(t, json.Unmarshal([]byte(payload), &fromStream))
 

@@ -2,8 +2,8 @@ package wire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -12,38 +12,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
-// Commit writes a previously-detached backend response to the client.
-// Used after proxy.ForwardDetached confirms a successful status code.
-func Commit(w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
-	CommitWithRouting(w, resp, RoutingMetadata{Provider: providerType}, recorder, norms)
+func Commit(ctx context.Context, w http.ResponseWriter, resp *http.Response, providerType string, recorder *llm.InferenceRecorder, norms *normalizer.Registry, shape func([]byte) []byte) Result {
+	return CommitWithRouting(ctx, w, resp, RoutingMetadata{Provider: providerType}, recorder, norms, shape)
 }
 
-// CommitWithRouting writes the response plus routing metadata headers
-// and optional in-body usage injection. Streaming and non-streaming
-// responses both flow through this function.
-//
-// Ordering invariant — capture metrics → inject response → fire
-// RecordCompletion hook → bridge settles ledger. The response inject
-// runs synchronously inside this function before the hook fires, so
-// the ledger settle path observes the same recorder state the
-// response did.
-//
-// Other invariants preserved from pre-extraction
-// (commitDetachedResponseWithRouting):
-//   - Headers (including X-zzrouter-*) are set BEFORE WriteHeader.
-//   - Non-streaming path re-sets Content-Length to match rewritten bytes.
-//   - Streaming path may emit a synthetic final usage chunk when
-//     InjectUsage is true and the upstream did not include one;
-//     note that CopyWithMetrics may synthesize a [DONE] sentinel before
-//     returning, so the synthetic usage chunk can currently follow
-//     [DONE] in the happy path — pre-existing ordering behavior is
-//     preserved verbatim.
-func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry) {
+func CommitWithRouting(ctx context.Context, w http.ResponseWriter, resp *http.Response, meta RoutingMetadata, recorder *llm.InferenceRecorder, norms *normalizer.Registry, shape func([]byte) []byte) Result {
 	streaming := IsStreaming(resp)
-
-	if !streaming {
-		CaptureNonStreamingMetrics(resp, recorder)
-	}
 
 	// Both branches rewrite the body, so the upstream's framing is dropped:
 	// a streamed rewrite under the engine's Content-Length is cut off.
@@ -75,61 +49,12 @@ func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingM
 	}
 
 	if streaming {
-		var inner func([]byte) []byte
-		usageSeen := false
-		if meta.InjectUsage {
-			inner = func(chunk []byte) []byte {
-				// Test for a real usage OBJECT, not the substring: the
-				// copier offers every chunk, so being called proves
-				// nothing, and `"usage":null` rides along on every delta
-				// frame OpenAI and vLLM emit. A substring test goes true
-				// on frame one and the synthetic-metadata fallback below
-				// would then never fire on a provider that sends no usage
-				// at all -- which is the case it exists for.
-				if ChunkHasUsageObject(chunk) {
-					usageSeen = true
-				}
-				// Build per-chunk metadata from the live recorder
-				// snapshot so the terminal usage frame can carry cost
-				// + timing values that were populated by the parser
-				// before this chunk was forwarded.
-				return InjectUsageIntoSSEChunk(chunk, MetadataWithSnapshot(meta, recorder))
-			}
-		}
-		// Restoring the caller's model id is not metadata: it rides on
-		// every frame, so it must not sit behind the InjectUsage gate
-		// above. Without it a model-group stream answered in the
-		// replica's model name, which is not the id the caller sent and
-		// not one the catalog lists.
-		//
-		// Frames reach this transform whole: CopyWithMetrics re-aligns
-		// its reads to line boundaries, so one split across two TCP
-		// segments arrives rejoined rather than as truncated JSON the
-		// rewrite would pass through untouched.
-		var restore func([]byte) []byte
-		if meta.ClientModel != "" {
-			restore = func(chunk []byte) []byte {
-				return RewriteModelInStreamChunk(chunk, meta.ClientModel)
-			}
-		}
-		// Last in the chain, so usageSeen above and the recorder (which
-		// CopyWithMetrics feeds from the raw chunk before any transform)
-		// both still observe the frame this drops.
-		var strip func([]byte) []byte
-		if meta.SuppressUsageFrame {
-			strip = StripUsageOnlyFrames
-		}
-		transform := normalizer.ComposeStream(norms.Stream(meta.Provider),
-			normalizer.ChainChunks(inner, restore, strip))
+		st := NewStreamTransform(norms.Stream(meta.Provider), meta, recorder)
 		w.WriteHeader(resp.StatusCode)
-		CopyWithMetrics(w, resp.Body, recorder, transform)
+		result := CopyStream(ctx, w, resp.Body, recorder, st.Func())
 
-		// If the provider didn't include a usage block in any streaming
-		// chunk, emit a synthetic final chunk so clients (e.g. Open WebUI)
-		// can still display routing metadata via the zz_* fields.
-		// Skipped when the caller did not ask for usage: synthesising the
-		// very frame the strip above removes would hand it back.
-		if meta.InjectUsage && !usageSeen && meta.Deployment != "" && !meta.SuppressUsageFrame {
+		// A completed stream without usage still needs its requested routing metadata.
+		if result.Outcome == Completed && meta.InjectUsage && !st.UsageSeen() && meta.Deployment != "" && !meta.SuppressUsageFrame {
 			usage := map[string]any{
 				"zz_provider": meta.Provider,
 				"zz_model":    meta.Deployment,
@@ -153,20 +78,9 @@ func CommitWithRouting(w http.ResponseWriter, resp *http.Response, meta RoutingM
 				}
 			}
 		}
-	} else {
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err == nil && len(bodyBytes) > 0 {
-			if bodyNorm := norms.Body(meta.Provider); bodyNorm != nil {
-				if rewritten := bodyNorm(bodyBytes); rewritten != nil {
-					bodyBytes = rewritten
-				}
-			}
-			bodyBytes = MaybeInjectRoutingMetadata(bodyBytes, meta, recorder)
-		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyBytes)
+		return result
 	}
+	return RelayBuffered(w, resp, shape, recorder)
 }
 
 // MaybeInjectRoutingMetadata applies the canonical gate that decides

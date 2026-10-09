@@ -213,3 +213,9 @@ func refuseMessagesBody(c *gin.Context, err error) {
 	}
 	httperr.FromContext(c).BadRequest(c, err.Error(), param)
 }
+
+// EndStream bypasses chat translation and suppresses its success finalization.
+func (w *messagesCompatWriter) EndStream(_ http.ResponseWriter, e httperr.Error) {
+	w.stream.Fail(e)
+	w.ResponseWriter.Flush()
+}

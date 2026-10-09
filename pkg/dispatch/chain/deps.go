@@ -18,7 +18,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -76,6 +78,11 @@ type ProviderConfig interface {
 // Runtime exposes the behavioural collaborators the Proxy delegates to
 // during a single request.
 type Runtime interface {
+	BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte
+
+	// FinishRelay reports a truncated relay in the client dialect.
+	FinishRelay(w http.ResponseWriter, req *http.Request, resp *http.Response, res wire.Result)
+
 	// ProxyForwardDetached sends the outbound request to the backend
 	// but does NOT begin writing to the client. The caller inspects the
 	// response status and decides whether to commit or fall back.

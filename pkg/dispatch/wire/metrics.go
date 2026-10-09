@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -245,52 +243,6 @@ func ParseSSEFinalUsageExtended(chunk []byte) UsageData {
 	return UsageData{}
 }
 
-// CaptureNonStreamingMetrics reads the response body for metrics
-// extraction, then replaces it so downstream consumers can still read
-// it. Handles both Content-Length and chunked transfer encoding
-// responses. When resp.StatusCode indicates failure (>= 400) the
-// recorder is tagged with a closed-enum error_type before
-// RecordCompletion fires, so OTel emission carries the failure label.
-func CaptureNonStreamingMetrics(resp *http.Response, recorder *llm.InferenceRecorder) {
-	// Tag error_type from status BEFORE the body read — applies even
-	// when the body is too large or empty for usage extraction.
-	tagRecorderFromStatus(recorder, resp.StatusCode)
-
-	// Accept responses with known size < 1 MiB, or chunked (ContentLength == -1)
-	if resp.ContentLength > 1<<20 {
-		// Too large to extract usage — but for error responses we still
-		// need RecordCompletion to fire so the metric emits with the
-		// error_type tag. The extracted-usage path can stay the
-		// success contract; here we cover the pure-error case.
-		if recorder != nil && resp.StatusCode >= 400 {
-			recorder.RecordCompletion(0, 0)
-		}
-		return
-	}
-	if resp.ContentLength == 0 {
-		if recorder != nil && resp.StatusCode >= 400 {
-			recorder.RecordCompletion(0, 0)
-		}
-		return
-	}
-
-	// Read body (with a 1 MiB safety limit for chunked responses)
-	limitReader := io.LimitReader(resp.Body, 1<<20)
-	bodyBytes, err := io.ReadAll(limitReader)
-	if err != nil || len(bodyBytes) == 0 {
-		if recorder != nil && resp.StatusCode >= 400 {
-			recorder.RecordCompletion(0, 0)
-		}
-		return
-	}
-	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	// The body is already in hand for usage parsing, so capturing the
-	// reply here costs no extra read.
-	recorder.SetResponseBody(bodyBytes)
-	recorder.AppendResponseText(ResponseText(bodyBytes))
-	recordProxyMetrics(bodyBytes, recorder)
-}
-
 // tagRecorderFromStatus sets the recorder's error_type from an upstream
 // HTTP status code. Closed-enum mapping keeps Prometheus cardinality
 // predictable (any 5xx → upstream_server_error, etc.) and lets
@@ -324,7 +276,7 @@ func errorTypeFromStatus(statusCode int) string {
 // SetErrorFromStatus is the exported form of the status → error_type
 // tagger for callers outside the wire package (proxy clients that
 // short-circuit before entering the wire layer). Applies the same
-// closed-enum mapping as CaptureNonStreamingMetrics. No-op when
+// closed-enum mapping as RelayBuffered. No-op when
 // recorder is nil or the status doesn't indicate failure.
 func SetErrorFromStatus(recorder *llm.InferenceRecorder, statusCode int) {
 	tagRecorderFromStatus(recorder, statusCode)
@@ -338,7 +290,7 @@ func SetErrorFromStatus(recorder *llm.InferenceRecorder, statusCode int) {
 // pairs that used to live in proxy_client.go and chain/fallback.go.
 //
 // Calling this on a path that ALSO reaches the wire layer's
-// CaptureNonStreamingMetrics or CopyWithMetrics would double-emit the
+// RelayBuffered or CopyStream would double-emit the
 // operation_duration histogram (and double-fire the inference log
 // bridge — settling spend twice). Use only on pre-byte-copy aborts
 // where no further metric path runs. Safe no-op when recorder is nil.
