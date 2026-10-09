@@ -75,7 +75,7 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 			}
 			inst := instance.NewInstance("selected-files", "vllm", req.Model, 8100, 0, 0)
 			inst.Endpoint = "chat"
-			run, err := m.prepareRun(t.Context(), inst, req, "vllm", svc)
+			run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
 			if scenario == "enabled projector removed during preparation" || scenario == "explicit missing projector" {
 				require.ErrorIs(t, err, process.ErrModelIncomplete)
 				return
@@ -98,7 +98,7 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
 	inst := instance.NewInstance("incomplete", "vllm", req.Model, 8100, 0, 0)
 	inst.Endpoint = "chat"
-	_, err := m.prepareRun(t.Context(), inst, req, "vllm", svc)
+	_, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
 	require.ErrorIs(t, err, process.ErrModelIncomplete)
 }
 

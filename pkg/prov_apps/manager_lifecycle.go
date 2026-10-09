@@ -34,7 +34,8 @@ func (m *ProviderAppManager) StartOnDemandAsync(req LaunchRequest) error {
 	if err != nil {
 		return err
 	}
-	if _, _, err := m.resolveLaunch(&req); err != nil {
+	selection, err := m.resolveLaunch(&req)
+	if err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -46,7 +47,7 @@ func (m *ProviderAppManager) StartOnDemandAsync(req LaunchRequest) error {
 	m.mu.Unlock()
 	go func() {
 		defer m.onDemandStarts.Done()
-		if _, err := m.launchInstance(ctx, req); err != nil {
+		if _, err := m.launchInstance(ctx, req, selection); err != nil {
 			slog.Error("Failed to start on-demand model", "model", req.Model, "provider", req.Provider, "error", err)
 		}
 	}()
@@ -60,7 +61,11 @@ func (m *ProviderAppManager) LaunchInstance(ctx context.Context, req LaunchReque
 	if err != nil {
 		return nil, err
 	}
-	return m.launchInstance(ctx, req)
+	selection, err := m.resolveLaunch(&req)
+	if err != nil {
+		return nil, err
+	}
+	return m.launchInstance(ctx, req, selection)
 }
 
 // prepareInstanceLaunch canonicalizes the name before any key is computed from it, so every alias
@@ -77,10 +82,10 @@ func (m *ProviderAppManager) prepareInstanceLaunch(ctx context.Context, req Laun
 	return req, nil
 }
 
-func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	// Providers without endpoint overlays share one chat instance.
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	if _, svcCfg, ok := m.resolveConfigKey(req.Provider); ok && !svcCfg.IsEndpointAware() {
+	if !selection.config.IsEndpointAware() {
 		endpoint = string(EndpointChat)
 	}
 	req.Endpoint = Endpoint(endpoint)
@@ -89,7 +94,7 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 		if run, ok := m.instances.GetByModelEndpoint(req.Model, endpoint); ok && !run.GetStatus().IsTerminal() {
 			return nil, fmt.Errorf("%w: smoke cannot reuse an existing run", ErrInstancesRunning)
 		}
-		return m.launchAdmittedInstance(ctx, req)
+		return m.launchAdmittedInstance(ctx, req, selection)
 	}
 	key := req.Provider + ":" + req.Model + ":" + endpoint
 	result, err, _ := m.launchGroup.Do(key, func() (any, error) {
@@ -106,7 +111,7 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 				}
 			}
 		}
-		return m.launchAdmittedInstance(ctx, req)
+		return m.launchAdmittedInstance(ctx, req, selection)
 	})
 	if err != nil {
 		return nil, err
@@ -119,20 +124,16 @@ func (m *ProviderAppManager) launchInstance(ctx context.Context, req LaunchReque
 	return inst, nil
 }
 
-func (m *ProviderAppManager) launchAdmittedInstance(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchAdmittedInstance(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	admitted, err := m.AdmitLocalModel(ctx, req.requestedModel)
 	if err != nil {
 		return nil, err
 	}
-	return m.launchInstanceLocked(admitted, req)
+	return m.launchInstanceLocked(admitted, req, selection)
 }
 
-func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest) (*instance.Instance, error) {
+func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req LaunchRequest, selection launchSelection) (*instance.Instance, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	configKey, svcCfg, err := m.resolveLaunch(&req)
-	if err != nil {
 		return nil, err
 	}
 	if !req.installSmoke {
@@ -142,11 +143,11 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 		}
 		defer unlock()
 	}
-	budget, err := m.launchBudget(configKey)
+	budget, err := m.launchBudget(selection.key)
 	if err != nil {
 		return nil, err
 	}
-	inst, err := m.registerRun(ctx, req, svcCfg)
+	inst, err := m.registerRun(ctx, req, selection.config)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +168,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 			return m.queueRun(inst, req, blocker.ID)
 		}
 	}
-	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.admitRun(ctx, inst, req, selection)
 	if err != nil {
 		m.releaseRun(inst)
 		return nil, err
@@ -177,25 +178,32 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Launc
 	return inst, nil
 }
 
+type launchSelection struct {
+	key    string
+	config config.ServiceConfig
+	model  process.ResolvedModel
+}
+
 // resolveLaunch resolves the provider config and freezes the runtime a
 // launch selects; toolkit reads happen under that runtime's gate.
-func (m *ProviderAppManager) resolveLaunch(req *LaunchRequest) (string, config.ServiceConfig, error) {
+func (m *ProviderAppManager) resolveLaunch(req *LaunchRequest) (launchSelection, error) {
 	configKey, svcCfg, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
-		return "", svcCfg, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
+		return launchSelection{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
-	_, selected, _, err := m.featureRuntime(svcCfg, req.Model, req.Runtime)
+	model := process.ResolveModel(svcCfg, req.Model)
+	_, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime)
 	if err != nil {
-		return "", svcCfg, err
+		return launchSelection{}, err
 	}
 	if selected == "" {
 		selected = svcCfg.Name
 	}
 	req.selectedRuntime = selected
 	if req.installSmoke && selected != req.Runtime {
-		return "", svcCfg, fmt.Errorf("smoke model does not use the runtime being installed")
+		return launchSelection{}, fmt.Errorf("smoke model does not use the runtime being installed")
 	}
-	return configKey, svcCfg, nil
+	return launchSelection{key: configKey, config: svcCfg, model: model}, nil
 }
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
@@ -284,7 +292,7 @@ type admittedRun struct {
 
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
-func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
+func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, selection launchSelection) (admittedRun, error) {
 	// Create log file. Sanitize model name for filesystem safety —
 	// strip every character outside [A-Za-z0-9._-] so a hostile or
 	// quirky model id (slashes, backslashes, ..) cannot escape the
@@ -294,7 +302,7 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, fmt.Errorf("failed to create log file: %w", err)
 	}
 	inst.SetLogFilePath(logPath)
-	run, err := m.prepareRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.prepareRun(ctx, inst, req, selection)
 	if err == nil && !inst.Admit() {
 		err = fmt.Errorf("run %s stopped before it was admitted", inst.ID)
 	}
@@ -313,15 +321,15 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 }
 
 // prepareRun resolves a run's parameters, checks its memory fit and builds argv.
-func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, configKey string, svcCfg config.ServiceConfig) (admittedRun, error) {
+func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req LaunchRequest, selection launchSelection) (admittedRun, error) {
 	endpoint := inst.Endpoint
-	features, err := m.modelLaunchParameters(svcCfg, req, endpoint)
+	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
 	if err == nil {
-		err = m.admitMemory(ctx, configKey, instance.Resolved{Parameters: features.Params, Environment: features.Environment})
+		err = m.admitMemory(ctx, selection.key, features)
 	}
 	var prepared preparedLaunch
 	if err == nil {
-		prepared, err = m.prepareLaunchFeatures(features, configKey, endpoint, req, inst.Port)
+		prepared, err = m.prepareLaunchFeatures(features, selection.key, endpoint, inst.Port)
 	}
 	if err != nil {
 		return admittedRun{}, err
@@ -405,7 +413,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req LaunchR
 // tryAdmit admits a queued run unless an admitted run is still starting.
 // Config is resolved again: it may have changed while the run waited.
 func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instance, req LaunchRequest) (admittedRun, *instance.Instance, error) {
-	configKey, svcCfg, err := m.resolveLaunch(&req)
+	selection, err := m.resolveLaunch(&req)
 	if err != nil {
 		return admittedRun{}, nil, err
 	}
@@ -423,7 +431,7 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 	if blocker, err := m.startingBlocker(inst.ID); err != nil || blocker != nil {
 		return admittedRun{}, blocker, err
 	}
-	run, err := m.admitRun(ctx, inst, req, configKey, svcCfg)
+	run, err := m.admitRun(ctx, inst, req, selection)
 	return run, nil, err
 }
 
@@ -503,7 +511,7 @@ func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, err
 	return nil, nil //nolint:nilnil // no blocker is not an error
 }
 
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, resolved instance.Resolved) error {
+func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) error {
 	budget, err := m.launchBudget(provider)
 	if err != nil || budget == nil {
 		return err
@@ -511,7 +519,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 	if budget.Kind != "fraction_total" {
 		return nil
 	}
-	env, err := process.ChildEnvironment(resolved.Environment)
+	env, err := process.ChildEnvironment(features.Environment)
 	if err != nil {
 		return err
 	}
@@ -535,7 +543,11 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, r
 			owners[pid] = run.ID
 		}
 	}
-	return process.AdmitMemoryBudget(*budget, resolved.Parameters, visible, devices, owners)
+	need := process.Need{}
+	if features.Params[budget.Parameter] == "auto" {
+		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
+	}
+	return process.AdmitMemoryBudget(*budget, need, features.Params, visible, devices, owners)
 }
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.
@@ -1152,13 +1164,13 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 //
 // Split out from LaunchInstance so the parameters-to-argv contract can be
 // tested without starting a process.
-func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint, model string, port int, params map[string]string) (process.Launch, map[string]string, error) {
+func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
 	if err := process.ValidateParameters(params); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	var files map[string]string
 	if m.localizeParams != nil {
-		local, err := m.localizeParams(provider, endpoint, model, params)
+		local, err := m.localizeParams(provider, endpoint, model.Name, params)
 		if err != nil {
 			return process.Launch{}, nil, fmt.Errorf("%w: on node %q: %w", ErrParameterValidation, m.localNodename(), err)
 		}
@@ -1203,16 +1215,16 @@ func (m *ProviderAppManager) PreviewLaunch(req LaunchRequest, port int) (LaunchP
 // "would a restart launch differently" asks the same question a launch
 // answers.
 func (m *ProviderAppManager) prepareLaunch(svcCfg config.ServiceConfig, configKey, endpoint string, req LaunchRequest, port int) (preparedLaunch, error) {
-	features, err := m.modelLaunchParameters(svcCfg, req, endpoint)
+	features, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), req, endpoint)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	return m.prepareLaunchFeatures(features, configKey, endpoint, req, port)
+	return m.prepareLaunchFeatures(features, configKey, endpoint, port)
 }
 
-func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, req LaunchRequest, port int) (preparedLaunch, error) {
+func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, port int) (preparedLaunch, error) {
 	params, env, svcCfg := features.Params, features.Environment, features.Config
-	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, req.Model, port, params)
+	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, params)
 	if err != nil {
 		return preparedLaunch{}, err
 	}

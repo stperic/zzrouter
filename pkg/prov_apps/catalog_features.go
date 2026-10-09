@@ -39,7 +39,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 		}
 	}
 	out["features"] = states
-	effective, _, _, err := m.featureRuntime(svc, model)
+	effective, _, _, err := m.featureRuntime(svc, process.ResolveModel(svc, model), "")
 	if err == nil && effective.Capabilities != nil {
 		out["wire_endpoints"] = append([]string{}, wireEndpoints(effective)...)
 	}
@@ -68,7 +68,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 }
 
 func (m *ProviderAppManager) modelFeatureState(svc config.ServiceConfig, model, name string, f config.Feature, details map[string]any) string {
-	dir, local := process.ModelDirectory(svc, model)
+	dir := process.ResolveModel(svc, model).Directory()
 	state := "unknown"
 	switch {
 	case len(f.Files) > 0:
@@ -82,7 +82,7 @@ func (m *ProviderAppManager) modelFeatureState(svc config.ServiceConfig, model, 
 			}
 		}
 	case f.Runtime != "":
-		if local {
+		if dir != "" {
 			qualifies, err := featurePredicate(dir, f.When)
 			if err == nil {
 				state = "unsupported"

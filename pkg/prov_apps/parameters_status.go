@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
 
 // Path prefixes ParametersStatus names keys under, matching the config
@@ -63,7 +64,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 	// What config alone resolves to, to name the keys the run's own
 	// request holds against it.
 	fromConfig, fromConfigEnv := m.resolveLaunchParams(svcCfg, LaunchRequest{Provider: req.Provider, Model: req.Model}, endpoint)
-	if configured, err := m.modelLaunchParameters(svcCfg, LaunchRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
+	if configured, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), LaunchRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
 		fromConfig, fromConfigEnv = configured.Params, configured.Environment
 	}
 	overridden := heldKeys(parametersPath, req.Parameters, fromConfig)
