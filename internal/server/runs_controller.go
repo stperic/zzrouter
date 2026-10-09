@@ -32,6 +32,7 @@ func NewRunsController(
 	utility *RunsUtilityService,
 	nodes NodeValidator,
 	logs RunLogHandler,
+	idem *idempotencyStore,
 ) *RunsController {
 	return &RunsController{
 		service:     service,
@@ -39,7 +40,7 @@ func NewRunsController(
 		utility:     utility,
 		nodes:       nodes,
 		logs:        logs,
-		idem:        newIdempotencyStore(),
+		idem:        idem,
 	}
 }
 

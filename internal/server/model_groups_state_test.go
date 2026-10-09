@@ -34,7 +34,7 @@ func mountModelGroupsRouterWithTrackers(t *testing.T, yaml string) (*gin.Engine,
 		{DeploymentName: "r1", URL: "http://stub", Path: "/health"},
 	})
 
-	ctrl := NewModelGroupsController(store, cooldowns, load, latency, health, nil, nil, nil, "/model-groups/")
+	ctrl := NewModelGroupsController(store, cooldowns, load, latency, health, nil, nil, nil, "/model-groups/", newIdempotencyStore())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

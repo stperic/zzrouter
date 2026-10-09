@@ -73,16 +73,10 @@ func (s *Server) registerOpenAIRoutes() int {
 		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 	)
-	// Per-route idempotency middleware for the inference paths.
-	// Each route gets its own store so a client reusing the same
-	// Idempotency-Key across different routes (e.g. /chat/completions
-	// then /completions) doesn't replay the wrong route's response —
-	// same key + different route = different operation.
-	// Streaming bodies bypass via skipIdempotencyOnStreamingBody (the
-	// cache would otherwise buffer the entire SSE chunk sequence and
-	// replay it instantly, breaking live-stream timing).
+	// One store backs every route because the key includes the path.
+	// Streaming bodies bypass because replaying a buffered SSE sequence would break live timing.
 	newInferenceIdemMiddleware := func() gin.HandlerFunc {
-		return newIdempotencyStore().middlewareWithBodySkip(skipIdempotencyOnStreamingBody)
+		return s.idempotency.middlewareWithBodySkip(skipIdempotencyOnStreamingBody)
 	}
 	{
 		// Core inference endpoints. Idempotency-Key dedup closes the

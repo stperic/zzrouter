@@ -27,7 +27,7 @@ func mountModelGroupsWithEventBus(t *testing.T) (*gin.Engine, *route_events.Bus)
 	store.SetPath(filepath.Join(t.TempDir(), "model_groups.yaml"))
 
 	bus := route_events.NewBus()
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, bus, nil, "/model-groups/")
+	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, bus, nil, "/model-groups/", newIdempotencyStore())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -85,7 +85,7 @@ func TestRouteEventsStream_ServiceUnavailableWhenBusNil(t *testing.T) {
 	require.NoError(t, store.LoadFromBytes([]byte(idemTestYAML)))
 	store.SetPath(filepath.Join(t.TempDir(), "model_groups.yaml"))
 	gin.SetMode(gin.TestMode)
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, nil, nil, "/model-groups/")
+	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, nil, nil, "/model-groups/", newIdempotencyStore())
 	r := gin.New()
 	api := r.Group("/zzrouter/v1")
 	ctrl.RegisterPublicRoutes(api)

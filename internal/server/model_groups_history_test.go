@@ -26,7 +26,7 @@ func mountModelGroupsWithLogStore(t *testing.T, yaml string) (*gin.Engine, *infe
 	logStore := inferencelog.NewStore(100, 0)
 	t.Cleanup(logStore.Stop)
 
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, logStore, nil, nil, "/model-groups/")
+	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, logStore, nil, nil, "/model-groups/", newIdempotencyStore())
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {

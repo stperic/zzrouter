@@ -476,3 +476,50 @@ func TestIdempotency_PanicReleasesWaiters(t *testing.T) {
 		"the panicked entry must be forgotten, so a retry runs the handler again")
 	assert.EqualValues(t, 2, calls.Load())
 }
+
+// One store serves every route. The key includes the path, so the same
+// Idempotency-Key and body on /a and /b are two operations, and a repeat
+// on /a replays only /a's answer.
+func TestIdempotency_SharedStoreAcrossRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newIdempotencyStore()
+	aCalls := &atomic.Int64{}
+	bCalls := &atomic.Int64{}
+	principal := func(c *gin.Context) {
+		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+	}
+	handler := func(calls *atomic.Int64) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			calls.Add(1)
+			c.JSON(http.StatusAccepted, gin.H{"ok": true})
+		}
+	}
+	r := gin.New()
+	r.POST("/a", principal, store.middleware(), handler(aCalls))
+	r.POST("/b", principal, store.middleware(), handler(bCalls))
+
+	body := `{"model_name":"x"}`
+	headers := map[string]string{"Idempotency-Key": "shared"}
+
+	require.Equal(t, http.StatusAccepted, idemRequest(r, "POST", "/a", body, headers).Code)
+	require.Equal(t, http.StatusAccepted, idemRequest(r, "POST", "/b", body, headers).Code)
+	assert.EqualValues(t, 1, aCalls.Load(), "/a handler runs once")
+	assert.EqualValues(t, 1, bCalls.Load(), "/b must run its own handler, not replay /a's answer")
+
+	require.Equal(t, http.StatusAccepted, idemRequest(r, "POST", "/a", body, headers).Code)
+	assert.EqualValues(t, 1, aCalls.Load(), "repeat on /a replays instead of running again")
+
+	store.mu.Lock()
+	assert.Len(t, store.m, 2, "one entry per route")
+	store.mu.Unlock()
+}
+
+// The store's caps only bound memory if every controller records into the one Server owns.
+func TestIdempotency_ControllersShareServerStore(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	require.NotNil(t, s.idempotency)
+	require.NotNil(t, s.controllers.Runs)
+	require.NotNil(t, s.controllers.ModelGroups)
+	assert.Same(t, s.idempotency, s.controllers.Runs.idem)
+	assert.Same(t, s.idempotency, s.controllers.ModelGroups.idemStore)
+}

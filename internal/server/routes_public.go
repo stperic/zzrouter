@@ -75,6 +75,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		s.services.Runs, s.services.Load, s.services.RunsUtility,
 		nodeValidator,  // NodeValidator
 		s.logsHandlers, // RunLogHandler
+		s.idempotency,
 	)
 	s.ensureDiscoveryController()
 	s.controllers.Deployments = NewDeploymentsController(s.services.Deployments)
@@ -135,6 +136,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			s.providers.routeEvents,
 			s.model.Pricing,
 			s.config.Coordinator.Routing.GetRoutePrefix(),
+			s.idempotency,
 		)
 		s.controllers.ModelGroups.RegisterPublicRoutes(router)
 	}

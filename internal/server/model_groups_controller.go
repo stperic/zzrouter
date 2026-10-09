@@ -205,6 +205,7 @@ func NewModelGroupsController(
 	routeEvents *route_events.Bus,
 	pricingStore *pricing.Store,
 	routePrefix string,
+	idem *idempotencyStore,
 ) *ModelGroupsController {
 	return &ModelGroupsController{
 		groupStore:     groupStore,
@@ -216,7 +217,7 @@ func NewModelGroupsController(
 		routeEvents:    routeEvents,
 		pricing:        pricingStore,
 		routePrefix:    routePrefix,
-		idemStore:      newIdempotencyStore(),
+		idemStore:      idem,
 	}
 }
 
