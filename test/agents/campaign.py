@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Local-engine test campaign for zzRouter.
+"""Local-engine test campaign for zzRouter, run as a matrix.
+
+Every cell is one node and one local provider it supports (lab.json lists
+them). Models are never named per node: each role (a small text model, a
+small vision model, a big model for tool calling) is a family and size, and
+the runner finds the build each cell loads through zzRouter's own model
+search, sized to the node's hardware, and downloads it through the API.
 
 Three tracks against a running coordinator:
-  direct   the script itself drives /v1 on every local engine (chat, stream,
-           OpenAI tools, Anthropic Messages tools, Responses, two models at
-           once, an over-budget launch).
-  mcp      Claude Code (Haiku) and Codex operate the cluster through the MCP
+  direct   the script drives /v1 in every cell: chat, stream, Responses,
+           Anthropic Messages, tool calling on the big model, an image to a
+           text-only model, an image to a vision model without and then with
+           its projector, two models on one card, and two that contend.
+  mcp      Claude Code (Haiku) and Codex operate each cell through the MCP
            server; a logging proxy records every tools/call as ground truth.
   backend  Claude Code and Codex use a local model behind zzRouter as their
            brain and must write and run a file (real tool calling).
@@ -14,33 +21,31 @@ Every agent confusion (a schema error, a failed or retried call, a fall
 back to the zz_api escape hatch) is a finding: confusion.md lists them.
 
 Usage: ZZR_CAMPAIGN_KEY=<admin key> campaign.py --lab lab.json  (copy lab.example.json)
-       [--tracks direct,mcp,backend] [--nodes ...] [--agents claude,codex]
-       [--only <scenario-substring>] [--analyze <run dir>]
+       [--plan] [--tracks direct,mcp,backend] [--nodes ...] [--providers ...]
+       [--agents claude,codex] [--only <scenario-substring>] [--analyze <run dir>]
+--plan prints the matrix and the build search picked per cell, downloads nothing.
 Needs claude and codex on PATH. Writes report.md and confusion.md under
 $TMPDIR/zzr-campaign/<time>/ unless --out says otherwise.
 """
-import argparse, base64, json, os, shlex, shutil, subprocess, sys, threading, time
+import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time
 import http.server as httpserver, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlencode
 
 COORD = os.environ.get("ZZR_COORDINATOR", "http://127.0.0.1:9090")
 KEY = os.environ.get("ZZR_CAMPAIGN_KEY", "")
 PROXY_PORT = 19390
 CLAUDE_MODEL = "claude-haiku-5-5"
-AGENT_TIMEOUT = 1800  # downloads of several GB happen inside a scenario
+AGENT_TIMEOUT = 3600  # a big model's download happens inside a scenario
 
-# The lab under test (--lab, filled in main()). Per node: "providers" maps
-# each local provider to models to exercise; optional scenario blocks say
-# what else the node can host: "budget" (a launch-time GPU budget zzRouter
-# refuses before start), "vision" (a GGUF model to give a projector),
-# "oversize" (a GGUF repo larger than the node's GPU), "fit" (a model to
-# judge against free memory) and "cloud" (route cloud media through it).
+# The lab under test (--lab, filled in main()). "nodes" maps each node to the
+# local providers it runs and an optional "projector_reset" command template
+# ({repo}, {file}) that removes a vision projector out of band. "roles" maps
+# each model role to a family, a size and, for ollama, its library name.
 LAB = {}
+ROLES = {}
 BACKEND_MODELS = {}
-
-
-def providers(node):
-    return LAB[node]["providers"]
+MATRIX = {}  # (node, provider) -> {role: pick}, filled by plan()
 
 WEATHER_TOOL = {"type": "function", "function": {"name": "get_weather", "description": "Get the current weather for a city",
                 "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
@@ -118,6 +123,192 @@ class Results:
         return path
 
 
+
+# ---------------------------------------------------------------- matrix: models found by search
+# The Hugging Face library each provider loads; ollama has its own registry.
+FORMATS = {"llamacpp": "gguf", "mlx": "mlx", "vllm": "transformers"}
+# Community re-tunes rank high on downloads but are not the model under test.
+RETUNE_MARKS = ("uncensored", "abliterat", "heretic", "fusion", "merge", "turbo", "-rco")
+# A big model is quantized, not full precision: vLLM already covers bf16.
+FULL_PRECISION = ("BF16", "F16", "F32")
+GiB = 1 << 30
+# vLLM keeps the weights and KV cache in GPU memory; this share leaves room for the cache.
+VLLM_WEIGHT_SHARE = 0.7
+# MLX shares unified memory with the OS and every other process.
+MLX_WEIGHT_SHARE = 0.5
+# llama.cpp and ollama spill layers to system RAM; half of the free RAM may hold them.
+OFFLOAD_RAM_SHARE = 0.5
+# A Q4 build of N billion parameters takes about this many GB, for ollama tags search does not size.
+OLLAMA_GB_PER_B = 0.65
+
+
+def hardware(node):
+    d = http("GET", f"/zzrouter/v1/nodes/{node}")[1].get("data") or {}
+    gpus = [g for g in (d.get("gpu") or {}).get("gpus") or [] if g.get("memory_total_gb")]
+    mem = d.get("memory") or {}
+    return {"os": d.get("os"), "gpu_gb": max((g["memory_total_gb"] for g in gpus), default=0),
+            "ram_gb": mem.get("total_gb") or 0, "free_ram_gb": mem.get("available_gb") or 0}
+
+
+def budgets(provider, hw):
+    """Largest weights (GB) a cell may pick: on the GPU alone first, then with offload."""
+    if provider == "vllm":
+        return [VLLM_WEIGHT_SHARE * hw["gpu_gb"]]
+    if provider == "mlx":
+        return [MLX_WEIGHT_SHARE * hw["ram_gb"]]
+    return [hw["gpu_gb"], hw["gpu_gb"] + OFFLOAD_RAM_SHARE * hw["free_ram_gb"]]
+
+
+def billions(size):
+    return float(re.sub(r"[^0-9.]", "", size) or 0)
+
+
+def search(registry, query):
+    _, d, _ = http("GET", "/zzrouter/v1/search?" + urlencode({"type": "models", "provider": registry, "q": query, "limit": 20}), timeout=120)
+    return (d.get("data") or {}).get("results") or []
+
+
+def hf_candidates(role, provider):
+    fmt = FORMATS[provider]
+    words = [role["family"], role["size"], role.get("variant", "")]
+    query = " ".join(w for w in words + [{"gguf": "GGUF", "mlx": "MLX"}.get(fmt, "")] if w)
+    out = []
+    for r in search("huggingface", query):
+        rid = r.get("id") or ""
+        low = rid.lower()
+        tags = {str(t).lower() for t in r.get("tags") or []} | {str(r.get("library_name") or "").lower()}
+        if not all(w.lower() in low for w in words if w) or any(m in low for m in RETUNE_MARKS):
+            continue
+        if (fmt == "gguf") != ("gguf" in tags or low.endswith("gguf")) or (fmt == "mlx") != ("mlx" in tags or "mlx" in low):
+            continue
+        out.append(r)
+    return sorted(out, key=lambda r: -(r.get("downloads") or 0))
+
+
+def gguf_choice(variants, limit, largest):
+    fits = sorted((v for v in variants if v.get("quantization") and v.get("size_bytes") and v["size_bytes"] / GiB <= limit
+                   and "mtp" not in v["file"].lower() and not (largest and v.get("quantization") in FULL_PRECISION)),
+                  key=lambda v: v["size_bytes"])
+    if not fits:
+        return None
+    if largest:
+        return fits[-1]
+    return next((v for v in fits if v.get("recommended")), None) or next((v for v in fits if v.get("quantization") == "Q4_K_M"), fits[len(fits) // 2])
+
+
+def pick_hf(provider, role, hw):
+    """The most downloaded build of the role that fits: a GGUF file (the largest quantization
+    for a big role), or a whole repo."""
+    for limit in budgets(provider, hw):
+        for r in hf_candidates(role, provider)[:5]:
+            _, d, _ = http("GET", "/zzrouter/v1/registries/huggingface/variants?" + urlencode({"id": r["id"], "provider": provider}), timeout=120)
+            d = d.get("data") or d
+            if provider == "llamacpp":
+                v = gguf_choice(d.get("variants") or [], limit, role.get("largest"))
+                if not v:
+                    continue
+                vision = next((f for f in d.get("features") or [] if f.get("feature") == "vision"), None)
+                if role.get("vision") and not vision:
+                    continue  # a GGUF reads images only through a projector the repo ships
+                return {"registry": "huggingface", "repo": r["id"], "file": v["file"], "size_gb": round(v["size_bytes"] / GiB, 1),
+                        "projector": vision and vision["file"], "name": gguf_name(v["file"])}
+            size = (d.get("total_size_bytes") or 0) / GiB
+            if 0 < size <= limit:
+                return {"registry": "huggingface", "repo": r["id"], "file": "", "size_gb": round(size, 1), "projector": None, "name": r["id"]}
+    return None
+
+
+def pick_ollama(role, hw):
+    name = role.get("ollama")
+    if not name or not any(r.get("name") == name for r in search("ollama", name)):
+        return None
+    size = round(billions(role["size"]) * OLLAMA_GB_PER_B, 1)
+    if size > budgets("ollama", hw)[-1]:
+        return None
+    tag = f"{name}:{role['size'].lower()}"
+    return {"registry": "ollama", "repo": tag, "file": "", "size_gb": size, "projector": None, "name": tag}
+
+
+def gguf_name(file):
+    """The catalog name of a GGUF: its file stem, one name for every shard."""
+    stem = os.path.basename(file).removesuffix(".gguf")
+    return re.sub(r"-0+1-of-\d+$", "", stem)
+
+
+def plan(nodes, only_providers=()):
+    """Fill MATRIX with every cell's pick per role and print it."""
+    lines = ["| node | provider | role | build | size GB | projector | on node |", "|---|---|---|---|---|---|---|"]
+    for node in nodes:
+        hw = hardware(node)
+        for provider in LAB[node]["providers"]:
+            if only_providers and provider not in only_providers:
+                continue
+            cell = MATRIX.setdefault((node, provider), {})
+            have = catalog(node, provider)
+            for role_name, role in ROLES.items():
+                pick = pick_ollama(role, hw) if provider == "ollama" else pick_hf(provider, role, hw)
+                if pick:
+                    pick["present"] = pick["name"] in have
+                    cell[role_name] = pick
+                build = f"{pick['repo']} {pick['file']}".strip() if pick else "none fits"
+                lines.append(f"| {node} | {provider} | {role_name} | {build} | {pick['size_gb'] if pick else ''} | "
+                             f"{pick and pick['projector'] or ''} | {pick['present'] if pick else ''} |")
+    print("\n".join(lines), flush=True)
+    return "\n".join(lines)
+
+
+def catalog(node, provider=None):
+    _, d, _ = http("GET", f"/zzrouter/v1/models?node={node}&limit=500&refresh=true")
+    return {m["name"]: m for m in d.get("data") or [] if provider in (None, m.get("assigned_app"))}
+
+
+def vision_state(node, provider, name):
+    m = catalog(node, provider).get(name) or {}
+    return ((m.get("details") or {}).get("features") or {}).get("vision")
+
+
+def deploy(node, provider, pick, features=None):
+    """Download a pick to one node through the API and wait for its job."""
+    body = {"model": pick["repo"], "registry": pick["registry"], "provider": provider, "nodes": [node]}
+    if pick["file"]:
+        body["file"] = pick["file"]
+    if features is not None:
+        body["features"] = features
+    code, d, _ = http("POST", "/zzrouter/v1/deployments", body)
+    jobs = [n.get("job_id") for n in ((d.get("data") or {}).get("nodes") or []) if n.get("job_id")]
+    results = [wait_job(j, timeout=AGENT_TIMEOUT) for j in jobs]
+    failed = [r for r in results if job_phase(r) not in JOB_SUCCESS]
+    return code in (200, 201, 202) and not failed, f"{code} jobs={len(jobs)} {json.dumps(failed or d)[:240]}"
+
+
+def ensure(R, node, provider, role, pick, features=None):
+    if pick["present"] and features is None:
+        return True
+    ok, detail = deploy(node, provider, pick, features)
+    pick["present"] = ok and pick["name"] in catalog(node, provider)
+    R.add("direct", node, f"{provider}:{role}", f"download {pick['repo']} {pick['file']}".strip(), pick["present"], detail)
+    return pick["present"]
+
+
+JOB_SUCCESS = ("completed", "succeeded", "done")
+JOB_TERMINAL = JOB_SUCCESS + ("failed", "cancelled", "error")
+
+
+def job_phase(d):
+    j = d.get("data") or d
+    return j.get("phase") or j.get("state") or j.get("status")
+
+
+def wait_job(job, timeout=900):
+    end = time.time() + timeout
+    while time.time() < end:
+        _, d, _ = http("GET", f"/zzrouter/v1/jobs/{job}")
+        if job_phase(d) in JOB_TERMINAL:
+            return d
+        time.sleep(3)
+    return {"timeout": job}
+
+
 # ---------------------------------------------------------------- direct track
 def sse_events(raw):
     for line in raw.decode("utf-8", "replace").splitlines():
@@ -130,144 +321,209 @@ def sse_events(raw):
 ANSWER_TOKENS = 1024
 
 
-def direct_model(R, node, provider, model):
-    name = f"{model}@{node}"
-    sc = f"{provider}:{model}"
-    # chat (cold start included)
-    code, d, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": 32,
-                       "messages": [{"role": "user", "content": "Reply with the single word: pong"}]})
-    txt = (d.get("choices") or [{}])[0].get("message", {}).get("content") if code == 200 else d
-    R.add("direct", node, sc, "chat (cold start)", code == 200 and bool(txt), f"{code} {txt!s:.120}", ms)
+def chat(name, content, max_tokens=ANSWER_TOKENS, **extra):
+    return http("POST", "/v1/chat/completions", dict({"model": name, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}]}, **extra))
+
+
+def answer(code, d):
+    return ((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "" if code == 200 else ""
+
+
+def problem(d):
+    e = d.get("error") if isinstance(d.get("error"), dict) else d
+    return f"{e.get('code')} {str(e.get('message') or e.get('detail'))[:200]}"
+
+
+def direct_basics(R, node, provider, name):
+    sc = f"{provider}:text"
+    code, d, ms = chat(f"{name}@{node}", "Reply with the single word: pong", 32)
+    R.add("direct", node, sc, "chat (cold start)", code == 200 and bool(answer(code, d)), f"{code} {answer(code, d) or d!s:.120}", ms)
     if code != 200:
         return
     served = d.get("zzrouter", {})
-    R.add("direct", node, sc, "served by expected node/provider",
-          served.get("node") == node and served.get("provider") == provider, served)
-    # streaming
-    code, raw, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": 32, "stream": True,
+    R.add("direct", node, sc, "served by this node and provider", served.get("node") == node and served.get("provider") == provider, served)
+    code, raw, ms = http("POST", "/v1/chat/completions", {"model": f"{name}@{node}", "max_tokens": 32, "stream": True,
                          "messages": [{"role": "user", "content": "Count from 1 to 5."}]}, raw=True)
     ev = list(sse_events(raw)) if code == 200 else []
-    R.add("direct", node, sc, "chat stream ends [DONE]", code == 200 and ev[-1:] == ["[DONE]"] and len(ev) > 2,
-          f"{code} events={len(ev)}", ms)
-    # OpenAI tool calling
-    code, d, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": 200, "tools": [WEATHER_TOOL],
-                       "messages": [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}]})
-    tc = ((d.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") if code == 200 else None
-    if provider == "vllm" and code == 400:
-        err = d.get("error") or {}
-        R.add("direct", node, sc, "vllm tools refusal is classified", err.get("code") == "tool_calling_not_enabled", f"{err.get('code')} {str(err.get('message'))[:160]}", ms)
-        stop_runs(node)
-        lc, ld, _ = http("POST", "/zzrouter/v1/runs", {"provider": "vllm", "launch_mode": "native", "node": node, "model": model,
-                         "parameters": {"enable-auto-tool-choice": "true", "tool-call-parser": "hermes"}})
-        job = (ld.get("data") or {}).get("job_id") if isinstance(ld.get("data"), dict) else None
-        if job:
-            wait_job(job)
-        code, d, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": 200, "tools": [WEATHER_TOOL],
-                           "messages": [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}]})
-        tc = ((d.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") if code == 200 else None
-        sc += "+tool-params"
-    ok = bool(tc) and tc[0]["function"]["name"] == "get_weather" and "paris" in tc[0]["function"]["arguments"].lower()
-    R.add("direct", node, sc, "openai tool_calls", ok, f"{code} {tc or d!s:.200}", ms)
-    if ok:  # round trip: feed the tool result back
-        msgs = [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."},
-                d["choices"][0]["message"],
-                {"role": "tool", "tool_call_id": tc[0]["id"], "content": json.dumps({"city": "Paris", "temp_c": 31, "sky": "sunny"})}]
-        code, d2, ms = http("POST", "/v1/chat/completions", {"model": name, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": msgs})
-        ans = (d2.get("choices") or [{}])[0].get("message", {}).get("content") or "" if code == 200 else str(d2)
-        R.add("direct", node, sc, "openai tool result round trip", code == 200 and "31" in ans, f"{code} {ans:.150}", ms)
-    # Anthropic Messages + tools (native on llama.cpp, translated on vLLM/MLX)
-    code, d, ms = http("POST", "/v1/messages", {"model": name, "max_tokens": 200, "tools": [ANTH_TOOL],
-                       "messages": [{"role": "user", "content": "What is the weather in Tokyo? Use the tool."}]},
-                       headers={"anthropic-version": "2023-06-01"})
-    blocks = d.get("content", []) if code == 200 else []
-    tu = [b for b in blocks if b.get("type") == "tool_use"]
-    R.add("direct", node, sc, "anthropic messages tool_use",
-          bool(tu) and tu[0].get("name") == "get_weather" and d.get("stop_reason") == "tool_use",
-          f"{code} stop={d.get('stop_reason')} {tu or d!s:.200}", ms)
-    # Anthropic system prompt + a mid-conversation system message, as Claude Code sends
-    code, d, ms = http("POST", "/v1/messages", {"model": name, "max_tokens": 32, "system": "You are terse.",
+    R.add("direct", node, sc, "chat stream ends [DONE]", code == 200 and ev[-1:] == ["[DONE]"] and len(ev) > 2, f"{code} events={len(ev)}", ms)
+    code, d, ms = http("POST", "/v1/messages", {"model": f"{name}@{node}", "max_tokens": 32, "system": "You are terse.",
                        "messages": [{"role": "user", "content": "Say hi."}, {"role": "assistant", "content": "Hi."},
                                     {"role": "user", "content": [{"type": "text", "text": "<system-reminder>Be brief.</system-reminder>"},
                                                                  {"type": "text", "text": "Say bye."}]}]},
                        headers={"anthropic-version": "2023-06-01"})
     R.add("direct", node, sc, "anthropic multi-turn + system", code == 200, f"{code} {str(d)[:200]}", ms)
-    # Responses API (native or compat)
-    code, d, ms = http("POST", "/v1/responses", {"model": name, "input": "Reply with the single word: pong", "max_output_tokens": 32})
-    R.add("direct", node, sc, "responses", code == 200 and d.get("status") in ("completed", "incomplete"),
-          f"{code} {d.get('status') or str(d)[:200]}", ms)
+    code, d, ms = http("POST", "/v1/responses", {"model": f"{name}@{node}", "input": "Reply with the single word: pong", "max_output_tokens": 32})
+    R.add("direct", node, sc, "responses", code == 200 and d.get("status") in ("completed", "incomplete"), f"{code} {d.get('status') or str(d)[:200]}", ms)
 
 
-def direct_concurrent(R, node):
-    """Two models on one node at once: both must answer while both are running."""
-    models = [(p, m) for p, ms_ in providers(node).items() for m in ms_]
-    if len(models) < 2:
-        R.add("direct", node, "two-models", "skipped: one local model configured", None)
+def direct_tools(R, node, provider, name):
+    """Tool calling on the big model: OpenAI tool_calls, the result round trip, Anthropic tool_use."""
+    sc, model = f"{provider}:big", f"{name}@{node}"
+    ask = [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}]
+    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": ask})
+    if code == 400 and (d.get("error") or {}).get("code") == "tool_calling_not_enabled":
+        R.add("direct", node, sc, "tools refusal is classified", True, problem(d), ms)
         return
-    pair = models[:2]
-    def ask(pm):
-        return http("POST", "/v1/chat/completions", {"model": f"{pm[1]}@{node}", "max_tokens": 16,
-                    "messages": [{"role": "user", "content": "Reply: ok"}]})
-    with ThreadPoolExecutor(2) as ex:
-        res = list(ex.map(ask, pair))
-    live = {r["model"] for r in runs(node) if r.get("status") == "running"}
-    for (p, m), (code, d, ms) in zip(pair, res):
-        R.add("direct", node, "two-models", f"{p}:{m} answers concurrently", code == 200, f"{code} {str(d)[:150]}", ms)
-    R.add("direct", node, "two-models", "both running at once", all(any(m in l for l in live) for _, m in pair), sorted(live))
+    tc = ((d.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") if code == 200 else None
+    ok = bool(tc) and tc[0]["function"]["name"] == "get_weather" and "paris" in tc[0]["function"]["arguments"].lower()
+    R.add("direct", node, sc, "openai tool_calls", ok, f"{code} {tc or d!s:.200}", ms)
+    if ok:
+        msgs = ask + [d["choices"][0]["message"], {"role": "tool", "tool_call_id": tc[0]["id"],
+                      "content": json.dumps({"city": "Paris", "temp_c": 31, "sky": "sunny"})}]
+        code, d2, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": msgs})
+        R.add("direct", node, sc, "openai tool result round trip", code == 200 and "31" in answer(code, d2), f"{code} {answer(code, d2) or d2!s:.150}", ms)
+    code, d, ms = http("POST", "/v1/messages", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [ANTH_TOOL],
+                       "messages": [{"role": "user", "content": "What is the weather in Tokyo? Use the tool."}]},
+                       headers={"anthropic-version": "2023-06-01"})
+    tu = [b for b in d.get("content", []) if b.get("type") == "tool_use"] if code == 200 else []
+    R.add("direct", node, sc, "anthropic messages tool_use", bool(tu) and tu[0].get("name") == "get_weather" and d.get("stop_reason") == "tool_use",
+          f"{code} stop={d.get('stop_reason')} {tu or d!s:.200}", ms)
 
 
-def direct_oom(R, node):
-    budget = LAB[node].get("budget")
-    if budget:
-        # A fraction budget is checked against free VRAM before the process starts.
+def image_request(model):
+    b64 = base64.b64encode(open(IMAGE, "rb").read()).decode()
+    return chat(model, [{"type": "text", "text": "What color is this square? One word."},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}])
+
+
+def refused_for_images(code, d):
+    return code == 400 and any(w in json.dumps(d).lower() for w in ("image", "vision"))
+
+
+def direct_image_to_text(R, node, provider, name):
+    """An image to a model that cannot read one is a clear 400, never a guess about pixels it never saw."""
+    stop_runs(node)
+    code, d, ms = image_request(f"{name}@{node}")
+    R.add("direct", node, f"{provider}:text", "image to a text-only model refused", refused_for_images(code, d),
+          f"{code} vision={vision_state(node, provider, name)} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
+    R.add("direct", node, f"{provider}:text", "no run left by the refusal", code == 200 or not runs(node), [r["model"] for r in runs(node)])
+
+
+def direct_vision(R, node, provider, pick):
+    """A vision model whose projector is missing refuses images and says why; with it, it reads them.
+    A run started before the projector arrived must not answer an image as text."""
+    sc, model = f"{provider}:vision", f"{pick['name']}@{node}"
+    stop_runs(node)
+    if pick["projector"]:
+        if vision_state(node, provider, pick["name"]) == "present" and not reset_projector(node, provider, pick):
+            R.add("direct", node, sc, "projector removed for the test", False, "no projector_reset for this node")
+            return
+        code, d, ms = image_request(model)
+        R.add("direct", node, sc, "image without projector refused with the fix", refused_for_images(code, d),
+              f"{code} vision={vision_state(node, provider, pick['name'])} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
+        chat(model, "Reply: ok", 16)  # a text run, launched before the projector exists
+        ok, detail = deploy(node, provider, pick, ["vision"])
+        R.add("direct", node, sc, "projector added through the API", ok and vision_state(node, provider, pick["name"]) == "present",
+              f"vision={vision_state(node, provider, pick['name'])} {detail}")
+        code, d, ms = image_request(model)
+        stale_ok = (code == 200 and "red" in answer(code, d).lower()) or (code in (400, 409) and "restart" in json.dumps(d).lower())
+        R.add("direct", node, sc, "image to the run started before the projector", stale_ok,
+              f"{code} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
         stop_runs(node)
-        code, d, ms = http("POST", "/zzrouter/v1/runs", {"provider": budget["provider"], "launch_mode": "native", "node": node,
-                           "model": budget["model"], "parameters": {budget["parameter"]: "0.99"}})
-        job = d.get("data", {}).get("job_id") if isinstance(d.get("data"), dict) else None
-        if job:  # async launch: read the job outcome
-            d = wait_job(job)
-            code = 409 if "GPU budget cannot fit" in json.dumps(d) else code
-        R.add("direct", node, "oom", "over-budget launch refused before start",
-              code == 409 and "GPU budget" in json.dumps(d), f"{code} {json.dumps(d)[:300]}", ms)
-        left = [r for r in runs(node) if r.get("provider") == budget["provider"]]
-        R.add("direct", node, "oom", "no process left behind", not left, left)
-    else:
-        R.add("direct", node, "oom", "no launch-time budget on this node; see the mcp oversize/fit scenarios", None)
+    code, d, ms = image_request(model)
+    R.add("direct", node, sc, "image answered correctly (red)", code == 200 and "red" in answer(code, d).lower(),
+          f"{code} {problem(d) if code != 200 else answer(code, d)[:120]}", ms)
 
 
-def wait_job(job, timeout=900):
-    end = time.time() + timeout
-    while time.time() < end:
-        _, d, _ = http("GET", f"/zzrouter/v1/jobs/{job}")
-        j = d.get("data") or d
-        st = j.get("phase") or j.get("state") or j.get("status")
-        if st in ("completed", "failed", "cancelled", "succeeded", "error", "done"):
-            return d
-        time.sleep(3)
-    return {"timeout": job}
+def reset_projector(node, provider, pick):
+    tmpl = LAB[node].get("projector_reset")
+    if not tmpl:
+        return False
+    done = subprocess.run(shlex.split(tmpl.format(repo=pick["repo"], file=pick["projector"])), capture_output=True, text=True, timeout=60)
+    http("POST", f"/zzrouter/v1/models/scan?node={node}")
+    return done.returncode == 0 and vision_state(node, provider, pick["name"]) != "present"
 
 
-def track_direct(R, node):
+def direct_pair(R, node, provider, a, b):
+    """Two models on one card at once: both answer while both run."""
     stop_runs(node)
-    for provider, models in providers(node).items():
-        for m in models:
-            try:
-                direct_model(R, node, provider, m)
-            except Exception as e:
-                R.add("direct", node, f"{provider}:{m}", "exception", False, repr(e))
-    direct_concurrent(R, node)
-    direct_oom(R, node)
-    direct_catalog(R, node)
-    if LAB[node].get("cloud"):
-        direct_cloud(R, node)
+    with ThreadPoolExecutor(2) as ex:
+        res = list(ex.map(lambda p: chat(f"{p['name']}@{node}", "Reply: ok", 16), (a, b)))
+    for p, (code, d, ms) in zip((a, b), res):
+        R.add("direct", node, f"{provider}:pair", f"{p['name']} answers beside the other", code == 200, f"{code} {problem(d) if code != 200 else ''}", ms)
+    if provider != "ollama":
+        live = {r["model"] for r in runs(node) if r.get("status") == "running"}
+        R.add("direct", node, f"{provider}:pair", "both running at once", all(any(p["name"] in l or p["repo"] in l for l in live) for p in (a, b)), sorted(live))
     stop_runs(node)
+
+
+def memory_parameter(provider):
+    """The launch parameter that sets a fraction of GPU memory, as the provider declares it."""
+    mem = ((http("GET", f"/zzrouter/v1/providers/{provider}/schema")[1].get("diagnostics")) or {}).get("memory") or {}
+    return mem.get("parameter") if mem.get("kind") == "fraction_total" else None
+
+
+# Two launches at this share of GPU memory cannot both fit.
+CONTENTION_SHARE = "0.6"
+
+
+def launch(node, provider, pick, parameters):
+    code, d, _ = http("POST", "/zzrouter/v1/runs", {"provider": provider, "launch_mode": "native", "node": node,
+                      "model": pick["name"], "parameters": parameters})
+    return code, d, ((d.get("data") or {}) if isinstance(d.get("data"), dict) else {}).get("job_id")
+
+
+def direct_contention(R, node, provider, cell):
+    """Two models that cannot both fit: the second is queued, then refused with the holder named,
+    or both serve where the engine offloads. Never a crash, a hang or a run left behind.
+    A provider that sizes runs by a GPU-memory fraction gets two small models at a share that
+    cannot fit twice; the others get the big model and a second one beside it."""
+    sc = f"{provider}:contention"
+    param = memory_parameter(provider)
+    a, b = (cell["text"], cell["vision"]) if param else (cell.get("big") or cell["text"], cell["vision"])
+    stop_runs(node)
+    if provider == "ollama":
+        res = [chat(f"{p['name']}@{node}", "Reply: ok", 16) for p in (a, b)]
+        R.add("direct", node, sc, "ollama swaps models it cannot hold together", all(c == 200 for c, _, _ in res),
+              [f"{c} {problem(d) if c != 200 else ''}" for c, d, _ in res])
+        return
+    params = {param: CONTENTION_SHARE} if param else {}
+    first, second = launch(node, provider, a, params), launch(node, provider, b, params)
+    outcome = []
+    for (code, d, job), p in zip((first, second), (a, b)):
+        j = wait_job(job, timeout=AGENT_TIMEOUT) if job else d
+        outcome.append((p["name"], code, job_phase(j), json.dumps(j)))
+    refused = outcome[1][2] == "failed" and any(w in outcome[1][3] for w in ("cannot fit", "budget", "memory"))
+    holder = refused and a["name"].split("/")[-1].lower() in outcome[1][3].lower()
+    R.add("direct", node, sc, "first launch serves", outcome[0][2] in JOB_SUCCESS, outcome[0][3][:200])
+    R.add("direct", node, sc, "second launch serves or is refused for memory", outcome[1][2] in JOB_SUCCESS or refused, outcome[1][3][:300])
+    if refused:
+        R.add("direct", node, sc, "refusal names the run holding the memory", holder, outcome[1][3][:300])
+    stop_runs(node)
+    time.sleep(2)
+    R.add("direct", node, sc, "no run left behind", not runs(node), [r["model"] for r in runs(node)])
 
 
 def direct_catalog(R, node):
     """A split GGUF is one model in the catalog, not one per shard."""
-    _, d, _ = http("GET", f"/zzrouter/v1/models?node={node}")
-    names = [m.get("name", "") for m in d.get("data", [])]
+    names = list(catalog(node))
     shards = [n for n in names if "-of-0" in n]
     R.add("direct", node, "catalog", "no shard listed as its own model", not shards, shards or f"{len(names)} models")
+
+
+def track_direct(R, node, provider):
+    cell = MATRIX.get((node, provider)) or {}
+    for role, pick in cell.items():
+        # The vision model arrives without its projector, so the test starts from that state.
+        if not ensure(R, node, provider, role, pick, [] if role == "vision" and pick["projector"] else None):
+            cell[role] = None
+    text, vision, big = cell.get("text"), cell.get("vision"), cell.get("big")
+    stop_runs(node)
+    steps = [(text, lambda: direct_basics(R, node, provider, text["name"])),
+             (big, lambda: direct_tools(R, node, provider, big["name"])),
+             (text, lambda: direct_image_to_text(R, node, provider, text["name"])),
+             (vision, lambda: direct_vision(R, node, provider, vision)),
+             (text and vision, lambda: direct_pair(R, node, provider, text, vision)),
+             (text and vision, lambda: direct_contention(R, node, provider, cell))]
+    for ready, step in steps:
+        if not ready:
+            continue
+        try:
+            step()
+        except Exception as e:
+            R.add("direct", node, provider, "exception", False, repr(e))
+        stop_runs(node)
 
 
 def direct_cloud(R, node):
@@ -446,91 +702,52 @@ def analyze(out_dir):
     return path, len(rows)
 
 
-# ---------------------------------------------------------------- MCP scenarios
-TAIL = ("\nUse only the zzrouter tools. Local engines only (mlx, vllm, llamacpp); do not use ollama or cloud providers. "
-        "Finish with exactly one line: RESULT: <compact JSON>.")
+
+# ---------------------------------------------------------------- MCP scenarios (one set per cell)
+def tail(provider):
+    return (f"\nUse only the zzrouter tools and only the {provider} provider; no cloud providers. "
+            "Finish with exactly one line: RESULT: <compact JSON>.")
 
 
-def scenarios(node):
-    lab = LAB[node]
-    models = [(p, m) for p, ms in providers(node).items() for m in ms]
-    out = [{
-        "id": "inventory",
-        "prompt": f"Report node {node}'s operating system, GPU and free GPU memory, its local providers (mlx, vllm, llamacpp only) "
-                  f"and the local models on it those providers can run.{TAIL} JSON keys: node, os, providers (list), model_count.",
-        "check": check_inventory,
-    }]
-    if len(models) >= 2:
-        (p1, m1), (p2, m2) = models[0], models[1]
+def describe(role):
+    return " ".join(w for w in (role["family"], role["size"], role.get("variant", "")) if w)
+
+
+def scenarios(node, provider):
+    cell = MATRIX.get((node, provider)) or {}
+    out = []
+    if cell.get("text"):
         out.append({
-            "id": "two-models",
-            "prompt": f"On node {node}, run {m1} ({p1}) and {m2} ({p2}) at the same time. Smoke-test each with one chat, confirm "
-                      f"with the runs list that both are running simultaneously, then stop both.{TAIL} JSON keys: run_ids (list), "
-                      f"both_running (bool), stopped (bool).",
-            "check": lambda ctx: check_lifecycle(ctx, starts=2, chats=2, stops=2),
+            "id": "find-run",
+            "prompt": f"On node {node}, find {describe(ROLES['text'])} for the {provider} provider with the model search, pick a build "
+                      f"that fits the node, download it to {node} if it is not there yet, start it with {provider}, smoke-test it "
+                      f"with one chat, then stop it." + tail(provider) + " JSON keys: model, downloaded (bool), reply, stopped (bool).",
+            "check": check_find_run,
         })
-    else:
-        p1, m1 = models[0]
-        out.append({
-            "id": "lifecycle",
-            "prompt": f"On node {node}, start {m1} with {p1}, smoke-test it with one chat, check its logs for errors, then stop it."
-                      f"{TAIL} JSON keys: run_id, reply, stopped (bool).",
-            "check": lambda ctx: check_lifecycle(ctx, starts=1, chats=1, stops=1),
-        })
-    if "budget" in lab:
-        b = lab["budget"]
-        out.append({
-            "id": "oom",
-            "prompt": f"On node {node}, start {b['model']} with {b['provider']} for this launch only with the launch parameter "
-                      f"{b['parameter']} set to 0.99 (do not change any saved provider parameters). If zzRouter refuses, explain "
-                      "the refusal from its error details (required vs free memory, who holds the memory). Then launch it again with "
-                      "a value that fits, one chat, and stop it." + TAIL + " JSON keys: refused (bool), required_mib, free_mib, "
-                      "second_launch_ok (bool), stopped (bool).",
-            "check": check_oom_budget,
-            "expect_error": "GPU budget cannot fit",
-        })
-    if "queue" in lab:
-        q = lab["queue"]
-        a, b = q["models"]
-        out.append({
-            "id": "queue",
-            "prompt": f"On node {node}, start {a} and then {b} with {q['provider']}, the second right after the first without "
-                      f"waiting for it to be ready, each for this launch only with {q['parameter']} set to {q['value']} (do not "
-                      "change saved provider parameters). Follow both until they serve, smoke-test each with one chat, confirm "
-                      f"with the runs list that both are running, then stop both.{TAIL} JSON keys: run_ids (list), "
-                      "both_running (bool), stopped (bool).",
-            "check": check_queue,
-        })
-    if "vision" in lab:
-        v = lab["vision"]
+    vision = cell.get("vision")
+    if vision and vision["projector"]:
         out.append({
             "id": "vision",
-            "prompt": f"On node {node}, the model {v['model']} ({v['provider']}) reports no vision. Make it able to read images "
-                      "the supported way (its vision projector file from the same HuggingFace repo), then confirm the model catalog "
-                      f"on {node} reports vision for it. Do not start any run." + TAIL + " JSON keys: projector_file, vision (bool).",
+            "prompt": f"On node {node}, the model {vision['name']} ({provider}) cannot read images yet. Make it able to read images "
+                      f"through zzRouter, then confirm the model catalog on {node} reports vision for it. Do not start any run."
+                      + tail(provider) + " JSON keys: what_you_added, vision (bool).",
             "check": check_vision,
-            "setup": lambda: reset_vision(node),
+            "setup": lambda: vision_precondition(node, provider, vision),
+            "pick": vision,
+            "provider": provider,
         })
-    if "oversize" in lab:
-        o = lab["oversize"]
+    if cell.get("text") and vision:
+        param = memory_parameter(provider)
+        a = cell["text"] if param else (cell.get("big") or cell["text"])
+        share = f", each for this launch only with {param} set to {CONTENTION_SHARE} (do not change saved provider parameters)" if param else ""
         out.append({
-            "id": "oom",
-            "prompt": f"Node {node} has a {o['gpu_gb']} GB GPU. Make sure a {o['repo']} quantization between {o['min_gb']} and "
-                      f"{o['max_gb']} GB is on that node (download it if it is not), then run it with {o['provider']} on that node. "
-                      "Report what happens: refusal, a failed launch, or a partial/CPU offload, using the run logs as evidence. Chat "
-                      "once if it runs, then stop it. Leave the file downloaded." + TAIL +
-                      " JSON keys: file, size_gb, outcome (refused|failed|offloaded|full_gpu), evidence, stopped (bool).",
-            "check": check_oom_oversize,
-        })
-    if "fit" in lab:
-        f = lab["fit"]
-        out.append({
-            "id": "fit",
-            "prompt": f"On node {node}, decide whether {f['model']} ({f['provider']}) can be started right now without "
-                      "exceeding 80% of the node's currently free memory. Work out its size from the model catalog or files and the "
-                      "free memory from the node inventory. Do not start it if it does not fit." + TAIL +
-                      " JSON keys: model_gb, free_gb, fits (bool), started (bool).",
-            "check": check_fit,
+            "id": "contention",
+            "prompt": f"On node {node}, start {a['name']} and then {vision['name']} with {provider}, the second right after the first"
+                      f"{share}. Follow both. If both serve, smoke-test each with one chat. If zzRouter refuses one, explain from its "
+                      "error which run holds the memory and how much is needed. Then stop everything you started."
+                      + tail(provider) + " JSON keys: both_served (bool), refused_model, holder, stopped (bool).",
+            "check": check_contention,
+            "expect_error": "cannot fit",
         })
     return out
 
@@ -544,68 +761,48 @@ def tool_calls(ctx, name, ok=None):
 
 def check_inventory(ctx):
     rj = ctx["rj"] or {}
-    want = set(providers(ctx["node"]))
+    want = set(LAB[ctx["node"]]["providers"])
     got = {p.lower() for p in rj.get("providers") or []}
-    return [("RESULT line parsed", bool(rj), rj), ("local providers match", want <= got and not ({"ollama"} & got), f"want {want} got {got}")]
+    return [("RESULT line parsed", bool(rj), rj), ("local providers match", want <= got, f"want {want} got {got}")]
 
 
-def check_lifecycle(ctx, starts, chats, stops):
-    s, c, st = tool_calls(ctx, "zz_run_start", True), tool_calls(ctx, "zz_chat", True), tool_calls(ctx, "zz_run_stop", True)
+def check_find_run(ctx):
     rj = ctx["rj"] or {}
-    return [(f">= {starts} successful zz_run_start", len(s) >= starts, len(s)),
-            (f">= {chats} successful zz_chat", len(c) >= chats, len(c)),
-            (f">= {stops} successful zz_run_stop", len(st) >= stops, len(st)),
-            ("agent claims match", rj.get("stopped") is True and rj.get("both_running", True) is True, rj),
+    return [("searched the registry", bool(tool_calls(ctx, "zz_model_search", True)), len(tool_calls(ctx, "zz_model_search"))),
+            ("started a run", bool(tool_calls(ctx, "zz_run_start", True)), len(tool_calls(ctx, "zz_run_start"))),
+            ("chat answered", bool(tool_calls(ctx, "zz_chat", True)), rj.get("reply")),
+            ("stopped", bool(tool_calls(ctx, "zz_run_stop", True)) and rj.get("stopped") is True, rj),
             ("no runs left on node", not ctx["left"], ctx["left"])]
 
 
-def check_queue(ctx):
-    starts = tool_calls(ctx, "zz_run_start")
-    seen = tool_calls(ctx, "zz_run_start") + tool_calls(ctx, "zz_job") + tool_calls(ctx, "zz_runs")
-    queued = any('"queued"' in c["resp"] or "waiting_on" in c["resp"] for c in seen)
-    return check_lifecycle(ctx, starts=2, chats=2, stops=2) + [
-        ("no start refused", not [c for c in starts if c["is_error"]], len(starts)),
-        ("second launch was queued, not refused (proxy)", queued, len(seen))]
-
-
-def check_oom_budget(ctx):
+def check_contention(ctx):
+    rj = ctx["rj"] or {}
     starts = tool_calls(ctx, "zz_run_start") + tool_calls(ctx, "zz_job")
-    refused = any("GPU budget cannot fit" in c["resp"] for c in starts)
-    rj = ctx["rj"] or {}
-    b = LAB[ctx["node"]]["budget"]
-    saved = http("GET", f"/zzrouter/v1/providers/{b['provider']}/resolved?node={ctx['node']}")[1]
-    return [("zzRouter refused the 0.99 launch (proxy)", refused, len(starts)),
-            ("agent reported refusal with numbers", rj.get("refused") is True and bool(rj.get("required_mib")), rj),
-            ("second launch + chat ok", bool(tool_calls(ctx, "zz_chat", True)) and rj.get("second_launch_ok") is True, rj.get("second_launch_ok")),
-            ("saved params untouched (no zz_params_set)", not tool_calls(ctx, "zz_params_set"), "0.99" not in json.dumps(saved)),
-            ("no runs left on node", not ctx["left"], ctx["left"])]
+    refused = [c for c in starts if "cannot fit" in c["resp"]]
+    out = [(">= 2 launches", len(tool_calls(ctx, "zz_run_start")) >= 2, len(tool_calls(ctx, "zz_run_start"))),
+           ("agent claims match zzRouter", bool(rj) and (rj.get("both_served") is True) == (not refused), rj),
+           ("no runs left on node", not ctx["left"], ctx["left"])]
+    if refused:
+        out.append(("agent named the memory holder", bool(rj.get("holder")), rj.get("holder")))
+    return out
 
 
-def reset_vision(node):
-    """Remove the projector out of band (lab reset command), rescan, and
-    confirm the catalog no longer reports vision before the agent starts."""
-    v = LAB[node]["vision"]
-    if not v.get("reset"):
-        return False, "lab has no vision reset command"
-    done = subprocess.run(shlex.split(v["reset"]), capture_output=True, text=True, timeout=60)
-    if done.returncode:
-        return False, f"reset failed: {done.stderr[:200]}"
-    http("POST", f"/zzrouter/v1/models/scan?node={node}")
-    name = v["model"] + "@" + node
-    m = [x for x in http("GET", "/v1/models")[1].get("data", []) if x["id"] == name]
-    vis = bool(m and m[0].get("capabilities", {}).get("vision"))
-    return bool(m) and not vis, f"present={bool(m)} vision={vis}"
+def vision_precondition(node, provider, pick):
+    """The model is on the node without its projector before the agent starts."""
+    if vision_state(node, provider, pick["name"]) == "present" and not reset_projector(node, provider, pick):
+        return False, "projector present and no projector_reset for this node"
+    state = vision_state(node, provider, pick["name"])
+    return state not in (None, "present"), f"vision={state}"
 
 
 def check_vision(ctx):
-    name = LAB[ctx["node"]]["vision"]["model"] + "@" + ctx["node"]
-    _, d, _ = http("GET", "/v1/models")
-    m = [x for x in d.get("data", []) if x["id"] == name]
-    vis = bool(m and m[0].get("capabilities", {}).get("vision"))
-    out = [("catalog reports vision", vis, m[0].get("capabilities") if m else None),
-           ("agent claim matches catalog", (ctx["rj"] or {}).get("vision") == vis, ctx["rj"])]
-    if vis:  # prove it: send an image
-        out.append(vision_probe(name))
+    pick = ctx["scenario"]["pick"]
+    state = vision_state(ctx["node"], ctx["scenario"]["provider"], pick["name"])
+    out = [("catalog reports vision", state == "present", state),
+           ("agent claim matches catalog", (ctx["rj"] or {}).get("vision") == (state == "present"), ctx["rj"])]
+    if state == "present":
+        code, d, _ = image_request(f"{pick['name']}@{ctx['node']}")
+        out.append(("image answered correctly (red)", code == 200 and "red" in answer(code, d).lower(), f"{code} {answer(code, d)[:120] or problem(d)}"))
     return out
 
 
@@ -622,74 +819,53 @@ def write_test_image():
                 + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def vision_probe(model):
-    img = IMAGE
-    b64 = base64.b64encode(open(img, "rb").read()).decode()
-    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "messages": [{"role": "user", "content": [
-        {"type": "text", "text": "What color is this square? One word."},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}]}]})
-    ans = (d.get("choices") or [{}])[0].get("message", {}).get("content") or "" if code == 200 else str(d)
-    return ("image answered correctly (red)", code == 200 and "red" in ans.lower(), f"{code} {ans[:120]}")
-
-
-def check_oom_oversize(ctx):
-    rj = ctx["rj"] or {}
-    dl = tool_calls(ctx, "zz_model_download", True)
-    stem = LAB[ctx["node"]]["oversize"]["repo"].split("/")[-1].lower().removesuffix("-gguf")
-    present = any(stem in m["id"].lower() and m["id"].endswith("@" + ctx["node"]) for m in http("GET", "/v1/models")[1].get("data", []))
-    return [("model present (downloaded or already there)", bool(dl) or present, len(dl)),
-            ("run attempted", bool(tool_calls(ctx, "zz_run_start")), len(tool_calls(ctx, "zz_run_start"))),
-            ("outcome reported", rj.get("outcome") in ("refused", "failed", "offloaded", "full_gpu"), rj),
-            ("logs consulted", bool(tool_calls(ctx, "zz_logs")), len(tool_calls(ctx, "zz_logs"))),
-            ("no runs left on node", not ctx["left"], ctx["left"]),
-            ("worker still healthy", node_healthy(ctx["node"]), "")]
-
-
-def check_fit(ctx):
-    rj = ctx["rj"] or {}
-    started = [c for c in tool_calls(ctx, "zz_run_start") if "27B" in json.dumps(c["args"])]
-    consistent = rj.get("fits") is not None and (rj.get("fits") or not started)
-    return [("decision reported with numbers", bool(rj.get("model_gb")) and bool(rj.get("free_gb")), rj),
-            ("did not start when it does not fit", consistent, f"starts={len(started)}"),
-            ("no runs left on node", not ctx["left"], ctx["left"])]
-
-
 def node_healthy(node):
     _, d, _ = http("GET", "/zzrouter/v1/nodes")
     return any(n["name"] == node and n.get("health_status") == "healthy" for n in d.get("data", []))
 
 
-def track_mcp(R, node, agents, only, out):
-    for sc in scenarios(node):
-        for agent in agents:
-            sid = f"{node}.{sc['id']}.{agent}"
-            if only and only not in sid:
+def run_scenario(R, node, label, sc, agents, only, out):
+    for agent in agents:
+        sid = f"{node}.{label}.{agent}"
+        if only and only not in sid:
+            continue
+        wd = os.path.join(out, "mcp", sid); os.makedirs(wd, exist_ok=True)
+        json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
+        stop_runs(node)
+        if "setup" in sc:
+            ok, detail = sc["setup"]()
+            R.add("mcp", node, f"{label}.{agent}", "precondition", ok, detail)
+            if not ok:
                 continue
-            wd = os.path.join(out, "mcp", sid); os.makedirs(wd, exist_ok=True)
-            json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
-            if "setup" in sc:
-                ok, detail = sc["setup"]()
-                R.add("mcp", node, f"{sc['id']}.{agent}", "precondition", ok, detail)
-                if not ok:
-                    continue
-            stop_runs(node)
-            before = {r["id"] for r in runs(node)}
-            drive = run_claude_mcp if agent == "claude" else run_codex_mcp
-            text, meta, secs = drive(sid, sc["prompt"], wd)
-            time.sleep(2)
-            left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
-            calls = calls_for(sid)
-            json.dump(calls, open(os.path.join(wd, "calls.json"), "w"), indent=1)
-            ctx = {"node": node, "calls": calls, "text": text, "rj": result_json(text), "left": left}
-            failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
-            R.add("mcp", node, f"{sc['id']}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),
-                  f"{secs}s calls={len(calls)} failed={failed} meta={meta}", secs * 1000)
-            conf = confusion(calls, sc.get("expect_error"))
-            R.add("mcp", node, f"{sc['id']}.{agent}", "no agent confusion", not conf,
-                  "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
-            for name, ok, detail in sc["check"](ctx):
-                R.add("mcp", node, f"{sc['id']}.{agent}", name, ok, detail)
-            stop_runs(node)
+        before = {r["id"] for r in runs(node)}
+        drive = run_claude_mcp if agent == "claude" else run_codex_mcp
+        text, meta, secs = drive(sid, sc["prompt"], wd)
+        time.sleep(2)
+        left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
+        calls = calls_for(sid)
+        json.dump(calls, open(os.path.join(wd, "calls.json"), "w"), indent=1)
+        ctx = {"node": node, "calls": calls, "text": text, "rj": result_json(text), "left": left, "scenario": sc}
+        failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
+        R.add("mcp", node, f"{label}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),
+              f"{secs}s calls={len(calls)} failed={failed} meta={meta}", secs * 1000)
+        conf = confusion(calls, sc.get("expect_error"))
+        R.add("mcp", node, f"{label}.{agent}", "no agent confusion", not conf,
+              "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
+        for name, ok, detail in sc["check"](ctx):
+            R.add("mcp", node, f"{label}.{agent}", name, ok, detail)
+        R.add("mcp", node, f"{label}.{agent}", "node still healthy", node_healthy(node), "")
+        stop_runs(node)
+
+
+def track_mcp(R, node, cells, agents, only, out):
+    run_scenario(R, node, "inventory", {
+        "prompt": f"Report node {node}'s operating system, GPU and free GPU memory, and its local providers ({', '.join(LAB[node]['providers'])}) "
+                  "with the local models each can run.\nUse only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. "
+                  "JSON keys: node, os, providers (list), model_count.",
+        "check": check_inventory}, agents, only, out)
+    for provider in cells:
+        for sc in scenarios(node, provider):
+            run_scenario(R, node, f"{provider}.{sc['id']}", sc, agents, only, out)
 
 
 # ---------------------------------------------------------------- backend track
@@ -727,12 +903,15 @@ def track_backend(R, node, agents, out):
         R.add("backend", node, f"{agent}@{model}", "fib.py output correct", got == FIB, got)
 
 
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lab", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab.json"))
+    ap.add_argument("--plan", action="store_true", help="print the matrix and the builds search picked, download nothing")
     ap.add_argument("--tracks", default="direct,mcp,backend")
     ap.add_argument("--nodes", default="")
+    ap.add_argument("--providers", default="", help="limit the matrix to these providers")
     ap.add_argument("--agents", default="claude,codex")
     ap.add_argument("--only", default="")
     ap.add_argument("--analyze", default="", help="only rebuild confusion.md for an existing run dir")
@@ -744,25 +923,34 @@ def main():
         sys.exit("set ZZR_CAMPAIGN_KEY to the coordinator's admin key")
     lab = json.load(open(a.lab))
     LAB.update(lab["nodes"])
+    ROLES.update(lab["roles"])
     BACKEND_MODELS.update(lab.get("backend_models", {}))
-    if not a.nodes:
-        a.nodes = ",".join(LAB)
-    write_test_image()
+    nodes = a.nodes.split(",") if a.nodes else list(LAB)
+    only_providers = tuple(p for p in a.providers.split(",") if p)
     a.out = os.path.abspath(a.out)
     os.makedirs(a.out, exist_ok=True)
+    open(os.path.join(a.out, "matrix.md"), "w").write(plan(nodes, only_providers) + "\n")
+    if a.plan:
+        return
+    write_test_image()
     R = Results(a.out)
-    tracks, nodes, agents = a.tracks.split(","), a.nodes.split(","), a.agents.split(",")
+    tracks, agents = a.tracks.split(","), a.agents.split(",")
     if "mcp" in tracks:
         start_proxy()
 
     def per_node(node):  # nodes in parallel, everything within a node sequential
+        cells = [p for (n, p) in MATRIX if n == node]
         if "direct" in tracks:
-            track_direct(R, node)
+            for provider in cells:
+                track_direct(R, node, provider)
+            direct_catalog(R, node)
+            if LAB[node].get("cloud"):
+                direct_cloud(R, node)
         if "mcp" in tracks:
-            track_mcp(R, node, agents, a.only, a.out)
+            track_mcp(R, node, cells, agents, a.only, a.out)
         if "backend" in tracks:
             track_backend(R, node, agents, a.out)
-            stop_runs(node)
+        stop_runs(node)
     with ThreadPoolExecutor(len(nodes)) as ex:
         for f in [ex.submit(per_node, n) for n in nodes]:
             f.result()

@@ -1,60 +1,46 @@
 {
   "nodes": {
     "mac-coordinator": {
-      "providers": {
-        "mlx": [
-          "mlx-community/Qwen3.5-9B-MLX-4bit"
-        ]
-      },
-      "fit": {
-        "provider": "mlx",
-        "model": "mlx-community/Qwen3.8-27B-bf16"
-      },
+      "providers": [
+        "mlx"
+      ],
       "cloud": true
     },
     "linux-gpu-worker": {
-      "providers": {
-        "vllm": [
-          "Qwen/Qwen2.5-0.5B-Instruct"
-        ],
-        "llamacpp": [
-          "gemma-4-E2B-it-Q3_K_M",
-          "qwen2.5-1.5b-instruct-q4_k_m"
-        ]
-      },
-      "budget": {
-        "provider": "vllm",
-        "model": "Qwen/Qwen2.5-0.5B-Instruct",
-        "parameter": "gpu-memory-utilization"
-      },
-      "vision": {
-        "provider": "llamacpp",
-        "model": "gemma-4-E2B-it-Q3_K_M",
-        "reset": "ssh root@linux-gpu-worker rm -f /var/lib/zzrouter/models/unsloth/gemma-4-E2B-it-GGUF/mmproj-F16.gguf"
-      },
-      "queue": {
-        "provider": "vllm",
-        "models": [
-          "Qwen/Qwen2.5-0.5B-Instruct",
-          "Qwen/Qwen2.5-0.5B"
-        ],
-        "parameter": "gpu-memory-utilization",
-        "value": "0.3"
-      }
+      "providers": [
+        "vllm",
+        "llamacpp",
+        "ollama"
+      ],
+      "projector_reset": "ssh root@linux-gpu-worker rm -f /var/lib/zzrouter/models/{repo}/{file}"
     },
     "windows-worker": {
-      "providers": {
-        "llamacpp": [
-          "qwen2.5-0.5b-instruct-q4_k_m"
-        ]
-      },
-      "oversize": {
-        "provider": "llamacpp",
-        "repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "gpu_gb": 4,
-        "min_gb": 4.5,
-        "max_gb": 6
-      }
+      "providers": [
+        "llamacpp",
+        "ollama"
+      ],
+      "projector_reset": "ssh windows-worker powershell -NoProfile -Command Remove-Item -Force C:/WINDOWS/system32/config/systemprofile/AppData/Local/zzrouter/models/{repo}/{file}"
+    }
+  },
+  "roles": {
+    "text": {
+      "family": "Qwen2.5",
+      "size": "0.5B",
+      "variant": "Instruct",
+      "ollama": "qwen2.5"
+    },
+    "vision": {
+      "family": "gemma-4",
+      "size": "E2B",
+      "variant": "it",
+      "ollama": "gemma4",
+      "vision": true
+    },
+    "big": {
+      "family": "Qwen3.8",
+      "size": "27B",
+      "ollama": "qwen3.8",
+      "largest": true
     }
   },
   "backend_models": {
