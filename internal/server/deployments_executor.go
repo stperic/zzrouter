@@ -381,12 +381,13 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
 				return
 			default:
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
+				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+					status, currentFile = string(constants.StatusFailed), err.Error()
+					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
+					}
+				}
 				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
-
-			if status == string(constants.StatusCompleted) && e.autoRoute != nil {
-				e.autoRoute.SyncAfterPull()
 			}
 		}
 
@@ -471,12 +472,13 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
 				return
 			default:
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
+				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+					status, currentFile = string(constants.StatusFailed), err.Error()
+					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
+						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
+					}
+				}
 				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
-
-			if status == string(constants.StatusCompleted) && e.autoRoute != nil {
-				e.autoRoute.SyncAfterPull()
 			}
 		}
 

@@ -232,9 +232,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 				s.model.Cache.Invalidate()
 			}
 			s.publishSelfSnapshot()
-			if s.cluster.signaler != nil {
-				s.cluster.signaler.NotifyCacheRefresh()
-			}
+			s.notifyCoordinatorAsync()
 		}),
 		prov_apps.WithNodename(s.node.Nodename),
 		prov_apps.WithInstallPolicy(cfg.Providers.InstallPolicyFile),
@@ -414,18 +412,15 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.model.Cache.SetAutoRoute(s.model.AutoRoute)
 
 		// Set callback to invalidate/refresh cache when downloads complete
-		s.model.Downloads.SetOnCompleteCallback(func() {
-			if cfg.Cluster.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
-			} else {
-				s.model.Cache.Invalidate()
-			}
+		s.model.Downloads.SetOnCompleteCallback(func() error {
+			_, err := s.RescanLocal()
+			return err
 		})
 
 		// Workers notify the coord that its per-endpoint snapshot is stale.
 		s.SetOnFinalizeCallback(func(_ string) {
 			if s.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
+				s.notifyCoordinatorAsync()
 			}
 		})
 

@@ -69,7 +69,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 
 	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.isLocalNodeCompatible)
 	hostsExecutor.eligibleProviders = s.eligibleDeployProviders
-	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
+	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
 
 	// ========================================================================
 	// SYSTEM - Health and version for cluster monitoring
@@ -220,15 +220,16 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// Security: Cluster key required, path validation, SHA256 verification
 	// refreshIndex fires when a cross-node sync completes on this node.
 	// Invalidates the cluster-join ModelCache, which cascades to the
-	// Registry scan cache, so the new model propagates to readers on
-	// the next query.
+	// Registry scan cache, then publishes the new model to readers
+	// before completion becomes visible.
 	var refreshIndex func() error
 	if s.model.Cache != nil {
 		refreshIndex = func() error {
-			s.model.Cache.Invalidate()
-			return nil
+			_, err := s.RescanLocal()
+			return err
 		}
 	}
+
 	getEndpoints := func() []*mesh.Endpoint {
 		if s.cluster.coordinator == nil {
 			return nil

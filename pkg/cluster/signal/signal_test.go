@@ -2,8 +2,10 @@ package signal
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func TestSignaler_Notify_CoordinatorNoOp(t *testing.T) {
 	s.Start(context.Background())
 	defer s.Stop(context.Background())
 
-	s.NotifyCacheRefresh()
+	require.NoError(t, s.NotifyCacheRefresh(t.Context()))
 
 	// Stop must return promptly because notifyWG is empty.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -47,7 +49,7 @@ func TestSignaler_Notify_NoOpWhenNotStarted(t *testing.T) {
 	})
 
 	// No Start called — should bail via lifeCtx==nil check.
-	s.NotifyCacheRefresh()
+	require.NoError(t, s.NotifyCacheRefresh(t.Context()))
 
 	// A Stop with short ctx would hang if a goroutine had been spawned.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -70,7 +72,7 @@ func TestSignaler_Notify_NoOpAfterStop(t *testing.T) {
 	s.Stop(context.Background())
 
 	// Post-Stop notify must be a no-op.
-	s.NotifyCacheRefresh()
+	require.NoError(t, s.NotifyCacheRefresh(t.Context()))
 
 	// A Stop with near-zero deadline would return immediately either
 	// way, but the lifecycle-check contract guarantees no goroutine
@@ -94,7 +96,7 @@ func TestSignaler_StartStopStart(t *testing.T) {
 		s.Start(context.Background())
 		// NotifyCacheRefresh short-circuits on errCoordNotWired; the
 		// point is that it doesn't panic and Stop drains cleanly.
-		s.NotifyCacheRefresh()
+		require.ErrorIs(t, s.NotifyCacheRefresh(t.Context()), errCoordNotWired)
 		stopCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		s.Stop(stopCtx)
 		cancel()
@@ -126,7 +128,7 @@ func TestSignaler_Stop_WaitsForInFlight(t *testing.T) {
 	})
 
 	s.Start(context.Background())
-	s.NotifyCacheRefresh()
+	go func() { _ = s.NotifyCacheRefresh(t.Context()) }()
 
 	require.Eventually(t, func() bool {
 		return requests.Load() >= 1
@@ -218,7 +220,7 @@ func TestSignaler_Notify_IncludesWorkerURL(t *testing.T) {
 	})
 
 	s.Start(context.Background())
-	s.NotifyCacheRefresh()
+	require.NoError(t, s.NotifyCacheRefresh(t.Context()))
 
 	select {
 	case got := <-bodies:
@@ -264,5 +266,77 @@ func TestSignaler_Goodbye_PostsNodeURL(t *testing.T) {
 	}
 	if gotBody != `{"node_url":"`+workerURL+`"}` {
 		t.Errorf("POST body = %q, want node_url=%q", gotBody, workerURL)
+	}
+}
+
+type catalogRefreshTransport func(*http.Request) (*http.Response, error)
+
+func (f catalogRefreshTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSignaler_NotifyWaitsForCatalogAcknowledgement(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	returned := make(chan error, 1)
+	client := &http.Client{Transport: catalogRefreshTransport(func(r *http.Request) (*http.Response, error) {
+		close(entered)
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})}
+	s := New(Config{IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+	s.Start(t.Context())
+	t.Cleanup(func() { s.Stop(context.Background()) })
+	go func() { returned <- s.NotifyCacheRefresh(t.Context()) }()
+	<-entered
+	early := false
+	select {
+	case <-returned:
+		early = true
+	default:
+	}
+	close(release)
+	if !early {
+		require.NoError(t, <-returned)
+	}
+	require.False(t, early, "notification must wait for publication acknowledgement")
+}
+
+func TestSignaler_NotifyRetryBound(t *testing.T) {
+	var attempts atomic.Int32
+	client := &http.Client{Transport: catalogRefreshTransport(func(r *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		deadline, ok := r.Context().Deadline()
+		require.True(t, ok)
+		require.WithinDuration(t, time.Now().Add(10*time.Second), deadline, time.Second)
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})}
+	s := New(Config{IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+	s.Start(t.Context())
+	t.Cleanup(func() { s.Stop(context.Background()) })
+	require.Error(t, s.NotifyCacheRefresh(t.Context()))
+	require.EqualValues(t, 3, attempts.Load())
+}
+
+func TestSignaler_NotifyCancellation(t *testing.T) {
+	for _, lifecycle := range []bool{false, true} {
+		t.Run(map[bool]string{false: "caller", true: "lifecycle"}[lifecycle], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			lifeCtx, stop := context.WithCancel(t.Context())
+			defer stop()
+			var attempts atomic.Int32
+			client := &http.Client{Transport: catalogRefreshTransport(func(r *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				if lifecycle {
+					stop()
+				} else {
+					cancel()
+				}
+				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("{}"))}, nil
+			})}
+			s := New(Config{IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+			s.Start(lifeCtx)
+			t.Cleanup(func() { s.Stop(context.Background()) })
+			require.ErrorIs(t, s.NotifyCacheRefresh(ctx), context.Canceled)
+			require.EqualValues(t, 1, attempts.Load())
+		})
 	}
 }

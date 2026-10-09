@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -199,13 +200,14 @@ func TestCoalescer_DrainingShortCircuits(t *testing.T) {
 // coord-side notify handler invokes BOTH the cache-C invalidator and
 // the cache-B refresh (the unit fan-out contract from the doc).
 func TestHandleInternalRefreshCache_FansOutBothCaches(t *testing.T) {
-	var invalidated, refreshed atomic.Int32
+	var invalidated, refreshed, published atomic.Int32
 	node := NewNodeIdentity(&pkgConfig.NodeConfig{
 		Cluster: pkgConfig.ClusterConfig{Mode: pkgConfig.ClusterModeCoordinator},
 	})
 	exec := &SystemExecutor{
 		node:             node,
 		invalidateCache:  func() { invalidated.Add(1) },
+		refreshCacheSync: func(context.Context) error { published.Add(1); return nil },
 		refreshEndpoints: func() { refreshed.Add(1) },
 	}
 
@@ -221,4 +223,6 @@ func TestHandleInternalRefreshCache_FansOutBothCaches(t *testing.T) {
 	if got := refreshed.Load(); got != 1 {
 		t.Errorf("refreshEndpoints invocations = %d, want 1", got)
 	}
+	require.EqualValues(t, 1, published.Load())
+	require.Equal(t, 200, rec.Code)
 }

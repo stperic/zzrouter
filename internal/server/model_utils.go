@@ -3,7 +3,10 @@
 
 package server
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // ============================================================================
 // REQUEST/RESPONSE TYPES
@@ -69,14 +72,24 @@ func (s *Server) RescanLocal() (map[string]any, error) {
 		return nil, fmt.Errorf("model registry not initialized")
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCacheRefreshTimeout)
+	defer cancel()
 	// Invalidate the cluster-join ModelCache; this cascades to the
-	// Registry scan cache so the next ListModels call re-scans all
-	// sources. Using cache.Invalidate rather than registry.Rescan
-	// keeps the single-invalidation-entry-point contract.
+	// Registry scan cache so the refresh re-scans all sources.
+	// Using cache.Invalidate rather than registry.Rescan keeps the
+	// single-invalidation-entry-point contract.
 	if s.model.Cache != nil {
 		s.model.Cache.Invalidate()
+		if err := s.model.Cache.RefreshCacheSync(ctx); err != nil {
+			return nil, err
+		}
 	} else if err := s.model.Registry.Rescan(); err != nil {
 		return nil, err
+	}
+	if s.node.IsWorker() && s.cluster.signaler != nil {
+		if err := s.cluster.signaler.NotifyCacheRefresh(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	models, _ := s.model.Registry.ListModels()
