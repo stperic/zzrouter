@@ -94,9 +94,10 @@ func TestToChatRequest_ShapesAndChoices(t *testing.T) {
 		assert.Equal(t, want, out["tool_choice"], choice)
 	}
 
-	onlyServerTools := translate(`{"model":"m","messages":[],"tools":[{"type":"web_search_20250305","name":"w"}],"tool_choice":{"type":"any"}}`)
+	onlyServerTools := translate(`{"model":"m","messages":[],"tools":[{"type":"web_search_20250305","name":"w"}],"tool_choice":{"type":"auto","disable_parallel_tool_use":true}}`)
 	assert.NotContains(t, onlyServerTools, "tools")
 	assert.NotContains(t, onlyServerTools, "tool_choice", "no tools left to choose from")
+	assert.NotContains(t, onlyServerTools, "parallel_tool_calls")
 }
 
 func TestToChatRequest_Refusals(t *testing.T) {
@@ -106,6 +107,13 @@ func TestToChatRequest_Refusals(t *testing.T) {
 		"document block":  {`{"model":"m","messages":[{"role":"user","content":[{"type":"document"}]}]}`, "messages.0.content.0"},
 		"image no source": {`{"model":"m","messages":[{"role":"user","content":[{"type":"image"}]}]}`, "messages.0.content.0.source"},
 		"system image":    {`{"model":"m","system":[{"type":"image"}],"messages":[]}`, "system"},
+		// A forced tool call the engine cannot make must not become plain generation.
+		"named server tool": {`{"model":"m","messages":[],"tools":[{"name":"t","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"w"}],
+		  "tool_choice":{"type":"tool","name":"w"}}`, "tools.1"},
+		"named unknown tool":  {`{"model":"m","messages":[],"tools":[{"name":"t","input_schema":{}}],"tool_choice":{"type":"tool","name":"x"}}`, "tool_choice.name"},
+		"any, all dropped":    {`{"model":"m","messages":[],"tools":[{"type":"web_search_20250305","name":"w"}],"tool_choice":{"type":"any"}}`, "tool_choice"},
+		"any, no tools":       {`{"model":"m","messages":[],"tool_choice":{"type":"any"}}`, "tool_choice"},
+		"unknown choice type": {`{"model":"m","messages":[],"tools":[{"name":"t","input_schema":{}}],"tool_choice":{"type":"some"}}`, "tool_choice.type"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ToChatRequest([]byte(tc.body))
@@ -172,14 +180,6 @@ func TestToChatRequest_ContextRoleIsNotATurn(t *testing.T) {
 }
 
 func TestTranslate_Edges(t *testing.T) {
-	// A named tool_choice whose tool was left out (a server tool) names
-	// nothing the engine has.
-	got, err := ToChatRequest([]byte(`{"model":"m","messages":[],
-	  "tools":[{"name":"t","input_schema":{"type":"object"}},{"type":"web_search_20250305","name":"w"}],
-	  "tool_choice":{"type":"tool","name":"w"}}`))
-	require.NoError(t, err)
-	assert.NotContains(t, string(got.Body), "tool_choice")
-
 	// More cached than prompt tokens never makes input negative; a reply
 	// with calls stops for tool_use even when the engine says stop; no id
 	// still gives an id.
