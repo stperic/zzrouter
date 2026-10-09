@@ -31,6 +31,29 @@ Install matching node/launcher bundles on every node. Verify each running
 version, protocol, health and a request pinned to that node. If cutover fails,
 restore a compatible cluster before resuming inference.
 
+Every release publishes `release.json` with `version`, `cluster_protocol` and
+`min_cluster_protocol`. The release pipeline runs the built linux/amd64 node's
+`version --json` command to read its protocol window, then includes the manifest
+in `checksums.txt`, authenticated by the same Sigstore bundle as the archives.
+The rehearsal script reads the freshly built node the same way. Protocol values
+remain owned by [protocol.go](../pkg/version/protocol.go).
+
+The serial rollout API fetches the exact target's manifest and verifies it through
+the update verifier before accepting a job. A missing manifest returns HTTP 409
+`release_manifest_missing`; verification failures follow the existing update
+failure path. It reads every peer's current protocol window, including peers
+outside the selected nodes. An unreadable window returns HTTP 503
+`node_unreachable` with `Retry-After`.
+
+A target protocol outside the running coordinator's accepted window, or a target
+minimum above an unselected peer's protocol, returns HTTP 409
+`protocol_cutover_required`. The detail names the node and protocol values.
+Refusal creates no job, changes no rollout history, and sends no update command.
+Even selecting every node cannot bypass this gate: workers update before the
+coordinator, so a protocol cutover requires the maintenance procedure above.
+A peer that becomes unreachable after acceptance can remain pending until it
+reconnects.
+
 Compatible signed updates can use the serial rollout API. It is not an atomic
 all-node cutover or a recovery mechanism for incompatible peers. See
 [installation and updates](install.md).

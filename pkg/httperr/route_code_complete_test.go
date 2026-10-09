@@ -8,12 +8,14 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
-		"CodeJobNotFound":        "job_not_found",
-		"CodeModelNodeAmbiguous": "model_node_ambiguous",
-		"CodeNodeUnreachable":    "node_unreachable",
-		"CodeClusterUnavailable": "cluster_unavailable",
-		"CodeUpstreamTimeout":    "upstream_timeout",
-		"CodeUpstreamCanceled":   "upstream_canceled",
-		"CodeUpstreamShape":      "upstream_shape",
+		"CodeReleaseManifestMissing":  "release_manifest_missing",
+		"CodeProtocolCutoverRequired": "protocol_cutover_required",
+		"CodeJobNotFound":             "job_not_found",
+		"CodeModelNodeAmbiguous":      "model_node_ambiguous",
+		"CodeNodeUnreachable":         "node_unreachable",
+		"CodeClusterUnavailable":      "cluster_unavailable",
+		"CodeUpstreamTimeout":         "upstream_timeout",
+		"CodeUpstreamCanceled":        "upstream_canceled",
+		"CodeUpstreamShape":           "upstream_shape",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }

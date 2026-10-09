@@ -8,6 +8,8 @@ package httperr
 type RouteErrorCode string
 
 const (
+	CodeReleaseManifestMissing  RouteErrorCode = "release_manifest_missing"
+	CodeProtocolCutoverRequired RouteErrorCode = "protocol_cutover_required"
 	// CodeJobNotFound means no local job exists and every peer confirmed absence.
 	CodeJobNotFound RouteErrorCode = "job_not_found"
 

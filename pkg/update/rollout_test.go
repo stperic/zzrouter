@@ -3,6 +3,9 @@ package update
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,11 +20,38 @@ import (
 )
 
 type rolloutFixture struct {
-	statuses    map[string]UpdateStatus
-	unavailable map[string]bool
-	calls       []string
-	statusHook  func()
-	applyError  error
+	manifest      *ReleaseManifest
+	manifestError error
+	windows       map[string]version.ProtocolWindow
+	windowErrors  map[string]error
+	windowCalls   []string
+	statuses      map[string]UpdateStatus
+	unavailable   map[string]bool
+	calls         []string
+	statusHook    func()
+	applyError    error
+}
+
+func (f *rolloutFixture) Manifest(_ context.Context, target string) (ReleaseManifest, error) {
+	if f.manifest != nil {
+		return *f.manifest, f.manifestError
+	}
+	return rolloutManifest(target), f.manifestError
+}
+
+func (f *rolloutFixture) Window(_ context.Context, node string) (version.ProtocolWindow, error) {
+	f.windowCalls = append(f.windowCalls, node)
+	if err := f.windowErrors[node]; err != nil {
+		return version.ProtocolWindow{}, err
+	}
+	if w, ok := f.windows[node]; ok {
+		return w, nil
+	}
+	return version.LocalProtocolWindow(), nil
+}
+
+func rolloutManifest(target string) ReleaseManifest {
+	return ReleaseManifest{Version: target, ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion}
 }
 
 func (f *rolloutFixture) Status(_ context.Context, n string) (UpdateStatus, error) {
@@ -60,7 +90,7 @@ func completeNode(f *rolloutFixture, n string) {
 }
 func TestRolloutWorkersFirstAndClockIndependent(t *testing.T) {
 	r, f, registry := newRolloutFixture(t)
-	record, err := r.Submit("2.0.0", []string{"coord", "z", "a"})
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"coord", "z", "a"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "z", "coord"}, []string{record.Nodes[0].Node, record.Nodes[1].Node, record.Nodes[2].Node})
 	for _, n := range []string{"a", "z", "coord"} {
@@ -81,9 +111,9 @@ func TestRolloutWorkersFirstAndClockIndependent(t *testing.T) {
 }
 func TestRolloutSleepingNodeRemainsPending(t *testing.T) {
 	r, f, _ := newRolloutFixture(t)
-	f.unavailable["worker"] = true
-	_, err := r.Submit("2.0.0", []string{"coord", "worker"})
+	_, err := r.Submit(context.Background(), "2.0.0", []string{"coord", "worker"}, nil)
 	require.NoError(t, err)
+	f.unavailable["worker"] = true
 	for i := 0; i < 5; i++ {
 		r.step(context.Background())
 	}
@@ -103,9 +133,9 @@ func TestRolloutPendingNeverStartedTimesOut(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(r.Stop)
 
-	f.unavailable["worker"] = true
-	_, err = r.Submit("2.0.0", []string{"worker"})
+	_, err = r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
 	require.NoError(t, err)
+	f.unavailable["worker"] = true
 	r.step(context.Background())
 	node := r.History()[0].Nodes[0]
 	require.Equal(t, "pending", node.State)
@@ -128,7 +158,7 @@ func TestRolloutPendingNeverStartedTimesOut(t *testing.T) {
 
 func TestRolloutStopsOnFirstFailure(t *testing.T) {
 	r, f, _ := newRolloutFixture(t)
-	record, err := r.Submit("2.0.0", []string{"coord", "worker"})
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"coord", "worker"}, nil)
 	require.NoError(t, err)
 	r.step(context.Background())
 	finished := time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -149,7 +179,7 @@ func TestRolloutReconcilesLostResponseAndPreDispatchRestart(t *testing.T) {
 	for _, lost := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before dispatch", true: "lost response"}[lost], func(t *testing.T) {
 			r, f, registry := newRolloutFixture(t)
-			record, err := r.Submit("2.0.0", []string{"worker"})
+			record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
 			require.NoError(t, err)
 			_, err = r.change(record.JobID, func(v *Rollout) {
 				now := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
@@ -182,7 +212,7 @@ func TestRolloutReconcilesLostResponseAndPreDispatchRestart(t *testing.T) {
 }
 func TestRolloutDurableCancellationDuringObservation(t *testing.T) {
 	r, f, registry := newRolloutFixture(t)
-	record, err := r.Submit("2.0.0", []string{"worker"})
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
 	require.NoError(t, err)
 	f.statusHook = func() { require.NoError(t, r.Cancel(record.JobID)); require.NoError(t, registry.Cancel(record.JobID)) }
 	r.step(context.Background())
@@ -194,7 +224,7 @@ func TestRolloutDurableCancellationDuringObservation(t *testing.T) {
 }
 func TestRolloutPersistenceFailureDoesNotDispatchOrTerminate(t *testing.T) {
 	r, f, registry := newRolloutFixture(t)
-	record, err := r.Submit("2.0.0", []string{"worker"})
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
 	require.NoError(t, err)
 	original := r.path
 	r.path = filepath.Join(original, "impossible.json")
@@ -212,7 +242,7 @@ func TestRolloutPersistenceFailureDoesNotDispatchOrTerminate(t *testing.T) {
 }
 func TestRolloutSnapshotsAndOldIDAreIsolated(t *testing.T) {
 	r, _, _ := newRolloutFixture(t)
-	record, err := r.Submit("2.0.0", []string{"worker"})
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
 	require.NoError(t, err)
 	now := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
 	_, err = r.change(record.JobID, func(v *Rollout) { v.Nodes[0].StartedAt = &now })
@@ -222,7 +252,7 @@ func TestRolloutSnapshotsAndOldIDAreIsolated(t *testing.T) {
 	snap[0].Nodes[0].State = "changed"
 	require.Equal(t, now, *r.History()[0].Nodes[0].StartedAt)
 	require.NoError(t, r.Cancel(record.JobID))
-	next, err := r.Submit("3.0.0", []string{"worker"})
+	next, err := r.Submit(context.Background(), "3.0.0", []string{"worker"}, nil)
 	require.NoError(t, err)
 	_, err = r.change(record.JobID, func(v *Rollout) { v.State = "failed" })
 	require.Error(t, err)
@@ -266,4 +296,94 @@ func TestHandoffVersionRedeliveryIsIdempotent(t *testing.T) {
 	second, err = h.ApplyVersion("2.0.0")
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+}
+
+func assertRolloutRefused(t *testing.T, r *Rollouts, f *rolloutFixture, err error, status int, code httperr.RouteErrorCode) {
+	t.Helper()
+	var wire httperr.Error
+	require.ErrorAs(t, err, &wire)
+	require.Equal(t, status, wire.Status)
+	require.Equal(t, string(code), wire.Code)
+	r.step(context.Background())
+	require.Empty(t, f.calls)
+	require.Empty(t, r.History())
+	_, statErr := os.Stat(r.path)
+	require.True(t, os.IsNotExist(statErr), "rollout refusal persisted a record")
+}
+
+func TestRolloutPreflightRefusesProtocolCutover(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	manifest := rolloutManifest("2.0.0")
+	manifest.ClusterProtocol = version.ClusterProtocolVersion + 1
+	f.manifest = &manifest
+	_, err := r.Submit(context.Background(), manifest.Version, []string{"worker", "coord"}, []string{"worker"})
+	assertRolloutRefused(t, r, f, err, http.StatusConflict, httperr.CodeProtocolCutoverRequired)
+	require.ErrorContains(t, err, "coord")
+	require.ErrorContains(t, err, fmt.Sprintf("protocol %d", manifest.ClusterProtocol))
+}
+
+func TestRolloutPreflightRefusesStrandedPeer(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	f.windows = map[string]version.ProtocolWindow{"older": {Min: version.ClusterProtocolVersion - 1, Max: version.ClusterProtocolVersion - 1}}
+	manifest := rolloutManifest("2.0.0")
+	manifest.MinClusterProtocol = version.ClusterProtocolVersion
+	f.manifest = &manifest
+	_, err := r.Submit(context.Background(), manifest.Version, []string{"worker", "coord"}, []string{"worker", "older"})
+	assertRolloutRefused(t, r, f, err, http.StatusConflict, httperr.CodeProtocolCutoverRequired)
+	require.ErrorContains(t, err, "older")
+	require.ErrorContains(t, err, fmt.Sprintf("minimum protocol %d", manifest.MinClusterProtocol))
+}
+
+func TestRolloutPreflightUnknownWindowIs503(t *testing.T) {
+	for _, node := range []string{"worker", "unselected"} {
+		t.Run(node, func(t *testing.T) {
+			r, f, _ := newRolloutFixture(t)
+			f.windowErrors = map[string]error{node: ErrNodeUnavailable}
+			_, err := r.Submit(context.Background(), "2.0.0", []string{"worker", "coord"}, []string{"worker", "unselected"})
+			assertRolloutRefused(t, r, f, err, http.StatusServiceUnavailable, httperr.CodeNodeUnreachable)
+			require.ErrorContains(t, err, node)
+		})
+	}
+}
+
+func TestRolloutPreflightAllowsCompatible(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"coord", "worker"}, []string{"worker", "unselected"})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"coord", "worker", "unselected"}, f.windowCalls)
+	require.Equal(t, "worker", record.Nodes[0].Node)
+	r.step(context.Background())
+	require.Equal(t, []string{"worker"}, f.calls)
+	var persisted []Rollout
+	require.NoError(t, readJSON(r.path, &persisted))
+	require.Len(t, persisted, 1)
+}
+
+func TestRolloutPreflightRefusalPreservesHistory(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
+	require.NoError(t, err)
+	require.NoError(t, r.Cancel(record.JobID))
+	before, err := os.ReadFile(r.path)
+	require.NoError(t, err)
+	manifest := rolloutManifest("3.0.0")
+	manifest.ClusterProtocol++
+	f.manifest = &manifest
+	_, err = r.Submit(context.Background(), manifest.Version, []string{"worker"}, nil)
+	require.Error(t, err)
+	after, err := os.ReadFile(r.path)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	require.Empty(t, f.calls)
+}
+
+// A target whose manifest cannot be fetched or verified starts nothing.
+func TestRolloutManifestFailureStartsNothing(t *testing.T) {
+	r, f, _ := newRolloutFixture(t)
+	f.manifestError = errors.New("release.json signature invalid")
+	_, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
+	require.ErrorIs(t, err, f.manifestError)
+	_, statErr := os.Stat(r.path)
+	require.True(t, os.IsNotExist(statErr), "nothing may be persisted")
+	require.Empty(t, f.calls)
 }

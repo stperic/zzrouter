@@ -373,42 +373,22 @@ func (c *Checker) GetAssetForPlatform(release *ReleaseInfo) *ReleaseAsset {
 
 // GetChecksumAsset returns the checksums file asset
 func (c *Checker) GetChecksumAsset(release *ReleaseInfo) *ReleaseAsset {
-	for _, asset := range release.Assets {
-		if asset.Name == "checksums.txt" {
-			return &asset
-		}
-	}
-	return nil
+	return release.asset("checksums.txt")
 }
 
 // GetBundleAsset returns the required offline verification bundle.
 func (c *Checker) GetBundleAsset(release *ReleaseInfo) *ReleaseAsset {
-	for _, asset := range release.Assets {
-		if asset.Name == "checksums.txt.sigstore.json" {
-			return &asset
-		}
-	}
-	return nil
+	return release.asset("checksums.txt.sigstore.json")
 }
 
 // GetSignatureAsset returns the signature file asset
 func (c *Checker) GetSignatureAsset(release *ReleaseInfo) *ReleaseAsset {
-	for _, asset := range release.Assets {
-		if asset.Name == "checksums.txt.sig" {
-			return &asset
-		}
-	}
-	return nil
+	return release.asset("checksums.txt.sig")
 }
 
 // GetCertificateAsset returns the certificate file asset
 func (c *Checker) GetCertificateAsset(release *ReleaseInfo) *ReleaseAsset {
-	for _, asset := range release.Assets {
-		if asset.Name == "checksums.txt.pem" {
-			return &asset
-		}
-	}
-	return nil
+	return release.asset("checksums.txt.pem")
 }
 
 // matchesVersionPin checks if a version matches a pin pattern

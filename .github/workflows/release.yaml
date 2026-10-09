@@ -217,13 +217,24 @@ jobs:
           echo "SBOMs generated:"
           ls -la artifacts/sbom.*.cyclonedx.json
 
+      - name: Generate release manifest
+        run: |
+          manifest_bin=$(mktemp -d)
+          tar -xzf artifacts/zzrouter-linux-amd64.tar.gz -C "$manifest_bin" zzrouter-node-linux-amd64
+          chmod +x "$manifest_bin/zzrouter-node-linux-amd64"
+          "$manifest_bin/zzrouter-node-linux-amd64" version --json | \
+            jq --arg version "${GITHUB_REF#refs/tags/v}" \
+              '{version: $version, cluster_protocol: .cluster_protocol, min_cluster_protocol: .min_cluster_protocol}' > artifacts/release.json
+          rm "$manifest_bin/zzrouter-node-linux-amd64"
+          rmdir "$manifest_bin"
+
       - name: Generate checksums
         run: |
           cd artifacts
           # Positive check: if no matching files exist, fail loudly instead of
           # publishing an empty/partial checksums.txt. `|| true` would mask a
           # missing-artifact bug until release consumers reported it.
-          sha256sum *.tar.gz *.zip sbom.*.cyclonedx.json > checksums.txt
+          sha256sum *.tar.gz *.zip sbom.*.cyclonedx.json release.json > checksums.txt
           test -s checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
@@ -291,6 +302,7 @@ jobs:
             artifacts/sbom.zzrouter-node.cyclonedx.json
             artifacts/sbom.zzrouter-node.cyclonedx.json.sig
             artifacts/sbom.zzrouter-node.cyclonedx.json.pem
+            artifacts/release.json
             artifacts/checksums.txt
             artifacts/checksums.txt.sigstore.json
             artifacts/checksums.txt.sig

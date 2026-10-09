@@ -5922,7 +5922,13 @@ paths:
         With a body, queues one durable job for the exact GitHub release version.
         Nodes defaults to this coordinator; ["all"] snapshots known cluster membership.
         Workers update serially before the coordinator. First failure skips remaining
-        targets. A sleeping node stays pending until reconnect. Cancel through
+        targets. Before acceptance, verifies release.json against the signed checksums
+        and reads every peer's protocol window. Missing manifests return 409
+        release_manifest_missing. A target outside the running coordinator's window,
+        or a minimum that strands an unselected peer, returns 409
+        protocol_cutover_required. An unreadable peer window returns 503
+        node_unreachable with Retry-After. Refusal persists nothing and sends no
+        update commands. A node sleeping after acceptance stays pending until reconnect. Cancel through
         DELETE /jobs/{id}; already accepted node work may finish. Each node downloads
         and verifies the signed release itself, then confirms health or rolls back.
         Only versions and node names are accepted, never binaries or URLs.
@@ -5994,7 +6000,9 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '409':
-          description: Another rollout is active, or no local update is pending for body-less apply.
+          description: |
+            Another rollout is active, no local update is pending for body-less apply,
+            or preflight refused with release_manifest_missing or protocol_cutover_required.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -6004,7 +6012,13 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Update control not initialized. Explicit updates work with enabled=false.
+          description: |
+            Update control not initialized, or a selected or unselected peer's protocol
+            window could not be read (node_unreachable). Explicit updates work with enabled=false.
+          headers:
+            Retry-After:
+              description: Seconds before retrying a node_unreachable preflight refusal.
+              schema: { type: integer, minimum: 1 }
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

@@ -41,6 +41,14 @@ func NewDownloader(tempDir string) *Downloader {
 	}
 }
 
+// in returns a copy of d that downloads into dir, keeping its client and host policy.
+func (d *Downloader) in(dir string) *Downloader {
+	c := *d
+	c.tempDir = dir
+	c.callback = nil
+	return &c
+}
+
 // SetProgressCallback sets the callback for download progress updates
 func (d *Downloader) SetProgressCallback(callback ProgressCallback) {
 	d.callback = callback
