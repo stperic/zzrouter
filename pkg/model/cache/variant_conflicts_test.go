@@ -197,8 +197,9 @@ func TestVariantConflict_RefreshInvalidationOverlap(t *testing.T) {
 	<-entered
 	c.Invalidate()
 	close(release)
-	require.Error(t, <-done, "refresh started before invalidation must not publish")
-	assert.False(t, c.valid)
+	require.NoError(t, <-done, "refresh must publish the generation after invalidation")
+	assert.True(t, c.valid)
+	assert.False(t, c.HasModel("fast"))
 	require.NoError(t, c.CheckModelAdmission(t.Context(), "fast"))
 }
 
