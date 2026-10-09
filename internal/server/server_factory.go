@@ -106,6 +106,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		httpStreamingClient: connMgr.GetStreamingClient(),
 		connManager:         connMgr, // Store reference for metrics
 		listenerReady:       make(chan struct{}),
+		idempotency:         newIdempotencyStore(),
 	}
 	s.shutdownCtx, s.shutdownCancel = context.WithCancel(context.Background())
 	s.node = NewNodeIdentity(cfg)

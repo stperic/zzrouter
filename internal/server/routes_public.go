@@ -97,7 +97,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.Models.RegisterPublicRoutes(router)
 
 	// Runs: List, launch, stop, load, preview, restart, metrics, config, ports, batch
-	s.controllers.Runs.RegisterPublicRoutes(router)
+	s.controllers.Runs.RegisterPublicRoutes(router, s.idempotent)
 
 	// Params: Schema, get/set/delete parameters, ignore
 	s.controllers.Params.RegisterPublicRoutes(router)
@@ -112,7 +112,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.System.RegisterPublicRoutes(router)
 
 	// Deployments: List, deploy, stop
-	s.controllers.Deployments.RegisterPublicRoutes(router)
+	s.controllers.Deployments.RegisterPublicRoutes(router, s.idempotent)
 
 	// Registries: agent-friendly pre-pull discovery (e.g., GGUF variants in a HF repo).
 	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }, func() *pkgConfig.AppsConfig { return s.appsConfig }).RegisterPublicRoutes(router)
@@ -136,7 +136,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			s.model.Pricing,
 			s.config.Coordinator.Routing.GetRoutePrefix(),
 		)
-		s.controllers.ModelGroups.RegisterPublicRoutes(router)
+		s.controllers.ModelGroups.RegisterPublicRoutes(router, s.idempotent)
 	}
 
 	// Provider Status: Provider-level health/cooldown and rate limit status
@@ -178,7 +178,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// update.enabled: true.
 	updateController := NewUpdateController(func() *update.Scheduler { return s.updateScheduler })
 	updateController.server = s
-	updateController.RegisterRoutes(router)
+	updateController.RegisterRoutes(router, s.idempotent)
 
 	// Pricing: token-cost pricing data lookup.
 	// Routes are registered even when the store is nil so disabled-feature
@@ -206,7 +206,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 
 		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc)
 		providersController.publishCatalog = s.publishCatalog
-		providersController.RegisterPublicRoutes(router)
+		providersController.RegisterPublicRoutes(router, s.idempotent)
 	}
 
 	// Inference Logs: Query and stream inference request logs

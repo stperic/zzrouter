@@ -34,7 +34,7 @@ func mountModelGroupsWithLogStore(t *testing.T, yaml string) (*gin.Engine, *infe
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")
-	ctrl.RegisterPublicRoutes(api)
+	ctrl.RegisterPublicRoutes(api, (&Server{idempotency: newIdempotencyStore()}).idempotent)
 	return r, logStore
 }
 

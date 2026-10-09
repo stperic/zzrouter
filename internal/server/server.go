@@ -149,6 +149,9 @@ type Server struct {
 	// MCP stdio bridge serialization
 	mcpGateway *MCPGateway
 
+	// idempotency is shared by every route that honours Idempotency-Key; the key scopes by method and path.
+	idempotency *idempotencyStore
+
 	// fsnotify-driven cache invalidator. Closes the disk-state-vs-cache
 	// drift class of bug; nil when the models root doesn't exist yet
 	// (pre-deploy state) or fsnotify init failed.

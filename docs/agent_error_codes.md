@@ -2,6 +2,7 @@
 
 Stable `code` values an LLM agent will encounter when driving zzRouter.
 Codes are wire-stable: branch on them, do not parse `message`.
+MCP application/tool errors carry these codes in `structuredContent.code`.
 
 Two error envelopes are in play:
 
@@ -155,7 +156,47 @@ peers means the local registry is the complete lookup.
 | `protocol_cutover_required` | 409 | The target protocol is outside the coordinator's accepted window, or its minimum would strand an unselected peer. No rollout was accepted. | Follow [the protocol cutover procedure](protocol_versioning.md); current protocol values live in `pkg/version/protocol.go`. |
 | `node_unreachable` | 503 | A selected or unselected peer's current protocol window could not be read. No rollout was accepted. | Restore connectivity, honor `Retry-After`, and retry. |
 
+## MCP tools
+
+Application/tool failures carry `isError: true`, a human line in
+`content[0].text`, and an RFC 9457 Problem Details object in `structuredContent`.
+REST Problems keep all their fields, including `request_id`, `node` and
+per-key `errors[]`. Non-problem REST error bodies use the status slug from
+`utils.NewProblemDetails` (`bad_gateway` for 502), with a bounded excerpt as
+`detail`. MCP-specific codes are declared in
+`internal/server/mcpserver/errors.go`.
+
+| `structuredContent.code` | Status | Meaning | Recovery |
+|---|---|---|---|
+| `mcp_invalid_input` | 400 | Handler validation or route-catalog refusal before dispatch. | Fix the named input; use `zz_api_search` for eligible routes. |
+| `mcp_response_too_large` | 502 | REST response exceeded the tool's 1 MiB cap. | Narrow the query or reduce the result limit. |
+| `mcp_streaming_refused` | 400 | Route requires streaming and has no admitted snapshot form. | Use a snapshot endpoint. |
+| `mcp_response_decode_failed` | 502 | REST response could not be decoded or lacked the expected result shape. | Inspect the REST endpoint and provider logs. |
+| `mcp_request_interrupted` | 499 | Tool request or job wait was cancelled or exceeded its deadline. | Check job state before retrying a mutation; reuse its idempotency key where supported. |
+| `mcp_internal_error` | 500 | Request metadata, input encoding, route catalog or embedded OpenAPI search is unavailable or failed. | Retry through the public MCP endpoint; investigate persistent failures. |
+| `mcp_upstream_error` | Original HTTP status | Non-problem REST error used a nonstandard status without a known status slug. | Read `status` and the bounded `detail` excerpt. |
+
+SDK argument-schema and protocol failures keep the SDK's own error behavior;
+this middleware leaves errors outside the typed tool-error contract untouched.
+A FAILED job returned by `zz_job` is a successful state snapshot, with the
+job's failure in `error`, rather than an MCP tool error. Polling wait limits
+also return successful snapshots.
+
 ## Idempotency notes
+
+These codes apply to keyed management and inference requests, using each surface's error envelope.
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `idempotency_key_conflict` | 422 | The same key names a different request body. | Send the original body or choose a new key. |
+| `idempotency_wait_timeout` | 504 | The original request is still in flight after the duplicate's wait limit. | Retry the same key and body shortly. |
+| `idempotency_store_full` | 503 | All store slots are occupied by in-flight requests. | Honor `Retry-After` and retry the same key and body. |
+
+Replay storage retains up to 4,096 entries and 32 MiB of response bodies.
+Completed entries expire 24 hours after completion and are swept every five
+minutes. Capacity eviction removes the oldest completed response first, never
+an in-flight request. Replies larger than 1 MiB are served in full and forgotten,
+so a later repeat runs again; duplicates already waiting must retry.
 
 - `POST /zzrouter/v1/runs` with `auto_deploy:true` is singleflight-deduped
   per `(provider, model, file)` : a retry while a deploy is in progress

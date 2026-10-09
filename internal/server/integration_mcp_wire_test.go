@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -85,6 +86,29 @@ func TestMCPWireResultTypes(t *testing.T) {
 			if tc.toolError {
 				require.Equal(t, true, result["isError"])
 			}
+		})
+	}
+}
+
+func TestToolErrorOverWire(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	for _, version := range []string{"2026-07-28", "2025-06-18"} {
+		t.Run(version, func(t *testing.T) {
+			r := mcpWireRequest(t, "tools/call", version, map[string]any{"name": "zz_job", "arguments": map[string]any{"job_id": "missing"}})
+			r.Header.Set("X-Request-ID", "mcp-error-wire")
+			body := mcpWireResponse(t, s, r, http.StatusOK)
+			require.NotContains(t, body, "error")
+			result := body["result"].(map[string]any)
+			require.Equal(t, true, result["isError"])
+			problem := result["structuredContent"].(map[string]any)
+			require.EqualValues(t, http.StatusNotFound, problem["status"])
+			require.Equal(t, string(httperr.CodeJobNotFound), problem["code"])
+			require.Equal(t, "mcp-error-wire.1", problem["request_id"])
+			require.NotEmpty(t, problem["type"])
+			require.Equal(t, "Not Found", problem["title"])
+			text := result["content"].([]any)[0].(map[string]any)
+			require.Equal(t, "text", text["type"])
+			require.Contains(t, text["text"], "HTTP 404 "+string(httperr.CodeJobNotFound)+":")
 		})
 	}
 }
