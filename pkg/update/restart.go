@@ -93,14 +93,31 @@ func (r *supervisorRestarter) canRestart() error {
 // a node nothing supervises trades a bad version for no version.
 func CanRestart() error { return newSupervisorRestarter().canRestart() }
 
-// restartExit is process-global on purpose: "this process is about to
+// exitSignal is a one-shot "exit so the supervisor restarts us", with the reason that raised it.
+type exitSignal struct {
+	ch     chan struct{}
+	once   sync.Once
+	reason atomic.Value
+}
+
+func newExitSignal() *exitSignal { return &exitSignal{ch: make(chan struct{})} }
+
+func (e *exitSignal) request(reason string) {
+	e.once.Do(func() {
+		e.reason.Store(reason)
+		close(e.ch)
+	})
+}
+
+func (e *exitSignal) requestedReason() string {
+	reason, _ := e.reason.Load().(string)
+	return reason
+}
+
+// processExit is process-global on purpose: "this process is about to
 // exit" is not a per-scheduler fact, and the serve loop that acts on it
 // has no handle to whatever raised it.
-var (
-	restartExit     = make(chan struct{})
-	restartExitOnce sync.Once
-	restartReason   atomic.Value
-)
+var processExit = newExitSignal()
 
 // RestartRequested is closed once the process needs to exit so its
 // supervisor starts it again: after an update installs, and after an
@@ -109,23 +126,15 @@ var (
 // failure status — the exit that every supported supervisor's restart
 // policy keys on. Which binary comes back is decided by what is on disk
 // at that point, not by this signal.
-func RestartRequested() <-chan struct{} { return restartExit }
+func RestartRequested() <-chan struct{} { return processExit.ch }
 
 // RestartReason describes why the exit was requested, for the operator
 // reading the log line that precedes it.
-func RestartReason() string {
-	reason, _ := restartReason.Load().(string)
-	return reason
-}
+func RestartReason() string { return processExit.requestedReason() }
 
 // RequestExit asks the process to shut down and be restarted. Safe to
 // call more than once; the first reason is the one reported, since it
 // is the one that started the shutdown.
-func RequestExit(reason string) {
-	restartExitOnce.Do(func() {
-		restartReason.Store(reason)
-		close(restartExit)
-	})
-}
+func RequestExit(reason string) { processExit.request(reason) }
 
 func requestRestartExit() { RequestExit("an update was installed") }

@@ -102,22 +102,23 @@ func TestNewSupervisorRestarter_UsesThisProcess(t *testing.T) {
 	assert.NotNil(t, r.request)
 }
 
-// TestRequestRestartExit_IsIdempotent closes the process-global restart
-// channel. Nothing else in this package selects on it, and two applies
-// racing to request the same exit must not panic on a double close.
-func TestRequestRestartExit_IsIdempotent(t *testing.T) {
+// Two applies racing to request the same exit must not panic on a double close, and the first
+// reason is the one reported. A fresh signal keeps the test repeatable under -count.
+func TestExitSignal_IsIdempotent(t *testing.T) {
+	e := newExitSignal()
 	select {
-	case <-RestartRequested():
+	case <-e.ch:
 		t.Fatal("restart must not already be requested")
 	default:
 	}
 
-	requestRestartExit()
-	requestRestartExit()
+	e.request("first")
+	e.request("second")
 
 	select {
-	case <-RestartRequested():
+	case <-e.ch:
 	default:
-		t.Fatal("requestRestartExit must close the channel")
+		t.Fatal("request must close the channel")
 	}
+	assert.Equal(t, "first", e.requestedReason())
 }
