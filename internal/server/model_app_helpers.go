@@ -182,28 +182,23 @@ func (s *Server) findCapableProvider(modelName string) (string, string, error) {
 	return provider, canonical, nil
 }
 
+func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
+	return inst.Acquire(req.Context(), hints)
+}
+
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
-	// Concurrency gating: acquire a slot before proxying
-	if err := inst.AcquireConcurrency(req.Context()); err != nil {
+	lease, err := s.openInstance(req, inst)
+	if err != nil {
 		if errors.Is(err, instance.ErrAtCapacity) {
 			failBeforeBackend(w, req, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
 				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
 			return
 		}
-		// Context cancelled (client disconnect)
 		slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
 		return
 	}
-	defer inst.ReleaseConcurrency()
-
-	// Record activity for local instances, applying any per-request hints
-	// parsed at the handler edge (see CtxKeyRequestHints).
-	if getInstanceBackendNode(inst) == constants.Localhost {
-		ov, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-		if err := s.providers.appMgr.Instances().UpdateActivity(inst.ID, ov); err != nil && !quiet {
-			utils.LogErrorf("Warning: Failed to record activity for instance %s: %v", inst.ID, err)
-		}
-	}
+	defer lease.Release()
 
 	// Build instance URL (handles local and remote instances)
 	backendNode := getInstanceBackendNode(inst)

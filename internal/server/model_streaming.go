@@ -26,7 +26,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -329,24 +328,15 @@ func getInstanceBackendNode(inst *instance.Instance) string {
 // stream through streamer. Only called from HandleLocalModel after the
 // SSE preamble, which only an in-band streamer opens.
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
-	// Concurrency gating: acquire a slot before streaming.
-	if err := inst.AcquireConcurrency(req.Context()); err != nil {
+	lease, err := s.openInstance(req, inst)
+	if err != nil {
 		if errors.Is(err, instance.ErrAtCapacity) {
 			streamer.StreamError(w, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
 				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
 		}
-		// Context cancelled = client disconnected, nothing to write.
 		return
 	}
-	defer inst.ReleaseConcurrency()
-
-	// Only update activity for local instances, applying any per-request
-	// keep_alive override parsed at the handler edge (see
-	// CtxKeyRequestHints).
-	if getInstanceBackendNode(inst) == constants.Localhost {
-		ov, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-		_ = s.providers.appMgr.Instances().UpdateActivity(inst.ID, ov)
-	}
+	defer lease.Release()
 
 	body, answerAs := s.instanceRequest(req, inst)
 	rec, _ := req.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
