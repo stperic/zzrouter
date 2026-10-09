@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -451,7 +450,6 @@ func (p *Proxy) tryOnce(
 	outcome.attempt.StatusCode = resp.StatusCode
 	if pfallback.IsRetriable(resp.StatusCode, nil) {
 		p.trackRateLimitHeaders(resp, dep)
-		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		outcome.attempt.Duration, outcome.disposition = time.Since(start), attemptRetry
 		return outcome

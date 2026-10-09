@@ -292,3 +292,41 @@ func TestGroupClientGoneDuringBackoffStopsChain(t *testing.T) {
 	assert.Empty(t, w.Body.String())
 	assert.Zero(t, inst.GetActiveRequests())
 }
+
+type countingReader struct {
+	r    io.Reader
+	read *atomic.Int64
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read.Add(int64(n))
+	return n, err
+}
+
+// A retriable error body is read only up to the normalizer's bound, however large it is.
+func TestErrorBodyDrainBounded(t *testing.T) {
+	const huge = 8 << 20
+	deps := newFakeDeps()
+	var read atomic.Int64
+	deps.endpoints["far"] = "http://far.test"
+	deps.forward["http://far.test/v1/chat/completions"] = func() (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(countingReader{r: io.LimitReader(zeroReader{}, huge), read: &read})}, nil
+	}
+	c, _ := buildGinCtx(t, `{"model":"group"}`)
+	resolved := leaseGroup([]pfallback.Candidate{{Name: "far", App: "far", Model: "m", MaxRetries: 1}})
+
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+
+	attempts := int64(deps.forwardCalls.Load())
+	require.Positive(t, attempts)
+	assert.LessOrEqual(t, read.Load(), attempts*(64<<10+1), "each attempt reads at most the bounded prefix")
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
