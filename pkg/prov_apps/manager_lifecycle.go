@@ -199,6 +199,9 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req LaunchRequest,
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
 	inst.Endpoint = endpoint
+	if svcCfg.Runtime != nil {
+		inst.FailureClassifier = &svcCfg.Runtime.FailurePatterns
+	}
 	inst.StopUnconfirmed.Store(req.installSmoke) // Smoke retains ownership until strict process drain.
 	inst.Config = instance.Config{
 		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
@@ -350,7 +353,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req LaunchR
 			}
 			return
 		case err != nil:
-			inst.MarkRefused(err)
+			inst.MarkFailedError(err)
 			m.emitEvent(Event{
 				Type: EventInstanceFailed, Provider: inst.Provider,
 				Instance: inst.ID, Model: inst.Model,
@@ -534,7 +537,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	result, err := m.launcher.Launch(m.shutdownCtx, inst, cmd, args, envVars, logWriter, executionEnvironment)
 	if err != nil {
 		logFile.Close()
-		inst.MarkFailed(err.Error())
+		inst.MarkFailedError(err)
 		m.emitEvent(Event{
 			Type: EventInstanceFailed, Provider: inst.Provider,
 			Instance: inst.ID, Model: inst.Model,
@@ -640,7 +643,7 @@ func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.
 			// The log says the process started. For engines that listen
 			// before loading weights, only the serve check knows whether
 			// that means anything yet.
-			ready, detail := m.awaitServes(inst, probe.Serve, timer.C)
+			ready, detail := m.awaitServes(inst, probe.Serve, timer.C, rw.Signal)
 			if !ready {
 				m.failNotReady(inst, probe.Timeout)
 				return
@@ -659,14 +662,7 @@ func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.
 				})
 			}
 		} else if sig.Failed {
-			slog.Warn("readiness probe failure matched", "instance", inst.ID, "pattern", sig.Pattern)
-			inst.MarkFailed(fmt.Sprintf("readiness probe failure: %s", sig.Pattern))
-			m.emitEvent(Event{
-				Type: EventInstanceFailed, Provider: inst.Provider,
-				Instance: inst.ID, Model: inst.Model,
-				Message: fmt.Sprintf("Readiness failure (log: %s)", sig.Pattern),
-				Cause:   obsruns.FailureReadiness, Time: utils.Now(),
-			})
+			m.failReadiness(inst, sig)
 		}
 	case <-timer.C:
 		// Readiness owns the startup window, so it is also what ends it.
@@ -677,6 +673,21 @@ func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.
 	case <-inst.Context().Done():
 		// Instance stopped
 	}
+}
+
+func (m *ProviderAppManager) failReadiness(inst *instance.Instance, sig health.ReadinessSignal) {
+	slog.Warn("readiness probe failure matched", "instance", inst.ID, "pattern", sig.Pattern)
+	if sig.Cause != nil {
+		inst.MarkFailedError(sig.Cause)
+	} else {
+		inst.MarkFailed(fmt.Sprintf("readiness probe failure: %s", sig.Pattern))
+	}
+	m.emitEvent(Event{
+		Type: EventInstanceFailed, Provider: inst.Provider,
+		Instance: inst.ID, Model: inst.Model,
+		Message: fmt.Sprintf("Readiness failure (log: %s)", sig.Pattern),
+		Cause:   obsruns.FailureReadiness, Time: utils.Now(),
+	})
 }
 
 // failNotReady closes the startup window on an instance that never came
@@ -702,7 +713,7 @@ func (m *ProviderAppManager) failNotReady(inst *instance.Instance, timeout time.
 // the readiness deadline fires, or the instance goes away. A nil check
 // means the provider offers no proof beyond its log line, so the caller's
 // signal stands.
-func (m *ProviderAppManager) awaitServes(inst *instance.Instance, check *health.ServeCheck, deadline <-chan time.Time) (ready bool, detail string) {
+func (m *ProviderAppManager) awaitServes(inst *instance.Instance, check *health.ServeCheck, deadline <-chan time.Time, failures <-chan health.ReadinessSignal) (ready bool, detail string) {
 	if check == nil {
 		return true, ""
 	}
@@ -715,6 +726,11 @@ func (m *ProviderAppManager) awaitServes(inst *instance.Instance, check *health.
 			return true, fmt.Sprintf("served %s", check.Path)
 		}
 		select {
+		case sig := <-failures:
+			m.failReadiness(inst, sig)
+			return false, ""
+		case <-inst.LeftStarting():
+			return false, ""
 		case <-ticker.C:
 		case <-deadline:
 			slog.Warn("engine never served before readiness deadline",
@@ -999,7 +1015,7 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 
 	// Map readiness probe from config
 	if rp := rc.ReadinessProbe; rp != nil && (len(rp.LogPatterns.Success)+len(rp.LogPatterns.Failure) > 0 || rp.Serve != nil) {
-		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout)}
+		probe := &health.ReadinessProbe{Timeout: readinessTimeout(rp.Timeout), FailureClassifier: &svcCfg.Runtime.FailurePatterns}
 		for _, p := range rp.LogPatterns.Success {
 			probe.LogPatterns.Success = append(probe.LogPatterns.Success, health.PatternMatcher{
 				Pattern: p.Pattern,

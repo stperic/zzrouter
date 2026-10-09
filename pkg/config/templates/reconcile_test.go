@@ -598,3 +598,31 @@ func TestReconcileRefreshesShippedPinsWithoutChangingOperatorTuning(t *testing.T
 	require.NoError(t, err)
 	assert.Empty(t, changed, "second pass must be idempotent")
 }
+
+func TestReconcileManagedSpineAddsFailurePatterns(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, InstallDefaults(dir))
+	for _, rel := range []string{"on-demand/llamacpp/config.yaml", "on-demand/vllm/config.yaml", "on-demand/mlx/config.yaml", "external/ollama/config.yaml"} {
+		file := filepath.Join(dir, filepath.FromSlash(rel))
+		raw, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var doc map[string]any
+		require.NoError(t, yaml.Unmarshal(raw, &doc))
+		runtime := doc["runtime"].(map[string]any)
+		expected := runtime["failure_patterns"]
+		delete(runtime, "failure_patterns")
+		stale, err := yaml.Marshal(doc)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(file, stale, 0600))
+		changed, err := ReconcileManagedSpine(dir)
+		require.NoError(t, err)
+		require.Contains(t, changed, rel)
+		repaired, err := os.ReadFile(file)
+		require.NoError(t, err)
+		require.NoError(t, yaml.Unmarshal(repaired, &doc))
+		assert.Equal(t, expected, doc["runtime"].(map[string]any)["failure_patterns"])
+	}
+	changed, err := ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	assert.Empty(t, changed)
+}

@@ -6,12 +6,15 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // ReadinessProbe defines how to determine if a process is ready.
 type ReadinessProbe struct {
-	LogPatterns LogPatterns   `yaml:"logPatterns" json:"log_patterns"`
-	Timeout     time.Duration `yaml:"timeout" json:"timeout"`
+	FailureClassifier *httperr.Classifier `yaml:"-" json:"-"`
+	LogPatterns       LogPatterns         `yaml:"logPatterns" json:"log_patterns"`
+	Timeout           time.Duration       `yaml:"timeout" json:"timeout"`
 
 	// Serve, when set, is the authority on readiness: log patterns say the
 	// process started, this says it can serve. Engines that open their

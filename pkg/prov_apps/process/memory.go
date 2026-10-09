@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -56,8 +57,16 @@ func (e *MemoryFitError) Error() string {
 	case e.AttributionReason != "":
 		msg += "; holders unknown: " + e.AttributionReason
 	}
-	return msg + "; release memory or reduce the configured budget"
+	return msg
 }
+
+// Unwrap gives admission the same typed cause as an engine allocation failure.
+func (e *MemoryFitError) Unwrap() error {
+	return &httperr.EngineFailure{Class: httperr.FailureMemory, Message: e.Error()}
+}
+
+// maxMemoryDevices bounds device selection before any observation or allocation.
+const maxMemoryDevices = 64
 
 // CheckMemoryBudget compares a resolved fraction-of-total budget on each selected GPU.
 func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
@@ -71,7 +80,7 @@ func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[s
 	count := 1
 	if value := parameters[budget.DeviceCountParameter]; value != "" {
 		count, err = strconv.Atoi(value)
-		if err != nil || count < 1 || count > 64 {
+		if err != nil || count < 1 || count > maxMemoryDevices {
 			return fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
 		}
 	}

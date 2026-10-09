@@ -101,9 +101,10 @@ func loadInternal(message string) *loadFailure {
 // so it lands on the same 502 the engine failures use rather than being
 // dropped.
 func classifyLoadFailure(err error) *loadFailure {
-	var memory *process.MemoryFitError
-	if errors.As(err, &memory) {
-		return (&loadFailure{status: http.StatusConflict, errType: "invalid_request_error", code: string(httperr.CodeOutOfRange), message: memory.Error()}).withCause(err)
+	var classified *httperr.EngineFailure
+	if errors.As(err, &classified) {
+		failure := (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError()
+		return (&loadFailure{status: failure.Status, errType: failure.Type, code: failure.Code, message: failure.Message}).withCause(err)
 	}
 	if errors.Is(err, process.ErrMemoryBudgetInvalid) {
 		return newLoadFailure(http.StatusBadRequest, err.Error()).withCause(err)

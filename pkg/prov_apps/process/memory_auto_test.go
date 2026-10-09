@@ -56,3 +56,22 @@ func TestResolveAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 	require.NoError(t, ResolveAutoMemory(budget, numeric, nil, nil))
 	assert.Equal(t, "0.9", numeric["budget"])
 }
+
+func TestAutoMemoryBesideOutsideHolder(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "gpu-memory-utilization"}
+	held := int64(25 * 1024)
+	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97249, FreeMiB: 71649, Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: &held}}}}
+	parameters := map[string]string{budget.Parameter: "auto"}
+	require.NoError(t, ResolveAutoMemory(budget, parameters, nil, devices))
+	assert.Equal(t, "0.6867", parameters[budget.Parameter])
+	require.NoError(t, CheckMemoryBudget(budget, parameters, nil, devices, nil))
+	for _, fraction := range []string{"0.95", "0.99"} {
+		parameters[budget.Parameter] = fraction
+		var refusal *MemoryFitError
+		require.ErrorAs(t, CheckMemoryBudget(budget, parameters, nil, devices, nil), &refusal)
+		assert.Equal(t, int64(71649), refusal.FreeMiB)
+		require.Len(t, refusal.Holders, 1)
+		assert.Equal(t, "other_or_untracked", refusal.Holders[0].Ownership)
+		assert.Contains(t, refusal.Error(), "a process zzRouter does not manage (pid 42, 25600 MiB)")
+	}
+}

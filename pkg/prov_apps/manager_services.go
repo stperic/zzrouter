@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -479,7 +480,11 @@ func (m *ProviderAppManager) superviseService(ctx context.Context, name, binary 
 				exitCode = new(exit.ExitCode())
 			}
 		}
-		failure, reason := instance.CaptureFailure(logPath, reason, exitCode, "")
+		var classifier *httperr.Classifier
+		if cfg, err := m.serviceConfig(name); err == nil && cfg.Runtime != nil {
+			classifier = &cfg.Runtime.FailurePatterns
+		}
+		failure, reason := instance.CaptureFailure(logPath, reason, exitCode, "", classifier)
 		state.mu.Lock()
 		state.status.Running, state.status.PID, state.status.Backoff = false, 0, delay.String()
 		state.status.LastExit = &ProviderServiceExit{At: utils.NowUTC(), Reason: reason, Detail: failure}

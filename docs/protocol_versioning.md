@@ -7,7 +7,7 @@ Coordinators accept peers only within that minimum/maximum window. Workers
 advertise their version. Application semantic versions and cluster protocol
 versions are separate.
 
-Model features and typed provider install recipes require a compatible
+Engine failure declarations, model features and typed provider install recipes require a compatible
 provider configuration on every node. Upgrade incompatible peers
 in one maintenance window before rejoining them.
 

@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -55,6 +56,7 @@ type Topology interface {
 // ProviderConfig exposes the static provider metadata the Proxy needs
 // per deployment attempt.
 type ProviderConfig interface {
+	FailureClassifier(app string) *httperr.Classifier
 	// Backend resolves a provider (app) that has an endpoint of its own
 	// (cloud, external, service) to that endpoint and what of the
 	// caller's request travels there. On-demand providers return false.

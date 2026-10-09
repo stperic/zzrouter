@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -113,4 +114,8 @@ func (d *chainServerDeps) NewLoadExecutor() chain.LoadExecutor {
 
 func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response) {
 	d.s.trackProviderRateLimit(app, resp)
+}
+
+func (d *chainServerDeps) FailureClassifier(app string) *httperr.Classifier {
+	return d.s.failureClassifier(app)
 }

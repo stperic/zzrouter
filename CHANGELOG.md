@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Provider-declared engine failure classes now cover startup, process exit and
+  inference. Memory exhaustion returns 409 `out_of_range`; input, template and
+  tool-calling refusals return their specific 400 codes. Generic server errors
+  keep their status. Existing installs receive the declarations through reconcile.
+- Cluster protocol and minimum advance from 1 to 2: older provider schemas
+  reject `runtime.failure_patterns`. Upgrade all peers together following
+  [the protocol maintenance procedure](docs/protocol_versioning.md).
+
 - Removed `model_defaults`, the release-managed per-model-family tier. No
   release shipped data in it after 0.1.0. Per-family settings belong in the
   operator's `models` tier, which accepts glob patterns. `/resolved` no longer

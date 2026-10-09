@@ -100,6 +100,25 @@ defaults:
     context_param: "max-model-len"
 
 runtime:
+  failure_patterns:
+    - pattern: "CUDA out of memory"
+      isRegex: false
+      class: memory
+    - pattern: "No available memory for the cache blocks"
+      isRegex: false
+      class: memory
+    - pattern: "is not a multimodal model"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "tool choice requires --enable-auto-tool-choice"
+      isRegex: false
+      class: tool_calling_not_enabled
+    - pattern: "(?i)chat template rejected the request: (.*)"
+      isRegex: true
+      class: chat_template_rejected
+    - pattern: "jinja2.exceptions.TemplateError:"
+      isRegex: false
+      class: chat_template_rejected
   port_range: [8000, 8009]
   base_port: 8000
   keep_alive: 30m
@@ -135,7 +154,5 @@ runtime:
             isRegex: false
         failure:
           - pattern: "RuntimeError:"
-            isRegex: false
-          - pattern: "out of memory"
             isRegex: false
       timeout: 300s  # vLLM first-run compiles CUDA graphs (~2-3 min)

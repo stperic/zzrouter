@@ -11,19 +11,21 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // AppRuntimeConfig represents runtime configuration in v2.0 format
 type AppRuntimeConfig struct {
-	Endpoint    string            `yaml:"endpoint"`
-	PortRange   []int             `yaml:"port_range,omitempty"` // Port range for on-demand apps [start, end]
-	BasePort    int               `yaml:"base_port,omitempty"`  // Starting port for dynamic allocation
-	KeepAlive   string            `yaml:"keep_alive,omitempty"` // Duration to keep model loaded (e.g., "5m", "1h", "0" to disable, "-1" for indefinite)
-	Execution   ExecutionConfig   `yaml:"execution"`
-	HealthCheck HealthcheckConfig `yaml:"health_check,omitempty"`
-	Resources   *ResourcesConfig  `yaml:"resources,omitempty"`
-	Container   *ContainerConfig  `yaml:"container,omitempty"`
-	API         *APIConfig        `yaml:"api,omitempty"` // For external API apps
+	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
+	Endpoint        string             `yaml:"endpoint"`
+	PortRange       []int              `yaml:"port_range,omitempty"` // Port range for on-demand apps [start, end]
+	BasePort        int                `yaml:"base_port,omitempty"`  // Starting port for dynamic allocation
+	KeepAlive       string             `yaml:"keep_alive,omitempty"` // Duration to keep model loaded (e.g., "5m", "1h", "0" to disable, "-1" for indefinite)
+	Execution       ExecutionConfig    `yaml:"execution"`
+	HealthCheck     HealthcheckConfig  `yaml:"health_check,omitempty"`
+	Resources       *ResourcesConfig   `yaml:"resources,omitempty"`
+	Container       *ContainerConfig   `yaml:"container,omitempty"`
+	API             *APIConfig         `yaml:"api,omitempty"` // For external API apps
 
 	// Concurrency gating for on-demand instances.
 	// 0 or omitted = unlimited (backward compatible). Only meaningful for on-demand providers;

@@ -80,7 +80,7 @@ func (*ollamaResponder) GatewayTimeout(c *gin.Context, _ string) {
 	OllamaError(c, http.StatusGatewayTimeout, "upstream timeout")
 }
 
-// WriteError renders the flat shape; Type and Code have no field in it.
+// WriteError renders the flat shape with an optional machine code.
 func (*ollamaResponder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
 	writeJSONBody(w, e.Status, "application/json", flatError(e))
 }
@@ -91,6 +91,9 @@ func flatError(e httperr.Error) map[string]any {
 		body[k] = v
 	}
 	body["error"] = e.Message
+	if e.Code != "" {
+		body["code"] = e.Code
+	}
 	return body
 }
 

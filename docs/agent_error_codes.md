@@ -11,7 +11,11 @@ Two error envelopes are in play:
   (`application/problem+json`) with a `code` field at the top level.
   Agents read `code`.
 
-Both surfaces preserve upstream status codes across cluster hops.
+The serving node classifies declared engine failures before forwarding them.
+Relays preserve that status and code across cluster hops. Classifications apply
+at startup, process exit and inference; an unmatched upstream error keeps its
+status. The class table is `pkg/httperr/engine_failure.go`, and provider phrasings
+live only in `runtime.failure_patterns`.
 
 ## OpenAI surface (`/v1/*`)
 
@@ -24,9 +28,15 @@ Both surfaces preserve upstream status codes across cluster hops.
 | `rate_limit_exceeded` | 429 | Per-key RPM/TPM cap or budget reservation rejected the request. | Honor `Retry-After` if present; back off. Check `/zzrouter/v1/keys/:id/usage` for current budget. |
 | `invalid_request_error` (type) | 400 | Generic validation failure. `param` names the offending field. | Read `param`; fix and retry. |
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Retry with exponential backoff; if persistent, the model's `runtime.status` may be wrong : call `/zzrouter/v1/runs` to redeploy. |
+| `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details identify managed runs and outside holders by PID. |
+| `unsupported_input` | 400 | The `unsupported_input` class: the engine refused an input kind. | Use a model supporting that input, or remove it from the request. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `responses_compat` translate supported Responses requests to Chat Completions. |
-| `tool_calling_not_enabled` | 400 | The model's engine was launched without the switches its tool calling needs (reported for vLLM). | Retrying will not help. Set the provider's tool-calling launch parameters for the model (vLLM: `enable-auto-tool-choice: "true"` and the `tool-call-parser` for its family) with PATCH `/zzrouter/v1/providers/{name}/parameters`, then restart the run. |
-| `chat_template_rejected` | 400 | The model's chat template refused to render the request (for example a system message after the first turn). Reported for llama.cpp; vLLM and MLX return the template's own message. | Retrying will not help. An admin installs a template that accepts the request: follow `chat_templates` in `GET /zzrouter/v1`. |
+| `tool_calling_not_enabled` | 400 | The `tool_calling_not_enabled` class: required launch switches are missing. | Set the provider's tool-calling parameters through PATCH `/zzrouter/v1/providers/{name}/parameters`, then restart the run. |
+| `chat_template_rejected` | 400 | The `chat_template_rejected` class: the model's template refused to render this request. | Install and select a template that accepts it; follow `chat_templates` in `GET /zzrouter/v1`. |
+
+The same engine codes reach the management surface when a launch fails.
+Anthropic errors carry the code in `error.code`; Ollama errors retain their flat
+`error` string with an optional top-level `code`.
 
 ## Management surface (`/zzrouter/v1/*`)
 

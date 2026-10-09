@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,6 +46,21 @@ var (
 
 func compile(c *compiledSchema, url string, raw []byte) (*jsonschema.Schema, error) {
 	c.once.Do(func() {
+		var document map[string]any
+		if err := json.Unmarshal(raw, &document); err != nil {
+			c.err = err
+			return
+		}
+		if defs, ok := document["$defs"].(map[string]any); ok {
+			if pattern, ok := defs["failurePattern"].(map[string]any); ok {
+				properties := pattern["properties"].(map[string]any)
+				properties["class"].(map[string]any)["enum"] = httperr.FailureClasses()
+			}
+		}
+		raw, c.err = json.Marshal(document)
+		if c.err != nil {
+			return
+		}
 		comp := jsonschema.NewCompiler()
 		comp.Draft = jsonschema.Draft2020
 		if err := comp.AddResource(url, strings.NewReader(string(raw))); err != nil {

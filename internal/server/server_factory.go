@@ -126,7 +126,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.inference.normalizers = normalizers
 	s.proxy = NewProxyClient(s.httpStreamingClient, s.coordWorkerMTLSClient, normalizers, s.trackProviderRateLimit,
 		func() bool { return s.config.Coordinator.Routing.InjectUsageMetadata },
-		s.GetNodename)
+		s.GetNodename, s.failureClassifier)
 	s.inference.affinity = newResponseAffinity(0)
 
 	// Initialize the model subsystem. Pricing wires up front; Cache and

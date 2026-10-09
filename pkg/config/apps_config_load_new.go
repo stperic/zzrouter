@@ -378,6 +378,7 @@ func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 		MaxConcurrentRequests: rt.MaxConcurrentRequests,
 		QueueTimeout:          rt.QueueTimeout,
 		Execution:             rt.Execution,
+		FailurePatterns:       rt.FailurePatterns,
 		HealthCheck:           rt.HealthCheck,
 		Container:             rt.Container,
 		Resources:             rt.Resources,
@@ -386,11 +387,12 @@ func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 
 func externalRuntimeToLegacy(rt ExternalRuntime) *AppRuntimeConfig {
 	return &AppRuntimeConfig{
-		Endpoint:    rt.Endpoint,
-		ModelURLFmt: rt.ModelURL,
-		KeepAlive:   rt.KeepAlive,
-		API:         rt.API,
-		HealthCheck: rt.HealthCheck,
+		Endpoint:        rt.Endpoint,
+		ModelURLFmt:     rt.ModelURL,
+		KeepAlive:       rt.KeepAlive,
+		API:             rt.API,
+		FailurePatterns: rt.FailurePatterns,
+		HealthCheck:     rt.HealthCheck,
 		// External daemons in the legacy shape always carried execution.type=api
 		// as a cosmetic "it talks to an HTTP API" tag. Re-emit it so any legacy
 		// reader that asserts non-nil Execution keeps working.
