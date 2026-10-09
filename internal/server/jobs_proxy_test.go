@@ -15,6 +15,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -542,4 +545,144 @@ func TestProxyCancel_CarriesJobIDLikeTheLocalPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, true, body["accepted"])
 	assert.Equal(t, "dl_z", body["job_id"], "proxied cancel must carry job_id like the local path")
+}
+
+func newJobLookupController(t *testing.T, peers map[string]string) *JobsController {
+	t.Helper()
+	c := newProxyController("", false)
+	c.registry = newTestJobsRegistry(t)
+	c.proxy.ListPeers = func() []string {
+		names := make([]string, 0, len(peers))
+		for name := range peers {
+			names = append(names, name)
+		}
+		return names
+	}
+	c.proxy.ResolveEndpoint = func(node string) *mesh.Endpoint {
+		upstream, ok := peers[node]
+		if !ok {
+			return nil
+		}
+		return &mesh.Endpoint{NodeName: node, ClusterURL: upstream, URL: upstream}
+	}
+	return c
+}
+
+func checkJobLookupRoutes(t *testing.T, c *JobsController, id string,
+	check func(*testing.T, string, *httptest.ResponseRecorder)) {
+	t.Helper()
+	router := gin.New()
+	c.RegisterPublicRoutes(router.Group("/zzrouter/v1"))
+	for _, tc := range []struct {
+		name   string
+		method string
+		suffix string
+	}{
+		{"get", http.MethodGet, ""},
+		{"stream", http.MethodGet, "/stream"},
+		{"cancel", http.MethodDelete, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(tc.method, "/zzrouter/v1/jobs/"+id+tc.suffix, nil)
+			router.ServeHTTP(rec, req)
+			check(t, tc.method, rec)
+		})
+	}
+}
+
+func TestJobLookupComplete404(t *testing.T) {
+	miss := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	peer1 := httptest.NewServer(miss)
+	t.Cleanup(peer1.Close)
+	peer2 := httptest.NewServer(miss)
+	t.Cleanup(peer2.Close)
+	c := newJobLookupController(t, map[string]string{"w1": peer1.URL, "w2": peer2.URL})
+	checkJobLookupRoutes(t, c, "missing", func(t *testing.T, _ string, rec *httptest.ResponseRecorder) {
+		require.Equal(t, http.StatusNotFound, rec.Code)
+		assert.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+		var problem utils.ProblemDetails
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+		assert.Equal(t, string(httperr.CodeJobNotFound), problem.Code)
+		assert.Equal(t, http.StatusNotFound, problem.Status)
+		assert.Contains(t, problem.Detail, "jobs live in memory on the node that runs them")
+		assert.Contains(t, problem.Detail, "evicted "+jobs.DefaultCompletedTTL.String()+" after completion")
+		assert.Empty(t, rec.Header().Get("Retry-After"))
+	})
+}
+
+type jobProbeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f jobProbeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestJobLookupProbeIncomplete503(t *testing.T) {
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(peer.Close)
+	c := newJobLookupController(t, map[string]string{"w1": peer.URL, "w2": "http://unreachable"})
+	c.proxy.StreamClient = func() (*http.Client, error) {
+		return &http.Client{Transport: jobProbeRoundTripper(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host == "unreachable" {
+				return nil, fmt.Errorf("peer transport unavailable")
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		})}, nil
+	}
+	checkJobLookupRoutes(t, c, "missing", func(t *testing.T, _ string, rec *httptest.ResponseRecorder) {
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		assert.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+		var problem utils.ProblemDetails
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+		assert.Equal(t, string(httperr.CodeNodeUnreachable), problem.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, problem.Status)
+		assert.Contains(t, problem.Detail, "a peer that may own the job did not answer")
+		assert.NotEmpty(t, rec.Header().Get("Retry-After"))
+	})
+}
+
+func TestJobLookupFoundOnPeer(t *testing.T) {
+	registry := newTestJobsRegistry(t)
+	h, err := registry.Start(context.Background(), jobs.KindDownload, "", nil)
+	require.NoError(t, err)
+	h.Done()
+	worker := NewJobsController(registry, "w1", nil)
+	router := gin.New()
+	worker.RegisterInternalRoutes(router.Group("/zzrouter/v1/internal"))
+	peer1 := httptest.NewServer(router)
+	t.Cleanup(peer1.Close)
+	peer2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(peer2.Close)
+	c := newJobLookupController(t, map[string]string{"w1": peer1.URL, "w2": peer2.URL})
+	checkJobLookupRoutes(t, c, h.ID(), func(t *testing.T, method string, rec *httptest.ResponseRecorder) {
+		status := http.StatusOK
+		if method == http.MethodDelete {
+			status = http.StatusAccepted
+		}
+		require.Equal(t, status, rec.Code)
+		assert.Contains(t, rec.Body.String(), `"job_id":"`+h.ID()+`"`)
+		assert.Empty(t, rec.Header().Get("Retry-After"))
+	})
+}
+
+// A peer the health monitor marks down is not asked, so it cannot turn every job miss into a 503.
+func TestListJobsPeers_SkipsDownPeers(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	coord, err := mesh.NewCluster(&mesh.Config{}, "http://127.0.0.1:9090", nil, nil, nil)
+	require.NoError(t, err)
+	s.cluster.coordinator = coord
+	for _, ep := range []*mesh.Endpoint{
+		{Name: "up", NodeName: "up", URL: "http://10.9.9.1:9090", Status: mesh.StatusUp},
+		{Name: "unknown", NodeName: "unknown", URL: "http://10.9.9.2:9090", Status: mesh.StatusUnknown},
+		{Name: "down", NodeName: "down", URL: "http://10.9.9.3:9090", Status: mesh.StatusDown},
+	} {
+		require.NoError(t, coord.RegisterEndpoint(ep))
+	}
+	assert.ElementsMatch(t, []string{"up", "unknown"}, s.listJobsPeers())
 }

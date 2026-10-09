@@ -8,6 +8,7 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeJobNotFound":        "job_not_found",
 		"CodeModelNodeAmbiguous": "model_node_ambiguous",
 		"CodeNodeUnreachable":    "node_unreachable",
 		"CodeClusterUnavailable": "cluster_unavailable",

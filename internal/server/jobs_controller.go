@@ -46,11 +46,10 @@ const (
 	// Streaming read after headers is bounded by the request context,
 	// which cancels when the downstream client disconnects.
 	proxyResponseHeaderTimeout = 30 * time.Second
-	// peerProbeTimeout caps per-peer GetJob probes during owner
-	// fan-out. Short by design — agents poll, so a slow peer that
-	// would take seconds is better treated as a miss; the next poll
-	// will retry.
+	// peerProbeTimeout bounds fan-out so callers can retry an incomplete lookup.
 	peerProbeTimeout = 2 * time.Second
+	// jobLookupRetryAfterSeconds spaces retries when a possible owner did not answer.
+	jobLookupRetryAfterSeconds = 5
 )
 
 // JobsProxy bundles the coord-side dependencies needed to forward
@@ -67,7 +66,7 @@ type JobsProxy struct {
 	// Returns nil endpoint on miss so the handler can 404.
 	ResolveEndpoint func(node string) *mesh.Endpoint
 	// ListPeers returns the names of every non-local cluster peer the
-	// coord can reach. Used by GetJob/StreamJob fan-out when no ?node=
+	// coord knows. Used by job lookup fan-out when no ?node=
 	// is provided so agents don't have to remember which worker owns a
 	// job. Optional — nil disables fan-out and the handler 404s on
 	// local-miss instead.
@@ -167,7 +166,7 @@ func respondJobPage(ctx *gin.Context, events []jobs.Event, total int, hasMore bo
 // GetJob returns the latest event snapshot for a single job. When
 // ?node=<remote>, forwards the JSON reply from the owning worker. When
 // no node hint is provided and the job isn't local, fans out across
-// known peers (first non-404 wins) so agents don't have to track owners.
+// known peers (first 200 wins) so agents don't have to track owners.
 func (c *JobsController) GetJob(ctx *gin.Context) {
 	if c.handleRemote(ctx, c.proxyJSON) {
 		return
@@ -183,14 +182,12 @@ func (c *JobsController) GetJob(ctx *gin.Context) {
 		ctx.Abort()
 		return
 	}
-	if owner := c.findJobOwner(ctx, id); owner != "" {
+	if owner, ok := c.locatePeerJob(ctx, id); ok {
 		// Same re-wrap as the ?node= path: a caller who let the
 		// coordinator find the owner must not get a different shape
 		// than one who named it.
 		c.proxyOwnedJob(ctx, owner, id, false)
-		return
 	}
-	NotFound(ctx, "job not found")
 }
 
 // StreamJob opens an SSE stream for the job's events. Honors
@@ -212,11 +209,9 @@ func (c *JobsController) StreamJob(ctx *gin.Context) {
 		ctx.Abort()
 		return
 	}
-	if owner := c.findJobOwner(ctx, id); owner != "" {
+	if owner, ok := c.locatePeerJob(ctx, id); ok {
 		c.proxyStream(ctx, owner)
-		return
 	}
-	NotFound(ctx, "job not found")
 }
 
 // CancelJob fires cancel on the local registry and returns 202. Cancel
@@ -235,16 +230,11 @@ func (c *JobsController) CancelJob(ctx *gin.Context) {
 		}
 	}
 	if err := c.registry.Cancel(id); errors.Is(err, jobs.ErrNotFound) {
-		// Jobs are owned by the node performing the work, so a coordinator
-		// asked to cancel a worker's job finds nothing locally. GetJob and
-		// StreamJob already resolve the owner; without the same fan-out here
-		// the caller got a 404 that clients read as "already gone" and
-		// reported as a successful cancel while the work continued.
-		if owner := c.findJobOwner(ctx, id); owner != "" {
+		// A coordinator asked to cancel a worker's job finds nothing locally;
+		// a bare 404 here read as "already gone" while the work continued.
+		if owner, ok := c.locatePeerJob(ctx, id); ok {
 			c.proxyCancel(ctx, owner)
-			return
 		}
-		NotFound(ctx, "job not found")
 		return
 	}
 	ctx.JSON(http.StatusAccepted, gin.H{
@@ -318,77 +308,92 @@ func (c *JobsController) handleRemote(ctx *gin.Context, fn func(*gin.Context, st
 	return true
 }
 
-// findJobOwner probes every known peer's /internal/jobs/:id in parallel
-// and returns the node name of the first 200 response. Returns "" when
-// no proxy/peers are wired or no peer claims the job. Bounded by
-// peerProbeTimeout per peer; peers are racing so the slowest is not on
-// the critical path. Used by GetJob/StreamJob fallback when the agent
-// didn't pass ?node=.
-func (c *JobsController) findJobOwner(ctx *gin.Context, id string) string {
+// locatePeerJob names the peer holding a job missing locally, or answers the miss itself and returns ok=false.
+func (c *JobsController) locatePeerJob(ctx *gin.Context, id string) (owner string, ok bool) {
+	owner, complete := c.findJobOwner(ctx, id)
+	if owner != "" {
+		return owner, true
+	}
+	if complete {
+		RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
+			fmt.Sprintf("job not found on this node or any reachable peer; jobs live in memory on the node that runs them and are evicted %s after completion", jobs.DefaultCompletedTTL),
+			ProblemOpts{Code: string(httperr.CodeJobNotFound)})
+	} else {
+		ctx.Header("Retry-After", strconv.Itoa(jobLookupRetryAfterSeconds))
+		RespondWithProblemOpts(ctx, http.StatusServiceUnavailable, "Service Unavailable",
+			"a peer that may own the job did not answer; retry after the indicated delay",
+			ProblemOpts{Code: string(httperr.CodeNodeUnreachable)})
+	}
+	ctx.Abort()
+	return "", false
+}
+
+// findJobOwner reports complete absence only when every known peer answers 404.
+func (c *JobsController) findJobOwner(ctx *gin.Context, id string) (owner string, complete bool) {
 	if c.proxy == nil || c.proxy.ListPeers == nil || c.proxy.ResolveEndpoint == nil {
-		return ""
+		return "", true
 	}
 	peers := c.proxy.ListPeers()
 	if len(peers) == 0 {
-		return ""
+		return "", true
 	}
 	probeCtx, cancel := context.WithTimeout(ctx.Request.Context(), peerProbeTimeout)
 	defer cancel()
 
-	type result struct{ node string }
+	type result struct {
+		node     string
+		complete bool
+	}
 	hits := make(chan result, len(peers))
 	for _, peer := range peers {
 		go func(node string) {
+			var r result
+			defer func() { hits <- r }()
 			ep := c.proxy.ResolveEndpoint(node)
 			if ep == nil {
-				hits <- result{}
 				return
 			}
 			clusterURL := ep.ClusterURL
 			if clusterURL == "" {
 				derived, err := mesh.DeriveClusterURL(ep.URL, c.proxy.ClusterPort)
 				if err != nil {
-					hits <- result{}
 					return
 				}
 				clusterURL = derived
 			}
 			client, err := c.proxy.StreamClient()
 			if err != nil {
-				hits <- result{}
 				return
 			}
 			req, err := http.NewRequestWithContext(probeCtx, http.MethodGet,
 				clusterURL+"/zzrouter/v1/internal/jobs/"+url.PathEscape(id), nil)
 			if err != nil {
-				hits <- result{}
 				return
 			}
 			resp, err := client.Do(req)
 			if err != nil {
-				hits <- result{}
 				return
 			}
 			defer resp.Body.Close()
-			_, _ = io.Copy(io.Discard, resp.Body)
 			if resp.StatusCode == http.StatusOK {
-				hits <- result{node: node}
-				return
+				r.node = node
 			}
-			hits <- result{}
+			r.complete = resp.StatusCode == http.StatusNotFound
 		}(peer)
 	}
+	complete = true
 	for range peers {
 		select {
 		case r := <-hits:
 			if r.node != "" {
-				return r.node
+				return r.node, false
 			}
+			complete = complete && r.complete
 		case <-probeCtx.Done():
-			return ""
+			return "", false
 		}
 	}
-	return ""
+	return "", complete
 }
 
 // resolveUpstream derives the cluster-port base URL for the named

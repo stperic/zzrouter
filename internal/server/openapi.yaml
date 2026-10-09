@@ -3143,11 +3143,8 @@ paths:
                     properties:
                       data: { $ref: '#/components/schemas/JobEvent' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '404':
-          description: No such job.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/JobNotFound' }
+        '503': { $ref: '#/components/responses/JobLookupIncomplete' }
     delete:
       tags: [Jobs]
       operationId: deleteJob
@@ -3169,11 +3166,8 @@ paths:
                   accepted: { type: boolean }
                   job_id:   { type: string }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '404':
-          description: No such job.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/JobNotFound' }
+        '503': { $ref: '#/components/responses/JobLookupIncomplete' }
 
   /zzrouter/v1/jobs/{id}/stream:
     parameters: [{ in: path, name: id, required: true, schema: { type: string } }]
@@ -3195,11 +3189,8 @@ paths:
             text/event-stream:
               schema: { type: string }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '404':
-          description: No such job.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/JobNotFound' }
+        '503': { $ref: '#/components/responses/JobLookupIncomplete' }
 
   /zzrouter/v1/providers/{name}/versions:
     parameters: [{ in: path, name: name, required: true, schema: { type: string } }]
@@ -9805,6 +9796,25 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     MgmtForbidden:
       description: Authenticated but insufficient permissions (e.g. non-owner PATCH on a shared team).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    JobNotFound:
+      description: >
+        Automatic lookup found no local job and every peer confirmed absence;
+        code is job_not_found. Jobs live in memory on the node that runs them
+        and are evicted after completion; detail gives the retention duration.
+        An explicit node hint can instead return node_unknown or the peer's 404.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    JobLookupIncomplete:
+      description: >
+        Automatic lookup could not establish absence because a peer that may
+        own the job did not answer definitively; code is node_unreachable.
+        Retry after the indicated delay.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
