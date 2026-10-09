@@ -110,7 +110,7 @@ capabilities:
   priority: 3
   # Ollama exposes /v1/chat/completions, /v1/completions, /v1/embeddings
   # (and its native /api/* surface). No /v1/responses today.
-  wire_endpoints: [chat_completions, completions, embeddings, responses_compat]
+  wire_endpoints: [chat_completions, completions, embeddings]
 discovery:
   # LOAD-BEARING: this block is the only discovery.detection rule the
   # runtime still reads. zzRouter's generic provider-discovery engine was

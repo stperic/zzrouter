@@ -108,7 +108,7 @@ func NewOllamaConnectProvider(name, endpoint, token string) *ExternalProvider {
 			API:      api,
 		},
 		Capabilities: &AppCapabilities{
-			WireEndpoints: []string{"chat_completions", "completions", "embeddings", "responses_compat"},
+			WireEndpoints: []string{"chat_completions", "completions", "embeddings"},
 		},
 	}
 }

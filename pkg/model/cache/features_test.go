@@ -103,3 +103,22 @@ func TestLookupTargetKeepsReplicaIdentity(t *testing.T) {
 	assert.Empty(t, c.indexByTarget)
 	c.mu.Unlock()
 }
+
+func TestWireEndpointsDeriveFromWorkerDeclaration(t *testing.T) {
+	for _, declared := range []any{[]string{"chat_completions", "responses_compat"}, []any{"chat_completions", "responses_compat"}} {
+		details := map[string]any{"wire_endpoints": declared}
+		c := New(Config{})
+		c.populateModelCacheFromItems([]map[string]any{{"name": "worker-model", "node": "worker", "details": details}})
+		got, ok := c.LookupByName("worker-model")
+		require.True(t, ok)
+		eps, known := got.WireEndpoints()
+		require.True(t, known)
+		assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, eps, "ingest derives an older worker's declared list")
+		assert.Equal(t, eps, got.Details["wire_endpoints"], "catalog advertises the same endpoints routing reads")
+		assert.Equal(t, declared, details["wire_endpoints"], "source evidence is not mutated")
+	}
+	for _, details := range []map[string]any{nil, {"wire_endpoints": []any{"chat_completions", 3}}} {
+		_, known := (&CachedModel{Details: details}).WireEndpoints()
+		assert.False(t, known)
+	}
+}

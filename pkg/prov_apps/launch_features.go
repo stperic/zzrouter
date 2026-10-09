@@ -193,10 +193,7 @@ func executionDigest(svc config.ServiceConfig, runtimeKey, command string) strin
 }
 
 func wireEndpoints(svc config.ServiceConfig) []string {
-	if svc.Capabilities == nil {
-		return nil
-	}
-	return slices.Clone(svc.Capabilities.WireEndpoints)
+	return svc.Capabilities.EffectiveWireEndpoints()
 }
 
 // LaunchParameters is the node's effective launch configuration before argv

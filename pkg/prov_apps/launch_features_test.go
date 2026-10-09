@@ -49,6 +49,7 @@ func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	req := LaunchRequest{Provider: "vllm", Model: "variant"}
 	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
+	assert.Equal(t, []string{"chat_completions", "embeddings", "messages_compat", "responses_compat"}, before.resolved.WireEndpoints)
 	assert.NotContains(t, before.launch.Args, "--mmproj")
 	inst := instance.NewInstance("feature-test", "vllm", "variant", 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant", Port: 8100}
@@ -138,7 +139,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	assert.Equal(t, python, after.launch.Command, "use the selected runtime venv")
 	assert.NotContains(t, after.launch.Args, "--chat-template")
 	assert.Equal(t, after.launch.ModelPath, after.launch.WireModel)
-	assert.Equal(t, []string{"chat_completions", "responses", "messages"}, after.resolved.WireEndpoints)
+	assert.Equal(t, []string{"chat_completions", "messages", "responses"}, after.resolved.WireEndpoints)
 	inst := instance.NewInstance("runtime-test", "vllm", "variant", 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant", Port: 8100, Parameters: req.Parameters}
 	inst.Endpoint = "chat"

@@ -44,7 +44,7 @@ func TestCatalogFeatureFilesAndServingSnapshot(t *testing.T) {
 
 func TestCatalogRuntimeFeatureStates(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
-	svc.Features = map[string]config.Feature{"vision": {Runtime: "test-runtime", When: "vision_config", Execution: &config.ExecutionConfig{Type: "python", Command: "python3"}, WireEndpoints: []string{"messages"}}}
+	svc.Features = map[string]config.Feature{"vision": {Runtime: "test-runtime", When: "vision_config", Execution: &config.ExecutionConfig{Type: "python", Command: "python3"}, WireEndpoints: []string{"chat_completions"}}}
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	m.ReloadConfig(cfg)
@@ -60,13 +60,17 @@ func TestCatalogRuntimeFeatureStates(t *testing.T) {
 	assert.Equal(t, "available", state())
 	fake.installed.Store(true)
 	assert.Equal(t, "present", state())
-	assert.Equal(t, []string{"messages"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
+	assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
 	inst := instance.NewInstance("old-runtime", "vllm", "variant", 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant"}
-	inst.SetResolved(instance.Resolved{WireEndpoints: []string{"messages_compat"}})
+	inst.SetResolved(instance.Resolved{WireEndpoints: config.EffectiveWireEndpoints(svc.Features["vision"].WireEndpoints)})
 	inst.MarkRunning()
 	require.NoError(t, m.instances.Register(inst))
+	assert.Equal(t, "present", state(), "a run launched on the feature runtime keeps it present")
+	assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
+	inst.SetResolved(instance.Resolved{WireEndpoints: []string{"messages"}})
 	assert.Equal(t, "available", state())
+	assert.Equal(t, []string{"messages"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
 	require.NoError(t, m.instances.Remove(inst.ID))
 }
 
@@ -78,6 +82,7 @@ func TestCatalogBuiltinAndCloudEvidence(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, m.Stop(context.Background())) })
 	assert.Equal(t, "unknown", m.ModelFeatureDetails("cloud", "llava-vision", nil)["features"].(map[string]string)["vision"])
+	assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, m.ModelFeatureDetails("cloud", "llava-vision", nil)["wire_endpoints"])
 	for _, tc := range []struct {
 		details map[string]any
 		want    string

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Derive Messages and Responses translations for all providers declaring
+  Chat Completions without the corresponding native API. Shipped provider
+  configs now declare native endpoints only, and reconciliation carries that to
+  existing installs. An explicit `*_compat` entry still loads and means the same
+  thing. Catalogs and running snapshots report the same effective endpoints.
+
 - Removed `model_defaults`, the release-managed per-model-family tier. No
   release shipped data in it after 0.1.0. Per-family settings belong in the
   operator's `models` tier, which accepts glob patterns. `/resolved` no longer

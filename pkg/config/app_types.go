@@ -492,33 +492,7 @@ type AppCapabilities struct {
 	// auto-deploy path when /runs is invoked with a model that isn't yet
 	// in the cache; ignored if the source repo doesn't carry variants.
 	DefaultVariant string `yaml:"default_variant,omitempty"`
-	// WireEndpoints declares which compat HTTP routes the provider's
-	// process serves. Used by the router to gate /v1/* requests against
-	// backends that would otherwise 404 the upstream. Required field —
-	// config load fails for enabled providers that omit it. The accepted
-	// values are the keys of validWireEndpoints.
-	//
-	// "responses" means the provider's process serves /v1/responses
-	// natively on its own HTTP wire (vLLM, OpenAI cloud, OpenRouter
-	// responses-aware deployments). zzRouter passes through.
-	//
-	// "responses_compat" means the provider does NOT serve
-	// /v1/responses natively, but zzRouter provides client-facing
-	// compatibility via the Responses ↔ Chat Completions translation
-	// shim (responses_translator.go). Use this when you want
-	// /v1/responses traffic to land on a chat-completions-only
-	// backend. Mutually informative with "responses": a provider
-	// declaring both is a config error (zzRouter will not validate
-	// that, but the gate prefers native passthrough).
-	//
-	// "messages" means the provider serves the Anthropic Messages API
-	// (/v1/messages, /v1/messages/count_tokens) natively. zzRouter
-	// passes through.
-	//
-	// "messages_compat" means it does not, and zzRouter translates the
-	// Messages API to and from Chat Completions for it
-	// (pkg/protocol/anthropic), the way responses_compat does for
-	// /v1/responses.
+	// WireEndpoints declares the APIs the engine speaks natively; EffectiveWireEndpoints adds the shims.
 	WireEndpoints []string `yaml:"wire_endpoints"`
 }
 
@@ -551,19 +525,33 @@ func wireEndpointList() string {
 	return strings.Join(slices.Sorted(maps.Keys(validWireEndpoints)), ", ")
 }
 
-// SupportsWireEndpoint reports whether the named OpenAI-compat HTTP
-// route is served by the provider's process. Returns false on a nil
-// capabilities pointer so callers don't need a separate nil check.
-func (c *AppCapabilities) SupportsWireEndpoint(endpoint string) bool {
+// EffectiveWireEndpoints is the provider's declared endpoints plus every
+// translation shim compatShims allows for them, sorted.
+func (c *AppCapabilities) EffectiveWireEndpoints() []string {
 	if c == nil {
-		return false
+		return nil
 	}
-	for _, e := range c.WireEndpoints {
-		if e == endpoint {
-			return true
+	return EffectiveWireEndpoints(c.WireEndpoints)
+}
+
+// EffectiveWireEndpoints derives the shims for a declared endpoint list. It is
+// idempotent, so an already effective list comes back unchanged.
+func EffectiveWireEndpoints(declared []string) []string {
+	endpoints := slices.Clone(declared)
+	if slices.Contains(endpoints, "chat_completions") {
+		for shim, native := range compatShims {
+			if !slices.Contains(endpoints, native) && !slices.Contains(endpoints, shim) {
+				endpoints = append(endpoints, shim)
+			}
 		}
 	}
-	return false
+	slices.Sort(endpoints)
+	return slices.Compact(endpoints)
+}
+
+// SupportsWireEndpoint reports whether zzRouter can serve the endpoint for this provider.
+func (c *AppCapabilities) SupportsWireEndpoint(endpoint string) bool {
+	return slices.Contains(c.EffectiveWireEndpoints(), endpoint)
 }
 
 // ValidateWireEndpoints enforces presence + closed-enum membership at
@@ -580,14 +568,14 @@ func (c *AppCapabilities) ValidateWireEndpoints() error {
 		}
 	}
 	for _, shim := range slices.Sorted(maps.Keys(compatShims)) {
-		if !c.SupportsWireEndpoint(shim) {
+		if !slices.Contains(c.WireEndpoints, shim) {
 			continue
 		}
 		native := compatShims[shim]
-		if c.SupportsWireEndpoint(native) {
+		if slices.Contains(c.WireEndpoints, native) {
 			return fmt.Errorf("capabilities.wire_endpoints: '%s' (native) and '%s' (translation shim) are mutually exclusive", native, shim)
 		}
-		if !c.SupportsWireEndpoint("chat_completions") {
+		if !slices.Contains(c.WireEndpoints, "chat_completions") {
 			return fmt.Errorf("capabilities.wire_endpoints: '%s' requires 'chat_completions' (the shim translates to Chat Completions)", shim)
 		}
 	}

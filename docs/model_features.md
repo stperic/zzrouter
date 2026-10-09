@@ -86,10 +86,21 @@ providers that declare none keep the name-based guess.
 Inference uses the catalog cache's exact model-or-source/provider/node index,
 without scanning the full model list for each replica.
 
-`details.wire_endpoints` reports effective runtime endpoints or the existing
-running snapshot. An empty list explicitly declares none. Missing evidence falls
-back to the provider's static endpoints. Native and translated Messages/Responses
-routing uses this model/provider/node evidence.
+`capabilities.wire_endpoints` declares the APIs the provider speaks natively.
+For every provider kind, zzRouter derives `messages_compat` and
+`responses_compat` when `chat_completions` is present and the corresponding
+native endpoint (`messages` or `responses`) is absent, so declare native APIs
+only. A provider with native Messages keeps passthrough. There is no way to
+refuse a translation, because no shipped provider needs one. An explicit
+`*_compat` entry still loads and means the same thing; it requires
+`chat_completions` and cannot sit beside its native endpoint.
+
+`details.wire_endpoints` reports the effective runtime endpoints or the existing
+running snapshot, including derived shims. Snapshot and worker declarations use
+the same derivation as provider config. An empty list explicitly declares none.
+Missing evidence falls back to the provider's effective endpoints. Native and
+translated Messages/Responses routing uses this model/provider/node evidence;
+mixed replica groups prefer native endpoints before translation.
 
 Images are inspected structurally in Chat `image_url`, Responses `input_image`,
 Messages `image` including nested tool results, Ollama chat message `images` and

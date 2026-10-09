@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -822,7 +823,11 @@ func (mc *Cache) modelItems(items []map[string]any) []*CachedModel {
 		}
 		if details, ok := item["details"].(map[string]any); ok {
 			cm.Format = extractStringField(details, "format")
-			cm.Details = details
+			cm.Details = maps.Clone(details)
+			// A worker on an older release reports declared endpoints; derive the shims once, here.
+			if eps, known := cm.WireEndpoints(); known {
+				cm.Details["wire_endpoints"] = pkgConfig.EffectiveWireEndpoints(eps)
+			}
 		}
 		if ipAddr, ok := item["ip_address"].(string); ok && ipAddr != "" {
 			cm.Extra = make(map[string]any)

@@ -71,9 +71,8 @@ requirements:
     max: "3.14"
 capabilities:
   formats: [mlx]
-  # mlx_lm.server only exposes /v1/chat/completions + /v1/models.
-  # The Responses and Anthropic Messages APIs go through translation shims.
-  wire_endpoints: [chat_completions, responses_compat, messages_compat]
+  # mlx_lm.server exposes Chat; zzRouter derives Messages and Responses translations.
+  wire_endpoints: [chat_completions]
 
 defaults:
   parameters:
