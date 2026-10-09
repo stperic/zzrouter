@@ -11,6 +11,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
+	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 	"github.com/stperic/zzrouter/pkg/version"
 	"github.com/stretchr/testify/require"
 )
@@ -92,6 +93,39 @@ func TestRolloutSleepingNodeRemainsPending(t *testing.T) {
 	r.step(context.Background())
 	require.Equal(t, []string{"worker"}, f.calls)
 }
+func TestRolloutPendingNeverStartedTimesOut(t *testing.T) {
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "coord", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	f := &rolloutFixture{statuses: map[string]UpdateStatus{}, unavailable: map[string]bool{}}
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	r, err := NewRollouts(filepath.Join(t.TempDir(), "rollouts.json"), "coord", f, registry, fc)
+	require.NoError(t, err)
+	t.Cleanup(r.Stop)
+
+	f.unavailable["worker"] = true
+	_, err = r.Submit("2.0.0", []string{"worker"})
+	require.NoError(t, err)
+	r.step(context.Background())
+	node := r.History()[0].Nodes[0]
+	require.Equal(t, "pending", node.State)
+	require.Nil(t, node.StartedAt)
+	require.NotNil(t, node.WaitingSince)
+	require.Equal(t, fc.Now(), *node.WaitingSince)
+	var persisted []Rollout
+	require.NoError(t, readJSON(r.path, &persisted))
+	require.NotNil(t, persisted[0].Nodes[0].WaitingSince)
+	require.Equal(t, *node.WaitingSince, *persisted[0].Nodes[0].WaitingSince)
+
+	fc.Advance(rolloutApplyTimeout + time.Minute)
+	r.step(context.Background())
+	require.Empty(t, f.calls)
+	result := r.History()[0]
+	require.Equal(t, "failed", result.State)
+	require.Equal(t, "failed", result.Nodes[0].State)
+	require.Equal(t, "node was unreachable and never started the update", result.Nodes[0].Error)
+}
+
 func TestRolloutStopsOnFirstFailure(t *testing.T) {
 	r, f, _ := newRolloutFixture(t)
 	record, err := r.Submit("2.0.0", []string{"coord", "worker"})

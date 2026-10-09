@@ -32,6 +32,7 @@ type NodeUpdate struct {
 	Node                string     `json:"node"`
 	State               string     `json:"state"`
 	FromVersion         string     `json:"from_version,omitempty"`
+	WaitingSince        *time.Time `json:"waiting_since,omitempty"` // bounds a node that never starts
 	StartedAt           *time.Time `json:"started_at,omitempty"`
 	OperationID         string     `json:"operation_id,omitempty"`
 	PreviousOperationID string     `json:"previous_operation_id,omitempty"`
@@ -198,9 +199,11 @@ func (r *Rollouts) History() []Rollout {
 func cloneRollout(v Rollout) Rollout {
 	v.Nodes = slices.Clone(v.Nodes)
 	for i := range v.Nodes {
-		if v.Nodes[i].StartedAt != nil {
-			t := *v.Nodes[i].StartedAt
-			v.Nodes[i].StartedAt = &t
+		for _, p := range []**time.Time{&v.Nodes[i].WaitingSince, &v.Nodes[i].StartedAt} {
+			if *p != nil {
+				t := **p
+				*p = &t
+			}
 		}
 	}
 	return v
@@ -277,6 +280,15 @@ func (r *Rollouts) step(ctx context.Context) {
 
 func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h jobs.Handle) {
 	node := record.Nodes[i]
+	if node.WaitingSince == nil {
+		waiting := r.clock.Now()
+		changed, err := r.change(record.JobID, func(v *Rollout) { v.Nodes[i].WaitingSince = &waiting })
+		if err != nil {
+			h.Progress(0, "retrying rollout persistence: "+err.Error(), jobs.Bytes{})
+			return
+		}
+		node = changed.Nodes[i]
+	}
 	observation, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	status, err := r.backend.Status(observation, node.Node)
@@ -284,8 +296,16 @@ func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h job
 		return
 	}
 	if errors.Is(err, ErrNodeUnavailable) {
-		if node.StartedAt != nil && r.clock.Since(*node.StartedAt) > rolloutApplyTimeout {
-			r.fail(record.JobID, i, "node did not return healthy after update", h)
+		since := node.WaitingSince
+		if node.StartedAt != nil {
+			since = node.StartedAt
+		}
+		if r.clock.Since(*since) > rolloutApplyTimeout {
+			msg := "node did not return healthy after update"
+			if node.StartedAt == nil {
+				msg = "node was unreachable and never started the update"
+			}
+			r.fail(record.JobID, i, msg, h)
 		}
 		return
 	}
