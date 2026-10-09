@@ -23,7 +23,13 @@ var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 type MemoryHolder struct {
 	gpu.MemoryProcess
 	Run       string `json:"run,omitempty"`
+	Model     string `json:"model,omitempty"`
 	Ownership string `json:"ownership"`
+}
+
+// RunRef identifies the zzRouter run behind a process, by id and the model it serves.
+type RunRef struct {
+	ID, Model string
 }
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
@@ -47,7 +53,7 @@ func (e *MemoryFitError) Error() string {
 			size = fmt.Sprintf("%d MiB", *h.MemoryMiB)
 		}
 		if h.Run != "" {
-			held = append(held, fmt.Sprintf("zzRouter run %s (pid %d, %s)", h.Run, h.PID, size))
+			held = append(held, fmt.Sprintf("zzRouter run %s serving %s (pid %d, %s)", h.Run, h.Model, h.PID, size))
 		} else {
 			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
 		}
@@ -72,7 +78,7 @@ const maxMemoryDevices = 64
 // AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses. auto becomes the
 // model's need when it is known, which must fit beside the safety margin, else the free fraction left
 // after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
-func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]RunRef) error {
 	if budget.Kind != "fraction_total" {
 		return nil
 	}
@@ -125,12 +131,12 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 }
 
 // memoryFitError names every process holding the device, marking zzRouter's own runs.
-func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners map[int]string) *MemoryFitError {
+func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners map[int]RunRef) *MemoryFitError {
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
 	for _, process := range device.Processes {
 		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
-		if run := runOwning(process.PID, owners); run != "" {
-			holder.Run, holder.Ownership = run, "zzrouter"
+		if run, ok := runOwning(process.PID, owners); ok {
+			holder.Run, holder.Model, holder.Ownership = run.ID, run.Model, "zzrouter"
 		}
 		failure.Holders = append(failure.Holders, holder)
 	}
@@ -139,19 +145,19 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 
 // runOwning returns the run whose process is pid or one of its ancestors: engines hold the GPU from
 // child processes. An ancestry it cannot read is nobody's.
-func runOwning(pid int, owners map[int]string) string {
+func runOwning(pid int, owners map[int]RunRef) (RunRef, bool) {
 	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
-		if run := owners[pid]; run != "" {
-			return run
+		if run, ok := owners[pid]; ok {
+			return run, true
 		}
 		seen[pid] = true
 		parent, err := parentPID(int32(pid))
 		if err != nil {
-			return ""
+			return RunRef{}, false
 		}
 		pid = int(parent)
 	}
-	return ""
+	return RunRef{}, false
 }
 
 // parentPID reads a process's parent; tests replace it.

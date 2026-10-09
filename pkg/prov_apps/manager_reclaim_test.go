@@ -69,8 +69,8 @@ func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error) {
 	require.ErrorAs(t, err, &fit)
 	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB,
 		Holders: []process.MemoryHolder{
-			{MemoryProcess: f.device.Processes[0], Run: f.older.ID, Ownership: "zzrouter"},
-			{MemoryProcess: f.device.Processes[1], Run: f.newer.ID, Ownership: "zzrouter"},
+			{MemoryProcess: f.device.Processes[0], Run: f.older.ID, Model: f.older.Model, Ownership: "zzrouter"},
+			{MemoryProcess: f.device.Processes[1], Run: f.newer.ID, Model: f.newer.Model, Ownership: "zzrouter"},
 		}}, fit)
 }
 

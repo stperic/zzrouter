@@ -12,8 +12,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/layout"
 )
 
-// DefaultActivationOverheadMiB reserves 2 GiB per device for activations and CUDA graphs.
-const DefaultActivationOverheadMiB int64 = 2048
+// DefaultActivationOverheadMiB is the engine's in-budget memory beyond weights and KV (activations, CUDA graphs,
+// encoder profiling). Lab, vLLM on localai: gemma-4-E2B used 2.9 GiB (3 video items profiled), Qwen2.5-0.5B under 2.
+const DefaultActivationOverheadMiB int64 = 4096
 
 // Need is the model's weights, one context sequence's KV cache and per-device runtime overhead.
 type Need struct {

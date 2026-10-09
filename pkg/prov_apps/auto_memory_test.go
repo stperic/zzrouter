@@ -143,9 +143,9 @@ func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
 	for i, arg := range run.args {
 		if arg == "--memory-fraction" {
 			require.Less(t, i+1, len(run.args))
-			assert.Equal(t, "0.3661", run.args[i+1])
+			assert.Equal(t, "0.5914", run.args[i+1])
 		}
 	}
-	assert.Equal(t, "0.3661", inst.Resolved().Parameters["memory-fraction"])
+	assert.Equal(t, "0.5914", inst.Resolved().Parameters["memory-fraction"])
 	assert.Equal(t, "memory-fraction", inst.Resolved().AutoMemory)
 }

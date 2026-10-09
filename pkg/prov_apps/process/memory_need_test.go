@@ -44,8 +44,8 @@ func TestMemoryNeedDenseGQA(t *testing.T) {
 	dir, svc, params := needFixture(t, denseAttentionConfig())
 	need, ok := ModelMemoryNeed(dir, svc, params)
 	require.True(t, ok)
-	assert.Equal(t, Need{WeightsMiB: 1024, KVMiB: 256, OverheadMiB: 2048}, need)
-	assert.Equal(t, "0.3661", admitNeed(t, need, 10000, 9500))
+	assert.Equal(t, Need{WeightsMiB: 1024, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, need)
+	assert.Equal(t, "0.5914", admitNeed(t, need, 10000, 9500), "(1024+256+4096) x 1.1 of 10000 MiB")
 }
 
 func TestMemoryNeedHybridTextConfig(t *testing.T) {

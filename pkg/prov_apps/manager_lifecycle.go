@@ -550,10 +550,10 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.Memo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	owners := make(map[int]string)
+	owners := make(map[int]process.RunRef)
 	for _, run := range m.instances.List() {
 		if pid := run.GetProcessID(); pid > 0 {
-			owners[pid] = run.ID
+			owners[pid] = process.RunRef{ID: run.ID, Model: run.Model}
 		}
 	}
 	return process.AdmitMemoryBudget(budget, need, params, visible, devices, owners)

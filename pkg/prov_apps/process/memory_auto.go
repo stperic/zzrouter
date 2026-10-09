@@ -19,7 +19,7 @@ const (
 
 // autoFraction is the least free fraction of the selected GPUs after the safety margin, rounded down.
 // A GPU with no room beyond the margin is refused like any budget that cannot fit.
-func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owners map[int]string) (float64, error) {
+func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owners map[int]RunRef) (float64, error) {
 	if budget.AutoSafetyMarginMiB < 0 {
 		return 0, fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
 	}

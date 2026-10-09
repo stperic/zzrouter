@@ -83,10 +83,10 @@ func TestAutoMemoryWithoutHeadroomNamesTheHolder(t *testing.T) {
 	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97887, FreeMiB: 4000, Processes: []gpu.MemoryProcess{{PID: 7, MemoryMiB: &held}}}}
 	parameters := map[string]string{budget.Parameter: "auto"}
 	var refusal *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, map[int]string{7: "run-qwen"}), &refusal)
+	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, map[int]RunRef{7: {ID: "run-qwen", Model: "Qwen/Qwen3-8B"}}), &refusal)
 	assert.Equal(t, "auto", parameters[budget.Parameter])
 	assert.Equal(t, int64(4000), refusal.FreeMiB)
-	assert.Contains(t, refusal.Error(), "zzRouter run run-qwen (pid 7")
+	assert.Contains(t, refusal.Error(), "zzRouter run run-qwen serving Qwen/Qwen3-8B (pid 7")
 	var cause *httperr.EngineFailure
 	require.ErrorAs(t, refusal, &cause)
 	assert.Equal(t, httperr.FailureMemory, cause.Class)

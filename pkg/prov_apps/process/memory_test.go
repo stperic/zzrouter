@@ -37,7 +37,7 @@ func TestMemoryFitErrorAttributesDescendants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			held := int64(3000)
 			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000, Processes: []gpu.MemoryProcess{{PID: tc.pid, MemoryMiB: &held}}}
-			failure := memoryFitError("budget", device, 9500, map[int]string{42: "run-owned"})
+			failure := memoryFitError("budget", device, 9500, map[int]RunRef{42: {ID: "run-owned", Model: "org/owned-model"}})
 			require.Len(t, failure.Holders, 1)
 			holder := failure.Holders[0]
 			assert.Equal(t, tc.pid, holder.PID)
@@ -58,7 +58,7 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	amount := int64(3000)
 	devices := []gpu.MemoryDevice{{UUID: "GPU-A", Index: 0, TotalMiB: 10000, FreeMiB: 6000, Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: &amount}, {PID: 43}}}}
 	require.NoError(t, AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil))
-	err := AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.95"}, nil, devices, map[int]string{42: "run-owned"})
+	err := AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.95"}, nil, devices, map[int]RunRef{42: {ID: "run-owned", Model: "org/owned-model"}})
 	var failure *MemoryFitError
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(9500), failure.RequiredMiB)
@@ -68,7 +68,7 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	assert.Equal(t, "run-owned", failure.Holders[0].Run)
 	assert.Equal(t, "other_or_untracked", failure.Holders[1].Ownership)
 	assert.Nil(t, failure.Holders[1].MemoryMiB)
-	assert.Contains(t, failure.Error(), "held by zzRouter run run-owned (pid 42, 3000 MiB), a process zzRouter does not manage (pid 43, size unknown)",
+	assert.Contains(t, failure.Error(), "held by zzRouter run run-owned serving org/owned-model (pid 42, 3000 MiB), a process zzRouter does not manage (pid 43, size unknown)",
 		"the message alone tells a stoppable run from a workload only the operator can release")
 	// An aggregate free total must not hide one undersized shard device.
 	devices = append(devices, gpu.MemoryDevice{UUID: "GPU-B", Index: 1, TotalMiB: 10000, FreeMiB: 5000})
