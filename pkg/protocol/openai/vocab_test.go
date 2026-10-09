@@ -61,6 +61,9 @@ func TestErrorType_ValidRejectsUnknown(t *testing.T) {
 // TestErrorCode_ValidCoversAllConstants mirrors the ErrorType check.
 func TestErrorCode_ValidCoversAllConstants(t *testing.T) {
 	cases := []ErrorCode{
+		ErrorCodeIdempotencyKeyConflict,
+		ErrorCodeIdempotencyWaitTimeout,
+		ErrorCodeIdempotencyStoreFull,
 		ErrorCodeInvalidAPIKey,
 		ErrorCodeInsufficientPermissions,
 		ErrorCodeInvalidRequest,

@@ -249,6 +249,9 @@ const (
 	// request waited out its bound for the original, still-in-flight
 	// request to publish a response to replay.
 	ErrorCodeIdempotencyWaitTimeout ErrorCode = "idempotency_wait_timeout"
+
+	// ErrorCodeIdempotencyStoreFull asks callers to retry when every available slot is in flight.
+	ErrorCodeIdempotencyStoreFull ErrorCode = "idempotency_store_full"
 )
 
 // allErrorCodes is the authoritative list of known ErrorCode values,
@@ -262,6 +265,7 @@ var allErrorCodes = []ErrorCode{
 	ErrorCodeFeatureDisabled,
 	ErrorCodeInsufficientPermissions,
 	ErrorCodeIdempotencyKeyConflict,
+	ErrorCodeIdempotencyStoreFull,
 	ErrorCodeIdempotencyWaitTimeout,
 	ErrorCodeInsufficientQuota,
 	ErrorCodeInternalError,

@@ -142,6 +142,20 @@ the first owner's response. A 404 means no peer claims the job.
 
 ## Idempotency notes
 
+These codes apply to keyed management and inference requests, using each surface's error envelope.
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `idempotency_key_conflict` | 422 | The same key names a different request body. | Send the original body or choose a new key. |
+| `idempotency_wait_timeout` | 504 | The original request is still in flight after the duplicate's wait limit. | Retry the same key and body shortly. |
+| `idempotency_store_full` | 503 | All store slots are occupied by in-flight requests. | Honor `Retry-After` and retry the same key and body. |
+
+Replay storage retains up to 4,096 entries and 32 MiB of response bodies.
+Completed entries expire 24 hours after completion and are swept every five
+minutes. Capacity eviction removes the oldest completed response first, never
+an in-flight request. Replies larger than 1 MiB are served in full and forgotten,
+so a later repeat runs again; duplicates already waiting must retry.
+
 - `POST /zzrouter/v1/runs` with `auto_deploy:true` is singleflight-deduped
   per `(provider, model, file)` : a retry while a deploy is in progress
   attaches to the in-flight job rather than starting a second one.

@@ -9870,7 +9870,10 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/OpenAIError' }
     OpenAIUnavailable:
-      description: Service unavailable , feature disabled, draining, or no default backend configured.
+      description: >
+        Service unavailable: feature disabled, draining, or no default backend
+        configured. Also emitted with `code: idempotency_store_full` and
+        Retry-After when every recorded idempotent request is still in flight.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/OpenAIError' }
@@ -10572,6 +10575,7 @@ components:
         - provider_not_running
         - model_inventory_unavailable
         - idempotency_key_conflict
+        - idempotency_store_full
         - idempotency_wait_timeout
 
     HealthResponse:

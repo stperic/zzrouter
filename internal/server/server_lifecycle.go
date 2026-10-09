@@ -74,6 +74,8 @@ func (s *Server) Start(ctx context.Context) error {
 		}()
 	}
 
+	s.idempotency.Start(s.shutdownCtx)
+
 	s.logNodeStart()
 	return s.startServing()
 }
@@ -100,6 +102,8 @@ func (s *Server) Stop() error {
 	if s.access != nil {
 		s.access.FlushSpend()
 	}
+
+	s.idempotency.Stop()
 
 	httpErr := s.stopServing(ctx)
 
