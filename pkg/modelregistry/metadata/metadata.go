@@ -7,6 +7,7 @@
 package metadata
 
 import (
+	"maps"
 	"strings"
 	"time"
 )
@@ -67,6 +68,7 @@ func (m *ModelMetadata) ToOllamaFormat(host string) map[string]any {
 
 	if m.Extra != nil {
 		if details, ok := m.Extra["details"].(map[string]any); ok {
+			details = maps.Clone(details)
 			// Ensure format is always set from ModelMetadata.Format
 			// (the source of truth).
 			details["format"] = m.Format

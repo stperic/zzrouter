@@ -37,6 +37,7 @@ import (
 
 // RunsExecutor handles direct local runs operations
 type RunsExecutor struct {
+	publishCatalog      func() error
 	appMgr              *prov_apps.ProviderAppManager
 	getNodename         func() string
 	appsConfig          func() *pkgConfig.AppsConfig
@@ -219,11 +220,14 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 	inst, exists := e.appMgr.GetInstance(runID)
 	if exists {
 		// On-demand instance found in provider app manager — stop it directly
-		if err := e.appMgr.StopInstance(c.Request.Context(), runID); err != nil {
+		err := e.appMgr.StopInstance(c.Request.Context(), runID)
+		if !publishOr503(c, e.publishCatalog) {
+			return
+		}
+		if err != nil {
 			InternalNodeError(c, "failed to stop instance")
 			return
 		}
-
 		utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
 		e.triggerResourceRefresh()
 		c.JSON(http.StatusOK, gin.H{
@@ -289,6 +293,10 @@ func (e *RunsExecutor) tryUnloadEndpointModel(c *gin.Context, runID string) bool
 				return false
 			}
 
+			if !publishOr503(c, e.publishCatalog) {
+				handled = true
+				return false
+			}
 			utils.LogDebugf("[RunsExecutor] Unloaded endpoint model '%s' from provider '%s'", m.Name, providerName)
 			e.triggerResourceRefresh()
 			c.JSON(http.StatusOK, gin.H{
@@ -321,6 +329,9 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 	}
 
 	newInst, err := e.appMgr.RestartInstance(c.Request.Context(), runID)
+	if !publishOr503(c, e.publishCatalog) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, prov_apps.ErrInstanceNotFound) {
 			NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
@@ -791,6 +802,9 @@ func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID s
 	}
 	runHandle.Meta(jobs.Meta{"phase": "launching"})
 	inst, err := e.appMgr.LaunchInstance(runHandle.Context(), launchReq)
+	if err == nil && inst.StreamJobID != "" {
+		err = waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(inst.StreamJobID) })
+	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy: %w", err))
 		return
