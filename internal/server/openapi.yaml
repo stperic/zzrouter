@@ -1086,16 +1086,14 @@ paths:
       summary: Ensure a model is running (idempotent warm-up)
       description: |
         Single verb the agent uses to make a model hot. Idempotent and
-        retry-safe: if the model is already running anywhere in the
-        cluster, returns 200 with the running-instance details. If
-        cold, launches via the existing auto_deploy chain (downloads
-        the model first if not in the local cache) and returns 202
-        with `job_id` (and `deploy_job_id` when a download is needed)
-        for stream subscription.
-
-        The manager-level singleflight on LaunchInstance dedupes
-        concurrent ensures by construction , there is no race where
-        two callers each spawn a process.
+        retry-safe. The model starts on the node that serves its name,
+        the same node inference picks (`name@node` pins one; several
+        holders answer 409 `model_node_ambiguous`). A run of the model
+        already on that node is reused: 200 when it serves, 202 with
+        its `job_id` while it starts. Otherwise the model is launched,
+        downloaded first when not in the catalog, and the answer is 202
+        with `job_id` (and `deploy_job_id` when a download is needed).
+        Concurrent ensures of one model start one run.
       requestBody:
         required: true
         content:
@@ -11373,7 +11371,7 @@ components:
       properties:
         status:
           type: string
-          enum: [running, loading, launching, waiting_for_deploy]
+          enum: [running, starting, unhealthy, restarting, waiting_for_deploy]
         model:    { type: string }
         provider: { type: string }
         endpoint: { type: string }

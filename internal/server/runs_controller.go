@@ -175,11 +175,8 @@ func (ctrl *RunsController) LaunchRun(c *gin.Context) {
 	respondAccepted(c, "Run launch accepted; subscribe to job_id for readiness", resp)
 }
 
-// EnsureRun handles POST /zzrouter/v1/runs/ensure. Idempotent
-// warm-up: returns 200 with running-instance details when the model
-// is already hot, 202 + job ids when a launch (and possibly a
-// download) is needed. Singleflight at the manager layer dedupes
-// concurrent ensures by construction.
+// EnsureRun handles POST /zzrouter/v1/runs/ensure: 200 when the model
+// already serves on its node, 202 + job ids while it starts or downloads.
 func (ctrl *RunsController) EnsureRun(c *gin.Context) {
 	var req EnsureRunRequest
 	if !BindJSONStrict(c, &req) {

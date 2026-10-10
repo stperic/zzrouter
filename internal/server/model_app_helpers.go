@@ -140,8 +140,7 @@ func (s *Server) findCapableProvider(modelName string) (string, string, error) {
 		if errors.As(err, &notFound) {
 			// Hint at the cloud-deployment on-ramp — agents often pass a
 			// catalog ID (e.g. "openai/gpt-4o") expecting it to work
-			// without a prior registration step. The same hint already
-			// fires from /runs/ensure for cloud-only providers.
+			// without a prior registration step.
 			return "", "", fmt.Errorf(
 				"model %q not found in registry; if this is a cloud-served model, register it via POST /zzrouter/v1/deployments first",
 				modelName)
@@ -375,13 +374,6 @@ func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error 
 		}
 	}
 	return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is configured but disabled on this node; %s, then retry", name, next))
-}
-
-// isProviderEnabledInConfig checks if provider is enabled in provider config
-func isProviderEnabledInConfig(appsConfig *pkgConfig.AppsConfig, providerType string) bool {
-	normalizedType := utils.NormalizeAppType(providerType)
-	providerConfig, exists := appsConfig.LookupApp(normalizedType)
-	return exists && providerConfig.IsEnabled()
 }
 
 // instanceRequest is what an instance is sent for this request, and the

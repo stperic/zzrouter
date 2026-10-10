@@ -14,7 +14,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
-	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -55,7 +55,7 @@ type RunsService struct {
 	// launch to the target node after deploy completes.
 	deployments   *DeploymentsService
 	modelInPool   func(string) bool
-	lookupModel   func(ctx context.Context, name string) *cache.CachedModel
+	resolveModel  func(ctx context.Context, name string) (*resolver.Resolved, error)
 	appsConfig    func() *pkgConfig.AppsConfig
 	jobs          *jobs.Registry
 	validateModel func(context.Context, string) error
@@ -95,11 +95,9 @@ func (s *RunsService) admitModel(ctx context.Context, model string) error {
 	return s.validateModel(ctx, model)
 }
 
-// WithModelLookup wires the cache lookup callback used by EnsureRun
-// to resolve a bare model name to its CachedModel (provider + node).
-// Optional — without it EnsureRun returns 503.
-func (s *RunsService) WithModelLookup(lookup func(ctx context.Context, name string) *cache.CachedModel) *RunsService {
-	s.lookupModel = lookup
+// WithModelResolver wires the resolver inference uses, so EnsureRun picks the same node.
+func (s *RunsService) WithModelResolver(resolve func(ctx context.Context, name string) (*resolver.Resolved, error)) *RunsService {
+	s.resolveModel = resolve
 	return s
 }
 
@@ -504,10 +502,9 @@ type EnsureRunRequest struct {
 }
 
 // EnsureRunResponse carries the unified shape for ensure outcomes:
-//   - status="running": instance already serving; port + node + run_id
-//     are populated, job ids are empty.
-//   - status="loading"|"launching"|"waiting_for_deploy": launch
-//     accepted; subscribe to job_id (and deploy_job_id if non-empty).
+//   - status="running": the run already serves; port, node and run_id are set.
+//   - status="starting"|"waiting_for_deploy": subscribe to job_id (and
+//     deploy_job_id if non-empty) for readiness.
 type EnsureRunResponse struct {
 	Status      string `json:"status"`
 	Model       string `json:"model"`
@@ -521,59 +518,45 @@ type EnsureRunResponse struct {
 	Message     string `json:"message,omitempty"`
 }
 
-// EnsureRun makes a model hot. If an instance is already running for
-// (model, endpoint) anywhere in the cluster, returns the running view
-// (HTTP 200 at the controller layer). Otherwise delegates to LaunchRun
-// with auto_deploy=true so a missing model triggers the download
-// chain. The manager-level singleflight on EnsureRun dedupes
-// concurrent ensures by construction; we don't add a second layer.
+// EnsureRun makes a model hot on the node the shared resolver picks, so
+// ensure and inference agree on where a model runs; that node's run policy
+// reuses a live run, and a model not yet on it is deployed first.
 func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*EnsureRunResponse, error) {
 	if err := s.admitModel(ctx, req.Model); err != nil {
 		return nil, err
+	}
+	if s.resolveModel == nil {
+		return nil, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model resolver not wired")
 	}
 	endpoint := req.Endpoint
 	if endpoint == "" {
 		endpoint = "chat"
 	}
-
-	// Cluster-wide running check. ListRuns broadcasts; ensure isn't
-	// in the inference hot path so the fan-out cost is acceptable.
-	if running := s.findRunningInstance(ctx, req.Model, endpoint); running != nil {
-		return &EnsureRunResponse{
-			Status:   "running",
-			Model:    running.Model,
-			Provider: running.Provider,
-			Endpoint: endpoint,
-			Node:     running.Node,
-			Port:     running.Port,
-			RunID:    running.ID,
-			Message:  "model already running",
-		}, nil
-	}
-
-	// Resolve provider + node from the cache so the agent doesn't
-	// have to know either. SourceID alias resolution at the cache
-	// layer means the agent can pass either form of the model name.
-	cm, err := s.lookupModelForEnsure(ctx, req.Model)
+	resolved, err := s.resolveModel(ctx, req.Model)
 	if err != nil {
 		return nil, err
 	}
-
-	launchReq := &LaunchRunRequest{
-		Provider:   cm.Provider,
+	if resolved.Provider == "" {
+		return nil, newProblemError(http.StatusNotFound, "Not Found", fmt.Sprintf("model %q not found in catalog, or not fully downloaded; list /v1/models for known names", req.Model))
+	}
+	model := resolved.RequestModel
+	if model == "" {
+		model = resolved.ModelName
+	}
+	launchResp, err := s.LaunchRun(ctx, &LaunchRunRequest{
+		Provider:   resolved.Provider,
 		LaunchMode: string(instance.LaunchModeNative),
-		Model:      cm.Name,
+		Model:      model,
 		Endpoint:   endpoint,
 		AutoDeploy: true,
-		Node:       cm.Node,
-	}
-	launchResp, err := s.LaunchRun(ctx, launchReq)
+		Node:       resolved.Node,
+	})
 	if err != nil {
 		return nil, err
 	}
 	return &EnsureRunResponse{
 		Status:      launchResp.Status,
-		Model:       cm.Name,
+		Model:       model,
 		Provider:    launchResp.Provider,
 		Endpoint:    endpoint,
 		Node:        launchResp.Node,
@@ -583,51 +566,6 @@ func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*En
 		DeployJobID: launchResp.DeployJobID,
 		Message:     launchResp.Message,
 	}, nil
-}
-
-// findRunningInstance broadcasts ListRuns and returns the first
-// running instance matching (model, endpoint). Returns nil when none
-// is found or the broadcast failed — callers fall through to launch.
-func (s *RunsService) findRunningInstance(ctx context.Context, model, endpoint string) *instance.InstanceInfo {
-	resp, err := s.ListRuns(ctx, &ListRunsRequest{Node: "*"})
-	if err != nil {
-		slog.Debug("[RunsService] EnsureRun: ListRuns broadcast failed; falling through to launch", "error", err)
-		return nil
-	}
-	for i := range resp.Data {
-		inst := &resp.Data[i]
-		if inst.Status != instance.StatusRunning {
-			continue
-		}
-		if inst.Model != model {
-			continue
-		}
-		instEP := inst.Endpoint
-		if instEP == "" {
-			instEP = "chat"
-		}
-		if instEP == endpoint {
-			return inst
-		}
-	}
-	return nil
-}
-
-// lookupModelForEnsure resolves the model name to its CachedModel via
-// the cache lookup callback, returning a Problem error when not found
-// so the controller emits a 404 instead of a 500.
-func (s *RunsService) lookupModelForEnsure(ctx context.Context, model string) (*cache.CachedModel, error) {
-	if s.lookupModel == nil {
-		return nil, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model registry not wired")
-	}
-	cm := s.lookupModel(ctx, model)
-	if cm == nil {
-		return nil, newProblemError(http.StatusNotFound, "Not Found", fmt.Sprintf("model %q not found in catalog; list /v1/models for known names", model))
-	}
-	if cm.Provider == "" {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("model %q has no assigned provider", model))
-	}
-	return cm, nil
 }
 
 // runAutoDeployChain synthesizes a deploy + chains the launch behind it.

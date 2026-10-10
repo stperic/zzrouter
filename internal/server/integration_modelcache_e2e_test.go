@@ -625,22 +625,3 @@ func TestModelCacheE2E_WorkerFirstUseFromShared(t *testing.T) {
 		t.Logf("Final state verified: %d files, all valid", result.FilesChecked)
 	})
 }
-
-// createTestNodeWithSharedStorage creates a test server with separate shared and cache directories.
-func createTestNodeWithSharedStorage(t *testing.T, cfg TestNodeConfig, cacheDir, sharedDir, serverName string) *Server {
-	t.Helper()
-
-	modelregistry.SetModelsRootDirOverride(cacheDir)
-	t.Cleanup(func() {
-		modelregistry.ClearModelsRootDirOverride()
-	})
-
-	server := createTestNode(t, cfg)
-	server.config.Node.Name = serverName
-
-	// Configure shared storage
-	server.config.Models.Cache = cacheDir
-	server.config.Models.Shared = sharedDir
-
-	return server
-}

@@ -539,6 +539,10 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	inst := result.Run
 
 	hostname := e.getNodename()
+	message := "Instance launch accepted; subscribe to job_id for readiness"
+	if !result.Started {
+		message = "Run already exists for this model; reused"
+	}
 
 	// Return 202 Accepted with instance details + job_id so agents can
 	// subscribe to launch progress via /jobs/:id/stream?node=<node>.
@@ -554,7 +558,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"port":               inst.Port,
 		"health_url":         inst.HealthURL,
 		"started_at":         inst.StartedAt.Format(time.RFC3339),
-		"message":            "Instance launch accepted; subscribe to job_id for readiness",
+		"message":            message,
 		"files_mounted":      len(req.Files),
 		"parameters_applied": len(req.Parameters),
 		"node":               hostname,

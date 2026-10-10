@@ -16,7 +16,9 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -315,4 +317,43 @@ func TestRunsService_AutoDeployPresentModelKeepsMasterDefault(t *testing.T) {
 	request := <-router.launched
 	assert.Equal(t, "@master", request.Node)
 	require.Nil(t, router.deployed)
+}
+
+// Ensure starts the model where the shared resolver places it, so it never picks a node inference would not.
+func TestEnsureRunUsesTheSharedResolver(t *testing.T) {
+	router := &autoDeployRouter{launched: make(chan routing.Request, 1)}
+	service := NewRunsService(router).WithAutoDeploy(&DeploymentsService{}, func(string) bool { return true }, nil, newJobsForChainTest(t))
+	resolved := &resolver.Resolved{Provider: "llamacpp", ModelName: "base", RequestModel: "base+fast", Node: "localai"}
+	var resolveErr error
+	service.WithModelResolver(func(_ context.Context, name string) (*resolver.Resolved, error) {
+		assert.Equal(t, "base+fast@localai", name)
+		return resolved, resolveErr
+	})
+
+	resp, err := service.EnsureRun(t.Context(), &EnsureRunRequest{Model: "base+fast@localai"})
+	require.NoError(t, err)
+	request := <-router.launched
+	assert.Equal(t, "localai", request.Node)
+	var launched LaunchRunRequest
+	require.NoError(t, json.Unmarshal(request.Body, &launched))
+	assert.Equal(t, "base+fast", launched.Model)
+	assert.Equal(t, "llamacpp", launched.Provider)
+	assert.Equal(t, "base+fast", resp.Model)
+
+	// A group carries its member's model name only.
+	resolved = &resolver.Resolved{Provider: "vllm", ModelName: "member", Node: "gpu", GroupName: "fast"}
+	_, err = service.EnsureRun(t.Context(), &EnsureRunRequest{Model: "base+fast@localai"})
+	require.NoError(t, err)
+	request = <-router.launched
+	require.NoError(t, json.Unmarshal(request.Body, &launched))
+	assert.Equal(t, "gpu", request.Node)
+	assert.Equal(t, "member", launched.Model)
+
+	resolveErr = httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeModelNodeAmbiguous), Message: "choose"}
+	_, err = service.EnsureRun(t.Context(), &EnsureRunRequest{Model: "base+fast@localai"})
+	assert.Equal(t, http.StatusConflict, answeredStatus(err))
+
+	resolved, resolveErr = &resolver.Resolved{}, nil
+	_, err = service.EnsureRun(t.Context(), &EnsureRunRequest{Model: "base+fast@localai"})
+	assert.Equal(t, http.StatusNotFound, answeredStatus(err))
 }

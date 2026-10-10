@@ -65,8 +65,7 @@ type InstanceInfo struct {
 	Model            string `json:"model,omitempty"`
 	// Endpoint is the per-request endpoint label this instance serves
 	// ("chat", "embeddings", "reranking"). Empty defaults to chat.
-	// Surfaced so cluster-wide consumers (e.g. /runs/ensure) can
-	// distinguish multi-endpoint launches for one model.
+	// Surfaced so run listings can distinguish multi-endpoint launches for one model.
 	Endpoint              string            `json:"endpoint,omitempty"`
 	SourceRepo            string            `json:"source_repo,omitempty"`
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
