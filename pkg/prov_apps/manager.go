@@ -211,14 +211,19 @@ func WithModelValidator(fn func(context.Context, string) error) Option {
 
 // ValidateModel checks a name before any canonicalization or warm reuse.
 func (m *ProviderAppManager) ValidateModel(ctx context.Context, model string) error {
-	if m.validateModel != nil {
-		if err := m.validateModel(ctx, model); err != nil {
-			if errors.Is(err, config.ErrModelNameConflict) || errors.Is(err, ErrModelIncomplete) {
-				return err
-			}
-			slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)
-		}
+	if m.validateModel == nil {
+		return nil
 	}
+	return AdmissionRefusal(model, m.validateModel(ctx, model))
+}
+
+// AdmissionRefusal keeps the admission errors that refuse a model name;
+// any other is missing evidence, and admission fails open on it.
+func AdmissionRefusal(model string, err error) error {
+	if err == nil || errors.Is(err, config.ErrModelNameConflict) || errors.Is(err, ErrModelIncomplete) {
+		return err
+	}
+	slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)
 	return nil
 }
 

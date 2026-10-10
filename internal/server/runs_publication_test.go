@@ -135,7 +135,7 @@ func TestRunMutationWaitsForPublication(t *testing.T) {
 				if operation == "restart" {
 					method, path, pattern, handler = http.MethodPost, path+"/restart", "/runs/:id/restart", e.HandleInternalRestartRun
 					run.Config.Provider = "missing"
-					want = http.StatusInternalServerError
+					want = http.StatusNotFound // the relaunch names a provider that no longer exists
 				}
 				if operation == "launch" {
 					method, path, pattern, handler = http.MethodPost, "/runs", "/runs", e.HandleInternalLaunchRun

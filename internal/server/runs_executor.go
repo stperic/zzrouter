@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -225,7 +224,7 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 			return
 		}
 		if err != nil {
-			InternalNodeError(c, "failed to stop instance")
+			RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
 			return
 		}
 		utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
@@ -333,11 +332,7 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, prov_apps.ErrInstanceNotFound) {
-			NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-			return
-		}
-		InternalNodeError(c, "restart failed: "+err.Error())
+		RespondToError(c, fmt.Errorf("restart run %s: %w", runID, err))
 		return
 	}
 
@@ -501,7 +496,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	}
 
 	if err := e.appMgr.ValidateModel(c.Request.Context(), req.Model); err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 	launchReq := prov_apps.LaunchRequest{
@@ -539,7 +534,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		// those as 500 tells an agent to retry something that cannot
 		// ever succeed, so classify by sentinel and keep 500 for the
 		// failures that really are ours.
-		respondProviderErr(c, fmt.Errorf("failed to launch instance: %w", err))
+		RespondToError(c, fmt.Errorf("failed to launch instance: %w", err))
 		return
 	}
 

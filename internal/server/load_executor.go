@@ -12,14 +12,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/sync/singleflight"
@@ -450,7 +448,7 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 		req.ModelName, req.Provider)
 
 	if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
-		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
+		return nil, err
 	}
 	normalizedApp := utils.NormalizeAppType(req.Provider)
 	if normalizedApp == "" {
@@ -465,7 +463,7 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	}
 
 	if _, err := e.appMgr.AdmitLocalModel(ctx, req.ModelName); err != nil {
-		return nil, newProblemError(extractStatusCode(err), http.StatusText(extractStatusCode(err)), err.Error())
+		return nil, err
 	}
 
 	projectedPort := 0
@@ -505,15 +503,8 @@ func (e *LoadExecutor) HandleInternalLoadModel(c *gin.Context) {
 
 	resp, err := e.LoadLocalModel(c.Request.Context(), &req)
 	if err != nil {
-		slog.Error("Failed to load model", "model", err)
-		var memory *process.MemoryFitError
-		if errors.Is(err, config.ErrModelNameConflict) || errors.As(err, &memory) ||
-			errors.Is(err, process.ErrMemoryObservation) || errors.Is(err, process.ErrMemoryBudgetInvalid) ||
-			errors.Is(err, prov_apps.ErrAtCapacity) {
-			respondProviderErr(c, err)
-		} else {
-			InternalNodeError(c, "failed to load model")
-		}
+		slog.Error("Failed to load model", "model", req.ModelName, "error", err)
+		RespondToError(c, err)
 		return
 	}
 
@@ -537,16 +528,8 @@ func (e *LoadExecutor) HandleInternalPreviewRun(c *gin.Context) {
 
 	preview, err := e.PreviewLocalRun(c.Request.Context(), &req)
 	if err != nil {
-		// Preserve structured *RoutedError statuses (e.g. 400 unknown
-		// provider) so coord's PreviewRun surfaces the right HTTP code
-		// to the public caller.
-		var rerr *RoutedError
-		if errors.As(err, &rerr) {
-			rerr.Respond(c)
-			return
-		}
-		slog.Error("Failed to preview run", "run", err)
-		InternalNodeError(c, "failed to preview run")
+		slog.Error("Failed to preview run", "model", req.ModelName, "error", err)
+		RespondToError(c, err)
 		return
 	}
 

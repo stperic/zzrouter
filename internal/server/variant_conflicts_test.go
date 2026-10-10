@@ -466,9 +466,10 @@ func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	s.providers.appMgr = manager
 	t.Cleanup(func() { s.providers.appMgr = old })
 	require.NoError(t, manager.ValidateModel(t.Context(), "cloud-model"))
-	service := NewRunsService(nil).WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") })
+	require.NoError(t, prov_apps.AdmissionRefusal("unrelated", errors.New("catalog unavailable")))
+	service := NewRunsService(nil).WithModelValidator(s.validateModel)
 	require.NoError(t, service.admitModel(t.Context(), "unrelated"))
-	require.Equal(t, http.StatusInternalServerError, extractStatusCode(errors.New("plain error")))
+	require.Equal(t, http.StatusInternalServerError, answeredStatus(errors.New("plain error")))
 	for _, tc := range []struct {
 		model, provider string
 		status          int
@@ -484,12 +485,14 @@ func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 		require.Equal(t, tc.status, w.Code, w.Body.String())
 	}
 	_, err = s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "missing-provider", ModelName: qwenModel})
-	require.Equal(t, http.StatusBadRequest, extractStatusCode(err))
+	require.Equal(t, http.StatusBadRequest, answeredStatus(err))
 	service.WithModelValidator(func(context.Context, string) error { return &config.ModelNameConflictError{Model: "reserved"} })
-	require.Equal(t, http.StatusConflict, extractStatusCode(service.admitModel(t.Context(), "reserved")))
+	require.Equal(t, http.StatusConflict, answeredStatus(service.admitModel(t.Context(), "reserved")))
 }
 
-func TestVariants_InternalLoadNonConflictErrorsKeepHistorical500(t *testing.T) {
+// The internal load answers every error from the failure table, not from a
+// list of its own: a provider that does not exist is the caller's 404.
+func TestVariants_InternalLoadAnswersFromTheFailureTable(t *testing.T) {
 	s := variantNode(t)
 	executor := s.newLoadExecutor()
 	executor.launchOnDemand = func(context.Context, string, string, string, map[string]string, map[string]string) (*instance.Instance, error) {
@@ -499,7 +502,7 @@ func TestVariants_InternalLoadNonConflictErrorsKeepHistorical500(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"llamacpp"}`))
 	executor.HandleInternalLoadModel(c)
-	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
 
 func TestVariants_ForcedLoadCarriesLocalAdmission(t *testing.T) {
@@ -535,5 +538,5 @@ func TestVariants_PreviewGuardsUnpublishedLocalConflict(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, variantAgent+".gguf"), []byte("GGUF"), 0o600))
 	_, err = s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent})
 	require.Error(t, err)
-	assert.Equal(t, http.StatusConflict, extractStatusCode(err))
+	assert.Equal(t, http.StatusConflict, answeredStatus(err))
 }

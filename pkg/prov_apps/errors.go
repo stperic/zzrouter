@@ -46,6 +46,12 @@ var (
 	// ErrPortOutOfRange is returned when a requested port is outside the configured range.
 	ErrPortOutOfRange = errors.New("port outside configured range")
 
+	// ErrExternalService refuses a lifecycle change to a provider zzRouter does not run.
+	ErrExternalService = errors.New("provider is external; zzRouter cannot change its lifecycle")
+
+	// ErrServiceDisabled refuses starting a provider that is disabled.
+	ErrServiceDisabled = errors.New("provider is disabled; enable it before starting")
+
 	// ErrShutdown is returned when an operation is attempted after shutdown.
 	ErrShutdown = errors.New("manager is shutting down")
 

@@ -15,7 +15,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/model/cache"
-	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -93,14 +92,7 @@ func (s *RunsService) admitModel(ctx context.Context, model string) error {
 	if s.validateModel == nil {
 		return nil
 	}
-	if err := s.validateModel(ctx, model); err != nil {
-		if !errors.Is(err, pkgConfig.ErrModelNameConflict) && !errors.Is(err, layout.ErrIncomplete) {
-			slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)
-			return nil
-		}
-		return newProblemError(http.StatusConflict, "Conflict", err.Error())
-	}
-	return nil
+	return s.validateModel(ctx, model)
 }
 
 // WithModelLookup wires the cache lookup callback used by EnsureRun

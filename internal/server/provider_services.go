@@ -148,17 +148,14 @@ func (e *ParamsExecutor) HandleInternalApplyService(c *gin.Context) {
 		"manual_instructions":           result.Instructions, "warning": result.Warning})
 }
 
+// serviceError answers a provider service action; one nothing names means
+// the service could not be reached.
 func (e *ParamsExecutor) serviceError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, prov_apps.ErrExternalService):
-		Forbidden(c, err.Error())
-	case errors.Is(err, prov_apps.ErrServiceDisabled):
-		Conflict(c, err.Error())
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		RequestTimeout(c, err.Error())
-	default:
-		ServiceUnavailable(c, err.Error())
+		return
 	}
+	respondError(c, err, http.StatusServiceUnavailable)
 }
 
 func (e *ParamsExecutor) relayToNode(c *gin.Context, method, suffix string, body []byte) {

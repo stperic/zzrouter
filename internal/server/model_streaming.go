@@ -175,9 +175,9 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		// loadInternal, wrong for the 503 an unavailable provider gets.
 		// Stashing the classified type unconditionally keeps the metric
 		// label equal to the body's error.type on every branch.
-		*req = *proxy.SetErrorTypeOnRequest(req, lf.errType)
-		recordErrorOnContext(req.Context(), lf.code, lf.message)
-		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code, RetryAfter: lf.retryAfter}
+		failure := lf.wire()
+		*req = *proxy.SetErrorTypeOnRequest(req, failure.Type)
+		recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 		if sseStarted {
 			// Already committed to 200: the error can only travel inside
 			// the stream. Same type/code/message as the header path, so a
@@ -261,7 +261,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 	}
 	if budget <= 0 {
 		return nil, loadStillWarming(fmt.Sprintf(
-			"instance '%s' is still loading; retry shortly", inst.ID))
+			"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
@@ -274,7 +274,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 		select {
 		case <-ctx.Done():
 			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID))
+				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
 		case <-ticker.C:
 			currentInstance, found := s.providers.appMgr.Instances().Get(inst.ID)
 			if !found {

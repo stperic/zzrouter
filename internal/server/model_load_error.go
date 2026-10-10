@@ -11,10 +11,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // loadFailure is a model-load failure that already knows how it should
@@ -33,6 +31,9 @@ type loadFailure struct {
 	// only where retrying is genuinely the right move — a model still
 	// coming up, not one that cannot come up.
 	retryAfter time.Duration
+	// extra rides beside the error as top-level members, such as the
+	// run and job a still-loading model can be followed through.
+	extra map[string]any
 	// cause is the error this was built from, kept so the chain survives
 	// classification. Without it errors.Is against anything underneath
 	// (context.DeadlineExceeded, a transport error) silently stops
@@ -43,29 +44,51 @@ type loadFailure struct {
 func (e *loadFailure) Error() string { return e.message }
 func (e *loadFailure) Unwrap() error { return e.cause }
 
+// wire is the failure as every dialect renders it.
+func (e *loadFailure) wire() httperr.Error {
+	return httperr.Error{Status: e.status, Type: e.errType, Code: e.code, Message: e.message, RetryAfter: e.retryAfter, Extra: e.extra}
+}
+
+// forRun names the run and job a caller can follow instead of retrying blind.
+func (e *loadFailure) forRun(run *instance.Instance) *loadFailure {
+	e.extra = map[string]any{"run_id": run.ID, "job_id": run.StreamJobID}
+	return e
+}
+
 // withCause keeps the original error reachable through errors.Is/As.
 func (e *loadFailure) withCause(err error) *loadFailure {
 	e.cause = err
 	return e
 }
 
-// newLoadFailure builds a failure from the executor's own status code,
-// which is the only place that knows why the load did not happen.
+// newLoadFailure reads the executor's status; anything but 400/404/503 means the engine failed (502).
 func newLoadFailure(executorStatus int, message string) *loadFailure {
-	switch executorStatus {
-	case http.StatusBadRequest:
-		return &loadFailure{status: http.StatusBadRequest, errType: "invalid_request_error", code: "invalid_request", message: message}
-	case http.StatusNotFound:
-		// Same envelope as HandleLocalModel's no-capable-provider case:
-		// from the caller's side both mean "this model cannot serve you".
-		return &loadFailure{status: http.StatusNotFound, errType: "invalid_request_error", code: "model_not_found", message: message}
-	case http.StatusServiceUnavailable:
-		return &loadFailure{status: http.StatusServiceUnavailable, errType: "api_error", code: "provider_unavailable", message: message}
+	status := executorStatus
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable:
 	default:
-		// The engine was reachable and failed anyway — a gateway
-		// reporting a bad upstream, matching this package's other
-		// backend failures.
-		return &loadFailure{status: http.StatusBadGateway, errType: "api_error", code: "model_load_failed", message: message}
+		status = http.StatusBadGateway
+	}
+	errType := "api_error"
+	if status < http.StatusInternalServerError {
+		errType = "invalid_request_error"
+	}
+	return &loadFailure{status: status, errType: errType, code: inferenceCode(status), message: message}
+}
+
+// inferenceCode is an inference caller's code for a failure with none of its own.
+func inferenceCode(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request"
+	case http.StatusNotFound:
+		return "model_not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusServiceUnavailable:
+		return "provider_unavailable"
+	default:
+		return "model_load_failed"
 	}
 }
 
@@ -97,24 +120,16 @@ func loadInternal(message string) *loadFailure {
 	return &loadFailure{status: http.StatusInternalServerError, errType: "server_error", code: "model_load_failed", message: message}
 }
 
-// classifyLoadFailure maps any load error onto the wire. An error that
-// did not come from the load path at all still has to reach the client,
-// so it lands on the same 502 the engine failures use rather than being
-// dropped.
+// classifyLoadFailure maps any load error onto the wire through the
+// failure table. An error no row names did not come from a refusal, so it
+// lands on the same 502 the engine failures use rather than being dropped.
 func classifyLoadFailure(err error) *loadFailure {
-	var classified *httperr.EngineFailure
-	if errors.As(err, &classified) {
-		failure := (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError()
-		return (&loadFailure{status: failure.Status, errType: failure.Type, code: failure.Code, message: failure.Message}).withCause(err)
-	}
-	if errors.Is(err, process.ErrMemoryBudgetInvalid) {
-		return newLoadFailure(http.StatusBadRequest, err.Error()).withCause(err)
-	}
-	if errors.Is(err, process.ErrMemoryObservation) || errors.Is(err, prov_apps.ErrAtCapacity) {
-		return newLoadFailure(http.StatusServiceUnavailable, err.Error()).withCause(err)
-	}
-	if errors.Is(err, config.ErrModelNameConflict) {
-		return (&loadFailure{status: http.StatusConflict, errType: "invalid_request_error", code: "model_name_conflict", message: err.Error()}).withCause(err)
+	// A named cause outranks a generic failure wrapped around it.
+	if wire, ok := knownFailure(err); ok {
+		if wire.Code == "" {
+			wire.Code = inferenceCode(wire.Status)
+		}
+		return (&loadFailure{status: wire.Status, errType: wire.Type, code: wire.Code, message: wire.Message, retryAfter: wire.RetryAfter}).withCause(err)
 	}
 	var lf *loadFailure
 	if errors.As(err, &lf) {

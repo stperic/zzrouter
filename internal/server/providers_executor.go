@@ -291,7 +291,7 @@ func (e *ProvidersExecutor) HandleInternalGetProviderStatus(c *gin.Context) {
 
 	status, err := e.mgr.ProviderStatus(name)
 	if err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 
@@ -352,7 +352,7 @@ func (e *ProvidersExecutor) HandleInternalInstallProvider(c *gin.Context) {
 		Force:    req.Force,
 	}, finalize)
 	if err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, nil))
@@ -389,7 +389,7 @@ func (e *ProvidersExecutor) HandleInternalUpgradeProvider(c *gin.Context) {
 
 	jobID, err := e.mgr.Install().UpgradeAsync(c.Request.Context(), name, req.Version, e.afterLifecycle(nil))
 	if err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, nil))
@@ -403,7 +403,7 @@ func (e *ProvidersExecutor) HandleInternalUninstallProvider(c *gin.Context) {
 	finalize := e.afterLifecycle(func() error { return e.finalizeOff(name) })
 	jobID, err := e.mgr.Install().UninstallAsync(c.Request.Context(), name, finalize)
 	if err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, nil))
@@ -561,7 +561,7 @@ func (e *ProvidersExecutor) HandleInternalExecuteStep(c *gin.Context) {
 	version := e.mgr.ResolveVersion(name, req.Version)
 	jobID, err := e.mgr.Install().ExecuteStepAsync(c.Request.Context(), name, version, req.Step, e.afterLifecycle(finalize))
 	if err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
 	c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, gin.H{"step": req.Step}))
@@ -699,17 +699,18 @@ func (e *ProvidersExecutor) hasRecipe(provider string) bool {
 }
 
 func respondRecipeErr(c *gin.Context, err error) {
-	if errors.Is(err, install.ErrStalePlan) {
-		Conflict(c, err.Error())
-		return
-	}
 	if errors.Is(err, install.ErrInstallPolicy) {
-		RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", []utils.ParamError{{Key: "install", Code: string(httperr.CodePreflightFailed), Message: err.Error()}})
+		respondRecipeRefused(c, err)
 		return
 	}
-	if errors.Is(err, prov_apps.ErrProviderNotFound) || errors.Is(err, prov_apps.ErrShutdown) || errors.Is(err, prov_apps.ErrInstancesRunning) || errors.Is(err, prov_apps.ErrProviderAlreadyInstalled) || errors.Is(err, install.ErrUnsupportedPlatform) {
-		respondProviderErr(c, err)
+	if _, named := knownFailure(err); named {
+		RespondToError(c, err)
 		return
 	}
+	respondRecipeRefused(c, err)
+}
+
+// respondRecipeRefused reports an install the recipe or its policy refused.
+func respondRecipeRefused(c *gin.Context, err error) {
 	RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", []utils.ParamError{{Key: "install", Code: string(httperr.CodePreflightFailed), Message: err.Error()}})
 }
