@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -26,19 +24,22 @@ func (s *Server) validateModel(ctx context.Context, model string) error {
 	if s.providers.appMgr != nil {
 		return s.providers.appMgr.ValidateModel(ctx, model)
 	}
-	return s.checkCatalogModelAdmission(ctx, model)
+	return prov_apps.AdmissionRefusal(model, s.checkCatalogModelAdmission(ctx, model))
 }
 
-// writeModelAdmissionError preserves the conflict code on inference surfaces.
+// writeModelAdmissionError answers an admission refusal on an inference
+// surface from the failure table; one no row names means the backend
+// cannot take the request.
 func writeModelAdmissionError(w http.ResponseWriter, req *http.Request, err error) {
-	status, kind, code := http.StatusServiceUnavailable, "server_error", "backend_unavailable"
-	if errors.Is(err, config.ErrModelNameConflict) {
-		status, kind, code = http.StatusConflict, "invalid_request_error", "model_name_conflict"
-	} else if errors.Is(err, prov_apps.ErrModelIncomplete) {
-		status, kind, code = http.StatusConflict, "invalid_request_error", "model_incomplete"
+	failure, ok := knownFailure(err)
+	if !ok {
+		failure = httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "backend_unavailable", Message: err.Error()}
 	}
-	recordErrorOnContext(req.Context(), code, err.Error())
-	writeError(w, req, httperr.Error{Status: status, Type: kind, Code: code, Message: err.Error()})
+	if failure.Code == "" {
+		failure.Code = inferenceCode(failure.Status)
+	}
+	recordErrorOnContext(req.Context(), failure.Code, failure.Message)
+	writeError(w, req, failure)
 }
 
 // admitResolvedModels filters reserved names before feature and wire endpoint
@@ -56,10 +57,6 @@ func (s *Server) admitResolvedModels(c *gin.Context, resolved *resolver.Resolved
 	var unavailable *httperr.Error
 	for _, candidate := range resolved.Candidates {
 		if err := s.validateModel(c.Request.Context(), candidate.Model); err != nil {
-			if !errors.Is(err, config.ErrModelNameConflict) && !errors.Is(err, prov_apps.ErrModelIncomplete) {
-				writeModelAdmissionError(c.Writer, c.Request, err)
-				return false
-			}
 			conflict = err
 			continue
 		}

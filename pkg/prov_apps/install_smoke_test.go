@@ -419,7 +419,7 @@ func TestSmokeFrozenFeatureSelectionRefusesPredicateDrift(t *testing.T) {
 	require.Equal(t, "test-runtime", selected)
 	// Simulate the predicate disappearing while the launch waits on the selected gate.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	_, err = mgr.modelLaunchParameters(svc, process.ResolveModel(svc, "vendor/model"), LaunchRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat")
+	_, err = mgr.modelLaunchParameters(svc, process.ResolveModel(svc, "vendor/model"), EnsureRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat")
 	require.ErrorContains(t, err, "selected runtime changed")
 }
 
@@ -462,7 +462,7 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 	waiterContext := &smokeGateContext{Context: parent, selected: make(chan struct{})}
 	waiter := make(chan error, 1)
 	go func() {
-		_, err := mgr.LaunchInstance(waiterContext, LaunchRequest{Provider: "generic", Model: "registry-model"})
+		_, err := mgr.EnsureRun(waiterContext, EnsureRequest{Provider: "generic", Model: "registry-model"})
 		waiter <- err
 	}()
 	select {
@@ -476,7 +476,8 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 	default:
 		t.Error("waiting on one runtime must not hold node memory admission")
 	}
-	sibling, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "sibling", Model: "other-model"})
+	siblingResult, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "sibling", Model: "other-model"})
+	sibling := siblingResult.Run
 	require.NoError(t, err)
 	require.NoError(t, mgr.StopInstance(t.Context(), sibling.ID))
 	smoke := make(chan error, 1)

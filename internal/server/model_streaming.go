@@ -21,6 +21,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -175,9 +176,9 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		// loadInternal, wrong for the 503 an unavailable provider gets.
 		// Stashing the classified type unconditionally keeps the metric
 		// label equal to the body's error.type on every branch.
-		*req = *proxy.SetErrorTypeOnRequest(req, lf.errType)
-		recordErrorOnContext(req.Context(), lf.code, lf.message)
-		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code, RetryAfter: lf.retryAfter}
+		failure := lf.wire()
+		*req = *proxy.SetErrorTypeOnRequest(req, failure.Type)
+		recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 		if sseStarted {
 			// Already committed to 200: the error can only travel inside
 			// the stream. Same type/code/message as the header path, so a
@@ -205,34 +206,13 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 // loadModelViaNodeAPI loads a LOCAL model directly via executor. No
 // routing needed — we're already on the correct node.
 func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (*instance.Instance, error) {
-	executor := s.newLoadExecutor()
-	req := &LoadModelRequest{
-		ModelName: modelName,
-		Provider:  providerType,
-		Endpoint:  endpoint,
-	}
-
-	resp, err := executor.LoadLocalModel(context.Background(), req)
+	result, err := s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint), ByRequest: true})
 	if err != nil {
 		return nil, classifyLoadFailure(err)
 	}
-
-	// Handle error responses (but 409 Conflict is OK — means model is
-	// already running). The executor's own status code is what separates
-	// a model that was never downloaded from an engine that died, so
-	// carry it instead of flattening the response to its message.
-	if resp.Error != "" && resp.StatusCode != http.StatusConflict {
-		message := resp.Error
-		if resp.Details != "" {
-			message = fmt.Sprintf("%s: %s", resp.Error, resp.Details)
-		}
-		return nil, newLoadFailure(resp.StatusCode, message)
-	}
-
-	// Get instance from local registry
-	inst, found := s.providers.appMgr.Instances().Get(resp.InstanceID)
-	if !found {
-		return nil, loadInternal(fmt.Sprintf("instance %s not found after loading", resp.InstanceID))
+	inst := result.Run
+	if inst == nil {
+		return nil, loadInternal("served model has no local instance")
 	}
 
 	// Wait for local instance to be ready if still starting
@@ -249,7 +229,7 @@ func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (
 // The budget runs from when the INSTANCE started, not from when this
 // request arrived. A provider may declare a readiness window far longer
 // than a request should be held open (MLX allows 600s against this
-// package's 120s), and doLoadLocalModel hands an already-starting
+// package's 120s), and EnsureRun hands an already-starting
 // instance straight back, so measuring per-request gave every caller in
 // that window a fresh full-length hang against the same slow load.
 // Measuring from the instance means the first caller waits, and the ones
@@ -261,7 +241,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 	}
 	if budget <= 0 {
 		return nil, loadStillWarming(fmt.Sprintf(
-			"instance '%s' is still loading; retry shortly", inst.ID))
+			"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
@@ -274,7 +254,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 		select {
 		case <-ctx.Done():
 			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID))
+				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
 		case <-ticker.C:
 			currentInstance, found := s.providers.appMgr.Instances().Get(inst.ID)
 			if !found {
@@ -292,7 +272,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 				// GetErrorMessage takes the instance mutex; direct field
 				// access races with MarkFailed's write (Status atomic and
 				// the ErrorMessage write are not co-synchronized).
-				return nil, newLoadFailure(http.StatusBadGateway,
+				return nil, loadEngineFailed(
 					fmt.Sprintf("instance '%s' failed to start: %s", currentInstance.ID, currentInstance.GetErrorMessage()))
 			default:
 				// Still starting, continue polling.

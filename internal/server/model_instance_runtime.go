@@ -6,16 +6,8 @@ package server
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"path/filepath"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	modelcache "github.com/stperic/zzrouter/pkg/model/integrity"
-	"github.com/stperic/zzrouter/pkg/modelregistry"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
-	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -91,256 +83,19 @@ func preMergeForRequest(appsCfg *config.AppsConfig, req *LoadModelRequest, targe
 	return sources
 }
 
-// ============================================================================
-// Parameter Resolve (launcher path)
-// ============================================================================
-
-// ============================================================================
-// Build Instance Config
-// ============================================================================
-
-// instanceBuildResult wraps the result of buildInstanceConfig.
-type instanceBuildResult struct {
-	LaunchReq      prov_apps.LaunchRequest
-	ProviderConfig *config.ServiceConfig
-	ModelPath      string
-}
-
-// buildInstanceConfig builds instance configuration for launch: model
-// metadata, the disk path its weights live at, and the provider's
-// runtime config. Parameter resolution is deliberately not part of it.
-func (s *Server) buildInstanceConfig(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instanceBuildResult, error) {
-	if err := s.validateModel(ctx, modelName); err != nil {
-		return nil, err
-	}
-	normalizedType := utils.NormalizeAppType(providerType)
-
-	// Get model metadata
+// localCatalogContains reads the node snapshot using the launch catalog's name match.
+func (s *Server) localCatalogContains(ctx context.Context, weights string) (bool, error) {
 	if s.model.Registry == nil {
-		return nil, fmt.Errorf("model registry not available - check provider configuration")
+		return false, fmt.Errorf("local model registry unavailable")
 	}
 	models, _, err := s.model.Registry.ModelSnapshot(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list models: %w", err)
+		return false, err
 	}
-
-	if s.appsConfig == nil {
-		return nil, fmt.Errorf("providers config not loaded")
-	}
-	providerCfg, exists := s.appsConfig.LookupApp(normalizedType)
-	if !exists {
-		return nil, fmt.Errorf("provider %s not configured", normalizedType)
-	}
-	if providerCfg.Runtime == nil {
-		return nil, fmt.Errorf("provider %s has no runtime configuration", normalizedType)
-	}
-
-	// A variant has no weights of its own: it loads its base's, while the
-	// run keeps the variant's name, parameters and alias.
-	weights := providerCfg.WeightsOf(modelName)
-	if s.providers.appMgr != nil {
-		weights = s.providers.appMgr.CanonicalModelName(weights)
-	}
-	var modelMetadata *metadata.ModelMetadata
 	for _, model := range models {
 		if model.Name == weights || utils.FormatModelName(model.Name) == weights {
-			modelMetadata = model
-			break
+			return true, nil
 		}
 	}
-	if modelMetadata == nil {
-		return nil, fmt.Errorf("model metadata not found for: %s", weights)
-	}
-
-	modelPath, err := s.resolveModelPath(ctx, modelMetadata, normalizedType)
-	if err != nil {
-		return nil, fmt.Errorf("model path not found: %w", err)
-	}
-
-	// Parameters and environment go over as the caller sent them, and
-	// nothing else. LaunchInstance walks the tier tree itself and stores
-	// what it was handed as the request tier — the tier a restart
-	// replays. Resolving here too would hand it the whole merged set,
-	// and every configured value would then be replayed as if the
-	// caller had typed it, outranking the config it came from: a
-	// restart could never pick up a parameter change.
-	launchReq := prov_apps.LaunchRequest{
-		Provider:   normalizedType,
-		Model:      modelName,
-		Endpoint:   prov_apps.Endpoint(endpoint),
-		Port:       0,
-		Parameters: parameters,
-		EnvVars:    environment,
-	}
-
-	if normalizedType != "mlx" {
-		launchReq.Files = []instance.FileMount{{Name: "model", NodePath: modelPath, ReadOnly: true}}
-	}
-
-	return &instanceBuildResult{
-		LaunchReq:      launchReq,
-		ProviderConfig: &providerCfg,
-		ModelPath:      modelPath,
-	}, nil
-}
-
-// launchOnDemandContainerWithParams launches an on-demand container with
-// custom runtime parameters and environment variables.
-func (s *Server) launchOnDemandContainerWithParams(ctx context.Context, modelName, providerType, endpoint string, parameters, environment map[string]string) (*instance.Instance, error) {
-	normalizedType := utils.NormalizeAppType(providerType)
-	utils.LogDebugf("Launching model %s with provider %s", modelName, normalizedType)
-
-	// Build launch request with in-memory parameter resolution
-	// Note: Parameters like "auto" are resolved in-memory during this step
-	// We never save the resolved values - they're calculated fresh each launch
-	result, err := s.buildInstanceConfig(ctx, modelName, providerType, endpoint, parameters, environment)
-	if err != nil {
-		slog.Error("Failed to build instance config", "error", err)
-		return nil, err
-	}
-
-	// Only on-demand providers can be launched as instances
-	if result.ProviderConfig.HasEndpoint() {
-		slog.Error("launchOnDemandContainerWithParams called for non-launchable provider", "normalized_type", normalizedType, "mode", result.ProviderConfig.Mode)
-		return nil, fmt.Errorf("%s providers like %s don't need instance launching - use the provider's API directly", result.ProviderConfig.Mode, normalizedType)
-	}
-
-	// The request tier only; the tree is resolved over it inside
-	// LaunchInstance, which is where the final argv is decided.
-	slog.Debug("Launching with caller-supplied config", "params", len(result.LaunchReq.Parameters), "env", len(result.LaunchReq.EnvVars))
-
-	// Launch instance (async - health check happens in background)
-	inst, err := s.providers.appMgr.LaunchInstance(ctx, result.LaunchReq)
-	if err != nil {
-		slog.Error("Failed to launch instance", "instance", err)
-		return nil, fmt.Errorf("failed to launch instance: %w", err)
-	}
-	utils.LogDebugf("Instance launched successfully: ID=%s, Port=%d", inst.ID, inst.Port)
-
-	// Don't wait for health here - the async goroutine in runs manager handles that
-	// The instance will transition from StatusStarting -> StatusRunning when healthy
-	return inst, nil
-}
-
-// resolveModelPath resolves the filesystem path for a model from its metadata.
-// For MLX provider, returns the model name (HuggingFace repo name, not filesystem path).
-// For shared storage, caches locally on first use and returns the cache path.
-func (s *Server) resolveModelPath(ctx context.Context, model *metadata.ModelMetadata, providerType string) (string, error) {
-	// MLX expects HuggingFace repo names, not filesystem paths
-	if providerType == "mlx" {
-		return model.Name, nil
-	}
-
-	// Shared storage: cache locally for fast access
-	if s.config.Models.HasShared() {
-		return s.resolveModelPathWithCache(ctx, model)
-	}
-
-	return model.FullPath, nil
-}
-
-// resolveModelPathWithCache handles shared storage mode:
-// - If shared == cache (same directory), use directly (no copy needed)
-// - If model exists in local cache, return cache path (fast)
-// - If model only exists in shared storage, copy to cache first
-// - Return cache path for local fast access
-func (s *Server) resolveModelPathWithCache(ctx context.Context, model *metadata.ModelMetadata) (string, error) {
-	sharedDir := s.config.Models.GetShared()
-
-	// Get local cache directory (use GetModelsCacheDir for correct resolution)
-	cacheDir, err := modelregistry.GetModelsCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get cache directory: %w", err)
-	}
-
-	// Normalize paths for comparison (resolve symlinks, clean paths)
-	sharedDirClean := filepath.Clean(sharedDir)
-	cacheDirClean := filepath.Clean(cacheDir)
-
-	// If shared and cache are the same directory, use directly (no copy needed)
-	// This handles the coordinator case where local storage IS the shared storage
-	if sharedDirClean == cacheDirClean {
-		utils.LogDebugf("[Models] Shared and cache are same directory, using directly: %s", model.FullPath)
-		return model.FullPath, nil
-	}
-
-	// Calculate relative path from shared storage
-	// model.FullPath is absolute, we need to extract the relative portion
-	var relativePath string
-	if after, ok := strings.CutPrefix(model.FullPath, sharedDirClean); ok {
-		relativePath = after
-		relativePath = strings.TrimPrefix(relativePath, string(filepath.Separator))
-	} else {
-		// Model path doesn't start with shared dir - might be a local-only model
-		// or the path format is different. Use the full path as-is.
-		utils.LogDebugf("[Models] Model path '%s' not under shared dir '%s', using as-is", model.FullPath, sharedDir)
-		return model.FullPath, nil
-	}
-
-	sharedPath := model.FullPath
-	cachePath := filepath.Join(cacheDir, relativePath)
-
-	// If paths resolve to the same location, use directly
-	if filepath.Clean(sharedPath) == filepath.Clean(cachePath) {
-		utils.LogDebugf("[Models] Shared and cache paths resolve to same location: %s", cachePath)
-		return cachePath, nil
-	}
-
-	// Check if model already exists in cache
-	if modelcache.FileExists(cachePath) {
-		// Quick integrity check on cached model
-		if modelcache.HasManifest(cachePath) {
-			valid, err := s.model.Verifier.QuickVerify(context.WithoutCancel(ctx), cachePath, nil)
-			if err != nil || !valid {
-				slog.Info("[Models] Cached model failed integrity check, will re-cache", "cache", cachePath)
-				// Invalidate and continue to re-copy
-				s.model.Verifier.InvalidateCache(cachePath)
-			} else {
-				utils.LogDebugf("[Models] Using verified cached model: %s", cachePath)
-				return cachePath, nil
-			}
-		} else {
-			// No manifest in cache - trust it for now but log warning
-			utils.LogDebugf("[Models] Using cached model (no manifest): %s", cachePath)
-			return cachePath, nil
-		}
-	}
-
-	// Model not in cache - copy from shared storage with integrity verification
-	slog.Info("[Models] Caching from shared storage...", "name", model.Name)
-
-	// Check if shared storage has integrity manifest
-	if modelcache.HasManifest(sharedPath) {
-		// Use zero-trust copy: verify source → copy → verify destination
-		result, err := s.model.Verifier.VerifyAndCopy(context.WithoutCancel(ctx), sharedPath, cachePath)
-		if err != nil {
-			slog.Info("[Models] Verified cache failed: , using shared storage directly", "failed", err)
-			return sharedPath, nil
-		}
-		if !result.Valid {
-			slog.Info("[Models] Destination verification failed after copy, using shared storage")
-			return sharedPath, nil
-		}
-		slog.Info("[Models] Model cached with integrity verification: ( files verified)", "verification", cachePath, "files_checked", result.FilesChecked)
-		return cachePath, nil
-	}
-
-	// No manifest in shared storage - use plain copy and create manifest
-	if err := modelcache.CopyDir(sharedPath, cachePath); err != nil {
-		slog.Info("[Models] Cache failed, using shared storage directly", "directly", err)
-		return sharedPath, nil
-	}
-
-	// Create integrity manifest for future verifications
-	manifest, err := modelcache.CreateManifest(context.WithoutCancel(ctx), cachePath, model.Name, model.DownloadedFrom)
-	if err != nil {
-		slog.Warn("[Models] Warning: failed to create integrity manifest", "manifest", err)
-	} else {
-		if err := modelcache.WriteManifest(cachePath, manifest); err != nil {
-			slog.Warn("[Models] Warning: failed to write integrity manifest", "manifest", err)
-		}
-	}
-
-	slog.Info("[Models] Model cached successfully", "successfully", cachePath)
-	return cachePath, nil
+	return false, nil
 }

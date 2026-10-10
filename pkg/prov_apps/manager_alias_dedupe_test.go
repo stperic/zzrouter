@@ -49,9 +49,9 @@ func aliasTestConfig(t *testing.T) *config.AppsConfig {
 // request for that same repo id started the model a second time, under
 // its file stem, with both copies resident on the node at once.
 //
-// Canonicalizing inside LaunchInstance is what makes the two agree; the
+// Canonicalizing inside EnsureRun is what makes the two agree; the
 // assertion that matters is the instance count, not the name.
-func TestLaunchInstance_AliasFormsShareOneInstance(t *testing.T) {
+func TestEnsureRun_AliasFormsShareOneInstance(t *testing.T) {
 	const (
 		repoID    = "nomic-ai/nomic-embed-text-v1.5-GGUF"
 		fileStem  = "nomic-embed-text-v1.5.Q4_K_M"
@@ -70,15 +70,17 @@ func TestLaunchInstance_AliasFormsShareOneInstance(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
-	byRepo, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	byRepoResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "fake", Model: repoID,
 	})
+	byRepo := byRepoResult.Run
 	require.NoError(t, err)
 	require.NotNil(t, byRepo)
 
-	byStem, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	byStemResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "fake", Model: fileStem,
 	})
+	byStem := byStemResult.Run
 	require.NoError(t, err)
 	require.NotNil(t, byStem)
 
@@ -100,7 +102,7 @@ func TestLaunchInstance_AliasFormsShareOneInstance(t *testing.T) {
 // given. Returning "" for an unknown model is the normal cache miss,
 // and launching an instance whose model is the empty string would be a
 // worse failure than the duplicate this fix exists to stop.
-func TestLaunchInstance_EmptyCanonicalLeavesTheNameAlone(t *testing.T) {
+func TestEnsureRun_EmptyCanonicalLeavesTheNameAlone(t *testing.T) {
 	m, err := NewProviderAppManager(aliasTestConfig(t),
 		WithNodename(func() string { return "node1" }),
 		WithModelCanonicalizer(func(string) string { return "" }),
@@ -108,9 +110,10 @@ func TestLaunchInstance_EmptyCanonicalLeavesTheNameAlone(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "fake", Model: "unknown-to-the-cache",
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 	require.NotNil(t, inst)
 	assert.Equal(t, "unknown-to-the-cache", inst.Model)
@@ -138,9 +141,10 @@ func TestGetInstanceByModel_FindsAnInstanceByTheNameItWasLaunchedWith(t *testing
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
-	launched, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	launchedResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "fake", Model: repoID,
 	})
+	launched := launchedResult.Run
 	require.NoError(t, err)
 	require.NotNil(t, launched)
 

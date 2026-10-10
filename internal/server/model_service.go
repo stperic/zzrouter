@@ -133,7 +133,7 @@ func (s *ModelService) getModelDetails(ctx context.Context, model *cache.CachedM
 
 	if resp.StatusCode != 200 {
 		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response (raw provider response)
@@ -206,7 +206,7 @@ func (s *ModelService) DeleteModels(ctx context.Context, req *DeleteModelsReques
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response
@@ -397,7 +397,7 @@ func (s *ModelService) aggregateDeleteResponses(multiResp *routing.Response) (*r
 			if err != nil {
 				return nil, err
 			}
-			return nil, parseRoutedError(int(status), raw)
+			return nil, parseRoutedError(int(status), raw, nil)
 		}
 
 		// Extract deleted count (JSON numbers are float64)
@@ -489,7 +489,7 @@ func (s *ModelService) handleGetModelInstance(c *gin.Context) {
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			RespondToError(c, parseRoutedError(resp.StatusCode, resp.Body))
+			RespondToError(c, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers))
 			return
 		}
 		if err := json.Unmarshal(resp.Body, &runs); err != nil {

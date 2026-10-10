@@ -79,7 +79,7 @@ func (s *SystemService) GetSystemInfo(ctx context.Context, req *GetSystemInfoReq
 	}
 	if resp.StatusCode >= 400 {
 		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of unmarshaling Problem fields into systemData.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response

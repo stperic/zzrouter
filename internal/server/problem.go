@@ -10,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/openaicompat"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -174,46 +176,24 @@ func BadGateway(c *gin.Context, detail string) {
 	RespondWithProblem(c, http.StatusBadGateway, "Bad Gateway", sanitized)
 }
 
-// RespondToError writes a Problem Details response that preserves the original
-// status code and structure of routed errors, falling back to 500 Internal
-// Server Error for unrecognized errors.
-//
-// This is the preferred way for public handlers to propagate errors returned
-// from service/executor calls. It eliminates the old pattern of calling
-// err.Error() and passing the stringified (and possibly already-escaped-JSON)
-// result to RespondWithProblem, which produced nested errors.
-//
-// When err is a *RoutedError with an attached Problem Details, the inner
-// Problem Details is forwarded verbatim (with a fresh instance and request_id
-// reflecting the current hop). This lets clients see the real underlying cause
-// with its original status code (e.g. a 501 stays 501, not a wrapped 500).
+// RespondToError answers err in the request's dialect: a wire error as
+// built, a routed error with the document its node wrote, a named failure
+// from the failure table, and anything else as a 500 that keeps its cause.
 func RespondToError(c *gin.Context, err error) {
-	if err == nil {
-		return
-	}
-	var wire httperr.Error
-	if errors.As(err, &wire) {
-		respondSurfaceError(c, wire)
-		return
-	}
-	var re *RoutedError
-	if errors.As(err, &re) {
-		re.Respond(c)
-		return
-	}
-	InternalNodeError(c, err.Error())
+	respondError(c, err, http.StatusInternalServerError)
 }
 
 // RespondToLookupError is RespondToError for handlers that fetch one named
-// resource from a node.
-//
-// Those handlers cannot use a bare NotFound: when the node is unreachable
-// the service returns a *RoutedError, and flattening it to 404 tells the
-// caller "no such provider" for a provider that exists on a node that
-// merely timed out. An agent retrying elsewhere on that signal gives up on
-// the wrong thing. A routed failure therefore keeps its own status (502
-// with an upstream_timeout code); everything else is a genuine 404.
+// resource: an unnamed error means the resource is absent (404), while a
+// routed failure keeps its own status, so an unreachable node never reads
+// as "no such provider".
 func RespondToLookupError(c *gin.Context, err error) {
+	respondError(c, err, http.StatusNotFound)
+}
+
+// respondError is the one path from an error to a response; unnamed is the
+// status of an error nothing names, which is the surface's to decide.
+func respondError(c *gin.Context, err error, unnamed int) {
 	if err == nil {
 		return
 	}
@@ -227,7 +207,27 @@ func RespondToLookupError(c *gin.Context, err error) {
 		re.Respond(c)
 		return
 	}
-	NotFound(c, err.Error())
+	respondSurfaceError(c, failureWire(err, unnamed))
+}
+
+// failureWire is err as the failure table names it, or as an unnamed
+// failure with the given status. A memory refusal also names the budget
+// parameter that cannot fit.
+func failureWire(err error, unnamed int) httperr.Error {
+	wire, ok := knownFailure(err)
+	if !ok {
+		return httperr.Error{Status: unnamed, Type: openaicompat.StatusToErrorType(unnamed), Message: utils.SanitizeErrorMessage(err.Error())}
+	}
+	var memory *process.MemoryFitError
+	if errors.As(err, &memory) {
+		wire.Title = "GPU memory budget cannot fit"
+		wire.Extra = map[string]any{"errors": []utils.ParamError{{
+			Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB,
+			Want: "required_mib <= free_mib on each selected device", Message: wire.Message,
+			Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads.",
+		}}}
+	}
+	return wire
 }
 
 // OpenAI-compatible error response helpers
@@ -250,8 +250,8 @@ func OllamaError(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{"error": message})
 }
 
-// RespondToErrorOllama translates err to an Ollama wire response,
-// preserving the status code from *RoutedError and falling back to 500.
+// RespondToErrorOllama is RespondToError for the Ollama wire: a routed
+// error keeps its status, the rest answer from the failure table.
 func RespondToErrorOllama(c *gin.Context, err error) {
 	if err == nil {
 		return
@@ -263,8 +263,9 @@ func RespondToErrorOllama(c *gin.Context, err error) {
 	}
 	var re *RoutedError
 	if errors.As(err, &re) {
+		re.setRetryAfter(c)
 		OllamaError(c, re.StatusCode, re.Error())
 		return
 	}
-	OllamaError(c, http.StatusInternalServerError, err.Error())
+	respondSurfaceError(c, failureWire(err, http.StatusInternalServerError))
 }

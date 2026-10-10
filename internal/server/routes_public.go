@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/logging"
 	"github.com/stperic/zzrouter/pkg/prov_apps/upstream"
@@ -51,15 +51,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			s.jobs,
 		)
 	}
-	// EnsureRun resolves a bare model name → CachedModel via the cache;
-	// the cache already handles SourceID alias resolution so the agent
-	// can pass either form of the name.
-	s.services.Runs.WithModelLookup(func(ctx context.Context, name string) *cache.CachedModel {
-		cm, err := s.model.Cache.LookupModel(ctx, name)
-		if err != nil {
-			return nil
-		}
-		return cm
+	s.services.Runs.WithModelResolver(func(ctx context.Context, name string) (*resolver.Resolved, error) {
+		return s.ResolveModel(ctx, name, "")
 	})
 	s.services.Apps = NewAppsService(s, routingRouter)
 	s.services.Nodes = NewNodesService(s, routingRouter, func(address string) string {

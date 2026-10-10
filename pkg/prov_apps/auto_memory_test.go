@@ -35,11 +35,12 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	preview, err := mgr.prepareLaunch(svc, "generic", "chat", LaunchRequest{Provider: "generic", Model: "registry-model"}, 8640)
+	preview, err := mgr.prepareLaunch(svc, "generic", "chat", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
 	assert.NotContains(t, preview.resolved.Parameters, "dtype")
-	run, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "registry-model", Parameters: map[string]string{"memory_fraction": "auto", "tensor_parallel_size": "2"}})
+	runResult, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "registry-model", Parameters: map[string]string{"memory_fraction": "auto", "tensor_parallel_size": "2"}})
+	run := runResult.Run
 	require.NoError(t, err)
 	assert.Equal(t, "0.3000", run.Resolved().Parameters["memory-fraction"])
 	assert.Equal(t, "memory-fraction", run.Resolved().AutoMemory)
@@ -64,7 +65,7 @@ func TestAutoMemoryIntentPreservesParameterStatusWithoutDiscovery(t *testing.T) 
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	mgr.ReloadConfig(cfg)
-	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	prepared, err := mgr.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
 	prepared.resolved.Parameters["memory-fraction"] = "0.5"
@@ -133,7 +134,7 @@ func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "later.gguf"), []byte("later weights"), 0600))
 		return Localized{Params: params}, nil
 	}
-	req := LaunchRequest{Provider: "vllm", Model: "variant"}
+	req := EnsureRequest{Provider: "vllm", Model: "variant"}
 	inst := instance.NewInstance("need-argv", "vllm", req.Model, 8100, 0, 0)
 	inst.Endpoint = "chat"
 	run, err := mgr.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})

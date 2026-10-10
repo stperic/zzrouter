@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,7 +60,7 @@ type RunsExecutor struct {
 	// auto_deploy=true requests are refused.
 	deploy func(ctx context.Context, req *DeployRequest) (*Deployment, error)
 	// jobs is the registry the auto-deploy chain uses to mint a run job
-	// that waits on the deploy job before invoking LaunchInstance.
+	// that waits on the deploy job before invoking EnsureRun.
 	// Nullable — when nil, auto_deploy=true requests are refused.
 	jobs *jobs.Registry
 	// deployGroup coalesces concurrent auto_deploy on (provider, model, file)
@@ -225,7 +224,7 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 			return
 		}
 		if err != nil {
-			InternalNodeError(c, "failed to stop instance")
+			RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
 			return
 		}
 		utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
@@ -333,11 +332,7 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		if errors.Is(err, prov_apps.ErrInstanceNotFound) {
-			NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-			return
-		}
-		InternalNodeError(c, "restart failed: "+err.Error())
+		RespondToError(c, fmt.Errorf("restart run %s: %w", runID, err))
 		return
 	}
 
@@ -482,9 +477,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 
 	// Cloud providers don't run — they're already running upstream and
 	// "deploying" them just registers a model name (AddCloudModel). The
-	// /runs surface is local-only by definition; previously this fell
-	// through to LaunchInstance and 500'd because cloud providers have
-	// no Execution config to spawn a process from.
+	// /runs surface requires a local runtime.
 	if cfg := e.appsConfig(); cfg != nil {
 		if svc, ok := cfg.LookupApp(req.Provider); ok && svc.IsCloudProvider() {
 			BadRequest(c, fmt.Sprintf(
@@ -500,11 +493,12 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
+	// Before auto_deploy can start a download for a name admission refuses.
 	if err := e.appMgr.ValidateModel(c.Request.Context(), req.Model); err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
-	launchReq := prov_apps.LaunchRequest{
+	launchReq := prov_apps.EnsureRequest{
 		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
 		Provider:     req.Provider,
 		Model:        req.Model,
@@ -526,12 +520,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
-	// Launch the instance. Concurrent POSTs for the same (provider,
-	// model) are coalesced inside LaunchInstance via the manager's
-	// launchGroup singleflight, so the direct /runs path and the
-	// /runs/load path both get the same dedupe semantics — second
-	// caller receives the first's instance instead of ErrModelAlreadyLoaded.
-	inst, err := e.appMgr.LaunchInstance(c.Request.Context(), launchReq)
+	result, err := e.appMgr.EnsureRun(c.Request.Context(), launchReq)
 	if err != nil {
 		// Most of what a launch can fail on is the caller's doing: a
 		// model that is not on this node, a parameter the provider
@@ -539,11 +528,21 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		// those as 500 tells an agent to retry something that cannot
 		// ever succeed, so classify by sentinel and keep 500 for the
 		// failures that really are ours.
-		respondProviderErr(c, fmt.Errorf("failed to launch instance: %w", err))
+		RespondToError(c, fmt.Errorf("failed to launch instance: %w", err))
 		return
 	}
 
+	if result.Served {
+		c.JSON(http.StatusOK, LaunchRunResponse{Accepted: true, Provider: req.Provider, LaunchMode: req.LaunchMode, Status: "running", Port: result.Port, Node: e.getNodename(), Message: "Model loaded successfully", ParametersApplied: len(req.Parameters), FilesMounted: len(req.Files)})
+		return
+	}
+	inst := result.Run
+
 	hostname := e.getNodename()
+	message := "Instance launch accepted; subscribe to job_id for readiness"
+	if !result.Started {
+		message = "Run already exists for this model; reused"
+	}
 
 	// Return 202 Accepted with instance details + job_id so agents can
 	// subscribe to launch progress via /jobs/:id/stream?node=<node>.
@@ -559,7 +558,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"port":               inst.Port,
 		"health_url":         inst.HealthURL,
 		"started_at":         inst.StartedAt.Format(time.RFC3339),
-		"message":            "Instance launch accepted; subscribe to job_id for readiness",
+		"message":            message,
 		"files_mounted":      len(req.Files),
 		"parameters_applied": len(req.Parameters),
 		"node":               hostname,
@@ -701,13 +700,13 @@ func (e *RunsExecutor) HandleInternalGetRunHealth(c *gin.Context) {
 // handleAutoDeployLaunch is the auto_deploy=true chain. Resolves the
 // provider's registry + variant, kicks off a deploy via the injected
 // DeploymentsService, opens a run job that waits on the deploy job
-// before invoking LaunchInstance, and returns 202 with both job IDs.
+// before invoking EnsureRun, and returns 202 with both job IDs.
 //
 // Refuses cloud providers explicitly — those go through POST /deployments
 // (AddCloudModel, no download). The structural difference between the
 // two paths matters for failure modes and observability; transparent
 // dispatch would mask it.
-func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endpoint string, launchReq prov_apps.LaunchRequest) {
+func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endpoint string, launchReq prov_apps.EnsureRequest) {
 	if e.deploy == nil || e.jobs == nil {
 		ServiceUnavailable(c, "auto_deploy is not wired on this node")
 		return
@@ -794,22 +793,25 @@ func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endp
 
 // waitDeployThenLaunch is the chained run-job goroutine. Subscribes to
 // the deploy job's terminal event and either fails the run job or
-// invokes LaunchInstance on success.
-func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID string, launchReq prov_apps.LaunchRequest) {
+// invokes EnsureRun on success.
+func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID string, launchReq prov_apps.EnsureRequest) {
 	if err := waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(deployJobID) }); err != nil {
 		runHandle.Fail(fmt.Errorf("deploy job %s: %w", deployJobID, err))
 		return
 	}
 	runHandle.Meta(jobs.Meta{"phase": "launching"})
-	inst, err := e.appMgr.LaunchInstance(runHandle.Context(), launchReq)
-	if err == nil && inst.StreamJobID != "" {
+	result, err := e.appMgr.EnsureRun(runHandle.Context(), launchReq)
+	inst := result.Run
+	if err == nil && inst != nil && inst.StreamJobID != "" {
 		err = waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(inst.StreamJobID) })
 	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy: %w", err))
 		return
 	}
-	runHandle.Meta(jobs.Meta{"phase": "running", "instance_id": inst.ID, "port": inst.Port})
+	if inst != nil {
+		runHandle.Meta(jobs.Meta{"phase": "running", "instance_id": inst.ID, "port": inst.Port})
+	}
 	runHandle.Done()
 }
 

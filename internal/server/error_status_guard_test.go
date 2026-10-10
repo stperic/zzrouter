@@ -19,55 +19,51 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
-// sentinelStatus is the decision record: every error prov_apps exports
-// at the HTTP boundary, and the status it must produce.
-//
-// 500 is the default extractStatusCode falls back to, which is why a
-// sentinel missing from this table is a bug rather than a shrug: it
-// means a failure the caller caused is being reported as a failure the
-// server caused, and an agent reading 500 will retry something that
-// cannot succeed. Adding a sentinel to prov_apps without adding a row
-// here fails the test below.
-var sentinelStatus = map[string]struct {
-	err  error
-	want int
-}{
-	"ErrProviderNotFound":         {prov_apps.ErrProviderNotFound, http.StatusNotFound},
-	"ErrInstanceNotFound":         {prov_apps.ErrInstanceNotFound, http.StatusNotFound},
-	"ErrInstallInProgress":        {prov_apps.ErrInstallInProgress, http.StatusConflict},
-	"ErrInstancesRunning":         {prov_apps.ErrInstancesRunning, http.StatusConflict},
-	"ErrProviderNotManaged":       {prov_apps.ErrProviderNotManaged, http.StatusConflict},
-	"ErrProviderAlreadyInstalled": {prov_apps.ErrProviderAlreadyInstalled, http.StatusConflict},
-	"ErrInstanceAlreadyExists":    {prov_apps.ErrInstanceAlreadyExists, http.StatusConflict},
-	"ErrModelAlreadyLoaded":       {prov_apps.ErrModelAlreadyLoaded, http.StatusConflict},
-	"ErrPortConflict":             {prov_apps.ErrPortConflict, http.StatusConflict},
-	"ErrModelIncomplete":          {prov_apps.ErrModelIncomplete, http.StatusConflict},
-	"ErrUnsupportedPlatform":      {prov_apps.ErrUnsupportedPlatform, http.StatusBadRequest},
-	"ErrModelNotLocal":            {prov_apps.ErrModelNotLocal, http.StatusBadRequest},
-	"ErrParameterValidation":      {prov_apps.ErrParameterValidation, http.StatusBadRequest},
-	"ErrPortOutOfRange":           {prov_apps.ErrPortOutOfRange, http.StatusBadRequest},
-	"ErrDangerousEnvVar":          {prov_apps.ErrDangerousEnvVar, http.StatusBadRequest},
-	"ErrShutdown":                 {prov_apps.ErrShutdown, http.StatusServiceUnavailable},
-	"ErrAtCapacity":               {prov_apps.ErrAtCapacity, http.StatusServiceUnavailable},
-	"ErrPortUnavailable":          {prov_apps.ErrPortUnavailable, http.StatusServiceUnavailable},
+// sentinels names every error prov_apps exports at the HTTP boundary, so
+// the guards below can hold failureTable (the decision record) complete
+// against pkg/prov_apps/errors.go. Statuses live only in failureTable.
+var sentinels = map[string]error{
+	"ErrProviderNotFound":         prov_apps.ErrProviderNotFound,
+	"ErrInstanceNotFound":         prov_apps.ErrInstanceNotFound,
+	"ErrInstallInProgress":        prov_apps.ErrInstallInProgress,
+	"ErrExternalService":          prov_apps.ErrExternalService,
+	"ErrServiceDisabled":          prov_apps.ErrServiceDisabled,
+	"ErrInstancesRunning":         prov_apps.ErrInstancesRunning,
+	"ErrProviderNotManaged":       prov_apps.ErrProviderNotManaged,
+	"ErrProviderAlreadyInstalled": prov_apps.ErrProviderAlreadyInstalled,
+	"ErrInstanceAlreadyExists":    prov_apps.ErrInstanceAlreadyExists,
+	"ErrModelAlreadyLoaded":       prov_apps.ErrModelAlreadyLoaded,
+	"ErrPortConflict":             prov_apps.ErrPortConflict,
+	"ErrModelIncomplete":          prov_apps.ErrModelIncomplete,
+	"ErrUnsupportedPlatform":      prov_apps.ErrUnsupportedPlatform,
+	"ErrRunHeldByOtherProvider":   prov_apps.ErrRunHeldByOtherProvider,
+	"ErrModelNotLocal":            prov_apps.ErrModelNotLocal,
+	"ErrParameterValidation":      prov_apps.ErrParameterValidation,
+	"ErrPortOutOfRange":           prov_apps.ErrPortOutOfRange,
+	"ErrDangerousEnvVar":          prov_apps.ErrDangerousEnvVar,
+	"ErrShutdown":                 prov_apps.ErrShutdown,
+	"ErrAtCapacity":               prov_apps.ErrAtCapacity,
+	"ErrPortUnavailable":          prov_apps.ErrPortUnavailable,
 }
 
 // The sentinels reach handlers wrapped in whatever context the raise
 // site added, so classification has to survive wrapping -- which is the
-// half that a test comparing bare values would not check.
-func TestProviderSentinels_MapToTheirDecidedStatus(t *testing.T) {
-	for name, tc := range sentinelStatus {
+// half that a test comparing bare values would not check. A sentinel
+// with no row would fall to 500, a failure the caller cannot act on.
+func TestProviderSentinels_HaveARowInTheFailureTable(t *testing.T) {
+	for name, sentinel := range sentinels {
 		t.Run(name, func(t *testing.T) {
 			wrapped := fmt.Errorf("failed to launch instance: %w",
-				fmt.Errorf("build command: %w", tc.err))
-			if got := extractStatusCode(wrapped); got != tc.want {
-				t.Errorf("%s => %d, want %d", name, got, tc.want)
-			}
+				fmt.Errorf("build command: %w", sentinel))
+			wire, ok := knownFailure(wrapped)
+			require.True(t, ok, "prov_apps.%s has no row in failureTable", name)
+			assert.NotEqual(t, http.StatusInternalServerError, wire.Status)
+			assert.Equal(t, wire.Status, answeredStatus(wrapped))
 		})
 	}
 }
 
-// The table above is only a decision record if it is complete. This
+// failureTable is only a decision record if it is complete. This
 // walks prov_apps/errors.go -- the single place that file's own comment
 // declares the root-level error surface lives -- and holds the two in
 // step in both directions.
@@ -97,14 +93,14 @@ func TestProviderSentinels_EveryExportedErrorHasARow(t *testing.T) {
 	}
 
 	for name := range declared {
-		if _, ok := sentinelStatus[name]; !ok {
-			t.Errorf("prov_apps.%s has no row in sentinelStatus: decide its HTTP status, "+
+		if _, ok := sentinels[name]; !ok {
+			t.Errorf("prov_apps.%s is not in sentinels: add it, and decide its HTTP status in failureTable, "+
 				"or it will be reported as a 500 the caller cannot act on", name)
 		}
 	}
-	for name := range sentinelStatus {
+	for name := range sentinels {
 		if !declared[name] {
-			t.Errorf("sentinelStatus names prov_apps.%s, which %s no longer declares", name, errorsFile)
+			t.Errorf("sentinels names prov_apps.%s, which %s no longer declares", name, errorsFile)
 		}
 	}
 }

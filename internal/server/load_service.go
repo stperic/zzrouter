@@ -95,10 +95,9 @@ func (s *LoadService) preMerge(ctx context.Context, req *LoadModelRequest) (map[
 
 // LoadModelRequest represents a request to load a model
 type LoadModelRequest struct {
-	requestedModel string
-	Node           string `json:"node,omitempty"`
-	Provider       string `json:"provider,omitempty"`
-	ModelName      string `json:"model_name" binding:"required"`
+	Node      string `json:"node,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	ModelName string `json:"model_name" binding:"required"`
 	// Closed set, empty means "chat": the launch keys an instance by
 	// whatever string it is handed, so an unvalidated value starts a
 	// process nothing can route to.
@@ -118,6 +117,7 @@ func (req *LoadModelRequest) Validate() error {
 
 // LoadModelResponse represents the response from loading a model
 type LoadModelResponse struct {
+	Reused     bool   `json:"-"`
 	InstanceID string `json:"instance_id"`
 	Model      string `json:"model"`
 	Provider   string `json:"provider"`
@@ -125,16 +125,8 @@ type LoadModelResponse struct {
 	Status     string `json:"status"`
 	Node       string `json:"node"`
 	Message    string `json:"message"`
-	// JobID is the pkg/jobs handle for the underlying launch. Present
-	// on fresh launches AND on "already starting / already running"
-	// 409 responses — retries return the SAME ID so agents can
-	// subscribe idempotently.
+	// JobID follows the launch on fresh starts and reused runs.
 	JobID string `json:"job_id,omitempty"`
-
-	// Error fields (for conflict responses)
-	StatusCode int    `json:"-"` // Internal use only
-	Error      string `json:"error,omitempty"`
-	Details    string `json:"details,omitempty"`
 }
 
 // routeForModel routes a request based on host or model-aware discovery
@@ -159,28 +151,30 @@ func (s *LoadService) LoadModel(ctx context.Context, req *LoadModelRequest) (*Lo
 		return nil, newRoutedTransportError(err, req.Node)
 	}
 
-	// A warm-run 409 carries reusable instance data. Other failures, including
-	// admission conflicts, carry a problem envelope and must remain errors.
+	if resp.StatusCode >= http.StatusBadRequest && resp.StatusCode != http.StatusConflict {
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
+	}
 	var loadResp LoadModelResponse
-	if resp.StatusCode >= http.StatusBadRequest {
-		if resp.StatusCode != http.StatusConflict || json.Unmarshal(resp.Body, &loadResp) != nil || loadResp.InstanceID == "" {
-			return nil, parseRoutedError(resp.StatusCode, resp.Body)
+	if err := json.Unmarshal(resp.Body, &loadResp); err != nil {
+		if resp.StatusCode == http.StatusConflict {
+			return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 		}
-	} else if err := json.Unmarshal(resp.Body, &loadResp); err != nil {
 		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "upstream returned an invalid load response", httperr.CodeUpstreamShape, resp.Node)
 	}
-	loadResp.StatusCode = resp.StatusCode
+
+	if resp.StatusCode == http.StatusConflict {
+		if loadResp.InstanceID == "" {
+			return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
+		}
+		loadResp.Reused = true
+	}
 
 	// Use the host from routing response (actual IP we routed to)
 	if resp.Node != "" {
 		loadResp.Node = resp.Node
 	}
 
-	if resp.StatusCode == http.StatusConflict {
-		slog.Info("Reusing existing instance", "model", loadResp.Model, "node", loadResp.Node, "port", loadResp.Port)
-	} else {
-		slog.Info("Model loaded successfully", "model", loadResp.Model, "node", loadResp.Node, "port", loadResp.Port)
-	}
+	slog.Info("Model loaded successfully", "model", loadResp.Model, "node", loadResp.Node, "port", loadResp.Port)
 	return &loadResp, nil
 }
 
@@ -240,7 +234,7 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	// *RoutedError so the public controller forwards the same status +
 	// Problem Details body — not a 200 with an empty preview.
 	if resp.StatusCode != http.StatusOK {
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	var preview PreviewRunResponse

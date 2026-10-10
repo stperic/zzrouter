@@ -47,7 +47,7 @@ const watcherPollInterval = 500 * time.Millisecond
 // so a genuinely slow load doesn't get reaped before becoming healthy.
 const watcherHeartbeatInterval = 30 * time.Second
 
-// watchInstanceReadiness owns a jobs.Handle from LaunchInstance through
+// watchInstanceReadiness owns a jobs.Handle from EnsureRun through
 // first-readiness (Done) or terminal failure (Fail). Exits after the
 // terminal event. Post-readiness the instance lifecycle is observed via
 // /runs/:id and /runs/:id/health; the launch job is done.

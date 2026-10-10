@@ -3,15 +3,10 @@ package server
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/process"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ============================================================================
@@ -48,76 +43,6 @@ func extractEnvVar(token string) string {
 		return matches[1]
 	}
 	return ""
-}
-
-// extractStatusCode extracts the HTTP status code from a RoutedError.
-// Falls back to mapping prov_apps sentinel errors for direct (non-routed) calls.
-func extractStatusCode(err error) int {
-	var re *RoutedError
-	if errors.As(err, &re) {
-		return re.StatusCode
-	}
-	var classified *httperr.EngineFailure
-	if errors.As(err, &classified) {
-		return classified.HTTPError().Status
-	}
-	switch {
-	case errors.Is(err, prov_apps.ErrProviderNotFound),
-		errors.Is(err, prov_apps.ErrInstanceNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, pkgConfig.ErrModelNameConflict),
-		errors.Is(err, prov_apps.ErrInstallInProgress),
-		errors.Is(err, prov_apps.ErrInstancesRunning),
-		errors.Is(err, prov_apps.ErrProviderNotManaged),
-		errors.Is(err, prov_apps.ErrProviderAlreadyInstalled),
-		errors.Is(err, prov_apps.ErrInstanceAlreadyExists),
-		errors.Is(err, prov_apps.ErrModelAlreadyLoaded),
-		errors.Is(err, prov_apps.ErrPortConflict),
-		// The weights are here but half-downloaded. Nothing the
-		// caller can rephrase fixes it; they have to repair the
-		// model first, which is what 409 says and 400 does not.
-		errors.Is(err, prov_apps.ErrModelIncomplete):
-		return http.StatusConflict
-	case errors.Is(err, prov_apps.ErrUnsupportedPlatform),
-		errors.Is(err, process.ErrMemoryBudgetInvalid),
-		errors.Is(err, prov_apps.ErrModelNotLocal),
-		errors.Is(err, prov_apps.ErrParameterValidation),
-		errors.Is(err, prov_apps.ErrPortOutOfRange),
-		errors.Is(err, prov_apps.ErrDangerousEnvVar):
-		return http.StatusBadRequest
-	case errors.Is(err, prov_apps.ErrShutdown),
-		errors.Is(err, process.ErrMemoryObservation),
-		errors.Is(err, prov_apps.ErrAtCapacity),
-		errors.Is(err, prov_apps.ErrPortUnavailable):
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
-	}
-}
-
-// respondProviderErr writes an RFC 9457 problem response for a prov_apps
-// error, mapping sentinels (and RoutedError from cluster routing) to the
-// right HTTP status in one shot.
-func respondProviderErr(c *gin.Context, err error) {
-	var classified *httperr.EngineFailure
-	if errors.As(err, &classified) {
-		failure := (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError()
-		var memory *process.MemoryFitError
-		if errors.As(err, &memory) {
-			RespondWithProblemOpts(c, failure.Status, "GPU memory budget cannot fit", failure.Message, ProblemOpts{
-				Code: failure.Code, Errors: []utils.ParamError{{
-					Key: memory.Parameter, Code: failure.Code, Got: memory, Max: memory.FreeMiB,
-					Want: "required_mib <= free_mib on each selected device", Message: failure.Message,
-					Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads.",
-				}},
-			})
-			return
-		}
-		RespondWithProblemOpts(c, failure.Status, http.StatusText(failure.Status), failure.Message, ProblemOpts{Code: failure.Code})
-		return
-	}
-	status := extractStatusCode(err)
-	RespondWithProblem(c, status, http.StatusText(status), utils.SanitizeErrorMessage(err.Error()))
 }
 
 // respondFinalizeErr maps a FinalizeOnboarding/FinalizeOffboarding error

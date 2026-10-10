@@ -29,9 +29,9 @@ func parseLaunchMode(mode string) (instance.LaunchMode, error) {
 	}
 }
 
-// buildLaunchRequest creates a LaunchRequest from launch request parameters.
-func buildLaunchRequest(providerName string, req LaunchRequest) prov_apps.LaunchRequest {
-	return prov_apps.LaunchRequest{
+// buildEnsureRequest creates an EnsureRequest from launch request parameters.
+func buildEnsureRequest(providerName string, req LaunchRequest) prov_apps.EnsureRequest {
+	return prov_apps.EnsureRequest{
 		Provider:     providerName,
 		Port:         req.Port,
 		Parameters:   req.Parameters,

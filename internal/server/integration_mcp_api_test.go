@@ -228,7 +228,7 @@ func TestMCPPreviewProviderErrorsBelongToREST(t *testing.T) {
 		require.NotContains(t, problem["detail"], tc.absent)
 		_, err := s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: tc.provider, ModelName: "model"})
 		require.Error(t, err)
-		require.Equal(t, http.StatusBadRequest, extractStatusCode(err))
+		require.Equal(t, http.StatusBadRequest, answeredStatus(err))
 		require.Equal(t, problem["detail"], err.Error())
 		// The worker handler also forwards the same code, rather than wrapping it as 500.
 		rec := httptest.NewRecorder()

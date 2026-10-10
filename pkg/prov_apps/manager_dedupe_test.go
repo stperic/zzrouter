@@ -11,12 +11,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
-// TestLaunchInstance_ConcurrentDedupe pins the race fix. Two goroutines
-// call LaunchInstance for the same (provider, model) simultaneously; the
+// TestEnsureRun_ConcurrentDedupe pins the race fix. Two goroutines
+// call EnsureRun for the same (provider, model) simultaneously; the
 // coalescing singleflight must produce a single Instance shared by both
 // callers rather than one succeeding and the other erroring with
 // ErrModelAlreadyLoaded.
-func TestLaunchInstance_ConcurrentDedupe(t *testing.T) {
+func TestEnsureRun_ConcurrentDedupe(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
@@ -32,10 +32,11 @@ func TestLaunchInstance_ConcurrentDedupe(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() {
 			defer wg.Done()
-			inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+			instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 				Provider: "vllm",
 				Model:    "llama3-dedupe",
 			})
+			inst := instResult.Run
 			mu.Lock()
 			defer mu.Unlock()
 			results = append(results, inst)
@@ -72,25 +73,27 @@ func TestLaunchInstance_ConcurrentDedupe(t *testing.T) {
 	assert.Equal(t, 1, mineCount, "registry has more than one instance for the deduped model")
 }
 
-// TestLaunchInstance_SequentialReturnsExisting is the sequential variant
+// TestEnsureRun_SequentialReturnsExisting is the sequential variant
 // of the above. A second Launch after the first completes must also
 // return the same running instance — the "live" fast path inside the
 // singleflight body.
-func TestLaunchInstance_SequentialReturnsExisting(t *testing.T) {
+func TestEnsureRun_SequentialReturnsExisting(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
 
-	first, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	firstResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3-seq",
 	})
+	first := firstResult.Run
 	require.NoError(t, err)
 
-	second, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	secondResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3-seq",
 	})
+	second := secondResult.Run
 	require.NoError(t, err)
 	assert.Equal(t, first.ID, second.ID, "second launch should return the first instance")
 }

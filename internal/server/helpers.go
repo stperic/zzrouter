@@ -64,6 +64,7 @@ func ensureTimeout(ctx context.Context, timeout time.Duration) (context.Context,
 //	}
 type RoutedError struct {
 	StatusCode     int
+	RetryAfter     string // Preserves admission backoff across worker/coordinator hops.
 	Body           string
 	ProblemDetails *utils.ProblemDetails // parsed inner Problem Details, if any
 }
@@ -82,10 +83,17 @@ func (e *RoutedError) Error() string {
 	return fmt.Sprintf("HTTP %d", e.StatusCode)
 }
 
+func (e *RoutedError) setRetryAfter(c *gin.Context) {
+	if e.RetryAfter != "" {
+		c.Header("Retry-After", e.RetryAfter)
+	}
+}
+
 // Respond forwards the inner error to the client, preserving its status code
 // and Problem Details structure. A fresh request_id and instance path are set
 // from the current request so operators can correlate logs across hops.
 func (e *RoutedError) Respond(c *gin.Context) {
+	e.setRetryAfter(c)
 	if e.ProblemDetails != nil {
 		pd := *e.ProblemDetails // copy by value so we don't mutate the shared error
 		pd.Instance = c.Request.URL.Path
@@ -122,8 +130,8 @@ func newProblemError(status int, title, detail string) *RoutedError {
 // parseRoutedError builds a *RoutedError from a routed response body,
 // attempting to parse the body as a Problem Details JSON. If parsing succeeds
 // and the result looks like a Problem Details (has a Title), it is attached.
-func parseRoutedError(statusCode int, body []byte) *RoutedError {
-	re := &RoutedError{StatusCode: statusCode, Body: string(body)}
+func parseRoutedError(statusCode int, body []byte, headers http.Header) *RoutedError {
+	re := &RoutedError{StatusCode: statusCode, Body: string(body), RetryAfter: headers.Get("Retry-After")}
 	if len(body) == 0 {
 		return re
 	}
@@ -174,7 +182,7 @@ func routeAndParse[T any](ctx context.Context, router routing.Router, method, pa
 		return nil, newRoutedTransportError(err, node)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 	var result T
 	if err := json.Unmarshal(resp.Body, &result); err != nil {
@@ -225,7 +233,7 @@ func routeAndRelay(c *gin.Context, router routing.Router, method, path, node str
 		return
 	}
 	if resp.StatusCode >= 400 {
-		parseRoutedError(resp.StatusCode, resp.Body).Respond(c)
+		parseRoutedError(resp.StatusCode, resp.Body, resp.Headers).Respond(c)
 		return
 	}
 	c.Data(resp.StatusCode, "application/json", resp.Body)

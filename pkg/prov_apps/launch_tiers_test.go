@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 
 	"github.com/stretchr/testify/assert"
@@ -81,7 +82,7 @@ func tierManager(t *testing.T, node string) *ProviderAppManager {
 }
 
 // endpointAwareManager builds a provider that DECLARES an endpoints
-// overlay. That matters: LaunchInstance collapses the endpoint to chat
+// overlay. That matters: EnsureRun collapses the endpoint to chat
 // for providers with no overlays (one instance per provider+model), so
 // endpoint behaviour is only observable on an endpoint-aware provider.
 func endpointAwareManager(t *testing.T) *ProviderAppManager {
@@ -139,7 +140,7 @@ func TestResolveLaunchParams_TierPrecedence(t *testing.T) {
 			svc, ok := m.appsConfig.LookupApp("vllm")
 			require.True(t, ok)
 
-			params, _ := m.resolveLaunchParams(svc, LaunchRequest{
+			params, _ := m.resolveLaunchParams(svc, EnsureRequest{
 				Provider:   "vllm",
 				Model:      tc.model,
 				Parameters: tc.reqParam,
@@ -158,7 +159,7 @@ func TestResolveLaunchParams_UnknownNodeFallsBackNotSideways(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _ := m.resolveLaunchParams(svc, LaunchRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _ := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", params["ctx-size"], "no nodename must not reach tier2/tier3")
 }
 
@@ -169,7 +170,7 @@ func TestResolveLaunchParams_HigherTierDoesNotDropLowerKeys(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _ := m.resolveLaunchParams(svc, LaunchRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _ := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier3", params["ctx-size"])
 	assert.Equal(t, "d", params["only-default"], "defaults-only key must survive the overlay")
 }
@@ -179,7 +180,7 @@ func TestResolveLaunchParams_EnvironmentFollowsTheSameWalk(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	_, env := m.resolveLaunchParams(svc, LaunchRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	_, env := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", env["ZZ_ENV"], "environment must walk the tiers too, not read Defaults only")
 }
 
@@ -191,7 +192,7 @@ func TestResolveLaunchParams_AutoIsFilteredAfterRequestTier(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _ := m.resolveLaunchParams(svc, LaunchRequest{
+	params, _ := m.resolveLaunchParams(svc, EnsureRequest{
 		Provider:   "vllm",
 		Model:      "llama3",
 		Parameters: map[string]string{"ctx-size": "auto"},
@@ -224,18 +225,18 @@ func TestResolveLaunchParams_EndpointOverlayAppliesWithinItsTier(t *testing.T) {
 	resolved, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	embed, _ := m.resolveLaunchParams(resolved, LaunchRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
+	embed, _ := m.resolveLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
 	assert.Equal(t, "mean", embed["pooling"],
 		"a key only the overlay sets must reach the launch")
 	assert.Equal(t, "tier2", embed["ctx-size"],
 		"the node tier still outranks an overlay declared under defaults")
 
-	chat, _ := m.resolveLaunchParams(resolved, LaunchRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
+	chat, _ := m.resolveLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
 	_, leaked := chat["pooling"]
 	assert.False(t, leaked, "chat must not inherit the embeddings overlay")
 }
 
-// RestartInstance rebuilds its LaunchRequest from the stored instance.
+// RestartInstance rebuilds its EnsureRequest from the stored instance.
 // instance.Config carries no endpoint, so it has to be read off the
 // instance itself; dropping it relaunched an embeddings instance as a
 // chat one, and now that launch resolves the endpoints overlay it would
@@ -243,11 +244,12 @@ func TestResolveLaunchParams_EndpointOverlayAppliesWithinItsTier(t *testing.T) {
 func TestRestartRequestPreservesEndpoint(t *testing.T) {
 	m := endpointAwareManager(t)
 
-	inst, err := m.LaunchInstance(t.Context(), LaunchRequest{
+	instResult, err := m.EnsureRun(t.Context(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 		Endpoint: EndpointEmbeddings,
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 	require.Equal(t, string(EndpointEmbeddings), inst.Endpoint)
 
@@ -259,6 +261,14 @@ func TestRestartRequestPreservesEndpoint(t *testing.T) {
 	assert.Equal(t, "vllm", req.Provider)
 	assert.Equal(t, "llama3", req.Model)
 	assert.Zero(t, req.Port, "port must be left unset so the pool reallocates")
+	assert.Equal(t, instance.StartedByAPI, inst.StartedBy)
+	assert.False(t, req.ByRequest)
+
+	// A run a request started stays a request's run across a restart.
+	instResult, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: "other", ByRequest: true})
+	require.NoError(t, err)
+	assert.Equal(t, instance.StartedByRequest, instResult.Run.ToInfo("node").StartedBy)
+	assert.True(t, restartRequest(instResult.Run).ByRequest)
 }
 
 // The stored Config must hold the REQUEST tier only. If it held the
@@ -268,11 +278,12 @@ func TestRestartRequestPreservesEndpoint(t *testing.T) {
 func TestLaunchStoresRequestTierNotMergedResult(t *testing.T) {
 	m := tierManager(t, tierTestNode)
 
-	inst, err := m.LaunchInstance(t.Context(), LaunchRequest{
+	instResult, err := m.EnsureRun(t.Context(), EnsureRequest{
 		Provider:   "vllm",
 		Model:      "llama3",
 		Parameters: map[string]string{"seed": "42"},
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 
 	stored := inst.SnapshotConfig().Parameters
@@ -326,14 +337,14 @@ func TestBuildLaunch_ValidatesBeforeLocalizing(t *testing.T) {
 // The localizer is keyed by the provider's config key and the launch's
 // endpoint, and the instance keeps the configured values, so /runs
 // reports names rather than node-local paths.
-func TestLaunchInstance_LocalizerRefusalRefusesLaunch(t *testing.T) {
+func TestEnsureRun_LocalizerRefusalRefusesLaunch(t *testing.T) {
 	var gotProvider, gotEndpoint string
 	var gotParams map[string]string
 	m, _ := localizerManager(t, func(provider, endpoint, model string, params map[string]string) (Localized, error) {
 		gotProvider, gotEndpoint, gotParams = provider, endpoint, params
 		return Localized{}, errors.New("asset not on this node")
 	})
-	_, err := m.LaunchInstance(t.Context(), LaunchRequest{
+	_, err := m.EnsureRun(t.Context(), EnsureRequest{
 		Provider: "vllm", Model: "llama3",
 		Parameters: map[string]string{"template": "t.jinja"},
 	})

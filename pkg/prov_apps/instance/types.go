@@ -15,6 +15,14 @@ const (
 	StatusRestarting Status = "restarting"
 )
 
+// StartedBy says what started a run: a management call, or an inference request to a model with no run.
+type StartedBy string
+
+const (
+	StartedByAPI     StartedBy = "api"
+	StartedByRequest StartedBy = "request"
+)
+
 // IsTerminal returns true if the status represents a final state (stopped or failed).
 // Terminal instances should not block lifecycle operations like upgrade or uninstall.
 func (s Status) IsTerminal() bool {
@@ -65,8 +73,7 @@ type InstanceInfo struct {
 	Model            string `json:"model,omitempty"`
 	// Endpoint is the per-request endpoint label this instance serves
 	// ("chat", "embeddings", "reranking"). Empty defaults to chat.
-	// Surfaced so cluster-wide consumers (e.g. /runs/ensure) can
-	// distinguish multi-endpoint launches for one model.
+	// Surfaced so run listings can distinguish multi-endpoint launches for one model.
 	Endpoint              string            `json:"endpoint,omitempty"`
 	SourceRepo            string            `json:"source_repo,omitempty"`
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
@@ -85,6 +92,7 @@ type InstanceInfo struct {
 	ErrorMessage          string            `json:"error_message,omitempty"`
 	WaitingOn             string            `json:"waiting_on,omitempty"`   // run a queued launch waits for
 	EvictedRuns           []EvictedRun      `json:"evicted_runs,omitempty"` // idle runs this launch stopped for GPU memory
+	StartedBy             StartedBy         `json:"started_by,omitempty"`
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`

@@ -49,7 +49,7 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	_, err = mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
+	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
 	var failure *process.MemoryFitError
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(9500), failure.RequiredMiB)
@@ -57,13 +57,14 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	_, err = os.Stat(marker)
 	assert.True(t, os.IsNotExist(err), "refused launch must never start the engine")
 	// Node tier fits without request overrides and admission releases its refused port.
-	inst, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "arbitrary", Port: 8620})
+	result, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Port: 8620})
+	inst := result.Run
 	require.NoError(t, err)
 	assert.Equal(t, "0.55", inst.Resolved().Parameters["budget"])
 	require.NoError(t, mgr.StopInstance(t.Context(), inst.ID))
 	// A subsequent model sees the changed live measurement, not a cached free total.
 	writeFree("4000")
-	_, err = mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "second", Port: 8621})
+	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "second", Port: 8621})
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(5500), failure.RequiredMiB)
 	assert.Equal(t, int64(4000), failure.FreeMiB)
@@ -124,7 +125,8 @@ func (f queueFixture) release(t *testing.T, runs ...*instance.Instance) {
 
 func (f queueFixture) launch(t *testing.T, model string) *instance.Instance {
 	t.Helper()
-	inst, err := f.mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: model})
+	instResult, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: model})
+	inst := instResult.Run
 	require.NoError(t, err)
 	return inst
 }
@@ -165,7 +167,7 @@ func TestMemoryAdmissionQueuesWhileAdmissionLocked(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := f.mgr.LaunchInstance(ctx, LaunchRequest{Provider: "generic", Model: "two"})
+	_, err := f.mgr.EnsureRun(ctx, EnsureRequest{Provider: "generic", Model: "two"})
 	assert.ErrorIs(t, err, context.Canceled)
 	f.release(t, inst)
 }
@@ -206,7 +208,7 @@ func TestStopQueuedRun(t *testing.T) {
 func TestSmokeDoesNotQueue(t *testing.T) {
 	f := newQueueFixture(t)
 	first := f.launch(t, "one")
-	_, err := f.mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "two", Runtime: "generic", installSmoke: true})
+	_, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "two", Runtime: "generic", installSmoke: true})
 	require.ErrorIs(t, err, errAdmissionBusy)
 	assert.Len(t, f.mgr.instances.ListAll(), 1, "a refused smoke leaves nothing registered")
 	f.release(t, first)

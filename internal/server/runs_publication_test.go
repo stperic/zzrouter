@@ -135,7 +135,7 @@ func TestRunMutationWaitsForPublication(t *testing.T) {
 				if operation == "restart" {
 					method, path, pattern, handler = http.MethodPost, path+"/restart", "/runs/:id/restart", e.HandleInternalRestartRun
 					run.Config.Provider = "missing"
-					want = http.StatusInternalServerError
+					want = http.StatusNotFound // the relaunch names a provider that no longer exists
 				}
 				if operation == "launch" {
 					method, path, pattern, handler = http.MethodPost, "/runs", "/runs", e.HandleInternalLaunchRun
@@ -264,7 +264,7 @@ func TestRunAutoDeployChainWaitsForRunJob(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		e.waitDeployThenLaunch(chain, deploy.ID(), prov_apps.LaunchRequest{Provider: run.Provider, Model: run.Model})
+		e.waitDeployThenLaunch(chain, deploy.ID(), prov_apps.EnsureRequest{Provider: run.Provider, Model: run.Model})
 	}()
 	select {
 	case <-finished:

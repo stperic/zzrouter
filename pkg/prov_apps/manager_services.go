@@ -24,11 +24,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-var (
-	ErrExternalService = errors.New("provider is external; zzRouter cannot change its lifecycle")
-	ErrServiceDisabled = errors.New("provider is disabled; enable it before starting")
-)
-
 // ProviderServiceStatus describes daemon ownership separately from endpoint health.
 type ProviderServiceStatus struct {
 	Provider   string               `json:"provider"`
