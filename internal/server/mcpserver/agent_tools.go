@@ -77,7 +77,7 @@ type runInput struct {
 	Node  string `json:"node,omitempty" jsonschema:"Optional owning node name, never an address."`
 }
 type retryInput struct {
-	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key; reuse it when retrying the same operation."`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key, unique per operation: keys are remembered across sessions, so a new operation needs a key never used before. Reuse it only when retrying the same operation."`
 }
 type previewInput struct {
 	Model       string            `json:"model" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
