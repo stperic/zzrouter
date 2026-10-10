@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,14 +31,19 @@ func TestProviderCallsSendTheConfiguredCredential(t *testing.T) {
 	}))
 	t.Cleanup(daemon.Close)
 
-	cfg := &pkgConfig.AppsConfig{Version: "1.0", Name: "test"}
-	nas := pkgConfig.NewOllamaConnectProvider("ollama-nas", daemon.URL, "first-token")
-	require.NoError(t, cfg.AddApp("ollama-nas", pkgConfig.ServiceConfig{
-		Enabled: nas.Enabled, Name: "ollama-nas", Mode: "external", Protocol: nas.Protocol,
-		Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: daemon.URL, API: nas.Runtime.API},
-		Capabilities: nas.Capabilities,
-	}))
-	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithBackendResolver(backend.NewResolver(func() *pkgConfig.AppsConfig { return cfg }).Resolve))
+	withToken := func(token string) *pkgConfig.AppsConfig {
+		cfg := &pkgConfig.AppsConfig{Version: "1.0", Name: "test"}
+		nas := pkgConfig.NewOllamaConnectProvider("ollama-nas", daemon.URL, token)
+		require.NoError(t, cfg.AddApp("ollama-nas", pkgConfig.ServiceConfig{
+			Enabled: nas.Enabled, Name: "ollama-nas", Mode: "external", Protocol: nas.Protocol,
+			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: daemon.URL, API: nas.Runtime.API},
+			Capabilities: nas.Capabilities,
+		}))
+		return cfg
+	}
+	var current atomic.Pointer[pkgConfig.AppsConfig]
+	current.Store(withToken("first-token"))
+	mgr, err := prov_apps.NewProviderAppManager(current.Load(), prov_apps.WithBackendResolver(backend.NewResolver(current.Load).Resolve))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, mgr.Stop(context.Background())) })
 	load := func(model string) string {
@@ -54,9 +60,8 @@ func TestProviderCallsSendTheConfiguredCredential(t *testing.T) {
 
 	assert.Equal(t, "Bearer first-token", load("a"))
 
-	require.NoError(t, cfg.UpdateApp("ollama-nas", func(sc *pkgConfig.ServiceConfig) error {
-		sc.Runtime.API = &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "second-token"}
-		return nil
-	}))
+	// An edit reaches the node as a new config, never as a write to the one in use.
+	current.Store(withToken("second-token"))
+	mgr.ReloadConfig(current.Load())
 	assert.Equal(t, "Bearer second-token", load("b"), "no snapshot: the edited token is sent")
 }

@@ -936,8 +936,33 @@ func (d *fakeDaemon) isLoaded(model string) bool {
 
 type servedRig struct {
 	*contractRig
-	cfg    *config.AppsConfig
 	daemon *fakeDaemon
+	config atomic.Pointer[config.AppsConfig] // the config in use, as the node's store holds it
+	edits  []func(*config.ServiceConfig)
+}
+
+// servedConfig builds ollama from scratch with every edit so far: a new config shares nothing with one in use.
+func (r *servedRig) servedConfig(t *testing.T) *config.AppsConfig {
+	t.Helper()
+	svc := config.ServiceConfig{
+		Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external",
+		Runtime:      &config.AppRuntimeConfig{Endpoint: servedBase, KeepAlive: "5m"},
+		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+	}
+	for _, edit := range r.edits {
+		edit(&svc)
+	}
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("ollama", svc))
+	return cfg
+}
+
+// edit changes the provider as production does: a new config, reloaded.
+func (r *servedRig) edit(t *testing.T, fn func(*config.ServiceConfig)) {
+	t.Helper()
+	r.edits = append(r.edits, fn)
+	r.config.Store(r.servedConfig(t))
+	r.m.ReloadConfig(r.config.Load())
 }
 
 // newServedRig builds a served provider, ollama, over a fake daemon.
@@ -950,14 +975,10 @@ func newServedRig(t *testing.T, opts ...Option) *servedRig {
 func newServedRigTimed(t *testing.T, clientTimeout time.Duration, opts ...Option) *servedRig {
 	t.Helper()
 	isolateProviderRoot(t)
-	r := &servedRig{contractRig: &contractRig{}, cfg: &config.AppsConfig{}, daemon: newFakeDaemon()}
-	require.NoError(t, r.cfg.AddApp("ollama", config.ServiceConfig{
-		Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external",
-		Runtime:      &config.AppRuntimeConfig{Endpoint: servedBase, KeepAlive: "5m"},
-		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
-	}))
+	r := &servedRig{contractRig: &contractRig{}, daemon: newFakeDaemon()}
+	r.config.Store(r.servedConfig(t))
 	resolve := WithBackendResolver(func(name string) (*backend.Resolved, bool) {
-		svc, ok := r.cfg.LookupApp(name)
+		svc, ok := r.config.Load().LookupApp(name)
 		if !ok {
 			return nil, false
 		}
@@ -967,9 +988,10 @@ func newServedRigTimed(t *testing.T, clientTimeout time.Duration, opts ...Option
 		r.attempts.Add(1)
 		return ctx, func(EnsureResult, error) {}
 	})
-	m, err := NewProviderAppManager(r.cfg, append([]Option{WithHTTPClient(&http.Client{Transport: r.daemon, Timeout: clientTimeout}), resolve, observe}, opts...)...)
+	m, err := NewProviderAppManager(r.config.Load(), append([]Option{WithHTTPClient(&http.Client{Transport: r.daemon, Timeout: clientTimeout}), resolve, observe}, opts...)...)
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
+	m.SetProviderVersion("ollama", "test") // a reload would otherwise probe a real daemon for it
 	r.m = m
 	return r
 }
@@ -1516,10 +1538,9 @@ func TestEnsureRunContractServed(t *testing.T) {
 				r := newServedRigTimed(t, clientTimeout)
 				r.daemon.set(func(d *fakeDaemon) { d.loadDelay = loadTime })
 				if tc.budget != "" {
-					require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error {
+					r.edit(t, func(svc *config.ServiceConfig) {
 						svc.Runtime.HealthCheck.ReadinessProbe = &config.ProbeConfig{Timeout: tc.budget}
-						return nil
-					}))
+					})
 				}
 				o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
 				require.NoError(t, o.err)
@@ -1538,15 +1559,13 @@ func TestEnsureRunContractServed(t *testing.T) {
 		run := r.running(t, served)
 		pinned := r.running(t, EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}})
 		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State)
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error {
+		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"num-ctx": "4096"}}
-			return nil
-		}))
+		})
 		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State, "a key the load does not send changes nothing")
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error {
+		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Runtime.KeepAlive = "10m"
-			return nil
-		}))
+		})
 		stale := r.m.ParametersStatus(run)
 		assert.Equal(t, instance.ParametersStale, stale.State)
 		assert.Contains(t, stale.Changed, "parameters.keep-alive")
@@ -1611,19 +1630,26 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 	})
 
 	t.Run("S28 a run of a provider config no longer enables still ends", func(t *testing.T) {
-		t.Run("stopped after the edit", func(t *testing.T) {
+		t.Run("a stop in progress when it is disabled", func(t *testing.T) {
 			r := newServedRig(t)
-			run := r.running(t, served)
-			require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error { svc.Enabled = new(false); return nil }))
-			require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
-			assert.Equal(t, 1, r.daemon.count(true))
+			r.daemon.holdLoads()
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			r.daemon.waitEntered(t)
+			stopped := make(chan error, 1)
+			go func() { stopped <- r.m.StopInstance(context.Background(), o.result.Run.ID) }()
+			waitParkedOn(t, ").StopInstance(", 1, contractWait)
+			r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) }) // the stop holds the run; the reload leaves it
+			r.daemon.release()
+			require.NoError(t, <-stopped)
+			assert.Equal(t, 1, r.daemon.count(true), "the disabled provider's daemon is still told")
+			assert.False(t, r.daemon.isLoaded(servedLoaded))
 			assert.Empty(t, r.m.instances.List())
 		})
 		t.Run("retired by the reload", func(t *testing.T) {
 			r := newServedRig(t)
 			run := r.running(t, served)
-			require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error { svc.Enabled = new(false); return nil }))
-			r.m.ReloadConfig(r.cfg)
+			r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) })
 			require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
 			assert.Empty(t, r.m.instances.List())
 			assert.Zero(t, r.daemon.count(true), "the provider no longer exists here: nothing is asked of it")
@@ -1633,7 +1659,7 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 	t.Run("S29 keep-alive: explicit reaches the daemon, unset is its own, zero is zzRouter's", func(t *testing.T) {
 		r := newServedRig(t)
 		r.m.Start(t.Context())
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error { svc.Runtime.KeepAlive = ""; return nil }))
+		r.edit(t, func(svc *config.ServiceConfig) { svc.Runtime.KeepAlive = "" })
 		unset := r.running(t, served)
 		assert.NotContains(t, r.daemon.generateCalls()[0].body, "keep_alive", "the daemon's OLLAMA_KEEP_ALIVE applies")
 		assert.NotContains(t, unset.Resolved().Parameters, "keep-alive")
@@ -1721,15 +1747,13 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 
 	t.Run("S34 the reconcile's listing carries the provider's credential, edits included", func(t *testing.T) {
 		r := newServedRig(t)
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error {
+		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Runtime.API = &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "first-token"}
-			return nil
-		}))
+		})
 		r.tick(t)
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error {
+		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Runtime.API = &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "second-token"}
-			return nil
-		}))
+		})
 		r.tick(t)
 		r.daemon.mu.Lock()
 		defer r.daemon.mu.Unlock()
@@ -1774,8 +1798,7 @@ func TestEnsureRunContractServedRaces(t *testing.T) {
 		o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
 		require.NoError(t, o.err)
 		r.daemon.waitEntered(t)
-		require.NoError(t, r.cfg.UpdateApp("ollama", func(svc *config.ServiceConfig) error { svc.Enabled = new(false); return nil }))
-		r.m.ReloadConfig(r.cfg)
+		r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) })
 		require.ErrorIs(t, o.result.Run.FailureCause(), ErrModelDropped)
 		for len(r.m.auditEvents) > 0 {
 			<-r.m.auditEvents
