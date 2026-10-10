@@ -796,7 +796,7 @@ def scenarios(node, provider):
             "prompt": f"On node {node}, start {a['name']} and then {vision['name']} with {provider}, the second right after the first"
                       f"{share}. Follow both. If both serve, smoke-test each with one chat. If zzRouter refuses one, explain from its "
                       "error which run holds the memory and how much is needed. Then stop everything you started."
-                      + tail(provider) + " JSON keys: both_served (bool), refused_model, holder, stopped (bool).",
+                      + tail(provider) + " JSON keys: both_served (bool: both held at once; false if one was evicted or refused), refused_model, holder, stopped (bool).",
             "check": check_contention,
             "expect_error": "cannot fit",
         })
