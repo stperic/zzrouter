@@ -989,6 +989,15 @@ func (r *servedRig) tick(t *testing.T) {
 	r.m.reconcileServedRuns(t.Context())
 }
 
+// runLog is what run's log file holds.
+func runLog(t *testing.T, run *instance.Instance) string {
+	t.Helper()
+	require.NotEmpty(t, run.LogFilePath, "every run has a log")
+	body, err := os.ReadFile(run.LogFilePath)
+	require.NoError(t, err)
+	return string(body)
+}
+
 func awaitLeft(t *testing.T, run *instance.Instance) {
 	t.Helper()
 	select {
@@ -1169,6 +1178,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		calls := r.daemon.generateCalls()
 		require.Len(t, calls, 2)
 		assert.True(t, calls[1].unload)
+		assert.Contains(t, runLog(t, run), "stopped (user)")
 		assert.Equal(t, servedLoaded, calls[1].model)
 		assert.Equal(t, float64(0), calls[1].keepAlive)
 		assert.Empty(t, r.m.instances.List())
@@ -1186,6 +1196,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			assert.Equal(t, instance.StatusFailed, run.GetStatus())
 			assert.Empty(t, r.m.instances.List())
 			assert.Zero(t, r.daemon.count(true))
+			assert.Regexp(t, `(?s)load requested, keep-alive 5m0s\n.* loaded\n.* dropped by the daemon: .*a request to the model starts it again\n$`, runLog(t, run))
 		})
 		t.Run("an unknown model is adopted", func(t *testing.T) {
 			r := newServedRig(t)
@@ -1199,6 +1210,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			assert.Equal(t, instance.StatusRunning, adopted.GetStatus())
 			assert.Negative(t, adopted.GetKeepAlive(), "zzRouter never expires what another client loaded")
 			assert.Zero(t, adopted.Port)
+			assert.Contains(t, runLog(t, adopted), "adopted (loaded by another client)")
 		})
 		t.Run("a starting run is untouched", func(t *testing.T) {
 			r := newServedRig(t)

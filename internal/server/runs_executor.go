@@ -433,10 +433,6 @@ WaitForLogPath:
 				return
 			}
 			inst = i
-			if !e.appMgr.HasLog(inst) {
-				NotFound(c, fmt.Sprintf("run '%s' has no log; its provider serves the model", instanceID))
-				return
-			}
 
 			// Check if log file path is set
 			if inst.LogFilePath != "" {

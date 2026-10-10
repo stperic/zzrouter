@@ -30,8 +30,6 @@ type engine interface {
 	upstream(run *instance.Instance) (string, backend.Upstream, error)
 	// outlivesNode reports whether a run's model stays loaded when this node stops.
 	outlivesNode() bool
-	// hasLog reports whether a run writes a log file of its own.
-	hasLog() bool
 }
 
 func (m *ProviderAppManager) engine(lifecycle RunLifecycle) engine {
@@ -46,9 +44,6 @@ func (m *ProviderAppManager) runEngine(run *instance.Instance) engine {
 	_, svc, _ := m.resolveConfigKey(run.Provider)
 	return m.engine(Lifecycle(svc))
 }
-
-// HasLog reports whether run writes a log file of its own.
-func (m *ProviderAppManager) HasLog(run *instance.Instance) bool { return m.runEngine(run).hasLog() }
 
 // Upstream returns where a run's requests go and what of the caller's request travels there.
 func (m *ProviderAppManager) Upstream(run *instance.Instance) (string, backend.Upstream, error) {
@@ -117,8 +112,6 @@ func (processEngine) upstream(run *instance.Instance) (string, backend.Upstream,
 
 func (processEngine) outlivesNode() bool { return false }
 
-func (processEngine) hasLog() bool { return true }
-
 // servedEngine loads a run's model into its provider's daemon, which schedules its own memory.
 type servedEngine struct{ m *ProviderAppManager }
 
@@ -147,7 +140,12 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	run.WireModel = load.launch.WireModel
 	run.SetResolved(load.resolved)
 	run.Admit() // the daemon admits its own memory
-	return run, daemonKeepAlive, nil
+	logFile, logPath, err := e.m.runLogFile(run)
+	if err != nil {
+		return nil, nil, err
+	}
+	run.SetLogFilePath(logPath)
+	return run, daemonKeepAlive, logFile.Close()
 }
 
 func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {
@@ -160,6 +158,11 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		return nil, err
 	}
 	m.watchRun(run, req)
+	sent := "daemon default"
+	if daemonKeepAlive != nil {
+		sent = instance.FormatKeepAlive(*daemonKeepAlive)
+	}
+	m.record(run, runEvent(EventInstanceStarting, run, "load requested, keep-alive "+sent))
 	// The load ends the start: Stop waits for it, as for any start, before it forgets runs.
 	m.onDemandStarts.Add(1)
 	run.TrackGoroutine()
@@ -188,11 +191,11 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		err = ErrShutdown // a start Stop cancelled answers why, loaded or not: the node forgets it
 	}
 	if err != nil {
-		err = fmt.Errorf("load %s: %w", run.Model, err)
+		err = fmt.Errorf("load %s failed: %w", run.Model, err)
 		if run.Context().Err() == nil { // a stop in progress owns the run's removal
 			m.releaseRun(run, err)
 		}
-		m.emitEvent(failedEvent(run, obsruns.FailureLaunchErr, err))
+		m.record(run, failedEvent(run, obsruns.FailureLaunchErr, err))
 		return
 	}
 	if run.Context().Err() != nil { // ended or retired while loading: the node asked the model gone
@@ -205,7 +208,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 	}
 	run.MarkRunning()
 	run.SetStartedAtIfZero()
-	m.emitEvent(runEvent(EventInstanceRunning, run, "Ready (loaded)"))
+	m.record(run, runEvent(EventInstanceRunning, run, "loaded"))
 }
 
 func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
@@ -249,8 +252,6 @@ func (e servedEngine) upstream(run *instance.Instance) (string, backend.Upstream
 }
 
 func (servedEngine) outlivesNode() bool { return true }
-
-func (servedEngine) hasLog() bool { return false }
 
 // readinessBudget is how long a provider gives a run to become ready.
 func readinessBudget(svc config.ServiceConfig) time.Duration {

@@ -196,16 +196,22 @@ type admittedRun struct {
 	transform process.EnvironmentTransform
 }
 
+// runLogFile opens run's log file for appending; it outlives the run on this node.
+func (m *ProviderAppManager) runLogFile(run *instance.Instance) (*os.File, string, error) {
+	// Sanitized so a hostile model id cannot escape the log directory.
+	f, path, err := m.logMgr.CreateLogFile(run.ID, run.Provider, sanitizeLogFragment(run.Model))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create log file: %w", err)
+	}
+	return f, path, nil
+}
+
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
 func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
-	// Create log file. Sanitize model name for filesystem safety —
-	// strip every character outside [A-Za-z0-9._-] so a hostile or
-	// quirky model id (slashes, backslashes, ..) cannot escape the
-	// log directory.
-	logFile, logPath, err := m.logMgr.CreateLogFile(inst.ID, req.Provider, sanitizeLogFragment(req.Model))
+	logFile, logPath, err := m.runLogFile(inst)
 	if err != nil {
-		return admittedRun{}, fmt.Errorf("failed to create log file: %w", err)
+		return admittedRun{}, err
 	}
 	inst.SetLogFilePath(logPath)
 	run, err := m.prepareRun(ctx, inst, req, selection)
@@ -762,7 +768,7 @@ func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance
 	}
 
 	// Emit event
-	m.emitEvent(stoppedEvent(inst, reason, "Instance stopped"))
+	m.record(inst, stoppedEvent(inst, reason, fmt.Sprintf("stopped (%s)", reason)))
 
 	return nil
 }

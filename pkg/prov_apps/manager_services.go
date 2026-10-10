@@ -335,7 +335,7 @@ func (m *ProviderAppManager) controlProviderService(ctx context.Context, name, a
 func (m *ProviderAppManager) daemonRestarted(provider string) {
 	for _, run := range m.instances.ListByProvider(provider) {
 		if run.GetStatus() == instance.StatusRunning {
-			m.retireRun(run, fmt.Errorf("%w: %s's daemon restarted", ErrModelDropped, provider), obsruns.StopReasonUser)
+			m.retireRun(run, fmt.Sprintf("retired: %s's daemon stopped or restarted", provider), obsruns.StopReasonUser)
 		}
 	}
 }
@@ -643,15 +643,15 @@ func (m *ProviderAppManager) RunningModels(provider string) []string {
 	return names
 }
 
-// retireRun ends a run whose daemon no longer holds its model; nothing is asked of the daemon.
-func (m *ProviderAppManager) retireRun(run *instance.Instance, cause error, reason obsruns.StopReason) {
+// retireRun ends a run whose daemon no longer holds its model, for why; nothing is asked of the daemon.
+func (m *ProviderAppManager) retireRun(run *instance.Instance, why string, reason obsruns.StopReason) {
 	if !run.ClaimEnd() {
 		return // a stop in progress ends it
 	}
 	run.Cancel()
 	run.StopKeepAliveTimer()
-	m.releaseRun(run, cause)
-	m.emitEvent(stoppedEvent(run, reason, cause.Error()))
+	m.releaseRun(run, fmt.Errorf("%w: %s", ErrModelDropped, why))
+	m.record(run, stoppedEvent(run, reason, why))
 }
 
 // retireUnserved retires the runs of a served provider config no longer enables: it no longer exists here.
@@ -665,7 +665,7 @@ func (m *ProviderAppManager) retireUnserved(before *config.AppsConfig) {
 			svc, found = before.LookupApp(run.Provider)
 		}
 		if found && Lifecycle(svc) == LifecycleServed {
-			m.retireRun(run, fmt.Errorf("%w: %s is no longer enabled", ErrModelDropped, run.Provider), obsruns.StopReasonUser)
+			m.retireRun(run, fmt.Sprintf("retired: its provider %s was disabled or removed", run.Provider), obsruns.StopReasonUser)
 		}
 	}
 }
@@ -722,7 +722,7 @@ func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider strin
 		case held:
 			run.SetLoaded(daemonLoaded(model))
 		case run.GetStatus() == instance.StatusRunning:
-			m.retireRun(run, fmt.Errorf("%w: %s dropped %s", ErrModelDropped, provider, run.Model), obsruns.StopReasonCrash)
+			m.retireRun(run, fmt.Sprintf("dropped by the daemon: %s unloaded %s to fit another model or at its own expiry (either is possible); a request to the model starts it again", provider, run.Model), obsruns.StopReasonCrash)
 		}
 	}
 	// A failed stop is retried while the daemon holds the model, else released; a stop in progress keeps its claim.
@@ -781,9 +781,11 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 	}
 	m.flightsMu.Unlock()
 	m.mu.Unlock()
-	if registered {
-		m.emitEvent(runEvent(EventInstanceRunning, run, "Adopted (loaded before this run)"))
+	if !registered {
+		_ = os.Remove(run.LogFilePath)
+		return
 	}
+	m.record(run, runEvent(EventInstanceRunning, run, "adopted (loaded by another client)"))
 }
 
 // holds reports a run of any provider and endpoint for a name the daemon lists, case aside.
