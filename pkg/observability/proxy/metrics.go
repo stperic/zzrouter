@@ -103,13 +103,6 @@ var reqCtxErrorTypeKey = requestContextKey(CtxKeyErrorType)
 // the gate also needs to apply at every llm-package emission site.
 const UnknownModelLabel = genai.UnknownModelLabel
 
-// SetModelAllowlist forwards to genai.SetModelAllowlist. Kept on the
-// proxy surface for callers that already imported this package; the
-// canonical setter lives in genai.
-func SetModelAllowlist(checker func(string) bool) {
-	genai.SetModelAllowlist(checker)
-}
-
 // SetErrorTypeOnRequest returns a copy of req whose context carries the
 // proxy-metric error.type override. Use from bare http.Handler call
 // sites (e.g. writeError users) where the gin

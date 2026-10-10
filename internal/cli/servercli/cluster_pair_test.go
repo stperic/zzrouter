@@ -5,42 +5,6 @@ import (
 	"testing"
 )
 
-func TestShortFingerprint(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "sha256 prefixed hex gets compact form",
-			in:   "sha256:51aae8bdd0a31839e5389d59bdd0711f70feba0a504c86879c71d42c4d0018f7",
-			want: "sha256:51aae8bd…18f7",
-		},
-		{
-			name: "bare hex gets compact form",
-			in:   "51aae8bdd0a31839e5389d59bdd0711f70feba0a504c86879c71d42c4d0018f7",
-			want: "51aae8bd…18f7",
-		},
-		{
-			name: "short input returned unchanged",
-			in:   "tooshort",
-			want: "tooshort",
-		},
-		{
-			name: "empty input",
-			in:   "",
-			want: "",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shortFingerprint(tc.in); got != tc.want {
-				t.Errorf("shortFingerprint(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestFormatPairingCode(t *testing.T) {
 	if got := formatPairingCode("ABCDEFGHIJKLMNOP"); got != "ABCD-EFGH-IJKL-MNOP" {
 		t.Errorf("formatPairingCode didn't dash-group: %q", got)

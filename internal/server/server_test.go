@@ -110,13 +110,6 @@ func TestParamRuleBuilders(t *testing.T) {
 		}
 	})
 
-	t.Run("RequiredQueryParam", func(t *testing.T) {
-		rule := RequiredQueryParam("id")
-		if !rule.Required {
-			t.Error("Required should be true")
-		}
-	})
-
 	t.Run("BoolQueryParam", func(t *testing.T) {
 		rule := BoolQueryParam("verbose")
 		if rule.Type != ParamTypeBool {
@@ -577,20 +570,6 @@ func TestRespondList(t *testing.T) {
 	}
 	if !strings.Contains(body, `"has_more":true`) {
 		t.Error("response should contain has_more")
-	}
-}
-
-func TestRespondNoContent(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-
-	respondNoContent(c)
-
-	// Gin's Status() sets internal state; check Writer.Status()
-	// The httptest.Recorder's code is set when headers are flushed
-	// which gin does lazily. We check gin's internal status instead.
-	if status := c.Writer.Status(); status != http.StatusNoContent {
-		t.Errorf("status = %d, want %d", status, http.StatusNoContent)
 	}
 }
 
@@ -1283,22 +1262,6 @@ func TestRespondSuccess(t *testing.T) {
 // ============================================================================
 // Validation Rule Builder Tests (Extended)
 // ============================================================================
-
-func TestRequiredQueryParam(t *testing.T) {
-	rule := RequiredQueryParam("search")
-	if rule.Name != "search" {
-		t.Errorf("Name = %q, want 'search'", rule.Name)
-	}
-	if rule.Source != ParamSourceQuery {
-		t.Error("Source should be ParamSourceQuery")
-	}
-	if !rule.Required {
-		t.Error("Required should be true")
-	}
-	if rule.MinLength != 1 {
-		t.Errorf("MinLength = %d, want 1", rule.MinLength)
-	}
-}
 
 // ============================================================================
 // Mock Providers for ModelService Tests

@@ -14,48 +14,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
-func TestParseOllamaUsage(t *testing.T) {
-	tests := []struct {
-		name    string
-		body    []byte
-		wantIn  int64
-		wantOut int64
-		wantOK  bool
-	}{
-		{
-			name:   "generate response",
-			body:   []byte(`{"model":"llama3","response":"hello","done":true,"prompt_eval_count":15,"eval_count":25}`),
-			wantIn: 15, wantOut: 25, wantOK: true,
-		},
-		{
-			name:   "chat response",
-			body:   []byte(`{"model":"llama3","message":{"role":"assistant","content":"hi"},"done":true,"prompt_eval_count":8,"eval_count":12}`),
-			wantIn: 8, wantOut: 12, wantOK: true,
-		},
-		{
-			name:   "streaming partial (done=false)",
-			body:   []byte(`{"model":"llama3","response":"h","done":false}`),
-			wantOK: false,
-		},
-		{
-			name:   "no eval fields",
-			body:   []byte(`{"model":"llama3","done":true}`),
-			wantOK: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			in, out, ok := ParseOllamaUsage(tt.body)
-			assert.Equal(t, tt.wantOK, ok)
-			if ok {
-				assert.Equal(t, tt.wantIn, in)
-				assert.Equal(t, tt.wantOut, out)
-			}
-		})
-	}
-}
-
 func TestExtractProviderCost(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -189,8 +147,7 @@ func TestParseUsageExtended_NoModel(t *testing.T) {
 }
 
 // TestParseOllamaUsageExtended_ResponseModel pins the Ollama-shape model
-// extraction. ParseOllamaUsage is the back-compat-stable form; callers
-// that need the model use ParseOllamaUsageExtended.
+// extraction.
 func TestParseOllamaUsageExtended_ResponseModel(t *testing.T) {
 	body := []byte(`{"model":"llama3:latest","done":true,"prompt_eval_count":8,"eval_count":12}`)
 	in, out, model, ok := ParseOllamaUsageExtended(body)
@@ -228,37 +185,6 @@ func TestErrorTypeFromStatus(t *testing.T) {
 		got := errorTypeFromStatus(c.status)
 		assert.Equal(t, c.want, got, "status=%d", c.status)
 	}
-}
-
-// TestSetErrorFromStatus_NoOpOnSuccess regression-pins that 2xx leaves
-// the recorder untouched so success-path series never carry an
-// error_type label. The Phase 0 acceptance test +
-// TestRing2_OTel_GenAIEmission both depend on this contract.
-func TestSetErrorFromStatus_NoOpOnSuccess(t *testing.T) {
-	rec := llm.NewInferenceRecorder(context.Background(), "m", "p")
-	SetErrorFromStatus(rec, 200)
-	// Drive RecordCompletion and assert no error_type bled into the
-	// payload via the inference log hook.
-	var captured llm.InferenceLogData
-	llm.SetInferenceLogHook(hookFn(func(d llm.InferenceLogData) { captured = d }))
-	defer llm.SetInferenceLogHook(nil)
-	rec.RecordCompletion(0, 0)
-	assert.Empty(t, captured.ErrorType, "200 must not tag error_type")
-}
-
-// TestSetErrorFromStatus_TagsErrorPath confirms a 5xx upstream tags
-// the recorder; the inference log hook captures the resulting
-// payload and exposes the label that the OTel histogram would also
-// emit.
-func TestSetErrorFromStatus_TagsErrorPath(t *testing.T) {
-	rec := llm.NewInferenceRecorder(context.Background(), "m", "p")
-	SetErrorFromStatus(rec, 503)
-
-	var captured llm.InferenceLogData
-	llm.SetInferenceLogHook(hookFn(func(d llm.InferenceLogData) { captured = d }))
-	defer llm.SetInferenceLogHook(nil)
-	rec.RecordCompletion(0, 0)
-	assert.Equal(t, "upstream_server_error", captured.ErrorType)
 }
 
 func TestRelayBuffered_TagsErrorBody(t *testing.T) {

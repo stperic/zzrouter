@@ -65,44 +65,6 @@ func RedactSensitive(s string) string {
 	return result
 }
 
-// RedactMap redacts sensitive values in a map (useful for logging headers/env vars)
-func RedactMap(m map[string]string) map[string]string {
-	result := make(map[string]string, len(m))
-	for k, v := range m {
-		if IsSensitiveKey(k) {
-			result[k] = RedactedPlaceholder
-		} else {
-			result[k] = v
-		}
-	}
-	return result
-}
-
-// SensitiveKeyPatterns are key names that indicate sensitive values
-var SensitiveKeyPatterns = []string{
-	"key",
-	"secret",
-	"password",
-	"passwd",
-	"token",
-	"auth",
-	"credential",
-	"api_key",
-	"apikey",
-	"bearer",
-}
-
-// IsSensitiveKey checks if a key name suggests a sensitive value
-func IsSensitiveKey(key string) bool {
-	lowerKey := strings.ToLower(key)
-	for _, pattern := range SensitiveKeyPatterns {
-		if strings.Contains(lowerKey, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // AllowedEnvVars is the whitelist of environment variables that can be expanded
 // in command arguments. This prevents accidental exposure of sensitive env vars.
 var AllowedEnvVars = map[string]bool{

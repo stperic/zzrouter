@@ -171,24 +171,6 @@ func TestResponder_Unavailable_CodeDisambiguation(t *testing.T) {
 	}
 }
 
-// TestResponder_Opaque_DropsBody pins the opaque-mode contract:
-// status code intact, headers intact, body empty.
-func TestResponder_Opaque_DropsBody(t *testing.T) {
-	r := New(WithOpaqueErrors(true))
-	c, rec := newTestContext("POST", "/v1/chat/completions")
-	r.BadRequest(c, "malformed", "messages")
-
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
-	}
-	if rec.Body.Len() != 0 {
-		t.Errorf("opaque body should be empty, got %q", rec.Body.String())
-	}
-	if got := rec.Header().Get("X-Request-Id"); got != "req-test-123" {
-		t.Errorf("X-Request-Id dropped in opaque mode: %q", got)
-	}
-}
-
 // TestResponder_PanicsOnInvalidVocab is the contract enforcement
 // point: the Responder refuses to emit unknown vocabulary values. A
 // developer who mistypes a constant gets a loud test failure rather

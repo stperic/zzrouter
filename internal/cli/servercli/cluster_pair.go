@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -227,25 +226,6 @@ func discoverCoordinator(selfIsCoordinator bool) (*network.NodeEntry, error) {
 	defer cancel()
 	hd := network.NewNodeDiscovery("", false, 0)
 	return hd.FindCoordinator(ctx)
-}
-
-// shortFingerprint returns a compact form for operator display.
-// "sha256:abc…def" — first 8 + last 4 of the hex payload.
-func shortFingerprint(fp string) string {
-	if len(fp) < 20 {
-		return fp
-	}
-	// Strip optional sha256: prefix for the short rendering, then re-add.
-	prefix := ""
-	hex := fp
-	if strings.HasPrefix(fp, "sha256:") {
-		prefix = "sha256:"
-		hex = fp[len("sha256:"):]
-	}
-	if len(hex) < 16 {
-		return fp
-	}
-	return prefix + hex[:8] + "…" + hex[len(hex)-4:]
 }
 
 // callResetEndpoint POSTs to the local /zzrouter/v1/cluster/reset

@@ -2,7 +2,7 @@
 //
 // Wire format is dictated by the OpenAI API spec: success responses use the
 // typed shapes in openai_types.go and errors use the OpenAI error envelope
-// (utils.OpenAIError) via OpenAIInvalidRequest / OpenAINodeError.
+// (utils.OpenAIError) via OpenAIInvalidRequest.
 package server
 
 import (

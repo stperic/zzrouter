@@ -59,61 +59,6 @@ func TestRedactSensitive(t *testing.T) {
 	}
 }
 
-func TestRedactMap(t *testing.T) {
-	input := map[string]string{
-		"ZZROUTER_ADMIN_API_KEY": "mx-supersecretkey1234567890",
-		"MODEL_PATH":             "/path/to/model",
-		"API_KEY":                "secret123456789012345678901234",
-		"PORT":                   "8000",
-	}
-
-	result := RedactMap(input)
-
-	// Sensitive keys should be redacted
-	if result["ZZROUTER_ADMIN_API_KEY"] != RedactedPlaceholder {
-		t.Errorf("ZZROUTER_ADMIN_API_KEY should be redacted, got: %s", result["ZZROUTER_ADMIN_API_KEY"])
-	}
-
-	if result["API_KEY"] != RedactedPlaceholder {
-		t.Errorf("API_KEY should be redacted, got: %s", result["API_KEY"])
-	}
-
-	// Non-sensitive keys should be preserved
-	if result["MODEL_PATH"] != "/path/to/model" {
-		t.Errorf("MODEL_PATH should be preserved, got: %s", result["MODEL_PATH"])
-	}
-
-	if result["PORT"] != "8000" {
-		t.Errorf("PORT should be preserved, got: %s", result["PORT"])
-	}
-}
-
-func TestIsSensitiveKey(t *testing.T) {
-	tests := []struct {
-		key       string
-		sensitive bool
-	}{
-		{"ZZROUTER_ADMIN_API_KEY", true},
-		{"API_KEY", true},
-		{"password", true},
-		{"SECRET_TOKEN", true},
-		{"auth_header", true},
-		{"MODEL_PATH", false},
-		{"PORT", false},
-		{"HOME", false},
-		{"CUDA_VISIBLE_DEVICES", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			result := IsSensitiveKey(tt.key)
-			if result != tt.sensitive {
-				t.Errorf("IsSensitiveKey(%s) = %v, want %v", tt.key, result, tt.sensitive)
-			}
-		})
-	}
-}
-
 func TestExpandEnvWhitelisted(t *testing.T) {
 	// Set up test environment variables
 	t.Setenv("HOME", "/home/testuser")

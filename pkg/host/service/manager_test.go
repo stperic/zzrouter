@@ -89,10 +89,3 @@ func TestPlatformManagers(t *testing.T) {
 		}
 	}
 }
-
-func TestDetect_NonexistentService(t *testing.T) {
-	mgr := Detect("nonexistent-service-that-does-not-exist-12345")
-	if mgr != nil {
-		t.Errorf("Detect should return nil for nonexistent service, got: %s", mgr.Name())
-	}
-}

@@ -1,18 +1,9 @@
 package config
 
 import (
-	"maps"
 	"path/filepath"
 	"strings"
 )
-
-// CloneOrEmpty returns maps.Clone(src), or an empty map if src is nil.
-func CloneOrEmpty(src map[string]string) map[string]string {
-	if src == nil {
-		return make(map[string]string)
-	}
-	return maps.Clone(src)
-}
 
 // matchesModelPattern checks if a model name matches a pattern (supports wildcards)
 // Pattern examples:
@@ -55,15 +46,4 @@ func calculatePatternSpecificity(pattern string) int {
 		}
 	}
 	return score
-}
-
-// MergeOverrides merges parameter layers from lowest to highest priority.
-// Each successive layer overrides values from previous layers.
-// Typical call: MergeOverrides(appDefaults, nodeOverrides, modelOverrides, userParams)
-func MergeOverrides(layers ...map[string]string) map[string]string {
-	result := make(map[string]string)
-	for _, layer := range layers {
-		maps.Copy(result, layer)
-	}
-	return result
 }

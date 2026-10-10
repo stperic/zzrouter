@@ -143,7 +143,6 @@ func ModelCard(provider, id string) string { return join(Models, "card", provide
 const clusterEndpoints = Base + "/cluster/endpoints"
 
 func ClusterEndpoint(address string) string { return join(clusterEndpoints, address) }
-func RunProbes(id string) string            { return join(Runs, id, "probes") }
 
 // Provider lifecycle.
 func ProviderVersionsFor(n string) string   { return join(Providers, n, "versions") }
@@ -171,22 +170,6 @@ func ProviderInstallExecuteStep(n string) string {
 func Provider(name string) string { return join(Providers, name) }
 
 // Provider parameters: three tiers, one shape.
-func ProviderParameters(n string) string     { return join(Providers, n, "parameters") }
-func ProviderParameter(n, key string) string { return join(Providers, n, "parameters", key) }
-func ProviderParameterIgnore(n, key string) string {
-	return join(Providers, n, "parameters", key, "ignore")
-}
-func ProviderNodesParameters(n string) string { return join(Providers, n, "nodes", "parameters") }
-func ProviderNodeParameter(n, key string) string {
-	return join(Providers, n, "nodes", "parameters", key)
-}
-func ProviderNodeParameterIgnore(n, key string) string {
-	return join(Providers, n, "nodes", "parameters", key, "ignore")
-}
+func ProviderParameters(n string) string       { return join(Providers, n, "parameters") }
+func ProviderNodesParameters(n string) string  { return join(Providers, n, "nodes", "parameters") }
 func ProviderModelsParameters(n string) string { return join(Providers, n, "models", "parameters") }
-func ProviderModelParameter(n, key string) string {
-	return join(Providers, n, "models", "parameters", key)
-}
-func ProviderModelParameterIgnore(n, key string) string {
-	return join(Providers, n, "models", "parameters", key, "ignore")
-}

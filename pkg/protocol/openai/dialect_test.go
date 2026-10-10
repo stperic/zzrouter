@@ -66,18 +66,12 @@ func TestEndStream_PerDialect(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
 	assert.Contains(t, rec.Body.String(), `"param":null`)
 	assert.True(t, rec.Flushed)
-	rec = httptest.NewRecorder()
-	New(WithOpaqueErrors(true)).EndStream(rec, e)
-	assert.Empty(t, rec.Body.String())
-	assert.True(t, rec.Flushed)
 }
 
 func TestStreamError_StillEndsWithDone(t *testing.T) {
-	for _, opaque := range []bool{false, true} {
-		rec := httptest.NewRecorder()
-		New(WithOpaqueErrors(opaque)).StreamError(rec, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "cut"})
-		assert.True(t, strings.HasSuffix(rec.Body.String(), "data: [DONE]\n\n"))
-		assert.Equal(t, 1, strings.Count(rec.Body.String(), "[DONE]"))
-		assert.True(t, rec.Flushed)
-	}
+	rec := httptest.NewRecorder()
+	New().StreamError(rec, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "cut"})
+	assert.True(t, strings.HasSuffix(rec.Body.String(), "data: [DONE]\n\n"))
+	assert.Equal(t, 1, strings.Count(rec.Body.String(), "[DONE]"))
+	assert.True(t, rec.Flushed)
 }

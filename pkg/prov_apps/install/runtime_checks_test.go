@@ -31,13 +31,13 @@ func TestRuntimeChecksCancellationAndRedaction(t *testing.T) {
 	checks := schema.RuntimeChecks{Imports: []string{"json"}, Checks: []string{"pip_check", "imports"}, Kernels: "unknown"}
 	executable := filepath.Join(t.TempDir(), "python")
 	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\necho 'api_key=super-secret-value' >&2\nexit 1\n"), 0o700))
-	result := RunRuntimeChecks(t.Context(), executable, checks)
+	result := RunRuntimeChecksSnapshot(t.Context(), executable, checks, nil, nil)
 	require.Len(t, result, 1)
 	assert.False(t, result[0].Passed)
 	assert.NotContains(t, result[0].Reason, "super-secret-value")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	result = RunRuntimeChecks(ctx, executable, checks)
+	result = RunRuntimeChecksSnapshot(ctx, executable, checks, nil, nil)
 	require.Len(t, result, 1)
 	assert.False(t, result[0].Passed)
 }

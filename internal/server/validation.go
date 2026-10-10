@@ -250,17 +250,6 @@ func OptionalQueryParamWithDefault(name, defaultValue string) ParamRule {
 	}
 }
 
-// RequiredQueryParam creates a rule for a required query parameter.
-func RequiredQueryParam(name string) ParamRule {
-	return ParamRule{
-		Name:      name,
-		Source:    ParamSourceQuery,
-		Type:      ParamTypeString,
-		Required:  true,
-		MinLength: 1,
-	}
-}
-
 // RequiredEnumQueryParam creates a rule for a required query parameter
 // constrained to a fixed set of values. The validation error lists all
 // allowed values so AI agents can parse them without a separate schema

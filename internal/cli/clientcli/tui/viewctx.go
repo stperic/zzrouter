@@ -30,13 +30,6 @@ type ViewContext struct {
 	cancel context.CancelFunc
 }
 
-// NewViewContext returns a fresh, live ViewContext. Equivalent to the
-// zero value followed by Context(); prefer the zero value in view structs.
-func NewViewContext() ViewContext {
-	ctx, cancel := context.WithCancel(context.Background())
-	return ViewContext{ctx: ctx, cancel: cancel}
-}
-
 // Context returns the view's context, lazy-creating it on first call. Safe
 // to call after Cancel — returns the cancelled context.
 //

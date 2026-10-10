@@ -49,13 +49,6 @@ func LogDebugf(format string, args ...any) {
 	}
 }
 
-// LogDebugln prints a debug line using log.Println if debug mode is enabled
-func LogDebugln(args ...any) {
-	if IsDebugEnabled() {
-		logger.Debug(fmt.Sprint(args...))
-	}
-}
-
 // LogInfof prints an info message using log.Printf
 func LogInfof(format string, args ...any) {
 	logger.Info(fmt.Sprintf(format, args...))
@@ -64,11 +57,6 @@ func LogInfof(format string, args ...any) {
 // LogWarnf prints a warning message
 func LogWarnf(format string, args ...any) {
 	logger.Warn(fmt.Sprintf(format, args...))
-}
-
-// LogErrorf prints an error message using log.Printf
-func LogErrorf(format string, args ...any) {
-	logger.Error(fmt.Sprintf(format, args...))
 }
 
 // InitDebugFromEnv initializes debug mode from environment variable

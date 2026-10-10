@@ -115,31 +115,6 @@ func GetModelsRootDir() (string, error) {
 	return config.Paths().GetModelsDir(), nil
 }
 
-// GetModelsCacheDir returns the local cache directory for models.
-// Unlike GetModelsRootDir(), this never returns shared storage.
-func GetModelsCacheDir() (string, error) {
-	// Priority 0: Thread-safe override (for testing)
-	if override := getModelsRootDirOverride(); override != "" {
-		return override, nil
-	}
-
-	// Priority 1: Explicit environment variable override
-	if envDir := os.Getenv("ZZROUTER_MODEL_DIR"); envDir != "" {
-		if err := validateModelDir(envDir); err != nil {
-			return "", err
-		}
-		return envDir, nil
-	}
-
-	// Priority 2: Config file models.cache (local cache, NOT shared)
-	if configCache := getModelsConfigCache(); configCache != "" {
-		return configCache, nil
-	}
-
-	// Priority 3: Use PathResolver (handles platform/context detection)
-	return config.Paths().GetModelsDir(), nil
-}
-
 // --- Model Path Types ---
 
 // ModelPath represents a complete path to a model

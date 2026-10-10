@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-
-	"github.com/stperic/zzrouter/pkg/observability/genai"
 )
 
 func TestErrorTypeFromStatus(t *testing.T) {
@@ -79,25 +77,6 @@ func TestMiddleware_NoPanic(t *testing.T) {
 		req := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-	}
-}
-
-// TestModelAllowlist_ProxyForwarder pins that the package-level
-// SetModelAllowlist forwarder reaches the canonical genai gate. Same
-// observable behavior as calling genai.SetModelAllowlist directly;
-// kept on the proxy surface so existing callers don't have to switch
-// imports. Detailed gate behavior (passthrough / known / unknown /
-// concurrent-swap) is exercised in the genai package's own tests.
-func TestModelAllowlist_ProxyForwarder(t *testing.T) {
-	defer genai.SwapModelAllowlist(func(name string) bool {
-		return name == "ok"
-	})()
-
-	if got := genai.GateModelLabel("ok"); got != "ok" {
-		t.Errorf("known model = %q, want passthrough", got)
-	}
-	if got := genai.GateModelLabel("nope"); got != UnknownModelLabel {
-		t.Errorf("unknown model = %q, want %q sentinel", got, UnknownModelLabel)
 	}
 }
 

@@ -1,12 +1,8 @@
 package utils
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -39,43 +35,6 @@ func NormalizeAppType(providerType string) string {
 type HTTPResponse struct {
 	Body       []byte
 	StatusCode int
-}
-
-// MakeHTTPRequestWithContext performs an HTTP request with a context and standard error handling
-func MakeHTTPRequestWithContext(ctx context.Context, client *http.Client, method, url string, body any) (*HTTPResponse, error) {
-	var reqBody io.Reader
-	if body != nil {
-		jsonData, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
-		}
-		reqBody = bytes.NewBuffer(jsonData)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	return &HTTPResponse{
-		Body:       responseBody,
-		StatusCode: resp.StatusCode,
-	}, nil
 }
 
 // DecodeJSONResponse decodes JSON response with standard error handling

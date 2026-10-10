@@ -7,10 +7,8 @@ import (
 )
 
 // jsonSensitiveKeys marks JSON field names whose values must never
-// leave a capture pipeline. Deliberately stricter than IsSensitiveKey:
-// that predicate is contains-based ("key" matches anything), which is
-// right for header/env maps but would gut API bodies where "key" names
-// a parameter, not a secret. A raw credential in a benign-named field
+// leave a capture pipeline. Exact names, not substring matches: "key"
+// often names a parameter in API bodies, not a secret. A raw credential in a benign-named field
 // is still caught by the value-prefix patterns in SensitivePatterns.
 var jsonSensitiveKeys = []string{
 	"token", "secret", "password", "passwd", "credential",
