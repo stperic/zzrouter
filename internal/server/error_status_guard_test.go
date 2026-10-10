@@ -24,6 +24,7 @@ import (
 // against pkg/prov_apps/errors.go. Statuses live only in failureTable.
 var sentinels = map[string]error{
 	"ErrProviderUnavailable":      prov_apps.ErrProviderUnavailable,
+	"ErrModelDropped":             prov_apps.ErrModelDropped,
 	"ErrProviderNotFound":         prov_apps.ErrProviderNotFound,
 	"ErrInstanceNotFound":         prov_apps.ErrInstanceNotFound,
 	"ErrInstallInProgress":        prov_apps.ErrInstallInProgress,

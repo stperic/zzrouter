@@ -13,7 +13,6 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -38,7 +37,6 @@ type RunsExecutor struct {
 	appMgr              *prov_apps.ProviderAppManager
 	getNodename         func() string
 	appsConfig          func() *pkgConfig.AppsConfig
-	routerAvailable     bool
 	streamInstanceLogs  func(*gin.Context, string, *logFilter)
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter)
 	// refreshResourceMetrics triggers an immediate re-probe of live
@@ -72,7 +70,6 @@ func NewRunsExecutor(
 	appMgr *prov_apps.ProviderAppManager,
 	getNodename func() string,
 	appsConfig func() *pkgConfig.AppsConfig,
-	routerAvailable bool,
 	streamInstanceLogs func(*gin.Context, string, *logFilter),
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter),
 	refreshResourceMetrics func(),
@@ -81,7 +78,6 @@ func NewRunsExecutor(
 		appMgr:                 appMgr,
 		getNodename:            getNodename,
 		appsConfig:             appsConfig,
-		routerAvailable:        routerAvailable,
 		streamInstanceLogs:     streamInstanceLogs,
 		getInstanceLogLines:    getInstanceLogLines,
 		refreshResourceMetrics: refreshResourceMetrics,
@@ -123,33 +119,19 @@ func (e *RunsExecutor) requireProviderAppMgr(c *gin.Context) bool {
 	return true
 }
 
-// GetLocalRuns retrieves all runs from the local provider app manager
-// PLUS queries endpoint providers (like Ollama) for their running models.
-// withStatus adds each launched run's ParametersStatus.
+// GetLocalRuns lists this node's runs, served models included; withStatus adds their ParametersStatus.
 func (e *RunsExecutor) GetLocalRuns(withStatus bool) ([]instance.InstanceInfo, error) {
 	if e.appMgr == nil {
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
-
 	hostname := e.getNodename()
+	if !withStatus {
+		return e.appMgr.ListInstances(hostname), nil
+	}
 	var result []instance.InstanceInfo
-	if withStatus {
-		for _, inst := range e.appMgr.Instances().List() {
-			result = append(result, e.appMgr.InstanceInfo(inst, hostname))
-		}
-	} else {
-		result = e.appMgr.ListInstances(hostname)
+	for _, inst := range e.appMgr.Instances().List() {
+		result = append(result, e.appMgr.InstanceInfo(inst, hostname))
 	}
-	launched := len(result)
-	// A model an external daemon serves was not launched from config here,
-	// so it has no parameters status to report.
-	endpointInstances := e.queryEndpointProviders()
-	for _, inst := range endpointInstances {
-		result = append(result, inst.ToInfo(hostname))
-	}
-
-	utils.LogDebugf("[RunsExecutor] GetLocalRuns: returning %d instances (%d from registry + %d from endpoint providers) from host '%s'",
-		len(result), launched, len(endpointInstances), hostname)
 	return result, nil
 }
 
@@ -213,90 +195,25 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 	}
 
 	inst, exists := e.appMgr.GetInstance(runID)
-	if exists {
-		// On-demand instance found in provider app manager — stop it directly
-		err := e.appMgr.StopInstance(c.Request.Context(), runID)
-		if !publishOr503(c, e.publishCatalog) {
-			return
-		}
-		if err != nil {
-			RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
-			return
-		}
-		utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
-		e.triggerResourceRefresh()
-		c.JSON(http.StatusOK, gin.H{
-			"id":      inst.ID,
-			"status":  "stopped",
-			"message": "Instance stopped successfully",
-		})
+	if !exists {
+		NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
 		return
 	}
-
-	// Not in provider app manager — check endpoint providers (e.g. Ollama)
-	// The runID for endpoint models is the digest from the provider
-	if e.tryUnloadEndpointModel(c, runID) {
+	err := e.appMgr.StopInstance(c.Request.Context(), runID)
+	if !publishOr503(c, e.publishCatalog) {
 		return
 	}
-
-	NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-}
-
-// tryUnloadEndpointModel attempts to unload a model from an endpoint provider (e.g. Ollama).
-// Returns true if the model was found and handled (success or error response written).
-func (e *RunsExecutor) tryUnloadEndpointModel(c *gin.Context, runID string) bool {
-	cfg := e.appsConfig()
-	if cfg == nil || e.appMgr == nil {
-		return false
+	if err != nil {
+		RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
+		return
 	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), constants.ClusterQueryTimeout)
-	defer cancel()
-
-	var handled bool
-	cfg.RangeApps(func(providerName string, _ pkgConfig.ServiceConfig) bool {
-		providerImpl, target, ok := e.appMgr.Loader(providerName)
-		if !ok {
-			return true
-		}
-
-		// Query running models to find one matching this runID (digest)
-		runningModels, err := providerImpl.ListRunningModels(ctx, target)
-		if err != nil {
-			return true
-		}
-
-		for _, m := range runningModels {
-			if m.Digest != runID {
-				continue
-			}
-
-			// Found it — unload
-			if err := providerImpl.UnloadModel(ctx, target, m.Name); err != nil {
-				slog.Error("[RunsExecutor] Failed to unload endpoint model", "provider", providerName, "model", m.Name, "error", err)
-				InternalNodeError(c, fmt.Sprintf("failed to unload model '%s'", m.Name))
-				handled = true
-				return false
-			}
-
-			if !publishOr503(c, e.publishCatalog) {
-				handled = true
-				return false
-			}
-			utils.LogDebugf("[RunsExecutor] Unloaded endpoint model '%s' from provider '%s'", m.Name, providerName)
-			e.triggerResourceRefresh()
-			c.JSON(http.StatusOK, gin.H{
-				"id":      runID,
-				"status":  "stopped",
-				"message": fmt.Sprintf("Model '%s' unloaded from %s", m.Name, providerName),
-			})
-			handled = true
-			return false
-		}
-		return true
+	utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
+	e.triggerResourceRefresh()
+	c.JSON(http.StatusOK, gin.H{
+		"id":      inst.ID,
+		"status":  "stopped",
+		"message": "Instance stopped successfully",
 	})
-
-	return handled
 }
 
 // HandleInternalRestartRun handles POST /zzrouter/internal/runs/:id/restart (internal API).
@@ -339,79 +256,6 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		Message:  fmt.Sprintf("Instance %s restart accepted as %s; subscribe to job_id", runID, newInst.ID),
 		Node:     e.getNodename(),
 	})
-}
-
-// queryEndpointProviders queries endpoint providers (like Ollama) for running models
-// Returns pseudo-instances for models running in the provider
-func (e *RunsExecutor) queryEndpointProviders() []*instance.Instance {
-	var pseudoInstances []*instance.Instance
-
-	// Check dependencies
-	cfg := e.appsConfig()
-	if !e.routerAvailable || cfg == nil || e.appMgr == nil {
-		return pseudoInstances
-	}
-
-	// Use a timeout context to ensure provider queries don't hang indefinitely
-	// This prevents resource leaks if a provider is slow or unresponsive
-	ctx, cancel := context.WithTimeout(context.Background(), constants.ClusterQueryTimeout)
-	defer cancel()
-
-	// Iterate through configured providers
-	cfg.RangeApps(func(providerName string, _ pkgConfig.ServiceConfig) bool {
-		providerImpl, target, ok := e.appMgr.Loader(providerName)
-		if !ok {
-			return true
-		}
-		runningModels, err := providerImpl.ListRunningModels(ctx, target)
-		if err != nil {
-			utils.LogDebugf("[RunsExecutor] Warning: Failed to query running models from %s: %v", providerName, err)
-			return true
-		}
-
-		// Convert running models to Instance format
-		for _, runningModel := range runningModels {
-			// Create a pseudo-instance for endpoint provider models
-			// Store the FULL digest internally (truncation happens in display layer)
-			instanceID := runningModel.Digest
-			if instanceID == "" {
-				// Fallback: generate a 12-char hash if provider doesn't provide an ID
-				source := fmt.Sprintf("%s-%s-%d", providerName, runningModel.Name, utils.Now().UnixNano())
-				instanceID = instance.GenerateShortHash(source)
-			}
-
-			// Compute processor string (e.g. "100% GPU") from VRAM ratio
-			var processor string
-			if runningModel.Size > 0 && runningModel.SizeVRAM > 0 {
-				pct := float64(runningModel.SizeVRAM) / float64(runningModel.Size) * 100
-				if pct >= 100 {
-					processor = "100% GPU"
-				} else if pct > 0 {
-					processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", pct, 100-pct)
-				}
-			} else if runningModel.SizeVRAM == 0 && runningModel.Size > 0 {
-				processor = "100% CPU"
-			}
-
-			pseudoInstance := instance.NewInstance(instanceID, providerName, runningModel.Name, 0, time.Until(runningModel.ExpiresAt), 0)
-			pseudoInstance.MarkRunning()
-			pseudoInstance.SizeBytes = runningModel.Size
-			pseudoInstance.ContextLength = runningModel.ContextLength
-			pseudoInstance.Processor = processor
-			pseudoInstance.SourceRepo = metadata.SourceOllama
-			pseudoInstance.LaunchMode = instance.LaunchModeNative
-			pseudoInstance.LastActivity = utils.Now()
-
-			pseudoInstances = append(pseudoInstances, pseudoInstance)
-		}
-
-		if len(runningModels) > 0 {
-			utils.LogDebugf("[RunsExecutor] Found %d running models in endpoint provider '%s'", len(runningModels), providerName)
-		}
-		return true
-	})
-
-	return pseudoInstances
 }
 
 // HandleInternalLaunchRun handles POST /zzrouter/internal/runs (internal API)
@@ -493,11 +337,11 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
-	if result.Served {
-		c.JSON(http.StatusOK, LaunchRunResponse{Accepted: true, Provider: req.Provider, LaunchMode: req.LaunchMode, Status: "running", Port: result.Port, Node: e.getNodename(), Message: "Model loaded successfully", ParametersApplied: len(req.Parameters), FilesMounted: len(req.Files)})
+	inst := result.Run
+	if inst == nil {
+		c.JSON(http.StatusOK, LaunchRunResponse{Accepted: true, Provider: req.Provider, LaunchMode: req.LaunchMode, Status: "running", Node: e.getNodename(), Message: "The provider serves this model without a run", ParametersApplied: len(req.Parameters), FilesMounted: len(req.Files)})
 		return
 	}
-	inst := result.Run
 
 	hostname := e.getNodename()
 	message := "Instance launch accepted; subscribe to job_id for readiness"
@@ -589,6 +433,10 @@ WaitForLogPath:
 				return
 			}
 			inst = i
+			if !e.appMgr.HasLog(inst) {
+				NotFound(c, fmt.Sprintf("run '%s' has no log; its provider serves the model", instanceID))
+				return
+			}
 
 			// Check if log file path is set
 			if inst.LogFilePath != "" {

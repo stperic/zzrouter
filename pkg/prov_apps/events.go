@@ -4,6 +4,8 @@ import (
 	"time"
 
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // EventType identifies the kind of lifecycle event.
@@ -77,4 +79,23 @@ type Event struct {
 	Reason   obsruns.StopReason   `json:"reason,omitempty"`
 	Cause    obsruns.FailureCause `json:"cause,omitempty"`
 	Time     time.Time            `json:"time"`
+}
+
+// runEvent is an event of type t about run.
+func runEvent(t EventType, run *instance.Instance, message string) Event {
+	return Event{Type: t, Provider: run.Provider, Instance: run.ID, Model: run.Model, Message: message, Time: utils.Now()}
+}
+
+// failedEvent is run's failure for cause, reported as err.
+func failedEvent(run *instance.Instance, cause obsruns.FailureCause, err error) Event {
+	event := runEvent(EventInstanceFailed, run, err.Error())
+	event.Error, event.Cause = err, cause
+	return event
+}
+
+// stoppedEvent is run's stop for reason.
+func stoppedEvent(run *instance.Instance, reason obsruns.StopReason, message string) Event {
+	event := runEvent(EventInstanceStopped, run, message)
+	event.Reason = reason
+	return event
 }

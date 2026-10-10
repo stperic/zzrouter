@@ -15,12 +15,13 @@ const (
 	StatusRestarting Status = "restarting"
 )
 
-// StartedBy says what started a run: a management call, or an inference request to a model with no run.
+// StartedBy says what started a run: a management call, an inference request, or another client of its daemon.
 type StartedBy string
 
 const (
-	StartedByAPI     StartedBy = "api"
-	StartedByRequest StartedBy = "request"
+	StartedByAPI      StartedBy = "api"
+	StartedByRequest  StartedBy = "request"
+	StartedByExternal StartedBy = "external"
 )
 
 // IsTerminal returns true if the status represents a final state (stopped or failed).
@@ -79,6 +80,7 @@ type InstanceInfo struct {
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
 	Processor             string            `json:"processor,omitempty"`
 	ContextLength         int               `json:"context_length,omitempty"`
+	ExpiresAt             string            `json:"expires_at,omitempty"` // when the daemon serving the run unloads it idle
 	ProcessID             int               `json:"process_id,omitempty"`
 	Port                  int               `json:"port"`
 	Status                Status            `json:"status"`

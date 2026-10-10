@@ -14,9 +14,15 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
 - **Mechanism** (`ensure_run.go`): one keyed flight per model and endpoint. The first caller creates it and runs
   the start on a context no caller can cancel (Stop can); the flight re-decides against the registry, ends at
   handoff (process started, run queued, or failure) and leaves the map before it answers.
-- **Lifecycle** is derived from provider config: process (launches an engine), served (its endpoint loads
-  models, Ollama) or none (external endpoint, cloud). A provider with no runs answers ready when it lists the
-  model.
+- **Lifecycle** is derived from provider config: process (launches an engine), served (its daemon loads
+  models, Ollama) or none (external endpoint, cloud). Process and served runs are the same runs, started,
+  reused, leased, stopped and listed by the same paths; an engine interface (`engine.go`: up, down,
+  prepare, upstream) holds what differs. A served run is keyed by the daemon's name for the model, takes no
+  port, is loaded with its resolved keep-alive for the daemon to apply (zzRouter arms no timer but a client's
+  hint) and outlives the node; the services ticker reconciles served runs with the daemon's list (retire what it
+  dropped, adopt what it holds on two sightings, a pin included after a node restart). An explicit client
+  keep_alive hint arms zzRouter's timer on any run, adopted ones included. A
+  provider with no runs answers ready when it lists the model.
 
 ## Waiter contract
 
@@ -38,9 +44,8 @@ asserts the same outcome.
 
 ## Still to come
 
-Ollama models become real runs behind an engine interface (load/unload as up/down), with keep-alive owned by
-zzRouter; the reaper owns idle expiry with `keep_alive` and eviction as tier-tree settings; refusals reach the
-wire through one table only.
+The reaper owns idle expiry with `keep_alive` and eviction as tier-tree settings; refusals reach the wire
+through one table only.
 
 ## Rejected
 

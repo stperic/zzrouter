@@ -23,8 +23,8 @@ type ProviderConnector struct {
 	circuitBreakers *fallback.BreakerManager
 }
 
-// NewProviderConnector creates a new provider connector with retry logic and circuit breakers
-func NewProviderConnector() *ProviderConnector {
+// NewProviderConnector probes with retries and breakers over transport, the provider's own (nil: default).
+func NewProviderConnector(transport http.RoundTripper) *ProviderConnector {
 	return &ProviderConnector{
 		backoff: retry.Backoff{
 			// First retry at 200ms; subsequent retries grow by 2.5×,
@@ -38,7 +38,8 @@ func NewProviderConnector() *ProviderConnector {
 		},
 		maxRetries: 4,
 		httpClient: &http.Client{
-			Timeout: constants.HealthCheckTimeout, // Reasonable timeout for provider APIs
+			Transport: transport,
+			Timeout:   constants.HealthCheckTimeout, // Reasonable timeout for provider APIs
 		},
 		circuitBreakers: fallback.NewBreakerManager(),
 	}

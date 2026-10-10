@@ -25,6 +25,7 @@ type fakeProviderServices struct {
 }
 
 func (f *fakeProviderServices) ProviderManagedBinary(string) string { return "" }
+func (f *fakeProviderServices) RunningModels(string) []string       { return nil }
 func (f *fakeProviderServices) ProviderServiceStatus(context.Context, string) (prov_apps.ProviderServiceStatus, error) {
 	return f.status, nil
 }
@@ -65,7 +66,7 @@ func serviceExecutor(t *testing.T, managed bool) (*ParamsExecutor, *fakeProvider
 	if managed {
 		owner.status.Supervisor = "zzRouter"
 	}
-	return NewParamsExecutor(func() *pkgConfig.AppsConfig { return cfg }, nil, func() string { return "worker" }, nil, nil, owner, nil,
+	return NewParamsExecutor(func() *pkgConfig.AppsConfig { return cfg }, nil, func() string { return "worker" }, nil, nil, owner,
 		&http.Client{Transport: serviceReadyTransport{}}, nil, nil), owner
 }
 

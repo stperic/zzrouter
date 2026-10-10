@@ -21,9 +21,12 @@ type ModelLister interface {
 // ModelLoader can load and unload models.
 type ModelLoader interface {
 	Provider
-	LoadModel(ctx context.Context, t Target, model string, params map[string]string) error
+	// LoadModel loads model for the daemon to expire after keepAlive idle (never when negative, its default when nil).
+	LoadModel(ctx context.Context, t Target, model string, keepAlive *time.Duration) error
 	UnloadModel(ctx context.Context, t Target, model string) error
 	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
+	// Identity is the name the daemon reports model loaded under.
+	Identity(model string) string
 }
 
 // ModelDeleter can delete models from disk/storage.

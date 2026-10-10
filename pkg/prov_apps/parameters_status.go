@@ -40,7 +40,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}
 	}
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	next, err := m.prepareLaunch(svcCfg, configKey, endpoint, req, inst.SnapshotConfig().Port)
+	next, err := m.engine(Lifecycle(svcCfg)).prepare(svcCfg, configKey, req, inst.SnapshotConfig().Port)
 	if err != nil {
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}
 	}

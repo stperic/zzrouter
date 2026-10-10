@@ -156,6 +156,9 @@ type ProviderAppManager struct {
 	services         map[string]*managedService
 	servicesStarted  atomic.Bool
 	servicesObserved chan struct{}
+	// sightings holds, per served provider, the models its daemon reported with no run on the last reconcile.
+	sightingsMu sync.Mutex
+	sightings   map[string]map[string]bool
 	// seams pause the start path where tests must interleave; nil in production.
 	seams struct{ beforeLaunch, processStarted, flightRemoved func() }
 }
@@ -339,6 +342,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		memorySnapshot:  gpu.MemorySnapshotContext,
 		services:        make(map[string]*managedService),
 		flights:         make(map[string]*flight),
+		sightings:       make(map[string]map[string]bool),
 	}
 
 	// Options first so WithParentContext can supply the ctx parent.
@@ -769,9 +773,13 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 	fp := fresh.Fingerprint()
 	m.mu.Lock()
 	unchanged := fresh != nil && m.lastReloadFP == fp
+	before := m.appsConfig
 	m.appsConfig = fresh
 	m.lastReloadFP = fp
 	m.mu.Unlock()
+	if !unchanged {
+		m.retireUnserved(before)
+	}
 
 	if fresh == nil {
 		m.reconcileServices()
@@ -873,14 +881,25 @@ func (m *ProviderAppManager) Protocol(name string) (protocol.FullProvider, bool)
 	return p, true
 }
 
-// Loader returns a served provider's loader and its target from live config.
-func (m *ProviderAppManager) Loader(name string) (protocol.ModelLoader, protocol.Target, bool) {
+// servedTarget is daemonOf for an enabled served provider, the only one a start or a reconcile uses.
+func (m *ProviderAppManager) servedTarget(name string) (protocol.ModelLoader, protocol.Target, bool) {
 	if _, cfg, found := m.resolveConfigKey(name); !found || !cfg.IsEnabled() || Lifecycle(cfg) != LifecycleServed {
 		return nil, protocol.Target{}, false
 	}
-	p, target, ok := m.endpoint(name)
+	loader, resolved, ok := m.daemonOf(name)
+	if !ok {
+		return nil, protocol.Target{}, false
+	}
+	return loader, protocol.TargetOf(resolved), true
+}
+
+// daemonOf is how this node reaches a provider's daemon, from its config, enabled or not.
+func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backend.Resolved, bool) {
+	key, cfg, found := m.resolveConfigKey(name)
+	p, _ := m.protocols.Of(key, m.AppsConfig().Find(key))
 	loader, loads := p.(protocol.ModelLoader)
-	return loader, target, ok && loads
+	resolved, ok := backend.Target(&cfg)
+	return loader, resolved, found && loads && ok
 }
 
 // providerLists is a provider without runs answering whether it serves model; unreachable is not "absent".
@@ -950,13 +969,25 @@ func (m *ProviderAppManager) GetInstance(id string) (*instance.Instance, bool) {
 	return m.instances.Get(id)
 }
 
-// GetInstanceByModel returns the instance serving a model. The name is
-// canonicalized the same way a launch canonicalizes it, so a model looked
-// up by the alias it was launched with resolves to the instance that
-// launch created. Without that, a caller who launches by repo id can
-// never find the run again: the registry holds it under the local name.
-func (m *ProviderAppManager) GetInstanceByModel(model string) (*instance.Instance, bool) {
-	return m.instances.GetByModel(m.CanonicalModelName(model))
+// GetInstanceByModel returns the run a start of model on provider and endpoint would reuse.
+func (m *ProviderAppManager) GetInstanceByModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
+	if key, svc, ok := m.resolveConfigKey(provider); ok {
+		return m.instances.GetByModelEndpoint(m.runModel(key, svc, model), string(runEndpoint(svc, endpoint)))
+	}
+	model = m.CanonicalModelName(model)
+	if run, ok := m.instances.GetByModelEndpoint(model, string(EndpointOrDefault(endpoint))); ok {
+		return run, true
+	}
+	// No provider named: a served daemon lists the model under its own name.
+	var run *instance.Instance
+	found := false
+	m.AppsConfig().RangeApps(func(key string, svc config.ServiceConfig) bool {
+		if Lifecycle(svc) == LifecycleServed {
+			run, found = m.instances.GetByModel(m.daemonName(key, svc, model))
+		}
+		return !found
+	})
+	return run, found
 }
 
 // CanonicalModelName maps a caller-supplied model name onto the name this

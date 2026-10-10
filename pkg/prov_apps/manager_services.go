@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,10 +19,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -266,6 +270,9 @@ func (m *ProviderAppManager) ApplyProviderService(ctx context.Context, name stri
 			return nil, fmt.Errorf("%s has no runtime environment controller", manager.Name())
 		}
 		result := controller.ApplyEnvContext(ctx, name, env)
+		if result.Restarted {
+			m.daemonRestarted(name)
+		}
 		if result.Applied || result.Restarted {
 			m.serviceCatalogChanged()
 		}
@@ -313,13 +320,24 @@ func (m *ProviderAppManager) controlProviderService(ctx context.Context, name, a
 		state.manualStop = action == "stop" && !installing
 		state.status.Desired = action != "stop"
 		state.mu.Unlock()
-		return nil
-	}
-	daemon, ok := inst.(install.DaemonInstaller)
-	if !ok {
+	} else if daemon, ok := inst.(install.DaemonInstaller); !ok {
 		return ErrExternalService
+	} else if err := m.controlDaemon(ctx, name, action, cfg, daemon, installing); err != nil {
+		return err
 	}
-	return m.controlDaemon(ctx, name, action, cfg, daemon, installing)
+	if action != "start" {
+		m.daemonRestarted(name)
+	}
+	return nil
+}
+
+// daemonRestarted retires provider's ready runs: a stopped or restarted daemon dropped their models.
+func (m *ProviderAppManager) daemonRestarted(provider string) {
+	for _, run := range m.instances.ListByProvider(provider) {
+		if run.GetStatus() == instance.StatusRunning {
+			m.retireRun(run, fmt.Errorf("%w: %s's daemon restarted", ErrModelDropped, provider), obsruns.StopReasonUser)
+		}
+	}
 }
 
 // The install coordinator holds the lifecycle gate. Only a newly activated
@@ -513,6 +531,7 @@ func (m *ProviderAppManager) observeServices(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.observeOSServices(ctx)
+			m.reconcileServedRuns(ctx)
 		}
 	}
 }
@@ -610,4 +629,171 @@ func (m *ProviderAppManager) stopServices(ctx context.Context) error {
 		}
 	}
 	return result
+}
+
+// RunningModels names the models provider's live runs serve.
+func (m *ProviderAppManager) RunningModels(provider string) []string {
+	var names []string
+	for _, run := range m.instances.ListByProvider(provider) {
+		if !run.GetStatus().IsTerminal() {
+			names = append(names, run.Model)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// retireRun ends a run whose daemon no longer holds its model; nothing is asked of the daemon.
+func (m *ProviderAppManager) retireRun(run *instance.Instance, cause error, reason obsruns.StopReason) {
+	if !run.ClaimEnd() {
+		return // a stop in progress ends it
+	}
+	run.Cancel()
+	run.StopKeepAliveTimer()
+	m.releaseRun(run, cause)
+	m.emitEvent(stoppedEvent(run, reason, cause.Error()))
+}
+
+// retireUnserved retires the runs of a served provider config no longer enables: it no longer exists here.
+func (m *ProviderAppManager) retireUnserved(before *config.AppsConfig) {
+	for _, run := range m.instances.List() {
+		_, svc, found := m.resolveConfigKey(run.Provider)
+		if found && svc.IsEnabled() {
+			continue
+		}
+		if !found && before != nil {
+			svc, found = before.LookupApp(run.Provider)
+		}
+		if found && Lifecycle(svc) == LifecycleServed {
+			m.retireRun(run, fmt.Errorf("%w: %s is no longer enabled", ErrModelDropped, run.Provider), obsruns.StopReasonUser)
+		}
+	}
+}
+
+// reconcileServedRuns makes each enabled served provider's runs match what its daemon reports loaded.
+func (m *ProviderAppManager) reconcileServedRuns(ctx context.Context) {
+	cfg := m.AppsConfig()
+	if cfg == nil || m.stopping.Load() {
+		return
+	}
+	var providers []string
+	cfg.RangeApps(func(name string, svc config.ServiceConfig) bool {
+		if svc.IsEnabled() && Lifecycle(svc) == LifecycleServed {
+			providers = append(providers, name)
+		}
+		return true
+	})
+	for _, provider := range providers {
+		if ctx.Err() != nil {
+			return
+		}
+		m.reconcileServed(ctx, provider)
+	}
+}
+
+// reconcileServed retires runs the daemon dropped and adopts models no run names; a failed listing changes nothing.
+func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider string) {
+	loader, target, ok := m.servedTarget(provider)
+	if !ok {
+		return
+	}
+	// Only a run ready before the listing, or one whose stop failed, is judged by it.
+	var ready, failed []*instance.Instance
+	for _, run := range m.instances.ListByProvider(provider) {
+		switch {
+		case run.GetStatus() == instance.StatusStopping && run.StopUnconfirmed.Load():
+			failed = append(failed, run)
+		case run.GetStatus() == instance.StatusRunning:
+			ready = append(ready, run)
+		}
+	}
+	listed, err := loader.ListRunningModels(ctx, target)
+	if err != nil {
+		slog.Debug("Served models unavailable; runs unchanged", "provider", provider, "error", err)
+		return
+	}
+	loaded := make(map[string]protocol.RunningModelInfo, len(listed)) // the daemon's names are case-insensitive
+	for _, model := range listed {
+		loaded[strings.ToLower(model.Name)] = model
+	}
+	for _, run := range ready {
+		model, held := loaded[strings.ToLower(run.Model)]
+		switch {
+		case held:
+			run.SetLoaded(daemonLoaded(model))
+		case run.GetStatus() == instance.StatusRunning:
+			m.retireRun(run, fmt.Errorf("%w: %s dropped %s", ErrModelDropped, provider, run.Model), obsruns.StopReasonCrash)
+		}
+	}
+	// A failed stop is retried while the daemon holds the model, else released; a stop in progress keeps its claim.
+	for _, run := range failed {
+		var down func(context.Context, *instance.Instance) error
+		if _, held := loaded[strings.ToLower(run.Model)]; held {
+			down = m.runEngine(run).down
+		}
+		if err := m.endRun(ctx, run, obsruns.StopReasonUser, down); err != nil && !errors.Is(err, instance.ErrStopping) {
+			slog.Warn("Failed to stop a served run", "run", run.ID, "error", err)
+		}
+	}
+	m.adoptServed(ctx, provider, listed)
+}
+
+// adoptServed adopts on a second listing in a row: one alone may predate the stop that unloaded the model.
+func (m *ProviderAppManager) adoptServed(ctx context.Context, provider string, listed []protocol.RunningModelInfo) {
+	m.sightingsMu.Lock()
+	defer m.sightingsMu.Unlock()
+	seen, sighted := m.sightings[provider], make(map[string]bool)
+	for _, model := range listed {
+		if m.holds(model.Name) {
+			continue
+		}
+		if !seen[model.Name] {
+			sighted[model.Name] = true
+			continue
+		}
+		m.adoptRun(ctx, provider, model)
+	}
+	m.sightings[provider] = sighted
+}
+
+// adoptRun registers a run for a model another client loaded, unless a start or a run holds its key.
+func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, model protocol.RunningModelInfo) {
+	key, svc, ok := m.resolveConfigKey(provider)
+	if !ok {
+		return
+	}
+	run, _, err := servedEngine{m}.servedRun(ctx, EnsureRequest{Provider: provider, Model: model.Name, Endpoint: EndpointChat}, svc, key)
+	if err != nil {
+		slog.Warn("Failed to adopt a served model", "provider", provider, "model", model.Name, "error", err)
+		return
+	}
+	run.StartedBy = instance.StartedByExternal
+	run.KeepAlive = neverExpires // only a client's hint arms zzRouter's timer on a model it did not load
+	run.SetLoaded(daemonLoaded(model))
+	run.MarkRunning()
+	run.SetStartedAtIfZero()
+	// As joinFlight decides: under m.mu against Stop, under flightsMu against a start of this key.
+	registered := false
+	m.mu.Lock()
+	m.flightsMu.Lock()
+	if !m.holds(model.Name) && !m.flying(model.Name) && !m.stopping.Load() {
+		registered = m.instances.Register(run) == nil
+	}
+	m.flightsMu.Unlock()
+	m.mu.Unlock()
+	if registered {
+		m.emitEvent(runEvent(EventInstanceRunning, run, "Adopted (loaded before this run)"))
+	}
+}
+
+// holds reports a run of any provider and endpoint for a name the daemon lists, case aside.
+func (m *ProviderAppManager) holds(name string) bool {
+	return slices.ContainsFunc(m.instances.List(), func(run *instance.Instance) bool { return strings.EqualFold(run.Model, name) })
+}
+
+func daemonLoaded(model protocol.RunningModelInfo) instance.Loaded {
+	return instance.Loaded{
+		Size: model.Size, VRAM: model.SizeVRAM, ContextLength: model.ContextLength, ExpiresAt: model.ExpiresAt, Digest: model.Digest,
+		Format: model.Format, Family: model.Family, ParameterSize: model.ParameterSize, QuantLevel: model.QuantLevel,
+	}
 }

@@ -52,6 +52,8 @@ var failureTable = []failureRow{
 	{prov_apps.ErrDangerousEnvVar, http.StatusBadRequest, ""},
 
 	{prov_apps.ErrProviderUnavailable, http.StatusServiceUnavailable, "provider_unavailable"},
+	// The daemon dropped the model: the next request loads it again.
+	{prov_apps.ErrModelDropped, http.StatusServiceUnavailable, ""},
 	{prov_apps.ErrShutdown, http.StatusServiceUnavailable, ""},
 	{process.ErrMemoryObservation, http.StatusServiceUnavailable, ""},
 	{prov_apps.ErrAtCapacity, http.StatusServiceUnavailable, ""},

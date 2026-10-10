@@ -1330,7 +1330,7 @@ func (m *mockModelRegistry) RescanLocal() (map[string]any, error) {
 
 type mockInstanceProvider struct{}
 
-func (m *mockInstanceProvider) GetInstanceByModel(modelName string) (*instance.Instance, bool) {
+func (m *mockInstanceProvider) GetInstanceByModel(_, modelName string) (*instance.Instance, bool) {
 	return nil, false
 }
 

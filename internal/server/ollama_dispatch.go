@@ -22,6 +22,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 )
 
 // dispatchOllamaInference resolves an Ollama-compat inference request and
@@ -121,20 +124,53 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		return nil
 	}
 
-	// Local coordinator Ollama. Requires a configured Ollama endpoint —
-	// otherwise the model truly isn't reachable via /api/*.
-	ollama, ok := s.backend.Resolve(constants.AppOllama)
-	if !ok {
-		return ollamaUnavailableErr(modelName)
-	}
 	recorder.SetProvider(constants.AppOllama)
 	recorder.SetRouting(llm.RoutingDecisionLocal, s.node.Nodename())
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal,
 		string(genai.ProviderName(constants.AppOllama)), operation)
-	target := backend.PassthroughTarget(ollama.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
-	s.proxy.ForwardToBackend(c.Writer, c.Request, constants.AppOllama, target, ollama.Upstream, body)
+	model := resolved.ModelName
+	if model == "" {
+		model = modelName
+	}
+	return s.serveLocalOllama(c.Writer, c.Request, model)
+}
+
+// serveLocalOllama answers a native request through the model's run, else by Ollama itself when it has none.
+func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, model string) error {
+	if s.hasRuns(constants.AppOllama) {
+		// An unload of a model with no run of it starts nothing: the daemon answers it.
+		result, err := s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{ //nolint:contextcheck // a load outlives the request that asked for it
+			Model: model, Provider: constants.AppOllama, Origin: prov_apps.OriginRequest, Unload: unloadAsked(req),
+		})
+		inst := result.Run
+		if err == nil && inst != nil && inst.GetStatus() == instance.StatusStarting {
+			inst, err = s.waitForLocalInstance(inst)
+		}
+		if err != nil {
+			failure := classifyLoadFailure(err).wire()
+			recordErrorOnContext(req.Context(), failure.Code, failure.Message)
+			dialectOf(req).WriteError(w, req, failure)
+			return nil
+		}
+		if inst != nil {
+			s.forwardToRun(w, req, inst)
+			return nil
+		}
+	}
+	ollama, ok := s.backend.Resolve(constants.AppOllama)
+	if !ok {
+		return ollamaUnavailableErr(model)
+	}
+	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+	s.proxy.ForwardToBackend(w, req, constants.AppOllama, backend.PassthroughTarget(ollama.Endpoint, req.URL.Path, req.URL.RawQuery), ollama.Upstream, body)
 	return nil
+}
+
+// unloadAsked reports a zero keep_alive hint: the caller asks the model unloaded.
+func unloadAsked(req *http.Request) bool {
+	hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
+	return hints != nil && hints.Duration != nil && *hints.Duration == 0
 }
 
 // ollamaUnavailableErr is the canonical 404 returned when a model is not

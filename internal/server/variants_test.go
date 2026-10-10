@@ -382,10 +382,10 @@ func TestVariants_ChainFindsTheServingRun(t *testing.T) {
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 
 	deps := &chainServerDeps{s: s}
-	got, ok := deps.AppInstance(variantChat)
+	got, ok := deps.AppInstance(variantChat, "llamacpp")
 	require.True(t, ok)
 	assert.Equal(t, "base-run", got.ID)
-	_, ok = deps.AppInstance(variantAgent)
+	_, ok = deps.AppInstance(variantAgent, "llamacpp")
 	assert.False(t, ok, "a variant with its own launch has no run yet")
 	assert.Equal(t, 0.7, deps.RequestDefaults("llamacpp", variantChat, "/v1/chat/completions")["temperature"])
 }

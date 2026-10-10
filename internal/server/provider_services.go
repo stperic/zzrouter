@@ -20,6 +20,7 @@ type providerServices interface {
 	ControlProviderService(context.Context, string, string) (prov_apps.ProviderServiceStatus, error)
 	ApplyProviderService(context.Context, string) (*service.ApplyResult, error)
 	ProviderManagedBinary(string) string
+	RunningModels(string) []string
 }
 
 func (e *ParamsExecutor) serviceEnv(cfg *pkgConfig.ServiceConfig) map[string]string {
@@ -63,7 +64,7 @@ func (e *ParamsExecutor) writeServiceStatus(c *gin.Context, cfg *pkgConfig.Servi
 		RunningModels []string         `json:"running_models,omitempty"`
 	}{ProviderServiceStatus: status, Node: e.nodename(), Mode: cfg.Mode, Manager: manager, Healthy: healthy}
 	if healthy {
-		result.RunningModels = e.listRunningModelNames(c.Request.Context(), status.Provider)
+		result.RunningModels = e.services.RunningModels(status.Provider)
 	}
 	if binary := e.services.ProviderManagedBinary(status.Provider); binary != "" {
 		result.EnvState = process.BinaryEnvState(binary, e.serviceEnv(cfg))
@@ -127,7 +128,7 @@ func (e *ParamsExecutor) HandleInternalApplyService(c *gin.Context) {
 		ServiceUnavailable(c, "provider lifecycle manager is unavailable")
 		return
 	}
-	runningModels := e.listRunningModelNames(c.Request.Context(), c.Param("name"))
+	runningModels := e.services.RunningModels(c.Param("name"))
 	result, err := e.services.ApplyProviderService(c.Request.Context(), c.Param("name"))
 	if err != nil {
 		e.serviceError(c, err)

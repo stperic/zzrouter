@@ -150,9 +150,7 @@ func (l *Lease) Release() {
 		}
 		l.mu.Unlock()
 		i := l.instance
-		// Re-arm expiry before the idle reaper can observe zero active requests.
-		i.StampActivityWithHints(nil)
-		atomic.AddInt64(&i.activeRequests, -1)
+		i.released()
 		if i.concurrencySem != nil {
 			<-i.concurrencySem
 		}

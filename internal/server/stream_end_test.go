@@ -20,6 +20,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/protocol/anthropic"
 	openaiproto "github.com/stperic/zzrouter/pkg/protocol/openai"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -144,6 +145,7 @@ func (b streamTestBody) Close() error {
 func instanceStreamTestServer() (*Server, *instance.Instance) {
 	s := &Server{config: &config.NodeConfig{}, node: &NodeIdentity{name: "test-node"}}
 	s.inference.normalizers = NewResponseNormalizers()
+	s.providers.appMgr, _ = prov_apps.NewProviderAppManager(nil) // a launched run is reached on its port
 	// The health host names the fake transport's engine.
 	inst := &instance.Instance{ID: "test", Provider: "engine", HealthURL: "http://engine.test/health", Port: 80}
 	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 100, QueueTimeout: 0})

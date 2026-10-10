@@ -33,14 +33,15 @@ const defaultLogBufferSize = 100
 //     code path BEFORE Registry.Register publishes the instance, then
 //     treated as immutable. No lock needed because there is no
 //     concurrent reader yet. Fields: ID, Provider, LaunchMode, Model,
-//     SourceRepo, SizeBytes, Processor, ContextLength, Port, HealthURL,
+//     SourceRepo, Port, HealthURL,
 //     Config, KeepAlive (initial), LogFilePath, LaunchCommand,
 //     IdleExpiry, Logs, FailureClassifier, StartedBy.
 //
 //  2. **Mu-protected mutable** — written by Set/Mark/Stamp/Update
 //     methods that take i.mu. Fields: Status, ErrorMessage, StartedAt,
 //     FailedAt, LastHealthCheck, LastHealthy, LastActivity, KeepAlive
-//     (after StampActivityWithHints), ProcessID, ProcessGroupID.
+//     (after StampActivityWithHints), ProcessID, ProcessGroupID,
+//     SizeBytes, Processor, ContextLength (SetLoaded).
 //
 // Direct field writes from outside this package are restricted to
 // bootstrap-only fields and only between NewInstance and Register.
@@ -57,6 +58,8 @@ type Instance struct {
 
 	// StopUnconfirmed keeps a runtime occupied until its process reaper drains.
 	StopUnconfirmed atomic.Bool `json:"-"`
+	// ending is held by the one stop or retirement ending the run; a failed stop gives it back.
+	ending atomic.Bool
 
 	// String not prov_apps.Endpoint to avoid a back-import (prov_apps imports instance).
 	Endpoint   string `json:"endpoint,omitempty"`
@@ -82,6 +85,7 @@ type Instance struct {
 	LastHealthy     time.Time `json:"last_healthy"`
 	LastActivity    time.Time `json:"last_activity"`
 	ErrorMessage    string    `json:"error_message,omitempty"`
+	loaded          Loaded
 	failure         *FailureInfo
 	// StreamJobID is the pkg/jobs handle ID used by clients to watch
 	// launch progress via /zzrouter/v1/jobs/:id/stream?node=<node>.
@@ -203,6 +207,12 @@ func (i *Instance) Cancel() {
 		i.cancelFunc()
 	}
 }
+
+// ClaimEnd takes the right to end the run; false while another stop or retirement holds it.
+func (i *Instance) ClaimEnd() bool { return i.ending.CompareAndSwap(false, true) }
+
+// ReleaseEnd gives the right back after a stop that failed, so a retry can take it.
+func (i *Instance) ReleaseEnd() { i.ending.Store(false) }
 
 // --- Thread-safe status reads ---
 
@@ -482,6 +492,42 @@ func (i *Instance) GetLastActivity() time.Time {
 	return i.lastActivityTime()
 }
 
+// Loaded is what the daemon serving a run reports of its model.
+type Loaded struct {
+	Size, VRAM                                        int64
+	ContextLength                                     int
+	ExpiresAt                                         time.Time // when the daemon unloads it idle
+	Digest, Format, Family, ParameterSize, QuantLevel string
+}
+
+// percentWhole is a whole share in percent.
+const percentWhole = 100
+
+// SetLoaded records, for listings, what the daemon serving the run reports of its model.
+func (i *Instance) SetLoaded(l Loaded) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.loaded, i.SizeBytes, i.ContextLength = l, l.Size, l.ContextLength
+	switch {
+	case l.Size <= 0:
+		i.Processor = ""
+	case l.VRAM >= l.Size:
+		i.Processor = "100% GPU"
+	case l.VRAM <= 0:
+		i.Processor = "100% CPU"
+	default:
+		gpu := float64(l.VRAM) / float64(l.Size) * percentWhole
+		i.Processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", gpu, percentWhole-gpu)
+	}
+}
+
+// Loaded returns what SetLoaded recorded.
+func (i *Instance) Loaded() Loaded {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.loaded
+}
+
 // --- Keep-alive ---
 
 // GetKeepAlive returns the current keep-alive duration. Safe to read
@@ -498,7 +544,7 @@ func (i *Instance) UpdateLastUsed() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.lastUsedAt = utils.Now()
-	i.resetKeepAliveTimerLocked()
+	i.resetKeepAliveTimerLocked(false)
 }
 
 // StampActivityWithHints applies any non-nil request hints, stamps activity
@@ -523,10 +569,22 @@ func (i *Instance) StampActivityWithHints(ov *keepalive.Override) {
 		}
 	}
 
+	i.stampLocked(false)
+}
+
+// released drops one hold under the idle rule's lock, so the reaper never sees the count without the re-armed timer.
+func (i *Instance) released() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	atomic.AddInt64(&i.activeRequests, -1)
+	i.stampLocked(true)
+}
+
+func (i *Instance) stampLocked(release bool) {
 	now := utils.Now()
 	i.LastActivity = now
 	i.lastUsedAt = now
-	i.resetKeepAliveTimerLocked()
+	i.resetKeepAliveTimerLocked(release)
 }
 
 // GetLastUsedAt returns the last-used timestamp.
@@ -552,7 +610,8 @@ func (i *Instance) StopKeepAliveTimer() {
 	}
 }
 
-func (i *Instance) resetKeepAliveTimerLocked() {
+// resetKeepAliveTimerLocked arms expiry: below zero never, zero only as a request releases the run.
+func (i *Instance) resetKeepAliveTimerLocked(release bool) {
 	if i.keepAliveTimer != nil {
 		if !i.keepAliveTimer.Stop() {
 			select {
@@ -562,7 +621,8 @@ func (i *Instance) resetKeepAliveTimerLocked() {
 		}
 	}
 
-	if i.KeepAlive <= 0 {
+	// A run being stopped arms nothing: its stop has already cleared the timer.
+	if i.KeepAlive < 0 || (i.KeepAlive == 0 && !release) || (i.ctx != nil && i.ctx.Err() != nil) {
 		i.keepAliveTimer = nil
 		return
 	}
@@ -773,6 +833,9 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 	}
 	if !i.LastHealthCheck.IsZero() {
 		info.LastHealthCheck = i.LastHealthCheck.Format(time.RFC3339)
+	}
+	if !i.loaded.ExpiresAt.IsZero() {
+		info.ExpiresAt = i.loaded.ExpiresAt.Format(time.RFC3339)
 	}
 
 	return info

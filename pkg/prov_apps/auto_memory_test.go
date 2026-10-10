@@ -35,7 +35,7 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	preview, err := mgr.prepareLaunch(svc, "generic", "chat", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
+	preview, err := processEngine{mgr}.prepare(svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
 	assert.NotContains(t, preview.resolved.Parameters, "dtype")
@@ -66,7 +66,7 @@ func TestAutoMemoryIntentPreservesParameterStatusWithoutDiscovery(t *testing.T) 
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	mgr.ReloadConfig(cfg)
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
-	prepared, err := mgr.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	prepared, err := processEngine{mgr}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	prepared.resolved.Parameters["memory-fraction"] = "0.5"
 	run := instance.NewInstance("test", "vllm", "vendor/model", 8100, 0, 0)

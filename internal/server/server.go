@@ -160,12 +160,12 @@ type Server struct {
 	modelsWatcher *modelsWatcher
 }
 
-// GetInstanceByModel returns instance info for a loaded model.
-func (s *Server) GetInstanceByModel(modelName string) (*instance.Instance, bool) {
+// GetInstanceByModel returns the run serving a model on provider ("" for any).
+func (s *Server) GetInstanceByModel(provider, modelName string) (*instance.Instance, bool) {
 	if s.providers.appMgr == nil {
 		return nil, false
 	}
-	return s.providers.appMgr.GetInstanceByModel(modelName)
+	return s.providers.appMgr.GetInstanceByModel(provider, modelName, prov_apps.EndpointChat)
 }
 
 // openAIModelRuntimeLookup answers /v1/models' "is this model hot?" question

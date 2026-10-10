@@ -13,7 +13,6 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -24,7 +23,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/version"
 )
 
@@ -329,57 +328,41 @@ func (h *OllamaHandlers) handleOllamaPs(c *gin.Context) {
 	})
 }
 
-// HandleOllamaPsLocal handles GET /zzrouter/v1/internal/ollama/ps.
+// HandleOllamaPsLocal handles GET /zzrouter/v1/internal/ollama/ps: the
+// runs of this node's served providers, from the run registry. The daemon
+// is not asked; the run reconcile keeps the registry true to it.
 //
 // Each returned entry's Name is suffixed with `@<node>` so that the
 // cluster-aggregated response (produced by handleOllamaPs on the
 // coordinator) has per-instance addressable rows — two nodes loading the
-// same model become two distinct entries, each with its own live VRAM
-// usage and expires_at. The Model field stays bare so clients that
-// group-by-model can still do so.
+// same model become two distinct entries. The Model field stays bare so
+// clients that group-by-model can still do so.
 //
 // The `@<node>` suffix matches the canonical name grammar established by
 // M1 (right-side qualifier: `llama3:8b@gpu-1`), consistent with
 // HuggingFace revisions, Docker digests, email, and Go module versions.
-//
-// Live polling is preserved: each request hits the upstream Ollama
-// daemon directly via protocol.ListRunningModels. Caching here would
-// produce stale VRAM/TTL data and break Open WebUI's stop-model UI.
 func (h *OllamaHandlers) HandleOllamaPsLocal(c *gin.Context) {
-	ctx := c.Request.Context()
 	entries := []OllamaPsEntry{}
-
 	nodeSuffix := ""
 	if h.nodeName != nil {
 		if n := h.nodeName(); n != "" {
 			nodeSuffix = "@" + n
 		}
 	}
-
-	h.forEachLocalOllamaApp(func(name string, p protocol.ModelLoader, t protocol.Target) {
-		running, err := p.ListRunningModels(ctx, t)
-		if err != nil {
-			slog.Debug("ollama ps query failed", "app", name, "error", err)
-			return
-		}
-		for _, m := range running {
+	if h.appMgr != nil {
+		for _, run := range h.appMgr.Instances().List() {
+			svc, ok := h.appMgr.ProviderConfig(run.Provider)
+			if !ok || prov_apps.Lifecycle(svc) != prov_apps.LifecycleServed || run.GetStatus() != instance.StatusRunning {
+				continue
+			}
+			loaded := run.Loaded()
 			entries = append(entries, OllamaPsEntry{
-				Name:          m.Name + nodeSuffix,
-				Model:         m.Name,
-				Size:          m.Size,
-				Digest:        m.Digest,
-				SizeVRAM:      m.SizeVRAM,
-				ContextLength: m.ContextLength,
-				ExpiresAt:     m.ExpiresAt,
-				Details: OllamaModelDetails{
-					Format:        m.Format,
-					Family:        m.Family,
-					ParameterSize: m.ParameterSize,
-					QuantLevel:    m.QuantLevel,
-				},
+				Name: run.Model + nodeSuffix, Model: run.Model,
+				Size: loaded.Size, SizeVRAM: loaded.VRAM, ContextLength: loaded.ContextLength, ExpiresAt: loaded.ExpiresAt, Digest: loaded.Digest,
+				Details: OllamaModelDetails{Format: loaded.Format, Family: loaded.Family, ParameterSize: loaded.ParameterSize, QuantLevel: loaded.QuantLevel},
 			})
 		}
-	})
+	}
 	c.JSON(http.StatusOK, OllamaPsResponse{Models: entries})
 }
 
@@ -415,19 +398,5 @@ func (h *OllamaHandlers) handleOllamaBlobsPost(c *gin.Context) {
 	}
 	if err := h.ollama.CreateBlob(c, params.GetString("digest")); err != nil && !c.Writer.Written() {
 		RespondToErrorOllama(c, err)
-	}
-}
-
-// forEachLocalOllamaApp invokes fn once per registered local Ollama app with
-// a parsed, enabled endpoint. Apps without a usable endpoint are skipped.
-func (h *OllamaHandlers) forEachLocalOllamaApp(fn func(name string, p protocol.ModelLoader, t protocol.Target)) {
-	if h.appMgr == nil {
-		return
-	}
-	for _, key := range h.appMgr.Protocols().List() {
-		loader, target, ok := h.appMgr.Loader(key)
-		if ok {
-			fn(key, loader, target)
-		}
 	}
 }

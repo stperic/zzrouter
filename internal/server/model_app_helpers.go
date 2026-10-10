@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -184,19 +185,41 @@ func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*inst
 	return inst.Acquire(req.Context(), hints)
 }
 
+// openRun leases a local run and resolves its target; on failure it answers through fail unless the client is gone.
+func (s *Server) openRun(req *http.Request, inst *instance.Instance, recorder *llm.InferenceRecorder, fail func(httperr.Error)) (*instance.Lease, *url.URL, backend.Upstream, bool) {
+	lease, err := s.openInstance(req, inst)
+	if err != nil {
+		if failure, ok := renderAdmissionError(err); ok {
+			fail(failure)
+		} else {
+			slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
+		}
+		return nil, nil, backend.Upstream{}, false
+	}
+	base, up, err := s.providers.appMgr.Upstream(inst)
+	var target *url.URL
+	if err == nil {
+		target, err = url.Parse(backend.PassthroughTarget(base, req.URL.Path, req.URL.RawQuery))
+	}
+	if err != nil {
+		lease.Release()
+		fail(instanceSendFailure(recorder, err))
+		return nil, nil, backend.Upstream{}, false
+	}
+	return lease, target, up, true
+}
+
 // sendToInstance is the one way a request reaches a leased local run; a streaming one gets the
 // lease's first-byte and idle deadlines.
-func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte) (*http.Response, error) {
+func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte, target *url.URL, up backend.Upstream) (*http.Response, error) {
 	ctx := req.Context()
 	var wrap func(io.ReadCloser) io.ReadCloser
 	if wire.StreamFromBody(body) {
 		ctx, wrap = lease.WatchStream(ctx)
 	}
-	inst := lease.Instance()
 	proxyReq := req.Clone(ctx)
-	proxyReq.URL.Scheme = "http"
-	proxyReq.URL.Host = fmt.Sprintf("%s:%d", getInstanceBackendNode(inst), inst.Port)
-	proxyReq.Host = proxyReq.URL.Host
+	proxyReq.URL = target
+	proxyReq.Host = target.Host
 	proxyReq.RequestURI = ""
 	proxyReq.Close = false
 	if body != nil {
@@ -204,7 +227,7 @@ func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body [
 		proxyReq.ContentLength = int64(len(body))
 		proxyReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	}
-	proxyReq.Header = upstreamHeaders(req.Header, backend.Engine())
+	proxyReq.Header = upstreamHeaders(req.Header, up)
 	// Engine servers refuse a JSON body sent without its type; a multipart body always names its own.
 	if proxyReq.Header.Get("Content-Type") == "" {
 		proxyReq.Header.Set("Content-Type", "application/json")
@@ -237,34 +260,26 @@ func instanceSendFailure(recorder *llm.InferenceRecorder, err error) httperr.Err
 }
 
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
-	lease, err := s.openInstance(req, inst)
-	if err != nil {
-		if failure, ok := renderAdmissionError(err); ok {
-			failBeforeBackend(w, req, failure)
-			return
-		}
-		slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	recorder := requestRecorder(req.Context(), model, inst.Provider)
+	lease, target, up, ok := s.openRun(req, inst, recorder, func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	if !ok {
 		return
 	}
 	defer lease.Release()
-
-	backendNode := getInstanceBackendNode(inst)
-
-	model, _ := req.Context().Value(CtxKeyModel).(string)
-	recorder := requestRecorder(req.Context(), model, inst.Provider)
-	recorder.SetServer(backendNode, inst.Port)
+	recorder.SetServer(target.Hostname(), portFromURL(target))
 
 	inflightToken := obsproxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
-		inst.Provider, model, backendNode)
+		inst.Provider, model, target.Hostname())
 	defer obsproxy.DecInflight(req.Context(), inflightToken)
 
 	body, restoreModel := s.instanceRequest(req, inst)
 	recorder.SetUpstreamRequestData(body)
 	if !quiet {
-		slog.Info("Forwarding request to instance", "id", inst.ID, "host", backendNode, "port", inst.Port, "path", req.URL.Path)
+		slog.Info("Forwarding request to instance", "id", inst.ID, "target", target.Host, "path", req.URL.Path)
 	}
-	resp, err := s.sendToInstance(req, lease, body)
+	resp, err := s.sendToInstance(req, lease, body, target, up)
 	if err != nil {
 		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
 		writeError(w, req, instanceSendFailure(recorder, err))
@@ -280,10 +295,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	stripUpstreamIdentifyingHeaders(w.Header())
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set(constants.HeaderServingProvider, inst.Provider)
-	servingNode := backendNode
-	if servingNode == constants.Localhost {
-		servingNode = s.GetNodename()
-	}
+	servingNode := s.GetNodename()
 	w.Header().Set(constants.HeaderServingNode, servingNode)
 	if resp.StatusCode >= 400 {
 		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
@@ -393,8 +405,8 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 	if original, ok := req.Context().Value(CtxKeyOriginalBody).([]byte); ok && len(original) > 0 {
 		clientModel = wire.ModelFromBody(original)
 		body = s.applyRequestDefaults(req.Context(), inst.Provider, clientModel, req.URL.Path, original)
-		if translateModel(inst, clientModel) {
-			body = wire.SetModelIfPresent(body, inst.WireModel)
+		if clientModel != "" {
+			body = wire.SetModelIfPresent(body, s.providers.appMgr.RequestModel(inst, clientModel))
 		}
 	}
 	answerAs = clientModelFromContext(req.Context())
@@ -404,20 +416,22 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 	return body, answerAs
 }
 
-// translateModel reports whether this instance's engine keys on a token
-// other than the one the client sent, i.e. whether the model name has to
-// be rewritten on the way in.
-//
-// The outbound direction is not gated on this. WireModel is only set for
-// instances zzRouter launches, so an external engine leaves it empty --
-// and an external engine still answers with its own token. Ollama echoes
-// its registry name, which drops the @node suffix the catalog advertises,
-// so the id in the response no longer matches any catalog entry. The
-// response is restored to whatever the client sent whenever that is
-// known; which concrete replica served it is reported by the zzrouter
-// block, not by overwriting the client's own handle for the model.
-func translateModel(inst *instance.Instance, clientModel string) bool {
-	return clientModel != "" && inst.WireModel != "" && inst.WireModel != clientModel
+// forwardToRun relays a native request to a leased local run, with the run's body at the run's target.
+func (s *Server) forwardToRun(w http.ResponseWriter, req *http.Request, inst *instance.Instance) {
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	lease, target, up, ok := s.openRun(req, inst, requestRecorder(req.Context(), model, inst.Provider), func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	if !ok {
+		return
+	}
+	defer lease.Release()
+	body, _ := s.instanceRequest(req, inst)
+	s.proxy.ForwardToBackend(w, req, inst.Provider, target.String(), up, body)
+}
+
+// hasRuns reports whether provider serves its models through runs; one without is forwarded to as it is.
+func (s *Server) hasRuns(provider string) bool {
+	svc, ok := s.providerConfig(provider)
+	return ok && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone
 }
 
 // modelInstance keeps provider selection intact when reusing an endpoint's run.
@@ -425,7 +439,7 @@ func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Inst
 	if s.providers.appMgr == nil {
 		return nil, false
 	}
-	inst, found := s.providers.appMgr.Instances().GetByModelEndpoint(model, endpoint)
+	inst, found := s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.Endpoint(endpoint))
 	if found && provider != "" && utils.NormalizeAppType(inst.Provider) != utils.NormalizeAppType(provider) {
 		return nil, false
 	}
