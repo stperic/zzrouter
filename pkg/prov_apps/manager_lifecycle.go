@@ -107,6 +107,10 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
 	inst.Endpoint = endpoint
+	inst.StartedBy = instance.StartedByAPI
+	if req.ByRequest {
+		inst.StartedBy = instance.StartedByRequest
+	}
 	if svcCfg.Runtime != nil {
 		inst.FailureClassifier = &svcCfg.Runtime.FailurePatterns
 	}
@@ -1015,6 +1019,7 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 		Endpoint:   Endpoint(inst.Endpoint),
 		Parameters: cfg.Parameters,
 		EnvVars:    cfg.EnvVars,
+		ByRequest:  inst.StartedBy == instance.StartedByRequest,
 	}
 }
 

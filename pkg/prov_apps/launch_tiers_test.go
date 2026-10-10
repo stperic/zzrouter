@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 
 	"github.com/stretchr/testify/assert"
@@ -260,6 +261,14 @@ func TestRestartRequestPreservesEndpoint(t *testing.T) {
 	assert.Equal(t, "vllm", req.Provider)
 	assert.Equal(t, "llama3", req.Model)
 	assert.Zero(t, req.Port, "port must be left unset so the pool reallocates")
+	assert.Equal(t, instance.StartedByAPI, inst.StartedBy)
+	assert.False(t, req.ByRequest)
+
+	// A run a request started stays a request's run across a restart.
+	instResult, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: "other", ByRequest: true})
+	require.NoError(t, err)
+	assert.Equal(t, instance.StartedByRequest, instResult.Run.ToInfo("node").StartedBy)
+	assert.True(t, restartRequest(instResult.Run).ByRequest)
 }
 
 // The stored Config must hold the REQUEST tier only. If it held the

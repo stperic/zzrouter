@@ -22,6 +22,7 @@ type EnsureRequest struct {
 	installSmoke     bool
 	selectedRuntime  string
 	Detached         bool // returns an empty result on a cold start accepted in the background
+	ByRequest        bool // an inference request starts the run, not a management call
 	Force            bool
 	Runtime          string
 	DisposablePlanID string

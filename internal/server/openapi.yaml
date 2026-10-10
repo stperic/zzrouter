@@ -11102,6 +11102,15 @@ components:
         error_message:
           type: string
           description: Bounded redacted failure summary, preserving the first specific cause.
+        started_by:
+          type: string
+          enum: [api, request]
+          description: |
+            What started the run: `api` for a run start (`POST /runs`,
+            `/runs/ensure`, `/runs/load`), `request` for an inference request
+            to a model that had no run. A restart or a reuse keeps the
+            original value. Absent for a model zzRouter did not launch
+            (one an endpoint provider such as Ollama loaded itself).
         waiting_on:
           type: string
           description: |

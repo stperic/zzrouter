@@ -112,6 +112,7 @@ func TestConcurrentInferenceAndChainEnsureOneRun(t *testing.T) {
 	require.NoError(t, first.err)
 	require.NoError(t, second.err)
 	require.Same(t, first.run, second.run)
+	assert.Equal(t, instance.StartedByRequest, first.run.StartedBy)
 	assert.Equal(t, int32(1), starts.Load())
 	require.Len(t, mgr.Instances().ListAll(), 1)
 }
@@ -286,6 +287,10 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 		require.NoError(t, newChainServerDeps(s).StartOnDemand("cold", "fake"))
 		<-entered
 		close(release)
+		synctest.Wait()
+		runs := mgr.Instances().ListAll()
+		require.Len(t, runs, 1)
+		assert.Equal(t, instance.StartedByRequest, runs[0].StartedBy)
 	})
 }
 

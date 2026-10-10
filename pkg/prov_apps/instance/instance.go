@@ -35,7 +35,7 @@ const defaultLogBufferSize = 100
 //     concurrent reader yet. Fields: ID, Provider, LaunchMode, Model,
 //     SourceRepo, SizeBytes, Processor, ContextLength, Port, HealthURL,
 //     Config, KeepAlive (initial), LogFilePath, LaunchCommand,
-//     IdleExpiry, Logs, FailureClassifier.
+//     IdleExpiry, Logs, FailureClassifier, StartedBy.
 //
 //  2. **Mu-protected mutable** — written by Set/Mark/Stamp/Update
 //     methods that take i.mu. Fields: Status, ErrorMessage, StartedAt,
@@ -89,6 +89,7 @@ type Instance struct {
 	// without a jobs registry. Named to avoid collision with `jobHandle`
 	// below (Windows process-group handle).
 	StreamJobID   string         `json:"stream_job_id,omitempty"`
+	StartedBy     StartedBy      `json:"started_by,omitempty"`
 	KeepAlive     time.Duration  `json:"keep_alive"`
 	LogFilePath   string         `json:"log_file_path,omitempty"`
 	LaunchCommand *LaunchCommand `json:"launch_command,omitempty"`
@@ -774,6 +775,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
 		EvictedRuns:           slices.Clone(i.evictedRuns),
+		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),
