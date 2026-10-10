@@ -20,7 +20,8 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   prepare, upstream) holds what differs. A served run is keyed by the daemon's name for the model, takes no
   port, is loaded with its resolved keep-alive for the daemon to apply (zzRouter arms no timer but a client's
   hint) and outlives the node; the services ticker reconciles served runs with the daemon's list (retire what it
-  dropped, adopt what it holds on two sightings, a pin included after a node restart). An explicit client
+  dropped, adopt what it holds on two sightings: a pin survives a node restart only where the daemon runs as
+  its own service; a daemon zzRouter supervises restarts with the node and drops its models). An explicit client
   keep_alive hint arms zzRouter's timer on any run, adopted ones included. A
   provider with no runs answers ready when it lists the model.
 

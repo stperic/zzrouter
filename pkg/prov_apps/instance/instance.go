@@ -808,7 +808,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Status:                i.Status,
 		HealthURL:             rewriteHealthURLHost(i.HealthURL, hostname),
 		Node:                  hostname,
-		KeepAlive:             i.KeepAlive.String(),
+		KeepAlive:             FormatKeepAlive(i.KeepAlive),
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
 		EvictedRuns:           slices.Clone(i.evictedRuns),
@@ -889,4 +889,12 @@ func copyStringMap(m map[string]string) map[string]string {
 	cp := make(map[string]string, len(m))
 	maps.Copy(cp, m)
 	return cp
+}
+
+// FormatKeepAlive writes a keep-alive as its parameter reads: -1 for never.
+func FormatKeepAlive(d time.Duration) string {
+	if d < 0 {
+		return "-1"
+	}
+	return d.String()
 }

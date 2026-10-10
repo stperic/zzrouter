@@ -231,7 +231,7 @@ func (servedEngine) prepare(svc config.ServiceConfig, _ string, req EnsureReques
 	}
 	params := map[string]string{}
 	if explicit {
-		params[keepAliveParameter] = formatKeepAlive(keepAlive)
+		params[keepAliveParameter] = instance.FormatKeepAlive(keepAlive)
 	}
 	return preparedLaunch{
 		launch:     process.Launch{WireModel: req.Model}, // runModel named it as the daemon does
@@ -251,14 +251,6 @@ func (e servedEngine) upstream(run *instance.Instance) (string, backend.Upstream
 func (servedEngine) outlivesNode() bool { return true }
 
 func (servedEngine) hasLog() bool { return false }
-
-// formatKeepAlive writes a keep-alive as its parameter reads: -1 for never.
-func formatKeepAlive(d time.Duration) string {
-	if d < 0 {
-		return "-1"
-	}
-	return d.String()
-}
 
 // readinessBudget is how long a provider gives a run to become ready.
 func readinessBudget(svc config.ServiceConfig) time.Duration {

@@ -590,3 +590,8 @@ func TestClaimTerminationOwner(t *testing.T) {
 	assert.Zero(t, stopped.ClaimTermination(false))
 	assert.Equal(t, 7, stopped.ClaimTermination(true), "a stop retries its own claim")
 }
+
+func TestToInfoKeepAliveReadsAsItsParameter(t *testing.T) {
+	assert.Equal(t, "-1", NewInstance("pinned", "ollama", "m", 0, -1, 1).ToInfo("node").KeepAlive)
+	assert.Equal(t, "5m0s", NewInstance("timed", "vllm", "m", 8000, 5*time.Minute, 1).ToInfo("node").KeepAlive)
+}
