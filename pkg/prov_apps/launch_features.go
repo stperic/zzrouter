@@ -208,7 +208,7 @@ type LaunchParameters struct {
 	RuntimeKey           string
 }
 
-func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req LaunchRequest, endpoint string) (LaunchParameters, error) {
+func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
 	if req.Runtime != "" && req.DisposablePlanID == "" && !req.installSmoke {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
@@ -301,7 +301,7 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 
 // ResolveLaunchParameters resolves this node's tiers and selected feature
 // runtime for previews without starting a process or installing anything.
-func (m *ProviderAppManager) ResolveLaunchParameters(req LaunchRequest) (LaunchParameters, error) {
+func (m *ProviderAppManager) ResolveLaunchParameters(req EnsureRequest) (LaunchParameters, error) {
 	_, svc, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return LaunchParameters{}, ErrProviderNotFound

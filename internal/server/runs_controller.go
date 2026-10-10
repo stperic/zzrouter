@@ -254,12 +254,8 @@ func (ctrl *RunsController) LoadModel(c *gin.Context) {
 	// directly) complete synchronously and lack a job_id. Local on-demand
 	// launches return 202 + job_id for async subscribe; the service layer
 	// maps status codes, so mirror the upstream status here.
-	if resp.StatusCode == http.StatusConflict {
-		c.JSON(http.StatusConflict, SuccessResponse{
-			Success: true,
-			Message: resp.Message,
-			Data:    resp,
-		})
+	if resp.Reused {
+		c.JSON(http.StatusConflict, SuccessResponse{Success: true, Message: resp.Message, Data: resp})
 		return
 	}
 	if resp.JobID != "" {

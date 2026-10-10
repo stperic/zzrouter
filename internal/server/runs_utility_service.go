@@ -251,13 +251,18 @@ func (svc *RunsUtilityService) BatchLaunch(ctx context.Context, instances []Laun
 			continue
 		}
 
-		provReq := buildLaunchRequest(req.Provider, req)
-		inst, err := svc.appMgr.LaunchInstance(ctx, provReq)
+		provReq := buildEnsureRequest(req.Provider, req)
+		instResult, err := svc.appMgr.EnsureRun(ctx, provReq)
+		inst := instResult.Run
 		if err != nil {
 			failed = append(failed, map[string]any{"provider": req.Provider, "error": err.Error()})
 			continue
 		}
 
+		if instResult.Served {
+			launched = append(launched, map[string]any{"provider": req.Provider, "port": instResult.Port, "status": "running"})
+			continue
+		}
 		launched = append(launched, map[string]any{
 			"id":       inst.ID,
 			"provider": inst.Provider,

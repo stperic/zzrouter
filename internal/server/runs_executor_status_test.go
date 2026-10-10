@@ -28,7 +28,7 @@ func TestInternalListRuns_ParametersStatusOnlyWhenAsked(t *testing.T) {
 	mgr, err := prov_apps.NewProviderAppManager(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mgr.Stop(t.Context()) })
-	_, err = mgr.LaunchInstance(t.Context(), prov_apps.LaunchRequest{Provider: "vllm", Model: "llama3"})
+	_, err = mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "vllm", Model: "llama3"})
 	require.NoError(t, err)
 	e := &RunsExecutor{appMgr: mgr, getNodename: func() string { return "n" }, appsConfig: func() *pkgConfig.AppsConfig { return cfg }}
 

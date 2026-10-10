@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
@@ -129,13 +130,11 @@ type ProviderAppManager struct {
 	// leaves a run's source unstated.
 	modelSource func(ctx context.Context, model string) string
 
-	// launchGroup coalesces concurrent LaunchInstance calls for the
-	// same (provider, model) so simultaneous POST /runs or /runs/load
-	// don't spawn racing instances. First caller runs the full launch
-	// flow; subsequent callers wait and receive the same *Instance.
-	// Key: "<provider>:<model>" (forbidden characters aren't possible
-	// in either field — validated upstream).
-	launchGroup singleflight.Group
+	// launchGroup shares one canonical model and endpoint's start decision.
+	launchGroup    singleflight.Group
+	localCatalog   func(context.Context, string) (bool, error)
+	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
+	resolveBackend func(string) (*backend.Resolved, bool)
 
 	// nodename is this node's cluster name, used to resolve the node
 	// tiers of the parameter tree. Optional; nil means Tier 0 only.
@@ -177,6 +176,21 @@ type Localized struct {
 
 // Option configures a ProviderAppManager.
 type Option func(*ProviderAppManager)
+
+// WithLocalCatalog supplies this node's catalog membership for base weights.
+func WithLocalCatalog(fn func(context.Context, string) (bool, error)) Option {
+	return func(m *ProviderAppManager) { m.localCatalog = fn }
+}
+
+// WithStartObserver records only actual cold-start attempts.
+func WithStartObserver(fn func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))) Option {
+	return func(m *ProviderAppManager) { m.observeStart = fn }
+}
+
+// WithBackendResolver supplies the target for providers with their own endpoint.
+func WithBackendResolver(fn func(string) (*backend.Resolved, bool)) Option {
+	return func(m *ProviderAppManager) { m.resolveBackend = fn }
+}
 
 // WithHTTPClient sets a shared HTTP client for all provider connections.
 func WithHTTPClient(client *http.Client) Option {

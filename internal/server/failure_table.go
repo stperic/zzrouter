@@ -26,6 +26,8 @@ var failureTable = []failureRow{
 	// Half-downloaded weights: the caller must repair the model, which 409 says and 400 does not.
 	{prov_apps.ErrModelIncomplete, http.StatusConflict, "model_incomplete"},
 
+	{errAutoDetectModelNotFound, http.StatusNotFound, ""},
+	{errAutoDetectMultipleProviders, http.StatusConflict, ""},
 	{prov_apps.ErrProviderNotFound, http.StatusNotFound, ""},
 	{prov_apps.ErrInstanceNotFound, http.StatusNotFound, ""},
 
@@ -34,6 +36,7 @@ var failureTable = []failureRow{
 	{prov_apps.ErrInstallInProgress, http.StatusConflict, ""},
 	{prov_apps.ErrServiceDisabled, http.StatusConflict, ""},
 	{install.ErrStalePlan, http.StatusConflict, ""},
+	{prov_apps.ErrRunHeldByOtherProvider, http.StatusConflict, ""},
 	{prov_apps.ErrInstancesRunning, http.StatusConflict, ""},
 	{prov_apps.ErrProviderNotManaged, http.StatusConflict, ""},
 	{prov_apps.ErrProviderAlreadyInstalled, http.StatusConflict, ""},
@@ -43,7 +46,7 @@ var failureTable = []failureRow{
 
 	{prov_apps.ErrUnsupportedPlatform, http.StatusBadRequest, ""},
 	{process.ErrMemoryBudgetInvalid, http.StatusBadRequest, ""},
-	{prov_apps.ErrModelNotLocal, http.StatusBadRequest, ""},
+	{prov_apps.ErrModelNotLocal, http.StatusNotFound, ""},
 	{prov_apps.ErrParameterValidation, http.StatusBadRequest, ""},
 	{prov_apps.ErrPortOutOfRange, http.StatusBadRequest, ""},
 	{prov_apps.ErrDangerousEnvVar, http.StatusBadRequest, ""},

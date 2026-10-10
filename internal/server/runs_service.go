@@ -197,7 +197,7 @@ func (s *RunsService) GetRun(ctx context.Context, req *GetRunRequest) (*instance
 	if resp.StatusCode >= 400 {
 		slog.Error("[RunsService] Error response for run", "run_id", req.RunID, "status", resp.StatusCode)
 		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response
@@ -292,7 +292,7 @@ func (s *RunsService) StopRun(ctx context.Context, req *StopRunRequest) (*StopRu
 	if resp.StatusCode >= 400 {
 		slog.Error("[RunsService] Error response for stopping run", "run_id", req.RunID, "status", resp.StatusCode)
 		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response
@@ -444,6 +444,7 @@ type LaunchRunResponse struct {
 // Note: Currently local-only (launches on current host)
 // For cluster support, this would route to internal executor
 func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*LaunchRunResponse, error) {
+	// Before auto_deploy can start a download for a name admission refuses.
 	if err := s.admitModel(ctx, req.Model); err != nil {
 		return nil, err
 	}
@@ -524,7 +525,7 @@ type EnsureRunResponse struct {
 // (model, endpoint) anywhere in the cluster, returns the running view
 // (HTTP 200 at the controller layer). Otherwise delegates to LaunchRun
 // with auto_deploy=true so a missing model triggers the download
-// chain. The manager-level singleflight on LaunchInstance dedupes
+// chain. The manager-level singleflight on EnsureRun dedupes
 // concurrent ensures by construction; we don't add a second layer.
 func (s *RunsService) EnsureRun(ctx context.Context, req *EnsureRunRequest) (*EnsureRunResponse, error) {
 	if err := s.admitModel(ctx, req.Model); err != nil {

@@ -36,6 +36,7 @@ var sentinels = map[string]error{
 	"ErrPortConflict":             prov_apps.ErrPortConflict,
 	"ErrModelIncomplete":          prov_apps.ErrModelIncomplete,
 	"ErrUnsupportedPlatform":      prov_apps.ErrUnsupportedPlatform,
+	"ErrRunHeldByOtherProvider":   prov_apps.ErrRunHeldByOtherProvider,
 	"ErrModelNotLocal":            prov_apps.ErrModelNotLocal,
 	"ErrParameterValidation":      prov_apps.ErrParameterValidation,
 	"ErrPortOutOfRange":           prov_apps.ErrPortOutOfRange,

@@ -24,7 +24,7 @@ import (
 // Scenario:
 // 1. Coordinator has model in its local storage (acts as shared storage)
 // 2. Worker syncs model from coordinator
-// 3. Worker's resolveModelPathWithCache copies from shared → cache
+// 3. Worker's shared-storage copy copies from shared → cache
 // 4. Integrity verification at each step
 func TestModelCacheE2E_SharedToCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -408,7 +408,7 @@ func TestModelCacheE2E_ContextCancellation(t *testing.T) {
 // 1. Coordinator has a model (simulating download completion)
 // 2. Worker has shared storage pointing to coordinator's models
 // 3. Worker queries the model for the first time
-// 4. resolveModelPathWithCache copies from shared → cache with integrity verification
+// 4. shared-storage copy copies from shared → cache with integrity verification
 //
 // This tests the production scenario where:
 // - Coordinator downloads models to shared storage (NFS/cluster FS)
@@ -514,7 +514,7 @@ func TestModelCacheE2E_WorkerFirstUseFromShared(t *testing.T) {
 		_, err := os.Stat(cachePath)
 		assert.True(t, os.IsNotExist(err), "Cache should be empty before first use")
 
-		// Simulate resolveModelPathWithCache behavior
+		// Simulate shared-storage copy behavior
 		verifier := modelcache.NewIntegrityVerifier()
 
 		// 1. Check if manifest exists in shared storage
@@ -624,120 +624,6 @@ func TestModelCacheE2E_WorkerFirstUseFromShared(t *testing.T) {
 
 		t.Logf("Final state verified: %d files, all valid", result.FilesChecked)
 	})
-}
-
-// TestModelCacheE2E_ServerResolveModelPathWithCache tests the actual server method
-// resolveModelPathWithCache which is called during model loading.
-func TestModelCacheE2E_ServerResolveModelPathWithCache(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	ctx := context.Background()
-
-	// Setup directories
-	sharedDir := t.TempDir()
-	cacheDir := t.TempDir()
-
-	testModelName := "resolve-test/model"
-	testFormat := "gguf"
-	testContent := []byte("Test model content for resolve path testing")
-
-	// Create model in shared storage with manifest
-	sharedModelDir := filepath.Join(sharedDir, testModelName, testFormat)
-	require.NoError(t, os.MkdirAll(sharedModelDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(sharedModelDir, "model.gguf"), testContent, 0644))
-
-	manifest, err := modelcache.CreateManifest(ctx, sharedModelDir, testModelName, "")
-	require.NoError(t, err)
-	require.NoError(t, modelcache.WriteManifest(sharedModelDir, manifest))
-
-	t.Logf("Created model in shared storage: %s", sharedModelDir)
-
-	// Create test server with shared storage configuration
-	server := createTestNodeWithSharedStorage(t, TestNodeConfig{
-		AdminKey:   TestAdminKey,
-		ClusterKey: TestClusterKey,
-	}, cacheDir, sharedDir, "resolve-test-server")
-
-	// Create model metadata pointing to shared storage
-	modelFullPath := filepath.Join(sharedModelDir, "model.gguf")
-	model := &metadata.ModelMetadata{
-		Name:           testModelName,
-		FullPath:       modelFullPath,
-		DownloadedFrom: "https://huggingface.co/" + testModelName,
-	}
-
-	t.Run("FirstCallCopiesFromSharedToCache", func(t *testing.T) {
-		cachePath := filepath.Join(cacheDir, testModelName, testFormat)
-
-		// Verify cache is empty
-		_, err := os.Stat(cachePath)
-		assert.True(t, os.IsNotExist(err), "Cache should be empty before resolve")
-
-		// Call resolveModelPathWithCache
-		// Note: This expects the model directory, not the file path
-		model.FullPath = sharedModelDir
-		resolvedPath, err := server.resolveModelPathWithCache(context.Background(), model)
-		require.NoError(t, err)
-
-		// Should return cache path (not shared path)
-		assert.Contains(t, resolvedPath, cacheDir, "Resolved path should be in cache directory")
-		t.Logf("Resolved path: %s", resolvedPath)
-
-		// Verify cache was populated with integrity verification
-		assert.True(t, modelcache.HasManifest(resolvedPath), "Cache should have manifest")
-	})
-
-	t.Run("SecondCallUsesCacheDirectly", func(t *testing.T) {
-		cachePath := filepath.Join(cacheDir, testModelName, testFormat)
-
-		// Cache should now exist
-		assert.DirExists(t, cachePath)
-
-		// Second call should use cache (fast path)
-		model.FullPath = sharedModelDir
-		resolvedPath, err := server.resolveModelPathWithCache(context.Background(), model)
-		require.NoError(t, err)
-
-		assert.Contains(t, resolvedPath, cacheDir)
-		t.Logf("Second resolve used cache: %s", resolvedPath)
-	})
-}
-
-func TestModelCacheE2E_CancelledRequestStillPreparesSharedCache(t *testing.T) {
-	sharedDir, cacheDir := t.TempDir(), t.TempDir()
-	server := createTestNodeWithSharedStorage(t, TestNodeConfig{
-		AdminKey: TestAdminKey, ClusterKey: TestClusterKey,
-	}, cacheDir, sharedDir, "cancelled-cache-test")
-
-	for _, name := range []string{"verified-source", "plain-source", "cached-manifest"} {
-		t.Run(name, func(t *testing.T) {
-			sharedPath := filepath.Join(sharedDir, name)
-			cachePath := filepath.Join(cacheDir, name)
-			fixturePath := sharedPath
-			if name == "cached-manifest" {
-				fixturePath = cachePath
-			}
-			content := []byte("synthetic shared-cache model weights")
-			require.NoError(t, os.MkdirAll(fixturePath, 0755))
-			require.NoError(t, os.WriteFile(filepath.Join(fixturePath, "model.gguf"), content, 0644))
-			if name != "plain-source" {
-				manifest, err := modelcache.CreateManifest(context.Background(), fixturePath, name, "")
-				require.NoError(t, err)
-				require.NoError(t, modelcache.WriteManifest(fixturePath, manifest))
-			}
-
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			resolved, err := server.resolveModelPathWithCache(ctx, &metadata.ModelMetadata{
-				Name: name, FullPath: sharedPath,
-			})
-			require.NoError(t, err)
-			require.Equal(t, cachePath, resolved)
-			data, err := os.ReadFile(filepath.Join(cachePath, "model.gguf"))
-			require.NoError(t, err)
-			require.Equal(t, content, data)
-			require.True(t, modelcache.HasManifest(cachePath))
-		})
-	}
 }
 
 // createTestNodeWithSharedStorage creates a test server with separate shared and cache directories.

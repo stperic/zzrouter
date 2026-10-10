@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var errTestStart = errors.New("test refuses before process launch")
+
 func onDemandTestManager(t *testing.T, source func(context.Context, string) string) *ProviderAppManager {
 	t.Helper()
 	cfg := aliasTestConfig(t)
@@ -25,112 +27,102 @@ func onDemandTestManager(t *testing.T, source func(context.Context, string) stri
 	second.Runtime.PortRange = []int{8210, 8215}
 	second.Runtime.BasePort = 8210
 	require.NoError(t, cfg.AddApp("other", second))
-	m, err := NewProviderAppManager(cfg, WithModelSource(source), WithParamLocalizer(func(_, _, _ string, _ map[string]string) (Localized, error) {
-		return Localized{}, errors.New("test refuses before process launch")
-	}))
+	m, err := NewProviderAppManager(cfg, WithModelSource(source), WithParamLocalizer(func(_, _, _ string, _ map[string]string) (Localized, error) { return Localized{}, errTestStart }))
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, m.Stop(context.Background())) })
 	return m
 }
 
-func TestStartOnDemandTwoProvidersOneName(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		var launches atomic.Int32
-		m := onDemandTestManager(t, func(ctx context.Context, _ string) string {
-			launches.Add(1)
-			<-ctx.Done()
-			return ""
-		})
-		for _, provider := range []string{"fake", "other"} {
-			require.NoError(t, m.StartOnDemandAsync(LaunchRequest{Model: "shared", Provider: provider}))
-		}
-		synctest.Wait()
-		assert.Equal(t, int32(2), launches.Load(), "both providers must enter the launch flow")
-		require.NoError(t, m.Stop(context.Background()))
-		assert.Empty(t, m.instances.ListAll())
-	})
-}
-
-func TestStartOnDemandDedupesSameProvider(t *testing.T) {
+func TestEnsureRunDifferentModelsStartConcurrently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var launches atomic.Int32
 		release := make(chan struct{})
-		m := onDemandTestManager(t, func(ctx context.Context, _ string) string {
-			launches.Add(1)
-			<-release
-			return ""
-		})
+		m := onDemandTestManager(t, func(context.Context, string) string { launches.Add(1); <-release; return "" })
+		var callers sync.WaitGroup
+		for _, provider := range []string{"fake", "other"} {
+			callers.Go(func() {
+				_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: provider, Provider: provider})
+				assert.ErrorIs(t, err, errTestStart)
+			})
+		}
+		synctest.Wait()
+		assert.Equal(t, int32(2), launches.Load())
+		close(release)
+		callers.Wait()
+	})
+}
+
+func TestEnsureRunDedupesSameModel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var launches atomic.Int32
+		release := make(chan struct{})
+		m := onDemandTestManager(t, nil)
+		m.localCatalog = func(context.Context, string) (bool, error) { launches.Add(1); <-release; return true, nil }
 		var callers sync.WaitGroup
 		for range 16 {
 			callers.Go(func() {
-				assert.NoError(t, m.StartOnDemandAsync(LaunchRequest{Model: "shared", Provider: "fake"}))
+				_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "shared", Provider: "fake"})
+				assert.ErrorIs(t, err, errTestStart)
 			})
 		}
-		callers.Wait()
 		synctest.Wait()
 		close(release)
-		m.onDemandStarts.Wait()
+		callers.Wait()
 		assert.Equal(t, int32(1), launches.Load())
-		require.NoError(t, m.Stop(context.Background()))
 	})
 }
 
-func TestStartOnDemandCancelledByStop(t *testing.T) {
+func TestEnsureRunCancelledByStop(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		cancelled := make(chan struct{}, 1)
-		release := make(chan struct{})
-		defer close(release)
-		m := onDemandTestManager(t, func(ctx context.Context, _ string) string {
-			select {
-			case <-ctx.Done():
-				cancelled <- struct{}{}
-				<-release
-			case <-release:
-			}
-			return ""
-		})
-		require.NoError(t, m.StartOnDemandAsync(LaunchRequest{Model: "shared", Provider: "fake"}))
+		cancelled, release := make(chan struct{}), make(chan struct{})
+		m := onDemandTestManager(t, func(ctx context.Context, _ string) string { <-ctx.Done(); close(cancelled); <-release; return "" })
+		started := make(chan error, 1)
+		go func() {
+			_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "shared", Provider: "fake"})
+			started <- err
+		}()
 		synctest.Wait()
-		stopped := make(chan struct{})
-		var stopErr error
-		go func() { stopErr = m.Stop(context.Background()); close(stopped) }()
+		stopped := make(chan error, 1)
+		go func() { stopped <- m.Stop(context.Background()) }()
 		synctest.Wait()
 		select {
 		case <-cancelled:
 		default:
-			t.Error("Stop must cancel the in-flight start")
+			t.Error("Stop must cancel the start")
 		}
 		select {
 		case <-stopped:
-			t.Error("Stop must wait until the start goroutine exits")
+			t.Error("Stop must drain the start")
 		default:
 		}
-		release <- struct{}{}
-		synctest.Wait()
-		<-stopped
-		require.NoError(t, stopErr)
+		close(release)
+		require.NoError(t, <-stopped)
+		require.Error(t, <-started)
 		assert.Empty(t, m.instances.ListAll())
-		assert.ErrorIs(t, m.StartOnDemandAsync(LaunchRequest{Model: "later", Provider: "fake"}), ErrShutdown)
+		_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "later", Provider: "fake"})
+		assert.ErrorIs(t, err, ErrShutdown)
 	})
 }
 
-func TestStartOnDemandImmediateRefusals(t *testing.T) {
+func TestEnsureRunImmediateRefusals(t *testing.T) {
 	m := onDemandTestManager(t, nil)
-	assert.ErrorIs(t, m.StartOnDemandAsync(LaunchRequest{Model: "m", Provider: "missing"}), ErrProviderNotFound)
+	_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "m", Provider: "missing"})
+	assert.ErrorIs(t, err, ErrProviderNotFound)
 	m.validateModel = func(context.Context, string) error { return config.ErrModelNameConflict }
-	assert.ErrorIs(t, m.StartOnDemandAsync(LaunchRequest{Model: "m", Provider: "fake"}), config.ErrModelNameConflict)
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "m", Provider: "fake"})
+	assert.ErrorIs(t, err, config.ErrModelNameConflict)
 }
 
-func TestStartOnDemandStopPreservesAuditDrain(t *testing.T) {
+func TestEnsureRunStopPreservesAuditDrain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		release := make(chan struct{})
-		m := onDemandTestManager(t, func(ctx context.Context, _ string) string {
-			<-ctx.Done()
-			<-release
-			return ""
-		})
+		m := onDemandTestManager(t, func(ctx context.Context, _ string) string { <-ctx.Done(); <-release; return "" })
 		m.Start(t.Context())
-		require.NoError(t, m.StartOnDemandAsync(LaunchRequest{Model: "shared", Provider: "fake"}))
+		started := make(chan error, 1)
+		go func() {
+			_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "shared", Provider: "fake"})
+			started <- err
+		}()
 		synctest.Wait()
 		stopped := make(chan error, 1)
 		go func() { stopped <- m.Stop(context.Background()) }()
@@ -138,11 +130,10 @@ func TestStartOnDemandStopPreservesAuditDrain(t *testing.T) {
 		time.Sleep(2 * eventDrainWindow)
 		m.emitEvent(Event{Type: EventInstanceStopped, Provider: "fake", Model: "shared"})
 		synctest.Wait()
-		assert.Empty(t, m.auditEvents, "audit consumer must remain alive while Stop drains starts")
+		assert.Empty(t, m.auditEvents)
 		close(release)
-		synctest.Wait()
 		require.NoError(t, <-stopped)
+		require.Error(t, <-started)
 		time.Sleep(2 * eventDrainWindow)
-		synctest.Wait()
 	})
 }

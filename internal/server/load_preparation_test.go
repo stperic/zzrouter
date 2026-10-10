@@ -8,38 +8,37 @@ import (
 	"testing/synctest"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestPrepareLocalLoadRefusals(t *testing.T) {
+func TestLoadLocalModelRefusals(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		provider string
-		enabled  bool
-		cause    string
-		status   int
+		name, provider string
+		local          bool
+		cause          error
+		status         int
 	}{
-		{"unknown provider", "missing", true, "unknown provider: missing", http.StatusBadRequest},
-		{"disabled provider", "fake", false, "provider not enabled: fake", http.StatusBadRequest},
-		{"missing weights", "fake", true, "Model file not found", http.StatusNotFound},
+		{"unknown provider", "missing", true, prov_apps.ErrProviderNotFound, http.StatusNotFound},
+		{"missing weights", "fake", false, prov_apps.ErrModelNotLocal, http.StatusNotFound},
+		{"disabled provider", "fake", true, prov_apps.ErrServiceDisabled, http.StatusConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			executor, _, launches := newAliasLoadExecutor(t)
-			executor.isProviderEnabled = func(string) bool { return tc.enabled }
+			executor, manager, launches := newAliasLoadExecutor(t)
+			prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) { return tc.local, nil })(manager)
+			if tc.cause == prov_apps.ErrServiceDisabled {
+				cfg := aliasLoadConfig(t)
+				svc, _ := cfg.LookupApp("fake")
+				svc.Enabled = new(false)
+				require.NoError(t, cfg.UpdateApp("fake", func(dst *config.ServiceConfig) error { *dst = svc; return nil }))
+				manager.ReloadConfig(cfg)
+			}
 			req := &LoadModelRequest{ModelName: aliasLoadRepoID, Provider: tc.provider}
-			prepared, refusal, err := executor.prepareLocalLoad(t.Context(), req)
-			require.NoError(t, err)
-			assert.Nil(t, prepared)
-			require.NotNil(t, refusal)
-			assert.Equal(t, tc.status, refusal.StatusCode)
-			assert.Equal(t, tc.cause, refusal.Error)
 			response, err := executor.LoadLocalModel(t.Context(), req)
-			require.NoError(t, err)
-			assert.Equal(t, refusal, response)
+			require.ErrorIs(t, err, tc.cause)
+			assert.Nil(t, response)
+			assert.Equal(t, tc.status, answeredStatus(err))
 			assert.Zero(t, *launches)
 			assert.Equal(t, aliasLoadRepoID, req.ModelName)
 		})
@@ -48,6 +47,8 @@ func TestPrepareLocalLoadRefusals(t *testing.T) {
 
 func TestLoadLocalModelValidatesEachNameBeforeDedupe(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		stopped := errors.New("test stops before process start")
 		manager, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t),
 			prov_apps.WithModelCanonicalizer(func(string) string { return "canonical" }),
 			prov_apps.WithModelValidator(func(_ context.Context, model string) error {
@@ -56,41 +57,23 @@ func TestLoadLocalModelValidatesEachNameBeforeDedupe(t *testing.T) {
 				}
 				return nil
 			}),
+			prov_apps.WithModelSource(func(context.Context, string) string { <-release; return "" }),
+			prov_apps.WithParamLocalizer(func(_, _, _ string, _ map[string]string) (prov_apps.Localized, error) {
+				return prov_apps.Localized{}, stopped
+			}),
 		)
 		require.NoError(t, err)
 		t.Cleanup(func() { assert.NoError(t, manager.Stop(context.Background())) })
-		release := make(chan struct{})
-		executor := NewLoadExecutor(manager, func(string) bool { return true }, emptyModelStore{},
-			func(string) (*backend.Resolved, bool) { return nil, false },
-			func(_ context.Context, model, provider, _ string, _, _ map[string]string) (*instance.Instance, error) {
-				<-release
-				return instance.NewInstance("fake", provider, model, 0, 0, 0), nil
-			}, func() string { return "node" }, nil)
+		executor := NewLoadExecutor(manager, emptyModelStore{}, func() string { return "node" })
 		valid := make(chan error, 1)
 		go func() {
-			_, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "valid", Provider: "fake", Force: true})
+			_, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "valid", Provider: "fake"})
 			valid <- err
 		}()
 		synctest.Wait()
-		refused := make(chan error, 1)
-		go func() {
-			_, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "conflicting", Provider: "fake", Force: true})
-			refused <- err
-		}()
-		synctest.Wait()
-		select {
-		case err := <-refused:
-			assert.ErrorIs(t, err, config.ErrModelNameConflict)
-		default:
-			t.Error("each original name must be admitted before joining a launch")
-		}
+		_, err = executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "conflicting", Provider: "fake"})
+		require.ErrorIs(t, err, config.ErrModelNameConflict)
 		close(release)
-		synctest.Wait()
-		require.NoError(t, <-valid)
-		select {
-		case err := <-refused:
-			assert.True(t, errors.Is(err, config.ErrModelNameConflict))
-		default:
-		}
+		require.ErrorIs(t, <-valid, stopped)
 	})
 }

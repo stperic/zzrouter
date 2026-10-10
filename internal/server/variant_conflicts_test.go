@@ -93,9 +93,9 @@ func TestVariants_LateConflictBlocksColdAndWarmPaths(t *testing.T) {
 					require.Equal(t, http.StatusConflict, resp.Code, string(resp.Body))
 					assert.Contains(t, string(resp.Body), `"code":"model_name_conflict"`)
 					assert.Contains(t, string(resp.Body), "rename the variant")
-					inst, err := s.providers.appMgr.LaunchInstance(t.Context(), prov_apps.LaunchRequest{Provider: "llamacpp", Model: name})
+					result, err := s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "llamacpp", Model: name})
 					require.ErrorIs(t, err, config.ErrModelNameConflict)
-					assert.Nil(t, inst)
+					assert.Nil(t, result.Run)
 					// Force must not stop a warm process before checking admission.
 					load, err := s.newLoadExecutor().LoadLocalModel(t.Context(), &LoadModelRequest{Provider: "llamacpp", ModelName: name, Force: true})
 					require.ErrorIs(t, err, config.ErrModelNameConflict)
@@ -108,7 +108,7 @@ func TestVariants_LateConflictBlocksColdAndWarmPaths(t *testing.T) {
 
 			// The cold path must refuse before reaching provider installation/exec.
 			require.NoError(t, s.providers.appMgr.Instances().Remove("conflict-run"))
-			_, err = s.providers.appMgr.LaunchInstance(t.Context(), prov_apps.LaunchRequest{Provider: "llamacpp", Model: variant})
+			_, err = s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "llamacpp", Model: variant})
 			require.ErrorIs(t, err, config.ErrModelNameConflict)
 			require.Empty(t, s.providers.appMgr.Instances().List())
 		})
@@ -134,7 +134,7 @@ func TestVariants_ConflictIsConsistentAcrossInferenceAndManagement(t *testing.T)
 	require.Equal(t, http.StatusConflict, ensure.Code, string(ensure.Body))
 	launch := makeAuthRequest(t, s, "POST", "/zzrouter/v1/runs", TestAdminKey, map[string]any{"provider": "llamacpp", "model": variantChat, "auto_deploy": true, "launch_mode": "native"})
 	require.Equal(t, http.StatusConflict, launch.Code, string(launch.Body))
-	_, err := s.buildInstanceConfig(t.Context(), variantChat, "llamacpp", "chat", nil, nil)
+	_, err := s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: variantChat, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat})
 	require.ErrorIs(t, err, config.ErrModelNameConflict)
 	require.Zero(t, calls.Load())
 
@@ -450,7 +450,6 @@ func TestVariants_ColdAndForcedSourceAliasUseCanonicalMetadata(t *testing.T) {
 			result, err := s.newLoadExecutor().LoadLocalModel(t.Context(), &LoadModelRequest{Provider: "llamacpp", ModelName: "owner/source", Force: force})
 			require.NoError(t, err)
 			require.NotNil(t, result)
-			assert.Zero(t, result.StatusCode)
 			assert.Equal(t, model.Name, result.Model)
 		})
 	}
@@ -474,7 +473,7 @@ func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 		model, provider string
 		status          int
 	}{
-		{qwenModel, "missing-provider", http.StatusBadRequest},
+		{qwenModel, "missing-provider", http.StatusNotFound},
 		{"missing-model", "llamacpp", http.StatusNotFound},
 	} {
 		w := httptest.NewRecorder()
@@ -490,17 +489,13 @@ func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	require.Equal(t, http.StatusConflict, answeredStatus(service.admitModel(t.Context(), "reserved")))
 }
 
-// The internal load answers every error from the failure table, not from a
-// list of its own: a provider that does not exist is the caller's 404.
+// Provider refusals use the failure table on the load route too.
 func TestVariants_InternalLoadAnswersFromTheFailureTable(t *testing.T) {
 	s := variantNode(t)
 	executor := s.newLoadExecutor()
-	executor.launchOnDemand = func(context.Context, string, string, string, map[string]string, map[string]string) (*instance.Instance, error) {
-		return nil, prov_apps.ErrProviderNotFound
-	}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"llamacpp"}`))
+	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs/load", strings.NewReader(`{"model_name":"`+qwenModel+`","provider":"missing"}`))
 	executor.HandleInternalLoadModel(c)
 	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
@@ -514,16 +509,13 @@ func TestVariants_ForcedLoadCarriesLocalAdmission(t *testing.T) {
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	executor := s.newLoadExecutor()
-	launch := executor.launchOnDemand
-	executor.launchOnDemand = func(ctx context.Context, model, provider, endpoint string, params, env map[string]string) (*instance.Instance, error) {
-		// The forced load already admitted this name before stopping the run.
+	prov_apps.WithParamLocalizer(func(_, _, _ string, params map[string]string) (prov_apps.Localized, error) {
 		require.NoError(t, os.WriteFile(filepath.Join(root, variantAgent+".gguf"), []byte("GGUF"), 0o600))
-		return launch(ctx, model, provider, endpoint, params, env)
-	}
+		return prov_apps.Localized{Params: params}, nil
+	})(s.providers.appMgr)
 	result, err := executor.LoadLocalModel(cache.WithVariantAdmission(t.Context()), &LoadModelRequest{Provider: "llamacpp", ModelName: variantAgent, Force: true})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Zero(t, result.StatusCode)
 	_, err = s.providers.appMgr.AdmitLocalModel(t.Context(), variantAgent)
 	require.ErrorIs(t, err, config.ErrModelNameConflict, "the next operation must see the new conflict")
 }

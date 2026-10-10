@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +63,9 @@ func replicaItem(node, provider string) map[string]any {
 
 func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"})
-	worker := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true})
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "qwen.gguf"), []byte("GGUF"), 0o600))
+	worker := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true}, root, "worker")
 	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
 	client := routingCatalog(t, coordinator, []map[string]any{replicaItem("worker", "llamacpp")})
 	routingCatalog(t, worker, []map[string]any{replicaItem("worker", "llamacpp")})

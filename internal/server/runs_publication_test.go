@@ -264,7 +264,7 @@ func TestRunAutoDeployChainWaitsForRunJob(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		e.waitDeployThenLaunch(chain, deploy.ID(), prov_apps.LaunchRequest{Provider: run.Provider, Model: run.Model})
+		e.waitDeployThenLaunch(chain, deploy.ID(), prov_apps.EnsureRequest{Provider: run.Provider, Model: run.Model})
 	}()
 	select {
 	case <-finished:

@@ -61,19 +61,9 @@ func (e *loadFailure) withCause(err error) *loadFailure {
 	return e
 }
 
-// newLoadFailure reads the executor's status; anything but 400/404/503 means the engine failed (502).
-func newLoadFailure(executorStatus int, message string) *loadFailure {
-	status := executorStatus
-	switch status {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable:
-	default:
-		status = http.StatusBadGateway
-	}
-	errType := "api_error"
-	if status < http.StatusInternalServerError {
-		errType = "invalid_request_error"
-	}
-	return &loadFailure{status: status, errType: errType, code: inferenceCode(status), message: message}
+// loadEngineFailed reports a startup failure without a more specific cause.
+func loadEngineFailed(message string) *loadFailure {
+	return &loadFailure{status: http.StatusBadGateway, errType: "api_error", code: "model_load_failed", message: message}
 }
 
 // inferenceCode is an inference caller's code for a failure with none of its own.
@@ -135,5 +125,5 @@ func classifyLoadFailure(err error) *loadFailure {
 	if errors.As(err, &lf) {
 		return lf
 	}
-	return newLoadFailure(http.StatusBadGateway, fmt.Sprintf("failed to load model: %v", err)).withCause(err)
+	return loadEngineFailed(fmt.Sprintf("failed to load model: %v", err)).withCause(err)
 }

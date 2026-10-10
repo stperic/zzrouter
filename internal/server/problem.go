@@ -263,6 +263,7 @@ func RespondToErrorOllama(c *gin.Context, err error) {
 	}
 	var re *RoutedError
 	if errors.As(err, &re) {
+		re.setRetryAfter(c)
 		OllamaError(c, re.StatusCode, re.Error())
 		return
 	}

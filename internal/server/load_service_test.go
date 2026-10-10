@@ -15,12 +15,13 @@ import (
 
 type loadResultRouter struct {
 	fakeRouter
-	status int
-	body   string
+	status  int
+	body    string
+	headers http.Header
 }
 
 func (r *loadResultRouter) Unicast(context.Context, string, string, string, []byte) (*routing.Response, error) {
-	return &routing.Response{StatusCode: r.status, Body: []byte(r.body), Node: "worker"}, nil
+	return &routing.Response{StatusCode: r.status, Body: []byte(r.body), Headers: r.headers, Node: "worker"}, nil
 }
 func TestLoadServicePreservesWorkerErrorsAndWarmReuse(t *testing.T) {
 	for _, tc := range []struct {
@@ -31,10 +32,10 @@ func TestLoadServicePreservesWorkerErrorsAndWarmReuse(t *testing.T) {
 	}{
 		{"admission conflict", 409, `{"type":"https://api.zzrouter.com/problems/conflict","status":409,"title":"Conflict","detail":"model name conflict","code":"conflict"}`, false},
 		{"missing weights", 404, `{"error":"Model file not found","details":"download weights first"}`, false},
-		{"bad provider", 400, `{"status":400,"title":"Bad Request","detail":"unknown provider"}`, false},
+		{"bad provider", 404, `{"status":404,"title":"Not Found","detail":"unknown provider"}`, false},
 		{"upstream failure", 500, `{"status":500,"title":"Internal Server Error","detail":"load failed"}`, false},
 		{"malformed success", 200, `not-json`, false},
-		{"warm reuse", 409, `{"instance_id":"warm-run","model":"base","provider":"llamacpp","status":"running","port":8080,"job_id":"existing-job","error":"already running"}`, true},
+		{"warm reuse", 409, `{"instance_id":"warm-run","model":"base","provider":"llamacpp","status":"running","port":8080,"job_id":"existing-job"}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := &loadResultRouter{status: tc.status, body: tc.body}
@@ -45,8 +46,8 @@ func TestLoadServicePreservesWorkerErrorsAndWarmReuse(t *testing.T) {
 				require.NotNil(t, response)
 				assert.Equal(t, "warm-run", response.InstanceID)
 				assert.Equal(t, "existing-job", response.JobID)
-				assert.Equal(t, http.StatusConflict, response.StatusCode)
 				assert.Equal(t, "worker", response.Node)
+				assert.True(t, response.Reused)
 				return
 			}
 			require.Error(t, err)

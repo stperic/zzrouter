@@ -49,7 +49,7 @@ func TestModelAdmissionAnswersFromTheFailureTable(t *testing.T) {
 		status int
 		code   string
 	}{
-		{fmt.Errorf("admit: %w", prov_apps.ErrModelNotLocal), http.StatusBadRequest, "invalid_request"},
+		{fmt.Errorf("admit: %w", prov_apps.ErrModelNotLocal), http.StatusNotFound, "model_not_found"},
 		{fmt.Errorf("admit: %w", prov_apps.ErrModelIncomplete), http.StatusConflict, "model_incomplete"},
 		{fmt.Errorf("admit: %w", prov_apps.ErrInstanceAlreadyExists), http.StatusConflict, "conflict"},
 		// Defensive: both validators pass only refusals, but an unnamed error still needs an answer.
@@ -123,7 +123,7 @@ func TestFailureTableDecisions(t *testing.T) {
 		{prov_apps.ErrExternalService, http.StatusForbidden, ""},
 		{install.ErrStalePlan, http.StatusConflict, ""},
 		{prov_apps.ErrModelIncomplete, http.StatusConflict, "model_incomplete"},
-		{prov_apps.ErrModelNotLocal, http.StatusBadRequest, ""},
+		{prov_apps.ErrModelNotLocal, http.StatusNotFound, ""},
 		{prov_apps.ErrAtCapacity, http.StatusServiceUnavailable, ""},
 	} {
 		wire, ok := knownFailure(fmt.Errorf("op: %w", tc.err))

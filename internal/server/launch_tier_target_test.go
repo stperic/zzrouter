@@ -246,5 +246,5 @@ func launchParameters(t *testing.T, s *Server, model, provider, endpoint string,
 		s.providers.appMgr = manager
 		t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	}
-	return s.providers.appMgr.ResolveLaunchParameters(prov_apps.LaunchRequest{Provider: provider, Model: model, Endpoint: prov_apps.Endpoint(endpoint), Parameters: parameters, EnvVars: environment})
+	return s.providers.appMgr.ResolveLaunchParameters(prov_apps.EnsureRequest{Provider: provider, Model: model, Endpoint: prov_apps.Endpoint(endpoint), Parameters: parameters, EnvVars: environment})
 }

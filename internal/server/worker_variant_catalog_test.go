@@ -16,7 +16,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 func workerVariantCatalog(t *testing.T) (*Server, string) {
@@ -56,7 +55,7 @@ func TestWorkerCatalogPublicationRestoresVariantAdmission(t *testing.T) {
 			require.Equal(t, true, s.model.Cache.GetCacheStats()["valid"], "publishing a worker catalog must also publish its admission index")
 			for _, name := range []string{variantChat, strings.ToUpper(variantChat), "owner/weights"} {
 				require.ErrorIs(t, s.providers.appMgr.ValidateModel(t.Context(), name), config.ErrModelNameConflict)
-				_, err := s.providers.appMgr.LaunchInstance(t.Context(), prov_apps.LaunchRequest{Provider: "llamacpp", Model: name})
+				_, err := s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "llamacpp", Model: name})
 				require.ErrorIs(t, err, config.ErrModelNameConflict)
 			}
 			require.Empty(t, s.providers.appMgr.Instances().List())
@@ -71,18 +70,15 @@ func TestWorkerLaunchPreservesVariantCatalog(t *testing.T) {
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 	executor := s.newLoadExecutor()
 	launches := 0
-	executor.launchOnDemand = func(_ context.Context, model, provider, _ string, _, _ map[string]string) (*instance.Instance, error) {
-		launches++
-		return instance.NewInstance("catalog-launch", provider, model, 8300, 0, 0), nil
-	}
+	prov_apps.WithModelSource(func(context.Context, string) string { launches++; return "" })(s.providers.appMgr)
 	for range 2 {
 		result, err := executor.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: qwenModel, Provider: "llamacpp"})
 		require.NoError(t, err)
-		require.Zero(t, result.StatusCode)
+		require.NotEmpty(t, result.InstanceID)
 		require.Equal(t, true, s.model.Cache.GetCacheStats()["valid"], "a launch changes no physical model identity")
 		require.ErrorIs(t, s.providers.appMgr.ValidateModel(t.Context(), variantChat), config.ErrModelNameConflict)
 	}
-	require.Equal(t, 2, launches)
+	require.Equal(t, 1, launches)
 }
 
 func TestWorkerCatalogPreservesInternalModelsWireBody(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -105,26 +106,8 @@ func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease,
 }
 
 func (d *chainServerDeps) StartOnDemand(model, provider string) error {
-	ctx := context.Background()
-	prepared, response, err := d.s.newLoadExecutor().prepareLocalLoad(ctx, &LoadModelRequest{ModelName: model, Provider: provider})
-	if err != nil {
-		return err
-	}
-	if response != nil {
-		if response.InstanceID != "" && response.StatusCode == http.StatusConflict {
-			return nil
-		}
-		message := response.Error
-		if response.Details != "" {
-			message += ": " + response.Details
-		}
-		return newLoadFailure(response.StatusCode, message)
-	}
-	result, err := d.s.buildInstanceConfig(ctx, prepared.requestedModel, prepared.Provider, prepared.Endpoint, prepared.Parameters, prepared.Environment)
-	if err != nil {
-		return err
-	}
-	return d.s.providers.appMgr.StartOnDemandAsync(result.LaunchReq)
+	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Detached: true})
+	return err
 }
 
 func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response) {

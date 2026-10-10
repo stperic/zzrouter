@@ -106,7 +106,7 @@ func TestWaitDeployThenLaunch_DeployFails(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		exec.waitDeployThenLaunch(runHandle, deployHandle.ID(), prov_apps.LaunchRequest{})
+		exec.waitDeployThenLaunch(runHandle, deployHandle.ID(), prov_apps.EnsureRequest{})
 	}()
 
 	// Fail the deploy.
@@ -206,7 +206,7 @@ func TestHandleAutoDeployLaunch_DownloadsTheVariantsBase(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 
-	exec.handleAutoDeployLaunch(c, "llamacpp", "", prov_apps.LaunchRequest{Model: "fast"})
+	exec.handleAutoDeployLaunch(c, "llamacpp", "", prov_apps.EnsureRequest{Model: "fast"})
 
 	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body)
 	require.NotNil(t, sent)

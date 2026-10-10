@@ -54,7 +54,7 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 			require.NoError(t, integrity.RecordFiles(dir, "vendor/model", "",
 				integrity.FileChecksum{RelativePath: "weights.gguf", Size: 7},
 				integrity.FileChecksum{RelativePath: "sibling.gguf", Size: 7}))
-			req := LaunchRequest{Provider: "vllm", Model: "vendor/model#weights.gguf"}
+			req := EnsureRequest{Provider: "vllm", Model: "vendor/model#weights.gguf"}
 			if scenario == "missing projector" || scenario == "vision opted out" || scenario == "explicit missing projector" {
 				require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
 			}
@@ -95,7 +95,7 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	require.NoError(t, os.Remove(filepath.Join(dir, "weights.gguf")))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o600))
-	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	inst := instance.NewInstance("incomplete", "vllm", req.Model, 8100, 0, 0)
 	inst.Endpoint = "chat"
 	_, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
@@ -104,7 +104,7 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
-	req := LaunchRequest{Provider: "vllm", Model: "variant"}
+	req := EnsureRequest{Provider: "vllm", Model: "variant"}
 	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"chat_completions", "embeddings", "messages_compat", "responses_compat"}, before.resolved.WireEndpoints)
@@ -133,7 +133,7 @@ func TestFeatureLaunchExplicitOptOut(t *testing.T) {
 			for _, tier := range []string{"config", "node", "endpoint", "request"} {
 				t.Run(tier, func(t *testing.T) {
 					copy := svc
-					req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
+					req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 					m.nodename = func() string { return "feature-node" }
 					if tier == "node" {
 						copy.Nodes = map[string]config.NodeSpec{"feature-node": {Parameters: map[string]string{"mmproj": value}}}
@@ -182,7 +182,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	m.ReloadConfig(cfg)
 	fake := newFakeInstaller("test-runtime")
 	m.installs.dispatcher.Register("test-runtime", fake)
-	req := LaunchRequest{Provider: "vllm", Model: "variant", Parameters: map[string]string{"chat-template": "named-asset"}}
+	req := EnsureRequest{Provider: "vllm", Model: "variant", Parameters: map[string]string{"chat-template": "named-asset"}}
 	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, before.launch.Args, "vision.server")
@@ -213,7 +213,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 	m, svc, _ := featureLaunchFixture(t)
 	isolateProviderRoot(t)
-	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
 	inst := instance.NewInstance("executable-test", "vllm", req.Model, 8100, 0, 0)
@@ -248,7 +248,7 @@ func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
 				cfg := &config.AppsConfig{}
 				require.NoError(t, cfg.AddApp("vllm", svc))
 				m.ReloadConfig(cfg)
-				got, err := m.ResolveLaunchParameters(LaunchRequest{Provider: "vllm", Model: "vendor/model"})
+				got, err := m.ResolveLaunchParameters(EnsureRequest{Provider: "vllm", Model: "vendor/model"})
 				require.NoError(t, err)
 				assert.Empty(t, got.RuntimeKey)
 				assert.Equal(t, svc.Runtime.Execution, got.Config.Runtime.Execution)
@@ -263,7 +263,7 @@ func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
 func TestPreviewLaunchUsesActualExpansionAndFlags(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	landProjector(t, dir, "digest")
-	req := LaunchRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"max-model-len": "4096"}}
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"max-model-len": "4096"}}
 	prepared, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
 	require.NoError(t, err)
 	preview, err := m.PreviewLaunch(req, 8100)

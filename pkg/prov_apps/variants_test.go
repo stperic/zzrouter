@@ -34,7 +34,8 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 
-	inst, err := m.LaunchInstance(t.Context(), LaunchRequest{Provider: "vllm", Model: tierVariant})
+	instResult, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: tierVariant})
+	inst := instResult.Run
 	require.NoError(t, err)
 	assert.Equal(t, tierVariant, inst.Model)
 	got := inst.Resolved().Parameters
@@ -78,7 +79,8 @@ func TestLaunch_RecordsTheWeightsSource(t *testing.T) {
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 
-	inst, err := m.LaunchInstance(t.Context(), LaunchRequest{Provider: "vllm", Model: tierVariant})
+	instResult, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: tierVariant})
+	inst := instResult.Run
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"llama3"}, asked, "the weights, not the variant's name")
@@ -103,7 +105,8 @@ func TestLaunch_ColdVariantConflictBeforeCanonicalization(t *testing.T) {
 	cleanupProviderManager(t, m)
 	require.NoError(t, os.WriteFile(filepath.Join(root, strings.ToUpper(tierVariant)+".gguf"), []byte("GGUF"), 0o600))
 	for _, name := range []string{tierVariant, strings.ToUpper(tierVariant) + ".gguf", filepath.Join(root, strings.ToUpper(tierVariant)+".gguf")} {
-		got, err := m.LaunchInstance(t.Context(), LaunchRequest{Provider: "vllm", Model: name})
+		gotResult, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: name})
+		got := gotResult.Run
 		require.ErrorIs(t, err, config.ErrModelNameConflict)
 		assert.Nil(t, got)
 	}
@@ -125,7 +128,7 @@ func TestValidateModel_NoFilesystemAdmission(t *testing.T) {
 	cleanupProviderManager(t, m)
 	require.NoError(t, os.WriteFile(filepath.Join(root, tierVariant+".gguf"), []byte("GGUF"), 0o600))
 	require.NoError(t, m.ValidateModel(t.Context(), tierVariant), "unpublished weights are checked only at cold launch")
-	_, err = m.LaunchInstance(t.Context(), LaunchRequest{Provider: "vllm", Model: tierVariant})
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: tierVariant})
 	require.ErrorIs(t, err, config.ErrModelNameConflict)
 }
 

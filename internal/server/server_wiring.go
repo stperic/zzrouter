@@ -15,6 +15,8 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -122,12 +124,8 @@ func (s *Server) newRunsExecutor() *RunsExecutor {
 func (s *Server) newLoadExecutor() *LoadExecutor {
 	return NewLoadExecutor(
 		s.providers.appMgr,
-		func(p string) bool { return isProviderEnabledInConfig(s.appsConfig, p) },
 		s.model.Registry,
-		s.backend.Resolve,
-		s.launchOnDemandContainerWithParams,
 		s.node.Nodename,
-		s.refreshResourceMetrics(),
 	)
 }
 
@@ -292,4 +290,35 @@ func (s *Server) notifyCoordinatorAsync() {
 		defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
 		_ = s.cluster.signaler.NotifyCacheRefresh(s.shutdownCtx)
 	}()
+}
+
+// observeModelStart records one attempt and refreshes resources after a cold start.
+func (s *Server) observeModelStart(ctx context.Context, req prov_apps.EnsureRequest) (context.Context, func(prov_apps.EnsureResult, error)) {
+	ctx, span := llm.StartModelLoadSpan(ctx, req.Model, req.Provider)
+	started := utils.Now()
+	return ctx, func(result prov_apps.EnsureResult, err error) {
+		defer span.End()
+		elapsed := time.Since(started)
+		status := "success"
+		if err != nil {
+			status = "failed"
+			llm.SetSpanError(span, err)
+		} else {
+			id, port := "", result.Port
+			if result.Run != nil {
+				id, port = result.Run.ID, result.Run.Port
+			}
+			llm.AddModelLoadResult(span, float64(elapsed.Milliseconds()), id, port)
+			llm.SetSpanOK(span)
+			if refresh := s.refreshResourceMetrics(); refresh != nil { //nolint:contextcheck // detached like triggerResourceRefresh; CollectNow takes no context
+				go refresh()
+			}
+		}
+		if metrics := llm.GetMetrics(); metrics != nil {
+			metrics.RecordModelLoad(ctx, req.Model, req.Provider, status, elapsed.Seconds())
+			if err == nil && result.Run != nil {
+				metrics.RecordInstanceStart(ctx, req.Model, req.Provider)
+			}
+		}
+	}
 }
