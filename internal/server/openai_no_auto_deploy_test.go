@@ -27,7 +27,7 @@ func TestOpenAI_DoesNotAutoDeploy(t *testing.T) {
 
 	// Snapshot the registry baseline before the request.
 	require.NotNil(t, s.providers.appMgr, "test fixture must have a provider manager")
-	beforeInstances := len(s.providers.appMgr.Instances().ListAll())
+	beforeInstances := len(s.providers.appMgr.Instances().List())
 
 	cases := []struct {
 		path string
@@ -70,7 +70,7 @@ func TestOpenAI_DoesNotAutoDeploy(t *testing.T) {
 	// If this trips, the access-control story for the OpenAI surface
 	// has been compromised — the pool no longer gates what clients
 	// can run.
-	afterInstances := len(s.providers.appMgr.Instances().ListAll())
+	afterInstances := len(s.providers.appMgr.Instances().List())
 	assert.Equal(t, beforeInstances, afterInstances,
 		"OpenAI requests for unknown models must not launch instances (before=%d after=%d)",
 		beforeInstances, afterInstances)

@@ -187,7 +187,7 @@ func (r *Registry) UpdateStatus(id string, status Status, errorMsg string) error
 //
 // Both LastActivity and lastUsedAt are set atomically under a single lock
 // (inside Instance.StampActivityWithHints) to prevent TOCTOU inconsistencies
-// in IsIdle/IsExpired.
+// in idle policy snapshots.
 func (r *Registry) UpdateActivity(id string, ov *keepalive.Override) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -202,23 +202,8 @@ func (r *Registry) UpdateActivity(id string, ov *keepalive.Override) error {
 
 // --- List methods ---
 
-// List returns all non-expired instances.
+// List returns all registered instances; only the reaper ends idle runs.
 func (r *Registry) List() []*Instance {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	now := utils.Now()
-	result := make([]*Instance, 0, len(r.instances))
-	for _, inst := range r.instances {
-		if !inst.IsExpired(now) {
-			result = append(result, inst)
-		}
-	}
-	return result
-}
-
-// ListAll returns all instances including expired ones.
-func (r *Registry) ListAll() []*Instance {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

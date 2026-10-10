@@ -40,6 +40,9 @@ var (
 	// ErrRunHeldByOtherProvider refuses reuse across providers.
 	ErrRunHeldByOtherProvider = errors.New("model is held by another provider")
 
+	// ErrProviderUnavailable refuses a served start without a usable endpoint.
+	ErrProviderUnavailable = errors.New("provider endpoint unavailable")
+
 	// ErrProviderNotFound is returned when a requested provider does not exist.
 	ErrProviderNotFound = errors.New("provider not found")
 

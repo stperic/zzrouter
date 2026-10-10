@@ -53,7 +53,7 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	var failure *process.MemoryFitError
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(9500), failure.RequiredMiB)
-	assert.Empty(t, mgr.instances.ListAll())
+	assert.Empty(t, mgr.instances.List())
 	_, err = os.Stat(marker)
 	assert.True(t, os.IsNotExist(err), "refused launch must never start the engine")
 	// Node tier fits without request overrides and admission releases its refused port.
@@ -210,7 +210,7 @@ func TestSmokeDoesNotQueue(t *testing.T) {
 	first := f.launch(t, "one")
 	_, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "two", Runtime: "generic", installSmoke: true})
 	require.ErrorIs(t, err, errAdmissionBusy)
-	assert.Len(t, f.mgr.instances.ListAll(), 1, "a refused smoke leaves nothing registered")
+	assert.Len(t, f.mgr.instances.List(), 1, "a refused smoke leaves nothing registered")
 	f.release(t, first)
 }
 

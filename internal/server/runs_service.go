@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -582,9 +583,10 @@ func (s *RunsService) runAutoDeployChain(ctx context.Context, req *LaunchRunRequ
 	if !ok {
 		return nil, newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q not in config", req.Provider))
 	}
-	if svc.IsCloudProvider() {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf(
-			"provider %q is cloud-only and has no run lifecycle; use POST /zzrouter/v1/deployments to register cloud models", req.Provider))
+	if prov_apps.Lifecycle(svc) == prov_apps.LifecycleNone {
+		forward := *req
+		forward.AutoDeploy = false
+		return s.LaunchRun(ctx, &forward)
 	}
 	deployReq, err := autoDeployRequest(req.Provider, svc, req.Model)
 	if err != nil {

@@ -5,62 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
+	"net"
 	"strconv"
 
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/sync/singleflight"
 )
 
-type runSnapshot struct {
-	run                               *instance.Instance
-	provider, endpoint, runtime, plan string
-	status                            instance.Status
-	unconfirmed                       bool
-}
-type startSnapshot struct {
-	local bool
-	run   *runSnapshot
-}
-type startDecision struct {
-	reuse, stop *instance.Instance
-	err         error
-}
-
-func decideStart(req EnsureRequest, snapshot startSnapshot) startDecision {
-	var stop *instance.Instance
-	if run := snapshot.run; run != nil && run.endpoint == string(req.Endpoint) {
-		if run.status == instance.StatusStopping {
-			// Drain may finish between retries; use the request-slot backoff.
-			return startDecision{err: &instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter}}
-		}
-		if req.installSmoke && (!run.status.IsTerminal() || run.unconfirmed) {
-			return startDecision{err: ErrInstancesRunning}
-		}
-		if req.Force || run.status.IsTerminal() {
-			stop = run.run
-		} else {
-			if run.provider != req.Provider {
-				return startDecision{err: fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, req.Model, run.provider, req.Provider)}
-			}
-			if run.runtime != req.Runtime || run.plan != req.DisposablePlanID {
-				return startDecision{err: ErrInstancesRunning}
-			}
-			return startDecision{reuse: run.run}
-		}
+func (m *ProviderAppManager) startSnapshot(ctx context.Context, prepared preparedStart) startSnapshot {
+	req := prepared.req
+	snapshot := startSnapshot{local: prepared.local, lifecycle: prepared.lifecycle}
+	switch snapshot.lifecycle {
+	case LifecycleServed:
+		_, _, snapshot.reachable = m.Loader(req.Provider)
+	case LifecycleNone:
+		snapshot.local, snapshot.reachable = m.providerLists(ctx, req.Provider, req.Model)
 	}
-	if !snapshot.local {
-		return startDecision{err: fmt.Errorf("%w: %s; download it with auto_deploy before starting", ErrModelNotLocal, req.Model)}
-	}
-	return startDecision{stop: stop}
-}
-
-func (m *ProviderAppManager) startSnapshot(req EnsureRequest, local bool) startSnapshot {
-	snapshot := startSnapshot{local: local}
 	if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
 		snapshot.run = snapshotRun(run)
 	}
@@ -75,6 +37,7 @@ func snapshotRun(run *instance.Instance) *runSnapshot {
 type preparedStart struct {
 	req       EnsureRequest
 	selection launchSelection
+	lifecycle RunLifecycle
 	local     bool
 	decision  startDecision
 }
@@ -100,12 +63,14 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 	if !cfg.IsEndpointAware() {
 		req.Endpoint = EndpointChat
 	}
-	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, local: true}, ctx.Err()
+	lifecycle := Lifecycle(cfg)
+	// A launch checks its catalog only when cold; other lifecycles gather evidence in the start snapshot.
+	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: lifecycle, local: lifecycle == LifecycleProcess}, ctx.Err()
 }
 
 func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared preparedStart) (context.Context, preparedStart, error) {
 	req := prepared.req
-	if m.localCatalog != nil && !req.installSmoke {
+	if m.localCatalog != nil && !req.installSmoke && prepared.lifecycle == LifecycleProcess {
 		local, err := m.localCatalog(ctx, m.CanonicalModelName(prepared.selection.config.WeightsOf(req.Model)))
 		if err != nil {
 			slog.Warn("Model catalog evidence unavailable; continuing", "model", req.Model, "error", err)
@@ -113,8 +78,8 @@ func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared prep
 			prepared.local = local
 		}
 	}
-	prepared.decision = decideStart(req, m.startSnapshot(req, prepared.local))
-	if prepared.decision.err != nil || prepared.decision.reuse != nil {
+	prepared.decision = decideStart(req, m.startSnapshot(ctx, prepared))
+	if prepared.decision.err != nil || prepared.decision.reuse != nil || prepared.decision.ready || prepared.decision.load {
 		return ctx, prepared, prepared.decision.err
 	}
 	selection, err := m.resolveLaunch(&req)
@@ -137,7 +102,14 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 	if prepared.req.installSmoke {
 		return m.runSmokeStart(ctx, prepared)
 	}
-	decision := decideStart(prepared.req, m.startSnapshot(prepared.req, true))
+	if prepared.lifecycle != LifecycleProcess {
+		ctx, prepared, err = m.prepareColdStart(ctx, prepared)
+		if err != nil {
+			return EnsureResult{}, err
+		}
+		return m.executeStart(ctx, prepared, prepared.decision)
+	}
+	decision := decideStart(prepared.req, m.startSnapshot(ctx, prepared))
 	if decision.err != nil || decision.reuse != nil {
 		return EnsureResult{Run: decision.reuse}, decision.err
 	}
@@ -267,7 +239,7 @@ func (m *ProviderAppManager) decideAndExecuteStart(ctx context.Context, prepared
 		}
 		defer unlock()
 	}
-	return m.executeStart(ctx, prepared, decideStart(prepared.req, m.startSnapshot(prepared.req, prepared.local)))
+	return m.executeStart(ctx, prepared, decideStart(prepared.req, m.startSnapshot(ctx, prepared)))
 }
 
 func (m *ProviderAppManager) executeStart(ctx context.Context, prepared preparedStart, decision startDecision) (result EnsureResult, err error) {
@@ -279,6 +251,12 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 	}
 	if decision.reuse != nil {
 		return EnsureResult{Run: decision.reuse}, nil
+	}
+	if decision.ready {
+		return EnsureResult{Served: true}, nil
+	}
+	if decision.load {
+		return m.loadServed(ctx, prepared.req)
 	}
 	req := prepared.req
 	if m.observeStart != nil && !req.installSmoke {
@@ -297,29 +275,21 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 			return result, err
 		}
 	}
-	if !req.installSmoke && prepared.selection.config.HasEndpoint() && m.resolveBackend != nil {
-		if resolved, ok := m.resolveBackend(req.Provider); ok {
-			return m.loadServed(ctx, req, resolved)
-		}
-	}
 	run, err := m.launchInstanceLocked(ctx, req, prepared.selection)
 	return EnsureResult{Run: run, Started: err == nil}, err
 }
 
-func (m *ProviderAppManager) loadServed(ctx context.Context, req EnsureRequest, resolved *backend.Resolved) (EnsureResult, error) {
-	loader, ok := m.Protocol(req.Provider)
+func (m *ProviderAppManager) loadServed(ctx context.Context, req EnsureRequest) (EnsureResult, error) {
+	loader, target, ok := m.Loader(req.Provider)
 	if !ok {
-		return EnsureResult{}, ErrProviderNotFound
+		return EnsureResult{}, ErrProviderUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, constants.ClusterActionTimeout)
 	defer cancel()
-	if err := loader.LoadModel(ctx, protocol.TargetOf(resolved), req.Model, req.Parameters); err != nil {
+	if err := loader.LoadModel(ctx, target, req.Model, req.Parameters); err != nil {
 		return EnsureResult{}, fmt.Errorf("failed to load model via provider API: %w", err)
 	}
-	endpoint, _ := url.Parse(resolved.Endpoint)
-	port := 0
-	if endpoint != nil {
-		port, _ = strconv.Atoi(endpoint.Port())
-	}
+	_, portText, _ := net.SplitHostPort(target.Host())
+	port, _ := strconv.Atoi(portText)
 	return EnsureResult{Served: true, Started: true, Port: port}, nil
 }

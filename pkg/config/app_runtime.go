@@ -318,7 +318,7 @@ func (prc *AppRuntimeConfig) GetMaxConcurrentModels() int {
 //   - duration < 0: Keep loaded indefinitely
 //   - error if parsing fails
 func (prc *AppRuntimeConfig) GetKeepAliveDuration() (time.Duration, error) {
-	if prc.KeepAlive == "" {
+	if prc == nil || prc.KeepAlive == "" {
 		return 5 * time.Minute, nil // Default: 5 minutes (like Ollama)
 	}
 

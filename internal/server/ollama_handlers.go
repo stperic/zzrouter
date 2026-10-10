@@ -356,7 +356,7 @@ func (h *OllamaHandlers) HandleOllamaPsLocal(c *gin.Context) {
 		}
 	}
 
-	h.forEachLocalOllamaApp(func(name string, p protocol.ModelLister, t protocol.Target) {
+	h.forEachLocalOllamaApp(func(name string, p protocol.ModelLoader, t protocol.Target) {
 		running, err := p.ListRunningModels(ctx, t)
 		if err != nil {
 			slog.Debug("ollama ps query failed", "app", name, "error", err)
@@ -420,20 +420,14 @@ func (h *OllamaHandlers) handleOllamaBlobsPost(c *gin.Context) {
 
 // forEachLocalOllamaApp invokes fn once per registered local Ollama app with
 // a parsed, enabled endpoint. Apps without a usable endpoint are skipped.
-func (h *OllamaHandlers) forEachLocalOllamaApp(fn func(name string, p protocol.ModelLister, t protocol.Target)) {
-	cfg := h.appsConfig()
-	if h.appMgr == nil || cfg == nil {
+func (h *OllamaHandlers) forEachLocalOllamaApp(fn func(name string, p protocol.ModelLoader, t protocol.Target)) {
+	if h.appMgr == nil {
 		return
 	}
-	resolver := backend.NewResolver(h.appsConfig)
-	for key, app := range h.appMgr.Protocols().GetAll() {
-		if !strings.EqualFold(app.Type(), "ollama") {
-			continue
+	for _, key := range h.appMgr.Protocols().List() {
+		loader, target, ok := h.appMgr.Loader(key)
+		if ok {
+			fn(key, loader, target)
 		}
-		resolved, ok := resolver.Resolve(key)
-		if !ok {
-			continue
-		}
-		fn(key, app, protocol.TargetOf(resolved))
 	}
 }

@@ -15,59 +15,6 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-func TestDecideStart(t *testing.T) {
-	run := instance.NewInstance("held", "fake", "model", 8200, 0, 0)
-	for _, tc := range []struct {
-		name                                     string
-		status                                   instance.Status
-		provider, runtime, plan                  string
-		force, absent, smoke, empty, unconfirmed bool
-		reuse, stop                              bool
-		err                                      error
-	}{
-		{name: "running reuse", status: instance.StatusRunning, provider: "fake", reuse: true},
-		{name: "stopping refuses until drain finishes", status: instance.StatusStopping, provider: "fake", err: instance.ErrStopping},
-		{name: "force also refuses stopping", status: instance.StatusStopping, provider: "fake", force: true, err: instance.ErrStopping},
-		{name: "unhealthy reuse", status: instance.StatusUnhealthy, provider: "fake", reuse: true},
-		{name: "restarting reuse", status: instance.StatusRestarting, provider: "fake", reuse: true},
-		{name: "running reuse without catalog", status: instance.StatusRunning, provider: "fake", absent: true, reuse: true},
-		{name: "smoke unconfirmed drain refuses", status: instance.StatusFailed, provider: "fake", smoke: true, unconfirmed: true, err: ErrInstancesRunning},
-		{name: "starting reuse", status: instance.StatusStarting, provider: "fake", reuse: true},
-		{name: "provider mismatch", status: instance.StatusRunning, provider: "other", err: ErrRunHeldByOtherProvider},
-		{name: "force same provider", status: instance.StatusRunning, provider: "fake", force: true, stop: true},
-		{name: "force other provider stops it", status: instance.StatusRunning, provider: "other", force: true, stop: true},
-		{name: "runtime mismatch", status: instance.StatusRunning, provider: "fake", runtime: "other", err: ErrInstancesRunning},
-		{name: "plan mismatch", status: instance.StatusRunning, provider: "fake", plan: "other", err: ErrInstancesRunning},
-		{name: "nothing running", empty: true},
-		{name: "missing catalog", empty: true, absent: true, err: ErrModelNotLocal},
-		{name: "force missing catalog preserves run", provider: "fake", force: true, absent: true, err: ErrModelNotLocal},
-		{name: "smoke with exempt catalog input", empty: true, smoke: true},
-		{name: "terminal cleanup", status: instance.StatusFailed, provider: "fake", stop: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			snapshot := startSnapshot{local: !tc.absent}
-			if !tc.empty {
-				snapshot.run = &runSnapshot{run, tc.provider, "chat", tc.runtime, tc.plan, tc.status, tc.unconfirmed}
-			}
-			result := decideStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat, Force: tc.force, installSmoke: tc.smoke}, snapshot)
-			require.ErrorIs(t, result.err, tc.err)
-			if errors.Is(result.err, instance.ErrStopping) {
-				var admission *instance.AdmissionError
-				require.ErrorAs(t, result.err, &admission)
-				assert.Equal(t, instance.AdmissionRetryAfter, admission.RetryAfter)
-			}
-			assert.Equal(t, tc.reuse, result.reuse != nil)
-			assert.Equal(t, tc.stop, result.stop != nil)
-			if tc.reuse {
-				assert.Same(t, run, result.reuse)
-			}
-			if tc.stop {
-				assert.Same(t, run, result.stop)
-			}
-		})
-	}
-}
-
 func TestEnsureRunForceStopsAnotherProvidersRun(t *testing.T) {
 	m, err := NewProviderAppManager(aliasTestConfig(t), WithLocalCatalog(func(context.Context, string) (bool, error) { return true, nil }))
 	require.NoError(t, err)
@@ -207,7 +154,10 @@ func TestEnsureRunStartedOnlyForFlightLeader(t *testing.T) {
 func TestEnsureRunWarmReuseSkipsCatalogAndHeldInstallGate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := onDemandTestManager(t, nil)
-		m.localCatalog = func(context.Context, string) (bool, error) { t.Error("warm reuse queried catalog"); return false, nil }
+		m.localCatalog = func(context.Context, string) (bool, error) {
+			t.Error("warm reuse queried catalog")
+			return false, nil
+		}
 		run := instance.NewInstance("warm", "fake", "missing-from-catalog", 8200, 0, 0)
 		run.MarkRunning()
 		require.NoError(t, m.instances.Register(run))
@@ -304,7 +254,7 @@ func TestStartSnapshotSelectsIndexedLiveEndpoint(t *testing.T) {
 	live.MarkRunning()
 	require.NoError(t, m.instances.Register(live))
 	req := EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}
-	snapshot := m.startSnapshot(req, false)
+	snapshot := m.startSnapshot(t.Context(), preparedStart{req: req})
 	require.NotNil(t, snapshot.run)
 	decision := decideStart(req, snapshot)
 	assert.Same(t, live, decision.reuse)
@@ -382,7 +332,7 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		}
 		close(release)
 		require.ErrorIs(t, <-done, context.DeadlineExceeded)
-		assert.Empty(t, m.instances.ListAll(), "timed-out smoke must leave no late run or process")
+		assert.Empty(t, m.instances.List(), "timed-out smoke must leave no late run or process")
 	})
 }
 

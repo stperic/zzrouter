@@ -84,40 +84,6 @@ func TestInstance_StatusTransitions_Concurrent(t *testing.T) {
 	wg.Wait()
 }
 
-func TestInstance_KeepAlive(t *testing.T) {
-	t.Run("disabled", func(t *testing.T) {
-		inst := NewInstance("id", "p", "m", 0, 0, 10)
-		assert.False(t, inst.IsIdle())
-		assert.False(t, inst.IsExpired(time.Now()))
-		assert.True(t, inst.ShouldUnload()) // 0 = immediate unload
-	})
-
-	t.Run("indefinite", func(t *testing.T) {
-		inst := NewInstance("id", "p", "m", 0, -1, 10)
-		assert.False(t, inst.IsIdle())
-		assert.False(t, inst.IsExpired(time.Now()))
-		assert.False(t, inst.ShouldUnload())
-	})
-
-	t.Run("idle_detection", func(t *testing.T) {
-		inst := NewInstance("id", "p", "m", 0, 50*time.Millisecond, 10)
-		inst.UpdateLastUsed()
-		assert.False(t, inst.IsIdle())
-
-		time.Sleep(60 * time.Millisecond)
-		assert.True(t, inst.IsIdle())
-		assert.True(t, inst.ShouldUnload())
-	})
-
-	t.Run("expired", func(t *testing.T) {
-		inst := NewInstance("id", "p", "m", 0, 100*time.Millisecond, 10)
-		inst.UpdateLastUsed()
-
-		assert.False(t, inst.IsExpired(time.Now()))
-		assert.True(t, inst.IsExpired(time.Now().Add(200*time.Millisecond)))
-	})
-}
-
 func TestInstance_StampActivityWithHints(t *testing.T) {
 	ptr := func(d time.Duration) *time.Duration { return &d }
 
@@ -145,13 +111,13 @@ func TestInstance_StampActivityWithHints(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 1*time.Hour, 10)
 		inst.StampActivityWithHints(&keepalive.Override{Duration: ptr(0)})
 		assert.Equal(t, time.Duration(0), inst.KeepAlive)
-		assert.True(t, inst.ShouldUnload(), "KeepAlive=0 means immediate unload")
+		assert.Equal(t, time.Duration(0), inst.GetKeepAlive())
 	})
 
 	t.Run("negative KeepAlive override preserves indefinite semantics", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, 1*time.Hour, 10)
 		inst.StampActivityWithHints(&keepalive.Override{Duration: ptr(-1 * time.Second)})
-		assert.False(t, inst.ShouldUnload(), "negative KeepAlive means indefinite")
+		assert.Equal(t, -1*time.Second, inst.GetKeepAlive())
 	})
 
 	t.Run("last-one-wins across successive calls", func(t *testing.T) {
@@ -600,4 +566,11 @@ func TestAdmit(t *testing.T) {
 	stopped := NewInstance("id2", "p", "m", 2, time.Minute, 0)
 	stopped.SetStatus(StatusStopping)
 	assert.False(t, stopped.Admit())
+}
+
+func TestIdleSnapshotReadsKeepAliveAndActivity(t *testing.T) {
+	inst := NewInstance("id", "p", "m", 0, time.Minute, 1)
+	keepAlive, activity := inst.IdleSnapshot()
+	assert.Equal(t, time.Minute, keepAlive)
+	assert.Equal(t, inst.GetLastActivity(), activity)
 }

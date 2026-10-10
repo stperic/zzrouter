@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const defaultEventChannelSize = 64
@@ -506,7 +508,8 @@ func (m *ProviderAppManager) idleReaper() {
 				continue
 			}
 			activity := inst.GetLastActivity()
-			if !m.evictable(inst) || !inst.ShouldUnload() {
+			keepAlive, lastActivity := inst.IdleSnapshot()
+			if !m.evictable(inst) || !idleExpired(keepAlive, lastActivity, utils.Now()) {
 				continue
 			}
 			release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: inst, Activity: activity}})
@@ -866,6 +869,43 @@ func (m *ProviderAppManager) Protocol(name string) (protocol.FullProvider, bool)
 		return nil, false
 	}
 	return p, true
+}
+
+// Loader returns a served provider's loader and its target from live config.
+func (m *ProviderAppManager) Loader(name string) (protocol.ModelLoader, protocol.Target, bool) {
+	if _, cfg, found := m.resolveConfigKey(name); !found || !cfg.IsEnabled() || Lifecycle(cfg) != LifecycleServed {
+		return nil, protocol.Target{}, false
+	}
+	p, target, ok := m.endpoint(name)
+	loader, loads := p.(protocol.ModelLoader)
+	return loader, target, ok && loads
+}
+
+// providerLists is a provider without runs answering whether it serves model; unreachable is not "absent".
+func (m *ProviderAppManager) providerLists(ctx context.Context, provider, model string) (listed, reachable bool) {
+	p, target, ok := m.endpoint(provider)
+	if !ok {
+		return false, false
+	}
+	models, err := p.ListModels(ctx, target)
+	if err != nil {
+		slog.Debug("Provider model list unavailable", "provider", provider, "error", err)
+		return false, false
+	}
+	return slices.ContainsFunc(models, func(info protocol.ModelInfo) bool { return info.Name == model || info.FullID == model }), true
+}
+
+// endpoint is a provider's protocol and resolved target.
+func (m *ProviderAppManager) endpoint(name string) (protocol.FullProvider, protocol.Target, bool) {
+	p, ok := m.Protocol(name)
+	if !ok || m.resolveBackend == nil {
+		return nil, protocol.Target{}, false
+	}
+	resolved, ok := m.resolveBackend(name)
+	if !ok {
+		return nil, protocol.Target{}, false
+	}
+	return p, protocol.TargetOf(resolved), true
 }
 
 // --- Version cache ---

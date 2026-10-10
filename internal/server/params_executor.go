@@ -104,13 +104,12 @@ type ParamsExecutor struct {
 	publishCatalog   func() error
 	installAuthority func(context.Context, string, pkgConfig.ServiceConfig) error
 	appsConfig       func() *pkgConfig.AppsConfig
-	backend          *backend.Resolver
 	configStore      *pkgConfig.AppsConfigStore
 	nodename         func() string
 	knownNodes       func() map[string]bool
 	router           routing.Router
 	services         providerServices
-	protocol         func(provider string) (protocol.FullProvider, bool)
+	loader           func(provider string) (protocol.ModelLoader, protocol.Target, bool)
 	httpClient       *http.Client
 	isWorker         func() bool   // nil on standalone
 	coordURL         func() string // coordinator base URL on workers; "" when unknown
@@ -138,7 +137,7 @@ func NewParamsExecutor(
 	knownNodes func() map[string]bool,
 	router routing.Router,
 	services providerServices,
-	protocol func(provider string) (protocol.FullProvider, bool),
+	loader func(provider string) (protocol.ModelLoader, protocol.Target, bool),
 	httpClient *http.Client,
 	isWorker func() bool,
 	coordURL func() string,
@@ -149,13 +148,12 @@ func NewParamsExecutor(
 
 	return &ParamsExecutor{
 		appsConfig:  appsConfig,
-		backend:     backend.NewResolver(appsConfig),
 		configStore: configStore,
 		nodename:    nodename,
 		knownNodes:  knownNodes,
 		router:      router,
 		services:    services,
-		protocol:    protocol,
+		loader:      loader,
 		httpClient:  httpClient,
 		isWorker:    isWorker,
 		coordURL:    coordURL,
@@ -980,20 +978,16 @@ func (e *ParamsExecutor) RetiredHandler(c *gin.Context) {
 }
 
 func (e *ParamsExecutor) listRunningModelNames(ctx context.Context, provider string) []string {
-	if e.protocol == nil {
+	if e.loader == nil {
 		return nil
 	}
-	providerImpl, ok := e.protocol(provider)
-	if !ok {
-		return nil
-	}
-	resolved, ok := e.backend.Resolve(provider)
+	providerImpl, target, ok := e.loader(provider)
 	if !ok {
 		return nil
 	}
 	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	models, err := providerImpl.ListRunningModels(tctx, protocol.TargetOf(resolved))
+	models, err := providerImpl.ListRunningModels(tctx, target)
 	if err != nil {
 		return nil
 	}

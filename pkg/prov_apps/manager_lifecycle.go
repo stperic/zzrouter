@@ -90,17 +90,13 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
 func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
+	keepAlive, err := svcCfg.Runtime.GetKeepAliveDuration()
+	if err != nil {
+		return nil, err
+	}
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
-	}
-
-	// Determine keep-alive from config (default: 5 minutes)
-	keepAlive := 5 * time.Minute
-	if svcCfg.Runtime != nil && svcCfg.Runtime.KeepAlive != "" {
-		if d, err := time.ParseDuration(svcCfg.Runtime.KeepAlive); err == nil {
-			keepAlive = d
-		}
 	}
 
 	endpoint := string(EndpointOrDefault(req.Endpoint))
@@ -835,10 +831,10 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		stopErr = ctx.Err()
 	}
-	for _, inst := range m.instances.ListAll() {
+	for _, inst := range m.instances.List() {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("provider manager shutdown interrupted by caller deadline",
-				"instances_remaining", len(m.instances.ListAll()),
+				"instances_remaining", len(m.instances.List()),
 				"error", err)
 			stopErr = err
 			break

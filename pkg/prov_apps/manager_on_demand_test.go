@@ -98,7 +98,7 @@ func TestEnsureRunCancelledByStop(t *testing.T) {
 		close(release)
 		require.NoError(t, <-stopped)
 		require.Error(t, <-started)
-		assert.Empty(t, m.instances.ListAll())
+		assert.Empty(t, m.instances.List())
 		_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "later", Provider: "fake"})
 		assert.ErrorIs(t, err, ErrShutdown)
 	})

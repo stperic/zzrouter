@@ -194,3 +194,21 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "123456789012...", truncate("1234567890123456", 15))
 	assert.Equal(t, "ab", truncate("abcdef", 2))
 }
+
+func TestProtocolsExposeOnlySupportedModelLoading(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider FullProvider
+		want     bool
+	}{
+		{"ollama", NewOllamaProvider(nil), true},
+		{"openai", NewOpenAIProvider("external", 0, "openai", nil), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := tc.provider.(ModelLoader)
+			if ok != tc.want {
+				t.Fatalf("loader support = %v, want %v", ok, tc.want)
+			}
+		})
+	}
+}
