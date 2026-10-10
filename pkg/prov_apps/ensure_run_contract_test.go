@@ -21,6 +21,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
@@ -757,6 +758,7 @@ type fakeDaemon struct {
 	stale       map[string]bool
 	unloadHold  chan struct{} // an unload drops the model, then answers once this closes
 	psAuth      []string      // the Authorization header of each listing
+	holdsOne    bool          // a load unloads every other model, as a daemon short of memory does
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -860,6 +862,9 @@ func (d *fakeDaemon) generate(ctx context.Context, body map[string]any) (*http.R
 		expires = time.Now().Add(time.Duration(seconds) * time.Second)
 	}
 	d.mu.Lock()
+	if d.holdsOne {
+		clear(d.loaded)
+	}
 	d.loaded[strings.ToLower(model)] = expires // Ollama lists names lower-cased
 	d.mu.Unlock()
 	return daemonReply(http.StatusOK, `{"done":true}`), nil
@@ -1225,6 +1230,19 @@ func TestEnsureRunContractServed(t *testing.T) {
 			r.daemon.release()
 			awaitRunning(t, o.result.Run)
 		})
+	})
+
+	t.Run("S41 a load the daemon makes room for reports the run it displaced", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
+		first := r.running(t, served)
+		first.SetLoaded(instance.Loaded{VRAM: 512 * constants.BytesPerMB})
+		second := r.running(t, EnsureRequest{Provider: "ollama", Model: "b"})
+		assert.Equal(t, []instance.EvictedRun{{RunID: first.ID, Model: first.Model, FreedMiB: 512}}, second.EvictedRuns())
+		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
+		assert.Contains(t, runLog(t, first), "displaced by run "+second.ID)
+		assert.Equal(t, []*instance.Instance{second}, r.m.instances.List())
+		assert.Zero(t, r.daemon.count(true), "the daemon unloaded it; zzRouter sends nothing")
 	})
 
 	t.Run("S8 a provider service restart retires its runs", func(t *testing.T) {

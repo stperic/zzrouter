@@ -16,6 +16,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -712,10 +713,7 @@ func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider strin
 		slog.Debug("Served models unavailable; runs unchanged", "provider", provider, "error", err)
 		return
 	}
-	loaded := make(map[string]protocol.RunningModelInfo, len(listed)) // the daemon's names are case-insensitive
-	for _, model := range listed {
-		loaded[strings.ToLower(model.Name)] = model
-	}
+	loaded := daemonModels(listed)
 	for _, run := range ready {
 		model, held := loaded[strings.ToLower(run.Model)]
 		switch {
@@ -736,6 +734,53 @@ func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider strin
 		}
 	}
 	m.adoptServed(ctx, provider, listed)
+}
+
+// daemonModels indexes a daemon's listing by name; the daemon's names are case-insensitive.
+func daemonModels(listed []protocol.RunningModelInfo) map[string]protocol.RunningModelInfo {
+	loaded := make(map[string]protocol.RunningModelInfo, len(listed))
+	for _, model := range listed {
+		loaded[strings.ToLower(model.Name)] = model
+	}
+	return loaded
+}
+
+// readyServed lists provider's ready runs other than except.
+func (m *ProviderAppManager) readyServed(provider string, except *instance.Instance) []*instance.Instance {
+	var ready []*instance.Instance
+	for _, run := range m.instances.ListByProvider(provider) {
+		if run != except && run.GetStatus() == instance.StatusRunning {
+			ready = append(ready, run)
+		}
+	}
+	return ready
+}
+
+// retireDisplaced retires the runs ready before run's load that its daemon no longer holds after it: the
+// daemon unloaded them to fit run's model, as an eviction does for a process run.
+func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.Instance, before []*instance.Instance) []instance.EvictedRun {
+	if len(before) == 0 {
+		return nil
+	}
+	loader, target, ok := m.servedTarget(run.Provider)
+	if !ok {
+		return nil
+	}
+	listed, err := loader.ListRunningModels(ctx, target)
+	if err != nil {
+		return nil // the reconcile retires them on its next listing
+	}
+	loaded := daemonModels(listed)
+	var evicted []instance.EvictedRun
+	for _, gone := range before {
+		if _, held := loaded[strings.ToLower(gone.Model)]; held || gone.GetStatus() != instance.StatusRunning {
+			continue
+		}
+		freed := gone.Loaded().VRAM / constants.BytesPerMB
+		m.retireRun(gone, fmt.Sprintf("displaced by run %s (%s): the daemon unloaded it to fit that model; a request to it starts it again", run.ID, run.Model), obsruns.StopReasonMemoryPressure)
+		evicted = append(evicted, instance.EvictedRun{RunID: gone.ID, Model: gone.Model, FreedMiB: freed})
+	}
+	return evicted
 }
 
 // adoptServed adopts on a second listing in a row: one alone may predate the stop that unloaded the model.

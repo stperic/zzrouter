@@ -181,6 +181,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 	ctx, cancel := context.WithTimeout(m.startsCtx, budget)
 	defer cancel()
 	err := ErrProviderUnavailable
+	before := m.readyServed(run.Provider, run)
 	if loader, target, ok := m.servedTarget(run.Provider); ok {
 		var unreachable *url.Error
 		if err = loader.LoadModel(ctx, target, run.WireModel, keepAlive); errors.As(err, &unreachable) {
@@ -206,6 +207,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		}
 		return
 	}
+	run.SetEvictedRuns(m.retireDisplaced(ctx, run, before))
 	run.MarkRunning()
 	run.SetStartedAtIfZero()
 	m.record(run, runEvent(EventInstanceRunning, run, "loaded"))
