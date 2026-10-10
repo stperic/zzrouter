@@ -34,16 +34,6 @@ const contractCallers = 16
 // contractWait bounds every wait in this file; reaching it is a failure.
 const contractWait = 10 * time.Second
 
-// contractBaseGapsEnv runs the scenarios the base cannot pass yet.
-const contractBaseGapsEnv = "ZZR_CONTRACT_BASE_GAPS"
-
-func baseGap(t *testing.T, observed string) {
-	t.Helper()
-	if os.Getenv(contractBaseGapsEnv) == "" {
-		t.Skip("base gap: " + observed)
-	}
-}
-
 // contractEngine prints READY once $0.ready exists, then serves until
 // stopped, recording each graceful stop in $0.terms (the launcher
 // forwards INT when its stdin closes, TERM when signalled).
@@ -318,6 +308,7 @@ func TestEnsureRunContract(t *testing.T) {
 			}
 		}
 		assert.Equal(t, 1, started)
+		assert.Len(t, r.m.instances.List(), 1, "the registry holds exactly one run")
 		awaitRunning(t, results[0].result.Run)
 	})
 
@@ -355,6 +346,51 @@ func TestEnsureRunContract(t *testing.T) {
 		awaitRunning(t, late.result.Run)
 	})
 
+	t.Run("3b a caller reusing a run released before launch gets its cause", func(t *testing.T) {
+		b := newBarrier()
+		var calls atomic.Int32
+		r := newContractRig(t, false, WithParamLocalizer(func(_, _, _ string, params map[string]string) (Localized, error) {
+			if calls.Add(1) == 1 {
+				b.hold() // registered, not launched
+				return Localized{}, errTestStart
+			}
+			return Localized{Params: params}, nil
+		}))
+		leader := r.ensure(t.Context(), req)
+		b.reached(t)
+		fast := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+		require.NoError(t, fast.err)
+		require.NotNil(t, fast.result.Run, "the registered run is reused while it starts")
+		assert.False(t, fast.result.Started)
+		b.open()
+		require.ErrorIs(t, collect(t, []<-chan outcome{leader})[0].err, errTestStart)
+		select {
+		case <-fast.result.Run.LeftStarting():
+		case <-time.After(contractWait):
+			t.Fatal("a run released before launch never left starting")
+		}
+		require.ErrorIs(t, fast.result.Run.FailureCause(), errTestStart)
+	})
+
+	t.Run("3c a caller after the flight ended starts fresh", func(t *testing.T) {
+		b, removed := newBarrier(), newBarrier()
+		r := newContractRig(t, false, failFirstLocalize(errTestStart), WithModelSource(func(context.Context, string) string { b.hold(); return "" }))
+		r.m.seams.flightRemoved = removed.hold
+		ctxs, reqs := same(t.Context(), req)
+		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+		b.open()
+		removed.reached(t) // the failed flight is gone; its callers are not answered yet
+		late := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+		require.NoError(t, late.err, "a caller that finds no flight observes the registry")
+		assert.True(t, late.result.Started)
+		removed.open()
+		for _, o := range collect(t, outs) {
+			require.ErrorIs(t, o.err, errTestStart)
+		}
+		assert.Equal(t, int32(2), r.attempts.Load())
+		awaitRunning(t, late.result.Run)
+	})
+
 	t.Run("5 concurrent force replaces a ready run once", func(t *testing.T) {
 		b := newBarrier()
 		var gate atomic.Bool
@@ -387,6 +423,32 @@ func TestEnsureRunContract(t *testing.T) {
 		awaitRunning(t, results[0].result.Run)
 	})
 
+	t.Run("5b force and plain callers share one cold start", func(t *testing.T) {
+		for _, forceLeads := range []bool{false, true} {
+			t.Run(fmt.Sprintf("force leads=%t", forceLeads), func(t *testing.T) {
+				b := newBarrier()
+				r := newContractRig(t, false, catalogBarrier(b))
+				ctxs, reqs := same(t.Context(), req)
+				for i := range reqs {
+					reqs[i].Force = (i == 0) == forceLeads
+				}
+				outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+				b.open()
+				results := collect(t, outs)
+				for _, o := range results {
+					require.NoError(t, o.err)
+					require.NotNil(t, o.result.Run)
+					assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
+				}
+				assert.True(t, results[0].result.Started)
+				assert.Equal(t, int32(1), r.attempts.Load())
+				assert.Len(t, r.m.instances.List(), 1)
+				awaitRunning(t, results[0].result.Run)
+				assert.Zero(t, r.terms(t), "nobody replaced the run the flight started")
+			})
+		}
+	})
+
 	t.Run("6 cancelled callers never cancel the start", func(t *testing.T) {
 		b := newBarrier()
 		r := newContractRig(t, false, catalogBarrier(b))
@@ -401,6 +463,7 @@ func TestEnsureRunContract(t *testing.T) {
 		results := collect(t, outs)
 		require.ErrorIs(t, results[0].err, context.Canceled)
 		require.ErrorIs(t, results[1].err, context.Canceled)
+		assert.Equal(t, int32(1), r.attempts.Load())
 		for _, o := range results[2:] {
 			require.NoError(t, o.err)
 			require.NotNil(t, o.result.Run)
@@ -426,16 +489,13 @@ func TestEnsureRunContract(t *testing.T) {
 		b.open()
 		results := collect(t, outs)
 		require.NoError(t, <-stopped)
-		t.Run("callers get ErrShutdown or the run", func(t *testing.T) {
-			baseGap(t, "every caller gets context.Canceled from the start Stop cancelled")
-			for _, o := range results {
-				if o.err != nil {
-					assert.ErrorIs(t, o.err, ErrShutdown)
-				} else {
-					assert.NotNil(t, o.result.Run)
-				}
+		for _, o := range results {
+			if o.err != nil {
+				assert.ErrorIs(t, o.err, ErrShutdown)
+			} else {
+				assert.NotNil(t, o.result.Run)
 			}
-		})
+		}
 		assert.Empty(t, r.m.instances.List())
 		goleak.VerifyNone(t, ignore)
 	})
@@ -587,4 +647,66 @@ func TestEnsureRunContract(t *testing.T) {
 		drop()
 		require.NoError(t, <-stopped)
 	})
+
+	t.Run("12 a smoke during a flight runs on its own, no deadlock", func(t *testing.T) {
+		r := newContractRig(t, false)
+		release, err := r.m.installs.acquireProvider(t.Context(), "generic") // the installer's gate
+		require.NoError(t, err)
+		unlock := sync.OnceFunc(release)
+		t.Cleanup(unlock)
+		leader := r.ensure(t.Context(), req)
+		waitParkedOn(t, ").acquireProvider(", 1, contractWait)
+		smoke := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Runtime: "generic", Model: req.Model, Origin: OriginInstall})})[0]
+		// The installer smoke-tests and stops its run before releasing its gate.
+		require.NoError(t, smoke.err)
+		require.NoError(t, r.m.StopInstance(t.Context(), smoke.result.Run.ID))
+		unlock()
+		o := collect(t, []<-chan outcome{leader})[0]
+		require.NoError(t, o.err)
+		assert.True(t, o.result.Started)
+		assert.Len(t, r.m.instances.List(), 1)
+		awaitRunning(t, o.result.Run)
+	})
+}
+
+// G3: a stop that lands before the run's process is recorded still ends it,
+// instead of draining until a deadline.
+func TestEnsureRunContractStopBeforeProcessRecorded(t *testing.T) {
+	const stopWait = 5 * time.Second // half the rig's readiness timeout
+	for _, stage := range []string{"before launch", "after process start"} {
+		t.Run(stage, func(t *testing.T) {
+			r := newContractRig(t, true)
+			b := newBarrier()
+			if stage == "before launch" {
+				r.m.seams.beforeLaunch = b.hold
+			} else {
+				r.m.seams.processStarted = b.hold
+			}
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "shared"})})[0]
+			require.NoError(t, o.err)
+			run := o.result.Run
+			b.reached(t)
+			stopped := make(chan error, 1)
+			go func() { stopped <- r.m.StopInstance(context.Background(), run.ID) }()
+			waitParkedOn(t, ").stopInstance(", 1, contractWait)
+			b.open()
+			select {
+			case err := <-stopped:
+				require.NoError(t, err)
+			case <-time.After(stopWait):
+				t.Fatal("StopInstance waited on a process nobody signalled")
+			}
+			assert.LessOrEqual(t, r.terms(t), 1, "the process is stopped once")
+			_, err := os.Stat(filepath.Join(config.Paths().GetPIDDir(), run.ID+".pid"))
+			assert.True(t, os.IsNotExist(err), "no tracked pid left")
+			pid := run.GetProcessID()
+			if stage == "before launch" {
+				assert.Zero(t, pid, "a run stopped before launch spawns nothing")
+			} else if assert.Positive(t, pid, "a started process is recorded") {
+				assert.False(t, process.ProcessExists(int32(pid)), "the process is gone")
+			}
+			_, listed := r.m.instances.Get(run.ID)
+			assert.False(t, listed)
+		})
+	}
 }

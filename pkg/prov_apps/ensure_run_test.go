@@ -12,7 +12,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sync/singleflight"
 )
 
 func TestEnsureRunForceStopsAnotherProvidersRun(t *testing.T) {
@@ -43,36 +42,6 @@ func TestEnsureRunInstallSmokeBypassesLocalCatalog(t *testing.T) {
 	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake", Runtime: "fake", Origin: OriginInstall})
 	require.ErrorIs(t, err, errTestStart, "smoke must pass the catalog rule and reach command preparation")
 	assert.Equal(t, 1, checked)
-}
-
-func TestJoinStartUsesActualRunAndErrorPrecedence(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("held", "fake", "model", 8200, 0, 0)
-	run.MarkRunning()
-	require.NoError(t, m.instances.Register(run))
-	for _, tc := range []struct {
-		name   string
-		req    EnsureRequest
-		flight singleflight.Result
-		err    error
-	}{
-		{"matching reuse", EnsureRequest{Provider: "fake"}, singleflight.Result{Val: EnsureResult{Run: run}}, nil},
-		{"provider mismatch", EnsureRequest{Provider: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrRunHeldByOtherProvider},
-		{"failed flight precedes provider mismatch", EnsureRequest{Provider: "other"}, singleflight.Result{Err: errTestStart}, errTestStart},
-		{"runtime mismatch", EnsureRequest{Provider: "fake", Runtime: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"plan mismatch", EnsureRequest{Provider: "fake", DisposablePlanID: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"force cannot join reuse", EnsureRequest{Provider: "fake", Force: true}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"force joins fresh start", EnsureRequest{Provider: "fake", Force: true}, singleflight.Result{Val: EnsureResult{Run: run, Started: true}}, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.req.Model, tc.req.Endpoint = "model", EndpointChat
-			_, err := m.joinStart(tc.req, tc.flight, false)
-			require.ErrorIs(t, err, tc.err)
-		})
-	}
-	run.Config.Runtime = "changed"
-	_, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: EnsureResult{Run: run}}, false)
-	require.ErrorIs(t, err, ErrInstancesRunning, "join policy must read the current snapshot")
 }
 
 func TestEnsureRunCancelledJoinerDoesNotCancelStart(t *testing.T) {
@@ -282,28 +251,6 @@ func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
 	assert.Equal(t, 1, finished)
 }
 
-func TestJoinStartRetainsIdentityAfterNativeRunRemoval(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("removed", "fake", "model", 8200, 0, 0)
-	run.MarkRunning()
-	require.NoError(t, m.instances.Register(run))
-	require.NoError(t, m.instances.Remove(run.ID))
-	flight := singleflight.Result{Val: EnsureResult{Run: run, Started: true}}
-	for _, tc := range []struct {
-		req EnsureRequest
-		err error
-	}{
-		{EnsureRequest{Provider: "fake"}, nil},
-		{EnsureRequest{Provider: "other"}, ErrRunHeldByOtherProvider},
-		{EnsureRequest{Provider: "fake", Runtime: "other"}, ErrInstancesRunning},
-		{EnsureRequest{Provider: "fake", DisposablePlanID: "other"}, ErrInstancesRunning},
-	} {
-		tc.req.Model, tc.req.Endpoint = "model", EndpointChat
-		_, err := m.joinStart(tc.req, flight, false)
-		assert.ErrorIs(t, err, tc.err)
-	}
-}
-
 func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		timedOut, release := make(chan struct{}), make(chan struct{})
@@ -333,48 +280,4 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		require.ErrorIs(t, <-done, context.DeadlineExceeded)
 		assert.Empty(t, m.instances.List(), "timed-out smoke must leave no late run or process")
 	})
-}
-
-func TestJoinStartFailedLeaderReturnsItsCause(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("failed-leader", "fake", "model", 8200, 0, 0)
-	run.MarkFailedError(errTestStart)
-	flight := singleflight.Result{Val: EnsureResult{Run: run, Started: true}}
-	result, err := m.joinStart(EnsureRequest{Provider: "other", Model: "model", Endpoint: EndpointChat}, flight, false)
-	require.ErrorIs(t, err, errTestStart, "the leader's failure precedes a joiner's provider mismatch")
-	assert.Nil(t, result.Run)
-	assert.False(t, result.Started)
-}
-
-func TestJoinStartRefusesMissingOrTerminalOutcome(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	for _, state := range []string{"nil", "served", "stopped", "failed without typed cause"} {
-		t.Run(state, func(t *testing.T) {
-			outcome := EnsureResult{Started: true, Served: state == "served"}
-			if state == "stopped" || state == "failed without typed cause" {
-				outcome.Run = instance.NewInstance("terminal", "fake", "model", 8200, 0, 0)
-				if state == "stopped" {
-					outcome.Run.SetStatus(instance.StatusStopped)
-				} else {
-					outcome.Run.MarkFailed("launch failed")
-				}
-			}
-			result, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: outcome}, false)
-			require.Error(t, err)
-			assert.Nil(t, result.Run)
-			assert.False(t, result.Served)
-		})
-	}
-}
-
-func TestJoinStartUsesOutcomeDespiteDifferentIndexedRun(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	returned := instance.NewInstance("returned", "fake", "model", 8200, 0, 0)
-	returned.MarkRunning()
-	indexed := instance.NewInstance("indexed", "other", "model", 8210, 0, 0)
-	indexed.MarkRunning()
-	require.NoError(t, m.instances.Register(indexed))
-	result, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: EnsureResult{Run: returned, Started: true}}, false)
-	require.NoError(t, err)
-	assert.Same(t, returned, result.Run)
 }

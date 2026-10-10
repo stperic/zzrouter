@@ -244,41 +244,31 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 			"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-
-	ticker := time.NewTicker(constants.ProgressPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
-		case <-ticker.C:
-			currentInstance, found := s.providers.appMgr.Instances().Get(inst.ID)
-			if !found {
-				return nil, loadInternal(fmt.Sprintf("instance '%s' disappeared while waiting", inst.ID))
-			}
-
-			switch currentInstance.GetStatus() {
-			case instance.StatusRunning:
-				slog.Info("Instance is now ready", "id", currentInstance.ID, "port", currentInstance.Port)
-				return currentInstance, nil
-			case instance.StatusFailed:
-				if cause := currentInstance.FailureCause(); cause != nil {
-					return nil, classifyLoadFailure(fmt.Errorf("instance %q failed to start: %w", currentInstance.ID, cause))
-				}
-				// GetErrorMessage takes the instance mutex; direct field
-				// access races with MarkFailed's write (Status atomic and
-				// the ErrorMessage write are not co-synchronized).
-				return nil, loadEngineFailed(
-					fmt.Sprintf("instance '%s' failed to start: %s", currentInstance.ID, currentInstance.GetErrorMessage()))
-			default:
-				// Still starting, continue polling.
-			}
-		}
+	// Wait on the run held, never the registry: a failed run that was replaced still has its cause.
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil, loadStillWarming(fmt.Sprintf(
+			"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
+	case <-inst.LeftStarting():
 	}
+	if s.providers.readinessWoken != nil {
+		s.providers.readinessWoken()
+	}
+	// The failure first: replacing a failed run stops it, which moves its status past Failed.
+	if cause := inst.FailureCause(); cause != nil {
+		return nil, classifyLoadFailure(fmt.Errorf("instance %q failed to start: %w", inst.ID, cause))
+	}
+	if message := inst.GetErrorMessage(); message != "" {
+		return nil, loadEngineFailed(fmt.Sprintf("instance '%s' failed to start: %s", inst.ID, message))
+	}
+	if inst.GetStatus() == instance.StatusRunning {
+		slog.Info("Instance is now ready", "id", inst.ID, "port", inst.Port)
+		return inst, nil
+	}
+	// Stopped while waiting: a retry finds the model's next run.
+	return nil, classifyLoadFailure(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
 }
 
 // getInstanceBackendNode extracts the backend host from instance.

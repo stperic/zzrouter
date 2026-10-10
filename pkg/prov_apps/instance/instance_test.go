@@ -574,3 +574,19 @@ func TestIdleSnapshotReadsKeepAliveAndActivity(t *testing.T) {
 	assert.Equal(t, time.Minute, keepAlive)
 	assert.Equal(t, inst.GetLastActivity(), activity)
 }
+
+// One side owns the signal: a launch claim excludes every stop, a stop claim excludes the launch, and a stop
+// may retry its own claim.
+func TestClaimTerminationOwner(t *testing.T) {
+	launched := NewInstance("a", "p", "m", 0, time.Minute, 1)
+	assert.Zero(t, launched.ClaimTermination(false), "no process yet")
+	launched.SetProcessInfo(42, 42, nil)
+	assert.Equal(t, 42, launched.ClaimTermination(false))
+	assert.Zero(t, launched.ClaimTermination(true))
+
+	stopped := NewInstance("b", "p", "m", 0, time.Minute, 1)
+	stopped.SetProcessInfo(7, 7, nil)
+	assert.Equal(t, 7, stopped.ClaimTermination(true))
+	assert.Zero(t, stopped.ClaimTermination(false))
+	assert.Equal(t, 7, stopped.ClaimTermination(true), "a stop retries its own claim")
+}

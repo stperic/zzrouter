@@ -24,8 +24,6 @@ import (
 const (
 	readinessWaiters = 16
 	readinessWait    = 10 * time.Second
-	// readinessBaseGapsEnv runs the scenarios the base cannot pass yet.
-	readinessBaseGapsEnv = "ZZR_CONTRACT_BASE_GAPS"
 )
 
 // crashingEngine stays loading until $0.crash exists, then exits; every
@@ -142,15 +140,16 @@ func TestEnsureRunContractReadinessWaiters(t *testing.T) {
 	})
 
 	t.Run("4b a replacement never hides the cause from an old waiter", func(t *testing.T) {
-		if os.Getenv(readinessBaseGapsEnv) == "" {
-			t.Skip("base gap: waiters re-read the registry by id; once the failed run is replaced they answer \"disappeared while waiting\"")
-		}
 		r := newReadinessRig(t)
+		replacedOld := make(chan struct{})
+		r.s.providers.readinessWoken = func() { <-replacedOld } // waiters look only once the old run is stopped
 		run, outs := r.loadingRun(t)
 		r.crash(t, run)
 		replaced, err := r.mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "fake", Model: "m"})
 		require.NoError(t, err)
 		require.NotEqual(t, run.ID, replaced.Run.ID)
+		require.NotEqual(t, instance.StatusFailed, run.GetStatus(), "replacing the failed run stopped it")
+		close(replacedOld)
 		assertCause(t, run, outs)
 		select {
 		case <-replaced.Run.LeftStarting():

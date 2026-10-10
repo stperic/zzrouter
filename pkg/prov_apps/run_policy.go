@@ -52,7 +52,8 @@ type Want struct {
 type RunView struct {
 	ID, Provider, Runtime, Plan string
 	Status                      instance.Status
-	Unconfirmed                 bool // its stop never drained, so its runtime is still occupied
+	Unconfirmed                 bool  // its stop never drained, so its runtime is still occupied
+	Failure                     error // why a terminal run ended
 }
 
 // Node is the evidence one decision is made on; a site sets what it has observed.
@@ -62,6 +63,7 @@ type Node struct {
 	Absent    bool     // the catalog says this node does not hold the model
 	Runtime   string   // the runtime a start would use, once selected
 	Existing  *RunView // the run holding the key
+	Joined    bool     // Existing is what a start in flight produced, and the caller joined that start
 	// Blocker and AdmissionHeld are observed only for a launch measured against a memory budget.
 	Blocker       *RunView // an admitted run still starting under a budget: its claim is not visible yet
 	AdmissionHeld bool     // another launch is measuring
@@ -114,12 +116,16 @@ func Decide(w Want, n Node) Decision {
 	replace := ""
 	if run := n.Existing; run != nil {
 		switch {
+		case n.Joined && run.Status.IsTerminal():
+			return refuse(run.Failure)
 		case run.Status == instance.StatusStopping:
 			// Drain may finish between retries; use the request-slot backoff.
 			return refuse(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
 		case smoke && (!run.Status.IsTerminal() || run.Unconfirmed):
 			return refuse(ErrInstancesRunning)
-		case w.Force || run.Status.IsTerminal():
+		case n.Joined && w.Force && run.Provider == w.Provider && run.Runtime == w.Runtime && run.Plan == w.Plan:
+			return Decision{Act: ActReuse, Run: run.ID} // the flight did what Force asks; a second replacement would undo it
+		case (w.Force && !n.Joined) || run.Status.IsTerminal():
 			replace = run.ID
 		case run.Provider != w.Provider:
 			return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Model, run.Provider, w.Provider))

@@ -11,7 +11,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
-	"golang.org/x/sync/singleflight"
 )
 
 // decide observes this node for prepared and asks the policy; the run returned is the one Existing describes.
@@ -36,7 +35,11 @@ func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart)
 
 func runView(run *instance.Instance) *RunView {
 	cfg := run.SnapshotConfig()
-	return &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load()}
+	view := &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load(), Failure: run.FailureCause()}
+	if view.Failure == nil && view.Status.IsTerminal() {
+		view.Failure = fmt.Errorf("run %s is %s: %s", run.ID, view.Status, run.GetErrorMessage())
+	}
+	return view
 }
 
 type preparedStart struct {
@@ -110,6 +113,17 @@ func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared prep
 	return ctx, prepared, err
 }
 
+// flight is one start in progress for a run key. Its leader records the outcome, removes the
+// flight from m.flights, then closes done: a caller that finds no flight observes the registry.
+type flight struct {
+	done    chan struct{}
+	run     *instance.Instance
+	started bool
+	err     error
+}
+
+func flightKey(req EnsureRequest) string { return req.Model + "\x00" + string(req.Endpoint) }
+
 // EnsureRun returns a run without waiting for readiness; Detached accepts a background start.
 func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (EnsureResult, error) {
 	prepared, err := m.prepareStart(ctx, req)
@@ -126,6 +140,7 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 		}
 		return m.executeStart(ctx, prepared)
 	}
+	// A fast path only: the flight decides again against the registry it starts on.
 	if prepared.decision, prepared.existing = m.decide(ctx, prepared); prepared.decision.Act != ActStart {
 		return prepared.answer()
 	}
@@ -138,29 +153,77 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 			return prepared.answer()
 		}
 	}
-	performed := false
-	flight, err := m.startFlight(ctx, prepared, &performed)
-	if err != nil {
+	f, leads, err := m.joinFlight(ctx, prepared)
+	if err != nil || req.Detached {
 		return EnsureResult{}, err
 	}
-	if req.Detached {
-		return EnsureResult{}, nil
-	}
 	select {
-	case result := <-flight:
-		return m.joinStart(prepared.req, result, performed)
+	case <-f.done:
 	case <-ctx.Done():
 		return EnsureResult{}, ctx.Err()
 	}
+	if f.err != nil || leads {
+		return EnsureResult{Run: f.run, Started: f.started}, f.err
+	}
+	prepared.decision = Decide(prepared.req.want(), Node{Lifecycle: LifecycleProcess, Existing: runView(f.run), Joined: true})
+	prepared.existing = f.run
+	return prepared.answer()
 }
 
-// The installer keeps ownership until smoke preparation has returned.
+// joinFlight joins the start in flight for prepared's run key, or creates it and starts it.
+func (m *ProviderAppManager) joinFlight(ctx context.Context, prepared preparedStart) (*flight, bool, error) {
+	key := flightKey(prepared.req)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopping.Load() || m.shutdown.Load() {
+		return nil, false, ErrShutdown
+	}
+	m.flightsMu.Lock()
+	defer m.flightsMu.Unlock()
+	if f, ok := m.flights[key]; ok {
+		return f, false, nil
+	}
+	f := &flight{done: make(chan struct{})}
+	m.flights[key] = f
+	m.onDemandStarts.Add(1)
+	go m.fly(ctx, key, prepared, f)
+	return f, true, nil
+}
+
+// fly runs a flight's start to handoff on its leader's context values, cancelled only by Stop.
+func (m *ProviderAppManager) fly(ctx context.Context, key string, prepared preparedStart, f *flight) {
+	defer m.onDemandStarts.Done()
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer context.AfterFunc(m.startsCtx, cancel)()
+	defer cancel()
+	result, err := m.decideAndExecuteStart(ctx, prepared)
+	if m.startsCtx.Err() != nil && err != nil {
+		err = ErrShutdown // whatever a start cancelled by Stop returned, its callers are told why
+	} else if err == nil && result.Run == nil {
+		err = errUndecided
+	}
+	if err != nil && prepared.req.Detached && !errors.Is(err, ErrShutdown) {
+		slog.Error("Failed to start on-demand model", "model", prepared.req.Model, "provider", prepared.req.Provider, "error", err)
+	}
+	f.run, f.started, f.err = result.Run, result.Started, err
+	m.flightsMu.Lock()
+	delete(m.flights, key)
+	m.flightsMu.Unlock()
+	if m.seams.flightRemoved != nil {
+		m.seams.flightRemoved()
+	}
+	close(f.done)
+}
+
+// The installer keeps ownership until smoke preparation has returned. A smoke never joins a
+// flight: the flight's leader may wait on the install gate this smoke's installer holds.
 func (m *ProviderAppManager) runSmokeStart(ctx context.Context, prepared preparedStart) (EnsureResult, error) {
 	m.mu.Lock()
 	if m.stopping.Load() || m.shutdown.Load() {
 		m.mu.Unlock()
 		return EnsureResult{}, ErrShutdown
 	}
+	// A smoke never joins a flight: a flight for its model waits on the gate its installer holds.
 	m.onDemandStarts.Add(1)
 	m.mu.Unlock()
 	defer m.onDemandStarts.Done()
@@ -169,68 +232,6 @@ func (m *ProviderAppManager) runSmokeStart(ctx context.Context, prepared prepare
 	defer cancel()
 	defer end()
 	return m.decideAndExecuteStart(ctx, prepared)
-}
-
-func (m *ProviderAppManager) startFlight(ctx context.Context, prepared preparedStart, performed *bool) (<-chan singleflight.Result, error) {
-	m.mu.Lock()
-	if m.stopping.Load() || m.shutdown.Load() {
-		m.mu.Unlock()
-		return nil, ErrShutdown
-	}
-	m.onDemandStarts.Add(1)
-	m.mu.Unlock()
-	start := func() (any, error) {
-		*performed = true
-		flightCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		end := context.AfterFunc(m.startsCtx, cancel)
-		defer cancel()
-		defer end()
-		return m.decideAndExecuteStart(flightCtx, prepared)
-	}
-	flight := m.launchGroup.DoChan(prepared.req.Model+":"+string(prepared.req.Endpoint), start)
-	result := make(chan singleflight.Result, 1)
-	go func() {
-		defer m.onDemandStarts.Done()
-		completed := <-flight
-		if prepared.req.Detached {
-			if _, err := m.joinStart(prepared.req, completed, *performed); err != nil {
-				slog.Error("Failed to start on-demand model", "model", prepared.req.Model, "provider", prepared.req.Provider, "error", err)
-			}
-		}
-		result <- completed
-	}()
-	return result, nil
-}
-
-func (m *ProviderAppManager) joinStart(req EnsureRequest, flight singleflight.Result, performed bool) (EnsureResult, error) {
-	if flight.Err != nil {
-		return EnsureResult{}, flight.Err
-	}
-	result, ok := flight.Val.(EnsureResult)
-	if !ok {
-		return EnsureResult{}, fmt.Errorf("invalid start result %T", flight.Val)
-	}
-	if !performed {
-		if result.Run == nil {
-			return EnsureResult{}, ErrInstanceNotFound
-		}
-		run := runView(result.Run)
-		if run.Status.IsTerminal() {
-			if cause := result.Run.FailureCause(); cause != nil {
-				return EnsureResult{}, cause
-			}
-			return EnsureResult{}, fmt.Errorf("run %s is %s: %s", result.Run.ID, run.Status, result.Run.GetErrorMessage())
-		}
-		if req.Force && !result.Started {
-			return EnsureResult{}, ErrInstancesRunning
-		}
-		req.Force = false // A successful shared start already performed the replacement.
-		if decision := Decide(req.want(), Node{Lifecycle: LifecycleProcess, Existing: run}); decision.Act != ActReuse {
-			return EnsureResult{}, decision.Err
-		}
-	}
-	result.Started = result.Started && performed
-	return result, nil
 }
 
 func (m *ProviderAppManager) decideAndExecuteStart(ctx context.Context, prepared preparedStart) (EnsureResult, error) {

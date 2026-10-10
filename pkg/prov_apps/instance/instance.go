@@ -112,6 +112,8 @@ type Instance struct {
 	waitingOn    string
 	evictedRuns  []EvictedRun
 	failureCause error
+	// stopClaimed/launchClaimed: which side signalled the process; a stop may retry its own claim.
+	stopClaimed, launchClaimed bool
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
 
@@ -409,6 +411,19 @@ func (i *Instance) SetProcessInfo(pid, pgid int, cmd *LaunchCommand) {
 // assignment would silently break if locking were added later.
 func (i *Instance) SetLogFilePath(path string) {
 	i.LogFilePath = path
+}
+
+// ClaimTermination returns the recorded pid when the caller is to signal it,
+// else 0. Whichever of a stop and the launching goroutine claims first owns
+// the signal; only a stop may claim again, to retry its own failed stop.
+func (i *Instance) ClaimTermination(byStop bool) int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.ProcessID <= 0 || i.launchClaimed || (i.stopClaimed && !byStop) {
+		return 0
+	}
+	i.stopClaimed, i.launchClaimed = byStop, !byStop
+	return i.ProcessID
 }
 
 // GetProcessID returns the process ID under lock.

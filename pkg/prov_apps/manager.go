@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -132,8 +130,9 @@ type ProviderAppManager struct {
 	// leaves a run's source unstated.
 	modelSource func(ctx context.Context, model string) string
 
-	// launchGroup shares one canonical model and endpoint's start decision.
-	launchGroup    singleflight.Group
+	// flights holds the start in flight per run key; flightsMu guards only the map.
+	flightsMu      sync.Mutex
+	flights        map[string]*flight
 	localCatalog   func(context.Context, string) (bool, error)
 	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
 	resolveBackend func(string) (*backend.Resolved, bool)
@@ -157,6 +156,8 @@ type ProviderAppManager struct {
 	services         map[string]*managedService
 	servicesStarted  atomic.Bool
 	servicesObserved chan struct{}
+	// seams pause the start path where tests must interleave; nil in production.
+	seams struct{ beforeLaunch, processStarted, flightRemoved func() }
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -337,6 +338,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
 		services:        make(map[string]*managedService),
+		flights:         make(map[string]*flight),
 	}
 
 	// Options first so WithParentContext can supply the ctx parent.

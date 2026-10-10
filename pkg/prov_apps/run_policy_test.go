@@ -40,6 +40,10 @@ func TestDecide(t *testing.T) {
 		return &RunView{ID: "held", Provider: provider, Status: status}
 	}
 	blocker := &RunView{ID: "b"}
+	// joined is the run a start in flight produced, as a joiner of that start sees it.
+	joined := func(status instance.Status, provider string) Node {
+		return Node{Joined: true, Existing: &RunView{ID: "flown", Provider: provider, Status: status, Failure: errTestStart}}
+	}
 	for _, tc := range []struct {
 		name    string
 		want    Want
@@ -83,6 +87,18 @@ func TestDecide(t *testing.T) {
 		{name: "smoke ignores the catalog", want: Want{Origin: OriginInstall, Runtime: "fake"}, node: Node{Absent: true, Runtime: "fake"}, act: ActStart},
 		{name: "smoke never queues behind blocker", want: Want{Origin: OriginInstall}, node: Node{Blocker: blocker}, err: errAdmissionBusy},
 		{name: "smoke never queues on held slot", want: Want{Origin: OriginInstall}, node: Node{AdmissionHeld: true}, err: errAdmissionBusy},
+
+		// A joiner of a start in flight gets that start's run, judged by its own want.
+		{name: "joiner same want", node: joined(instance.StatusStarting, "fake"), act: ActReuse, run: "flown"},
+		{name: "joiner another provider", node: joined(instance.StatusStarting, "other"), err: ErrRunHeldByOtherProvider},
+		{name: "joiner runtime differs", want: Want{Runtime: "other"}, node: joined(instance.StatusStarting, "fake"), err: ErrInstancesRunning},
+		{name: "joiner plan differs", want: Want{Plan: "other"}, node: joined(instance.StatusStarting, "fake"), err: ErrInstancesRunning},
+		{name: "force joiner shares the flight's run", want: Want{Force: true}, node: joined(instance.StatusStarting, "fake"), act: ActReuse, run: "flown"},
+		{name: "force joiner of another provider's flight is refused", want: Want{Force: true}, node: joined(instance.StatusRunning, "other"), err: ErrRunHeldByOtherProvider},
+		{name: "failed flight wins over another provider", node: joined(instance.StatusFailed, "other"), err: errTestStart},
+		{name: "joiner of a run already failed gets its cause", want: Want{Force: true}, node: joined(instance.StatusFailed, "fake"), err: errTestStart},
+		{name: "joiner of a run already stopped gets why", node: joined(instance.StatusStopped, "other"), err: errTestStart},
+		{name: "joiner of a stopping run retries", node: joined(instance.StatusStopping, "fake"), err: instance.ErrStopping},
 
 		{name: "queue behind blocker", node: Node{Blocker: blocker}, act: ActQueue, run: "b"},
 		{name: "queue on held slot", node: Node{AdmissionHeld: true}, act: ActQueue},

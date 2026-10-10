@@ -45,7 +45,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 		defer func() { <-m.memoryAdmission }()
 		blocker, err := m.startingBlocker(inst.ID)
 		if err != nil {
-			m.releaseRun(inst)
+			m.releaseRun(inst, err)
 			return nil, err
 		}
 		if blocker != nil {
@@ -55,7 +55,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	}
 	run, err := m.admitRun(ctx, inst, req, selection)
 	if err != nil {
-		m.releaseRun(inst)
+		m.releaseRun(inst, err)
 		return nil, err
 	}
 	m.watchRun(inst, req)
@@ -151,10 +151,12 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	return inst, nil
 }
 
-// releaseRun undoes registerRun for a run no process was started for. The
-// port goes back only with the registry entry, so a racing stop cannot
-// return it twice.
-func (m *ProviderAppManager) releaseRun(inst *instance.Instance) {
+// releaseRun undoes registerRun for a run no process was started for. It
+// fails the run with cause first, so a caller already holding it gets that
+// cause. The port goes back only with the registry entry, so a racing stop
+// cannot return it twice.
+func (m *ProviderAppManager) releaseRun(inst *instance.Instance, cause error) {
+	inst.MarkFailedError(cause)
 	if err := m.instances.Remove(inst.ID); err != nil {
 		slog.Warn("failed to remove instance during cleanup", "id", inst.ID, "error", err)
 		return
@@ -245,11 +247,12 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest, node Node) (*instance.Instance, error) {
 	decision := Decide(req.want(), node)
 	if decision.Act != ActQueue {
-		m.releaseRun(inst)
-		if decision.Err == nil {
-			return nil, errUndecided
+		err := decision.Err
+		if err == nil {
+			err = errUndecided
 		}
-		return nil, decision.Err
+		m.releaseRun(inst, err)
+		return nil, err
 	}
 	inst.SetWaitingOn(decision.Run)
 	m.watchRun(inst, req)
@@ -469,6 +472,13 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 		logWriter = readinessWriter
 	}
 
+	if m.seams.beforeLaunch != nil {
+		m.seams.beforeLaunch()
+	}
+	if inst.Context().Err() != nil { // stopped before its process: spawn nothing, fail nothing
+		logFile.Close()
+		return
+	}
 	// Launch process (exec.Command, not CommandContext — process lifetime managed by Terminate)
 	result, err := m.launcher.Launch(m.shutdownCtx, inst, cmd, args, envVars, logWriter, executionEnvironment)
 	if err != nil {
@@ -481,6 +491,25 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 			Time: utils.Now(),
 		})
 		return
+	}
+
+	if m.seams.processStarted != nil {
+		m.seams.processStarted()
+	}
+	inst.SetJobHandle(result.JobHandle)
+	inst.SetStdinPipe(result.StdinPipe)
+	inst.SetProcessInfo(result.PID, result.ProcessGroupID, result.Command) // last: a stop claims the process by its pid
+	// A stop that ran before the pid was recorded saw no process; this goroutine signals it instead.
+	if inst.Context().Err() != nil {
+		if pid := inst.ClaimTermination(false); pid > 0 {
+			inst.TrackGoroutine()
+			go func() {
+				defer inst.GoroutineDone()
+				if err := m.terminateProcess(context.Background(), inst, pid); err != nil {
+					slog.Warn("failed to stop a process launched during its stop", "instance", inst.ID, "pid", pid, "error", err)
+				}
+			}()
+		}
 	}
 
 	// Track PID on disk so orphan cleanup can find it after a crash
@@ -707,28 +736,11 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	inst.Cancel()
 	inst.StopKeepAliveTimer()
 
-	// Terminate process (graceful SIGTERM → SIGKILL)
-	//    Use shutdown_timeout from provider config if available.
-	pid := inst.GetProcessID()
-	pgid := inst.GetProcessGroupID()
-	if pid > 0 && process.IsSafeToKill(int32(pid)) {
-		if process.ProcessHasMarker(int32(pid)) {
-			timeout := m.resolveShutdownTimeout(inst.Provider)
-			req := process.TerminateRequest{
-				PID:            pid,
-				ProcessGroupID: pgid,
-				Graceful:       timeout,
-				JobHandle:      inst.GetJobHandle(),
-			}
-			if inst.HasStdinPipe() {
-				inst.CloseStdinPipe()
-				req.StdinPipe = nil // already closed above, terminateProcessTree will skip
-			}
-			if err := process.Terminate(ctx, req); err != nil {
-				return err
-			}
-		} else {
-			slog.Warn("skipping process termination: PID may have been recycled", "instance", id, "pid", pid)
+	// Terminate process (graceful SIGTERM → SIGKILL). No pid yet: the
+	// lifecycle goroutine sees the cancelled context and signals it.
+	if pid := inst.ClaimTermination(true); pid > 0 {
+		if err := m.terminateProcess(ctx, inst, pid); err != nil {
+			return err
 		}
 	}
 
@@ -764,6 +776,26 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	})
 
 	return nil
+}
+
+// terminateProcess ends a run's process tree, gracefully first, within the
+// provider's shutdown_timeout.
+func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instance.Instance, pid int) error {
+	if !process.IsSafeToKill(int32(pid)) {
+		return nil
+	}
+	if !process.ProcessHasMarker(int32(pid)) {
+		slog.Warn("skipping process termination: PID may have been recycled", "instance", inst.ID, "pid", pid)
+		return nil
+	}
+	req := process.TerminateRequest{
+		PID:            pid,
+		ProcessGroupID: inst.GetProcessGroupID(),
+		Graceful:       m.resolveShutdownTimeout(inst.Provider),
+		JobHandle:      inst.GetJobHandle(),
+	}
+	inst.CloseStdinPipe() // idempotent; the request leaves StdinPipe nil so it is not closed twice
+	return process.Terminate(ctx, req)
 }
 
 // RestartInstance stops a running instance and launches a new one with the
