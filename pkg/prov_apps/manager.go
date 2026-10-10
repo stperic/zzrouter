@@ -454,7 +454,7 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		m.servicesObserved = make(chan struct{})
 		m.servicesStarted.Store(true)
 		go m.observeServices(childCtx)
-		m.reconcileServices()
+		m.reconcileServices(nil)
 	})
 }
 
@@ -782,7 +782,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 	}
 
 	if fresh == nil {
-		m.reconcileServices()
+		m.reconcileServices(nil)
 		return config.DispositionApplied
 	}
 	if unchanged {
@@ -804,7 +804,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 
 	// 3. Version cache: detect versions for newly enabled providers
 	m.syncVersions(fresh)
-	m.reconcileServices()
+	m.reconcileServices(nil)
 
 	return config.DispositionApplied
 }

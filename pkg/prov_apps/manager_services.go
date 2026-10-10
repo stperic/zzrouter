@@ -76,6 +76,7 @@ type managedService struct {
 	managerSetting  string
 	status          ProviderServiceStatus
 	observedRunning *bool
+	unreconciled    bool // the last reconcile failed; the services ticker retries it
 }
 
 func (m *ProviderAppManager) serviceState(name string) *managedService {
@@ -532,6 +533,7 @@ func (m *ProviderAppManager) observeServices(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.observeOSServices(ctx)
+			m.retryUnreconciled()
 			m.reconcileServedRuns(ctx)
 		}
 	}
@@ -558,7 +560,13 @@ func (m *ProviderAppManager) observeOSServices(ctx context.Context) {
 	}
 }
 
-func (m *ProviderAppManager) reconcileServices() {
+// retryUnreconciled retries the services whose last reconcile failed, e.g. at boot while the old daemon exits.
+func (m *ProviderAppManager) retryUnreconciled() {
+	m.reconcileServices(func(state *managedService) bool { return state.unreconciled })
+}
+
+// reconcileServices reconciles the services only selects (nil: all); a failure is retried each services tick.
+func (m *ProviderAppManager) reconcileServices(only func(*managedService) bool) {
 	if !m.servicesStarted.Load() || m.stopping.Load() {
 		return
 	}
@@ -568,7 +576,7 @@ func (m *ProviderAppManager) reconcileServices() {
 		names[name] = true
 	}
 	m.servicesMu.Unlock()
-	if cfg := m.AppsConfig(); cfg != nil {
+	if cfg := m.AppsConfig(); cfg != nil && only == nil {
 		cfg.RangeApps(func(name string, svc config.ServiceConfig) bool {
 			inst, _ := m.installs.Dispatcher().Get(name)
 			if _, ok := inst.(install.DaemonInstaller); ok && svc.HasEndpoint() {
@@ -578,11 +586,22 @@ func (m *ProviderAppManager) reconcileServices() {
 		})
 	}
 	for name := range names {
-		ctx, cancel := context.WithTimeout(m.shutdownCtx, 30*time.Second)
-		if err := m.reconcileService(ctx, name); err != nil {
-			slog.Warn("Managed provider reconciliation failed", "provider", name, "error", err)
+		state := m.serviceState(name)
+		state.mu.Lock()
+		skip := only != nil && !only(state)
+		state.mu.Unlock()
+		if skip {
+			continue
 		}
+		ctx, cancel := context.WithTimeout(m.shutdownCtx, 30*time.Second)
+		err := m.reconcileService(ctx, name)
 		cancel()
+		if err != nil {
+			slog.Warn("Managed provider reconciliation failed; retrying on the next services tick", "provider", name, "error", err)
+		}
+		state.mu.Lock()
+		state.unreconciled = err != nil
+		state.mu.Unlock()
 	}
 }
 
