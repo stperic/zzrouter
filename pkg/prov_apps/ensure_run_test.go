@@ -40,7 +40,7 @@ func TestEnsureRunInstallSmokeBypassesLocalCatalog(t *testing.T) {
 	m.localCatalog = func(context.Context, string) (bool, error) { checked++; return false, nil }
 	_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake"})
 	require.ErrorIs(t, err, ErrModelNotLocal)
-	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake", Runtime: "fake", installSmoke: true})
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake", Runtime: "fake", Origin: OriginInstall})
 	require.ErrorIs(t, err, errTestStart, "smoke must pass the catalog rule and reach command preparation")
 	assert.Equal(t, 1, checked)
 }
@@ -243,7 +243,7 @@ func TestEnsureRunDetachedAcceptsBeforePreparationAndStopDrains(t *testing.T) {
 	})
 }
 
-func TestStartSnapshotSelectsIndexedLiveEndpoint(t *testing.T) {
+func TestDecideSelectsIndexedLiveEndpoint(t *testing.T) {
 	m := onDemandTestManager(t, nil)
 	old := instance.NewInstance("leftover", "other", "model", 8210, 0, 0)
 	old.Endpoint = "embeddings"
@@ -254,11 +254,10 @@ func TestStartSnapshotSelectsIndexedLiveEndpoint(t *testing.T) {
 	live.MarkRunning()
 	require.NoError(t, m.instances.Register(live))
 	req := EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}
-	snapshot := m.startSnapshot(t.Context(), preparedStart{req: req})
-	require.NotNil(t, snapshot.run)
-	decision := decideStart(req, snapshot)
-	assert.Same(t, live, decision.reuse)
-	assert.Nil(t, decision.stop)
+	decision, existing := m.decide(t.Context(), preparedStart{req: req})
+	assert.Equal(t, ActReuse, decision.Act)
+	assert.Same(t, live, existing)
+	assert.Empty(t, decision.Replace)
 }
 
 func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
@@ -277,7 +276,7 @@ func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
 	result, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Model: "warm"})
 	require.NoError(t, err)
 	assert.Same(t, warm, result.Run)
-	_, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", installSmoke: true})
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", Origin: OriginInstall})
 	require.ErrorIs(t, err, errTestStart)
 	assert.Equal(t, 1, started)
 	assert.Equal(t, 1, finished)
@@ -320,7 +319,7 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			_, err := m.EnsureRun(ctx, EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", installSmoke: true})
+			_, err := m.EnsureRun(ctx, EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", Origin: OriginInstall})
 			done <- err
 		}()
 		<-timedOut

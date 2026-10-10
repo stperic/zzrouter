@@ -106,7 +106,7 @@ func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease,
 }
 
 func (d *chainServerDeps) StartOnDemand(model, provider string) error {
-	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Detached: true, ByRequest: true})
+	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Detached: true, Origin: prov_apps.OriginRequest})
 	return err
 }
 

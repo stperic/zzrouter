@@ -48,7 +48,7 @@ func (m *ProviderAppManager) smokeInstalledRuntime(ctx context.Context, provider
 	var err, lastBusy error
 	retryUntil := utils.Now().Add(smokeAdmissionWait)
 	for {
-		ensured, err = m.EnsureRun(ctx, EnsureRequest{Provider: provider, Runtime: runtime, Model: model, installSmoke: true})
+		ensured, err = m.EnsureRun(ctx, EnsureRequest{Provider: provider, Runtime: runtime, Model: model, Origin: OriginInstall})
 		run = ensured.Run
 		if lastBusy != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return fmt.Errorf("%w: %v", errSmokeBusy, err)

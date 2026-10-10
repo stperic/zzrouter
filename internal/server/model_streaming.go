@@ -206,7 +206,7 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 // loadModelViaNodeAPI loads a LOCAL model directly via executor. No
 // routing needed — we're already on the correct node.
 func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (*instance.Instance, error) {
-	result, err := s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint), ByRequest: true})
+	result, err := s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint), Origin: prov_apps.OriginRequest})
 	if err != nil {
 		return nil, classifyLoadFailure(err)
 	}

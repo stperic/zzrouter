@@ -209,7 +209,7 @@ type LaunchParameters struct {
 }
 
 func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
-	if req.Runtime != "" && req.DisposablePlanID == "" && !req.installSmoke {
+	if req.Runtime != "" && req.DisposablePlanID == "" && req.Origin != OriginInstall {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
 	params, env, sources := m.resolveRawLaunchParams(svc, req, endpoint)

@@ -556,7 +556,7 @@ func TestEnsureRunContract(t *testing.T) {
 		require.NoError(t, r.m.StopInstance(t.Context(), third.ID), "a queued run is stoppable")
 		_, listed := r.m.instances.Get(third.ID)
 		assert.False(t, listed)
-		_, err = r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Runtime: "generic", Model: "smoke", installSmoke: true})
+		_, err = r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Runtime: "generic", Model: "smoke", Origin: OriginInstall})
 		require.ErrorIs(t, err, errAdmissionBusy)
 		assert.Len(t, r.m.instances.List(), 2)
 		r.ready(t)

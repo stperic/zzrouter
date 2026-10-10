@@ -35,10 +35,12 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	}
 	if budget != nil {
 		// Admission measures free memory, so admissions run one at a time.
+		node := Node{Lifecycle: LifecycleProcess, Runtime: req.selectedRuntime}
 		select {
 		case m.memoryAdmission <- struct{}{}:
 		default:
-			return m.queueRun(inst, req, "")
+			node.AdmissionHeld = true
+			return m.queueRun(inst, req, node)
 		}
 		defer func() { <-m.memoryAdmission }()
 		blocker, err := m.startingBlocker(inst.ID)
@@ -47,7 +49,8 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 			return nil, err
 		}
 		if blocker != nil {
-			return m.queueRun(inst, req, blocker.ID)
+			node.Blocker = runView(blocker)
+			return m.queueRun(inst, req, node)
 		}
 	}
 	run, err := m.admitRun(ctx, inst, req, selection)
@@ -82,9 +85,6 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 		selected = svcCfg.Name
 	}
 	req.selectedRuntime = selected
-	if req.installSmoke && selected != req.Runtime {
-		return launchSelection{}, fmt.Errorf("smoke model does not use the runtime being installed")
-	}
 	return launchSelection{key: configKey, config: svcCfg, model: model}, nil
 }
 
@@ -104,13 +104,13 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
 	inst.Endpoint = endpoint
 	inst.StartedBy = instance.StartedByAPI
-	if req.ByRequest {
+	if req.Origin == OriginRequest {
 		inst.StartedBy = instance.StartedByRequest
 	}
 	if svcCfg.Runtime != nil {
 		inst.FailureClassifier = &svcCfg.Runtime.FailurePatterns
 	}
-	inst.StopUnconfirmed.Store(req.installSmoke) // Smoke retains ownership until strict process drain.
+	inst.StopUnconfirmed.Store(req.Origin == OriginInstall) // Smoke retains ownership until strict process drain.
 	inst.Config = instance.Config{
 		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
 		Provider:   req.Provider,
@@ -241,14 +241,17 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 }
 
 // queueRun accepts a run that waits for another launch to claim its GPU
-// memory. An install smoke cannot wait: its install holds the gate a
-// queued run needs.
-func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest, blocker string) (*instance.Instance, error) {
-	if req.installSmoke {
+// memory, when the policy lets it wait on what node observed.
+func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest, node Node) (*instance.Instance, error) {
+	decision := Decide(req.want(), node)
+	if decision.Act != ActQueue {
 		m.releaseRun(inst)
-		return nil, errAdmissionBusy
+		if decision.Err == nil {
+			return nil, errUndecided
+		}
+		return nil, decision.Err
 	}
-	inst.SetWaitingOn(blocker)
+	inst.SetWaitingOn(decision.Run)
 	m.watchRun(inst, req)
 	inst.TrackGoroutine()
 	go func() {
@@ -1008,15 +1011,18 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 // Port is intentionally omitted so the pool reallocates.
 func restartRequest(inst *instance.Instance) EnsureRequest {
 	cfg := inst.SnapshotConfig()
-	return EnsureRequest{
+	req := EnsureRequest{
 		Runtime: cfg.Runtime, DisposablePlanID: cfg.DisposablePlanID,
 		Provider:   cfg.Provider,
 		Model:      cfg.Model,
 		Endpoint:   Endpoint(inst.Endpoint),
 		Parameters: cfg.Parameters,
 		EnvVars:    cfg.EnvVars,
-		ByRequest:  inst.StartedBy == instance.StartedByRequest,
 	}
+	if inst.StartedBy == instance.StartedByRequest {
+		req.Origin = OriginRequest
+	}
+	return req
 }
 
 // resolveLaunchParams produces the parameters and environment a launched

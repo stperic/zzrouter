@@ -208,7 +208,7 @@ func TestStopQueuedRun(t *testing.T) {
 func TestSmokeDoesNotQueue(t *testing.T) {
 	f := newQueueFixture(t)
 	first := f.launch(t, "one")
-	_, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "two", Runtime: "generic", installSmoke: true})
+	_, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "two", Runtime: "generic", Origin: OriginInstall})
 	require.ErrorIs(t, err, errAdmissionBusy)
 	assert.Len(t, f.mgr.instances.List(), 1, "a refused smoke leaves nothing registered")
 	f.release(t, first)

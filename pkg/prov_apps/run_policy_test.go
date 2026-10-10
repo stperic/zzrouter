@@ -35,85 +35,86 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
-func TestDecideStart(t *testing.T) {
-	run := instance.NewInstance("held", "fake", "model", 8200, 0, 0)
+func TestDecide(t *testing.T) {
+	held := func(status instance.Status, provider string) *RunView {
+		return &RunView{ID: "held", Provider: provider, Status: status}
+	}
+	blocker := &RunView{ID: "b"}
 	for _, tc := range []struct {
-		name                                     string
-		status                                   instance.Status
-		provider, runtime, plan                  string
-		force, absent, smoke, empty, unconfirmed bool
-		reuse, stop                              bool
-		err                                      error
+		name    string
+		want    Want
+		node    Node
+		act     Act
+		run     string
+		replace string
+		err     error
+		msg     string
 	}{
-		{name: "running reuse", status: instance.StatusRunning, provider: "fake", reuse: true},
-		{name: "stopping refuses until drain finishes", status: instance.StatusStopping, provider: "fake", err: instance.ErrStopping},
-		{name: "force also refuses stopping", status: instance.StatusStopping, provider: "fake", force: true, err: instance.ErrStopping},
-		{name: "unhealthy reuse", status: instance.StatusUnhealthy, provider: "fake", reuse: true},
-		{name: "restarting reuse", status: instance.StatusRestarting, provider: "fake", reuse: true},
-		{name: "running reuse without catalog", status: instance.StatusRunning, provider: "fake", absent: true, reuse: true},
-		{name: "smoke unconfirmed drain refuses", status: instance.StatusFailed, provider: "fake", smoke: true, unconfirmed: true, err: ErrInstancesRunning},
-		{name: "starting reuse", status: instance.StatusStarting, provider: "fake", reuse: true},
-		{name: "provider mismatch", status: instance.StatusRunning, provider: "other", err: ErrRunHeldByOtherProvider},
-		{name: "force same provider", status: instance.StatusRunning, provider: "fake", force: true, stop: true},
-		{name: "force other provider stops it", status: instance.StatusRunning, provider: "other", force: true, stop: true},
-		{name: "runtime mismatch", status: instance.StatusRunning, provider: "fake", runtime: "other", err: ErrInstancesRunning},
-		{name: "plan mismatch", status: instance.StatusRunning, provider: "fake", plan: "other", err: ErrInstancesRunning},
-		{name: "nothing running", empty: true},
-		{name: "missing catalog", empty: true, absent: true, err: ErrModelNotLocal},
-		{name: "force missing catalog preserves run", provider: "fake", force: true, absent: true, err: ErrModelNotLocal},
-		{name: "smoke with exempt catalog input", empty: true, smoke: true},
-		{name: "terminal cleanup", status: instance.StatusFailed, provider: "fake", stop: true},
+		// A process held by another provider cannot change a non-process decision.
+		{name: "none ready", want: Want{Force: true}, node: Node{Lifecycle: LifecycleNone, Reachable: true, Existing: held(instance.StatusStopping, "other")}, act: ActReady},
+		{name: "none absent", node: Node{Lifecycle: LifecycleNone, Reachable: true, Absent: true}, err: ErrModelNotLocal},
+		{name: "none unreachable", node: Node{Lifecycle: LifecycleNone, Absent: true}, err: ErrProviderUnavailable},
+		{name: "served loads without process catalog", want: Want{Force: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Absent: true, Existing: held(instance.StatusStopping, "other")}, act: ActLoad},
+		{name: "served unreachable", node: Node{Lifecycle: LifecycleServed}, err: ErrProviderUnavailable},
+		{name: "served unreachable before catalog", node: Node{Lifecycle: LifecycleServed, Absent: true}, err: ErrProviderUnavailable},
+
+		{name: "nothing running starts", act: ActStart},
+		{name: "missing catalog", node: Node{Absent: true}, err: ErrModelNotLocal},
+		{name: "running reuse", node: Node{Existing: held(instance.StatusRunning, "fake")}, act: ActReuse, run: "held"},
+		{name: "running reuse ignores catalog", node: Node{Absent: true, Existing: held(instance.StatusRunning, "fake")}, act: ActReuse, run: "held"},
+		{name: "unhealthy reuse", node: Node{Existing: held(instance.StatusUnhealthy, "fake")}, act: ActReuse, run: "held"},
+		{name: "restarting reuse", node: Node{Existing: held(instance.StatusRestarting, "fake")}, act: ActReuse, run: "held"},
+		{name: "starting reuse", node: Node{Existing: held(instance.StatusStarting, "fake")}, act: ActReuse, run: "held"},
+		{name: "stopping refuses until drain finishes", node: Node{Existing: held(instance.StatusStopping, "fake")}, err: instance.ErrStopping},
+		{name: "force also refuses stopping", want: Want{Force: true}, node: Node{Existing: held(instance.StatusStopping, "fake")}, err: instance.ErrStopping},
+		{name: "provider mismatch", node: Node{Existing: held(instance.StatusRunning, "other")}, err: ErrRunHeldByOtherProvider},
+		{name: "force other provider replaces it", want: Want{Force: true}, node: Node{Existing: held(instance.StatusRunning, "other")}, act: ActStart, replace: "held"},
+		{name: "force same provider replaces it", want: Want{Force: true}, node: Node{Existing: held(instance.StatusRunning, "fake")}, act: ActStart, replace: "held"},
+		{name: "runtime mismatch", want: Want{Runtime: "other"}, node: Node{Existing: held(instance.StatusRunning, "fake")}, err: ErrInstancesRunning},
+		{name: "plan mismatch", want: Want{Plan: "other"}, node: Node{Existing: held(instance.StatusRunning, "fake")}, err: ErrInstancesRunning},
+		{name: "terminal cleanup", node: Node{Existing: held(instance.StatusFailed, "fake")}, act: ActStart, replace: "held"},
+		{name: "force missing catalog preserves run", want: Want{Force: true}, node: Node{Absent: true, Existing: held(instance.StatusRunning, "fake")}, err: ErrModelNotLocal},
+
+		{name: "smoke beside live run", want: Want{Origin: OriginInstall}, node: Node{Existing: held(instance.StatusRunning, "fake")}, err: ErrInstancesRunning},
+		{name: "smoke beside unconfirmed drain", want: Want{Origin: OriginInstall}, node: Node{Existing: &RunView{ID: "held", Provider: "fake", Status: instance.StatusFailed, Unconfirmed: true}}, err: ErrInstancesRunning},
+		{name: "smoke replaces confirmed terminal", want: Want{Origin: OriginInstall}, node: Node{Existing: held(instance.StatusFailed, "fake")}, act: ActStart, replace: "held"},
+		{name: "smoke on another runtime", want: Want{Origin: OriginInstall, Runtime: "fake"}, node: Node{Runtime: "other"}, msg: "runtime being installed"},
+		{name: "smoke before runtime is known", want: Want{Origin: OriginInstall, Runtime: "fake"}, act: ActStart},
+		{name: "smoke ignores the catalog", want: Want{Origin: OriginInstall, Runtime: "fake"}, node: Node{Absent: true, Runtime: "fake"}, act: ActStart},
+		{name: "smoke never queues behind blocker", want: Want{Origin: OriginInstall}, node: Node{Blocker: blocker}, err: errAdmissionBusy},
+		{name: "smoke never queues on held slot", want: Want{Origin: OriginInstall}, node: Node{AdmissionHeld: true}, err: errAdmissionBusy},
+
+		{name: "queue behind blocker", node: Node{Blocker: blocker}, act: ActQueue, run: "b"},
+		{name: "queue on held slot", node: Node{AdmissionHeld: true}, act: ActQueue},
+		{name: "blocker precedes held slot", node: Node{Blocker: blocker, AdmissionHeld: true}, act: ActQueue, run: "b"},
+		{name: "absent precedes queue", node: Node{Absent: true, Blocker: blocker}, err: ErrModelNotLocal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			snapshot := startSnapshot{local: !tc.absent}
-			if !tc.empty {
-				snapshot.run = &runSnapshot{run, tc.provider, "chat", tc.runtime, tc.plan, tc.status, tc.unconfirmed}
+			tc.want.Model = "model"
+			if tc.want.Provider == "" {
+				tc.want.Provider = "fake"
 			}
-			result := decideStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat, Force: tc.force, installSmoke: tc.smoke}, snapshot)
-			require.ErrorIs(t, result.err, tc.err)
-			if errors.Is(result.err, instance.ErrStopping) {
+			d := Decide(tc.want, tc.node)
+			switch {
+			case tc.err != nil:
+				require.ErrorIs(t, d.Err, tc.err)
+			case tc.msg != "":
+				require.ErrorContains(t, d.Err, tc.msg)
+			default:
+				require.NoError(t, d.Err)
+			}
+			if errors.Is(d.Err, instance.ErrStopping) {
 				var admission *instance.AdmissionError
-				require.ErrorAs(t, result.err, &admission)
+				require.ErrorAs(t, d.Err, &admission)
 				assert.Equal(t, instance.AdmissionRetryAfter, admission.RetryAfter)
 			}
-			assert.Equal(t, tc.reuse, result.reuse != nil)
-			assert.Equal(t, tc.stop, result.stop != nil)
-			if tc.reuse {
-				assert.Same(t, run, result.reuse)
+			want := tc.act
+			if tc.err != nil || tc.msg != "" {
+				want = ActRefuse
 			}
-			if tc.stop {
-				assert.Same(t, run, result.stop)
-			}
-		})
-	}
-}
-
-func TestLifecycleStartPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		name                          string
-		lifecycle                     RunLifecycle
-		local, reachable, ready, load bool
-		err                           error
-	}{
-		{name: "none in catalog", lifecycle: LifecycleNone, local: true, reachable: true, ready: true},
-		{name: "none absent", lifecycle: LifecycleNone, reachable: true, err: ErrModelNotLocal},
-		{name: "none unreachable", lifecycle: LifecycleNone, err: ErrProviderUnavailable},
-		{name: "served unreachable", lifecycle: LifecycleServed, local: true, err: ErrProviderUnavailable},
-		{name: "served unreachable before catalog", lifecycle: LifecycleServed, err: ErrProviderUnavailable},
-		{name: "served loads without process catalog", lifecycle: LifecycleServed, reachable: true, load: true},
-		{name: "process absent", lifecycle: LifecycleProcess, err: ErrModelNotLocal},
-		{name: "process starts", lifecycle: LifecycleProcess, local: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// A process held by another provider cannot change a non-process decision.
-			snapshot := startSnapshot{lifecycle: tc.lifecycle, local: tc.local, reachable: tc.reachable}
-			if tc.lifecycle != LifecycleProcess {
-				snapshot.run = &runSnapshot{provider: "other", endpoint: "chat", status: instance.StatusStopping}
-			}
-			decision := decideStart(EnsureRequest{Model: "m", Provider: "requested", Endpoint: EndpointChat, Force: true}, snapshot)
-			assert.ErrorIs(t, decision.err, tc.err)
-			assert.Equal(t, tc.ready, decision.ready)
-			assert.Equal(t, tc.load, decision.load)
+			assert.Equal(t, want, d.Act)
+			assert.Equal(t, tc.run, d.Run)
+			assert.Equal(t, tc.replace, d.Replace)
 		})
 	}
 }
@@ -187,4 +188,10 @@ func TestRegisteredRunKeepAlive(t *testing.T) {
 			assert.Contains(t, mgr.Instances().List(), run)
 		})
 	}
+}
+
+// An unset decision is never a silent success.
+func TestUnsetDecisionIsAnError(t *testing.T) {
+	_, err := preparedStart{}.answer()
+	require.ErrorIs(t, err, errUndecided)
 }

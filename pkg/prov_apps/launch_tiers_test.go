@@ -262,13 +262,13 @@ func TestRestartRequestPreservesEndpoint(t *testing.T) {
 	assert.Equal(t, "llama3", req.Model)
 	assert.Zero(t, req.Port, "port must be left unset so the pool reallocates")
 	assert.Equal(t, instance.StartedByAPI, inst.StartedBy)
-	assert.False(t, req.ByRequest)
+	assert.Equal(t, OriginAPI, req.Origin)
 
 	// A run a request started stays a request's run across a restart.
-	instResult, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: "other", ByRequest: true})
+	instResult, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: "other", Origin: OriginRequest})
 	require.NoError(t, err)
 	assert.Equal(t, instance.StartedByRequest, instResult.Run.ToInfo("node").StartedBy)
-	assert.True(t, restartRequest(instResult.Run).ByRequest)
+	assert.Equal(t, OriginRequest, restartRequest(instResult.Run).Origin)
 }
 
 // The stored Config must hold the REQUEST tier only. If it held the

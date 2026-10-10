@@ -14,32 +14,49 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-func (m *ProviderAppManager) startSnapshot(ctx context.Context, prepared preparedStart) startSnapshot {
+// decide observes this node for prepared and asks the policy; the run returned is the one Existing describes.
+func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart) (Decision, *instance.Instance) {
 	req := prepared.req
-	snapshot := startSnapshot{local: prepared.local, lifecycle: prepared.lifecycle}
-	switch snapshot.lifecycle {
+	n := Node{Lifecycle: prepared.lifecycle, Absent: prepared.absent, Runtime: req.selectedRuntime}
+	var existing *instance.Instance
+	switch n.Lifecycle {
 	case LifecycleServed:
-		_, _, snapshot.reachable = m.Loader(req.Provider)
+		_, _, n.Reachable = m.Loader(req.Provider)
 	case LifecycleNone:
-		snapshot.local, snapshot.reachable = m.providerLists(ctx, req.Provider, req.Model)
+		var listed bool
+		listed, n.Reachable = m.providerLists(ctx, req.Provider, req.Model)
+		n.Absent = !listed
+	default:
+		if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
+			existing, n.Existing = run, runView(run)
+		}
 	}
-	if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
-		snapshot.run = snapshotRun(run)
-	}
-	return snapshot
+	return Decide(req.want(), n), existing
 }
 
-func snapshotRun(run *instance.Instance) *runSnapshot {
+func runView(run *instance.Instance) *RunView {
 	cfg := run.SnapshotConfig()
-	return &runSnapshot{run, run.Provider, string(EndpointOrDefault(Endpoint(run.Endpoint))), cfg.Runtime, cfg.DisposablePlanID, run.GetStatus(), run.StopUnconfirmed.Load()}
+	return &RunView{ID: run.ID, Provider: run.Provider, Runtime: cfg.Runtime, Plan: cfg.DisposablePlanID, Status: run.GetStatus(), Unconfirmed: run.StopUnconfirmed.Load()}
 }
 
 type preparedStart struct {
 	req       EnsureRequest
 	selection launchSelection
 	lifecycle RunLifecycle
-	local     bool
-	decision  startDecision
+	absent    bool // catalog evidence, gathered once the start is cold
+	decision  Decision
+	existing  *instance.Instance // the run decision.Run or decision.Replace names
+}
+
+// answer is the result of a decision that starts nothing: the reused run or the refusal.
+func (p preparedStart) answer() (EnsureResult, error) {
+	if p.decision.Act == ActReuse {
+		return EnsureResult{Run: p.existing}, nil
+	}
+	if p.decision.Err == nil {
+		return EnsureResult{}, errUndecided
+	}
+	return EnsureResult{}, p.decision.Err
 }
 
 func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest) (preparedStart, error) {
@@ -63,24 +80,24 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 	if !cfg.IsEndpointAware() {
 		req.Endpoint = EndpointChat
 	}
-	lifecycle := Lifecycle(cfg)
-	// A launch checks its catalog only when cold; other lifecycles gather evidence in the start snapshot.
-	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: lifecycle, local: lifecycle == LifecycleProcess}, ctx.Err()
+	// A launch checks its catalog only when cold; other lifecycles gather evidence in decide.
+	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: Lifecycle(cfg)}, ctx.Err()
 }
 
 func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared preparedStart) (context.Context, preparedStart, error) {
 	req := prepared.req
-	if m.localCatalog != nil && !req.installSmoke && prepared.lifecycle == LifecycleProcess {
+	// Decide ignores the catalog for a smoke, so a smoke does not read it.
+	if m.localCatalog != nil && req.Origin != OriginInstall && prepared.lifecycle == LifecycleProcess {
 		local, err := m.localCatalog(ctx, m.CanonicalModelName(prepared.selection.config.WeightsOf(req.Model)))
 		if err != nil {
 			slog.Warn("Model catalog evidence unavailable; continuing", "model", req.Model, "error", err)
 		} else {
-			prepared.local = local
+			prepared.absent = !local
 		}
 	}
-	prepared.decision = decideStart(req, m.startSnapshot(ctx, prepared))
-	if prepared.decision.err != nil || prepared.decision.reuse != nil || prepared.decision.ready || prepared.decision.load {
-		return ctx, prepared, prepared.decision.err
+	prepared.decision, prepared.existing = m.decide(ctx, prepared)
+	if prepared.decision.Act != ActStart {
+		return ctx, prepared, prepared.decision.Err
 	}
 	selection, err := m.resolveLaunch(&req)
 	if err != nil {
@@ -99,7 +116,7 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 	if err != nil {
 		return EnsureResult{}, err
 	}
-	if prepared.req.installSmoke {
+	if prepared.req.Origin == OriginInstall {
 		return m.runSmokeStart(ctx, prepared)
 	}
 	if prepared.lifecycle != LifecycleProcess {
@@ -107,19 +124,18 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 		if err != nil {
 			return EnsureResult{}, err
 		}
-		return m.executeStart(ctx, prepared, prepared.decision)
+		return m.executeStart(ctx, prepared)
 	}
-	decision := decideStart(prepared.req, m.startSnapshot(ctx, prepared))
-	if decision.err != nil || decision.reuse != nil {
-		return EnsureResult{Run: decision.reuse}, decision.err
+	if prepared.decision, prepared.existing = m.decide(ctx, prepared); prepared.decision.Act != ActStart {
+		return prepared.answer()
 	}
 	if req.Detached {
 		ctx, prepared, err = m.prepareColdStart(ctx, prepared)
 		if err != nil {
 			return EnsureResult{}, err
 		}
-		if prepared.decision.reuse != nil {
-			return EnsureResult{Run: prepared.decision.reuse}, nil
+		if prepared.decision.Act != ActStart {
+			return prepared.answer()
 		}
 	}
 	performed := false
@@ -198,20 +214,19 @@ func (m *ProviderAppManager) joinStart(req EnsureRequest, flight singleflight.Re
 		if result.Run == nil {
 			return EnsureResult{}, ErrInstanceNotFound
 		}
-		run := snapshotRun(result.Run)
-		if run.status.IsTerminal() {
+		run := runView(result.Run)
+		if run.Status.IsTerminal() {
 			if cause := result.Run.FailureCause(); cause != nil {
 				return EnsureResult{}, cause
 			}
-			return EnsureResult{}, fmt.Errorf("run %s is %s: %s", result.Run.ID, run.status, result.Run.GetErrorMessage())
+			return EnsureResult{}, fmt.Errorf("run %s is %s: %s", result.Run.ID, run.Status, result.Run.GetErrorMessage())
 		}
 		if req.Force && !result.Started {
 			return EnsureResult{}, ErrInstancesRunning
 		}
 		req.Force = false // A successful shared start already performed the replacement.
-		decision := decideStart(req, startSnapshot{local: true, run: run})
-		if decision.err != nil {
-			return EnsureResult{}, decision.err
+		if decision := Decide(req.want(), Node{Lifecycle: LifecycleProcess, Existing: run}); decision.Act != ActReuse {
+			return EnsureResult{}, decision.Err
 		}
 	}
 	result.Started = result.Started && performed
@@ -229,37 +244,35 @@ func (m *ProviderAppManager) decideAndExecuteStart(ctx context.Context, prepared
 			return EnsureResult{}, err
 		}
 	}
-	if prepared.decision.reuse != nil {
-		return EnsureResult{Run: prepared.decision.reuse}, nil
+	if prepared.decision.Act == ActReuse {
+		return prepared.answer()
 	}
-	if !prepared.req.installSmoke {
+	if prepared.req.Origin != OriginInstall {
 		unlock, err := m.installs.acquireProvider(ctx, prepared.req.selectedRuntime)
 		if err != nil {
 			return EnsureResult{}, err
 		}
 		defer unlock()
 	}
-	return m.executeStart(ctx, prepared, decideStart(prepared.req, m.startSnapshot(ctx, prepared)))
+	prepared.decision, prepared.existing = m.decide(ctx, prepared)
+	return m.executeStart(ctx, prepared)
 }
 
-func (m *ProviderAppManager) executeStart(ctx context.Context, prepared preparedStart, decision startDecision) (result EnsureResult, err error) {
+func (m *ProviderAppManager) executeStart(ctx context.Context, prepared preparedStart) (result EnsureResult, err error) {
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
-	if decision.err != nil {
-		return result, decision.err
-	}
-	if decision.reuse != nil {
-		return EnsureResult{Run: decision.reuse}, nil
-	}
-	if decision.ready {
+	switch prepared.decision.Act {
+	case ActStart:
+	case ActReady:
 		return EnsureResult{Served: true}, nil
-	}
-	if decision.load {
+	case ActLoad:
 		return m.loadServed(ctx, prepared.req)
+	default:
+		return prepared.answer()
 	}
 	req := prepared.req
-	if m.observeStart != nil && !req.installSmoke {
+	if m.observeStart != nil && req.Origin != OriginInstall {
 		var finish func(EnsureResult, error)
 		ctx, finish = m.observeStart(ctx, req)
 		defer func() { finish(result, err) }()
@@ -270,8 +283,8 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 			return result, err
 		}
 	}
-	if decision.stop != nil {
-		if err = m.StopInstance(ctx, decision.stop.ID); err != nil && !errors.Is(err, ErrInstanceNotFound) {
+	if replace := prepared.decision.Replace; replace != "" {
+		if err = m.StopInstance(ctx, replace); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			return result, err
 		}
 	}
