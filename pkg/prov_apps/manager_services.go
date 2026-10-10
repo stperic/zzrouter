@@ -745,25 +745,17 @@ func daemonModels(listed []protocol.RunningModelInfo) map[string]protocol.Runnin
 	return loaded
 }
 
-// readyServed lists provider's ready runs other than except.
-func (m *ProviderAppManager) readyServed(provider string, except *instance.Instance) []*instance.Instance {
-	var ready []*instance.Instance
-	for _, run := range m.instances.ListByProvider(provider) {
-		if run != except && run.GetStatus() == instance.StatusRunning {
-			ready = append(ready, run)
+// retireDisplaced retires the other runs ready when run's load landed that its daemon no longer holds: the
+// daemon unloaded them to fit run's model, as an eviction does for a process run.
+func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.Instance) []instance.EvictedRun {
+	var ready []*instance.Instance // read before the listing, as the reconcile does: a later one may not be in it
+	for _, other := range m.instances.ListByProvider(run.Provider) {
+		if other != run && other.GetStatus() == instance.StatusRunning {
+			ready = append(ready, other)
 		}
 	}
-	return ready
-}
-
-// retireDisplaced retires the runs ready before run's load that its daemon no longer holds after it: the
-// daemon unloaded them to fit run's model, as an eviction does for a process run.
-func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.Instance, before []*instance.Instance) []instance.EvictedRun {
-	if len(before) == 0 {
-		return nil
-	}
 	loader, target, ok := m.servedTarget(run.Provider)
-	if !ok {
+	if len(ready) == 0 || !ok {
 		return nil
 	}
 	listed, err := loader.ListRunningModels(ctx, target)
@@ -772,7 +764,7 @@ func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.
 	}
 	loaded := daemonModels(listed)
 	var evicted []instance.EvictedRun
-	for _, gone := range before {
+	for _, gone := range ready {
 		if _, held := loaded[strings.ToLower(gone.Model)]; held || gone.GetStatus() != instance.StatusRunning {
 			continue
 		}

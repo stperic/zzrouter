@@ -1245,6 +1245,22 @@ func TestEnsureRunContractServed(t *testing.T) {
 		assert.Zero(t, r.daemon.count(true), "the daemon unloaded it; zzRouter sends nothing")
 	})
 
+	t.Run("S42 a run that became ready during the load is displaced too", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
+		r.daemon.holdLoads()
+		pending := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: "b"})})[0]
+		require.NoError(t, pending.err)
+		r.daemon.waitEntered(t)
+		var parked chan struct{}
+		r.daemon.set(func(d *fakeDaemon) { parked, d.hold = d.hold, nil })
+		first := r.running(t, served)
+		close(parked)
+		awaitRunning(t, pending.result.Run)
+		assert.Equal(t, first.ID, pending.result.Run.EvictedRuns()[0].RunID)
+		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
+	})
+
 	t.Run("S8 a provider service restart retires its runs", func(t *testing.T) {
 		r := newServedRig(t)
 		r.serviceControlled()
