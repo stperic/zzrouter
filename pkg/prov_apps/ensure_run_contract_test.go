@@ -1283,6 +1283,23 @@ func TestEnsureRunContractServed(t *testing.T) {
 		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
 	})
 
+	t.Run("S43 a model dropped while another loads is the load's to report", func(t *testing.T) {
+		r := newServedRig(t)
+		first := r.running(t, served)
+		r.daemon.holdLoads()
+		pending := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: "b"})})[0]
+		require.NoError(t, pending.err)
+		r.daemon.waitEntered(t)
+		r.daemon.drop(servedLoaded)
+		r.tick(t)
+		assert.Equal(t, instance.StatusRunning, first.GetStatus(), "the daemon may be making room for the load")
+		r.daemon.release()
+		awaitRunning(t, pending.result.Run)
+		require.Len(t, pending.result.Run.EvictedRuns(), 1)
+		assert.Equal(t, first.ID, pending.result.Run.EvictedRuns()[0].RunID)
+		assert.Contains(t, runLog(t, first), "displaced by run "+pending.result.Run.ID)
+	})
+
 	t.Run("S8 a provider service restart retires its runs", func(t *testing.T) {
 		r := newServedRig(t)
 		r.serviceControlled()

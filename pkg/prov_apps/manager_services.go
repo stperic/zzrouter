@@ -698,15 +698,24 @@ func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider strin
 	if !ok {
 		return
 	}
-	// Only a run ready before the listing, or one whose stop failed, is judged by it.
+	// Only a run ready before the listing, or one whose stop failed, is judged by it; while a load is in
+	// flight the daemon may be making room for it, and the load reports what it displaced when it lands.
 	var ready, failed []*instance.Instance
+	loading := false
 	for _, run := range m.instances.ListByProvider(provider) {
-		switch {
-		case run.GetStatus() == instance.StatusStopping && run.StopUnconfirmed.Load():
-			failed = append(failed, run)
-		case run.GetStatus() == instance.StatusRunning:
+		switch run.GetStatus() {
+		case instance.StatusStopping:
+			if run.StopUnconfirmed.Load() {
+				failed = append(failed, run)
+			}
+		case instance.StatusRunning:
 			ready = append(ready, run)
+		case instance.StatusStarting:
+			loading = true
 		}
+	}
+	if loading {
+		ready = nil
 	}
 	listed, err := loader.ListRunningModels(ctx, target)
 	if err != nil {
