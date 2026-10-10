@@ -723,8 +723,15 @@ paths:
     post:
       tags: [Runs]
       operationId: createRun
-      summary: Start asynchronous run launch
+      summary: Make a model ready or start an asynchronous run
       description: |
+        Cataloged external OpenAI and cloud models return 200 ready without
+        a run or job. A model absent from this provider's node catalog returns
+        404; download or register it, using POST /zzrouter/v1/deployments for
+        a cloud model. Ollama endpoints load through their model API and
+        return 200 without a run; an unavailable endpoint returns 503.
+        auto_deploy never downloads for external OpenAI or cloud providers.
+
         Before starting the provider process, a schema-declared fraction_total GPU
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
@@ -762,6 +769,11 @@ paths:
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        '200':
+          description: Model ready without a run or job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
         '202':
           description: Launch accepted; watch job_id for readiness.
           headers:
@@ -794,16 +806,14 @@ paths:
                           node:     { type: string }
         '400':
           description: >
-            The request names something this node cannot launch: a model
-            whose weights are not in the local model store, a parameter
-            the provider's schema rejects, or a port outside the
-            configured range. Retrying the same body cannot succeed.
+            Invalid request fields, a parameter the provider's schema rejects,
+            or a port outside the configured range. Retrying the same body cannot succeed.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
-          description: No provider by that name is configured on this node.
+          description: Provider not configured, or model absent from this provider's node catalog; download or register it. Use POST /zzrouter/v1/deployments for a cloud model.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -828,7 +838,7 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
           description: >
-            The node cannot take the launch right now: no port is free
+            The node cannot take the launch right now: the provider endpoint is unavailable, no port is free
             in the provider's configured range, the instance cap is
             reached, or the node is shutting down. Unlike 400, the same
             request may succeed later.
@@ -1093,7 +1103,10 @@ paths:
         its `job_id` while it starts. Otherwise the model is launched,
         downloaded first when not in the catalog, and the answer is 202
         with `job_id` (and `deploy_job_id` when a download is needed).
-        Concurrent ensures of one model start one run.
+        Concurrent ensures of one process model start one run. Cataloged external
+        OpenAI and cloud models return 200 ready without a run or job and are
+        never auto-deployed. Ollama endpoints load through their model API and
+        return 200 without a run; an unavailable endpoint returns 503.
       requestBody:
         required: true
         content:
@@ -1103,7 +1116,7 @@ paths:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
-          description: Model already running.
+          description: Model ready; external and cloud models may have no run or job.
           content:
             application/json:
               schema:
@@ -1122,6 +1135,16 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/EnsureRunResponse' }
+        '400':
+          description: Invalid request fields or provider parameters.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Provider endpoint unavailable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '409':
           description: A configured variant name also identifies real weights; disambiguate the name before warming or launching it.
@@ -1129,7 +1152,7 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '404':
-          description: Model not in catalog.
+          description: Model absent from this provider's node catalog; download or register it. Use POST /zzrouter/v1/deployments for a cloud model.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1194,8 +1217,11 @@ paths:
       description: |
         Ensures a model is running on the target node. Three paths:
 
-        - **Endpoint providers** (cloud / external service) , returns 200
-          immediately after forwarding to the provider's load API.
+        - **Ready without a run**: cataloged external OpenAI and cloud models
+          return 200 without a run or job. Ollama endpoints load through their
+          model API and return 200 without a run. An unavailable endpoint is 503.
+          Models absent from this provider's catalog return 404; download or
+          register them, using POST /zzrouter/v1/deployments for a cloud model.
         - **Already running / already starting** , returns 409 with the
           live instance's `job_id` (empty if the launch predates jobs
           wiring). Retries are idempotent.
@@ -1214,7 +1240,7 @@ paths:
             schema: { $ref: '#/components/schemas/LoadModelRequest' }
       responses:
         '200':
-          description: Model ready (endpoint provider path).
+          description: Model ready; external and cloud models may have no run or job.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SuccessEnvelope' }
@@ -1228,6 +1254,21 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Run' }
+        '400':
+          description: Invalid request fields or provider parameters.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Provider endpoint unavailable.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: Provider not configured, or model absent from this provider's node catalog; download or register it. Use POST /zzrouter/v1/deployments for a cloud model.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '409':
           description: Model already running/starting (dedupe hit).

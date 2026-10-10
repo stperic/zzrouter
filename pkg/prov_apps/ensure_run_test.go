@@ -12,61 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/sync/singleflight"
 )
-
-func TestDecideStart(t *testing.T) {
-	run := instance.NewInstance("held", "fake", "model", 8200, 0, 0)
-	for _, tc := range []struct {
-		name                                     string
-		status                                   instance.Status
-		provider, runtime, plan                  string
-		force, absent, smoke, empty, unconfirmed bool
-		reuse, stop                              bool
-		err                                      error
-	}{
-		{name: "running reuse", status: instance.StatusRunning, provider: "fake", reuse: true},
-		{name: "stopping refuses until drain finishes", status: instance.StatusStopping, provider: "fake", err: instance.ErrStopping},
-		{name: "force also refuses stopping", status: instance.StatusStopping, provider: "fake", force: true, err: instance.ErrStopping},
-		{name: "unhealthy reuse", status: instance.StatusUnhealthy, provider: "fake", reuse: true},
-		{name: "restarting reuse", status: instance.StatusRestarting, provider: "fake", reuse: true},
-		{name: "running reuse without catalog", status: instance.StatusRunning, provider: "fake", absent: true, reuse: true},
-		{name: "smoke unconfirmed drain refuses", status: instance.StatusFailed, provider: "fake", smoke: true, unconfirmed: true, err: ErrInstancesRunning},
-		{name: "starting reuse", status: instance.StatusStarting, provider: "fake", reuse: true},
-		{name: "provider mismatch", status: instance.StatusRunning, provider: "other", err: ErrRunHeldByOtherProvider},
-		{name: "force same provider", status: instance.StatusRunning, provider: "fake", force: true, stop: true},
-		{name: "force other provider stops it", status: instance.StatusRunning, provider: "other", force: true, stop: true},
-		{name: "runtime mismatch", status: instance.StatusRunning, provider: "fake", runtime: "other", err: ErrInstancesRunning},
-		{name: "plan mismatch", status: instance.StatusRunning, provider: "fake", plan: "other", err: ErrInstancesRunning},
-		{name: "nothing running", empty: true},
-		{name: "missing catalog", empty: true, absent: true, err: ErrModelNotLocal},
-		{name: "force missing catalog preserves run", provider: "fake", force: true, absent: true, err: ErrModelNotLocal},
-		{name: "smoke with exempt catalog input", empty: true, smoke: true},
-		{name: "terminal cleanup", status: instance.StatusFailed, provider: "fake", stop: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			snapshot := startSnapshot{local: !tc.absent}
-			if !tc.empty {
-				snapshot.run = &runSnapshot{run, tc.provider, "chat", tc.runtime, tc.plan, tc.status, tc.unconfirmed}
-			}
-			result := decideStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat, Force: tc.force, installSmoke: tc.smoke}, snapshot)
-			require.ErrorIs(t, result.err, tc.err)
-			if errors.Is(result.err, instance.ErrStopping) {
-				var admission *instance.AdmissionError
-				require.ErrorAs(t, result.err, &admission)
-				assert.Equal(t, instance.AdmissionRetryAfter, admission.RetryAfter)
-			}
-			assert.Equal(t, tc.reuse, result.reuse != nil)
-			assert.Equal(t, tc.stop, result.stop != nil)
-			if tc.reuse {
-				assert.Same(t, run, result.reuse)
-			}
-			if tc.stop {
-				assert.Same(t, run, result.stop)
-			}
-		})
-	}
-}
 
 func TestEnsureRunForceStopsAnotherProvidersRun(t *testing.T) {
 	m, err := NewProviderAppManager(aliasTestConfig(t), WithLocalCatalog(func(context.Context, string) (bool, error) { return true, nil }))
@@ -93,39 +39,9 @@ func TestEnsureRunInstallSmokeBypassesLocalCatalog(t *testing.T) {
 	m.localCatalog = func(context.Context, string) (bool, error) { checked++; return false, nil }
 	_, err := m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake"})
 	require.ErrorIs(t, err, ErrModelNotLocal)
-	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake", Runtime: "fake", installSmoke: true})
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "not-cataloged", Provider: "fake", Runtime: "fake", Origin: OriginInstall})
 	require.ErrorIs(t, err, errTestStart, "smoke must pass the catalog rule and reach command preparation")
 	assert.Equal(t, 1, checked)
-}
-
-func TestJoinStartUsesActualRunAndErrorPrecedence(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("held", "fake", "model", 8200, 0, 0)
-	run.MarkRunning()
-	require.NoError(t, m.instances.Register(run))
-	for _, tc := range []struct {
-		name   string
-		req    EnsureRequest
-		flight singleflight.Result
-		err    error
-	}{
-		{"matching reuse", EnsureRequest{Provider: "fake"}, singleflight.Result{Val: EnsureResult{Run: run}}, nil},
-		{"provider mismatch", EnsureRequest{Provider: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrRunHeldByOtherProvider},
-		{"failed flight precedes provider mismatch", EnsureRequest{Provider: "other"}, singleflight.Result{Err: errTestStart}, errTestStart},
-		{"runtime mismatch", EnsureRequest{Provider: "fake", Runtime: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"plan mismatch", EnsureRequest{Provider: "fake", DisposablePlanID: "other"}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"force cannot join reuse", EnsureRequest{Provider: "fake", Force: true}, singleflight.Result{Val: EnsureResult{Run: run}}, ErrInstancesRunning},
-		{"force joins fresh start", EnsureRequest{Provider: "fake", Force: true}, singleflight.Result{Val: EnsureResult{Run: run, Started: true}}, nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.req.Model, tc.req.Endpoint = "model", EndpointChat
-			_, err := m.joinStart(tc.req, tc.flight, false)
-			require.ErrorIs(t, err, tc.err)
-		})
-	}
-	run.Config.Runtime = "changed"
-	_, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: EnsureResult{Run: run}}, false)
-	require.ErrorIs(t, err, ErrInstancesRunning, "join policy must read the current snapshot")
 }
 
 func TestEnsureRunCancelledJoinerDoesNotCancelStart(t *testing.T) {
@@ -207,7 +123,10 @@ func TestEnsureRunStartedOnlyForFlightLeader(t *testing.T) {
 func TestEnsureRunWarmReuseSkipsCatalogAndHeldInstallGate(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m := onDemandTestManager(t, nil)
-		m.localCatalog = func(context.Context, string) (bool, error) { t.Error("warm reuse queried catalog"); return false, nil }
+		m.localCatalog = func(context.Context, string) (bool, error) {
+			t.Error("warm reuse queried catalog")
+			return false, nil
+		}
 		run := instance.NewInstance("warm", "fake", "missing-from-catalog", 8200, 0, 0)
 		run.MarkRunning()
 		require.NoError(t, m.instances.Register(run))
@@ -293,7 +212,7 @@ func TestEnsureRunDetachedAcceptsBeforePreparationAndStopDrains(t *testing.T) {
 	})
 }
 
-func TestStartSnapshotSelectsIndexedLiveEndpoint(t *testing.T) {
+func TestDecideSelectsIndexedLiveEndpoint(t *testing.T) {
 	m := onDemandTestManager(t, nil)
 	old := instance.NewInstance("leftover", "other", "model", 8210, 0, 0)
 	old.Endpoint = "embeddings"
@@ -304,11 +223,10 @@ func TestStartSnapshotSelectsIndexedLiveEndpoint(t *testing.T) {
 	live.MarkRunning()
 	require.NoError(t, m.instances.Register(live))
 	req := EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}
-	snapshot := m.startSnapshot(req, false)
-	require.NotNil(t, snapshot.run)
-	decision := decideStart(req, snapshot)
-	assert.Same(t, live, decision.reuse)
-	assert.Nil(t, decision.stop)
+	decision, existing := m.decide(t.Context(), preparedStart{req: req})
+	assert.Equal(t, ActReuse, decision.Act)
+	assert.Same(t, live, existing)
+	assert.Empty(t, decision.Replace)
 }
 
 func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
@@ -327,32 +245,10 @@ func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
 	result, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Model: "warm"})
 	require.NoError(t, err)
 	assert.Same(t, warm, result.Run)
-	_, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", installSmoke: true})
+	_, err = m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", Origin: OriginInstall})
 	require.ErrorIs(t, err, errTestStart)
 	assert.Equal(t, 1, started)
 	assert.Equal(t, 1, finished)
-}
-
-func TestJoinStartRetainsIdentityAfterNativeRunRemoval(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("removed", "fake", "model", 8200, 0, 0)
-	run.MarkRunning()
-	require.NoError(t, m.instances.Register(run))
-	require.NoError(t, m.instances.Remove(run.ID))
-	flight := singleflight.Result{Val: EnsureResult{Run: run, Started: true}}
-	for _, tc := range []struct {
-		req EnsureRequest
-		err error
-	}{
-		{EnsureRequest{Provider: "fake"}, nil},
-		{EnsureRequest{Provider: "other"}, ErrRunHeldByOtherProvider},
-		{EnsureRequest{Provider: "fake", Runtime: "other"}, ErrInstancesRunning},
-		{EnsureRequest{Provider: "fake", DisposablePlanID: "other"}, ErrInstancesRunning},
-	} {
-		tc.req.Model, tc.req.Endpoint = "model", EndpointChat
-		_, err := m.joinStart(tc.req, flight, false)
-		assert.ErrorIs(t, err, tc.err)
-	}
 }
 
 func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
@@ -370,7 +266,7 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			_, err := m.EnsureRun(ctx, EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", installSmoke: true})
+			_, err := m.EnsureRun(ctx, EnsureRequest{Provider: "fake", Runtime: "fake", Model: "smoke", Origin: OriginInstall})
 			done <- err
 		}()
 		<-timedOut
@@ -382,50 +278,6 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		}
 		close(release)
 		require.ErrorIs(t, <-done, context.DeadlineExceeded)
-		assert.Empty(t, m.instances.ListAll(), "timed-out smoke must leave no late run or process")
+		assert.Empty(t, m.instances.List(), "timed-out smoke must leave no late run or process")
 	})
-}
-
-func TestJoinStartFailedLeaderReturnsItsCause(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	run := instance.NewInstance("failed-leader", "fake", "model", 8200, 0, 0)
-	run.MarkFailedError(errTestStart)
-	flight := singleflight.Result{Val: EnsureResult{Run: run, Started: true}}
-	result, err := m.joinStart(EnsureRequest{Provider: "other", Model: "model", Endpoint: EndpointChat}, flight, false)
-	require.ErrorIs(t, err, errTestStart, "the leader's failure precedes a joiner's provider mismatch")
-	assert.Nil(t, result.Run)
-	assert.False(t, result.Started)
-}
-
-func TestJoinStartRefusesMissingOrTerminalOutcome(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	for _, state := range []string{"nil", "served", "stopped", "failed without typed cause"} {
-		t.Run(state, func(t *testing.T) {
-			outcome := EnsureResult{Started: true, Served: state == "served"}
-			if state == "stopped" || state == "failed without typed cause" {
-				outcome.Run = instance.NewInstance("terminal", "fake", "model", 8200, 0, 0)
-				if state == "stopped" {
-					outcome.Run.SetStatus(instance.StatusStopped)
-				} else {
-					outcome.Run.MarkFailed("launch failed")
-				}
-			}
-			result, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: outcome}, false)
-			require.Error(t, err)
-			assert.Nil(t, result.Run)
-			assert.False(t, result.Served)
-		})
-	}
-}
-
-func TestJoinStartUsesOutcomeDespiteDifferentIndexedRun(t *testing.T) {
-	m := onDemandTestManager(t, nil)
-	returned := instance.NewInstance("returned", "fake", "model", 8200, 0, 0)
-	returned.MarkRunning()
-	indexed := instance.NewInstance("indexed", "other", "model", 8210, 0, 0)
-	indexed.MarkRunning()
-	require.NoError(t, m.instances.Register(indexed))
-	result, err := m.joinStart(EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}, singleflight.Result{Val: EnsureResult{Run: returned, Started: true}}, false)
-	require.NoError(t, err)
-	assert.Same(t, returned, result.Run)
 }

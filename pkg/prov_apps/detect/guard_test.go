@@ -20,8 +20,6 @@ var allowedDetectExports = map[string]bool{
 	"ProviderCLI":           true,
 	"ProbeOllama":           true,
 	"OllamaVersionEndpoint": true,
-	// Narrow port check kept from the old runtime.go.
-	"CheckPortListening": true,
 }
 
 // TestDetectPackageExportedSurface asserts the exact set of exported

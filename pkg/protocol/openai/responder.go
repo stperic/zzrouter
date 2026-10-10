@@ -22,7 +22,6 @@ import (
 // supported; future fields may carry invariants that only New can
 // enforce.
 type Responder struct {
-	opaque bool
 	logger InternalLogger
 }
 
@@ -43,19 +42,6 @@ type InternalLogger func(reqID, detail string)
 // Option configures a Responder at construction time. Options are
 // evaluated in order; later options override earlier ones.
 type Option func(*Responder)
-
-// WithOpaqueErrors collapses every error response to its HTTP status
-// code with an empty body. Response headers (X-Request-Id, Retry-After)
-// are still set when applicable. This matches LocalAI's OPAQUE_ERRORS
-// hardening mode and is intended for deployments where even sanitized
-// error messages are considered leakage.
-//
-// OPAQUE mode is incompatible with SDK error classification — openai-python
-// cannot construct a typed exception without reading error.type. Enable
-// it only for production ingresses that front trusted clients.
-func WithOpaqueErrors(opaque bool) Option {
-	return func(r *Responder) { r.opaque = opaque }
-}
 
 // WithInternalLogger attaches a logger that receives the raw detail
 // strings passed to Internal and BadGateway. See the InternalLogger
@@ -86,11 +72,8 @@ func (*Responder) Name() string { return "openai" }
 
 // writeEnvelope performs the common work of every error method:
 //
-//   - Propagates the request id to the X-Request-Id response header
-//     (always, even in opaque mode — the header does not leak the
-//     error body).
-//   - In opaque mode, writes the status code with no body.
-//   - Otherwise, builds a validated Envelope from typed dialect
+//   - Propagates the request id to the X-Request-Id response header.
+//   - Builds a validated Envelope from typed dialect
 //     constants, runs the message through sanitize, and writes it as
 //     JSON.
 //
@@ -109,15 +92,6 @@ func (r *Responder) writeEnvelope(c *gin.Context, status int, errType ErrorType,
 
 	if reqID := requestIDFrom(c); reqID != "" {
 		c.Header("X-Request-Id", reqID)
-	}
-
-	if r.opaque {
-		// AbortWithStatus forces gin to flush the status code
-		// immediately and halts the handler chain so no downstream
-		// middleware writes to the response. A bare c.Status(status)
-		// would be buffered until a first write that never happens.
-		c.AbortWithStatus(status)
-		return
 	}
 
 	env := NewEnvelope(errType, code, sanitize(message), param)

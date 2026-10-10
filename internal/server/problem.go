@@ -237,11 +237,6 @@ func OpenAIInvalidRequest(c *gin.Context, message string, param *string) {
 	c.JSON(http.StatusBadRequest, utils.NewOpenAIInvalidRequest(message, param))
 }
 
-// OpenAINodeError responds with a server error
-func OpenAINodeError(c *gin.Context, message string) {
-	c.JSON(http.StatusInternalServerError, utils.NewOpenAINodeError(message))
-}
-
 // Ollama-compatible error helpers. The Ollama protocol uses
 // {"error": "<message>"} on the wire.
 

@@ -252,28 +252,6 @@ func normalizeVRAMUnitsWithFormat(s string, isBytes bool) int64 {
 	return v
 }
 
-// normalizeVRAMUnits applies magnitude-based unit inference to
-// a raw rocm-smi numeric token where only a total is in scope.
-// A value ≥ 1 GiB (2^30) must be a byte count — ROCm 6.x — and
-// gets divided by 1 MiB. Anything smaller is already MiB from
-// ROCm 5.x and is returned verbatim. Returns 0 on parse failure.
-//
-// Safe for total-memory parsing because real GPUs have ≥ 1 GiB
-// of VRAM. Unsafe for "used" memory, which can be any size;
-// parseRocmSMIMemory uses string-based format detection instead.
-func normalizeVRAMUnits(s string) int64 {
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v <= 0 {
-		return 0
-	}
-	const oneGiB int64 = 1 << 30
-	const bytesPerMiB int64 = 1 << 20
-	if v >= oneGiB {
-		return v / bytesPerMiB
-	}
-	return v
-}
-
 // parseRocmSMIUtilization extracts the GPU utilization
 // percentage from --showuse output, averaged across every card
 // that reported a parseable value. rocm-smi emits one line per

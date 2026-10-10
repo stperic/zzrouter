@@ -219,11 +219,4 @@ func NewOpenAIInvalidRequest(message string, param *string) *OpenAIError {
 	return NewOpenAIError("invalid_request_error", message, param, nil)
 }
 
-// NewOpenAINodeError creates a server-side error. `code` is left nil because
-// the spec reserves it for specific machine-readable sub-codes. See the
-// comment on NewOpenAIInvalidRequest for the rationale.
-func NewOpenAINodeError(message string) *OpenAIError {
-	return NewOpenAIError("server_error", message, nil, nil)
-}
-
 // NOTE: Gin-specific response helpers have been moved to internal/server/problem.go

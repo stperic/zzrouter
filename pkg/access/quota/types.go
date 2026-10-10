@@ -117,16 +117,7 @@ const (
 // the agent gets only the budget_exhausted denial, no advance notice).
 //
 // Unexported so the array can't be mutated from outside the package.
-// Use BudgetThresholdPercents() to read it.
 var budgetThresholdPercents = [...]uint8{50, 80, 95}
-
-// BudgetThresholdPercents returns a copy of the threshold percentages
-// that may fire as informational breach events.
-func BudgetThresholdPercents() []uint8 {
-	out := make([]uint8, len(budgetThresholdPercents))
-	copy(out, budgetThresholdPercents[:])
-	return out
-}
 
 // ParsePeriod converts a string to BudgetPeriod, defaulting to monthly.
 func ParsePeriod(s string) BudgetPeriod {

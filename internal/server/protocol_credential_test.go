@@ -10,7 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
+	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 )
 
 // A call zzRouter makes to a provider on its own resolves the provider's
@@ -35,9 +36,10 @@ func TestProviderCallsSendTheConfiguredCredential(t *testing.T) {
 		Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: daemon.URL, API: nas.Runtime.API},
 		Capabilities: nas.Capabilities,
 	}))
-	ollama := protocol.NewOllamaProvider(nil)
-	e := NewParamsExecutor(func() *pkgConfig.AppsConfig { return cfg }, nil, nil, nil, nil, nil,
-		func(string) (protocol.FullProvider, bool) { return ollama, true }, nil, nil, nil)
+	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithBackendResolver(backend.NewResolver(func() *pkgConfig.AppsConfig { return cfg }).Resolve))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, mgr.Stop(context.Background())) })
+	e := NewParamsExecutor(func() *pkgConfig.AppsConfig { return cfg }, nil, nil, nil, nil, nil, mgr.Loader, nil, nil, nil)
 
 	e.listRunningModelNames(context.Background(), "ollama-nas")
 	assert.Equal(t, "Bearer first-token", auth)

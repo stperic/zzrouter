@@ -67,9 +67,6 @@ type EnvironmentController interface {
 	ApplyEnvContext(context.Context, string, map[string]string) *ApplyResult
 }
 
-// Detect auto-detects an existing service manager, returning nil when absent.
-func Detect(serviceName string) Manager { return DetectContext(context.Background(), serviceName) }
-
 // DetectContext detects existing ownership without creating host services.
 func DetectContext(ctx context.Context, serviceName string) Manager {
 	for _, m := range platformManagers() {

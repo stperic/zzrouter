@@ -18,7 +18,6 @@ func (s stubHeaders) GetHeader(name string) string { return s[name] }
 func TestParse_EmptyGivesZeroHints(t *testing.T) {
 	got, err := Parse(stubHeaders{})
 	require.Nil(t, err)
-	assert.False(t, got.HasAny())
 	assert.Empty(t, got.Applied())
 }
 
@@ -103,6 +102,5 @@ func TestParse_AllThreeTogether(t *testing.T) {
 
 func TestHints_ZeroValueIsNoop(t *testing.T) {
 	var h Hints
-	assert.False(t, h.HasAny())
 	assert.Empty(t, h.Applied())
 }

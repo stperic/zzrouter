@@ -98,7 +98,6 @@ func apipathSamples() map[string]string {
 		"ModelCard":           apipath.ModelCard("hf", "org/model"),
 
 		"ClusterEndpoint": apipath.ClusterEndpoint("10.0.0.1:9090"),
-		"RunProbes":       apipath.RunProbes(id),
 
 		"Provider":                   apipath.Provider(name),
 		"ProviderVersionsFor":        apipath.ProviderVersionsFor(name),
@@ -116,15 +115,9 @@ func apipathSamples() map[string]string {
 		"ProviderInstallVerifyStep":  apipath.ProviderInstallVerifyStep(name),
 		"ProviderInstallExecuteStep": apipath.ProviderInstallExecuteStep(name),
 
-		"ProviderParameters":           apipath.ProviderParameters(name),
-		"ProviderParameter":            apipath.ProviderParameter(name, key),
-		"ProviderParameterIgnore":      apipath.ProviderParameterIgnore(name, key),
-		"ProviderNodesParameters":      apipath.ProviderNodesParameters(name),
-		"ProviderNodeParameter":        apipath.ProviderNodeParameter(name, key),
-		"ProviderNodeParameterIgnore":  apipath.ProviderNodeParameterIgnore(name, key),
-		"ProviderModelsParameters":     apipath.ProviderModelsParameters(name),
-		"ProviderModelParameter":       apipath.ProviderModelParameter(name, key),
-		"ProviderModelParameterIgnore": apipath.ProviderModelParameterIgnore(name, key),
+		"ProviderParameters":       apipath.ProviderParameters(name),
+		"ProviderNodesParameters":  apipath.ProviderNodesParameters(name),
+		"ProviderModelsParameters": apipath.ProviderModelsParameters(name),
 	}
 }
 

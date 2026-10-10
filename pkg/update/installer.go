@@ -440,7 +440,7 @@ func (i *Installer) extractToFile(destPath string, reader io.Reader, mode os.Fil
 	return nil
 }
 
-// backupStampLayout is the suffix createBackup appends to a binary name;
+// backupStampLayout is the suffix createBackupAt appends to a binary name;
 // listBackups matches on it so one binary's backups cannot be claimed by
 // another whose name is a prefix of it.
 //
@@ -465,12 +465,6 @@ func isBackupStamp(s string) bool {
 		}
 	}
 	return false
-}
-
-// createBackup creates a backup of the current binary under a fresh
-// timestamp.
-func (i *Installer) createBackup(currentExe string) (string, error) {
-	return i.createBackupAt(currentExe, utils.Now().Format(backupStampLayout))
 }
 
 // createBackupAt backs up under a caller-chosen timestamp.

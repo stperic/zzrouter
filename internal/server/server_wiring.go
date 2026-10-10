@@ -23,13 +23,11 @@ import (
 
 // newParamsExecutor wires a ParamsExecutor with narrow deps from Server.
 func (s *Server) newParamsExecutor() *ParamsExecutor {
-	var protocolLookup func(string) (protocol.FullProvider, bool)
+	var loaderLookup func(string) (protocol.ModelLoader, protocol.Target, bool)
 	var services providerServices
 	if s.providers.appMgr != nil {
-		protocolLookup = s.providers.appMgr.Protocol
+		loaderLookup = s.providers.appMgr.Loader
 		services = s.providers.appMgr
-	} else {
-		protocolLookup = func(string) (protocol.FullProvider, bool) { return nil, false }
 	}
 	executor := NewParamsExecutor(
 		func() *pkgConfig.AppsConfig { return s.appsConfig },
@@ -38,7 +36,7 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 		s.knownClusterNodes,
 		s.cluster.router,
 		services,
-		protocolLookup,
+		loaderLookup,
 		s.httpClient,
 		s.node.IsWorker,
 		func() string {

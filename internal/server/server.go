@@ -65,6 +65,8 @@ type Server struct {
 		// because it fires on three triggers, not one: a config mutation,
 		// a worker coming up, and the maintenance tick.
 		syncFanOut *providerSyncFanOut
+		// readinessWoken runs after a readiness waiter wakes, so tests can order it; nil in production.
+		readinessWoken func()
 	}
 
 	cluster struct {

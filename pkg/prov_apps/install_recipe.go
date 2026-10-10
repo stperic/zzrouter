@@ -293,7 +293,7 @@ func (c *InstallCoordinator) runtimeProvider(runtime string) string {
 }
 
 func (c *InstallCoordinator) runtimeInUse(runtime string) bool {
-	for _, run := range c.instances.ListAll() {
+	for _, run := range c.instances.List() {
 		selected := run.Resolved().Runtime
 		if selected == "" {
 			selected = run.SnapshotConfig().Runtime

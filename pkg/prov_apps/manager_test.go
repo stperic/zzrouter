@@ -35,12 +35,12 @@ func cleanupProviderManager(t *testing.T, m *ProviderAppManager) {
 		// testing cancels t.Context before cleanup, so shutdown needs its own budget.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		instances := m.instances.ListAll()
+		instances := m.instances.List()
 		assert.NoError(t, m.Stop(ctx))
 		for _, inst := range instances {
 			assert.NoError(t, inst.WaitForGoroutines(ctx), "instance %s must finish before fixture removal", inst.ID)
 		}
-		assert.Empty(t, m.instances.ListAll(), "cleanup must stop every fixture instance")
+		assert.Empty(t, m.instances.List(), "cleanup must stop every fixture instance")
 	})
 }
 

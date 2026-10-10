@@ -11,13 +11,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/sync/singleflight"
 )
@@ -40,7 +38,6 @@ type RunsExecutor struct {
 	appMgr              *prov_apps.ProviderAppManager
 	getNodename         func() string
 	appsConfig          func() *pkgConfig.AppsConfig
-	backend             *backend.Resolver
 	routerAvailable     bool
 	streamInstanceLogs  func(*gin.Context, string, *logFilter)
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter)
@@ -84,7 +81,6 @@ func NewRunsExecutor(
 		appMgr:                 appMgr,
 		getNodename:            getNodename,
 		appsConfig:             appsConfig,
-		backend:                backend.NewResolver(appsConfig),
 		routerAvailable:        routerAvailable,
 		streamInstanceLogs:     streamInstanceLogs,
 		getInstanceLogLines:    getInstanceLogLines,
@@ -258,20 +254,11 @@ func (e *RunsExecutor) tryUnloadEndpointModel(c *gin.Context, runID string) bool
 	defer cancel()
 
 	var handled bool
-	cfg.RangeApps(func(providerName string, providerCfg pkgConfig.ServiceConfig) bool {
-		if !providerCfg.IsEnabled() || !providerCfg.HasEndpoint() {
-			return true
-		}
-		resolved, ok := e.backend.Resolve(providerName)
+	cfg.RangeApps(func(providerName string, _ pkgConfig.ServiceConfig) bool {
+		providerImpl, target, ok := e.appMgr.Loader(providerName)
 		if !ok {
 			return true
 		}
-
-		providerImpl, ok := e.appMgr.Protocol(providerName)
-		if !ok {
-			return true
-		}
-		target := protocol.TargetOf(resolved)
 
 		// Query running models to find one matching this runID (digest)
 		runningModels, err := providerImpl.ListRunningModels(ctx, target)
@@ -371,27 +358,12 @@ func (e *RunsExecutor) queryEndpointProviders() []*instance.Instance {
 	defer cancel()
 
 	// Iterate through configured providers
-	cfg.RangeApps(func(providerName string, providerCfg pkgConfig.ServiceConfig) bool {
-		// Only query enabled endpoint-based apps (service/external/cloud)
-		if !providerCfg.IsEnabled() || !providerCfg.HasEndpoint() {
-			return true
-		}
-
-		// Get the provider implementation from registry
-		providerImpl, ok := e.appMgr.Protocol(providerName)
+	cfg.RangeApps(func(providerName string, _ pkgConfig.ServiceConfig) bool {
+		providerImpl, target, ok := e.appMgr.Loader(providerName)
 		if !ok {
-			utils.LogDebugf("Provider '%s' not found in registry", providerName)
 			return true
 		}
-
-		resolved, ok := e.backend.Resolve(providerName)
-		if !ok {
-			utils.LogDebugf("Provider '%s' has no endpoint configured, skipping", providerName)
-			return true
-		}
-
-		// Query running models from the app's API
-		runningModels, err := providerImpl.ListRunningModels(ctx, protocol.TargetOf(resolved))
+		runningModels, err := providerImpl.ListRunningModels(ctx, target)
 		if err != nil {
 			utils.LogDebugf("[RunsExecutor] Warning: Failed to query running models from %s: %v", providerName, err)
 			return true
@@ -475,17 +447,6 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
-	// Cloud providers don't run — they're already running upstream and
-	// "deploying" them just registers a model name (AddCloudModel). The
-	// /runs surface requires a local runtime.
-	if cfg := e.appsConfig(); cfg != nil {
-		if svc, ok := cfg.LookupApp(req.Provider); ok && svc.IsCloudProvider() {
-			BadRequest(c, fmt.Sprintf(
-				"provider %q is cloud-only and has no run lifecycle; use POST /zzrouter/v1/deployments to register cloud models", req.Provider))
-			return
-		}
-	}
-
 	// Convert launch mode
 	_, err := parseLaunchMode(req.LaunchMode)
 	if err != nil {
@@ -513,9 +474,9 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	// auto_deploy: when the model isn't in the pool, trigger a
 	// download via DeploymentsService and chain the launch behind it.
 	// The handler returns 202 immediately with both job IDs; the run
-	// job's first phase waits on the deploy job. Cloud providers go
-	// through POST /deployments instead and are refused here.
-	if req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) {
+	// job's first phase waits on the deploy job. A provider without runs has nothing to download.
+	svc, _ := e.appsConfig().LookupApp(req.Provider)
+	if req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
 		e.handleAutoDeployLaunch(c, req.Provider, req.Endpoint, launchReq)
 		return
 	}

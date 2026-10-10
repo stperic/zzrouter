@@ -191,16 +191,9 @@ func extractProviderCost(raw map[string]json.RawMessage) float64 {
 	return 0
 }
 
-// ParseOllamaUsage extracts token counts from an Ollama JSON response.
-// Only returns data when done=true (final response).
-func ParseOllamaUsage(body []byte) (int64, int64, bool) {
-	in, out, _, ok := parseOllamaResponse(body)
-	return in, out, ok
-}
-
-// ParseOllamaUsageExtended is the model-aware companion to
-// ParseOllamaUsage. Returns (in, out, model, ok) so callers that need
-// to populate gen_ai.response.model don't have to re-parse the body.
+// ParseOllamaUsageExtended extracts token counts and the response model
+// from an Ollama JSON response. Returns (in, out, model, ok) so callers
+// that need to populate gen_ai.response.model don't have to re-parse the body.
 func ParseOllamaUsageExtended(body []byte) (int64, int64, string, bool) {
 	return parseOllamaResponse(body)
 }
@@ -257,9 +250,7 @@ func tagRecorderFromStatus(recorder *llm.InferenceRecorder, statusCode int) {
 }
 
 // errorTypeFromStatus maps an upstream HTTP status code to a closed-enum
-// error_type label. Exported via SetErrorFromStatus for callers outside
-// the wire package that need the same mapping (proxy clients tagging
-// before they hand off to wire). 429 is split out because rate-limit
+// error_type label. 429 is split out because rate-limit
 // dashboards routinely watch it as a distinct signal from generic 4xx.
 func errorTypeFromStatus(statusCode int) string {
 	switch {
@@ -271,15 +262,6 @@ func errorTypeFromStatus(statusCode int) string {
 		return "upstream_client_error"
 	}
 	return ""
-}
-
-// SetErrorFromStatus is the exported form of the status → error_type
-// tagger for callers outside the wire package (proxy clients that
-// short-circuit before entering the wire layer). Applies the same
-// closed-enum mapping as RelayBuffered. No-op when
-// recorder is nil or the status doesn't indicate failure.
-func SetErrorFromStatus(recorder *llm.InferenceRecorder, statusCode int) {
-	tagRecorderFromStatus(recorder, statusCode)
 }
 
 // RecordPreByteCopyError is the canonical helper for tagging a

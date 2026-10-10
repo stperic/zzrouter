@@ -62,7 +62,7 @@ func TestEnsureCallersRefuseUncatalogedNameOnlyModel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, jobs.PhaseFailed, event.Phase)
 	assert.Equal(t, 5, checks)
-	assert.Empty(t, mgr.Instances().ListAll())
+	assert.Empty(t, mgr.Instances().List())
 }
 
 func TestConcurrentInferenceAndChainEnsureOneRun(t *testing.T) {
@@ -114,7 +114,7 @@ func TestConcurrentInferenceAndChainEnsureOneRun(t *testing.T) {
 	require.Same(t, first.run, second.run)
 	assert.Equal(t, instance.StartedByRequest, first.run.StartedBy)
 	assert.Equal(t, int32(1), starts.Load())
-	require.Len(t, mgr.Instances().ListAll(), 1)
+	require.Len(t, mgr.Instances().List(), 1)
 }
 
 func TestEnsureLaunchAndLoadShareAcceptedJob(t *testing.T) {
@@ -196,7 +196,7 @@ func TestEnsureServedLaunchAndLoadUseBackendWithoutPortPool(t *testing.T) {
 	require.Len(t, batch, 1)
 	assert.NotContains(t, batch[0], "id")
 	assert.Equal(t, 3, calls)
-	assert.Empty(t, mgr.Instances().ListAll())
+	assert.Empty(t, mgr.Instances().List())
 }
 
 func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
@@ -227,7 +227,10 @@ func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
 func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
 	for _, status := range []instance.Status{instance.StatusRunning, instance.StatusStarting} {
 		t.Run(string(status), func(t *testing.T) {
-			mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) { t.Error("reuse queried catalog"); return false, nil }))
+			mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
+				t.Error("reuse queried catalog")
+				return false, nil
+			}))
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 			run := instance.NewInstance("warm", "fake", "local", 8300, 0, 0)
@@ -288,13 +291,13 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 		<-entered
 		close(release)
 		synctest.Wait()
-		runs := mgr.Instances().ListAll()
+		runs := mgr.Instances().List()
 		require.Len(t, runs, 1)
 		assert.Equal(t, instance.StartedByRequest, runs[0].StartedBy)
 	})
 }
 
-func TestEnsureServedJoinRefusesWithoutRealRun(t *testing.T) {
+func TestEnsureServedProvidersLoadIndependently(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cfg := &config.AppsConfig{}
 		for _, provider := range []string{"ollama", "other"} {
@@ -325,9 +328,9 @@ func TestEnsureServedJoinRefusesWithoutRealRun(t *testing.T) {
 		synctest.Wait()
 		close(release)
 		require.NoError(t, <-leader)
-		require.ErrorIs(t, <-joined, prov_apps.ErrInstanceNotFound)
-		assert.Equal(t, 1, calls)
-		assert.Empty(t, mgr.Instances().ListAll())
+		require.NoError(t, <-joined)
+		assert.Equal(t, 2, calls)
+		assert.Empty(t, mgr.Instances().List())
 	})
 }
 

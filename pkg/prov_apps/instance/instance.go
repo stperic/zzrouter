@@ -112,6 +112,8 @@ type Instance struct {
 	waitingOn    string
 	evictedRuns  []EvictedRun
 	failureCause error
+	// stopClaimed/launchClaimed: which side signalled the process; a stop may retry its own claim.
+	stopClaimed, launchClaimed bool
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
 
@@ -411,6 +413,19 @@ func (i *Instance) SetLogFilePath(path string) {
 	i.LogFilePath = path
 }
 
+// ClaimTermination returns the recorded pid when the caller is to signal it,
+// else 0. Whichever of a stop and the launching goroutine claims first owns
+// the signal; only a stop may claim again, to retry its own failed stop.
+func (i *Instance) ClaimTermination(byStop bool) int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.ProcessID <= 0 || i.launchClaimed || (i.stopClaimed && !byStop) {
+		return 0
+	}
+	i.stopClaimed, i.launchClaimed = byStop, !byStop
+	return i.ProcessID
+}
+
 // GetProcessID returns the process ID under lock.
 func (i *Instance) GetProcessID() int {
 	i.mu.RLock()
@@ -453,11 +468,8 @@ func (i *Instance) lastActivityTime() time.Time {
 	return i.lastUsedAt
 }
 
-// snapshotKeepAlive reads KeepAlive and the most recent activity
-// timestamp atomically under i.mu.RLock. Used by IsIdle / IsExpired /
-// ShouldUnload so all three see a consistent view across a concurrent
-// StampActivityWithHints write.
-func (i *Instance) snapshotKeepAlive() (keepAlive time.Duration, activity time.Time) {
+// IdleSnapshot reads keep-alive and last activity under one lock, the inputs of the idle rule.
+func (i *Instance) IdleSnapshot() (keepAlive time.Duration, activity time.Time) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.KeepAlive, i.lastActivityTime()
@@ -491,7 +503,7 @@ func (i *Instance) UpdateLastUsed() {
 
 // StampActivityWithHints applies any non-nil request hints, stamps activity
 // timestamps (LastActivity and lastUsedAt), and resets the keep-alive timer
-// — all under a single lock so IsIdle/IsExpired observers see a consistent
+// — all under a single lock so idle observers see a consistent
 // view.
 //
 // ov may be nil (no overrides). Individual Override fields may be nil; only
@@ -538,41 +550,6 @@ func (i *Instance) StopKeepAliveTimer() {
 		}
 		i.keepAliveTimer = nil
 	}
-}
-
-// IsIdle returns true if the instance has been idle longer than keep-alive.
-func (i *Instance) IsIdle() bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive <= 0 || activity.IsZero() {
-		return false
-	}
-	return time.Since(activity) > keepAlive
-}
-
-// IsExpired returns true if the instance has exceeded its keep-alive duration.
-func (i *Instance) IsExpired(now time.Time) bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive <= 0 || activity.IsZero() {
-		return false
-	}
-	return now.After(activity.Add(keepAlive))
-}
-
-// ShouldUnload returns true if the instance should be unloaded. Uses one
-// snapshot for the keep-alive read AND the activity comparison so the
-// negative/zero/idle branches see a consistent view.
-func (i *Instance) ShouldUnload() bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive < 0 {
-		return false // indefinite
-	}
-	if keepAlive == 0 {
-		return true // immediate
-	}
-	if activity.IsZero() {
-		return false
-	}
-	return time.Since(activity) > keepAlive
 }
 
 func (i *Instance) resetKeepAliveTimerLocked() {

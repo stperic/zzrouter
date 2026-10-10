@@ -480,7 +480,7 @@ func TestProxyInflightRequestsMetric(t *testing.T) {
 }
 
 // TestModelAllowlist_GatesFailedRequestLabel pins the operator-facing
-// cardinality knob: when proxy.SetModelAllowlist registers a checker,
+// cardinality knob: when genai.SetModelAllowlist registers a checker,
 // caller-supplied requested_model values that fail the check collapse
 // to UnknownModelLabel ("_unknown_") rather than emitting the raw
 // adversarial value as a separate Prometheus series.
@@ -513,7 +513,6 @@ func TestModelAllowlist_GatesFailedRequestLabel(t *testing.T) {
 	defer genai.SwapModelAllowlist(func(name string) bool {
 		return name == "known-model"
 	})()
-	_ = proxy.SetModelAllowlist // keep import on the test file for the proxy-side forwarder smoke
 
 	body := `{"model":"adversarial-spam-model-1","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))

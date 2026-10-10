@@ -12,11 +12,10 @@ type Provider interface {
 	DefaultPort() int
 }
 
-// ModelLister can list available and running models.
+// ModelLister can list available models.
 type ModelLister interface {
 	Provider
 	ListModels(ctx context.Context, t Target) ([]ModelInfo, error)
-	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
 }
 
 // ModelLoader can load and unload models.
@@ -24,6 +23,7 @@ type ModelLoader interface {
 	Provider
 	LoadModel(ctx context.Context, t Target, model string, params map[string]string) error
 	UnloadModel(ctx context.Context, t Target, model string) error
+	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
 }
 
 // ModelDeleter can delete models from disk/storage.
@@ -45,11 +45,9 @@ type ModelDisplayer interface {
 	DisplayTable(models []DisplayModel, command string)
 }
 
-// FullProvider is the union of all composable interfaces.
-// Most providers implement all of these.
+// FullProvider provides catalog and inspection operations for every protocol.
 type FullProvider interface {
 	ModelLister
-	ModelLoader
 	ModelDeleter
 	ModelInspector
 	ModelDisplayer

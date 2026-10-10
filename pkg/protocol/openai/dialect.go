@@ -16,10 +16,6 @@ import (
 // WriteError renders e as {"error":{...}} beside any e.Extra members.
 func (r *Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
 	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
-	if r.opaque {
-		w.WriteHeader(e.Status)
-		return
-	}
 	body := map[string]any{}
 	for k, v := range e.Extra {
 		body[k] = v
@@ -66,16 +62,14 @@ func (r *Responder) StreamError(w http.ResponseWriter, e httperr.Error) {
 
 // EndStream separates an upstream fragment from one vLLM-format error chunk.
 func (r *Responder) EndStream(w http.ResponseWriter, e httperr.Error) {
-	if !r.opaque {
-		var code any
-		if e.Code != "" {
-			code = e.Code
-		}
-		data, _ := json.Marshal(map[string]any{"error": map[string]any{
-			"message": e.Message, "type": e.Type, "param": nil, "code": code,
-		}})
-		_, _ = fmt.Fprintf(w, "\ndata: %s\n\n", data)
+	var code any
+	if e.Code != "" {
+		code = e.Code
 	}
+	data, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": e.Message, "type": e.Type, "param": nil, "code": code,
+	}})
+	_, _ = fmt.Fprintf(w, "\ndata: %s\n\n", data)
 	flush(w)
 }
 

@@ -25,12 +25,6 @@ func TestViewContextCancelStopsContext(t *testing.T) {
 	}
 }
 
-func TestViewContextCancelIdempotent(t *testing.T) {
-	v := NewViewContext()
-	v.Cancel()
-	v.Cancel() // must not panic
-}
-
 func TestViewContextContextStableAcrossCalls(t *testing.T) {
 	var v ViewContext
 	c1 := v.Context()

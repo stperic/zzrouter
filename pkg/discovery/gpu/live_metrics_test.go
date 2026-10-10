@@ -7,29 +7,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeVRAMUnits(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want int64
-	}{
-		{"ROCm 5.x MB form 16384", "16384", 16384},
-		{"ROCm 6.x byte form 17163091968", "17163091968", 17163091968 / (1 << 20)},
-		{"zero", "0", 0},
-		{"negative", "-1", 0},
-		{"garbage", "abc", 0},
-		{"empty", "", 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := normalizeVRAMUnits(tc.in)
-			if got != tc.want {
-				t.Errorf("normalizeVRAMUnits(%q) = %d, want %d", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseRocmSMIMemory(t *testing.T) {
 	cases := []struct {
 		name      string

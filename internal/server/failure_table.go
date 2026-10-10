@@ -51,6 +51,7 @@ var failureTable = []failureRow{
 	{prov_apps.ErrPortOutOfRange, http.StatusBadRequest, ""},
 	{prov_apps.ErrDangerousEnvVar, http.StatusBadRequest, ""},
 
+	{prov_apps.ErrProviderUnavailable, http.StatusServiceUnavailable, "provider_unavailable"},
 	{prov_apps.ErrShutdown, http.StatusServiceUnavailable, ""},
 	{process.ErrMemoryObservation, http.StatusServiceUnavailable, ""},
 	{prov_apps.ErrAtCapacity, http.StatusServiceUnavailable, ""},

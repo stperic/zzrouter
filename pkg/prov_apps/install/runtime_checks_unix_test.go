@@ -27,7 +27,7 @@ func TestRuntimeCancellationStopsDescendant(t *testing.T) {
 	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\nmkdir \"$6/cache\"; echo scratch > \"$6/cache/file\"; echo \"$6\" > '"+scratchFile+"'\nsleep 30 & echo $! > '"+pidFile+"'; wait\n"), 0o700))
 	checks := schema.RuntimeChecks{Imports: []string{"json"}, Checks: []string{"pip_check", "imports"}, Kernels: "unknown"}
 	done := make(chan []RuntimeCheck, 1)
-	go func() { done <- RunRuntimeChecks(ctx, executable, checks) }()
+	go func() { done <- RunRuntimeChecksSnapshot(ctx, executable, checks, nil, nil) }()
 	var pid int32
 	require.Eventually(t, func() bool {
 		data, err := os.ReadFile(pidFile)

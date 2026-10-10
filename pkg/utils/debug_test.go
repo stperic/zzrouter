@@ -99,23 +99,9 @@ func TestLogDebugf(t *testing.T) {
 	LogDebugf("test message %s", "value")
 }
 
-func TestLogDebugln(t *testing.T) {
-	// Test that function doesn't panic
-	SetDebugMode(true)
-	LogDebugln("test", "message")
-
-	SetDebugMode(false)
-	LogDebugln("test", "message")
-}
-
 func TestLogInfof(t *testing.T) {
 	// Test that function doesn't panic
 	LogInfof("test message %s", "value")
-}
-
-func TestLogErrorf(t *testing.T) {
-	// Test that function doesn't panic
-	LogErrorf("error message %s", "value")
 }
 
 func TestInitDebugFromEnv(t *testing.T) {
@@ -221,7 +207,6 @@ func TestDebugOutputFormat(t *testing.T) {
 	// Test that debug functions accept various argument types
 	Debugf("string: %s, int: %d, float: %.2f", "test", 42, 3.14)
 	LogDebugf("formatted: %v", map[string]int{"key": 123})
-	LogDebugln("multiple", "args", 456)
 }
 
 func TestDebugFunctionsDoNotPanicWhenDisabled(t *testing.T) {
@@ -241,16 +226,8 @@ func TestDebugFunctionsDoNotPanicWhenDisabled(t *testing.T) {
 			fn:   func() { LogDebugf("test %s", "message") },
 		},
 		{
-			name: "LogDebugln",
-			fn:   func() { LogDebugln("test", "message") },
-		},
-		{
 			name: "LogInfof",
 			fn:   func() { LogInfof("test %s", "message") },
-		},
-		{
-			name: "LogErrorf",
-			fn:   func() { LogErrorf("test %s", "message") },
 		},
 	}
 

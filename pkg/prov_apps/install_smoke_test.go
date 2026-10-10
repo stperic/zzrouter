@@ -194,7 +194,7 @@ func TestSmokeStrictStopRetainsUnconfirmedRun(t *testing.T) {
 	require.NoError(t, mgr.StopInstance(t.Context(), run.ID))
 	assert.False(t, run.StopUnconfirmed.Load())
 	assert.True(t, run.GetStatus().IsTerminal())
-	assert.Empty(t, mgr.instances.ListAll())
+	assert.Empty(t, mgr.instances.List())
 }
 
 func TestSmokeOptionsBoundAndRestricted(t *testing.T) {
@@ -331,7 +331,7 @@ func TestSmokeAdmissionBusyRetryAndExpiry(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, errSmokeBusy)
 			}
-			assert.Empty(t, mgr.instances.ListAll())
+			assert.Empty(t, mgr.instances.List())
 		})
 	}
 }
@@ -367,7 +367,7 @@ func TestSmokeCancellationStopsOwnedRunWithoutHoldingOtherRuntime(t *testing.T) 
 			mgr, err = NewProviderAppManager(cfg, WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(req *http.Request) (*http.Response, error) {
 				if mode == "removed" && req.URL.Path == "/v1/chat/completions" {
 					once.Do(func() {
-						runs := mgr.instances.ListAll()
+						runs := mgr.instances.List()
 						require.Len(t, runs, 1)
 						require.True(t, process.ProcessHasMarker(int32(runs[0].GetProcessID())))
 						closed := false
@@ -401,7 +401,7 @@ func TestSmokeCancellationStopsOwnedRunWithoutHoldingOtherRuntime(t *testing.T) 
 			} else {
 				require.Error(t, err)
 			}
-			assert.Empty(t, mgr.instances.ListAll(), "smoke cleanup must finish even with a canceled context")
+			assert.Empty(t, mgr.instances.List(), "smoke cleanup must finish even with a canceled context")
 		})
 	}
 }

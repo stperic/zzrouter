@@ -19,10 +19,9 @@ const (
 // EnsureRequest contains the parameters needed to launch a provider instance.
 type EnsureRequest struct {
 	requestedModel   string
-	installSmoke     bool
 	selectedRuntime  string
 	Detached         bool // returns an empty result on a cold start accepted in the background
-	ByRequest        bool // an inference request starts the run, not a management call
+	Origin           Origin
 	Force            bool
 	Runtime          string
 	DisposablePlanID string
@@ -34,6 +33,10 @@ type EnsureRequest struct {
 	EnvVars          map[string]string
 	Files            []instance.FileMount
 	NativeConfig     *instance.NativeConfig
+}
+
+func (r EnsureRequest) want() Want {
+	return Want{Model: r.Model, Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Origin: r.Origin}
 }
 
 // EnsureResult reports a reused or newly started run, or a served model.

@@ -35,24 +35,27 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	}
 	if budget != nil {
 		// Admission measures free memory, so admissions run one at a time.
+		node := Node{Lifecycle: LifecycleProcess, Runtime: req.selectedRuntime}
 		select {
 		case m.memoryAdmission <- struct{}{}:
 		default:
-			return m.queueRun(inst, req, "")
+			node.AdmissionHeld = true
+			return m.queueRun(inst, req, node)
 		}
 		defer func() { <-m.memoryAdmission }()
 		blocker, err := m.startingBlocker(inst.ID)
 		if err != nil {
-			m.releaseRun(inst)
+			m.releaseRun(inst, err)
 			return nil, err
 		}
 		if blocker != nil {
-			return m.queueRun(inst, req, blocker.ID)
+			node.Blocker = runView(blocker)
+			return m.queueRun(inst, req, node)
 		}
 	}
 	run, err := m.admitRun(ctx, inst, req, selection)
 	if err != nil {
-		m.releaseRun(inst)
+		m.releaseRun(inst, err)
 		return nil, err
 	}
 	m.watchRun(inst, req)
@@ -82,25 +85,18 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 		selected = svcCfg.Name
 	}
 	req.selectedRuntime = selected
-	if req.installSmoke && selected != req.Runtime {
-		return launchSelection{}, fmt.Errorf("smoke model does not use the runtime being installed")
-	}
 	return launchSelection{key: configKey, config: svcCfg, model: model}, nil
 }
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
 func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
+	keepAlive, err := svcCfg.Runtime.GetKeepAliveDuration()
+	if err != nil {
+		return nil, err
+	}
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
-	}
-
-	// Determine keep-alive from config (default: 5 minutes)
-	keepAlive := 5 * time.Minute
-	if svcCfg.Runtime != nil && svcCfg.Runtime.KeepAlive != "" {
-		if d, err := time.ParseDuration(svcCfg.Runtime.KeepAlive); err == nil {
-			keepAlive = d
-		}
 	}
 
 	endpoint := string(EndpointOrDefault(req.Endpoint))
@@ -108,13 +104,13 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
 	inst.Endpoint = endpoint
 	inst.StartedBy = instance.StartedByAPI
-	if req.ByRequest {
+	if req.Origin == OriginRequest {
 		inst.StartedBy = instance.StartedByRequest
 	}
 	if svcCfg.Runtime != nil {
 		inst.FailureClassifier = &svcCfg.Runtime.FailurePatterns
 	}
-	inst.StopUnconfirmed.Store(req.installSmoke) // Smoke retains ownership until strict process drain.
+	inst.StopUnconfirmed.Store(req.Origin == OriginInstall) // Smoke retains ownership until strict process drain.
 	inst.Config = instance.Config{
 		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
 		Provider:   req.Provider,
@@ -155,10 +151,12 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	return inst, nil
 }
 
-// releaseRun undoes registerRun for a run no process was started for. The
-// port goes back only with the registry entry, so a racing stop cannot
-// return it twice.
-func (m *ProviderAppManager) releaseRun(inst *instance.Instance) {
+// releaseRun undoes registerRun for a run no process was started for. It
+// fails the run with cause first, so a caller already holding it gets that
+// cause. The port goes back only with the registry entry, so a racing stop
+// cannot return it twice.
+func (m *ProviderAppManager) releaseRun(inst *instance.Instance, cause error) {
+	inst.MarkFailedError(cause)
 	if err := m.instances.Remove(inst.ID); err != nil {
 		slog.Warn("failed to remove instance during cleanup", "id", inst.ID, "error", err)
 		return
@@ -245,14 +243,18 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 }
 
 // queueRun accepts a run that waits for another launch to claim its GPU
-// memory. An install smoke cannot wait: its install holds the gate a
-// queued run needs.
-func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest, blocker string) (*instance.Instance, error) {
-	if req.installSmoke {
-		m.releaseRun(inst)
-		return nil, errAdmissionBusy
+// memory, when the policy lets it wait on what node observed.
+func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest, node Node) (*instance.Instance, error) {
+	decision := Decide(req.want(), node)
+	if decision.Act != ActQueue {
+		err := decision.Err
+		if err == nil {
+			err = errUndecided
+		}
+		m.releaseRun(inst, err)
+		return nil, err
 	}
-	inst.SetWaitingOn(blocker)
+	inst.SetWaitingOn(decision.Run)
 	m.watchRun(inst, req)
 	inst.TrackGoroutine()
 	go func() {
@@ -470,6 +472,13 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 		logWriter = readinessWriter
 	}
 
+	if m.seams.beforeLaunch != nil {
+		m.seams.beforeLaunch()
+	}
+	if inst.Context().Err() != nil { // stopped before its process: spawn nothing, fail nothing
+		logFile.Close()
+		return
+	}
 	// Launch process (exec.Command, not CommandContext — process lifetime managed by Terminate)
 	result, err := m.launcher.Launch(m.shutdownCtx, inst, cmd, args, envVars, logWriter, executionEnvironment)
 	if err != nil {
@@ -482,6 +491,25 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 			Time: utils.Now(),
 		})
 		return
+	}
+
+	if m.seams.processStarted != nil {
+		m.seams.processStarted()
+	}
+	inst.SetJobHandle(result.JobHandle)
+	inst.SetStdinPipe(result.StdinPipe)
+	inst.SetProcessInfo(result.PID, result.ProcessGroupID, result.Command) // last: a stop claims the process by its pid
+	// A stop that ran before the pid was recorded saw no process; this goroutine signals it instead.
+	if inst.Context().Err() != nil {
+		if pid := inst.ClaimTermination(false); pid > 0 {
+			inst.TrackGoroutine()
+			go func() {
+				defer inst.GoroutineDone()
+				if err := m.terminateProcess(context.Background(), inst, pid); err != nil {
+					slog.Warn("failed to stop a process launched during its stop", "instance", inst.ID, "pid", pid, "error", err)
+				}
+			}()
+		}
 	}
 
 	// Track PID on disk so orphan cleanup can find it after a crash
@@ -708,28 +736,11 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	inst.Cancel()
 	inst.StopKeepAliveTimer()
 
-	// Terminate process (graceful SIGTERM → SIGKILL)
-	//    Use shutdown_timeout from provider config if available.
-	pid := inst.GetProcessID()
-	pgid := inst.GetProcessGroupID()
-	if pid > 0 && process.IsSafeToKill(int32(pid)) {
-		if process.ProcessHasMarker(int32(pid)) {
-			timeout := m.resolveShutdownTimeout(inst.Provider)
-			req := process.TerminateRequest{
-				PID:            pid,
-				ProcessGroupID: pgid,
-				Graceful:       timeout,
-				JobHandle:      inst.GetJobHandle(),
-			}
-			if inst.HasStdinPipe() {
-				inst.CloseStdinPipe()
-				req.StdinPipe = nil // already closed above, terminateProcessTree will skip
-			}
-			if err := process.Terminate(ctx, req); err != nil {
-				return err
-			}
-		} else {
-			slog.Warn("skipping process termination: PID may have been recycled", "instance", id, "pid", pid)
+	// Terminate process (graceful SIGTERM → SIGKILL). No pid yet: the
+	// lifecycle goroutine sees the cancelled context and signals it.
+	if pid := inst.ClaimTermination(true); pid > 0 {
+		if err := m.terminateProcess(ctx, inst, pid); err != nil {
+			return err
 		}
 	}
 
@@ -765,6 +776,26 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	})
 
 	return nil
+}
+
+// terminateProcess ends a run's process tree, gracefully first, within the
+// provider's shutdown_timeout.
+func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instance.Instance, pid int) error {
+	if !process.IsSafeToKill(int32(pid)) {
+		return nil
+	}
+	if !process.ProcessHasMarker(int32(pid)) {
+		slog.Warn("skipping process termination: PID may have been recycled", "instance", inst.ID, "pid", pid)
+		return nil
+	}
+	req := process.TerminateRequest{
+		PID:            pid,
+		ProcessGroupID: inst.GetProcessGroupID(),
+		Graceful:       m.resolveShutdownTimeout(inst.Provider),
+		JobHandle:      inst.GetJobHandle(),
+	}
+	inst.CloseStdinPipe() // idempotent; the request leaves StdinPipe nil so it is not closed twice
+	return process.Terminate(ctx, req)
 }
 
 // RestartInstance stops a running instance and launches a new one with the
@@ -835,10 +866,10 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		stopErr = ctx.Err()
 	}
-	for _, inst := range m.instances.ListAll() {
+	for _, inst := range m.instances.List() {
 		if err := ctx.Err(); err != nil {
 			slog.Warn("provider manager shutdown interrupted by caller deadline",
-				"instances_remaining", len(m.instances.ListAll()),
+				"instances_remaining", len(m.instances.List()),
 				"error", err)
 			stopErr = err
 			break
@@ -1012,15 +1043,18 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 // Port is intentionally omitted so the pool reallocates.
 func restartRequest(inst *instance.Instance) EnsureRequest {
 	cfg := inst.SnapshotConfig()
-	return EnsureRequest{
+	req := EnsureRequest{
 		Runtime: cfg.Runtime, DisposablePlanID: cfg.DisposablePlanID,
 		Provider:   cfg.Provider,
 		Model:      cfg.Model,
 		Endpoint:   Endpoint(inst.Endpoint),
 		Parameters: cfg.Parameters,
 		EnvVars:    cfg.EnvVars,
-		ByRequest:  inst.StartedBy == instance.StartedByRequest,
 	}
+	if inst.StartedBy == instance.StartedByRequest {
+		req.Origin = OriginRequest
+	}
+	return req
 }
 
 // resolveLaunchParams produces the parameters and environment a launched
