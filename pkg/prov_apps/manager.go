@@ -454,7 +454,7 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		m.servicesObserved = make(chan struct{})
 		m.servicesStarted.Store(true)
 		go m.observeServices(childCtx)
-		m.reconcileServices(nil)
+		m.reconcileServices(false)
 	})
 }
 
@@ -782,7 +782,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 	}
 
 	if fresh == nil {
-		m.reconcileServices(nil)
+		m.reconcileServices(false)
 		return config.DispositionApplied
 	}
 	if unchanged {
@@ -804,7 +804,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 
 	// 3. Version cache: detect versions for newly enabled providers
 	m.syncVersions(fresh)
-	m.reconcileServices(nil)
+	m.reconcileServices(false)
 
 	return config.DispositionApplied
 }
@@ -883,11 +883,9 @@ func (m *ProviderAppManager) Protocol(name string) (protocol.FullProvider, bool)
 
 // servedTarget is daemonOf for an enabled served provider, the only one a start or a reconcile uses.
 func (m *ProviderAppManager) servedTarget(name string) (protocol.ModelLoader, protocol.Target, bool) {
-	if _, cfg, found := m.resolveConfigKey(name); !found || !cfg.IsEnabled() || Lifecycle(cfg) != LifecycleServed {
-		return nil, protocol.Target{}, false
-	}
+	_, cfg, found := m.resolveConfigKey(name)
 	loader, resolved, ok := m.daemonOf(name)
-	if !ok {
+	if !found || !ok || !cfg.IsEnabled() || Lifecycle(cfg) != LifecycleServed {
 		return nil, protocol.Target{}, false
 	}
 	return loader, protocol.TargetOf(resolved), true
@@ -896,7 +894,7 @@ func (m *ProviderAppManager) servedTarget(name string) (protocol.ModelLoader, pr
 // daemonOf is how this node reaches a provider's daemon, from its config, enabled or not.
 func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backend.Resolved, bool) {
 	key, cfg, found := m.resolveConfigKey(name)
-	p, _ := m.protocols.Of(key, m.AppsConfig().Find(key))
+	p := m.protocols.Of(key, m.AppsConfig().Find(key))
 	loader, loads := p.(protocol.ModelLoader)
 	resolved, ok := backend.Target(&cfg)
 	return loader, resolved, found && loads && ok
@@ -904,29 +902,20 @@ func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backe
 
 // providerLists is a provider without runs answering whether it serves model; unreachable is not "absent".
 func (m *ProviderAppManager) providerLists(ctx context.Context, provider, model string) (listed, reachable bool) {
-	p, target, ok := m.endpoint(provider)
+	p, ok := m.Protocol(provider)
+	if !ok || m.resolveBackend == nil {
+		return false, false
+	}
+	resolved, ok := m.resolveBackend(provider)
 	if !ok {
 		return false, false
 	}
-	models, err := p.ListModels(ctx, target)
+	models, err := p.ListModels(ctx, protocol.TargetOf(resolved))
 	if err != nil {
 		slog.Debug("Provider model list unavailable", "provider", provider, "error", err)
 		return false, false
 	}
 	return slices.ContainsFunc(models, func(info protocol.ModelInfo) bool { return info.Name == model || info.FullID == model }), true
-}
-
-// endpoint is a provider's protocol and resolved target.
-func (m *ProviderAppManager) endpoint(name string) (protocol.FullProvider, protocol.Target, bool) {
-	p, ok := m.Protocol(name)
-	if !ok || m.resolveBackend == nil {
-		return nil, protocol.Target{}, false
-	}
-	resolved, ok := m.resolveBackend(name)
-	if !ok {
-		return nil, protocol.Target{}, false
-	}
-	return p, protocol.TargetOf(resolved), true
 }
 
 // --- Version cache ---

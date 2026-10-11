@@ -163,6 +163,10 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		sent = instance.FormatKeepAlive(*daemonKeepAlive)
 	}
 	m.record(run, runEvent(EventInstanceStarting, run, "load requested, keep-alive "+sent))
+	budget := "" // the provider's readiness window
+	if rc := selection.config.Runtime; rc != nil && rc.HealthCheck.ReadinessProbe != nil {
+		budget = rc.HealthCheck.ReadinessProbe.Timeout
+	}
 	// The load ends the start: Stop waits for it, as for any start, before it forgets runs.
 	m.onDemandStarts.Add(1)
 	run.TrackGoroutine()
@@ -170,7 +174,7 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		defer m.onDemandStarts.Done()
 		defer run.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.loadServed")
-		e.load(run, daemonKeepAlive, readinessBudget(selection.config))
+		e.load(run, daemonKeepAlive, readinessTimeout(budget))
 	}()
 	return run, nil
 }
@@ -253,12 +257,3 @@ func (e servedEngine) upstream(run *instance.Instance) (string, backend.Upstream
 }
 
 func (servedEngine) outlivesNode() bool { return true }
-
-// readinessBudget is how long a provider gives a run to become ready.
-func readinessBudget(svc config.ServiceConfig) time.Duration {
-	raw := ""
-	if svc.Runtime != nil && svc.Runtime.HealthCheck.ReadinessProbe != nil {
-		raw = svc.Runtime.HealthCheck.ReadinessProbe.Timeout
-	}
-	return readinessTimeout(raw)
-}

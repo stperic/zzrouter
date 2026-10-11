@@ -328,9 +328,7 @@ func (h *OllamaHandlers) handleOllamaPs(c *gin.Context) {
 	})
 }
 
-// HandleOllamaPsLocal handles GET /zzrouter/v1/internal/ollama/ps: the
-// runs of this node's served providers, from the run registry. The daemon
-// is not asked; the run reconcile keeps the registry true to it.
+// HandleOllamaPsLocal handles GET /zzrouter/v1/internal/ollama/ps from the run registry, which the reconcile keeps true.
 //
 // Each returned entry's Name is suffixed with `@<node>` so that the
 // cluster-aggregated response (produced by handleOllamaPs on the
