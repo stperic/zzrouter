@@ -2,11 +2,17 @@ package prov_apps
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,8 +20,13 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
+	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
@@ -709,4 +720,1155 @@ func TestEnsureRunContractStopBeforeProcessRecorded(t *testing.T) {
 			assert.False(t, listed)
 		})
 	}
+}
+
+// The served contract: an Ollama model is a run like a launched one, started,
+// reused, stopped and reconciled through the same core. The daemon is a fake
+// answering the Ollama API over the manager's injected client.
+
+const (
+	servedModel   = "m"
+	servedLoaded  = "m:latest" // the daemon's name for servedModel
+	servedBase    = "http://daemon:11434"
+	daemonForever = 200 * 365 * 24 * time.Hour // how far ahead the daemon reports an infinite expiry
+	settle        = 50 * time.Millisecond      // a window in which nothing must happen
+)
+
+// daemonCall is one /api/generate the daemon received.
+type daemonCall struct {
+	model     string
+	unload    bool
+	body      map[string]any
+	keepAlive any
+}
+
+// fakeDaemon is an Ollama daemon: loads, unloads and lists models, and can be
+// held, failed, made unreachable or made to report stale state.
+type fakeDaemon struct {
+	mu          sync.Mutex
+	loaded      map[string]time.Time
+	calls       []daemonCall
+	hold        chan struct{}
+	entered     chan struct{}
+	loadStatus  int
+	loadDelay   time.Duration
+	unreachable bool
+	psErr       bool
+	psHook      func()
+	stale       map[string]bool
+	unloadHold  chan struct{} // an unload drops the model, then answers once this closes
+	psAuth      []string      // the Authorization header of each listing
+	holdsOne    bool          // a load unloads every other model, as a daemon short of memory does
+}
+
+func newFakeDaemon() *fakeDaemon {
+	return &fakeDaemon{loaded: map[string]time.Time{}, stale: map[string]bool{}}
+}
+
+func daemonReply(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{"Content-Type": []string{"application/json"}}}
+}
+
+func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
+	d.mu.Lock()
+	unreachable := d.unreachable
+	d.mu.Unlock()
+	if unreachable {
+		return nil, errors.New("dial tcp: connection refused")
+	}
+	switch req.URL.Path {
+	case "/v1/models":
+		return daemonReply(http.StatusOK, `{"data":[]}`), nil
+	case "/api/ps":
+		d.set(func(d *fakeDaemon) { d.psAuth = append(d.psAuth, req.Header.Get("Authorization")) })
+		return d.ps()
+	case "/api/generate":
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			return nil, err
+		}
+		return d.generate(req.Context(), body)
+	}
+	return daemonReply(http.StatusNotFound, `{"error":"not found"}`), nil
+}
+
+// fakeVRAM is what the fake daemon reports each model holds.
+const fakeVRAM = 512 * constants.BytesPerMB
+
+func (d *fakeDaemon) ps() (*http.Response, error) {
+	d.mu.Lock()
+	if d.psErr {
+		d.mu.Unlock()
+		return daemonReply(http.StatusInternalServerError, `{"error":"ps failed"}`), nil
+	}
+	var models []map[string]any
+	for name, expires := range d.loaded {
+		if expires.IsZero() {
+			expires = time.Now().Add(daemonForever)
+		}
+		models = append(models, map[string]any{"name": name, "model": name, "digest": "sha-" + name, "size_vram": fakeVRAM, "expires_at": expires.Format(time.RFC3339), "details": map[string]any{"format": "gguf", "family": "llama", "parameter_size": "8B", "quantization_level": "Q4_K_M"}})
+	}
+	for name := range d.stale {
+		if _, listed := d.loaded[name]; !listed {
+			models = append(models, map[string]any{"name": name, "model": name, "digest": "sha-" + name, "expires_at": time.Now().Add(time.Minute).Format(time.RFC3339)})
+		}
+	}
+	hook := d.psHook
+	d.mu.Unlock()
+	if hook != nil {
+		hook() // the snapshot above is what this answer reports
+	}
+	raw, err := json.Marshal(map[string]any{"models": models})
+	if err != nil {
+		return nil, err
+	}
+	return daemonReply(http.StatusOK, string(raw)), nil
+}
+
+func (d *fakeDaemon) generate(ctx context.Context, body map[string]any) (*http.Response, error) {
+	model, _ := body["model"].(string)
+	keepAlive, named := body["keep_alive"]
+	call := daemonCall{model: model, body: body, keepAlive: keepAlive, unload: named && keepAlive == float64(0)}
+	d.mu.Lock()
+	d.calls = append(d.calls, call)
+	if call.unload {
+		delete(d.loaded, model)
+		hold := d.unloadHold
+		d.mu.Unlock()
+		if hold != nil {
+			<-hold
+		}
+		return daemonReply(http.StatusOK, `{"done":true}`), nil
+	}
+	hold, entered, delay, status := d.hold, d.entered, d.loadDelay, d.loadStatus
+	d.mu.Unlock()
+	if hold != nil {
+		close(entered)
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if status != 0 {
+		return daemonReply(status, `{"error":"model failed to load"}`), nil
+	}
+	expires := time.Time{} // a negative keep_alive never expires
+	if seconds, _ := keepAlive.(float64); seconds >= 0 {
+		expires = time.Now().Add(time.Duration(seconds) * time.Second)
+	}
+	d.mu.Lock()
+	if d.holdsOne {
+		clear(d.loaded)
+	}
+	d.loaded[strings.ToLower(model)] = expires // Ollama lists names lower-cased
+	d.mu.Unlock()
+	return daemonReply(http.StatusOK, `{"done":true}`), nil
+}
+
+// holdLoads parks the next load until release.
+func (d *fakeDaemon) holdLoads() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hold, d.entered = make(chan struct{}), make(chan struct{})
+}
+
+func (d *fakeDaemon) release() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.hold != nil {
+		close(d.hold)
+		d.hold = nil
+	}
+}
+
+func (d *fakeDaemon) waitEntered(t *testing.T) {
+	t.Helper()
+	d.mu.Lock()
+	entered := d.entered
+	d.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(contractWait):
+		t.Fatal("no load reached the daemon")
+	}
+}
+
+func (d *fakeDaemon) set(fn func(d *fakeDaemon)) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fn(d)
+}
+
+// loadExternally is another client loading model with its own expiry; zero is forever.
+func (d *fakeDaemon) loadExternally(model string, expires time.Time) {
+	d.set(func(d *fakeDaemon) { d.loaded[model] = expires })
+}
+
+func (d *fakeDaemon) drop(model string) { d.set(func(d *fakeDaemon) { delete(d.loaded, model) }) }
+
+func (d *fakeDaemon) generateCalls() []daemonCall {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.calls)
+}
+
+func (d *fakeDaemon) count(unload bool) int {
+	n := 0
+	for _, c := range d.generateCalls() {
+		if c.unload == unload {
+			n++
+		}
+	}
+	return n
+}
+
+func (d *fakeDaemon) isLoaded(model string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.loaded[model]
+	return ok
+}
+
+type servedRig struct {
+	*contractRig
+	daemon *fakeDaemon
+	config atomic.Pointer[config.AppsConfig] // the config in use, as the node's store holds it
+	edits  []func(*config.ServiceConfig)
+}
+
+// servedConfig builds ollama from scratch with every edit so far: a new config shares nothing with one in use.
+func (r *servedRig) servedConfig(t *testing.T) *config.AppsConfig {
+	t.Helper()
+	svc := config.ServiceConfig{
+		Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external",
+		Runtime:      &config.AppRuntimeConfig{Endpoint: servedBase, KeepAlive: "5m"},
+		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+	}
+	for _, edit := range r.edits {
+		edit(&svc)
+	}
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("ollama", svc))
+	return cfg
+}
+
+// edit changes the provider as production does: a new config, reloaded.
+func (r *servedRig) edit(t *testing.T, fn func(*config.ServiceConfig)) {
+	t.Helper()
+	r.edits = append(r.edits, fn)
+	r.config.Store(r.servedConfig(t))
+	r.m.ReloadConfig(r.config.Load())
+}
+
+// newServedRig builds a served provider, ollama, over a fake daemon.
+func newServedRig(t *testing.T, opts ...Option) *servedRig {
+	t.Helper()
+	return newServedRigTimed(t, 0, opts...)
+}
+
+// newServedRigTimed is newServedRig with a client timeout on the manager's HTTP client.
+func newServedRigTimed(t *testing.T, clientTimeout time.Duration, opts ...Option) *servedRig {
+	t.Helper()
+	isolateProviderRoot(t)
+	r := &servedRig{contractRig: &contractRig{}, daemon: newFakeDaemon()}
+	r.config.Store(r.servedConfig(t))
+	resolve := WithBackendResolver(func(name string) (*backend.Resolved, bool) {
+		svc, ok := r.config.Load().LookupApp(name)
+		if !ok {
+			return nil, false
+		}
+		return backend.Target(&svc)
+	})
+	observe := WithStartObserver(func(ctx context.Context, _ EnsureRequest) (context.Context, func(EnsureResult, error)) {
+		r.attempts.Add(1)
+		return ctx, func(EnsureResult, error) {}
+	})
+	m, err := NewProviderAppManager(r.config.Load(), append([]Option{WithHTTPClient(&http.Client{Transport: r.daemon, Timeout: clientTimeout}), resolve, observe}, opts...)...)
+	require.NoError(t, err)
+	cleanupProviderManager(t, m)
+	m.SetProviderVersion("ollama", "test") // a reload would otherwise probe a real daemon for it
+	r.m = m
+	return r
+}
+
+// serviceControlled makes ollama a managed service its OS supervisor controls.
+func (r *servedRig) serviceControlled() {
+	r.m.installs.Dispatcher().Register("ollama", &testDaemonInstaller{binary: "ollama", managed: true})
+	r.m.serviceState("ollama").manager = &testOSService{name: "systemd", running: true}
+}
+
+func (r *servedRig) running(t *testing.T, req EnsureRequest) *instance.Instance {
+	t.Helper()
+	o := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+	require.NoError(t, o.err)
+	require.NotNil(t, o.result.Run, "a served start registers a run")
+	awaitRunning(t, o.result.Run)
+	return o.result.Run
+}
+
+func (r *servedRig) tick(t *testing.T) {
+	t.Helper()
+	r.m.reconcileServedRuns(t.Context())
+}
+
+// runLog is what run's log file holds.
+func runLog(t *testing.T, run *instance.Instance) string {
+	t.Helper()
+	require.NotEmpty(t, run.LogFilePath, "every run has a log")
+	body, err := os.ReadFile(run.LogFilePath)
+	require.NoError(t, err)
+	return string(body)
+}
+
+func awaitLeft(t *testing.T, run *instance.Instance) {
+	t.Helper()
+	select {
+	case <-run.LeftStarting():
+	case <-time.After(contractWait):
+		t.Fatal("run never left starting")
+	}
+}
+
+func modelSourceBarrier(b *barrier, gate *atomic.Bool) Option {
+	return WithModelSource(func(context.Context, string) string {
+		if gate == nil || gate.Load() {
+			b.hold()
+		}
+		return ""
+	})
+}
+
+func TestEnsureRunContractServed(t *testing.T) {
+	served := EnsureRequest{Provider: "ollama", Model: servedModel}
+
+	t.Run("S1 concurrent callers share one load", func(t *testing.T) {
+		b := newBarrier()
+		r := newServedRig(t, modelSourceBarrier(b, nil))
+		ctxs, reqs := same(t.Context(), served)
+		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+		b.open()
+		results := collect(t, outs)
+		started := 0
+		for _, o := range results {
+			require.NoError(t, o.err)
+			require.NotNil(t, o.result.Run)
+			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
+			if o.result.Started {
+				started++
+			}
+		}
+		assert.Equal(t, 1, started)
+		assert.Equal(t, int32(1), r.attempts.Load())
+		awaitRunning(t, results[0].result.Run)
+		assert.Equal(t, 1, r.daemon.count(false), "one load reaches the daemon")
+		assert.Len(t, r.m.instances.List(), 1)
+		assert.Equal(t, servedLoaded, results[0].result.Run.Model)
+	})
+
+	t.Run("S2 a failed load reaches every holder, then a fresh start", func(t *testing.T) {
+		for _, failure := range []string{"daemon 500", "unreachable"} {
+			t.Run(failure, func(t *testing.T) {
+				b := newBarrier()
+				r := newServedRig(t, modelSourceBarrier(b, nil))
+				r.daemon.set(func(d *fakeDaemon) {
+					d.loadStatus = http.StatusInternalServerError
+					d.unreachable = failure == "unreachable"
+				})
+				ctxs, reqs := same(t.Context(), served)
+				outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+				b.open()
+				results := collect(t, outs)
+				run := results[0].result.Run
+				require.NotNil(t, run)
+				for _, o := range results {
+					require.NoError(t, o.err)
+					assert.Same(t, run, o.result.Run)
+				}
+				awaitLeft(t, run)
+				require.Error(t, run.FailureCause(), "every holder reads the load's cause")
+				assert.Equal(t, instance.StatusFailed, run.GetStatus())
+				assert.Empty(t, r.m.instances.List(), "a failed load leaves no run")
+				assert.Equal(t, int32(1), r.attempts.Load())
+				r.daemon.set(func(d *fakeDaemon) { d.loadStatus, d.unreachable = 0, false })
+				late := r.running(t, served)
+				assert.NotEqual(t, run.ID, late.ID)
+				assert.Equal(t, int32(2), r.attempts.Load())
+			})
+		}
+	})
+
+	t.Run("S3 cancelled callers never cancel the load", func(t *testing.T) {
+		b := newBarrier()
+		r := newServedRig(t, modelSourceBarrier(b, nil))
+		r.daemon.holdLoads()
+		ctxs, reqs := same(t.Context(), served)
+		leaderCtx, cancelLeader := context.WithCancel(t.Context())
+		ctxs[0] = leaderCtx
+		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+		cancelLeader()
+		b.open()
+		results := collect(t, outs)
+		require.ErrorIs(t, results[0].err, context.Canceled)
+		run := results[1].result.Run
+		require.NotNil(t, run)
+		for _, o := range results[1:] {
+			require.NoError(t, o.err)
+			assert.Same(t, run, o.result.Run)
+		}
+		r.daemon.waitEntered(t)
+		lateCtx, cancelLate := context.WithCancel(t.Context())
+		late := collect(t, []<-chan outcome{r.ensure(lateCtx, served)})[0]
+		cancelLate()
+		require.NoError(t, late.err)
+		assert.Same(t, run, late.result.Run, "a caller arriving during the load reuses its run")
+		r.daemon.release()
+		awaitRunning(t, run)
+		assert.Equal(t, 1, r.daemon.count(false))
+	})
+
+	t.Run("S4 stop while a start is held", func(t *testing.T) {
+		t.Run("before registration", func(t *testing.T) {
+			b := newBarrier()
+			r := newServedRig(t, modelSourceBarrier(b, nil))
+			ctxs, reqs := same(t.Context(), served)
+			outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+			stopped := make(chan error, 1)
+			go func() { stopped <- r.m.Stop(context.Background()) }()
+			waitParkedOn(t, "ProviderAppManager).Stop(", 1, contractWait)
+			b.open()
+			for _, o := range collect(t, outs) {
+				if o.err != nil {
+					assert.ErrorIs(t, o.err, ErrShutdown)
+				} else if o.result.Run != nil {
+					awaitLeft(t, o.result.Run)
+				}
+			}
+			require.NoError(t, <-stopped)
+			assert.Empty(t, r.m.instances.List())
+			assert.Zero(t, r.daemon.count(true), "the daemon outlives the node: nothing is unloaded")
+		})
+		t.Run("during the load", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.holdLoads()
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			run := o.result.Run
+			require.NotNil(t, run)
+			r.daemon.waitEntered(t)
+			require.NoError(t, r.m.Stop(context.Background()))
+			awaitLeft(t, run)
+			require.ErrorIs(t, run.FailureCause(), ErrShutdown)
+			assert.Empty(t, r.m.instances.List())
+			assert.Zero(t, r.daemon.count(true))
+		})
+	})
+
+	t.Run("S5 concurrent force unloads once and loads once", func(t *testing.T) {
+		b := newBarrier()
+		var gate atomic.Bool
+		r := newServedRig(t, modelSourceBarrier(b, &gate))
+		old := r.running(t, served)
+		gate.Store(true)
+		force := served
+		force.Force = true
+		ctxs, reqs := same(t.Context(), force)
+		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
+		b.open()
+		results := collect(t, outs)
+		for _, o := range results {
+			require.NoError(t, o.err)
+			require.NotNil(t, o.result.Run)
+			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
+		}
+		replacement := results[0].result.Run
+		assert.NotEqual(t, old.ID, replacement.ID)
+		awaitRunning(t, replacement)
+		assert.Equal(t, instance.StatusStopped, old.GetStatus())
+		calls := r.daemon.generateCalls()
+		require.Len(t, calls, 3, "load, unload, load")
+		assert.False(t, calls[0].unload)
+		assert.True(t, calls[1].unload)
+		assert.False(t, calls[2].unload)
+		assert.Equal(t, int32(2), r.attempts.Load())
+		assert.Len(t, r.m.instances.List(), 1)
+	})
+
+	t.Run("S6 an explicit stop unloads once", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
+		calls := r.daemon.generateCalls()
+		require.Len(t, calls, 2)
+		assert.True(t, calls[1].unload)
+		assert.Contains(t, runLog(t, run), "stopped (user)")
+		assert.Equal(t, servedLoaded, calls[1].model)
+		assert.Equal(t, float64(0), calls[1].keepAlive)
+		assert.Empty(t, r.m.instances.List())
+		require.ErrorIs(t, r.m.StopInstance(t.Context(), run.ID), ErrInstanceNotFound)
+		assert.Equal(t, 1, r.daemon.count(true))
+	})
+
+	t.Run("S7 reconcile", func(t *testing.T) {
+		t.Run("a dropped model retires its run", func(t *testing.T) {
+			r := newServedRig(t)
+			run := r.running(t, served)
+			r.daemon.drop(servedLoaded)
+			r.tick(t)
+			require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
+			assert.Equal(t, instance.StatusFailed, run.GetStatus())
+			assert.Empty(t, r.m.instances.List())
+			assert.Zero(t, r.daemon.count(true))
+			assert.Regexp(t, `(?s)load requested, keep-alive 5m0s\n.* loaded\n.* dropped by the daemon: .*a request to the model starts it again\n$`, runLog(t, run))
+		})
+		t.Run("an unknown model is adopted", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.loadExternally("x:latest", time.Now().Add(time.Hour))
+			r.tick(t)
+			assert.Empty(t, r.m.instances.List(), "one sighting adopts nothing")
+			r.tick(t)
+			adopted, ok := r.m.instances.GetByModel("x:latest")
+			require.True(t, ok)
+			assert.Equal(t, instance.StartedBy("external"), adopted.StartedBy)
+			assert.Equal(t, instance.StatusRunning, adopted.GetStatus())
+			assert.Negative(t, adopted.GetKeepAlive(), "zzRouter never expires what another client loaded")
+			assert.Zero(t, adopted.Port)
+			assert.Contains(t, runLog(t, adopted), "adopted (loaded by another client)")
+		})
+		t.Run("a starting run is untouched", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.holdLoads()
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			r.daemon.waitEntered(t)
+			r.tick(t)
+			r.tick(t)
+			assert.Equal(t, instance.StatusStarting, o.result.Run.GetStatus())
+			assert.Len(t, r.m.instances.List(), 1)
+			r.daemon.release()
+			awaitRunning(t, o.result.Run)
+		})
+	})
+
+	t.Run("S41 a load the daemon makes room for reports the run it displaced", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
+		first := r.running(t, served)
+		second := r.running(t, EnsureRequest{Provider: "ollama", Model: "b"})
+		assert.Equal(t, []instance.EvictedRun{{RunID: first.ID, Model: first.Model, FreedMiB: 512}}, second.EvictedRuns())
+		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
+		assert.Contains(t, runLog(t, first), "displaced by run "+second.ID)
+		assert.Equal(t, []*instance.Instance{second}, r.m.instances.List())
+		assert.Zero(t, r.daemon.count(true), "the daemon unloaded it; zzRouter sends nothing")
+	})
+
+	t.Run("S42 a run that became ready during the load is displaced too", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
+		r.daemon.holdLoads()
+		pending := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: "b"})})[0]
+		require.NoError(t, pending.err)
+		r.daemon.waitEntered(t)
+		var parked chan struct{}
+		r.daemon.set(func(d *fakeDaemon) { parked, d.hold = d.hold, nil })
+		first := r.running(t, served)
+		close(parked)
+		awaitRunning(t, pending.result.Run)
+		assert.Equal(t, first.ID, pending.result.Run.EvictedRuns()[0].RunID)
+		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
+	})
+
+	t.Run("S43 a model dropped while another loads is the load's to report", func(t *testing.T) {
+		r := newServedRig(t)
+		first := r.running(t, served)
+		r.daemon.holdLoads()
+		pending := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: "b"})})[0]
+		require.NoError(t, pending.err)
+		r.daemon.waitEntered(t)
+		r.daemon.drop(servedLoaded)
+		r.tick(t)
+		assert.Equal(t, instance.StatusRunning, first.GetStatus(), "the daemon may be making room for the load")
+		r.daemon.release()
+		awaitRunning(t, pending.result.Run)
+		require.Len(t, pending.result.Run.EvictedRuns(), 1)
+		assert.Equal(t, first.ID, pending.result.Run.EvictedRuns()[0].RunID)
+		assert.Contains(t, runLog(t, first), "displaced by run "+pending.result.Run.ID)
+	})
+
+	t.Run("S8 a provider service restart retires its runs", func(t *testing.T) {
+		r := newServedRig(t)
+		r.serviceControlled()
+		run := r.running(t, served)
+		_, err := r.m.ControlProviderService(t.Context(), "ollama", "restart")
+		require.NoError(t, err)
+		require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
+		assert.Empty(t, r.m.instances.List())
+		assert.Zero(t, r.daemon.count(true), "the daemon went away; nothing is unloaded")
+		next := r.running(t, served)
+		assert.NotEqual(t, run.ID, next.ID)
+		assert.Equal(t, 2, r.daemon.count(false))
+	})
+
+	t.Run("S9 runs sharing a daemon never share a port", func(t *testing.T) {
+		r := newServedRig(t)
+		a := r.running(t, EnsureRequest{Provider: "ollama", Model: "a"})
+		other := r.running(t, EnsureRequest{Provider: "ollama", Model: "b"})
+		for _, run := range []*instance.Instance{a, other} {
+			assert.Zero(t, run.Port)
+			assert.Empty(t, run.HealthURL)
+		}
+		_, mapped := r.m.instances.GetByPort(11434)
+		assert.False(t, mapped)
+		for _, stats := range r.m.ports.GetPoolStats() {
+			assert.Zero(t, stats.AllocatedPorts, "no pool port for a served run")
+		}
+		require.NoError(t, r.m.StopInstance(t.Context(), a.ID))
+		kept, ok := r.m.instances.GetByModel("b:latest")
+		require.True(t, ok)
+		assert.Same(t, other, kept)
+		assert.Equal(t, instance.StatusRunning, kept.GetStatus())
+		assert.True(t, r.daemon.isLoaded("b:latest"))
+		assert.False(t, r.daemon.isLoaded("a:latest"))
+	})
+
+	t.Run("S11 a load carries the run's keep-alive as a number", func(t *testing.T) {
+		r := newServedRig(t)
+		pinned := served
+		pinned.Parameters = map[string]string{"keep-alive": "-1"}
+		run := r.running(t, pinned)
+		plain := r.running(t, EnsureRequest{Provider: "ollama", Model: "plain"})
+		calls := r.daemon.generateCalls()
+		require.Len(t, calls, 2)
+		assert.Equal(t, float64(-1), calls[0].keepAlive, "a number: the string \"-1\" is a 400")
+		assert.Equal(t, float64(300), calls[1].keepAlive, "the provider's keep-alive, in seconds")
+		for _, call := range calls {
+			assert.ElementsMatch(t, []string{"model", "prompt", "stream", "keep_alive"}, slices.Collect(maps.Keys(call.body)), "no parameter reaches the daemon")
+		}
+		for _, served := range []*instance.Instance{run, plain} {
+			assert.Negative(t, served.GetKeepAlive(), "the daemon expires a served model, not zzRouter")
+		}
+		assert.Equal(t, "-1", run.Resolved().Parameters["keep-alive"])
+		assert.Equal(t, "5m0s", plain.Resolved().Parameters["keep-alive"])
+	})
+
+	t.Run("S12 the daemon expires an idle model and the reconcile retires its run", func(t *testing.T) {
+		r := newServedRig(t)
+		r.m.Start(t.Context())
+		short := served
+		short.Parameters = map[string]string{"keep-alive": "1s"}
+		run := r.running(t, short)
+		assert.Equal(t, float64(1), r.daemon.generateCalls()[0].keepAlive)
+		lease, err := run.Acquire(t.Context(), nil) // a request without a hint re-arms nothing
+		require.NoError(t, err)
+		lease.Release()
+		time.Sleep(time.Second + settle)
+		assert.Len(t, r.m.instances.List(), 1, "zzRouter arms no timer of its own")
+		r.daemon.drop(servedLoaded) // the daemon's own expiry
+		r.tick(t)
+		require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
+		assert.Empty(t, r.m.instances.List())
+		assert.Zero(t, r.daemon.count(true), "zzRouter sends no unload")
+	})
+
+	t.Run("S13 a model a process provider holds refuses a served start", func(t *testing.T) {
+		r := newServedRig(t)
+		held := instance.NewInstance("held", "generic", servedLoaded, 0, 0, 0)
+		held.MarkRunning()
+		require.NoError(t, r.m.instances.Register(held))
+		_, err := r.m.EnsureRun(t.Context(), served)
+		require.ErrorIs(t, err, ErrRunHeldByOtherProvider)
+		assert.Zero(t, r.daemon.count(false))
+	})
+
+	t.Run("S14 a stop during the load unloads after it", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.holdLoads()
+		o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+		require.NoError(t, o.err)
+		r.daemon.waitEntered(t)
+		stopped := make(chan error, 1)
+		go func() { stopped <- r.m.StopInstance(context.Background(), o.result.Run.ID) }()
+		waitParkedOn(t, ").StopInstance(", 1, contractWait)
+		assert.Zero(t, r.daemon.count(true), "no unload races the load")
+		r.daemon.release()
+		require.NoError(t, <-stopped)
+		calls := r.daemon.generateCalls()
+		require.Len(t, calls, 2)
+		assert.False(t, calls[0].unload)
+		assert.True(t, calls[1].unload)
+		assert.False(t, r.daemon.isLoaded(servedLoaded))
+		r.tick(t)
+		r.tick(t)
+		assert.Empty(t, r.m.instances.List())
+	})
+
+	t.Run("S15 a zero keep-alive hint unloads at release", func(t *testing.T) {
+		r := newServedRig(t)
+		r.m.Start(t.Context())
+		run := r.running(t, served)
+		zero := time.Duration(0)
+		lease, err := run.Acquire(t.Context(), &keepalive.Override{Duration: &zero})
+		require.NoError(t, err)
+		time.Sleep(settle)
+		assert.Len(t, r.m.instances.List(), 1, "a held run is not expired")
+		lease.Release()
+		require.Eventually(t, func() bool { return len(r.m.instances.List()) == 0 }, contractWait, 10*time.Millisecond)
+		time.Sleep(settle)
+		assert.Equal(t, 1, r.daemon.count(true))
+	})
+
+	t.Run("S16 reconcile races", func(t *testing.T) {
+		t.Run("a load completing during a tick keeps its run", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.holdLoads()
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			run := o.result.Run
+			r.daemon.waitEntered(t)
+			r.daemon.set(func(d *fakeDaemon) {
+				d.psHook = func() { // once: the landing load's own listing must not wait on itself
+					d.set(func(d *fakeDaemon) { d.psHook = nil })
+					d.release()
+					<-run.LeftStarting()
+				}
+			})
+			r.tick(t)
+			assert.Equal(t, instance.StatusRunning, run.GetStatus())
+			assert.Len(t, r.m.instances.List(), 1)
+		})
+		t.Run("a model listed right after its stop is not adopted", func(t *testing.T) {
+			r := newServedRig(t)
+			run := r.running(t, served)
+			r.daemon.set(func(d *fakeDaemon) { d.stale[servedLoaded] = true })
+			require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
+			r.tick(t)
+			assert.Empty(t, r.m.instances.List())
+			r.daemon.set(func(d *fakeDaemon) { delete(d.stale, servedLoaded) })
+			r.tick(t)
+			assert.Empty(t, r.m.instances.List())
+		})
+	})
+
+	t.Run("S17 adoption racing a start leaves one run", func(t *testing.T) {
+		t.Run("start first", func(t *testing.T) {
+			b := newBarrier()
+			var gate atomic.Bool
+			r := newServedRig(t, modelSourceBarrier(b, &gate))
+			r.daemon.loadExternally(servedLoaded, time.Now().Add(time.Hour))
+			r.tick(t)
+			gate.Store(true)
+			start := r.ensure(t.Context(), served)
+			b.reached(t)
+			r.tick(t)
+			b.open()
+			o := collect(t, []<-chan outcome{start})[0]
+			require.NoError(t, o.err)
+			assert.True(t, o.result.Started)
+			assert.Len(t, r.m.instances.List(), 1)
+		})
+		t.Run("adoption first", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.loadExternally(servedLoaded, time.Now().Add(time.Hour))
+			r.tick(t)
+			r.tick(t)
+			adopted, ok := r.m.instances.GetByModel(servedLoaded)
+			require.True(t, ok)
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			assert.False(t, o.result.Started)
+			assert.Same(t, adopted, o.result.Run)
+			assert.Len(t, r.m.instances.List(), 1)
+		})
+	})
+
+	t.Run("S18 an untagged name is one run under the daemon's name", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		assert.Equal(t, servedLoaded, run.Model)
+		assert.Equal(t, servedLoaded, run.WireModel)
+		for range 3 {
+			r.tick(t)
+		}
+		assert.Equal(t, instance.StatusRunning, run.GetStatus())
+		listed, ok := r.m.instances.GetByModel(servedLoaded)
+		require.True(t, ok)
+		assert.Same(t, run, listed)
+		again := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: servedLoaded})})[0]
+		require.NoError(t, again.err)
+		assert.Same(t, run, again.result.Run)
+	})
+
+	t.Run("S19 a pin from before a node restart is adopted with no zzRouter expiry", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.loadExternally("p:latest", time.Time{})
+		r.tick(t)
+		r.tick(t)
+		adopted, ok := r.m.instances.GetByModel("p:latest")
+		require.True(t, ok)
+		assert.Negative(t, adopted.GetKeepAlive())
+		assert.Greater(t, time.Until(adopted.Loaded().ExpiresAt), daemonForever/2, "the daemon's own expiry is recorded")
+		assert.Equal(t, instance.StartedBy("external"), adopted.StartedBy)
+	})
+
+	t.Run("S20 a failed listing changes nothing", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		r.daemon.loadExternally("x:latest", time.Now().Add(time.Hour))
+		r.daemon.set(func(d *fakeDaemon) { d.psErr = true })
+		for range 3 {
+			r.tick(t)
+		}
+		assert.Equal(t, instance.StatusRunning, run.GetStatus())
+		assert.Len(t, r.m.instances.List(), 1)
+		r.daemon.set(func(d *fakeDaemon) { d.psErr = false })
+		r.tick(t)
+		assert.Len(t, r.m.instances.List(), 1, "failed listings were no sightings")
+	})
+
+	t.Run("S21 an install-driven restart retires running runs only", func(t *testing.T) {
+		r := newServedRig(t)
+		r.serviceControlled()
+		running := r.running(t, served)
+		r.daemon.holdLoads()
+		o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: "b"})})[0]
+		require.NoError(t, o.err)
+		r.daemon.waitEntered(t)
+		require.NoError(t, r.m.controlInstallService(t.Context(), "ollama", install.ServiceRestart))
+		require.ErrorIs(t, running.FailureCause(), ErrModelDropped)
+		assert.Equal(t, instance.StatusStarting, o.result.Run.GetStatus(), "a starting run's outcome is its load's")
+		r.daemon.release()
+		awaitRunning(t, o.result.Run)
+		assert.Len(t, r.m.instances.List(), 1)
+	})
+
+	t.Run("S23 a load outlasts the client timeout within its readiness budget", func(t *testing.T) {
+		for _, tc := range []struct {
+			budget string
+			ready  bool
+		}{{"", true}, {"20ms", false}} {
+			t.Run("budget="+tc.budget, func(t *testing.T) {
+				const clientTimeout, loadTime = 20 * time.Millisecond, 200 * time.Millisecond
+				r := newServedRigTimed(t, clientTimeout)
+				r.daemon.set(func(d *fakeDaemon) { d.loadDelay = loadTime })
+				if tc.budget != "" {
+					r.edit(t, func(svc *config.ServiceConfig) {
+						svc.Runtime.HealthCheck.ReadinessProbe = &config.ProbeConfig{Timeout: tc.budget}
+					})
+				}
+				o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+				require.NoError(t, o.err)
+				awaitLeft(t, o.result.Run)
+				if tc.ready {
+					assert.Equal(t, instance.StatusRunning, o.result.Run.GetStatus(), o.result.Run.GetErrorMessage())
+				} else {
+					require.ErrorIs(t, o.result.Run.FailureCause(), context.DeadlineExceeded)
+				}
+			})
+		}
+	})
+
+	t.Run("S24 parameters status answers what a reload would change", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		pinned := r.running(t, EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}})
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State)
+		r.edit(t, func(svc *config.ServiceConfig) {
+			svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"num-ctx": "4096"}}
+		})
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State, "a key the load does not send changes nothing")
+		r.edit(t, func(svc *config.ServiceConfig) {
+			svc.Runtime.KeepAlive = "10m"
+		})
+		stale := r.m.ParametersStatus(run)
+		assert.Equal(t, instance.ParametersStale, stale.State)
+		assert.Contains(t, stale.Changed, "parameters.keep-alive")
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(pinned).State, "a run's own keep-alive holds against config")
+	})
+
+	t.Run("S25 restarting an adopted run unloads and loads once", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.loadExternally("x:latest", time.Now().Add(time.Hour))
+		r.tick(t)
+		r.tick(t)
+		adopted, ok := r.m.instances.GetByModel("x:latest")
+		require.True(t, ok)
+		next, err := r.m.RestartInstance(t.Context(), adopted.ID)
+		require.NoError(t, err)
+		awaitRunning(t, next)
+		calls := r.daemon.generateCalls()
+		require.Len(t, calls, 2)
+		assert.True(t, calls[0].unload)
+		assert.False(t, calls[1].unload)
+		assert.Equal(t, instance.StartedByAPI, next.StartedBy)
+		assert.Equal(t, float64(300), calls[1].keepAlive, "the restart loads with the provider's keep-alive")
+		assert.Equal(t, "ollama", next.SnapshotConfig().Provider)
+	})
+
+	t.Run("S26 a failed unload is retried until the model is free", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		r.daemon.set(func(d *fakeDaemon) { d.unreachable = true })
+		require.Error(t, r.m.StopInstance(t.Context(), run.ID))
+		assert.True(t, run.StopUnconfirmed.Load())
+		_, err := r.m.EnsureRun(t.Context(), served)
+		require.ErrorIs(t, err, instance.ErrStopping)
+		r.daemon.set(func(d *fakeDaemon) { d.unreachable = false })
+		r.tick(t) // the daemon still holds the model: the stop is retried
+		assert.Empty(t, r.m.instances.List())
+		assert.False(t, r.daemon.isLoaded(servedLoaded), "a pinned model is unloaded, not left for the daemon")
+		next := r.running(t, served)
+		assert.NotEqual(t, run.ID, next.ID)
+	})
+}
+
+func TestEnsureRunContractServedEnds(t *testing.T) {
+	served := EnsureRequest{Provider: "ollama", Model: servedModel}
+
+	t.Run("S27 a stop in progress is never ended by the reconcile", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		hold := make(chan struct{})
+		r.daemon.set(func(d *fakeDaemon) { d.unloadHold = hold })
+		stopped := make(chan error, 1)
+		go func() { stopped <- r.m.StopInstance(context.Background(), run.ID) }()
+		require.Eventually(t, func() bool { return !r.daemon.isLoaded(servedLoaded) }, contractWait, time.Millisecond)
+		r.tick(t)
+		_, listed := r.m.instances.Get(run.ID)
+		assert.True(t, listed, "the run stays registered until its own unload answers")
+		_, err := r.m.EnsureRun(t.Context(), served)
+		require.ErrorIs(t, err, instance.ErrStopping, "no load can land before the unload")
+		close(hold)
+		require.NoError(t, <-stopped)
+		assert.Empty(t, r.m.instances.List())
+	})
+
+	t.Run("S28 a run of a provider config no longer enables still ends", func(t *testing.T) {
+		t.Run("a stop in progress when it is disabled", func(t *testing.T) {
+			r := newServedRig(t)
+			r.daemon.holdLoads()
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+			require.NoError(t, o.err)
+			r.daemon.waitEntered(t)
+			stopped := make(chan error, 1)
+			go func() { stopped <- r.m.StopInstance(context.Background(), o.result.Run.ID) }()
+			waitParkedOn(t, ").StopInstance(", 1, contractWait)
+			r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) }) // the stop holds the run; the reload leaves it
+			r.daemon.release()
+			require.NoError(t, <-stopped)
+			assert.Equal(t, 1, r.daemon.count(true), "the disabled provider's daemon is still told")
+			assert.False(t, r.daemon.isLoaded(servedLoaded))
+			assert.Empty(t, r.m.instances.List())
+		})
+		t.Run("retired by the reload", func(t *testing.T) {
+			r := newServedRig(t)
+			run := r.running(t, served)
+			r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) })
+			require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
+			assert.Empty(t, r.m.instances.List())
+			assert.Zero(t, r.daemon.count(true), "the provider no longer exists here: nothing is asked of it")
+		})
+	})
+
+	t.Run("S29 keep-alive: explicit reaches the daemon, unset is its own, zero is zzRouter's", func(t *testing.T) {
+		r := newServedRig(t)
+		r.m.Start(t.Context())
+		r.edit(t, func(svc *config.ServiceConfig) { svc.Runtime.KeepAlive = "" })
+		unset := r.running(t, served)
+		assert.NotContains(t, r.daemon.generateCalls()[0].body, "keep_alive", "the daemon's OLLAMA_KEEP_ALIVE applies")
+		assert.NotContains(t, unset.Resolved().Parameters, "keep-alive")
+		zero := r.running(t, EnsureRequest{Provider: "ollama", Model: "z", Parameters: map[string]string{"keep-alive": "0"}})
+		assert.NotContains(t, r.daemon.generateCalls()[1].body, "keep_alive", "a zero never reaches the daemon")
+		assert.True(t, r.daemon.isLoaded("z:latest"))
+		assert.Zero(t, zero.GetKeepAlive())
+		lease, err := zero.Acquire(t.Context(), nil)
+		require.NoError(t, err)
+		time.Sleep(settle)
+		assert.True(t, r.daemon.isLoaded("z:latest"), "a held run is not ended")
+		lease.Release()
+		require.Eventually(t, func() bool { return !r.daemon.isLoaded("z:latest") }, contractWait, 10*time.Millisecond)
+		_, listed := r.m.instances.Get(zero.ID)
+		assert.False(t, listed)
+	})
+
+	t.Run("S30 an unload asked of a model with no run starts nothing", func(t *testing.T) {
+		r := newServedRig(t)
+		unload := served
+		unload.Unload, unload.Origin = true, OriginRequest
+		result, err := r.m.EnsureRun(t.Context(), unload)
+		require.NoError(t, err)
+		assert.Nil(t, result.Run)
+		assert.Zero(t, r.daemon.count(false), "nothing is loaded to be unloaded")
+		assert.Empty(t, r.m.instances.List())
+		run := r.running(t, served)
+		result, err = r.m.EnsureRun(t.Context(), unload)
+		require.NoError(t, err)
+		assert.Same(t, run, result.Run, "a run that exists serves the request; its hint ends it at release")
+	})
+
+	t.Run("S31 a served model is one run whatever the endpoint and name", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, EnsureRequest{Provider: "ollama", Model: servedModel, Endpoint: EndpointEmbeddings})
+		for _, endpoint := range []Endpoint{EndpointChat, EndpointEmbeddings} {
+			found, ok := r.m.GetInstanceByModel("ollama", servedModel, endpoint)
+			require.True(t, ok)
+			assert.Same(t, run, found)
+		}
+		found, ok := r.m.GetInstanceByModel("", servedModel, EndpointChat)
+		require.True(t, ok, "a caller naming no provider finds the run under the daemon's name")
+		assert.Same(t, run, found)
+		assert.Equal(t, servedModel, r.m.RequestModel(run, servedModel), "the daemon resolves the untagged name")
+		assert.Equal(t, servedLoaded, r.m.RequestModel(run, "alias"), "another name is sent as the daemon's")
+		held := instance.NewInstance("held", "generic", "x:latest", 0, 0, 0)
+		held.Endpoint = string(EndpointEmbeddings)
+		held.MarkRunning()
+		require.NoError(t, r.m.instances.Register(held))
+		r.daemon.loadExternally("x:latest", time.Now().Add(time.Hour))
+		r.tick(t)
+		r.tick(t)
+		assert.Len(t, r.m.instances.List(), 2, "a model any endpoint's run holds is never adopted")
+	})
+
+	t.Run("S32 a deliberate daemon restart is a stop, not a crash, and listings keep the daemon's details", func(t *testing.T) {
+		r := newServedRig(t)
+		r.serviceControlled()
+		run := r.running(t, served)
+		r.tick(t)
+		loaded := run.Loaded()
+		assert.Equal(t, "sha-"+servedLoaded, loaded.Digest)
+		assert.Equal(t, instance.Loaded{Size: 0, VRAM: fakeVRAM, Digest: "sha-" + servedLoaded, Format: "gguf", Family: "llama", ParameterSize: "8B", QuantLevel: "Q4_K_M", ExpiresAt: loaded.ExpiresAt}, loaded)
+		for len(r.m.auditEvents) > 0 {
+			<-r.m.auditEvents
+		}
+		_, err := r.m.ControlProviderService(t.Context(), "ollama", "restart")
+		require.NoError(t, err)
+		var reasons []obsruns.StopReason
+		for len(r.m.auditEvents) > 0 {
+			if e := <-r.m.auditEvents; e.Type == EventInstanceStopped && e.Instance == run.ID {
+				reasons = append(reasons, e.Reason)
+			}
+		}
+		assert.Equal(t, []obsruns.StopReason{obsruns.StopReasonUser}, reasons)
+	})
+
+	t.Run("S33 a served start names its model", func(t *testing.T) {
+		r := newServedRig(t)
+		_, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "ollama"})
+		require.ErrorIs(t, err, ErrParameterValidation)
+		assert.Zero(t, r.daemon.count(false))
+		assert.Empty(t, r.m.instances.List())
+	})
+
+	t.Run("S34 the reconcile's listing carries the provider's credential, edits included", func(t *testing.T) {
+		r := newServedRig(t)
+		r.edit(t, func(svc *config.ServiceConfig) {
+			svc.Runtime.API = &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "first-token"}
+		})
+		r.tick(t)
+		r.edit(t, func(svc *config.ServiceConfig) {
+			svc.Runtime.API = &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "second-token"}
+		})
+		r.tick(t)
+		r.daemon.mu.Lock()
+		defer r.daemon.mu.Unlock()
+		assert.Equal(t, []string{"Bearer first-token", "Bearer second-token"}, r.daemon.psAuth)
+	})
+}
+
+func TestEnsureRunContractServedRaces(t *testing.T) {
+	served := EnsureRequest{Provider: "ollama", Model: servedModel}
+
+	t.Run("S35 a user's retried stop and the reconcile's retry end a run once", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		r.daemon.set(func(d *fakeDaemon) { d.unreachable = true })
+		require.Error(t, r.m.StopInstance(t.Context(), run.ID))
+		hold := make(chan struct{})
+		stopped := make(chan error, 1)
+		r.daemon.set(func(d *fakeDaemon) {
+			d.unreachable, d.unloadHold = false, hold
+			d.psHook = func() { // the listing is taken; the user retries the stop now
+				d.psHook = nil
+				go func() { stopped <- r.m.StopInstance(context.Background(), run.ID) }()
+				for r.daemon.count(true) == 0 { // the user's unload has reached the daemon
+
+					time.Sleep(time.Millisecond)
+				}
+			}
+		})
+		ticked := make(chan struct{})
+		go func() { r.tick(t); close(ticked) }()
+		time.Sleep(settle)
+		close(hold)
+		<-ticked
+		require.NoError(t, <-stopped)
+		assert.Equal(t, 1, r.daemon.count(true), "one unload reaches the daemon")
+		assert.Empty(t, r.m.instances.List())
+	})
+
+	t.Run("S36 a run retired while it loads never runs, and its load is undone", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.holdLoads()
+		o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+		require.NoError(t, o.err)
+		r.daemon.waitEntered(t)
+		r.edit(t, func(svc *config.ServiceConfig) { svc.Enabled = new(false) })
+		require.ErrorIs(t, o.result.Run.FailureCause(), ErrModelDropped)
+		for len(r.m.auditEvents) > 0 {
+			<-r.m.auditEvents
+		}
+		r.daemon.release()
+		require.Eventually(t, func() bool { return r.daemon.count(true) == 1 }, contractWait, time.Millisecond)
+		require.NoError(t, o.result.Run.WaitForGoroutines(t.Context()))
+		assert.False(t, r.daemon.isLoaded(servedLoaded))
+		assert.Equal(t, instance.StatusFailed, o.result.Run.GetStatus())
+		for len(r.m.auditEvents) > 0 {
+			assert.NotEqual(t, EventInstanceRunning, (<-r.m.auditEvents).Type)
+		}
+	})
+
+	t.Run("S37 a model the daemon does not have is not local", func(t *testing.T) {
+		r := newServedRig(t)
+		r.daemon.set(func(d *fakeDaemon) { d.loadStatus = http.StatusNotFound })
+		o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+		require.NoError(t, o.err)
+		awaitLeft(t, o.result.Run)
+		require.ErrorIs(t, o.result.Run.FailureCause(), ErrModelNotLocal)
+	})
+
+	t.Run("S38 nothing is reconciled while the node stops", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, served)
+		r.daemon.drop(servedLoaded)
+		r.m.stopping.Store(true)
+		r.tick(t)
+		r.m.stopping.Store(false) // let cleanup stop the node
+		assert.Equal(t, instance.StatusRunning, run.GetStatus())
+	})
+
+	t.Run("S39 a served provider is reached through its config alone", func(t *testing.T) {
+		r := newServedRig(t, WithBackendResolver(func(string) (*backend.Resolved, bool) { return nil, false }))
+		run := r.running(t, served)
+		base, _, err := r.m.Upstream(run)
+		require.NoError(t, err)
+		assert.Equal(t, servedBase, base)
+	})
+
+	t.Run("S40 a daemon name is matched as the daemon matches it", func(t *testing.T) {
+		r := newServedRig(t)
+		run := r.running(t, EnsureRequest{Provider: "ollama", Model: "library/M"})
+		assert.Equal(t, "M:latest", run.Model)
+		assert.True(t, r.daemon.isLoaded("m:latest"))
+		for range 3 {
+			r.tick(t)
+		}
+		assert.Equal(t, instance.StatusRunning, run.GetStatus())
+		assert.Len(t, r.m.instances.List(), 1, "the lower-cased listing is the same model, not one to adopt")
+	})
 }

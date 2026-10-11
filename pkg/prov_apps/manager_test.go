@@ -179,7 +179,7 @@ func TestProviderAppManager_EnsureRun(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, inst.ID, got.ID)
 
-	gotByModel, ok := m.GetInstanceByModel("llama3")
+	gotByModel, ok := m.GetInstanceByModel("", "llama3", EndpointChat)
 	assert.True(t, ok)
 	assert.Equal(t, inst.ID, gotByModel.ID)
 

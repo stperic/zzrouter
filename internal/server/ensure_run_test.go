@@ -150,22 +150,21 @@ func TestEnsureLaunchAndLoadShareAcceptedJob(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), launched.JobID)
 }
 
-func TestEnsureServedLaunchAndLoadUseBackendWithoutPortPool(t *testing.T) {
+func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) {
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
-	calls := 0
+	var loads atomic.Int32
 	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
-		calls++
+		if req.URL.Path != "/api/generate" {
+			return daemonListing(), nil // the daemon's listing, read as each load lands
+		}
+		loads.Add(1)
 		assert.Equal(t, "http://backend:11434/api/generate", req.URL.String())
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
-		if calls <= 2 {
-			assert.Equal(t, "local", body["model"])
-		} else {
-			assert.Empty(t, body["model"])
-		}
+		assert.Equal(t, "local:latest", body["model"])
 		assert.Equal(t, false, body["stream"])
-		assert.Equal(t, "-1", body["keep_alive"])
+		assert.Equal(t, float64(-1), body["keep_alive"])
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
 	})}
 	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithHTTPClient(client), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) { return true, nil }), prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) {
@@ -176,27 +175,29 @@ func TestEnsureServedLaunchAndLoadUseBackendWithoutPortPool(t *testing.T) {
 	runs := &RunsExecutor{appMgr: mgr, getNodename: func() string { return "node" }, appsConfig: func() *config.AppsConfig { return cfg }}
 	c, rec := postJSON(t, `{"model_name":"local","provider":"ollama","launch_mode":"native","parameters":{"keep-alive":"-1"}}`)
 	runs.HandleInternalLaunchRun(c)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	var launched LaunchRunResponse
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	var launched struct {
+		ID   string
+		Port int
+	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &launched))
-	assert.True(t, launched.Accepted)
-	assert.Equal(t, "native", launched.LaunchMode)
-	assert.Equal(t, 11434, launched.Port)
-	assert.Empty(t, launched.ID)
-	assert.NotEmpty(t, launched.Message)
-	response, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "-1"}})
+	require.NotEmpty(t, launched.ID, "a served model is a run")
+	assert.Zero(t, launched.Port, "a served run takes no port")
+	response, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: "local", Provider: "ollama"})
 	require.NoError(t, err)
-	assert.Equal(t, 11434, response.Port)
-	assert.Empty(t, response.InstanceID)
-	assert.Equal(t, "running", response.Status)
+	assert.True(t, response.Reused)
+	assert.Equal(t, launched.ID, response.InstanceID)
 	utility := NewRunsUtilityService(mgr, func() *config.AppsConfig { return cfg })
-	batch, failed, err := utility.BatchLaunch(t.Context(), []LaunchRequest{{Provider: "ollama", LaunchMode: "native", Parameters: map[string]string{"keep-alive": "-1"}}})
+	batch, failed, err := utility.BatchLaunch(t.Context(), []LaunchRequest{{Provider: "ollama", Model: "local", LaunchMode: "native"}})
 	require.NoError(t, err)
 	assert.Empty(t, failed)
 	require.Len(t, batch, 1)
-	assert.NotContains(t, batch[0], "id")
-	assert.Equal(t, 3, calls)
-	assert.Empty(t, mgr.Instances().List())
+	assert.Equal(t, launched.ID, batch[0]["id"])
+	require.Eventually(t, func() bool { return loads.Load() == 1 }, time.Second, time.Millisecond)
+	require.Len(t, mgr.Instances().List(), 1)
+	for _, stats := range mgr.Ports().GetPoolStats() {
+		assert.Zero(t, stats.AllocatedPorts)
+	}
 }
 
 func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
@@ -297,41 +298,46 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 	})
 }
 
-func TestEnsureServedProvidersLoadIndependently(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		cfg := &config.AppsConfig{}
-		for _, provider := range []string{"ollama", "other"} {
-			require.NoError(t, cfg.AddApp(provider, config.ServiceConfig{Enabled: new(true), Name: provider, Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+// One live run per model, across providers: a second served provider on the
+// same daemon is refused while the first holds the model.
+// daemonListing is an empty answer to any daemon read other than a load.
+func daemonListing() *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[]}`)), Header: http.Header{}}
+}
+
+func TestEnsureServedProvidersShareOneRunPerModel(t *testing.T) {
+	cfg := &config.AppsConfig{}
+	for _, provider := range []string{"ollama", "other"} {
+		require.NoError(t, cfg.AddApp(provider, config.ServiceConfig{Enabled: new(true), Name: provider, Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+	}
+	release := make(chan struct{})
+	var calls atomic.Int32
+	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/generate" {
+			return daemonListing(), nil
 		}
-		release := make(chan struct{})
-		calls := 0
-		client := &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) {
-			calls++
-			<-release
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
-		})}
-		mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithHTTPClient(client), prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) {
-			return &backend.Resolved{Endpoint: "http://backend:11434"}, true
-		}))
-		require.NoError(t, err)
-		t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-		leader, joined := make(chan error, 1), make(chan error, 1)
-		go func() {
-			_, err := mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "ollama", Model: "local"})
-			leader <- err
-		}()
-		synctest.Wait()
-		go func() {
-			_, err := mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "other", Model: "local"})
-			joined <- err
-		}()
-		synctest.Wait()
-		close(release)
-		require.NoError(t, <-leader)
-		require.NoError(t, <-joined)
-		assert.Equal(t, 2, calls)
-		assert.Empty(t, mgr.Instances().List())
-	})
+		calls.Add(1)
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+	})}
+	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithHTTPClient(client), prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) {
+		return &backend.Resolved{Endpoint: "http://backend:11434"}, true
+	}))
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
+	first, err := mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "ollama", Model: "local"})
+	require.NoError(t, err)
+	_, err = mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "other", Model: "local"})
+	require.ErrorIs(t, err, prov_apps.ErrRunHeldByOtherProvider)
+	assert.Equal(t, http.StatusConflict, answeredStatus(err))
+	close(release)
+	select {
+	case <-first.Run.LeftStarting():
+	case <-time.After(readinessWait):
+		t.Fatal("the load never finished")
+	}
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Len(t, mgr.Instances().List(), 1)
 }
 
 func TestRunsLoadStoppingRunRefusesWithRetryAfter(t *testing.T) {
@@ -363,4 +369,23 @@ func TestRunsLoadStoppingRunRefusesWithRetryAfter(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, ollama.Code)
 		assert.Equal(t, "5", ollama.Header().Get("Retry-After"))
 	}
+}
+
+// A served preview is the load a start would make: the daemon's name for
+// the model and the run's keep-alive, with no command line.
+func TestPreviewServedRendersItsLoad(t *testing.T) {
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434", KeepAlive: "5m"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+	mgr, err := prov_apps.NewProviderAppManager(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
+	load := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" })
+	preview, err := load.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama"})
+	require.NoError(t, err)
+	assert.Equal(t, "local:latest", preview.Model)
+	assert.Empty(t, preview.FullCommand)
+	assert.Equal(t, map[string]string{"keep-alive": "5m0s"}, preview.Parameters)
+	pinned, err := load.PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "-1"}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"keep-alive": "-1"}, pinned.Parameters)
 }

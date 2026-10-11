@@ -143,9 +143,18 @@ func (*fakeDeps) FinishRelay(w http.ResponseWriter, req *http.Request, resp *htt
 
 func (f *fakeDeps) Normalizers() *normalizer.Registry { return normalizer.NewRegistry() }
 
-func (f *fakeDeps) AppInstance(model string) (*instance.Instance, bool) {
+func (f *fakeDeps) AppInstance(model, _ string) (*instance.Instance, bool) {
 	inst, ok := f.instances[model]
 	return inst, ok
+}
+
+// LocalRun answers as a provider without runs: endpoint providers here are forwarded to.
+func (f *fakeDeps) LocalRun(string, string) (*instance.Instance, error) {
+	return nil, nil //nolint:nilnil // no run is the answer for a provider without runs
+}
+
+func (f *fakeDeps) RunUpstream(inst *instance.Instance) (string, backend.Upstream, error) {
+	return fmt.Sprintf("http://localhost:%d", inst.Port), backend.Engine(), nil
 }
 
 func (f *fakeDeps) ValidateModel(_ context.Context, model string) error {

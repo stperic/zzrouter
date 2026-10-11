@@ -86,13 +86,24 @@ func (d *chainServerDeps) ValidateModel(ctx context.Context, model string) error
 	return d.s.validateModel(ctx, model)
 }
 
-func (d *chainServerDeps) AppInstance(model string) (*instance.Instance, bool) {
+func (d *chainServerDeps) AppInstance(model, provider string) (*instance.Instance, bool) {
 	if d.s.providers.appMgr == nil {
 		return nil, false
 	}
-	// Canonicalized like every by-name lookup, so an alias, or a variant
-	// its base's process serves, finds the run.
-	return d.s.providers.appMgr.GetInstanceByModel(model)
+	// Resolved as a start resolves it: an alias, a variant's base or a daemon's tag finds the run.
+	return d.s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.EndpointChat)
+}
+
+// LocalRun is the ready run serving a local model, or nil when its provider serves it without one.
+func (d *chainServerDeps) LocalRun(model, provider string) (*instance.Instance, error) {
+	if !d.s.hasRuns(provider) {
+		return nil, nil //nolint:nilnil // no run is the answer for a provider without runs
+	}
+	return d.s.loadModelViaNodeAPI(model, provider, string(prov_apps.EndpointChat))
+}
+
+func (d *chainServerDeps) RunUpstream(inst *instance.Instance) (string, backend.Upstream, error) {
+	return d.s.providers.appMgr.Upstream(inst)
 }
 
 func (d *chainServerDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {

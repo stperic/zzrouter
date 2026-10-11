@@ -58,7 +58,16 @@ func TestDecide(t *testing.T) {
 		{name: "none ready", want: Want{Force: true}, node: Node{Lifecycle: LifecycleNone, Reachable: true, Existing: held(instance.StatusStopping, "other")}, act: ActReady},
 		{name: "none absent", node: Node{Lifecycle: LifecycleNone, Reachable: true, Absent: true}, err: ErrModelNotLocal},
 		{name: "none unreachable", node: Node{Lifecycle: LifecycleNone, Absent: true}, err: ErrProviderUnavailable},
-		{name: "served loads without process catalog", want: Want{Force: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Absent: true, Existing: held(instance.StatusStopping, "other")}, act: ActLoad},
+		// A served model is a run: only reachability is its own; the run rules are everyone's.
+		{name: "served starts", node: Node{Lifecycle: LifecycleServed, Reachable: true}, act: ActStart},
+		{name: "served reuses its run", node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusRunning, "fake")}, act: ActReuse, run: "held"},
+		{name: "served refuses another provider's run", node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusRunning, "other")}, err: ErrRunHeldByOtherProvider},
+		{name: "served force replaces its run", want: Want{Force: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusRunning, "fake")}, act: ActStart, replace: "held"},
+		{name: "unload of a model with no run starts nothing", want: Want{Unload: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true}, act: ActReady},
+		{name: "unload of a stopping model goes to the provider", want: Want{Unload: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusStopping, "fake")}, act: ActReady},
+		{name: "unload of another provider's model goes to the provider", want: Want{Unload: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusRunning, "other")}, act: ActReady},
+		{name: "unload of a running model reuses it", want: Want{Unload: true}, node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusRunning, "fake")}, act: ActReuse, run: "held"},
+		{name: "served stopping retries", node: Node{Lifecycle: LifecycleServed, Reachable: true, Existing: held(instance.StatusStopping, "other")}, err: instance.ErrStopping},
 		{name: "served unreachable", node: Node{Lifecycle: LifecycleServed}, err: ErrProviderUnavailable},
 		{name: "served unreachable before catalog", node: Node{Lifecycle: LifecycleServed, Absent: true}, err: ErrProviderUnavailable},
 

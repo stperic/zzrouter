@@ -43,6 +43,9 @@ var (
 	// ErrProviderUnavailable refuses a served start without a usable endpoint.
 	ErrProviderUnavailable = errors.New("provider endpoint unavailable")
 
+	// ErrModelDropped ends a served run whose daemon no longer holds its model; the next request loads it again.
+	ErrModelDropped = errors.New("the provider no longer serves this model")
+
 	// ErrProviderNotFound is returned when a requested provider does not exist.
 	ErrProviderNotFound = errors.New("provider not found")
 

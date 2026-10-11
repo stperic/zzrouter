@@ -17,7 +17,7 @@ type RunLifecycle int
 
 const (
 	LifecycleProcess RunLifecycle = iota // starts a process per model
-	LifecycleServed                      // loads a model through its endpoint
+	LifecycleServed                      // loads a model into its daemon
 	LifecycleNone                        // needs only catalog evidence
 )
 
@@ -45,6 +45,7 @@ const (
 type Want struct {
 	Model, Provider, Runtime, Plan string
 	Force                          bool
+	Unload                         bool // the caller asks the model unloaded, by a zero keep-alive
 	Origin                         Origin
 }
 
@@ -75,10 +76,9 @@ type Act int
 const (
 	actUnset Act = iota // a decision nobody made; never acted on
 	ActRefuse
-	ActReady // the provider already serves the model
-	ActLoad  // load the model through the provider's endpoint
+	ActReady // the provider serves the model without a run
 	ActReuse // the existing run answers for the key
-	ActStart // start a process, after stopping Replace
+	ActStart // start a run, after stopping Replace
 	ActQueue // wait on Run, or on the admission slot when Run is empty
 )
 
@@ -110,7 +110,9 @@ func Decide(w Want, n Node) Decision {
 		if !n.Reachable {
 			return refuse(ErrProviderUnavailable)
 		}
-		return Decision{Act: ActLoad}
+		if w.Model == "" {
+			return refuse(fmt.Errorf("%w: a served run names its model", ErrParameterValidation))
+		}
 	}
 	smoke := w.Origin == OriginInstall
 	replace := ""
@@ -118,6 +120,8 @@ func Decide(w Want, n Node) Decision {
 		switch {
 		case n.Joined && run.Status.IsTerminal():
 			return refuse(run.Failure)
+		case w.Unload && (run.Status == instance.StatusStopping || run.Provider != w.Provider):
+			return Decision{Act: ActReady} // no run of this want to end: the provider answers for itself
 		case run.Status == instance.StatusStopping:
 			// Drain may finish between retries; use the request-slot backoff.
 			return refuse(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
@@ -136,6 +140,8 @@ func Decide(w Want, n Node) Decision {
 		}
 	}
 	switch {
+	case w.Unload: // nothing to end: the provider answers for itself
+		return Decision{Act: ActReady}
 	case smoke && n.Runtime != "" && n.Runtime != w.Runtime:
 		return refuse(errors.New("smoke model does not use the runtime being installed"))
 	case !smoke && n.Absent: // a smoke tests the runtime being installed, not the catalog

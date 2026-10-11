@@ -148,15 +148,15 @@ func TestGetInstanceByModel_FindsAnInstanceByTheNameItWasLaunchedWith(t *testing
 	require.NoError(t, err)
 	require.NotNil(t, launched)
 
-	byRepo, ok := m.GetInstanceByModel(repoID)
+	byRepo, ok := m.GetInstanceByModel("", repoID, EndpointChat)
 	require.True(t, ok, "the model is not findable under the name it was launched with")
 	assert.Equal(t, launched.ID, byRepo.ID)
 
-	byStem, ok := m.GetInstanceByModel(fileStem)
+	byStem, ok := m.GetInstanceByModel("", fileStem, EndpointChat)
 	require.True(t, ok, "the model is not findable under its canonical name")
 	assert.Equal(t, launched.ID, byStem.ID)
 
-	if _, ok := m.GetInstanceByModel("never-launched"); ok {
+	if _, ok := m.GetInstanceByModel("", "never-launched", EndpointChat); ok {
 		t.Error("a model that was never launched reported an instance")
 	}
 }

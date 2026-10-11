@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
@@ -105,7 +106,7 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	req := EnsureRequest{Provider: "vllm", Model: "variant"}
-	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"chat_completions", "embeddings", "messages_compat", "responses_compat"}, before.resolved.WireEndpoints)
 	assert.NotContains(t, before.launch.Args, "--mmproj")
@@ -114,7 +115,7 @@ func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	inst.Endpoint = "chat"
 	inst.SetResolved(before.resolved)
 	landProjector(t, dir, "manifest-digest")
-	after, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Contains(t, after.launch.Args, filepath.Join(dir, "a-projector.gguf"))
 	assert.Equal(t, filepath.Join(dir, "weights.gguf"), after.launch.ModelPath)
@@ -144,7 +145,7 @@ func TestFeatureLaunchExplicitOptOut(t *testing.T) {
 					} else {
 						req.Parameters = map[string]string{"mmproj": value}
 					}
-					p, err := m.prepareLaunch(copy, "vllm", "chat", req, 8100)
+					p, err := processEngine{m}.prepare(copy, "vllm", req, 8100)
 					require.NoError(t, err)
 					assert.NotContains(t, p.launch.Args, filepath.Join(dir, "a-projector.gguf"))
 					assert.NotContains(t, p.resolved.Files, "mmproj")
@@ -183,7 +184,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	fake := newFakeInstaller("test-runtime")
 	m.installs.dispatcher.Register("test-runtime", fake)
 	req := EnsureRequest{Provider: "vllm", Model: "variant", Parameters: map[string]string{"chat-template": "named-asset"}}
-	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, before.launch.Args, "vision.server")
 	isolateProviderRoot(t)
@@ -191,7 +192,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(python), 0700))
 	require.NoError(t, os.WriteFile(python, nil, 0700))
 	fake.installed.Store(true)
-	after, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Contains(t, after.launch.Args, "vision.server")
 	assert.Equal(t, python, after.launch.Command, "use the selected runtime venv")
@@ -204,7 +205,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	inst.SetResolved(before.resolved)
 	assert.Contains(t, m.ParametersStatus(inst).Changed, "runtime.execution")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	text, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	text, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, text.launch.Args, "vision.server")
 	assert.Equal(t, svc.Runtime.Execution.Command, text.config.Runtime.Execution.Command)
@@ -214,7 +215,7 @@ func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 	m, svc, _ := featureLaunchFixture(t)
 	isolateProviderRoot(t)
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
-	before, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	inst := instance.NewInstance("executable-test", "vllm", req.Model, 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: req.Model, Port: 8100}
@@ -223,7 +224,7 @@ func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 	python := fsroot.ProviderVenvPython("vllm")
 	require.NoError(t, os.MkdirAll(filepath.Dir(python), 0700))
 	require.NoError(t, os.WriteFile(python, nil, 0700))
-	after, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, python, after.launch.Command)
 	assert.NotEqual(t, before.resolved.Execution, after.resolved.Execution)
@@ -264,7 +265,7 @@ func TestPreviewLaunchUsesActualExpansionAndFlags(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	landProjector(t, dir, "digest")
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"max-model-len": "4096"}}
-	prepared, err := m.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	prepared, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	preview, err := m.PreviewLaunch(req, 8100)
 	require.NoError(t, err)
@@ -294,4 +295,20 @@ func TestPreviewLaunchUsesActualExpansionAndFlags(t *testing.T) {
 	for _, arg := range preview.Args {
 		require.NotContains(t, arg, "${")
 	}
+}
+
+// keep-alive is zzRouter's run setting: it sets the run's idle limit and never reaches an engine's argv.
+func TestKeepAliveNeverReachesTheLaunch(t *testing.T) {
+	m, svc, dir := featureLaunchFixture(t)
+	landProjector(t, dir, "digest")
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"keep-alive": "10m", "max-model-len": "4096"}}
+	preview, err := m.PreviewLaunch(req, 8100)
+	require.NoError(t, err)
+	assert.NotContains(t, preview.Args, "--keep-alive")
+	assert.NotContains(t, preview.Params, "keep-alive")
+	assert.Contains(t, preview.Args, "--max-model-len")
+	keepAlive, explicit, err := runKeepAlive(svc, req)
+	require.NoError(t, err)
+	assert.True(t, explicit)
+	assert.Equal(t, 10*time.Minute, keepAlive)
 }

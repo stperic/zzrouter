@@ -30,7 +30,7 @@ type ModelRegistryProvider interface {
 
 // InstanceProvider defines the interface for instance management
 type InstanceProvider interface {
-	GetInstanceByModel(modelName string) (*instance.Instance, bool)
+	GetInstanceByModel(provider, modelName string) (*instance.Instance, bool)
 }
 
 // NodeInfoProvider defines the interface for host-specific information.

@@ -90,18 +90,30 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
 func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
-	keepAlive, err := svcCfg.Runtime.GetKeepAliveDuration()
-	if err != nil {
-		return nil, err
-	}
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
 	}
+	inst, err := m.newRun(ctx, req, svcCfg, allocatedPort)
+	if err == nil {
+		err = m.instances.Register(inst)
+	}
+	if err != nil {
+		m.ports.ReleaseForProvider(req.Provider, allocatedPort)
+		return nil, err
+	}
+	return inst, nil
+}
 
+// newRun builds a starting, not yet admitted run for req on port, 0 for none.
+func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig, port int) (*instance.Instance, error) {
+	keepAlive, _, err := runKeepAlive(svcCfg, req)
+	if err != nil {
+		return nil, err
+	}
 	endpoint := string(EndpointOrDefault(req.Endpoint))
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
-	inst := instance.NewInstance(id, req.Provider, req.Model, allocatedPort, keepAlive, 0)
+	inst := instance.NewInstance(id, req.Provider, req.Model, port, keepAlive, 0)
 	inst.Endpoint = endpoint
 	inst.StartedBy = instance.StartedByAPI
 	if req.Origin == OriginRequest {
@@ -116,17 +128,19 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 		Provider:   req.Provider,
 		LaunchMode: instance.LaunchModeNative,
 		Model:      req.Model,
-		Port:       allocatedPort,
+		Port:       port,
 		EnvVars:    req.EnvVars,
 		Parameters: req.Parameters,
 	}
 
 	// Set HealthURL from provider config (not hardcoded /health)
-	healthPath := "/health"
-	if svcCfg.Runtime != nil && svcCfg.Runtime.HealthCheck.Path != "" {
-		healthPath = svcCfg.Runtime.HealthCheck.Path
+	if port > 0 {
+		healthPath := "/health"
+		if svcCfg.Runtime != nil && svcCfg.Runtime.HealthCheck.Path != "" {
+			healthPath = svcCfg.Runtime.HealthCheck.Path
+		}
+		inst.HealthURL = fmt.Sprintf("http://localhost:%d%s", port, healthPath)
 	}
-	inst.HealthURL = fmt.Sprintf("http://localhost:%d%s", allocatedPort, healthPath)
 	if m.modelSource != nil {
 		weights, _, _ := strings.Cut(svcCfg.WeightsOf(req.Model), "#")
 		inst.SourceRepo = m.modelSource(ctx, weights)
@@ -143,12 +157,20 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 
 	// Wire keep-alive expiry to the manager's idle reaper
 	inst.IdleExpiry = m.idleExpiry
-
-	if err := m.instances.Register(inst); err != nil {
-		m.ports.ReleaseForProvider(req.Provider, allocatedPort)
-		return nil, err
-	}
 	return inst, nil
+}
+
+// keepAliveParameter is the start parameter that sets a run's keep-alive.
+const keepAliveParameter = "keep-alive"
+
+// runKeepAlive is a run's idle limit, the start's own else its provider's; explicit is false for the default.
+func runKeepAlive(svcCfg config.ServiceConfig, req EnsureRequest) (keepAlive time.Duration, explicit bool, err error) {
+	if raw, ok := req.Parameters[keepAliveParameter]; ok {
+		keepAlive, err = (&config.AppRuntimeConfig{KeepAlive: raw}).GetKeepAliveDuration()
+		return keepAlive, true, err
+	}
+	keepAlive, err = svcCfg.Runtime.GetKeepAliveDuration()
+	return keepAlive, svcCfg.Runtime != nil && svcCfg.Runtime.KeepAlive != "", err
 }
 
 // releaseRun undoes registerRun for a run no process was started for. It
@@ -174,16 +196,22 @@ type admittedRun struct {
 	transform process.EnvironmentTransform
 }
 
+// runLogFile opens run's log file for appending; it outlives the run on this node.
+func (m *ProviderAppManager) runLogFile(run *instance.Instance) (*os.File, string, error) {
+	// Sanitized so a hostile model id cannot escape the log directory.
+	f, path, err := m.logMgr.CreateLogFile(run.ID, run.Provider, sanitizeLogFragment(run.Model))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create log file: %w", err)
+	}
+	return f, path, nil
+}
+
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
 func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
-	// Create log file. Sanitize model name for filesystem safety —
-	// strip every character outside [A-Za-z0-9._-] so a hostile or
-	// quirky model id (slashes, backslashes, ..) cannot escape the
-	// log directory.
-	logFile, logPath, err := m.logMgr.CreateLogFile(inst.ID, req.Provider, sanitizeLogFragment(req.Model))
+	logFile, logPath, err := m.runLogFile(inst)
 	if err != nil {
-		return admittedRun{}, fmt.Errorf("failed to create log file: %w", err)
+		return admittedRun{}, err
 	}
 	inst.SetLogFilePath(logPath)
 	run, err := m.prepareRun(ctx, inst, req, selection)
@@ -195,12 +223,7 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, err
 	}
 	run.logFile = logFile
-	m.emitEvent(Event{
-		Type: EventInstanceStarting, Provider: req.Provider,
-		Instance: inst.ID, Model: req.Model,
-		Message: fmt.Sprintf("Starting %s on port %d", req.Model, inst.Port),
-		Time:    utils.Now(),
-	})
+	m.emitEvent(runEvent(EventInstanceStarting, inst, fmt.Sprintf("Starting %s on port %d", req.Model, inst.Port)))
 	return run, nil
 }
 
@@ -280,12 +303,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req EnsureR
 			return
 		case err != nil:
 			inst.MarkFailedError(err)
-			m.emitEvent(Event{
-				Type: EventInstanceFailed, Provider: inst.Provider,
-				Instance: inst.ID, Model: inst.Model,
-				Error: err, Message: err.Error(), Cause: obsruns.FailureLaunchErr,
-				Time: utils.Now(),
-			})
+			m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 			return
 		case blocker == nil:
 			m.startRun(inst, run)
@@ -484,12 +502,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	if err != nil {
 		logFile.Close()
 		inst.MarkFailedError(err)
-		m.emitEvent(Event{
-			Type: EventInstanceFailed, Provider: inst.Provider,
-			Instance: inst.ID, Model: inst.Model,
-			Error: err, Message: err.Error(), Cause: obsruns.FailureLaunchErr,
-			Time: utils.Now(),
-		})
+		m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 		return
 	}
 
@@ -576,12 +589,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 		if status == instance.StatusFailed {
 			return
 		}
-		m.emitEvent(Event{
-			Type: EventInstanceStopped, Provider: inst.Provider,
-			Instance: inst.ID, Model: inst.Model,
-			Message: "process exited unexpectedly", Reason: obsruns.StopReasonCrash,
-			Time: utils.Now(),
-		})
+		m.emitEvent(stoppedEvent(inst, obsruns.StopReasonCrash, "process exited unexpectedly"))
 	}
 }
 
@@ -635,11 +643,7 @@ func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.
 			inst.MarkRunning()
 			inst.SetStartedAtIfZero()
 			inst.UpdateLastUsed()
-			m.emitEvent(Event{
-				Type: EventInstanceRunning, Provider: inst.Provider,
-				Instance: inst.ID, Model: inst.Model,
-				Message: fmt.Sprintf("Ready (%s)", readyDetail), Time: utils.Now(),
-			})
+			m.emitEvent(runEvent(EventInstanceRunning, inst, fmt.Sprintf("Ready (%s)", readyDetail)))
 			return
 		}
 		timer.Reset(deadline.Sub(now))
@@ -682,12 +686,7 @@ func (m *ProviderAppManager) failReadiness(inst *instance.Instance, sig health.R
 	} else {
 		inst.MarkFailed(fmt.Sprintf("readiness probe failure: %s", sig.Pattern))
 	}
-	m.emitEvent(Event{
-		Type: EventInstanceFailed, Provider: inst.Provider,
-		Instance: inst.ID, Model: inst.Model,
-		Message: fmt.Sprintf("Readiness failure (log: %s)", sig.Pattern),
-		Cause:   obsruns.FailureReadiness, Time: utils.Now(),
-	})
+	m.emitEvent(failedEvent(inst, obsruns.FailureReadiness, fmt.Errorf("readiness failure (log: %s)", sig.Pattern)))
 }
 
 // failNotReady closes the startup window on an instance that never came
@@ -701,12 +700,7 @@ func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string
 	}
 	slog.Warn("instance never became ready", "instance", inst.ID, "reason", reason)
 	inst.MarkFailed(reason)
-	m.emitEvent(Event{
-		Type: EventInstanceFailed, Provider: inst.Provider,
-		Instance: inst.ID, Model: inst.Model,
-		Message: reason,
-		Cause:   obsruns.FailureReadiness, Time: utils.Now(),
-	})
+	m.emitEvent(failedEvent(inst, obsruns.FailureReadiness, errors.New(reason)))
 }
 
 // StopInstance gracefully stops an instance and removes it from the registry.
@@ -716,30 +710,36 @@ func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) error 
 }
 
 // stopInstance is StopInstance with the reason its stopped event carries.
-func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason obsruns.StopReason) (result error) {
+func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason obsruns.StopReason) error {
 	inst, ok := m.instances.Get(id)
 	if !ok {
 		return ErrInstanceNotFound
 	}
+	return m.endRun(ctx, inst, reason, m.runEngine(inst).down)
+}
+
+// endRun stops a run: down ends its model (nil leaves it loaded), then the run drains and leaves the registry.
+func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason, down func(context.Context, *instance.Instance) error) (result error) {
+	id := inst.ID
+	if !inst.ClaimEnd() {
+		return &instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter}
+	}
 	inst.StopUnconfirmed.Store(true)
-	defer func() { inst.StopUnconfirmed.Store(result != nil) }()
+	defer func() {
+		if inst.StopUnconfirmed.Store(result != nil); result != nil {
+			inst.ReleaseEnd()
+		}
+	}()
 
 	// Mark stopping
 	inst.SetStatus(instance.StatusStopping)
-	m.emitEvent(Event{
-		Type: EventInstanceStopping, Provider: inst.Provider,
-		Instance: id, Model: inst.Model,
-		Message: "Stopping instance", Time: utils.Now(),
-	})
+	m.emitEvent(runEvent(EventInstanceStopping, inst, "Stopping instance"))
 
-	// Stop background activity even if process termination fails.
+	// Stop background activity even if the engine cannot end the model.
 	inst.Cancel()
 	inst.StopKeepAliveTimer()
-
-	// Terminate process (graceful SIGTERM → SIGKILL). No pid yet: the
-	// lifecycle goroutine sees the cancelled context and signals it.
-	if pid := inst.ClaimTermination(true); pid > 0 {
-		if err := m.terminateProcess(ctx, inst, pid); err != nil {
+	if down != nil {
+		if err := down(ctx, inst); err != nil {
 			return err
 		}
 	}
@@ -768,12 +768,7 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	}
 
 	// Emit event
-	m.emitEvent(Event{
-		Type: EventInstanceStopped, Provider: inst.Provider,
-		Instance: id, Model: inst.Model,
-		Message: "Instance stopped", Reason: reason,
-		Time: utils.Now(),
-	})
+	m.record(inst, stoppedEvent(inst, reason, fmt.Sprintf("stopped (%s)", reason)))
 
 	return nil
 }
@@ -874,7 +869,13 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 			stopErr = err
 			break
 		}
-		if err := m.StopInstance(ctx, inst.ID); err != nil {
+		eng := m.runEngine(inst)
+		down := eng.down
+		if eng.outlivesNode() {
+			down = nil
+		}
+		// A stop already in progress is its caller's to finish.
+		if err := m.endRun(ctx, inst, obsruns.StopReasonUser, down); err != nil && !errors.Is(err, instance.ErrStopping) {
 			stopErr = err
 			slog.Warn("failed to stop instance during shutdown",
 				"id", inst.ID, "error", err)
@@ -1091,6 +1092,8 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 	for name := range req.Parameters {
 		sources[name] = config.TierRequest.String()
 	}
+	delete(params, keepAliveParameter) // a run setting (runKeepAlive), never an engine's
+	delete(sources, keepAliveParameter)
 	return params, env, sources
 }
 
@@ -1138,27 +1141,15 @@ type LaunchPreview struct {
 	Model string
 }
 
-// PreviewLaunch renders the same admitted launch preparation without starting a process.
+// PreviewLaunch renders the preparation a start would make, without starting anything.
 func (m *ProviderAppManager) PreviewLaunch(req EnsureRequest, port int) (LaunchPreview, error) {
-	req.Model = m.CanonicalModelName(req.Model)
 	key, svc, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return LaunchPreview{}, ErrProviderNotFound
 	}
-	prepared, err := m.prepareLaunch(svc, key, string(EndpointOrDefault(req.Endpoint)), req, port)
+	req.Model = m.runModel(key, svc, req.Model)
+	prepared, err := m.engine(Lifecycle(svc)).prepare(svc, key, req, port)
 	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
-}
-
-// prepareLaunch works out what launching req on port would give the
-// engine. A launch and a parameters-status check both go through it, so
-// "would a restart launch differently" asks the same question a launch
-// answers.
-func (m *ProviderAppManager) prepareLaunch(svcCfg config.ServiceConfig, configKey, endpoint string, req EnsureRequest, port int) (preparedLaunch, error) {
-	features, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), req, endpoint)
-	if err != nil {
-		return preparedLaunch{}, err
-	}
-	return m.prepareLaunchFeatures(features, configKey, endpoint, port)
 }
 
 func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, port int) (preparedLaunch, error) {

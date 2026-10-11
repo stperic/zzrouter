@@ -496,7 +496,7 @@ func (s *ModelService) handleGetModelInstance(c *gin.Context) {
 			BadGateway(c, "node returned an invalid run inventory")
 			return
 		}
-	} else if inst, found := s.instanceProvider.GetInstanceByModel(resolved.ModelName); found {
+	} else if inst, found := s.instanceProvider.GetInstanceByModel(resolved.Provider, resolved.ModelName); found {
 		runs.Instances = []instance.InstanceInfo{inst.ToInfo("")}
 	}
 	for _, run := range runs.Instances {

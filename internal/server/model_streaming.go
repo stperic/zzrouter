@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -73,13 +71,14 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		return fmt.Errorf("%s", problem.Message)
 	}
 
-	// A provider with its own endpoint (external, service, cloud) is
-	// forwarded to; only on-demand providers go on to a running instance.
-	if resolved, ok := s.backend.Resolve(providerType); ok {
-		body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
-		target := backend.PassthroughTarget(resolved.Endpoint, req.URL.Path, req.URL.RawQuery)
-		s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
-		return nil
+	// A provider without runs is forwarded to; every other one serves through a run.
+	if !s.hasRuns(providerType) {
+		if resolved, ok := s.backend.Resolve(providerType); ok {
+			body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+			target := backend.PassthroughTarget(resolved.Endpoint, req.URL.Path, req.URL.RawQuery)
+			s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
+			return nil
+		}
 	}
 
 	// For on-demand apps, check if model is already running (also handles
@@ -212,7 +211,7 @@ func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (
 	}
 	inst := result.Run
 	if inst == nil {
-		return nil, loadInternal("served model has no local instance")
+		return nil, loadInternal("the provider serves this model without a run")
 	}
 
 	// Wait for local instance to be ready if still starting
@@ -271,46 +270,29 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 	return nil, classifyLoadFailure(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
 }
 
-// getInstanceBackendNode extracts the backend host from instance.
-// Returns "localhost" for local instances, or the remote host from
-// HealthURL for remote instances.
-func getInstanceBackendNode(inst *instance.Instance) string {
-	if inst.HealthURL != "" && !strings.Contains(inst.HealthURL, constants.Localhost) {
-		// Extract host from HealthURL (e.g., "http://192.0.2.10:8080/health" → "192.0.2.10")
-		if u, err := url.Parse(inst.HealthURL); err == nil && u.Hostname() != "" {
-			return u.Hostname()
-		}
-	}
-	return constants.Localhost
-}
-
 // streamFromInstance streams response from instance when SSE headers are
 // already committed (200 + text/event-stream). Errors travel inside the
 // stream through streamer. Only called from HandleLocalModel after the
 // SSE preamble, which only an in-band streamer opens.
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
-	lease, err := s.openInstance(req, inst)
-	if err != nil {
-		if failure, ok := renderAdmissionError(err); ok {
-			streamer.StreamError(w, failure)
-		}
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	rec := requestRecorder(req.Context(), model, inst.Provider)
+	lease, target, up, ok := s.openRun(req, inst, rec, func(e httperr.Error) { streamer.StreamError(w, e) })
+	if !ok {
 		return
 	}
 	defer lease.Release()
 
 	body, answerAs := s.instanceRequest(req, inst)
-	model, _ := req.Context().Value(CtxKeyModel).(string)
-	rec := requestRecorder(req.Context(), model, inst.Provider)
 	rec.SetUpstreamRequestData(body)
-	backendNode := getInstanceBackendNode(inst)
-	rec.SetServer(backendNode, inst.Port)
+	rec.SetServer(target.Hostname(), portFromURL(target))
 
 	inflightToken := proxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
-		inst.Provider, model, backendNode)
+		inst.Provider, model, target.Hostname())
 	defer proxy.DecInflight(req.Context(), inflightToken)
 
-	resp, err := s.sendToInstance(req, lease, body)
+	resp, err := s.sendToInstance(req, lease, body, target, up)
 	if err != nil {
 		streamer.StreamError(w, instanceSendFailure(rec, err))
 		return
@@ -327,11 +309,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		return
 	}
 
-	servingNode := backendNode
-	if servingNode == constants.Localhost {
-		servingNode = s.GetNodename()
-	}
-	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
+	meta := s.localRoutingMetadata(req, inst, s.GetNodename(), answerAs)
 	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
 	endBrokenStream(w, req, result)
 }

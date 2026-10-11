@@ -23,6 +23,7 @@ type EnsureRequest struct {
 	Detached         bool // returns an empty result on a cold start accepted in the background
 	Origin           Origin
 	Force            bool
+	Unload           bool // a zero keep-alive hint: start nothing for a model with no run
 	Runtime          string
 	DisposablePlanID string
 	Provider         string
@@ -36,15 +37,13 @@ type EnsureRequest struct {
 }
 
 func (r EnsureRequest) want() Want {
-	return Want{Model: r.Model, Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Origin: r.Origin}
+	return Want{Model: r.Model, Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin}
 }
 
-// EnsureResult reports a reused or newly started run, or a served model.
+// EnsureResult reports a reused or newly started run; no run means the provider serves the model without one.
 type EnsureResult struct {
 	Run     *instance.Instance
 	Started bool
-	Served  bool
-	Port    int
 }
 
 // EndpointOrDefault returns EndpointChat for empty input.

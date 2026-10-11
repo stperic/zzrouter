@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"strconv"
+	"strings"
 
-	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -17,18 +15,18 @@ import (
 func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart) (Decision, *instance.Instance) {
 	req := prepared.req
 	n := Node{Lifecycle: prepared.lifecycle, Absent: prepared.absent, Runtime: req.selectedRuntime}
-	var existing *instance.Instance
 	switch n.Lifecycle {
-	case LifecycleServed:
-		_, _, n.Reachable = m.Loader(req.Provider)
 	case LifecycleNone:
 		var listed bool
 		listed, n.Reachable = m.providerLists(ctx, req.Provider, req.Model)
 		n.Absent = !listed
-	default:
-		if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
-			existing, n.Existing = run, runView(run)
-		}
+		return Decide(req.want(), n), nil
+	case LifecycleServed:
+		_, _, n.Reachable = m.servedTarget(req.Provider)
+	}
+	var existing *instance.Instance
+	if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
+		existing, n.Existing = run, runView(run)
 	}
 	return Decide(req.want(), n), existing
 }
@@ -53,8 +51,11 @@ type preparedStart struct {
 
 // answer is the result of a decision that starts nothing: the reused run or the refusal.
 func (p preparedStart) answer() (EnsureResult, error) {
-	if p.decision.Act == ActReuse {
+	switch p.decision.Act {
+	case ActReuse:
 		return EnsureResult{Run: p.existing}, nil
+	case ActReady:
+		return EnsureResult{}, nil
 	}
 	if p.decision.Err == nil {
 		return EnsureResult{}, errUndecided
@@ -70,20 +71,17 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 		return preparedStart{}, err
 	}
 	req.requestedModel = req.Model
-	req.Model = m.CanonicalModelName(req.Model)
 	req.Provider = utils.NormalizeAppType(req.Provider)
 	key, cfg, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return preparedStart{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
+	req.Model = m.runModel(key, cfg, req.Model)
 	if !cfg.IsEnabled() {
 		return preparedStart{}, ErrServiceDisabled
 	}
-	req.Endpoint = EndpointOrDefault(req.Endpoint)
-	if !cfg.IsEndpointAware() {
-		req.Endpoint = EndpointChat
-	}
-	// A launch checks its catalog only when cold; other lifecycles gather evidence in decide.
+	req.Endpoint = runEndpoint(cfg, req.Endpoint)
+	// A launch checks its catalog only when cold; a provider without runs gathers evidence in decide.
 	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: Lifecycle(cfg)}, ctx.Err()
 }
 
@@ -124,6 +122,16 @@ type flight struct {
 
 func flightKey(req EnsureRequest) string { return req.Model + "\x00" + string(req.Endpoint) }
 
+// flying reports a start in flight for model on any endpoint; callers hold flightsMu.
+func (m *ProviderAppManager) flying(model string) bool {
+	for key := range m.flights {
+		if name, _, _ := strings.Cut(key, "\x00"); strings.EqualFold(name, model) {
+			return true
+		}
+	}
+	return false
+}
+
 // EnsureRun returns a run without waiting for readiness; Detached accepts a background start.
 func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (EnsureResult, error) {
 	prepared, err := m.prepareStart(ctx, req)
@@ -133,12 +141,10 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 	if prepared.req.Origin == OriginInstall {
 		return m.runSmokeStart(ctx, prepared)
 	}
-	if prepared.lifecycle != LifecycleProcess {
-		ctx, prepared, err = m.prepareColdStart(ctx, prepared)
-		if err != nil {
-			return EnsureResult{}, err
-		}
-		return m.executeStart(ctx, prepared)
+	if prepared.lifecycle == LifecycleNone {
+		// No run to share: the provider's own catalog answers, for every caller alike.
+		_, _, err = m.prepareColdStart(ctx, prepared)
+		return EnsureResult{}, err
 	}
 	// A fast path only: the flight decides again against the registry it starts on.
 	if prepared.decision, prepared.existing = m.decide(ctx, prepared); prepared.decision.Act != ActStart {
@@ -263,13 +269,7 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
-	switch prepared.decision.Act {
-	case ActStart:
-	case ActReady:
-		return EnsureResult{Served: true}, nil
-	case ActLoad:
-		return m.loadServed(ctx, prepared.req)
-	default:
+	if prepared.decision.Act != ActStart {
 		return prepared.answer()
 	}
 	req := prepared.req
@@ -289,21 +289,6 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 			return result, err
 		}
 	}
-	run, err := m.launchInstanceLocked(ctx, req, prepared.selection)
+	run, err := m.engine(prepared.lifecycle).up(ctx, req, prepared.selection)
 	return EnsureResult{Run: run, Started: err == nil}, err
-}
-
-func (m *ProviderAppManager) loadServed(ctx context.Context, req EnsureRequest) (EnsureResult, error) {
-	loader, target, ok := m.Loader(req.Provider)
-	if !ok {
-		return EnsureResult{}, ErrProviderUnavailable
-	}
-	ctx, cancel := context.WithTimeout(ctx, constants.ClusterActionTimeout)
-	defer cancel()
-	if err := loader.LoadModel(ctx, target, req.Model, req.Parameters); err != nil {
-		return EnsureResult{}, fmt.Errorf("failed to load model via provider API: %w", err)
-	}
-	_, portText, _ := net.SplitHostPort(target.Host())
-	port, _ := strconv.Atoi(portText)
-	return EnsureResult{Served: true, Started: true, Port: port}, nil
 }

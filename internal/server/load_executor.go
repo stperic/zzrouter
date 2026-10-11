@@ -101,10 +101,10 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	if err != nil {
 		return nil, err
 	}
-	if result.Served {
-		return &LoadModelResponse{Model: e.appMgr.CanonicalModelName(req.ModelName), Provider: utils.NormalizeAppType(provider), Status: "running", Port: result.Port, Message: "Model loaded successfully"}, nil
-	}
 	run := result.Run
+	if run == nil {
+		return &LoadModelResponse{Model: e.appMgr.CanonicalModelName(req.ModelName), Provider: utils.NormalizeAppType(provider), Status: "running", Message: "The provider serves this model without a run"}, nil
+	}
 	status := run.GetStatus()
 	reused := !result.Started && (status == instance.StatusRunning || status == instance.StatusStarting)
 	message := "Model launch accepted; subscribe to job_id"

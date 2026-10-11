@@ -117,3 +117,21 @@ func TestCloudTargetIsNotProbed(t *testing.T) {
 	assert.NotContains(t, err.Error(), "failed to connect")
 	assert.Len(t, paths, 1, "one request: the call itself")
 }
+
+// A served run is keyed by the name the daemon lists it under, so an
+// untagged name and its :latest form are one model.
+func TestOllamaIdentity(t *testing.T) {
+	ollama := NewOllamaProvider(nil)
+	for name, want := range map[string]string{
+		"m":                               "m:latest",
+		"m:8b":                            "m:8b",
+		"hf.co/user/repo:Q4_K_M":          "hf.co/user/repo:Q4_K_M",
+		"hf.co/user/repo":                 "hf.co/user/repo:latest",
+		"registry.lan:5000/library/m":     "registry.lan:5000/library/m:latest",
+		"":                                "",
+		"library/m":                       "m:latest",
+		"registry.ollama.ai/library/m:8b": "m:8b",
+	} {
+		assert.Equal(t, want, ollama.Identity(name), name)
+	}
+}

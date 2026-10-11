@@ -39,7 +39,7 @@ func NewOpenAIProvider(name string, defaultPort int, protocol string, httpClient
 		providerType: utils.NormalizeAppType(name),
 		defaultPort:  defaultPort,
 		httpClient:   httpClient,
-		connector:    connectivity.NewProviderConnector(),
+		connector:    connectivity.NewProviderConnector(httpClient.Transport),
 		protocol:     protocol,
 	}
 }

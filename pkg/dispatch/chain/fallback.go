@@ -7,8 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -544,7 +542,7 @@ func (p *Proxy) separateOnDemand(deps []pfallback.Candidate) ([]pfallback.Candid
 	var skipped []pfallback.Attempt
 
 	for _, dep := range deps {
-		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model) {
+		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model, dep.App) {
 			err := p.deps.StartOnDemand(dep.Model, dep.App)
 			skipped = append(skipped, pfallback.Attempt{
 				DeploymentName: dep.Name,
@@ -596,21 +594,31 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 		return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Cluster(), nil, nil
 	}
 
-	// 3. On-demand local model — use running instance port.
-	if dep.OnDemand {
-		if inst, found := p.deps.AppInstance(dep.Model); found {
-			base := fmt.Sprintf("http://%s:%d", instanceBackendNode(inst), inst.Port)
-			return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Engine(), inst, nil
+	// 3. A local model: the run serving it, at the run's own target.
+	var inst *instance.Instance
+	switch {
+	case dep.OnDemand:
+		found := false
+		if inst, found = p.deps.AppInstance(dep.Model, dep.App); !found {
+			return "", backend.Upstream{}, nil, fmt.Errorf("on-demand model %q not running", dep.Model)
 		}
-		return "", backend.Upstream{}, nil, fmt.Errorf("on-demand model %q not running", dep.Model)
+	case hasEndpoint:
+		var err error
+		if inst, err = p.deps.LocalRun(dep.Model, dep.App); err != nil {
+			return "", backend.Upstream{}, nil, err
+		}
+	default:
+		return "", backend.Upstream{}, nil, fmt.Errorf("cannot resolve target for deployment %q (app=%s)", dep.Name, dep.App)
 	}
-
-	// 4. Local provider endpoint (e.g., ollama on localhost:11434).
-	if hasEndpoint {
+	// 4. A provider without runs is its own endpoint.
+	if inst == nil {
 		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
-
-	return "", backend.Upstream{}, nil, fmt.Errorf("cannot resolve target for deployment %q (app=%s)", dep.Name, dep.App)
+	base, up, err := p.deps.RunUpstream(inst)
+	if err != nil {
+		return "", backend.Upstream{}, nil, err
+	}
+	return backend.PassthroughTarget(base, urlPath, rawQuery), up, inst, nil
 }
 
 // attemptHeaders returns the headers an attempt sends. A worker is told
@@ -625,10 +633,9 @@ func attemptHeaders(h http.Header, up backend.Upstream, dep pfallback.Candidate)
 	return h
 }
 
-// isModelRunning checks if an on-demand model is currently running
-// locally.
-func (p *Proxy) isModelRunning(model string) bool {
-	inst, found := p.deps.AppInstance(model)
+// isModelRunning checks if a model is currently running locally on provider.
+func (p *Proxy) isModelRunning(model, provider string) bool {
+	inst, found := p.deps.AppInstance(model, provider)
 	return found && inst.GetStatus() == instance.StatusRunning
 }
 
@@ -648,7 +655,7 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 	result := make([]pfallback.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		// Already-running models have memory allocated — pass through.
-		if c.Node == "" && p.isModelRunning(c.Model) {
+		if c.Node == "" && p.isModelRunning(c.Model, c.App) {
 			result = append(result, c)
 			continue
 		}
@@ -801,20 +808,4 @@ func (p *Proxy) trackRateLimitHeaders(resp *http.Response, dep pfallback.Candida
 		p.providerCooldowns.SetCooldownIfLonger(dep.App, snap.ResetTokens, pfallback.ReasonRateLimit)
 		utils.LogDebugf("[RateLimit] %q tokens exhausted, proactive cooldown %s", dep.App, snap.ResetTokens)
 	}
-}
-
-// instanceBackendNode extracts the backend host from instance. Returns
-// constants.Localhost for local instances, or the remote host from
-// HealthURL for remote instances.
-//
-// Shares the `constants.Localhost` anchor with server's
-// getInstanceBackendNode so both copies move together if the project
-// ever repoints the local-host token.
-func instanceBackendNode(inst *instance.Instance) string {
-	if inst.HealthURL != "" && !strings.Contains(inst.HealthURL, constants.Localhost) {
-		if u, err := url.Parse(inst.HealthURL); err == nil && u.Hostname() != "" {
-			return u.Hostname()
-		}
-	}
-	return constants.Localhost
 }

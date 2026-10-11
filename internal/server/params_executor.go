@@ -28,7 +28,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -109,7 +108,6 @@ type ParamsExecutor struct {
 	knownNodes       func() map[string]bool
 	router           routing.Router
 	services         providerServices
-	loader           func(provider string) (protocol.ModelLoader, protocol.Target, bool)
 	httpClient       *http.Client
 	isWorker         func() bool   // nil on standalone
 	coordURL         func() string // coordinator base URL on workers; "" when unknown
@@ -137,7 +135,6 @@ func NewParamsExecutor(
 	knownNodes func() map[string]bool,
 	router routing.Router,
 	services providerServices,
-	loader func(provider string) (protocol.ModelLoader, protocol.Target, bool),
 	httpClient *http.Client,
 	isWorker func() bool,
 	coordURL func() string,
@@ -153,7 +150,6 @@ func NewParamsExecutor(
 		knownNodes:  knownNodes,
 		router:      router,
 		services:    services,
-		loader:      loader,
 		httpClient:  httpClient,
 		isWorker:    isWorker,
 		coordURL:    coordURL,
@@ -975,27 +971,6 @@ func (e *ParamsExecutor) RetiredHandler(c *gin.Context) {
 	}
 	c.Header("Content-Type", "application/problem+json")
 	c.JSON(http.StatusGone, problem)
-}
-
-func (e *ParamsExecutor) listRunningModelNames(ctx context.Context, provider string) []string {
-	if e.loader == nil {
-		return nil
-	}
-	providerImpl, target, ok := e.loader(provider)
-	if !ok {
-		return nil
-	}
-	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	models, err := providerImpl.ListRunningModels(tctx, target)
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(models))
-	for _, m := range models {
-		names = append(names, m.Name)
-	}
-	return names
 }
 
 // checkHealth probes the provider's own endpoint, sending the credential

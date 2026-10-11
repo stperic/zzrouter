@@ -17,16 +17,13 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // newParamsExecutor wires a ParamsExecutor with narrow deps from Server.
 func (s *Server) newParamsExecutor() *ParamsExecutor {
-	var loaderLookup func(string) (protocol.ModelLoader, protocol.Target, bool)
 	var services providerServices
 	if s.providers.appMgr != nil {
-		loaderLookup = s.providers.appMgr.Loader
 		services = s.providers.appMgr
 	}
 	executor := NewParamsExecutor(
@@ -36,7 +33,6 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 		s.knownClusterNodes,
 		s.cluster.router,
 		services,
-		loaderLookup,
 		s.httpClient,
 		s.node.IsWorker,
 		func() string {
@@ -109,7 +105,6 @@ func (s *Server) newRunsExecutor() *RunsExecutor {
 		s.providers.appMgr,
 		s.node.Nodename,
 		func() *pkgConfig.AppsConfig { return s.appsConfig },
-		s.cluster.router != nil,
 		s.logsHandlers.streamInstanceLogs,
 		s.logsHandlers.getInstanceLogLines,
 		s.refreshResourceMetrics(),
@@ -302,7 +297,7 @@ func (s *Server) observeModelStart(ctx context.Context, req prov_apps.EnsureRequ
 			status = "failed"
 			llm.SetSpanError(span, err)
 		} else {
-			id, port := "", result.Port
+			id, port := "", 0
 			if result.Run != nil {
 				id, port = result.Run.ID, result.Run.Port
 			}

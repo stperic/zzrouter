@@ -259,8 +259,8 @@ func (svc *RunsUtilityService) BatchLaunch(ctx context.Context, instances []Laun
 			continue
 		}
 
-		if instResult.Served {
-			launched = append(launched, map[string]any{"provider": req.Provider, "port": instResult.Port, "status": "running"})
+		if inst == nil {
+			launched = append(launched, map[string]any{"provider": req.Provider, "status": "running"})
 			continue
 		}
 		launched = append(launched, map[string]any{

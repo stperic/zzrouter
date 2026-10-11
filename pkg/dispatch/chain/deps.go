@@ -92,10 +92,14 @@ type Runtime interface {
 	// ValidateModel admits model before alias resolution, warm reuse or forwarding.
 	ValidateModel(ctx context.Context, model string) error
 
-	// AppInstance returns the running-or-starting instance bound to the
-	// given model, if any. The Proxy applies status filtering at the
-	// call-site (isModelRunning vs. port resolution for on-demand).
-	AppInstance(model string) (*instance.Instance, bool)
+	// AppInstance returns model's run on provider, any status; callers filter.
+	AppInstance(model, provider string) (*instance.Instance, bool)
+
+	// LocalRun returns the ready run of a local model, starting one; nil for a provider without runs.
+	LocalRun(model, provider string) (*instance.Instance, error)
+
+	// RunUpstream returns where a run's requests go and what of the caller's request travels there.
+	RunUpstream(inst *instance.Instance) (string, backend.Upstream, error)
 
 	// LeaseInstance shares local request admission with the direct instance paths.
 	LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error)

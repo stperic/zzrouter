@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,7 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 					prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) { return &backend.Resolved{Endpoint: upstream.URL}, true }))
 				require.NoError(t, err)
 				t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-				executor := NewRunsExecutor(mgr, func() string { return "worker" }, func() *config.AppsConfig { return cfg }, false, nil, nil, nil)
+				executor := NewRunsExecutor(mgr, func() string { return "worker" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
 				executor.modelInPool = func(string) bool { return false }
 				executor.deploy = func(context.Context, *DeployRequest) (*Deployment, error) {
 					t.Fatal("none auto-deployed")
@@ -93,8 +94,7 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 				result, err := mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: provider, Model: "m", Detached: true})
 				if catalog {
 					require.NoError(t, err)
-					assert.True(t, result.Served)
-					assert.Nil(t, result.Run)
+					assert.Nil(t, result.Run, "ready with no run")
 				} else {
 					assert.ErrorIs(t, err, prov_apps.ErrModelNotLocal)
 				}
@@ -103,13 +103,17 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 	}
 }
 
+// A daemon that cannot be reached answers every caller waiting on the load 503, and leaves no run.
 func TestLifecycleServedUnavailableUses503(t *testing.T) {
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("daemon", config.ServiceConfig{Name: "daemon", Enabled: new(true), Mode: "external", Protocol: config.ProtocolOllama, Runtime: &config.AppRuntimeConfig{Endpoint: "http://daemon:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
-	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) { return nil, false }))
+	refused := &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) { return nil, errors.New("connect: connection refused") })}
+	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithHTTPClient(refused))
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
-	_, err = mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "daemon", Model: "m"})
+	s := &Server{}
+	s.providers.appMgr = mgr
+	_, err = s.loadModelViaNodeAPI("m", "daemon", "chat")
 	require.ErrorIs(t, err, prov_apps.ErrProviderUnavailable)
 	assert.Equal(t, http.StatusServiceUnavailable, answeredStatus(err))
 	assert.Empty(t, mgr.Instances().List())

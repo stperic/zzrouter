@@ -25,8 +25,7 @@ type Override struct {
 	// Duration, when non-nil, overrides the instance's configured keep-alive
 	// duration for this request. Semantics match Ollama's keep_alive field:
 	//   - positive duration: reset idle timer to this value
-	//   - zero: unload as soon as the idle reaper notices (not strictly
-	//     "after this request" — bounded by reaper cadence)
+	//   - zero: unload once the request that set it releases the instance
 	//   - negative: keep the instance loaded indefinitely
 	Duration *time.Duration
 }

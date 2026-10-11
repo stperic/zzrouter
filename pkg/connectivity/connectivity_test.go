@@ -150,10 +150,10 @@ func TestConnectionManager_GetStats_TracksRequests(t *testing.T) {
 // ============================================================================
 
 func TestNewProviderConnector(t *testing.T) {
-	pc := NewProviderConnector()
+	pc := NewProviderConnector(nil)
 
 	if pc == nil {
-		t.Fatal("NewProviderConnector() returned nil")
+		t.Fatal("NewProviderConnector(nil) returned nil")
 	}
 	if pc.httpClient == nil {
 		t.Error("httpClient should not be nil")
@@ -164,7 +164,7 @@ func TestNewProviderConnector(t *testing.T) {
 }
 
 func TestProviderConnector_BackoffConfig(t *testing.T) {
-	pc := NewProviderConnector()
+	pc := NewProviderConnector(nil)
 
 	// Verify provider-optimized defaults
 	if pc.backoff.Initial != 200*time.Millisecond {
@@ -179,7 +179,7 @@ func TestProviderConnector_BackoffConfig(t *testing.T) {
 }
 
 func TestProviderConnector_isPermanentProviderError(t *testing.T) {
-	pc := NewProviderConnector()
+	pc := NewProviderConnector(nil)
 
 	tests := []struct {
 		name      string
