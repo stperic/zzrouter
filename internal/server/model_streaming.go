@@ -202,25 +202,27 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	return nil
 }
 
-// loadModelViaNodeAPI loads a LOCAL model directly via executor. No
-// routing needed — we're already on the correct node.
+// loadModelViaNodeAPI is a local model's ready run, started if need be: we are already on its node.
 func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (*instance.Instance, error) {
-	result, err := s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint), Origin: prov_apps.OriginRequest})
+	inst, err := s.ensureLocalRun(prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint)})
+	if err == nil && inst == nil {
+		return nil, loadInternal("the provider serves this model without a run")
+	}
+	return inst, err
+}
+
+// ensureLocalRun is req's ready run, nil when its provider serves the model without one; the start outlives the request.
+func (s *Server) ensureLocalRun(req prov_apps.EnsureRequest) (*instance.Instance, error) {
+	req.Origin = prov_apps.OriginRequest
+	result, err := s.providers.appMgr.EnsureRun(context.Background(), req)
 	if err != nil {
 		return nil, classifyLoadFailure(err)
 	}
-	inst := result.Run
-	if inst == nil {
-		return nil, loadInternal("the provider serves this model without a run")
-	}
-
-	// Wait for local instance to be ready if still starting
-	if inst.GetStatus() == instance.StatusStarting {
-		slog.Info("Model is starting locally, waiting for ready", "model_name", modelName)
+	if inst := result.Run; inst != nil && inst.GetStatus() == instance.StatusStarting {
+		slog.Info("Model is starting locally, waiting for ready", "model_name", req.Model)
 		return s.waitForLocalInstance(inst)
 	}
-
-	return inst, nil
+	return result.Run, nil
 }
 
 // waitForLocalInstance waits for a local instance to become ready.

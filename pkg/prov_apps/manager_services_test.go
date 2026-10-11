@@ -99,7 +99,7 @@ func TestManagedServiceBootStopRestartAndShutdown(t *testing.T) {
 	_, err := m.ControlProviderService(context.Background(), "generic-daemon", "stop")
 	require.NoError(t, err)
 	require.False(t, serviceStatus(t, m).Running)
-	m.reconcileServices(nil)
+	m.reconcileServices(false)
 	require.False(t, serviceStatus(t, m).Desired, "an unrelated config reload must preserve a manual stop")
 	_, err = m.ControlProviderService(context.Background(), "generic-daemon", "start")
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestOSServiceManualStopPreservesSupervisor(t *testing.T) {
 			require.Equal(t, 1, manager.starts)
 			_, err := m.ControlProviderService(context.Background(), "generic-daemon", "stop")
 			require.NoError(t, err)
-			m.reconcileServices(nil)
+			m.reconcileServices(false)
 			require.Equal(t, 1, manager.starts)
 			status := serviceStatus(t, m)
 			require.Equal(t, name, status.Supervisor)
@@ -287,7 +287,7 @@ func TestAutomaticReconcileChecksManualIntentInsideLifecycleGate(t *testing.T) {
 	unlock, err := m.installs.acquireProvider(context.Background(), "generic-daemon")
 	require.NoError(t, err)
 	finished := make(chan struct{})
-	go func() { m.reconcileServices(nil); close(finished) }()
+	go func() { m.reconcileServices(false); close(finished) }()
 	select {
 	case <-finished:
 		t.Fatal("reconciliation bypassed the lifecycle gate")
@@ -325,7 +325,7 @@ func TestBootReconcileBlockedByAnExitingDaemonIsRetried(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the previous node's daemon did not start")
 	}
-	m.reconcileServices(nil)
+	m.reconcileServices(false)
 	require.False(t, serviceStatus(t, m).Desired, "a daemon this node cannot identify is never claimed")
 	cancel()
 	select {
@@ -333,7 +333,7 @@ func TestBootReconcileBlockedByAnExitingDaemonIsRetried(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the previous node's daemon did not exit")
 	}
-	m.retryUnreconciled()
+	m.reconcileServices(true)
 	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
 	require.True(t, serviceStatus(t, m).Desired)
 }

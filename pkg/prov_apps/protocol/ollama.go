@@ -10,6 +10,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/connectivity"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol/formatting"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -158,18 +159,10 @@ func (p *OllamaProvider) ListRunningModels(ctx context.Context, t Target) ([]Run
 	result := make([]RunningModelInfo, 0, len(resp.Models))
 	for _, m := range resp.Models {
 		expiresAt, _ := time.Parse(time.RFC3339, m.ExpiresAt)
-		result = append(result, RunningModelInfo{
-			Name:          m.Name,
-			Digest:        m.Digest,
-			ExpiresAt:     expiresAt,
-			ContextLength: m.ContextLength,
-			Size:          m.Size,
-			SizeVRAM:      m.SizeVRAM,
-			Format:        m.Details.Format,
-			Family:        m.Details.Family,
-			ParameterSize: m.Details.ParameterSize,
-			QuantLevel:    m.Details.QuantLevel,
-		})
+		result = append(result, RunningModelInfo{Name: m.Name, Loaded: instance.Loaded{
+			Digest: m.Digest, ExpiresAt: expiresAt, ContextLength: m.ContextLength, Size: m.Size, VRAM: m.SizeVRAM,
+			Format: m.Details.Format, Family: m.Details.Family, ParameterSize: m.Details.ParameterSize, QuantLevel: m.Details.QuantLevel,
+		}})
 	}
 	return result, nil
 }
@@ -275,7 +268,7 @@ func (p *OllamaProvider) ShowModel(ctx context.Context, t Target, model string) 
 				if r.Name == model {
 					result["running"] = true
 					result["context_length"] = r.ContextLength
-					result["size_vram"] = r.SizeVRAM
+					result["size_vram"] = r.VRAM
 					break
 				}
 			}

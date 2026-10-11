@@ -72,15 +72,12 @@ func (r *Registry) GetAll() map[string]FullProvider {
 	return result
 }
 
-// Of returns key's provider, built for p when the registry no longer holds it (a disabled provider).
-func (r *Registry) Of(key string, p config.Provider) (FullProvider, bool) {
-	if held, err := r.Get(key); err == nil {
-		return held, true
+// Of returns key's provider, built for p when the registry no longer holds it (a disabled provider); nil for neither.
+func (r *Registry) Of(key string, p config.Provider) FullProvider {
+	if held, err := r.Get(key); err == nil || p == nil {
+		return held
 	}
-	if p == nil {
-		return nil, false
-	}
-	return r.createProvider(key, p), true
+	return r.createProvider(key, p)
 }
 
 // Register adds or replaces a provider in the registry from its typed

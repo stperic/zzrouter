@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // Provider is the base interface for all provider implementations.
@@ -74,18 +76,10 @@ type ModelInfo struct {
 	Extra      map[string]any
 }
 
-// RunningModelInfo represents a running model.
+// RunningModelInfo is a model a daemon lists loaded, under its name.
 type RunningModelInfo struct {
-	Name          string
-	Digest        string
-	ExpiresAt     time.Time
-	ContextLength int
-	Size          int64
-	SizeVRAM      int64
-	Format        string
-	Family        string
-	ParameterSize string
-	QuantLevel    string
+	Name string
+	instance.Loaded
 }
 
 // DisplayModel represents model data for table display.
