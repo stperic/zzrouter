@@ -792,6 +792,9 @@ func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 	return daemonReply(http.StatusNotFound, `{"error":"not found"}`), nil
 }
 
+// fakeVRAM is what the fake daemon reports each model holds.
+const fakeVRAM = 512 * constants.BytesPerMB
+
 func (d *fakeDaemon) ps() (*http.Response, error) {
 	d.mu.Lock()
 	if d.psErr {
@@ -803,7 +806,7 @@ func (d *fakeDaemon) ps() (*http.Response, error) {
 		if expires.IsZero() {
 			expires = time.Now().Add(daemonForever)
 		}
-		models = append(models, map[string]any{"name": name, "model": name, "digest": "sha-" + name, "size_vram": 1, "expires_at": expires.Format(time.RFC3339), "details": map[string]any{"format": "gguf", "family": "llama", "parameter_size": "8B", "quantization_level": "Q4_K_M"}})
+		models = append(models, map[string]any{"name": name, "model": name, "digest": "sha-" + name, "size_vram": fakeVRAM, "expires_at": expires.Format(time.RFC3339), "details": map[string]any{"format": "gguf", "family": "llama", "parameter_size": "8B", "quantization_level": "Q4_K_M"}})
 	}
 	for name := range d.stale {
 		if _, listed := d.loaded[name]; !listed {
@@ -1258,7 +1261,6 @@ func TestEnsureRunContractServed(t *testing.T) {
 		r := newServedRig(t)
 		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
 		first := r.running(t, served)
-		first.SetLoaded(instance.Loaded{VRAM: 512 * constants.BytesPerMB})
 		second := r.running(t, EnsureRequest{Provider: "ollama", Model: "b"})
 		assert.Equal(t, []instance.EvictedRun{{RunID: first.ID, Model: first.Model, FreedMiB: 512}}, second.EvictedRuns())
 		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
@@ -1431,7 +1433,8 @@ func TestEnsureRunContractServed(t *testing.T) {
 			run := o.result.Run
 			r.daemon.waitEntered(t)
 			r.daemon.set(func(d *fakeDaemon) {
-				d.psHook = func() {
+				d.psHook = func() { // once: the landing load's own listing must not wait on itself
+					d.set(func(d *fakeDaemon) { d.psHook = nil })
 					d.release()
 					<-run.LeftStarting()
 				}
@@ -1739,7 +1742,7 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 		r.tick(t)
 		loaded := run.Loaded()
 		assert.Equal(t, "sha-"+servedLoaded, loaded.Digest)
-		assert.Equal(t, instance.Loaded{Size: 0, VRAM: 1, Digest: "sha-" + servedLoaded, Format: "gguf", Family: "llama", ParameterSize: "8B", QuantLevel: "Q4_K_M", ExpiresAt: loaded.ExpiresAt}, loaded)
+		assert.Equal(t, instance.Loaded{Size: 0, VRAM: fakeVRAM, Digest: "sha-" + servedLoaded, Format: "gguf", Family: "llama", ParameterSize: "8B", QuantLevel: "Q4_K_M", ExpiresAt: loaded.ExpiresAt}, loaded)
 		for len(r.m.auditEvents) > 0 {
 			<-r.m.auditEvents
 		}

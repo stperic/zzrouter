@@ -155,6 +155,9 @@ func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) 
 	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
 	var loads atomic.Int32
 	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/generate" {
+			return daemonListing(), nil // the daemon's listing, read as each load lands
+		}
 		loads.Add(1)
 		assert.Equal(t, "http://backend:11434/api/generate", req.URL.String())
 		var body map[string]any
@@ -297,6 +300,11 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 
 // One live run per model, across providers: a second served provider on the
 // same daemon is refused while the first holds the model.
+// daemonListing is an empty answer to any daemon read other than a load.
+func daemonListing() *http.Response {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"models":[]}`)), Header: http.Header{}}
+}
+
 func TestEnsureServedProvidersShareOneRunPerModel(t *testing.T) {
 	cfg := &config.AppsConfig{}
 	for _, provider := range []string{"ollama", "other"} {
@@ -304,7 +312,10 @@ func TestEnsureServedProvidersShareOneRunPerModel(t *testing.T) {
 	}
 	release := make(chan struct{})
 	var calls atomic.Int32
-	client := &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) {
+	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/generate" {
+			return daemonListing(), nil
+		}
 		calls.Add(1)
 		<-release
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil

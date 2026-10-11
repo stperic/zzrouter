@@ -773,8 +773,8 @@ func daemonModels(listed []protocol.RunningModelInfo) map[string]protocol.Runnin
 	return loaded
 }
 
-// retireDisplaced retires the other runs ready when run's load landed that its daemon no longer holds: the
-// daemon unloaded them to fit run's model, as an eviction does for a process run.
+// retireDisplaced reads the daemon once run's load lands: it records what the daemon holds, and retires as
+// displaced by run the other runs ready then that it no longer holds, as an eviction does for a process run.
 func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.Instance) []instance.EvictedRun {
 	var ready []*instance.Instance // read before the listing, as the reconcile does: a later one may not be in it
 	for _, other := range m.instances.ListByProvider(run.Provider) {
@@ -783,7 +783,7 @@ func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.
 		}
 	}
 	loader, target, ok := m.servedTarget(run.Provider)
-	if len(ready) == 0 || !ok {
+	if !ok {
 		return nil
 	}
 	listed, err := loader.ListRunningModels(ctx, target)
@@ -791,14 +791,21 @@ func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.
 		return nil // the reconcile retires them on its next listing
 	}
 	loaded := daemonModels(listed)
+	if model, held := loaded[strings.ToLower(run.Model)]; held {
+		run.SetLoaded(daemonLoaded(model))
+	}
 	var evicted []instance.EvictedRun
-	for _, gone := range ready {
-		if _, held := loaded[strings.ToLower(gone.Model)]; held || gone.GetStatus() != instance.StatusRunning {
+	for _, other := range ready {
+		if model, held := loaded[strings.ToLower(other.Model)]; held {
+			other.SetLoaded(daemonLoaded(model))
 			continue
 		}
-		freed := gone.Loaded().VRAM / constants.BytesPerMB
-		m.retireRun(gone, fmt.Sprintf("displaced by run %s (%s): the daemon unloaded it to fit that model; a request to it starts it again", run.ID, run.Model), obsruns.StopReasonMemoryPressure)
-		evicted = append(evicted, instance.EvictedRun{RunID: gone.ID, Model: gone.Model, FreedMiB: freed})
+		if other.GetStatus() != instance.StatusRunning {
+			continue
+		}
+		freed := other.Loaded().VRAM / constants.BytesPerMB
+		m.retireRun(other, fmt.Sprintf("displaced by run %s (%s): the daemon unloaded it to fit that model; a request to it starts it again", run.ID, run.Model), obsruns.StopReasonMemoryPressure)
+		evicted = append(evicted, instance.EvictedRun{RunID: other.ID, Model: other.Model, FreedMiB: freed})
 	}
 	return evicted
 }
