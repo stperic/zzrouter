@@ -7,12 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/sync/singleflight"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -31,10 +28,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Proxy routes a request through a chain of candidate deployments with
-// pre-stream fallback. When a deployment returns a retriable error
-// (transport-level or HTTP 429/5xx) before the first byte is sent to the
-// client, the proxy transparently retries with the next candidate.
+// Proxy routes requests through candidate deployments with replay-safe fallback.
 type Proxy struct {
 	deps              ServerDeps
 	cooldowns         *pfallback.CooldownManager
@@ -43,12 +37,6 @@ type Proxy struct {
 	loadTracker       *pfallback.LoadTracker
 	latencyTracker    *pfallback.LatencyTracker
 	healthChecker     *pfallback.HealthChecker
-
-	// startGroup dedupes concurrent on-demand model starts. Key is the
-	// model name (not (model, app)) — the pre-extraction behaviour was
-	// to collapse starts across providers serving the same logical
-	// model. Invariant #11.
-	startGroup singleflight.Group
 }
 
 // New constructs a Proxy wired to its dependency surface and the
@@ -89,13 +77,6 @@ func (p *Proxy) Start(ctx context.Context) {
 // Stop stops the health checker background probes. Accepts ctx for
 // signature consistency with other lifecycle-managed subsystems;
 // HealthChecker.Stop today is unconditional and does not consult it.
-//
-// KNOWN LIMITATION: startModelAsync goroutines spawned via go
-// p.startModelAsync(...) are tied to a context.Background() with a
-// 10-minute internal timeout — they are NOT cancelled by Stop. A Proxy
-// teardown will leave in-flight on-demand starts running until they
-// complete or time out. Wiring a Proxy-scoped context into these
-// goroutines is tracked as Slice 6 follow-up work.
 func (p *Proxy) Stop(_ context.Context) {
 	if p == nil {
 		return
@@ -202,20 +183,22 @@ func (p *Proxy) ProxyWithFallback(
 			p.loadTracker.Acquire(dep.Name)
 		}
 
-		maxRetries := dep.MaxRetries
-		if maxRetries <= 0 {
-			maxRetries = pfallback.DefaultMaxRetries
-		}
+		maxRetries := dep.RetryLimit()
 
 		rctx.attemptsSoFar = attempts
-		depAttempt, committed := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)
+		depAttempt, disposition := p.tryDeployment(c, dep, body, recorder, resolved, maxRetries, rctx)
 		attempts = append(attempts, depAttempt...)
 
 		if p.loadTracker != nil {
 			p.loadTracker.Release(dep.Name)
 		}
 
-		if committed {
+		if disposition == attemptClientGone {
+			p.recordFallbackMetrics(recorder, attempts, firstDeployment)
+			return ""
+		}
+
+		if disposition == attemptCommitted {
 			p.recordFallbackMetrics(recorder, attempts, firstDeployment)
 			// Match the proxy's own local/remote test (deps.IsLocalNode)
 			// so the metric tracks reality. A deployment tagged with the
@@ -312,8 +295,27 @@ type routeMetaCtx struct {
 	steeringApplied    []string
 }
 
-// tryDeployment attempts a single deployment with retries. Returns the
-// attempts and whether a response was committed to the client.
+// attemptDisposition is what the chain does after one attempt.
+type attemptDisposition uint8
+
+const (
+	attemptRetry attemptDisposition = iota
+	attemptNextReplica
+	attemptCommitted
+	attemptClientGone
+)
+
+// attemptOutcome is one attempt's record and the chain's next move.
+type attemptOutcome struct {
+	attempt     pfallback.Attempt
+	disposition attemptDisposition
+	// retry and backoff are set when disposition is attemptRetry.
+	retry   pfallback.RetryDecision
+	backoff time.Duration
+}
+
+// tryDeployment attempts one deployment, retrying it with backoff while no lease is held, and
+// reports how the chain should go on.
 func (p *Proxy) tryDeployment(
 	c *gin.Context,
 	dep pfallback.Candidate,
@@ -322,218 +324,214 @@ func (p *Proxy) tryDeployment(
 	resolved *resolver.Resolved,
 	maxRetries int,
 	rctx routeMetaCtx,
-) ([]pfallback.Attempt, bool) {
+) ([]pfallback.Attempt, attemptDisposition) {
 	var attempts []pfallback.Attempt
-
-	// Rewrite model name in body to match deployment's actual model
-	// name (the client sends the group alias, but the backend needs the
-	// real model name).
+	// The client sent the group alias; the backend needs the replica's own model name.
 	if dep.Model != resolved.OriginalName {
 		body = wire.RewriteRequestModel(body, c.Request.Header.Get("Content-Type"), dep.Model)
 	}
-	// The replica's own request defaults (a variant's, say), as a direct
-	// request for that model would get them.
 	body = wire.SetDefaultFields(body, p.deps.RequestDefaults(dep.App, dep.Model, c.Request.URL.Path))
 	for retry := 0; retry <= maxRetries; retry++ {
-		start := utils.Now()
-
-		targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
-		if err != nil {
-			slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				Err:            err,
-				Duration:       time.Since(start),
-				Outcome:        pfallback.OutcomeRetriable,
-			})
-			break // Can't retry if we can't resolve the target.
+		attemptMeta := rctx
+		attemptMeta.attemptsSoFar = append(append([]pfallback.Attempt{}, rctx.attemptsSoFar...), attempts...)
+		outcome := p.tryOnce(c, dep, body, recorder, resolved, attemptMeta, retry, maxRetries)
+		attempts = append(attempts, outcome.attempt)
+		if outcome.disposition != attemptRetry {
+			return attempts, outcome.disposition
 		}
 
-		attemptBody := body
-		if inst != nil {
-			attemptBody = p.deps.InstanceRequest(c.Request, inst, body)
-		}
-		recorder.SetUpstreamRequestData(attemptBody)
-
-		var attemptCtx context.Context
-		var cancel context.CancelFunc
-		if dep.Timeout > 0 {
-			attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
-		} else {
-			attemptCtx, cancel = context.WithCancel(c.Request.Context())
-		}
-
-		resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, attemptBody)
-
-		if err != nil {
-			cancel()
-			duration := time.Since(start)
-
-			if pfallback.IsRetriable(0, err) {
-				attempts = append(attempts, pfallback.Attempt{
-					DeploymentName: dep.Name,
-					Err:            err,
-					Duration:       duration,
-					Outcome:        pfallback.OutcomeRetriable,
-				})
-
-				if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, 0, err); shouldRetry {
-					utils.LogDebugf("[Fallback] %q transport error (retry %d/%d, backoff %s): %v", dep.Name, retry+1, maxRetries, backoff, err)
-					select {
-					case <-time.After(backoff):
-					case <-c.Request.Context().Done():
-						return attempts, false
-					}
-					continue
-				}
-
-				// Retries exhausted for this deployment.
-				p.cooldowns.SetCooldown(dep.Name, pfallback.DefaultCooldownDuration, pfallback.ReasonTransport)
-				p.providerCooldowns.SetCooldown(dep.App, pfallback.DefaultCooldownDuration, pfallback.ReasonTransport)
-				utils.LogDebugf("[Fallback] %q transport error (retries exhausted): %v", dep.Name, err)
-				return attempts, false
+		a := outcome.attempt
+		if outcome.retry == pfallback.RetryReplica {
+			utils.LogDebugf("[Fallback] %q retry %d/%d (status %d, backoff %s): %v", dep.Name, retry+1, maxRetries, a.StatusCode, outcome.backoff, a.Err)
+			select {
+			case <-time.After(outcome.backoff):
+			case <-c.Request.Context().Done():
+				return attempts, attemptClientGone
 			}
-
-			// Non-retriable transport error — give up entirely.
-			utils.LogDebugf("[Fallback] %q transport error (non-retriable): %v", dep.Name, err)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				Err:            err,
-				Duration:       duration,
-				Outcome:        pfallback.OutcomeNonRetriable,
-			})
-			// Tag the recorder so OTel emission carries error_type
-			// before we hand back to the caller. The wire layer is
-			// not entered on this path (no resp), so without this
-			// the recorder would be dropped silently.
-			wire.RecordPreByteCopyError(recorder, "fallback_exhausted", err.Error())
-			writeError(c, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-				Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"})
-			return attempts, true
+			continue
 		}
+		p.coolDown(dep, a)
+		return attempts, attemptNextReplica
+	}
+	return attempts, attemptNextReplica
+}
 
-		// Classify errors before retry/cooldown; a capability refusal is not
-		// evidence that this deployment or provider is unhealthy.
-		if resp.StatusCode >= 400 {
-			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request))
-		}
-		// Inspect HTTP status before committing to client.
-		if pfallback.IsRetriable(resp.StatusCode, nil) {
-			// Track rate limit headers (429 responses often include Retry-After).
-			p.trackRateLimitHeaders(resp, dep)
+// coolDown takes a failing deployment and its provider out of rotation, for a transport error or
+// for the status it answered.
+func (p *Proxy) coolDown(dep pfallback.Candidate, a pfallback.Attempt) {
+	cooldownDur, reason := pfallback.CooldownForStatus(a.StatusCode), pfallback.ReasonForStatus(a.StatusCode)
+	if a.Err != nil {
+		cooldownDur, reason = pfallback.DefaultCooldownDuration, pfallback.ReasonTransport
+	}
+	p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
+	p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
+	utils.LogDebugf("[Fallback] %q cooled down (status %d, %s): %v", dep.Name, a.StatusCode, cooldownDur, a.Err)
+}
 
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			cancel()
-
-			duration := time.Since(start)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				StatusCode:     resp.StatusCode,
-				Duration:       duration,
-				Outcome:        pfallback.OutcomeRetriable,
-			})
-
-			if shouldRetry, backoff := pfallback.ShouldRetry(retry, maxRetries, resp.StatusCode, nil); shouldRetry {
-				utils.LogDebugf("[Fallback] %q returned %d (retry %d/%d, backoff %s)", dep.Name, resp.StatusCode, retry+1, maxRetries, backoff)
-				select {
-				case <-time.After(backoff):
-				case <-c.Request.Context().Done():
-					return attempts, false
-				}
-				continue
-			}
-
-			// Retries exhausted for this deployment.
-			cooldownDur := pfallback.CooldownForStatus(resp.StatusCode)
-			reason := pfallback.ReasonForStatus(resp.StatusCode)
-			p.cooldowns.SetCooldown(dep.Name, cooldownDur, reason)
-			p.providerCooldowns.SetCooldown(dep.App, cooldownDur, reason)
-			utils.LogDebugf("[Fallback] %q returned %d (retries exhausted, cooldown %s), trying next", dep.Name, resp.StatusCode, cooldownDur)
-			return attempts, false
-		}
-
-		if resp.StatusCode >= 400 {
-			// Non-retriable error — commit error response to client.
-			utils.LogDebugf("[Fallback] %q returned %d (non-retriable), returning to client", dep.Name, resp.StatusCode)
-			attempts = append(attempts, pfallback.Attempt{
-				DeploymentName: dep.Name,
-				StatusCode:     resp.StatusCode,
-				Duration:       time.Since(start),
-				Outcome:        pfallback.OutcomeNonRetriable,
-			})
-			wire.Commit(c.Writer, resp, dep.App, recorder, p.deps.Normalizers())
-			_ = resp.Body.Close()
-			cancel()
-			return attempts, true
-		}
-
-		// Success.
-		duration := time.Since(start)
-		utils.LogDebugf("[Fallback] %q returned %d: committing to client", dep.Name, resp.StatusCode)
-		attempts = append(attempts, pfallback.Attempt{
-			DeploymentName: dep.Name,
-			StatusCode:     resp.StatusCode,
-			Duration:       duration,
-			Outcome:        pfallback.OutcomeSuccess,
-		})
-
-		p.cooldowns.ClearCooldown(dep.Name)
-		p.providerCooldowns.ClearCooldown(dep.App)
-
-		// Track rate limit headers from the response (proactive cooldown).
-		p.trackRateLimitHeaders(resp, dep)
-
-		// Update recorder with the winning deployment info (latency is
-		// recorded via InferenceLogBridge.OnInferenceComplete). Guarded
-		// so that test fakes and any future caller passing a nil
-		// recorder do not crash here; recordFallbackMetrics at the
-		// caller enforces the same contract.
-		if recorder != nil {
-			recorder.SetProvider(dep.App)
-			recorder.SetModelGroup(resolved.GroupName, dep.Name)
-			if dep.Node != "" {
-				recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)
-			} else {
-				recorder.SetRouting(llm.RoutingDecisionLocal, p.deps.NodeName())
-			}
-		}
-
-		// Determine node for routing metadata — skip for cloud providers
-		// (node is irrelevant).
-		depNode := ""
-		if resolved, ok := p.deps.Backend(dep.App); !ok || !resolved.Cloud {
-			depNode = dep.Node
-			if depNode == "" {
-				depNode = p.deps.NodeName()
-			}
-		}
-
-		injectUsage := p.deps.InjectUsageMetadata()
-		fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
-		fullAttempts = append(fullAttempts, attempts...)
-		chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
-		wire.CommitWithRouting(c.Writer, resp, wire.RoutingMetadata{
-			Provider:             dep.App,
-			Deployment:           dep.Name,
-			Node:                 depNode,
-			InjectUsage:          injectUsage,
-			ClientModel:          rctx.clientModel,
-			GroupName:            rctx.groupName,
-			StrategyUsed:         rctx.strategyUsed,
-			FallbackChain:        chain,
-			Skipped:              skipped,
-			SteeringApplied:      rctx.steeringApplied,
-			DecisionLatencyMs:    utils.Now().Sub(rctx.decisionStart).Milliseconds(),
-			SuppressBodyMetadata: wire.SuppressBodyFromVerbose(c.Query("verbose")),
-			SuppressUsageFrame:   rctx.suppressUsageFrame,
-		}, recorder, p.deps.Normalizers())
-		_ = resp.Body.Close()
-		cancel()
-		return attempts, true
+// tryOnce makes one attempt. A local instance is leased for the whole attempt, body relay
+// included, and released before the caller backs off.
+func (p *Proxy) tryOnce(
+	c *gin.Context,
+	dep pfallback.Candidate,
+	body []byte,
+	recorder *llm.InferenceRecorder,
+	resolved *resolver.Resolved,
+	rctx routeMetaCtx,
+	retry, maxRetries int,
+) attemptOutcome {
+	start := utils.Now()
+	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
+	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
+	if err != nil {
+		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
+		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+		return outcome
 	}
 
-	return attempts, false
+	var lease *instance.Lease
+	if inst != nil {
+		lease, err = p.deps.LeaseInstance(c.Request, inst)
+		if err != nil {
+			outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptClientGone
+			}
+			return outcome
+		}
+		defer lease.Release()
+		body = p.deps.InstanceBody(c.Request, lease, body)
+	}
+	recorder.SetUpstreamRequestData(body)
+
+	var attemptCtx context.Context
+	var cancel context.CancelFunc
+	if dep.Timeout > 0 {
+		attemptCtx, cancel = context.WithTimeout(c.Request.Context(), dep.Timeout)
+	} else {
+		attemptCtx, cancel = context.WithCancel(c.Request.Context())
+	}
+	defer cancel()
+	var wrap func(io.ReadCloser) io.ReadCloser
+	if lease != nil && wire.StreamFromBody(body) {
+		attemptCtx, wrap = lease.WatchStream(attemptCtx)
+	}
+	resp, err := p.deps.ProxyForwardDetached(attemptCtx, c.Request.Method, targetURL, attemptHeaders(c.Request.Header, up, dep), up, body)
+	if err != nil {
+		if resp != nil {
+			_ = resp.Body.Close()
+			resp = nil
+		}
+		if cause := context.Cause(attemptCtx); errors.Is(cause, instance.ErrFirstByteTimeout) {
+			err = fmt.Errorf("%w: %w", cause, err)
+		}
+		if errors.Is(err, instance.ErrFirstByteTimeout) {
+			err = &pfallback.RequestError{Err: err, WroteRequest: true}
+			outcome.attempt.StatusCode = http.StatusGatewayTimeout
+		}
+		outcome.attempt.Err = err
+	} else {
+		if wrap != nil {
+			resp.Body = wrap(resp.Body)
+		}
+		// A capability refusal is not evidence the deployment is unhealthy.
+		if resp.StatusCode >= 400 {
+			classifier := p.deps.FailureClassifier(dep.App)
+			if inst != nil {
+				classifier = inst.FailureClassifier
+			}
+			if up.IsCluster() {
+				classifier = nil
+			}
+			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+		}
+		outcome.attempt.StatusCode = resp.StatusCode
+	}
+	outcome.attempt.Duration = time.Since(start)
+	decision, backoff := pfallback.ShouldRetry(c.Request.Method, err, outcome.attempt.StatusCode, retry, maxRetries)
+	if decision != pfallback.StopRetry {
+		if resp != nil {
+			p.trackRateLimitHeaders(resp, dep)
+			_ = resp.Body.Close()
+		}
+		outcome.disposition, outcome.retry, outcome.backoff = attemptRetry, decision, backoff
+		return outcome
+	}
+	// Not replayed, but a failure after the request left still marks the replica unhealthy.
+	if err != nil || outcome.attempt.StatusCode == http.StatusGatewayTimeout {
+		p.coolDown(dep, outcome.attempt)
+	}
+	if err != nil {
+		outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptCommitted
+		failure := httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
+			Message: utils.SanitizeErrorMessage(err.Error()), Code: "fallback_exhausted"}
+		if errors.Is(err, instance.ErrFirstByteTimeout) {
+			failure.Status, failure.Code = http.StatusGatewayTimeout, string(httperr.CodeUpstreamTimeout)
+		}
+		wire.RecordPreByteCopyError(recorder, failure.Code, err.Error())
+		writeError(c, failure)
+		return outcome
+	}
+
+	outcome.disposition = attemptCommitted
+	var result wire.Result
+	if resp.StatusCode >= 400 {
+		outcome.attempt.Outcome = pfallback.OutcomeNonRetriable
+		result = wire.Commit(c.Request.Context(), c.Writer, resp, dep.App, recorder, p.deps.Normalizers(), p.deps.BufferedShape(wire.RoutingMetadata{Provider: dep.App}, recorder))
+	} else {
+		outcome.attempt.Outcome = pfallback.OutcomeSuccess
+		p.cooldowns.ClearCooldown(dep.Name)
+		p.providerCooldowns.ClearCooldown(dep.App)
+		p.trackRateLimitHeaders(resp, dep)
+		result = p.commitSuccess(c, dep, resp, recorder, resolved, rctx, outcome.attempt)
+	}
+	_ = resp.Body.Close()
+	cancel()
+	p.deps.FinishRelay(c.Writer, c.Request, resp, result)
+	return outcome
+}
+
+// commitSuccess relays a successful response with the route's metadata.
+func (p *Proxy) commitSuccess(c *gin.Context, dep pfallback.Candidate, resp *http.Response, recorder *llm.InferenceRecorder, resolved *resolver.Resolved, rctx routeMetaCtx, attempt pfallback.Attempt) wire.Result {
+	// Test fakes pass a nil recorder.
+	if recorder != nil {
+		recorder.SetProvider(dep.App)
+		recorder.SetModelGroup(resolved.GroupName, dep.Name)
+		if dep.Node != "" {
+			recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)
+		} else {
+			recorder.SetRouting(llm.RoutingDecisionLocal, p.deps.NodeName())
+		}
+	}
+
+	// A cloud provider has no node.
+	depNode := ""
+	if resolved, ok := p.deps.Backend(dep.App); !ok || !resolved.Cloud {
+		depNode = dep.Node
+		if depNode == "" {
+			depNode = p.deps.NodeName()
+		}
+	}
+
+	injectUsage := p.deps.InjectUsageMetadata()
+	fullAttempts := append([]pfallback.Attempt{}, rctx.attemptsSoFar...)
+	fullAttempts = append(fullAttempts, attempt)
+	chain, skipped := buildRouteWireFields(fullAttempts, rctx.preFilterSkip)
+	meta := wire.RoutingMetadata{
+		Provider:             dep.App,
+		Deployment:           dep.Name,
+		Node:                 depNode,
+		InjectUsage:          injectUsage,
+		ClientModel:          rctx.clientModel,
+		GroupName:            rctx.groupName,
+		StrategyUsed:         rctx.strategyUsed,
+		FallbackChain:        chain,
+		Skipped:              skipped,
+		SteeringApplied:      rctx.steeringApplied,
+		DecisionLatencyMs:    utils.Now().Sub(rctx.decisionStart).Milliseconds(),
+		SuppressBodyMetadata: wire.SuppressBodyFromVerbose(c.Query("verbose")),
+		SuppressUsageFrame:   rctx.suppressUsageFrame,
+	}
+	return wire.CommitWithRouting(c.Request.Context(), c.Writer, resp, meta, recorder, p.deps.Normalizers(), p.deps.BufferedShape(meta, recorder))
 }
 
 // separateOnDemand splits out on-demand deployments that aren't running.
@@ -544,15 +542,12 @@ func (p *Proxy) separateOnDemand(deps []pfallback.Candidate) ([]pfallback.Candid
 	var skipped []pfallback.Attempt
 
 	for _, dep := range deps {
-		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model) {
-			// NOTE: startModelAsync is an owner-less goroutine — see
-			// Stop() docstring. Pre-existing behaviour, preserved
-			// verbatim in Slice 6.
-			go p.startModelAsync(dep.Model, dep.App)
-			utils.LogDebugf("[Fallback] Skipping %q: on-demand model not running, starting async", dep.Name)
+		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model, dep.App) {
+			err := p.deps.StartOnDemand(dep.Model, dep.App)
 			skipped = append(skipped, pfallback.Attempt{
 				DeploymentName: dep.Name,
 				Outcome:        pfallback.OutcomeOnDemandSkip,
+				Err:            err,
 			})
 			continue
 		}
@@ -599,21 +594,31 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 		return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Cluster(), nil, nil
 	}
 
-	// 3. On-demand local model — use running instance port.
-	if dep.OnDemand {
-		if inst, found := p.deps.AppInstance(dep.Model); found {
-			base := fmt.Sprintf("http://%s:%d", instanceBackendNode(inst), inst.Port)
-			return backend.PassthroughTarget(base, urlPath, rawQuery), backend.Engine(), inst, nil
+	// 3. A local model: the run serving it, at the run's own target.
+	var inst *instance.Instance
+	switch {
+	case dep.OnDemand:
+		found := false
+		if inst, found = p.deps.AppInstance(dep.Model, dep.App); !found {
+			return "", backend.Upstream{}, nil, fmt.Errorf("on-demand model %q not running", dep.Model)
 		}
-		return "", backend.Upstream{}, nil, fmt.Errorf("on-demand model %q not running", dep.Model)
+	case hasEndpoint:
+		var err error
+		if inst, err = p.deps.LocalRun(dep.Model, dep.App); err != nil {
+			return "", backend.Upstream{}, nil, err
+		}
+	default:
+		return "", backend.Upstream{}, nil, fmt.Errorf("cannot resolve target for deployment %q (app=%s)", dep.Name, dep.App)
 	}
-
-	// 4. Local provider endpoint (e.g., ollama on localhost:11434).
-	if hasEndpoint {
+	// 4. A provider without runs is its own endpoint.
+	if inst == nil {
 		return backend.PassthroughTarget(resolved.Endpoint, urlPath, rawQuery), resolved.Upstream, nil, nil
 	}
-
-	return "", backend.Upstream{}, nil, fmt.Errorf("cannot resolve target for deployment %q (app=%s)", dep.Name, dep.App)
+	base, up, err := p.deps.RunUpstream(inst)
+	if err != nil {
+		return "", backend.Upstream{}, nil, err
+	}
+	return backend.PassthroughTarget(base, urlPath, rawQuery), up, inst, nil
 }
 
 // attemptHeaders returns the headers an attempt sends. A worker is told
@@ -628,10 +633,9 @@ func attemptHeaders(h http.Header, up backend.Upstream, dep pfallback.Candidate)
 	return h
 }
 
-// isModelRunning checks if an on-demand model is currently running
-// locally.
-func (p *Proxy) isModelRunning(model string) bool {
-	inst, found := p.deps.AppInstance(model)
+// isModelRunning checks if a model is currently running locally on provider.
+func (p *Proxy) isModelRunning(model, provider string) bool {
+	inst, found := p.deps.AppInstance(model, provider)
 	return found && inst.GetStatus() == instance.StatusRunning
 }
 
@@ -646,21 +650,20 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 		return candidates
 	}
 
-	// All candidates in a model group resolve to the same underlying
-	// model, so one estimate covers all deployments.
-	modelName := candidates[0].Model
-	estimate := modelregistry.EstimateModelMemory(modelName, "", "")
-	if estimate == nil || estimate.MinMemoryMB <= 0 {
-		return candidates // Can't estimate — pass through.
-	}
-
 	localHostname := p.deps.NodeName()
 
 	result := make([]pfallback.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		// Already-running models have memory allocated — pass through.
-		if c.Node == "" && p.isModelRunning(c.Model) {
+		if c.Node == "" && p.isModelRunning(c.Model, c.App) {
 			result = append(result, c)
+			continue
+		}
+
+		// Replicas of one group may serve different models, so each is sized by its own.
+		estimate := modelregistry.EstimateModelMemory(c.Model, "", "")
+		if estimate == nil || estimate.MinMemoryMB <= 0 {
+			result = append(result, c) // Can't estimate — pass through.
 			continue
 		}
 
@@ -685,7 +688,7 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 
 		if availableMB < estimate.MinMemoryMB {
 			slog.Info("[Fallback] Skipping deployment: insufficient memory",
-				"deployment", c.Name, "node", nodeName, "model", modelName,
+				"deployment", c.Name, "node", nodeName, "model", c.Model,
 				"required_mb", estimate.MinMemoryMB, "available_mb", availableMB)
 			continue
 		}
@@ -700,28 +703,6 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 	}
 
 	return result
-}
-
-// startModelAsync triggers an async model start without blocking the
-// request. Uses singleflight to deduplicate concurrent starts for the
-// same model.
-//
-// LIFECYCLE NOTE: This goroutine is owner-less with respect to Proxy.Stop.
-// The internal context.Background() + 10min timeout is the only bound on
-// runtime. Preserved verbatim from the pre-extraction code. Wiring a
-// Proxy-scoped context is tracked as Slice 6 follow-up.
-func (p *Proxy) startModelAsync(model, app string) {
-	// Inner func always returns (nil, nil); outer error is always nil.
-	_, _, _ = p.startGroup.Do(model, func() (any, error) {
-		slog.Info("Starting on-demand model asynchronously", "model", model, "provider", app)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		exec := p.deps.NewLoadExecutor()
-		if err := exec(ctx, model, app); err != nil {
-			slog.Error("Failed to start on-demand model", "model", model, "error", err)
-		}
-		return nil, nil
-	})
 }
 
 // recordFallbackMetrics updates the inference recorder with fallback
@@ -744,12 +725,16 @@ func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts 
 	}
 }
 
+// modelLoadingRetryAfter is how long to tell a caller to wait while an
+// on-demand model starts: a cold start takes tens of seconds.
+const modelLoadingRetryAfter = 60 * time.Second
+
 // writeExhaustedResponse writes a 503 when all deployments are exhausted.
 func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt) {
 	if len(attempts) > 0 {
 		allConflicts := true
-		for _, a := range attempts {
-			allConflicts = allConflicts && errors.Is(a.Err, config.ErrModelNameConflict)
+		for _, attempt := range attempts {
+			allConflicts = allConflicts && errors.Is(attempt.Err, config.ErrModelNameConflict)
 		}
 		if allConflicts {
 			writeError(c, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "model_name_conflict", Message: attempts[0].Err.Error()})
@@ -758,22 +743,32 @@ func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempt
 	}
 	hasOnDemandPending := false
 	for _, a := range attempts {
-		if a.Outcome == pfallback.OutcomeOnDemandSkip {
+		if a.Outcome == pfallback.OutcomeOnDemandSkip && a.Err == nil {
 			hasOnDemandPending = true
 			break
 		}
 	}
 
 	message := fmt.Sprintf("No available deployments for model %q. All backends are unavailable, in cooldown, or lack sufficient resources.", groupName)
+	var refusals []error
+	for _, a := range attempts {
+		if a.Outcome == pfallback.OutcomeOnDemandSkip && a.Err != nil {
+			refusals = append(refusals, a.Err)
+		}
+	}
+	if len(refusals) > 0 {
+		message = fmt.Sprintf("No available deployments for model %q: %s", groupName, errors.Join(refusals...))
+	}
 	code := "model_not_available"
+	var retryAfter time.Duration
 
 	if hasOnDemandPending {
 		message = fmt.Sprintf("Model %q is starting up. Please retry in a few seconds.", groupName)
 		code = "model_loading"
-		c.Header("Retry-After", "60")
+		retryAfter = modelLoadingRetryAfter
 	}
 
-	writeError(c, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Message: message, Code: code})
+	writeError(c, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Message: message, Code: code, RetryAfter: retryAfter})
 }
 
 // writeError writes e in the dialect of c's route group. Every routed
@@ -813,20 +808,4 @@ func (p *Proxy) trackRateLimitHeaders(resp *http.Response, dep pfallback.Candida
 		p.providerCooldowns.SetCooldownIfLonger(dep.App, snap.ResetTokens, pfallback.ReasonRateLimit)
 		utils.LogDebugf("[RateLimit] %q tokens exhausted, proactive cooldown %s", dep.App, snap.ResetTokens)
 	}
-}
-
-// instanceBackendNode extracts the backend host from instance. Returns
-// constants.Localhost for local instances, or the remote host from
-// HealthURL for remote instances.
-//
-// Shares the `constants.Localhost` anchor with server's
-// getInstanceBackendNode so both copies move together if the project
-// ever repoints the local-host token.
-func instanceBackendNode(inst *instance.Instance) string {
-	if inst.HealthURL != "" && !strings.Contains(inst.HealthURL, constants.Localhost) {
-		if u, err := url.Parse(inst.HealthURL); err == nil && u.Hostname() != "" {
-			return u.Hostname()
-		}
-	}
-	return constants.Localhost
 }

@@ -232,32 +232,6 @@ func TestInstaller_extractBinary_AutoDetect(t *testing.T) {
 	assert.NotEmpty(t, extractedPath)
 }
 
-func TestInstaller_createBackup(t *testing.T) {
-	tmpDir := t.TempDir()
-	backupDir := filepath.Join(tmpDir, "backups")
-
-	// Create backup directory (the function expects it to exist)
-	err := os.MkdirAll(backupDir, 0750)
-	require.NoError(t, err)
-
-	i := NewInstaller(backupDir, 3)
-
-	// Create source file
-	sourcePath := filepath.Join(tmpDir, "zzrouter")
-	err = os.WriteFile(sourcePath, []byte("current binary"), 0750)
-	require.NoError(t, err)
-
-	// Create backup
-	backupPath, err := i.createBackup(sourcePath)
-	require.NoError(t, err)
-	assert.Contains(t, backupPath, "zzrouter-")
-
-	// Verify backup content
-	content, err := os.ReadFile(backupPath)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("current binary"), content)
-}
-
 func TestInstaller_listBackups(t *testing.T) {
 	tmpDir := t.TempDir()
 	i := NewInstaller(tmpDir, 3)

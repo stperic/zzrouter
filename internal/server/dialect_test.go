@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // A failure before any backend byte on a streaming request is the one
@@ -19,8 +19,8 @@ import (
 // inside a 200 stream (a bare status leaves OpenWebUI stuck), Anthropic
 // as the status its SDK retries.
 func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
-	capacity := httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-		Message: "instance at capacity", Code: "capacity_exceeded"}
+	capacity, ok := renderAdmissionError(&instance.AdmissionError{Reason: instance.ErrQueueFull, RetryAfter: instance.AdmissionRetryAfter})
+	require.True(t, ok)
 
 	streaming := func(path string) *http.Request {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
@@ -43,7 +43,7 @@ func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 		w := httptest.NewRecorder()
 		failBeforeBackend(w, streaming("/v1/messages"), capacity)
 
-		assert.Equal(t, http.StatusTooManyRequests, w.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 		assert.Equal(t, "5", w.Header().Get("Retry-After"))
 		var body struct {
 			Type  string `json:"type"`
@@ -53,12 +53,12 @@ func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
 		}
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body), w.Body.String())
 		assert.Equal(t, "error", body.Type)
-		assert.Equal(t, "rate_limit_error", body.Error.Type)
+		assert.Equal(t, "api_error", body.Error.Type)
 	})
 
 	t.Run("a non-streaming request always gets the status", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		failBeforeBackend(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), capacity)
-		assert.Equal(t, http.StatusTooManyRequests, w.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	})
 }

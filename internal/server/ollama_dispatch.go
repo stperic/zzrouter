@@ -22,6 +22,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 )
 
 // dispatchOllamaInference resolves an Ollama-compat inference request and
@@ -121,19 +123,42 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		return nil
 	}
 
-	// Local coordinator Ollama. Requires a configured Ollama endpoint —
-	// otherwise the model truly isn't reachable via /api/*.
-	ollama, ok := s.backend.Resolve(constants.AppOllama)
-	if !ok {
-		return ollamaUnavailableErr(modelName)
-	}
 	recorder.SetProvider(constants.AppOllama)
 	recorder.SetRouting(llm.RoutingDecisionLocal, s.node.Nodename())
 	routing.RecordDecision(c.Request.Context(),
 		s.routingStrategy(), routing.OutcomeLocal,
 		string(genai.ProviderName(constants.AppOllama)), operation)
-	target := backend.PassthroughTarget(ollama.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
-	s.proxy.ForwardToBackend(c.Writer, c.Request, constants.AppOllama, target, ollama.Upstream, body)
+	model := resolved.ModelName
+	if model == "" {
+		model = modelName
+	}
+	return s.serveLocalOllama(c.Writer, c.Request, model)
+}
+
+// serveLocalOllama answers a native request through the model's run, else by Ollama itself when it has none.
+func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, model string) error {
+	if s.hasRuns(constants.AppOllama) {
+		// A zero keep_alive asks the model unloaded: with no run of it, nothing starts and the daemon answers it.
+		hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
+		unload := hints != nil && hints.Duration != nil && *hints.Duration == 0
+		inst, err := s.ensureLocalRun(prov_apps.EnsureRequest{Model: model, Provider: constants.AppOllama, Unload: unload}) //nolint:contextcheck // a load outlives the request that asked for it
+		if err != nil {
+			failure := classifyLoadFailure(err).wire()
+			recordErrorOnContext(req.Context(), failure.Code, failure.Message)
+			dialectOf(req).WriteError(w, req, failure)
+			return nil
+		}
+		if inst != nil {
+			s.forwardToRun(w, req, inst)
+			return nil
+		}
+	}
+	ollama, ok := s.backend.Resolve(constants.AppOllama)
+	if !ok {
+		return ollamaUnavailableErr(model)
+	}
+	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+	s.proxy.ForwardToBackend(w, req, constants.AppOllama, backend.PassthroughTarget(ollama.Endpoint, req.URL.Path, req.URL.RawQuery), ollama.Upstream, body)
 	return nil
 }
 

@@ -54,20 +54,6 @@ func runtimeCheckData(checks schema.RuntimeChecks) ([]byte, error) {
 	return json.Marshal(checks)
 }
 
-// RunRuntimeChecks runs a bounded fixed probe without installing packages.
-func RunRuntimeChecks(ctx context.Context, python string, checks schema.RuntimeChecks) []RuntimeCheck {
-	return runRuntimeChecks(ctx, python, checks, nil)
-}
-
-// RunRuntimeChecksWithEnvironment uses the accepted runtime's explicit launch environment.
-func RunRuntimeChecksWithEnvironment(ctx context.Context, python string, checks schema.RuntimeChecks, environment map[string]string, toolkits ...ToolkitSelection) []RuntimeCheck {
-	return runRuntimeChecks(ctx, python, checks, environment, toolkits...)
-}
-
-func runRuntimeChecks(ctx context.Context, python string, checks schema.RuntimeChecks, environment map[string]string, toolkits ...ToolkitSelection) []RuntimeCheck {
-	return runRuntimeChecksSnapshot(ctx, python, checks, environment, nil, toolkits...)
-}
-
 // RunRuntimeChecksSnapshot keeps verification on the accepted install environment.
 func RunRuntimeChecksSnapshot(ctx context.Context, python string, checks schema.RuntimeChecks, environment map[string]string, executionEnvironment []string, toolkits ...ToolkitSelection) []RuntimeCheck {
 	return runRuntimeChecksSnapshot(ctx, python, checks, environment, executionEnvironment, toolkits...)

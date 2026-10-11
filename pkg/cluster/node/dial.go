@@ -5,10 +5,13 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 // DialClient returns an *http.Client for outbound mTLS dispatches from
@@ -69,6 +72,8 @@ func (n *Node) DialClient(expectedPeerOU string) (*http.Client, error) {
 	}
 	return &http.Client{
 		Transport: &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: constants.ClusterDialTimeout}).DialContext,
+			TLSHandshakeTimeout: constants.ClusterTLSHandshakeTimeout,
 			TLSClientConfig:     tlsCfg,
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 10,

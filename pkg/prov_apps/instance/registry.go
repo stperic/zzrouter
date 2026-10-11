@@ -91,11 +91,20 @@ func (r *Registry) Get(id string) (*Instance, bool) {
 	return inst, ok
 }
 
-// GetByModel returns the chat instance for a model. Shim over
-// GetByModelEndpoint(model, "chat") for callers that don't carry
-// endpoint context.
+// GetByModel returns the run of model on any endpoint, chat first.
 func (r *Registry) GetByModel(model string) (*Instance, bool) {
-	return r.GetByModelEndpoint(model, "chat")
+	if inst, ok := r.GetByModelEndpoint(model, "chat"); ok {
+		return inst, true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for key, id := range r.modelMap {
+		if name, _, _ := strings.Cut(key, "\x00"); name == model {
+			inst, ok := r.instances[id]
+			return inst, ok
+		}
+	}
+	return nil, false
 }
 
 // GetByModelEndpoint returns the instance serving (model, endpoint).
@@ -187,7 +196,7 @@ func (r *Registry) UpdateStatus(id string, status Status, errorMsg string) error
 //
 // Both LastActivity and lastUsedAt are set atomically under a single lock
 // (inside Instance.StampActivityWithHints) to prevent TOCTOU inconsistencies
-// in IsIdle/IsExpired.
+// in idle policy snapshots.
 func (r *Registry) UpdateActivity(id string, ov *keepalive.Override) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -202,23 +211,8 @@ func (r *Registry) UpdateActivity(id string, ov *keepalive.Override) error {
 
 // --- List methods ---
 
-// List returns all non-expired instances.
+// List returns all registered instances; only the reaper ends idle runs.
 func (r *Registry) List() []*Instance {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	now := utils.Now()
-	result := make([]*Instance, 0, len(r.instances))
-	for _, inst := range r.instances {
-		if !inst.IsExpired(now) {
-			result = append(result, inst)
-		}
-	}
-	return result
-}
-
-// ListAll returns all instances including expired ones.
-func (r *Registry) ListAll() []*Instance {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -370,13 +364,6 @@ func GenerateID(provider, model, endpoint string) string {
 	sanitized := sanitizeModelName(model)
 	seq := idCounter.Add(1)
 	source := fmt.Sprintf("%s-%s-%s-%d-%d", provider, sanitized, endpoint, utils.Now().UnixNano(), seq)
-	hash := sha256.Sum256([]byte(source))
-	return fmt.Sprintf("%x", hash[:6])
-}
-
-// GenerateShortHash produces a 12-char hex hash from an arbitrary source string.
-// Used for pseudo-instance IDs (e.g., endpoint provider running models).
-func GenerateShortHash(source string) string {
 	hash := sha256.Sum256([]byte(source))
 	return fmt.Sprintf("%x", hash[:6])
 }

@@ -2,6 +2,8 @@ package prov_apps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -63,6 +65,7 @@ func TestWatcher_ReachesRunning_EmitsDone(t *testing.T) {
 
 	ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
 	assert.Equal(t, jobs.PhaseDone, ev.Phase)
+	assert.NotContains(t, ev.Meta, "evicted_runs", "a launch that evicted nothing says nothing")
 }
 
 // TestWatcher_Failed_EmitsFail — the process crashed / health sustained
@@ -277,4 +280,73 @@ func TestWatcher_QueuedThenAdmitted(t *testing.T) {
 	require.True(t, inst.Admit())
 	assert.Equal(t, "launching", next("launching").Meta["phase"])
 	inst.MarkRunning()
+}
+
+func TestRunJobPublicationPrecedesTerminal(t *testing.T) {
+	for _, status := range []instance.Status{instance.StatusRunning, instance.StatusFailed} {
+		for _, publicationFails := range []bool{false, true} {
+			t.Run(string(status)+"/publicationFails="+fmt.Sprint(publicationFails), func(t *testing.T) {
+				m, reg := newWatcherTestMgr(t)
+				entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				defer func() {
+					select {
+					case <-release:
+					default:
+						close(release)
+					}
+				}()
+				m.publishCatalog = func() error {
+					close(entered)
+					<-release
+					if publicationFails {
+						return errors.New("publication refused")
+					}
+					return nil
+				}
+				inst := instance.NewInstance("management", "vllm", "model", 0, 0, 0)
+				inst.SetStatus(status)
+				h, err := reg.StartDetached(jobs.KindRun, "", nil)
+				require.NoError(t, err)
+				go func() {
+					defer close(finished)
+					m.watchInstanceReadiness(inst, h)
+				}()
+				select {
+				case <-entered:
+				case <-time.After(3 * time.Second):
+					t.Fatal("terminal job skipped catalog publication")
+				}
+				ev, err := reg.Get(h.ID())
+				require.NoError(t, err)
+				require.False(t, ev.Phase.IsTerminal(), "publication must finish before the terminal event")
+				close(release)
+				<-finished
+				ev, err = reg.Get(h.ID())
+				require.NoError(t, err)
+				want := jobs.PhaseDone
+				if status == instance.StatusFailed || publicationFails {
+					want = jobs.PhaseFailed
+				}
+				require.Equal(t, want, ev.Phase)
+				if publicationFails {
+					require.Contains(t, ev.Err, "publication refused")
+				}
+			})
+		}
+	}
+}
+
+func TestRunJobDuringShutdownDoesNotPublish(t *testing.T) {
+	m, reg := newWatcherTestMgr(t)
+	m.publishCatalog = func() error { t.Error("a shutting-down manager must not wait on publication"); return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.shutdownCtx = ctx
+	inst := instance.NewInstance("shutdown", "vllm", "model", 0, 0, 0)
+	h, err := reg.StartDetached(jobs.KindRun, "", nil)
+	require.NoError(t, err)
+	m.watchInstanceReadiness(inst, h)
+	ev, err := reg.Get(h.ID())
+	require.NoError(t, err)
+	require.Equal(t, jobs.PhaseFailed, ev.Phase)
 }

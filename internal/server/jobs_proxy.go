@@ -71,7 +71,7 @@ func (s *Server) newJobsStreamClient() (*http.Client, error) {
 }
 
 // listJobsPeers returns the names of every non-local cluster peer the
-// coord knows about. Used by GetJob/StreamJob fan-out so agents can
+// coord knows about and has not marked down. Used by job lookup fan-out so agents can
 // poll a job_id without remembering its owner. Empty slice when no
 // coordinator state is available — callers degrade to local-only.
 func (s *Server) listJobsPeers() []string {
@@ -86,7 +86,8 @@ func (s *Server) listJobsPeers() []string {
 	out := make([]string, 0, len(endpoints))
 	self := s.node.Name()
 	for _, ep := range endpoints {
-		if ep == nil || ep.IsLocal {
+		// A down peer's jobs are unreachable either way; asking it would turn every miss into a 503.
+		if ep == nil || ep.IsLocal || ep.Status == mesh.StatusDown {
 			continue
 		}
 		if strings.EqualFold(ep.NodeName, self) {

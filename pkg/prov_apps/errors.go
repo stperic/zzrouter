@@ -25,7 +25,7 @@ var (
 	ErrPortConflict          = port.ErrPortConflict
 
 	// Raised while building or validating a launch. They reach
-	// internal/server through LaunchInstance, which is why they are
+	// internal/server through EnsureRun, which is why they are
 	// re-exported here: a caller asking for a model that is not on
 	// this node, or whose local copy is half-downloaded, has made a
 	// mistake the HTTP layer must report as theirs.
@@ -37,6 +37,15 @@ var (
 // Locally-declared sentinels raised from code that lives in this package
 // (manager_lifecycle.go, install_coordinator.go, manager_init.go).
 var (
+	// ErrRunHeldByOtherProvider refuses reuse across providers.
+	ErrRunHeldByOtherProvider = errors.New("model is held by another provider")
+
+	// ErrProviderUnavailable refuses a served start without a usable endpoint.
+	ErrProviderUnavailable = errors.New("provider endpoint unavailable")
+
+	// ErrModelDropped ends a served run whose daemon no longer holds its model; the next request loads it again.
+	ErrModelDropped = errors.New("the provider no longer serves this model")
+
 	// ErrProviderNotFound is returned when a requested provider does not exist.
 	ErrProviderNotFound = errors.New("provider not found")
 
@@ -45,6 +54,12 @@ var (
 
 	// ErrPortOutOfRange is returned when a requested port is outside the configured range.
 	ErrPortOutOfRange = errors.New("port outside configured range")
+
+	// ErrExternalService refuses a lifecycle change to a provider zzRouter does not run.
+	ErrExternalService = errors.New("provider is external; zzRouter cannot change its lifecycle")
+
+	// ErrServiceDisabled refuses starting a provider that is disabled.
+	ErrServiceDisabled = errors.New("provider is disabled; enable it before starting")
 
 	// ErrShutdown is returned when an operation is attempted after shutdown.
 	ErrShutdown = errors.New("manager is shutting down")
@@ -64,7 +79,7 @@ var (
 	// queue behind another launch claiming GPU memory; the smoke retries.
 	errAdmissionBusy = errors.New("another launch on this node is still claiming GPU memory")
 
-	// ErrParameterValidation is returned when LaunchRequest.Parameters fail
+	// ErrParameterValidation is returned when EnsureRequest.Parameters fail
 	// the per-provider validation schema. The wrapped raise site preserves
 	// the inner validator error for context via fmt.Errorf("%w: %w", ...).
 	ErrParameterValidation = errors.New("parameter validation failed")

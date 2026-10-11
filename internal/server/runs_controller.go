@@ -22,7 +22,6 @@ type RunsController struct {
 	utility     *RunsUtilityService
 	nodes       NodeValidator
 	logs        RunLogHandler
-	idem        *idempotencyStore
 }
 
 // NewRunsController creates a new runs controller.
@@ -39,12 +38,11 @@ func NewRunsController(
 		utility:     utility,
 		nodes:       nodes,
 		logs:        logs,
-		idem:        newIdempotencyStore(),
 	}
 }
 
 // RegisterPublicRoutes registers public run routes.
-func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup) {
+func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	// Broadcast
 	router.GET("/runs", ctrl.ListRuns)
 
@@ -53,12 +51,10 @@ func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.GET("/runs/:id/logs", ctrl.GetRunLogs)
 	router.GET("/runs/:id/health", ctrl.GetRunHealth)
 	router.GET("/runs/:id/probes", ctrl.GetRunProbes)
-	// Launch + ensure carry agent retry weight; gate on Idempotency-Key
-	// so a retried timeout doesn't double-launch.
-	router.POST("/runs", ctrl.idem.middleware(), ctrl.LaunchRun)
-	router.POST("/runs/ensure", ctrl.idem.middleware(), ctrl.EnsureRun)
+	idempotent(router, "POST", "/runs", nil, ctrl.LaunchRun)
+	idempotent(router, "POST", "/runs/ensure", nil, ctrl.EnsureRun)
 	router.DELETE("/runs/:id", ctrl.StopRun)
-	router.POST("/runs/:id/restart", ctrl.RestartRun)
+	idempotent(router, "POST", "/runs/:id/restart", nil, ctrl.RestartRun)
 
 	// Load (Cache-aware)
 	router.POST("/runs/load", ctrl.LoadModel)
@@ -118,7 +114,7 @@ func (ctrl *RunsController) GetRun(c *gin.Context) {
 	resp, err := ctrl.service.GetRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -148,7 +144,7 @@ func (ctrl *RunsController) GetRunHealth(c *gin.Context) {
 	resp, err := ctrl.service.GetRunHealth(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -179,11 +175,8 @@ func (ctrl *RunsController) LaunchRun(c *gin.Context) {
 	respondAccepted(c, "Run launch accepted; subscribe to job_id for readiness", resp)
 }
 
-// EnsureRun handles POST /zzrouter/v1/runs/ensure. Idempotent
-// warm-up: returns 200 with running-instance details when the model
-// is already hot, 202 + job ids when a launch (and possibly a
-// download) is needed. Singleflight at the manager layer dedupes
-// concurrent ensures by construction.
+// EnsureRun handles POST /zzrouter/v1/runs/ensure: 200 when the model
+// already serves on its node, 202 + job ids while it starts or downloads.
 func (ctrl *RunsController) EnsureRun(c *gin.Context) {
 	var req EnsureRunRequest
 	if !BindJSONStrict(c, &req) {
@@ -211,7 +204,7 @@ func (ctrl *RunsController) StopRun(c *gin.Context) {
 	resp, err := ctrl.service.StopRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -231,7 +224,7 @@ func (ctrl *RunsController) RestartRun(c *gin.Context) {
 	resp, err := ctrl.service.RestartRun(c.Request.Context(), req)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			NotFound(c, "run not found: "+req.RunID)
+			NotFound(c, ctrl.service.MissingRunDetail(c.Request.Context(), req.RunID, req.Node))
 			return
 		}
 		RespondToError(c, err)
@@ -258,12 +251,8 @@ func (ctrl *RunsController) LoadModel(c *gin.Context) {
 	// directly) complete synchronously and lack a job_id. Local on-demand
 	// launches return 202 + job_id for async subscribe; the service layer
 	// maps status codes, so mirror the upstream status here.
-	if resp.StatusCode == http.StatusConflict {
-		c.JSON(http.StatusConflict, SuccessResponse{
-			Success: true,
-			Message: resp.Message,
-			Data:    resp,
-		})
+	if resp.Reused {
+		c.JSON(http.StatusConflict, SuccessResponse{Success: true, Message: resp.Message, Data: resp})
 		return
 	}
 	if resp.JobID != "" {

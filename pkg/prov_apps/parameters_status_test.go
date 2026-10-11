@@ -25,7 +25,8 @@ func reloadWith(t *testing.T, m *ProviderAppManager, edit func(*config.ServiceCo
 
 func launchLlama(t *testing.T, m *ProviderAppManager, params map[string]string) *instance.Instance {
 	t.Helper()
-	inst, err := m.LaunchInstance(t.Context(), LaunchRequest{Provider: "vllm", Model: "llama3", Parameters: params})
+	instResult, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "vllm", Model: "llama3", Parameters: params})
+	inst := instResult.Run
 	require.NoError(t, err)
 	return inst
 }

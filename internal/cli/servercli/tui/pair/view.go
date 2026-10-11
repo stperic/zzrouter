@@ -128,14 +128,6 @@ func renderPairing(b *strings.Builder, m *Model) {
 	b.WriteString(s.HintsBar.Render("[c] copy code  [f] write transfer script  [r] regenerate  [q] cancel") + "\n")
 }
 
-// Also drop the local compactFingerprint in favor of a single helper
-// shared with the rest of this file. Keeping it here (not unifying
-// with the CLI's shortFingerprint in cluster_pair.go) because this
-// package is intentionally CLI-free: the two will diverge if one
-// side grows color codes, and that's OK — file-suffix shortFP (8
-// chars) and operator-display compactFingerprint ("8…4") have
-// different jobs.
-
 // formatCode dash-groups a 16-char pairing code. Matches the
 // cluster_pair.go plain-output formatting.
 func formatCode(code string) string {

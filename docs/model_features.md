@@ -48,6 +48,11 @@ weights selection and complete shard grouping across downloads, scans and
 launches. Feature files are excluded from weights, including declared globs on
 repositories whose manifest has not tagged them yet.
 
+Directories without weights or with missing indexed shards stay in the management
+catalog with `incomplete: true`, so they can be deleted by name or re-downloaded.
+They are excluded from serving lookups and refused by model admission. Launches
+check the same layout rule even without a manifest; metadata alone is insufficient.
+
 `restart: affected` schedules a chain that waits for successful deployment, then
 restarts affected stale runs on successful targets and waits for readiness.
 Follow deployment job IDs and `restart_job_id` through the jobs API; HTTP 202
@@ -83,13 +88,30 @@ OpenAI-compatible server), stays `unknown` and is never refused. Providers that
 declare features derive `/v1/models` `capabilities.vision` from `present`;
 providers that declare none keep the name-based guess.
 
+Stopping or restarting a run answers, and a run's job completes, only after the
+catalog is published on the serving node and acknowledged by the coordinator; a
+publication failure returns 503 or fails the job. An inference request waits on the
+run itself, never on that publication, and background changes (a crash, idle expiry)
+stay announcements.
+
 Inference uses the catalog cache's exact model-or-source/provider/node index,
 without scanning the full model list for each replica.
 
-`details.wire_endpoints` reports effective runtime endpoints or the existing
-running snapshot. An empty list explicitly declares none. Missing evidence falls
-back to the provider's static endpoints. Native and translated Messages/Responses
-routing uses this model/provider/node evidence.
+`capabilities.wire_endpoints` declares the APIs the provider speaks natively.
+For every provider kind, zzRouter derives `messages_compat` and
+`responses_compat` when `chat_completions` is present and the corresponding
+native endpoint (`messages` or `responses`) is absent, so declare native APIs
+only. A provider with native Messages keeps passthrough. There is no way to
+refuse a translation, because no shipped provider needs one. An explicit
+`*_compat` entry still loads and means the same thing; it requires
+`chat_completions` and cannot sit beside its native endpoint.
+
+`details.wire_endpoints` reports the effective runtime endpoints or the existing
+running snapshot, including derived shims. Snapshot and worker declarations use
+the same derivation as provider config. An empty list explicitly declares none.
+Missing evidence falls back to the provider's effective endpoints. Native and
+translated Messages/Responses routing uses this model/provider/node evidence;
+mixed replica groups prefer native endpoints before translation.
 
 Images are inspected structurally in Chat `image_url`, Responses `input_image`,
 Messages `image` including nested tool results, Ollama chat message `images` and
@@ -106,9 +128,29 @@ replies. URL/base64 images are lifted into the following user turn after all too
 replies. Native bodies remain unchanged. Count_tokens uses the same image rules
 without inference metering.
 
-`pkg/httperr` classifies explicit unsupported-image backend 500s as invalid-request
-400s before retry or cooldown. Genuine server failures keep their status and
-class. Errors before a stream opens are HTTP errors even when streaming was
+Providers declare engine failures once in `runtime.failure_patterns`, as
+`{pattern, isRegex, class}` entries. `pkg/httperr` compiles them at config
+validation and uses the same classifier for readiness logs, process exit tails
+and inference errors. A regex's first capture group, when present, supplies the
+reason. Classified failures take priority over generic readiness detectors;
+`logPatterns.failure` contains only unclassified startup failures. Reconcile
+updates the managed declarations in existing installs.
+
+The closed classes are `memory` (409 `out_of_range`), `unsupported_input`
+(400 `unsupported_input`), `chat_template_rejected` (400 of the same code) and
+`tool_calling_not_enabled` (400 of the same code). Status, code and remedy live
+in one table in `pkg/httperr/engine_failure.go`. Memory admission unwraps to the
+same typed cause as an engine memory failure. Inference memory failures also
+use 409: the current request or allocation cannot fit, so automatic retries and
+provider cooldown would be misleading. Free memory or lower the budget first.
+
+Classification uses the serving provider's declarations, independently of the
+engine's HTTP status. Generic decoding/allocation errors without a declared
+match remain server failures; unmatched 4xx responses keep their status.
+A failed run retains its typed cause before publishing its failed state.
+The engine node classifies; relays preserve its code without adding remedies
+again. Anthropic carries it in `error.code`, and the flat Ollama envelope uses
+an optional top-level `code`. Errors before a stream opens are HTTP errors even when streaming was
 requested. Already-open cold-progress streams keep HTTP 200 and emit the error
 in-band; translated Responses emits `response.failed`, with no success event.
 

@@ -21,7 +21,7 @@ const defaultJanitorInterval = 30 * time.Second
 // Default CompletedTTL picked from the plan doc (plan_jobs.md
 // §Lifecycle): human-in-the-loop TUI reconnect after brief network
 // loss needs well over 60s. 5min covers handoffs and SSH reconnects.
-const defaultCompletedTTL = 5 * time.Minute
+const DefaultCompletedTTL = 5 * time.Minute
 
 // Default subscriber channel buffer. Small enough to surface
 // backpressure quickly (drop-oldest counts grow, operator notices);
@@ -40,7 +40,7 @@ type Config struct {
 	// CompletedTTL is the window a terminal job stays in the registry
 	// before eviction. Late subscribers within the window replay the
 	// ring and see the final event; after eviction, Get returns
-	// ErrNotFound. Zero → defaultCompletedTTL.
+	// ErrNotFound. Zero → DefaultCompletedTTL.
 	CompletedTTL time.Duration
 
 	// JanitorInterval is the tick period for the TTL + inactivity
@@ -87,7 +87,7 @@ func NewRegistry(cfg Config) (*Registry, error) {
 		return nil, fmt.Errorf("jobs: Clock is required")
 	}
 	if cfg.CompletedTTL <= 0 {
-		cfg.CompletedTTL = defaultCompletedTTL
+		cfg.CompletedTTL = DefaultCompletedTTL
 	}
 	if cfg.JanitorInterval <= 0 {
 		cfg.JanitorInterval = defaultJanitorInterval

@@ -254,7 +254,7 @@ func TestEndpointsForModel_WireServedEndpoints(t *testing.T) {
 	}{
 		{"native", "native", chat, []string{"chat", "completions", "responses", "messages"}},
 		{"translated", "compat", chat, []string{"chat", "completions", "responses", "messages"}},
-		{"neither", "plain", chat, []string{"chat", "completions"}},
+		{"derived", "plain", chat, []string{"chat", "completions", "responses", "messages"}},
 		{"no chat shape", "native", OpenAIModelCapabilities{Embeddings: true}, []string{"embeddings"}},
 		{"unknown provider", "gone", chat, []string{"chat", "completions"}},
 	}

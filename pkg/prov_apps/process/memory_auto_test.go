@@ -7,10 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
-func TestResolveAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
+func TestAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "count"}
 	for _, tc := range []struct {
 		name        string
@@ -31,6 +32,7 @@ func TestResolveAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 		{name: "no data", fail: true},
 		{name: "ambiguous", devices: []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}, {UUID: "GPU-B", TotalMiB: 10000, FreeMiB: 6000}}, fail: true},
 		{name: "no headroom", devices: []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 2048}}, fail: true},
+		{name: "room rounds to zero", devices: []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 1005}}, margin: 1000, fail: true},
 		{name: "invalid total", devices: []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 0, FreeMiB: 6000}}, fail: true},
 		{name: "bad count", devices: []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, count: "NaN", fail: true},
 	} {
@@ -41,7 +43,7 @@ func TestResolveAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 			}
 			declared := budget
 			declared.AutoSafetyMarginMiB = tc.margin
-			err := ResolveAutoMemory(declared, params, tc.visibility, tc.devices)
+			err := AdmitMemoryBudget(declared, Need{}, params, tc.visibility, tc.devices, nil)
 			if tc.fail {
 				require.Error(t, err)
 				assert.Equal(t, "auto", params["budget"])
@@ -49,10 +51,44 @@ func TestResolveAutoMemoryUsesLaunchingDeviceHeadroom(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, params["budget"])
-			require.NoError(t, CheckMemoryBudget(budget, params, tc.visibility, tc.devices, nil))
 		})
 	}
-	numeric := map[string]string{"budget": "0.9"}
-	require.NoError(t, ResolveAutoMemory(budget, numeric, nil, nil))
-	assert.Equal(t, "0.9", numeric["budget"])
+	numeric := map[string]string{"budget": "0.5"}
+	require.NoError(t, AdmitMemoryBudget(budget, Need{}, numeric, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil))
+	assert.Equal(t, "0.5", numeric["budget"], "a numeric budget is checked, never rewritten")
+}
+
+func TestAutoMemoryBesideOutsideHolder(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "gpu-memory-utilization"}
+	held := int64(25 * 1024)
+	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97249, FreeMiB: 71649, Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: &held}}}}
+	parameters := map[string]string{budget.Parameter: "auto"}
+	require.NoError(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, nil))
+	assert.Equal(t, "0.6867", parameters[budget.Parameter])
+	for _, fraction := range []string{"0.95", "0.99"} {
+		parameters[budget.Parameter] = fraction
+		var refusal *MemoryFitError
+		require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, nil), &refusal)
+		assert.Equal(t, int64(71649), refusal.FreeMiB)
+		require.Len(t, refusal.Holders, 1)
+		assert.Equal(t, "other_or_untracked", refusal.Holders[0].Ownership)
+		assert.Contains(t, refusal.Error(), "a process zzRouter does not manage (pid 42, 25600 MiB)")
+	}
+}
+
+// A GPU a running model already fills is a memory refusal naming the run, not an observation failure.
+func TestAutoMemoryWithoutHeadroomNamesTheHolder(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "gpu-memory-utilization"}
+	held := int64(91 * 1024)
+	devices := []gpu.MemoryDevice{{UUID: "GPU-localai", TotalMiB: 97887, FreeMiB: 4000, Processes: []gpu.MemoryProcess{{PID: 7, MemoryMiB: &held}}}}
+	parameters := map[string]string{budget.Parameter: "auto"}
+	var refusal *MemoryFitError
+	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, parameters, nil, devices, map[int]RunRef{7: {ID: "run-qwen", Model: "Qwen/Qwen3-8B"}}), &refusal)
+	assert.Equal(t, "auto", parameters[budget.Parameter])
+	assert.Equal(t, int64(4000), refusal.FreeMiB)
+	assert.Contains(t, refusal.Error(), "zzRouter run run-qwen serving Qwen/Qwen3-8B (pid 7")
+	var cause *httperr.EngineFailure
+	require.ErrorAs(t, refusal, &cause)
+	assert.Equal(t, httperr.FailureMemory, cause.Class)
+	assert.NotErrorIs(t, refusal, ErrMemoryObservation)
 }

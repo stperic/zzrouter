@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,13 +11,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
-	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/sync/singleflight"
 )
@@ -37,11 +33,10 @@ import (
 
 // RunsExecutor handles direct local runs operations
 type RunsExecutor struct {
+	publishCatalog      func() error
 	appMgr              *prov_apps.ProviderAppManager
 	getNodename         func() string
 	appsConfig          func() *pkgConfig.AppsConfig
-	backend             *backend.Resolver
-	routerAvailable     bool
 	streamInstanceLogs  func(*gin.Context, string, *logFilter)
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter)
 	// refreshResourceMetrics triggers an immediate re-probe of live
@@ -60,7 +55,7 @@ type RunsExecutor struct {
 	// auto_deploy=true requests are refused.
 	deploy func(ctx context.Context, req *DeployRequest) (*Deployment, error)
 	// jobs is the registry the auto-deploy chain uses to mint a run job
-	// that waits on the deploy job before invoking LaunchInstance.
+	// that waits on the deploy job before invoking EnsureRun.
 	// Nullable — when nil, auto_deploy=true requests are refused.
 	jobs *jobs.Registry
 	// deployGroup coalesces concurrent auto_deploy on (provider, model, file)
@@ -75,7 +70,6 @@ func NewRunsExecutor(
 	appMgr *prov_apps.ProviderAppManager,
 	getNodename func() string,
 	appsConfig func() *pkgConfig.AppsConfig,
-	routerAvailable bool,
 	streamInstanceLogs func(*gin.Context, string, *logFilter),
 	getInstanceLogLines func(*gin.Context, string, int, *logFilter),
 	refreshResourceMetrics func(),
@@ -84,8 +78,6 @@ func NewRunsExecutor(
 		appMgr:                 appMgr,
 		getNodename:            getNodename,
 		appsConfig:             appsConfig,
-		backend:                backend.NewResolver(appsConfig),
-		routerAvailable:        routerAvailable,
 		streamInstanceLogs:     streamInstanceLogs,
 		getInstanceLogLines:    getInstanceLogLines,
 		refreshResourceMetrics: refreshResourceMetrics,
@@ -127,33 +119,19 @@ func (e *RunsExecutor) requireProviderAppMgr(c *gin.Context) bool {
 	return true
 }
 
-// GetLocalRuns retrieves all runs from the local provider app manager
-// PLUS queries endpoint providers (like Ollama) for their running models.
-// withStatus adds each launched run's ParametersStatus.
+// GetLocalRuns lists this node's runs, served models included; withStatus adds their ParametersStatus.
 func (e *RunsExecutor) GetLocalRuns(withStatus bool) ([]instance.InstanceInfo, error) {
 	if e.appMgr == nil {
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
-
 	hostname := e.getNodename()
+	if !withStatus {
+		return e.appMgr.ListInstances(hostname), nil
+	}
 	var result []instance.InstanceInfo
-	if withStatus {
-		for _, inst := range e.appMgr.Instances().List() {
-			result = append(result, e.appMgr.InstanceInfo(inst, hostname))
-		}
-	} else {
-		result = e.appMgr.ListInstances(hostname)
+	for _, inst := range e.appMgr.Instances().List() {
+		result = append(result, e.appMgr.InstanceInfo(inst, hostname))
 	}
-	launched := len(result)
-	// A model an external daemon serves was not launched from config here,
-	// so it has no parameters status to report.
-	endpointInstances := e.queryEndpointProviders()
-	for _, inst := range endpointInstances {
-		result = append(result, inst.ToInfo(hostname))
-	}
-
-	utils.LogDebugf("[RunsExecutor] GetLocalRuns: returning %d instances (%d from registry + %d from endpoint providers) from host '%s'",
-		len(result), launched, len(endpointInstances), hostname)
 	return result, nil
 }
 
@@ -217,92 +195,25 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 	}
 
 	inst, exists := e.appMgr.GetInstance(runID)
-	if exists {
-		// On-demand instance found in provider app manager — stop it directly
-		if err := e.appMgr.StopInstance(c.Request.Context(), runID); err != nil {
-			InternalNodeError(c, "failed to stop instance")
-			return
-		}
-
-		utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
-		e.triggerResourceRefresh()
-		c.JSON(http.StatusOK, gin.H{
-			"id":      inst.ID,
-			"status":  "stopped",
-			"message": "Instance stopped successfully",
-		})
+	if !exists {
+		NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
 		return
 	}
-
-	// Not in provider app manager — check endpoint providers (e.g. Ollama)
-	// The runID for endpoint models is the digest from the provider
-	if e.tryUnloadEndpointModel(c, runID) {
+	err := e.appMgr.StopInstance(c.Request.Context(), runID)
+	if !publishOr503(c, e.publishCatalog) {
 		return
 	}
-
-	NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-}
-
-// tryUnloadEndpointModel attempts to unload a model from an endpoint provider (e.g. Ollama).
-// Returns true if the model was found and handled (success or error response written).
-func (e *RunsExecutor) tryUnloadEndpointModel(c *gin.Context, runID string) bool {
-	cfg := e.appsConfig()
-	if cfg == nil || e.appMgr == nil {
-		return false
+	if err != nil {
+		RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
+		return
 	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), constants.ClusterQueryTimeout)
-	defer cancel()
-
-	var handled bool
-	cfg.RangeApps(func(providerName string, providerCfg pkgConfig.ServiceConfig) bool {
-		if !providerCfg.IsEnabled() || !providerCfg.HasEndpoint() {
-			return true
-		}
-		resolved, ok := e.backend.Resolve(providerName)
-		if !ok {
-			return true
-		}
-
-		providerImpl, ok := e.appMgr.Protocol(providerName)
-		if !ok {
-			return true
-		}
-		target := protocol.TargetOf(resolved)
-
-		// Query running models to find one matching this runID (digest)
-		runningModels, err := providerImpl.ListRunningModels(ctx, target)
-		if err != nil {
-			return true
-		}
-
-		for _, m := range runningModels {
-			if m.Digest != runID {
-				continue
-			}
-
-			// Found it — unload
-			if err := providerImpl.UnloadModel(ctx, target, m.Name); err != nil {
-				slog.Error("[RunsExecutor] Failed to unload endpoint model", "provider", providerName, "model", m.Name, "error", err)
-				InternalNodeError(c, fmt.Sprintf("failed to unload model '%s'", m.Name))
-				handled = true
-				return false
-			}
-
-			utils.LogDebugf("[RunsExecutor] Unloaded endpoint model '%s' from provider '%s'", m.Name, providerName)
-			e.triggerResourceRefresh()
-			c.JSON(http.StatusOK, gin.H{
-				"id":      runID,
-				"status":  "stopped",
-				"message": fmt.Sprintf("Model '%s' unloaded from %s", m.Name, providerName),
-			})
-			handled = true
-			return false
-		}
-		return true
+	utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
+	e.triggerResourceRefresh()
+	c.JSON(http.StatusOK, gin.H{
+		"id":      inst.ID,
+		"status":  "stopped",
+		"message": "Instance stopped successfully",
 	})
-
-	return handled
 }
 
 // HandleInternalRestartRun handles POST /zzrouter/internal/runs/:id/restart (internal API).
@@ -321,12 +232,11 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 	}
 
 	newInst, err := e.appMgr.RestartInstance(c.Request.Context(), runID)
+	if !publishOr503(c, e.publishCatalog) {
+		return
+	}
 	if err != nil {
-		if errors.Is(err, prov_apps.ErrInstanceNotFound) {
-			NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-			return
-		}
-		InternalNodeError(c, "restart failed: "+err.Error())
+		RespondToError(c, fmt.Errorf("restart run %s: %w", runID, err))
 		return
 	}
 
@@ -346,94 +256,6 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		Message:  fmt.Sprintf("Instance %s restart accepted as %s; subscribe to job_id", runID, newInst.ID),
 		Node:     e.getNodename(),
 	})
-}
-
-// queryEndpointProviders queries endpoint providers (like Ollama) for running models
-// Returns pseudo-instances for models running in the provider
-func (e *RunsExecutor) queryEndpointProviders() []*instance.Instance {
-	var pseudoInstances []*instance.Instance
-
-	// Check dependencies
-	cfg := e.appsConfig()
-	if !e.routerAvailable || cfg == nil || e.appMgr == nil {
-		return pseudoInstances
-	}
-
-	// Use a timeout context to ensure provider queries don't hang indefinitely
-	// This prevents resource leaks if a provider is slow or unresponsive
-	ctx, cancel := context.WithTimeout(context.Background(), constants.ClusterQueryTimeout)
-	defer cancel()
-
-	// Iterate through configured providers
-	cfg.RangeApps(func(providerName string, providerCfg pkgConfig.ServiceConfig) bool {
-		// Only query enabled endpoint-based apps (service/external/cloud)
-		if !providerCfg.IsEnabled() || !providerCfg.HasEndpoint() {
-			return true
-		}
-
-		// Get the provider implementation from registry
-		providerImpl, ok := e.appMgr.Protocol(providerName)
-		if !ok {
-			utils.LogDebugf("Provider '%s' not found in registry", providerName)
-			return true
-		}
-
-		resolved, ok := e.backend.Resolve(providerName)
-		if !ok {
-			utils.LogDebugf("Provider '%s' has no endpoint configured, skipping", providerName)
-			return true
-		}
-
-		// Query running models from the app's API
-		runningModels, err := providerImpl.ListRunningModels(ctx, protocol.TargetOf(resolved))
-		if err != nil {
-			utils.LogDebugf("[RunsExecutor] Warning: Failed to query running models from %s: %v", providerName, err)
-			return true
-		}
-
-		// Convert running models to Instance format
-		for _, runningModel := range runningModels {
-			// Create a pseudo-instance for endpoint provider models
-			// Store the FULL digest internally (truncation happens in display layer)
-			instanceID := runningModel.Digest
-			if instanceID == "" {
-				// Fallback: generate a 12-char hash if provider doesn't provide an ID
-				source := fmt.Sprintf("%s-%s-%d", providerName, runningModel.Name, utils.Now().UnixNano())
-				instanceID = instance.GenerateShortHash(source)
-			}
-
-			// Compute processor string (e.g. "100% GPU") from VRAM ratio
-			var processor string
-			if runningModel.Size > 0 && runningModel.SizeVRAM > 0 {
-				pct := float64(runningModel.SizeVRAM) / float64(runningModel.Size) * 100
-				if pct >= 100 {
-					processor = "100% GPU"
-				} else if pct > 0 {
-					processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", pct, 100-pct)
-				}
-			} else if runningModel.SizeVRAM == 0 && runningModel.Size > 0 {
-				processor = "100% CPU"
-			}
-
-			pseudoInstance := instance.NewInstance(instanceID, providerName, runningModel.Name, 0, time.Until(runningModel.ExpiresAt), 0)
-			pseudoInstance.MarkRunning()
-			pseudoInstance.SizeBytes = runningModel.Size
-			pseudoInstance.ContextLength = runningModel.ContextLength
-			pseudoInstance.Processor = processor
-			pseudoInstance.SourceRepo = metadata.SourceOllama
-			pseudoInstance.LaunchMode = instance.LaunchModeNative
-			pseudoInstance.LastActivity = utils.Now()
-
-			pseudoInstances = append(pseudoInstances, pseudoInstance)
-		}
-
-		if len(runningModels) > 0 {
-			utils.LogDebugf("[RunsExecutor] Found %d running models in endpoint provider '%s'", len(runningModels), providerName)
-		}
-		return true
-	})
-
-	return pseudoInstances
 }
 
 // HandleInternalLaunchRun handles POST /zzrouter/internal/runs (internal API)
@@ -469,19 +291,6 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
-	// Cloud providers don't run — they're already running upstream and
-	// "deploying" them just registers a model name (AddCloudModel). The
-	// /runs surface is local-only by definition; previously this fell
-	// through to LaunchInstance and 500'd because cloud providers have
-	// no Execution config to spawn a process from.
-	if cfg := e.appsConfig(); cfg != nil {
-		if svc, ok := cfg.LookupApp(req.Provider); ok && svc.IsCloudProvider() {
-			BadRequest(c, fmt.Sprintf(
-				"provider %q is cloud-only and has no run lifecycle; use POST /zzrouter/v1/deployments to register cloud models", req.Provider))
-			return
-		}
-	}
-
 	// Convert launch mode
 	_, err := parseLaunchMode(req.LaunchMode)
 	if err != nil {
@@ -489,11 +298,12 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
+	// Before auto_deploy can start a download for a name admission refuses.
 	if err := e.appMgr.ValidateModel(c.Request.Context(), req.Model); err != nil {
-		respondProviderErr(c, err)
+		RespondToError(c, err)
 		return
 	}
-	launchReq := prov_apps.LaunchRequest{
+	launchReq := prov_apps.EnsureRequest{
 		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
 		Provider:     req.Provider,
 		Model:        req.Model,
@@ -508,19 +318,14 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	// auto_deploy: when the model isn't in the pool, trigger a
 	// download via DeploymentsService and chain the launch behind it.
 	// The handler returns 202 immediately with both job IDs; the run
-	// job's first phase waits on the deploy job. Cloud providers go
-	// through POST /deployments instead and are refused here.
-	if req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) {
+	// job's first phase waits on the deploy job. A provider without runs has nothing to download.
+	svc, _ := e.appsConfig().LookupApp(req.Provider)
+	if req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
 		e.handleAutoDeployLaunch(c, req.Provider, req.Endpoint, launchReq)
 		return
 	}
 
-	// Launch the instance. Concurrent POSTs for the same (provider,
-	// model) are coalesced inside LaunchInstance via the manager's
-	// launchGroup singleflight, so the direct /runs path and the
-	// /runs/load path both get the same dedupe semantics — second
-	// caller receives the first's instance instead of ErrModelAlreadyLoaded.
-	inst, err := e.appMgr.LaunchInstance(c.Request.Context(), launchReq)
+	result, err := e.appMgr.EnsureRun(c.Request.Context(), launchReq)
 	if err != nil {
 		// Most of what a launch can fail on is the caller's doing: a
 		// model that is not on this node, a parameter the provider
@@ -528,11 +333,21 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		// those as 500 tells an agent to retry something that cannot
 		// ever succeed, so classify by sentinel and keep 500 for the
 		// failures that really are ours.
-		respondProviderErr(c, fmt.Errorf("failed to launch instance: %w", err))
+		RespondToError(c, fmt.Errorf("failed to launch instance: %w", err))
+		return
+	}
+
+	inst := result.Run
+	if inst == nil {
+		c.JSON(http.StatusOK, LaunchRunResponse{Accepted: true, Provider: req.Provider, LaunchMode: req.LaunchMode, Status: "running", Node: e.getNodename(), Message: "The provider serves this model without a run", ParametersApplied: len(req.Parameters), FilesMounted: len(req.Files)})
 		return
 	}
 
 	hostname := e.getNodename()
+	message := "Instance launch accepted; subscribe to job_id for readiness"
+	if !result.Started {
+		message = "Run already exists for this model; reused"
+	}
 
 	// Return 202 Accepted with instance details + job_id so agents can
 	// subscribe to launch progress via /jobs/:id/stream?node=<node>.
@@ -548,7 +363,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"port":               inst.Port,
 		"health_url":         inst.HealthURL,
 		"started_at":         inst.StartedAt.Format(time.RFC3339),
-		"message":            "Instance launch accepted; subscribe to job_id for readiness",
+		"message":            message,
 		"files_mounted":      len(req.Files),
 		"parameters_applied": len(req.Parameters),
 		"node":               hostname,
@@ -690,13 +505,13 @@ func (e *RunsExecutor) HandleInternalGetRunHealth(c *gin.Context) {
 // handleAutoDeployLaunch is the auto_deploy=true chain. Resolves the
 // provider's registry + variant, kicks off a deploy via the injected
 // DeploymentsService, opens a run job that waits on the deploy job
-// before invoking LaunchInstance, and returns 202 with both job IDs.
+// before invoking EnsureRun, and returns 202 with both job IDs.
 //
 // Refuses cloud providers explicitly — those go through POST /deployments
 // (AddCloudModel, no download). The structural difference between the
 // two paths matters for failure modes and observability; transparent
 // dispatch would mask it.
-func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endpoint string, launchReq prov_apps.LaunchRequest) {
+func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endpoint string, launchReq prov_apps.EnsureRequest) {
 	if e.deploy == nil || e.jobs == nil {
 		ServiceUnavailable(c, "auto_deploy is not wired on this node")
 		return
@@ -783,19 +598,25 @@ func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endp
 
 // waitDeployThenLaunch is the chained run-job goroutine. Subscribes to
 // the deploy job's terminal event and either fails the run job or
-// invokes LaunchInstance on success.
-func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID string, launchReq prov_apps.LaunchRequest) {
+// invokes EnsureRun on success.
+func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID string, launchReq prov_apps.EnsureRequest) {
 	if err := waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(deployJobID) }); err != nil {
 		runHandle.Fail(fmt.Errorf("deploy job %s: %w", deployJobID, err))
 		return
 	}
 	runHandle.Meta(jobs.Meta{"phase": "launching"})
-	inst, err := e.appMgr.LaunchInstance(runHandle.Context(), launchReq)
+	result, err := e.appMgr.EnsureRun(runHandle.Context(), launchReq)
+	inst := result.Run
+	if err == nil && inst != nil && inst.StreamJobID != "" {
+		err = waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(inst.StreamJobID) })
+	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy: %w", err))
 		return
 	}
-	runHandle.Meta(jobs.Meta{"phase": "running", "instance_id": inst.ID, "port": inst.Port})
+	if inst != nil {
+		runHandle.Meta(jobs.Meta{"phase": "running", "instance_id": inst.ID, "port": inst.Port})
+	}
 	runHandle.Done()
 }
 

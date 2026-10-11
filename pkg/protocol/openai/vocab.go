@@ -201,6 +201,9 @@ const (
 	// dependencies, unrecoverable routing bugs.
 	ErrorCodeInternalError ErrorCode = "internal_error"
 
+	ErrorCodeCapacityExceeded ErrorCode = "capacity_exceeded"
+	ErrorCodeQueueWaitExpired ErrorCode = "queue_wait_expired"
+
 	// ErrorCodeUpstreamError is emitted on 502 when a backend
 	// returned a response that could not be parsed or the
 	// connection to the backend failed.
@@ -249,12 +252,16 @@ const (
 	// request waited out its bound for the original, still-in-flight
 	// request to publish a response to replay.
 	ErrorCodeIdempotencyWaitTimeout ErrorCode = "idempotency_wait_timeout"
+
+	// ErrorCodeIdempotencyStoreFull asks callers to retry when every available slot is in flight.
+	ErrorCodeIdempotencyStoreFull ErrorCode = "idempotency_store_full"
 )
 
 // allErrorCodes is the authoritative list of known ErrorCode values,
 // sorted for deterministic enumeration.
 var allErrorCodes = []ErrorCode{
 	ErrorCodeBackendUnavailable,
+	ErrorCodeCapacityExceeded,
 	ErrorCodeContentFilter,
 	ErrorCodeContextLengthExceeded,
 	ErrorCodeDraining,
@@ -262,6 +269,7 @@ var allErrorCodes = []ErrorCode{
 	ErrorCodeFeatureDisabled,
 	ErrorCodeInsufficientPermissions,
 	ErrorCodeIdempotencyKeyConflict,
+	ErrorCodeIdempotencyStoreFull,
 	ErrorCodeIdempotencyWaitTimeout,
 	ErrorCodeInsufficientQuota,
 	ErrorCodeInternalError,
@@ -273,6 +281,7 @@ var allErrorCodes = []ErrorCode{
 	ErrorCodeModelInventoryUnavailable,
 	ErrorCodeProviderNotRunning,
 	ErrorCodeNoDefaultBackend,
+	ErrorCodeQueueWaitExpired,
 	ErrorCodeRateLimitExceeded,
 	ErrorCodeRequestTooLarge,
 	ErrorCodeUnknownURL,

@@ -1,10 +1,14 @@
 package update
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,11 +20,95 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 	"github.com/sigstore/sigstore-go/pkg/tlog"
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
+	"github.com/stperic/zzrouter/pkg/version"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func releaseManifestFixture(t *testing.T, target string, manifest ReleaseManifest) (*Scheduler, map[string][]byte) {
+	t.Helper()
+	content, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	digest := sha256.Sum256(content)
+	checksums := []byte(fmt.Sprintf("%x  release.json\n", digest))
+	bundle, material := signedUpdateChecksums(t, checksums, target)
+	assets := map[string][]byte{"release.json": content, "checksums.txt": checksums, "checksums.txt.sigstore.json": bundle}
+	transport := resumeTransport(func(r *http.Request) (*http.Response, error) {
+		var body []byte
+		if strings.Contains(r.URL.Path, "/releases/tags/") {
+			release := githubRelease{TagName: "v" + target}
+			for name := range assets {
+				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "https://github.com/" + name})
+			}
+			body, err = json.Marshal(release)
+			require.NoError(t, err)
+		} else {
+			var ok bool
+			body, ok = assets[strings.TrimPrefix(r.URL.Path, "/")]
+			require.True(t, ok, "unexpected request: %s", r.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})
+	s := NewSchedulerIn(t.TempDir(), &config.UpdateConfig{}, clock.System())
+	t.Cleanup(s.Stop)
+	s.checker.httpClient.Transport = transport
+	s.downloader.httpClient.Transport = transport
+	s.verifier.trustedMaterial = material
+	return s, assets
+}
+
+func TestReleaseManifestMissingRefused(t *testing.T) {
+	s, assets := releaseManifestFixture(t, "1.2.3", rolloutManifest("1.2.3"))
+	delete(assets, "release.json")
+	_, err := s.ReleaseManifest(context.Background(), "1.2.3")
+	var wire httperr.Error
+	require.ErrorAs(t, err, &wire)
+	require.Equal(t, http.StatusConflict, wire.Status)
+	require.Equal(t, string(httperr.CodeReleaseManifestMissing), wire.Code)
+}
+
+func TestReleaseManifestVerifiedThroughChecksums(t *testing.T) {
+	manifest := rolloutManifest("1.2.3")
+	s, assets := releaseManifestFixture(t, manifest.Version, manifest)
+	got, err := s.ReleaseManifest(context.Background(), manifest.Version)
+	require.NoError(t, err)
+	require.Equal(t, manifest, got)
+	manifest.ClusterProtocol = version.ClusterProtocolVersion + 1
+	assets["release.json"], err = json.Marshal(manifest)
+	require.NoError(t, err)
+	_, err = s.ReleaseManifest(context.Background(), manifest.Version)
+	require.ErrorContains(t, err, "verification failed: checksum verification failed")
+}
+
+func TestReleaseManifestRequiresSignedChecksums(t *testing.T) {
+	s, assets := releaseManifestFixture(t, "1.2.3", rolloutManifest("1.2.3"))
+	assets["checksums.txt.sigstore.json"] = []byte(`{}`)
+	_, err := s.ReleaseManifest(context.Background(), "1.2.3")
+	require.ErrorContains(t, err, "signature verification failed")
+}
+
+func TestReleaseManifestValidatesSignedContents(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		manifest ReleaseManifest
+		target   string
+	}{
+		{"version mismatch", rolloutManifest("1.2.3"), "1.2.4"},
+		{"missing protocol", ReleaseManifest{Version: "1.2.3"}, "1.2.3"},
+		{"invalid window", ReleaseManifest{Version: "1.2.3", ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.ClusterProtocolVersion + 1}, "1.2.3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := releaseManifestFixture(t, tc.target, tc.manifest)
+			_, err := s.ReleaseManifest(context.Background(), tc.target)
+			require.Error(t, err)
+		})
+	}
+}
 
 func TestNewVerifier(t *testing.T) {
 	v := NewVerifier("stperic", "zzrouter")

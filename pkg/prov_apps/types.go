@@ -16,10 +16,14 @@ const (
 	EndpointReranking  Endpoint = "reranking"
 )
 
-// LaunchRequest contains the parameters needed to launch a provider instance.
-type LaunchRequest struct {
-	installSmoke     bool
+// EnsureRequest contains the parameters needed to launch a provider instance.
+type EnsureRequest struct {
+	requestedModel   string
 	selectedRuntime  string
+	Detached         bool // returns an empty result on a cold start accepted in the background
+	Origin           Origin
+	Force            bool
+	Unload           bool // a zero keep-alive hint: start nothing for a model with no run
 	Runtime          string
 	DisposablePlanID string
 	Provider         string
@@ -30,6 +34,16 @@ type LaunchRequest struct {
 	EnvVars          map[string]string
 	Files            []instance.FileMount
 	NativeConfig     *instance.NativeConfig
+}
+
+func (r EnsureRequest) want() Want {
+	return Want{Model: r.Model, Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin}
+}
+
+// EnsureResult reports a reused or newly started run; no run means the provider serves the model without one.
+type EnsureResult struct {
+	Run     *instance.Instance
+	Started bool
 }
 
 // EndpointOrDefault returns EndpointChat for empty input.

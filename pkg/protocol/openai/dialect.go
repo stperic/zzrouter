@@ -15,10 +15,7 @@ import (
 
 // WriteError renders e as {"error":{...}} beside any e.Extra members.
 func (r *Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
-	if r.opaque {
-		w.WriteHeader(e.Status)
-		return
-	}
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	body := map[string]any{}
 	for k, v := range e.Extra {
 		body[k] = v
@@ -56,22 +53,23 @@ func (*Responder) StreamStatus(w http.ResponseWriter, status, message string) {
 	flush(w)
 }
 
-// StreamError writes the error as a vLLM-format chunk, then [DONE].
-// OpenWebUI displays it as a red error box; the user clicks "regenerate"
-// to retry, and the error does not enter the conversation context. The
-// chunk spells out param and code even when null, as vLLM does.
+// StreamError preserves the pre-backend OpenWebUI terminator.
 func (r *Responder) StreamError(w http.ResponseWriter, e httperr.Error) {
-	if !r.opaque {
-		var code any
-		if e.Code != "" {
-			code = e.Code
-		}
-		data, _ := json.Marshal(map[string]any{"error": map[string]any{
-			"message": e.Message, "type": e.Type, "param": nil, "code": code,
-		}})
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-	}
+	r.EndStream(w, e)
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	flush(w)
+}
+
+// EndStream separates an upstream fragment from one vLLM-format error chunk.
+func (r *Responder) EndStream(w http.ResponseWriter, e httperr.Error) {
+	var code any
+	if e.Code != "" {
+		code = e.Code
+	}
+	data, _ := json.Marshal(map[string]any{"error": map[string]any{
+		"message": e.Message, "type": e.Type, "param": nil, "code": code,
+	}})
+	_, _ = fmt.Fprintf(w, "\ndata: %s\n\n", data)
 	flush(w)
 }
 

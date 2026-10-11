@@ -103,6 +103,7 @@ func NormalizeError(status int, raw []byte) []byte {
 		Error struct {
 			Type    string `json:"type"`
 			Message string `json:"message"`
+			Code    any    `json:"code"`
 		} `json:"error"`
 	}
 	if json.Unmarshal(raw, &native) == nil && native.Type == "error" && native.Error.Message != "" {
@@ -110,7 +111,11 @@ func NormalizeError(status int, raw []byte) []byte {
 		if _, ok := errorTypes[errType]; !ok {
 			errType = ErrorTypeForStatus(status)
 		}
-		out, _ := json.Marshal(envelope(errType, native.Error.Message))
+		body := envelope(errType, native.Error.Message)
+		if code, ok := native.Error.Code.(string); ok && code != "" {
+			body["error"].(map[string]any)["code"] = code
+		}
+		out, _ := json.Marshal(body)
 		return out
 	}
 
@@ -119,9 +124,14 @@ func NormalizeError(status int, raw []byte) []byte {
 	var oai struct {
 		Error struct {
 			Message string `json:"message"`
+			Code    any    `json:"code"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(openaicompat.NormalizeError(status, raw), &oai)
-	out, _ := json.Marshal(Envelope(status, oai.Error.Message))
+	body := Envelope(status, oai.Error.Message)
+	if code, ok := oai.Error.Code.(string); ok && code != "" {
+		body["error"].(map[string]any)["code"] = code
+	}
+	out, _ := json.Marshal(body)
 	return out
 }

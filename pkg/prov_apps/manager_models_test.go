@@ -21,6 +21,9 @@ func TestMain(m *testing.M) {
 		if err := os.MkdirAll(filepath.Join(modelsRoot, model), 0o755); err != nil {
 			panic("seed test model: " + err.Error())
 		}
+		if err := os.WriteFile(filepath.Join(modelsRoot, model, "model.safetensors"), []byte("weights"), 0o600); err != nil {
+			panic("seed test weights: " + err.Error())
+		}
 	}
 	if err := os.Setenv("ZZROUTER_TEST_HOME", filepath.Join(root, "state")); err != nil {
 		panic("isolate test runtime paths: " + err.Error())

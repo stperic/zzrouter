@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,21 +49,22 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	_, err = mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
+	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
 	var failure *process.MemoryFitError
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(9500), failure.RequiredMiB)
-	assert.Empty(t, mgr.instances.ListAll())
+	assert.Empty(t, mgr.instances.List())
 	_, err = os.Stat(marker)
 	assert.True(t, os.IsNotExist(err), "refused launch must never start the engine")
 	// Node tier fits without request overrides and admission releases its refused port.
-	inst, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "arbitrary", Port: 8620})
+	result, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Port: 8620})
+	inst := result.Run
 	require.NoError(t, err)
 	assert.Equal(t, "0.55", inst.Resolved().Parameters["budget"])
 	require.NoError(t, mgr.StopInstance(t.Context(), inst.ID))
 	// A subsequent model sees the changed live measurement, not a cached free total.
 	writeFree("4000")
-	_, err = mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "second", Port: 8621})
+	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "second", Port: 8621})
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(5500), failure.RequiredMiB)
 	assert.Equal(t, int64(4000), failure.FreeMiB)
@@ -121,7 +125,8 @@ func (f queueFixture) release(t *testing.T, runs ...*instance.Instance) {
 
 func (f queueFixture) launch(t *testing.T, model string) *instance.Instance {
 	t.Helper()
-	inst, err := f.mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: model})
+	instResult, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: model})
+	inst := instResult.Run
 	require.NoError(t, err)
 	return inst
 }
@@ -144,6 +149,7 @@ func TestMemoryAdmissionQueuesBehindStartingRun(t *testing.T) {
 	assert.Equal(t, instance.StatusStarting, second.GetStatus())
 	assert.Never(t, second.Admitted, queueHoldWindow, 10*time.Millisecond, "measured only once the first claim is visible")
 	assert.Equal(t, first.ID, second.ToInfo("").WaitingOn)
+	assert.Empty(t, first.ToInfo("").EvictedRuns, "nothing was evicted")
 
 	f.release(t, first, second)
 	assert.Empty(t, second.WaitingOn())
@@ -161,7 +167,7 @@ func TestMemoryAdmissionQueuesWhileAdmissionLocked(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := f.mgr.LaunchInstance(ctx, LaunchRequest{Provider: "generic", Model: "two"})
+	_, err := f.mgr.EnsureRun(ctx, EnsureRequest{Provider: "generic", Model: "two"})
 	assert.ErrorIs(t, err, context.Canceled)
 	f.release(t, inst)
 }
@@ -177,7 +183,7 @@ func TestQueuedRefusalFailsRunWithItsError(t *testing.T) {
 	f.release(t, first)
 	eventually(t, func() bool { return second.GetStatus() == instance.StatusFailed }, "refused at admission")
 	var fit *process.MemoryFitError
-	require.ErrorAs(t, second.Refusal(), &fit)
+	require.ErrorAs(t, second.FailureCause(), &fit)
 	assert.Contains(t, second.GetErrorMessage(), "cannot fit")
 	assert.Zero(t, second.GetProcessID(), "a refused run never starts its engine")
 	require.NoError(t, f.mgr.StopInstance(t.Context(), second.ID))
@@ -202,9 +208,9 @@ func TestStopQueuedRun(t *testing.T) {
 func TestSmokeDoesNotQueue(t *testing.T) {
 	f := newQueueFixture(t)
 	first := f.launch(t, "one")
-	_, err := f.mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "two", Runtime: "generic", installSmoke: true})
+	_, err := f.mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "two", Runtime: "generic", Origin: OriginInstall})
 	require.ErrorIs(t, err, errAdmissionBusy)
-	assert.Len(t, f.mgr.instances.ListAll(), 1, "a refused smoke leaves nothing registered")
+	assert.Len(t, f.mgr.instances.List(), 1, "a refused smoke leaves nothing registered")
 	f.release(t, first)
 }
 
@@ -218,4 +224,34 @@ func TestStopQueuedRunWhileAdmissionBusy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), queueHoldWindow)
 	defer cancel()
 	require.NoError(t, f.mgr.StopInstance(ctx, inst.ID), "the waiter gives up the slot wait when stopped")
+}
+
+// A launch that evicts an idle run names it on its own run record and in
+// its job result, so the caller learns of the eviction where it looks.
+func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
+	f := newQueueFixture(t)
+	reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(reg.Stop)
+	f.mgr.jobsRegistry = reg
+	f.mgr.evictIdleOnMemoryPressure = true
+	idle := instance.NewInstance("idle", "generic", "idle-model", 0, -1, 10)
+	idle.SetStatus(instance.StatusRunning)
+	idle.SetProcessInfo(9000001, 0, nil)
+	require.NoError(t, f.mgr.instances.Register(idle))
+	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		free := int64(1000)
+		if idle.GetStatus() == instance.StatusStopped {
+			free = 6000
+		}
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
+	}
+
+	inst := f.launch(t, "big")
+	want := []instance.EvictedRun{{RunID: idle.ID, Model: idle.Model, FreedMiB: 5000}}
+	assert.Equal(t, want, inst.ToInfo("").EvictedRuns)
+	f.release(t, inst)
+	ev := subscribeTerminal(t, reg, inst.StreamJobID, 5*time.Second)
+	assert.Equal(t, jobs.PhaseDone, ev.Phase)
+	assert.Equal(t, want, ev.Meta["evicted_runs"])
 }

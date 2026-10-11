@@ -3,50 +3,62 @@ package health
 import (
 	"bytes"
 	"io"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ReadinessSignal is the result of log-based readiness detection.
 type ReadinessSignal struct {
+	Cause   *httperr.EngineFailure
 	Ready   bool   // True if a success pattern matched
 	Failed  bool   // True if a failure pattern matched
 	Pattern string // The pattern that matched
 }
 
-// ReadinessWriter wraps an io.Writer and scans each line of process output
-// against readiness probe patterns. When a success or failure pattern matches,
-// a signal is sent on the Signal channel. After the first match, scanning stops
-// but writing continues to the underlying writer.
-//
-// This allows the health monitor to detect readiness from process logs
-// (e.g., "INFO - Starting httpd") instead of waiting for HTTP health checks.
+// readinessSignalCapacity holds startup and failure signals from one write.
+const readinessSignalCapacity = 2
+
+// ReadinessWriter keeps checking failures after startup when a serve probe is present.
 type ReadinessWriter struct {
-	inner    io.Writer
-	probe    *ReadinessProbe
-	Signal   chan ReadinessSignal
-	buffer   bytes.Buffer
-	mu       sync.Mutex
-	resolved bool // true after first match — stop scanning
+	origin       time.Time
+	lastOutputAt atomic.Int64
+	lastLine     []byte
+	lineEnded    bool
+	inner        io.Writer
+	probe        *ReadinessProbe
+	Signal       chan ReadinessSignal
+	buffer       bytes.Buffer
+	mu           sync.Mutex
+	started      bool
+	resolved     bool // true after first match — stop scanning
 }
 
 // NewReadinessWriter creates a writer that scans for readiness patterns.
 // The probe's patterns must already be compiled (call Validate() first).
-// Signal channel is buffered(1) so sending never blocks the write path.
+// Signals never block the write path.
 func NewReadinessWriter(inner io.Writer, probe *ReadinessProbe) *ReadinessWriter {
 	return &ReadinessWriter{
+		origin: utils.Now(),
 		inner:  inner,
 		probe:  probe,
-		Signal: make(chan ReadinessSignal, 1),
+		Signal: make(chan ReadinessSignal, readinessSignalCapacity),
 	}
 }
 
 // Write writes to the underlying writer and scans for readiness patterns.
 func (rw *ReadinessWriter) Write(p []byte) (int, error) {
-	// Always write to the underlying writer first
+	if len(p) > 0 {
+		rw.lastOutputAt.Store(int64(utils.Now().Sub(rw.origin)))
+	}
 	n, err := rw.inner.Write(p)
 
-	// Scan for patterns if not yet resolved
 	rw.mu.Lock()
+	rw.recordOutputLocked(p[:n])
 	if !rw.resolved {
 		rw.buffer.Write(p[:n])
 		rw.scanLinesLocked()
@@ -54,6 +66,36 @@ func (rw *ReadinessWriter) Write(p []byte) (int, error) {
 	rw.mu.Unlock()
 
 	return n, err
+}
+
+// LastOutputAt preserves monotonic time by storing elapsed nanoseconds atomically.
+func (rw *ReadinessWriter) LastOutputAt() time.Time {
+	return rw.origin.Add(time.Duration(rw.lastOutputAt.Load()))
+}
+
+const maxReadinessLineBytes = 300
+
+// LastLine returns bounded output, including an unfinished line.
+func (rw *ReadinessWriter) LastLine() string {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	return strings.ToValidUTF8(string(rw.lastLine), "")
+}
+
+func (rw *ReadinessWriter) recordOutputLocked(p []byte) {
+	for _, b := range p {
+		if b == '\n' || b == '\r' {
+			rw.lineEnded = true
+			continue
+		}
+		if rw.lineEnded {
+			rw.lastLine = rw.lastLine[:0]
+			rw.lineEnded = false
+		}
+		if len(rw.lastLine) < maxReadinessLineBytes {
+			rw.lastLine = append(rw.lastLine, b)
+		}
+	}
 }
 
 // scanLinesLocked checks complete lines against readiness patterns.
@@ -76,6 +118,12 @@ func (rw *ReadinessWriter) scanLinesLocked() {
 		// Trim trailing newline/carriage return
 		line = trimLine(line)
 
+		if cause := rw.probe.FailureClassifier.Match(line); cause != nil {
+			rw.resolved = true
+			rw.Signal <- ReadinessSignal{Failed: true, Pattern: line, Cause: cause}
+			return
+		}
+
 		// Check failure first — failure takes priority over success
 		if matched, pattern := rw.probe.LogPatterns.MatchFailure(line); matched {
 			rw.resolved = true
@@ -84,10 +132,13 @@ func (rw *ReadinessWriter) scanLinesLocked() {
 		}
 
 		// Check success
-		if matched, pattern := rw.probe.LogPatterns.MatchSuccess(line); matched {
-			rw.resolved = true
+		if matched, pattern := rw.probe.LogPatterns.MatchSuccess(line); matched && !rw.started {
+			rw.resolved = rw.probe.Serve == nil
+			rw.started = true
 			rw.Signal <- ReadinessSignal{Ready: true, Pattern: pattern}
-			return
+			if rw.resolved {
+				return
+			}
 		}
 	}
 }

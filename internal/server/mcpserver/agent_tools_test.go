@@ -12,6 +12,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +53,7 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_providers", "GET", "/zzrouter/v1/providers", `{"node":"worker"}`, "node=worker&limit=50&offset=0", "", `{"data":[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}],"total":1}`, `[{"name":"llamacpp","node":"worker","kind":"on-demand","enabled":false,"installed":true,"managed":false,"version":"b123"}]`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs", "{}", "limit=50&offset=0&node=&status=", "", `{"data":[{"id":"r","status":"failed","error_message":"bad parameters","environment":{"drop":"private"}}],"total":1}`, `[{"run_id":"r","status":"failed","error_message":"bad parameters"}]`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "limit=50&offset=0&node=worker&status=", "", `{"data":{"id":"r","status":"running","process_id":42}}`, `{"run_id":"r","status":"running"}`},
+		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r"}`, "limit=50&offset=0&node=&status=", "", `{"data":{"id":"r","status":"running","started_by":"request","evicted_runs":[{"run_id":"old","model":"m","freed_mib":2048}]}}`, `{"run_id":"r","status":"running","started_by":"request","evicted_runs":[{"run_id":"old","model":"m","freed_mib":2048}]}`},
 		{"zz_run_preview", "POST", "/zzrouter/v1/runs/preview", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, "", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, `{"data":{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"},"working_dir":"drop"}}`, `{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"}}`},
 		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"}}`, `{"data":{"id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
 		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_run_id":"r","job_id":"j","node":"worker"}`},
@@ -133,6 +138,8 @@ func TestAgentChatSmokeBounds(t *testing.T) {
 				require.Equal(t, expectedModel, body["model"])
 				require.EqualValues(t, tc.want, body["max_tokens"])
 				require.Equal(t, false, body["stream"])
+				require.NotContains(t, body, "tools")
+				require.NotContains(t, body, "tool_choice")
 				require.Equal(t, []any{map[string]any{"role": "user", "content": "say hello"}}, body["messages"])
 				writeFixture(t, w, []byte(`{"model":"m","choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"drop":"extra"}`))
 			})
@@ -141,6 +148,92 @@ func TestAgentChatSmokeBounds(t *testing.T) {
 			data, err := json.Marshal(result["structuredContent"])
 			require.NoError(t, err)
 			require.JSONEq(t, `{"reply":"hello","model":"m","usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`, string(data))
+		})
+	}
+}
+
+func TestAgentChatToolProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name, message, finish, outcome, next string
+	}{
+		{"verified", `{"content":null,"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"}}]}`, "tool_calls", "verified", "use this model"},
+		{"parser missing", `{"content":"lookup_weather({\"city\":\"Paris\"})"}`, "stop", "parser_missing", "zz_params_set"},
+		{"truncated", `{"content":"","tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"}}]}`, "length", "truncated", "reasoning settings"},
+		{"inconclusive", `{"content":"I cannot look up current weather."}`, "stop", "inconclusive", "model card"},
+		{"wrong function", `{"tool_calls":[{"function":{"name":"other_function","arguments":"{\"city\":\"Paris\"}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"malformed arguments", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{oops"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"missing argument", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"case mismatched argument", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"City\":\"Paris\"}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"nonstring argument", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":42}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"null argument", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":null}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"empty argument", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":\" \"}"}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"arguments not encoded JSON", `{"tool_calls":[{"function":{"name":"lookup_weather","arguments":{"city":"Paris"}}}]}`, "tool_calls", "inconclusive", "probe again"},
+		{"invalid call and text", `{"content":"lookup_weather","tool_calls":[{"function":{"name":"other","arguments":"{}"}}]}`, "stop", "inconclusive", "probe again"},
+		{"valid call after invalid call", `{"tool_calls":[{"function":{"name":"other","arguments":"{}"}},{"function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"}}]}`, "tool_calls", "verified", "use this model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "POST", r.Method)
+				require.Equal(t, "/v1/chat/completions", r.URL.Path)
+				var body map[string]any
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				require.Equal(t, "m@worker", body["model"])
+				require.Equal(t, false, body["stream"])
+				assert.Equal(t, "auto", body["tool_choice"])
+				require.EqualValues(t, 4096, body["max_tokens"])
+				require.Equal(t, []any{map[string]any{"role": "user", "content": "What is the current weather in Paris? Call lookup_weather with city Paris to find out; do not guess."}}, body["messages"])
+				tools, err := json.Marshal(body["tools"])
+				require.NoError(t, err)
+				require.JSONEq(t, `[{"type":"function","function":{"name":"lookup_weather","description":"Look up the current weather in a city.","parameters":{"type":"object","properties":{"city":{"type":"string","minLength":1}},"required":["city"]}}}]`, string(tools))
+				writeFixture(t, w, []byte(fmt.Sprintf(`{"model":"m","choices":[{"message":%s,"finish_reason":%q}],"usage":{"total_tokens":10}}`, tc.message, tc.finish)))
+			})
+			result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "node": "worker", "message": "ignored caller message", "tools": true, "max_tokens": 1})
+			require.NotEqual(t, true, result["isError"], result)
+			fields := result["structuredContent"].(map[string]any)
+			require.Equal(t, tc.outcome, fields["tool_call"])
+			require.Equal(t, "m", fields["model"])
+			require.Equal(t, float64(10), fields["usage"].(map[string]any)["total_tokens"])
+			line := result["content"].([]any)[0].(map[string]any)["text"]
+			require.Contains(t, line, tc.next)
+			if tc.outcome == "parser_missing" {
+				require.Contains(t, line, "zz_run_restart")
+				require.Contains(t, line, "probe again")
+			}
+		})
+	}
+}
+
+func TestAgentChatToolProbeWithoutMessage(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.EqualValues(t, 4096, body["max_tokens"])
+		require.Equal(t, "auto", body["tool_choice"])
+		writeFixture(t, w, []byte(`{"choices":[{"message":{"content":"No weather available"}},{"message":{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}`))
+	})
+	for _, tokens := range []int{0, -1, 99999} {
+		result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "tools": true, "max_tokens": tokens})
+		require.NotEqual(t, true, result["isError"], result)
+		require.Equal(t, "inconclusive", result["structuredContent"].(map[string]any)["tool_call"])
+	}
+}
+
+func TestAgentChatToolProbeClassifiedRefusal(t *testing.T) {
+	for _, class := range []httperr.FailureClass{httperr.FailureToolCallingNotEnabled, httperr.FailureChatTemplateRejected} {
+		t.Run(string(class), func(t *testing.T) {
+			failure := (&httperr.EngineFailure{Class: class, Message: "synthetic engine refusal"}).HTTPError()
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(failure.Status)
+				require.NoError(t, json.NewEncoder(w).Encode(utils.NewOpenAIError(failure.Type, failure.Message, nil, &failure.Code)))
+			})
+			result := callTool(t, d, "zz_chat", map[string]any{"model": "m", "tools": true})
+			problem := resultProblem(t, result)
+			require.Equal(t, failure.Code, problem.Code)
+			require.Equal(t, failure.Status, problem.Status)
+			line := result.Content[0].(*mcp.TextContent).Text
+			require.Contains(t, line, failure.Code)
+			require.Contains(t, line, failure.Message)
 		})
 	}
 }
@@ -185,6 +278,7 @@ func TestAgentInvalidInputsNeverDispatch(t *testing.T) {
 		{"zz_params_set", `{"provider":"vllm","patch":null}`}, {"zz_models", `{"limit":-1}`},
 		{"zz_models", `{"limit":1001}`}, {"zz_logs", `{"run_id":"r","lines":-1}`},
 		{"zz_chat", `{"model":"m","message":"hi","max_tokens":-1}`},
+		{"zz_chat", `{"model":"m"}`},
 		{"zz_update_status", `{"check":true,"nodes":["worker"]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

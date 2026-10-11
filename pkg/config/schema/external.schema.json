@@ -6,7 +6,8 @@
   "type": "object",
   "required": ["protocol", "runtime"],
   "additionalProperties": false,
-  "properties": {
+  "$defs": {"failurePattern": {"type":"object","additionalProperties":false,"required":["pattern","class"],"properties":{"pattern":{"type":"string","minLength":1},"isRegex":{"type":"boolean"},"class":{"type":"string"}}}},
+"properties": {
     "features": {
       "type": "object",
       "additionalProperties": false,
@@ -334,6 +335,7 @@
             "custom_headers": { "type": "object", "additionalProperties": { "type": "string" } }
           }
         },
+        "failure_patterns": {"type": "array", "items": {"$ref": "#/$defs/failurePattern"}},
         "health_check": {
           "type": "object",
           "additionalProperties": false,

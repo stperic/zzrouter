@@ -107,9 +107,10 @@ func (s *Server) HandleProviderSync(c *gin.Context) {
 		InternalNodeError(c, err.Error())
 		return
 	}
-	// `changed` is what makes a scheduled push cheap: the coordinator
-	// re-sends the whole tree on a timer to repair drift, and a worker
-	// already in step writes nothing and reloads nothing.
+	// `changed` keeps scheduled pushes cheap: an in-step worker writes and reloads nothing.
+	if !publishOr503(c, s.publishCatalog) {
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"name": name, "bytes": len(body.ConfigYAML), "changed": changed})
 }
 

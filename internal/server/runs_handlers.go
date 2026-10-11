@@ -29,10 +29,11 @@ func parseLaunchMode(mode string) (instance.LaunchMode, error) {
 	}
 }
 
-// buildLaunchRequest creates a LaunchRequest from launch request parameters.
-func buildLaunchRequest(providerName string, req LaunchRequest) prov_apps.LaunchRequest {
-	return prov_apps.LaunchRequest{
+// buildEnsureRequest creates an EnsureRequest from launch request parameters.
+func buildEnsureRequest(providerName string, req LaunchRequest) prov_apps.EnsureRequest {
+	return prov_apps.EnsureRequest{
 		Provider:     providerName,
+		Model:        req.Model,
 		Port:         req.Port,
 		Parameters:   req.Parameters,
 		EnvVars:      req.EnvVars,
@@ -43,6 +44,7 @@ func buildLaunchRequest(providerName string, req LaunchRequest) prov_apps.Launch
 
 // LaunchRequest represents a request to launch an app instance.
 type LaunchRequest struct {
+	Model        string                 `json:"model_name,omitempty"`
 	Provider     string                 `json:"provider" binding:"required"`
 	LaunchMode   string                 `json:"launch_mode" binding:"required,oneof=native"`
 	Port         int                    `json:"port,omitempty"`

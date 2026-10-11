@@ -2,32 +2,32 @@ package process
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 )
 
-// ErrModelIncomplete is returned when a model's files don't match the
-// integrity manifest written at download time — the signature of an
-// interrupted or truncated download.
-var ErrModelIncomplete = errors.New("model weights incomplete")
+// ErrModelIncomplete is returned when required weights are absent or truncated.
+var ErrModelIncomplete = layout.ErrIncomplete
 
-// VerifyLocalWeights checks a resolved model path against the integrity
-// manifest zzRouter wrote when it downloaded the model.
-//
-// Only presence and size are checked, never content hashes: this runs on
-// the launch path, and re-hashing tens of gigabytes to answer "did the
-// download finish" would cost more than the launch itself. Models with no
-// manifest (Ollama pulls, hand-placed files) pass through — the manifest is
-// evidence when present, not a requirement.
-func VerifyLocalWeights(ctx context.Context, modelPath string) error {
+// VerifyLocalWeights checks required weights and only manifest files read by this launch.
+func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths []string) error {
 	if modelPath == "" {
 		return nil
+	}
+	modelPath = filepath.Clean(modelPath)
+	complete, err := layout.Complete(modelPath)
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", modelPath, err)
+	}
+	if !complete {
+		return fmt.Errorf("%w: %s (re-download to repair)", ErrModelIncomplete, modelPath)
 	}
 
 	dir, ok := manifestDir(modelPath)
@@ -35,7 +35,18 @@ func VerifyLocalWeights(ctx context.Context, modelPath string) error {
 		return nil
 	}
 
-	complete, err := integrity.NewIntegrityVerifier().QuickVerify(ctx, dir)
+	paths := append([]string{modelPath}, featurePaths...)
+	info, statErr := os.Stat(modelPath)
+	if layout.IsGGUF(modelPath) {
+		variant, _ := layout.VariantOf(modelPath)
+		for _, f := range variant.Files {
+			paths = append(paths, filepath.Join(filepath.Dir(modelPath), filepath.FromSlash(f.Path)))
+		}
+	}
+	complete, err = integrity.NewIntegrityVerifier().QuickVerify(ctx, dir, func(f integrity.FileChecksum) bool {
+		p := filepath.Join(dir, f.RelativePath)
+		return slices.Contains(paths, p) || (statErr == nil && info.IsDir() && f.Feature == "" && strings.HasPrefix(p, modelPath+string(filepath.Separator)))
+	})
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", dir, err)
 	}

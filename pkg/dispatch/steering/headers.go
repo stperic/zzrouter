@@ -189,12 +189,6 @@ func parseNameList(raw string) ([]string, error) {
 	return out, nil
 }
 
-// HasAny reports whether any hint is set. Used by the wire layer to
-// decide whether to emit SteeringApplied at all.
-func (h Hints) HasAny() bool {
-	return len(h.ExcludeReplicas) > 0 || h.LatencyBudgetMs > 0 || len(h.RequireTags) > 0
-}
-
 // Applied returns the parameter-name keys for every hint actually
 // populated on h, sorted for deterministic wire output. Used by the
 // commit path to fill RoutingMetadata.SteeringApplied.

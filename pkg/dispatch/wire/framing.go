@@ -20,14 +20,10 @@ import (
 // ensures optimal performance for streaming without excessive memory use.
 const StreamBufferSize = 32 * 1024
 
-// IsStreaming returns true if the HTTP response indicates a streaming
-// format. Checks for NDJSON (Ollama), SSE (OpenAI), or chunked transfer
-// encoding.
 func IsStreaming(resp *http.Response) bool {
 	contentType := resp.Header.Get("Content-Type")
 	return contentType == "application/x-ndjson" ||
-		strings.Contains(contentType, "text/event-stream") ||
-		resp.Header.Get("Transfer-Encoding") == "chunked"
+		strings.Contains(contentType, "text/event-stream")
 }
 
 // connectionHeaders is the RFC 9110 §7.6.1 set that describes one
@@ -89,14 +85,6 @@ func MergeUpstreamHeaders(dst, src http.Header) {
 // putting anything on the wire a client could mistake for a chat chunk.
 func SendSSEComment(w http.ResponseWriter, text string) {
 	_, _ = fmt.Fprintf(w, ": %s\n\n", strings.ReplaceAll(text, "\n", " "))
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-// SendSSEDone sends the stream termination marker.
-func SendSSEDone(w http.ResponseWriter) {
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}

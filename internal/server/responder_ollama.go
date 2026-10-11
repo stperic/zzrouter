@@ -10,7 +10,9 @@ package server
 // responder therefore does not expose a code or type vocabulary.
 
 import (
+	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -53,9 +55,7 @@ func (*ollamaResponder) RequestTooLarge(c *gin.Context, detail string) {
 }
 
 func (*ollamaResponder) TooManyRequests(c *gin.Context, detail string, retryAfterSeconds int) {
-	if retryAfterSeconds > 0 {
-		c.Header("Retry-After", intSeconds(retryAfterSeconds))
-	}
+	httperr.SetRetryAfter(c.Writer.Header(), time.Duration(retryAfterSeconds)*time.Second)
 	OllamaError(c, http.StatusTooManyRequests, detail)
 }
 
@@ -80,8 +80,9 @@ func (*ollamaResponder) GatewayTimeout(c *gin.Context, _ string) {
 	OllamaError(c, http.StatusGatewayTimeout, "upstream timeout")
 }
 
-// WriteError renders the flat shape; Type and Code have no field in it.
+// WriteError renders the flat shape with an optional machine code.
 func (*ollamaResponder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	writeJSONBody(w, e.Status, "application/json", flatError(e))
 }
 
@@ -91,9 +92,20 @@ func flatError(e httperr.Error) map[string]any {
 		body[k] = v
 	}
 	body["error"] = e.Message
+	if e.Code != "" {
+		body["code"] = e.Code
+	}
 	return body
 }
 
 func (*ollamaResponder) NormalizeUpstreamError(status int, raw []byte) []byte {
 	return ollamaSurfaceErrorBody(status, raw)
+}
+
+// EndStream writes one Ollama error line; a blank line before it would fail the Ollama client's JSON parse.
+func (*ollamaResponder) EndStream(w http.ResponseWriter, e httperr.Error) {
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": e.Message})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }

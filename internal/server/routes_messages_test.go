@@ -19,6 +19,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -102,6 +103,7 @@ func TestMessagesThroughInstance_PassesStreamAndMeters(t *testing.T) {
 // what reached it and answers status with reply as contentType (JSON when
 // empty), or with a Messages body naming its own model when reply is empty.
 type serviceBackend struct {
+	failures    httperr.Classifier
 	wire        []string
 	status      int
 	reply       string
@@ -146,11 +148,12 @@ func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serv
 		t.Cleanup(engine.Close)
 		require.NoError(t, s.appsConfig.AddApp(name, pkgConfig.ServiceConfig{
 			Enabled: &enabled, Name: name, Mode: "service", Protocol: pkgConfig.ProtocolOpenAI,
-			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL},
+			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL, FailurePatterns: b.failures},
 			Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: b.wire},
 		}))
 		replicas = append(replicas, modelgroup.Replica{Name: name, App: name, Model: name + "-model", Priority: i + 1})
 	}
+	s.providers.appMgr.ReloadConfig(s.appsConfig)
 	require.NoError(t, s.model.Groups.Set("claude", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: replicas}))
 	return s
 }
@@ -181,7 +184,7 @@ func TestMessagesRoute_GroupFailsOverAcrossMessagesReplicas(t *testing.T) {
 		`{"model":"claude","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
 
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body)
-	assert.Empty(t, backends["chatonly"].requests(), "a replica without messages must not be tried")
+	assert.Empty(t, backends["chatonly"].requests(), "native replicas take precedence over translated replicas")
 	assert.NotEmpty(t, backends["busy"].requests(), "the first Messages replica is tried first")
 	spare := backends["spare"].requests()
 	require.Len(t, spare, 1)
@@ -197,9 +200,9 @@ func TestMessagesRoute_GroupFailsOverAcrossMessagesReplicas(t *testing.T) {
 // anything is sent, on both routes.
 func TestMessagesRoute_GroupWithoutMessagesReplicaRefused(t *testing.T) {
 	backends := map[string]*serviceBackend{
-		"chatonly": {wire: []string{"chat_completions"}, status: http.StatusOK},
+		"embedonly": {wire: []string{"embeddings"}, status: http.StatusOK},
 	}
-	s := newServiceGroupNode(t, []string{"chatonly"}, backends)
+	s := newServiceGroupNode(t, []string{"embedonly"}, backends)
 
 	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
 		t.Run(path, func(t *testing.T) {
@@ -209,7 +212,7 @@ func TestMessagesRoute_GroupWithoutMessagesReplicaRefused(t *testing.T) {
 			errType, msg := decodeAnthropicError(t, w.Body.Bytes())
 			assert.Equal(t, "invalid_request_error", errType)
 			assert.Contains(t, msg, messagesEndpoint)
-			assert.Empty(t, backends["chatonly"].requests())
+			assert.Empty(t, backends["embedonly"].requests())
 		})
 	}
 }

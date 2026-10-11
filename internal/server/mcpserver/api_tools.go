@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -33,7 +34,7 @@ type apiInput struct {
 
 func registerAPITools(s *mcp.Server, cfg Config, bindings map[string][]string) {
 	read := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_api_search", Description: "Find a REST operation when a curated tool does not cover the task. Searches the embedded OpenAPI spec and returns method, path, operationId, summary and parameter names; use zz_api_get for eligible public GETs or zz_api for writes.", Annotations: read}, nil, dispatcher.apiSearch)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_api_search", Description: "Find a REST operation when a curated tool does not cover the task. Searches the embedded OpenAPI spec and returns method, path, operationId, summary and parameter names, plus task_tools naming the curated tool that serves an operation; use zz_api_get for eligible public GETs or zz_api for writes.", Annotations: read}, nil, dispatcher.apiSearch)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_api_get", Description: "Read one public management REST route found with zz_api_search. Returns its JSON reply unchanged; use the operation summary and /openapi.yaml to interpret it. Internal, MCP, streaming and retired routes are refused.", Annotations: read}, nil, dispatcher.apiGet)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_api", Description: "Change one public management REST resource found with zz_api_search; every call is destructive. Supply a method other than GET and optional JSON body, content_type and retry headers; returns the REST JSON reply unchanged, or null for no content. Follow returned job_id values with zz_job. Internal, MCP, streaming and retired routes are refused.", Annotations: &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)}}, nil, dispatcher.api)
 }
@@ -43,13 +44,44 @@ func (d dispatcher) apiSearch(_ context.Context, in apiSearchInput) (agentOutput
 		in.Limit = DefaultAPISearchLimit
 	}
 	if in.Limit < 1 || in.Limit > MaxListLimit {
-		return agentOutput{}, fmt.Errorf("limit must be 1 to %d", MaxListLimit)
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("limit must be 1 to %d", MaxListLimit), nil)
 	}
 	if d.cfg.SearchAPI == nil {
-		return agentOutput{}, fmt.Errorf("OpenAPI search is unavailable")
+		return agentOutput{}, newToolError(http.StatusInternalServerError, codeInternal, "OpenAPI search is unavailable", nil)
 	}
 	operations, err := d.cfg.SearchAPI(in.Query, in.Limit)
-	return agentOutput{fields: map[string]any{"operations": operations}, text: fmt.Sprintf("Returned %d operations; read the contract before calling one.", len(operations))}, err
+	if err != nil {
+		return agentOutput{}, newToolError(http.StatusInternalServerError, codeInternal, err.Error(), err)
+	}
+	text := fmt.Sprintf("Returned %d operations; read the contract before calling one.", len(operations))
+	var curated []string
+	for _, operation := range operations {
+		id, _ := operation["operationId"].(string)
+		if tools := d.taskTools(id); len(tools) > 0 {
+			operation["task_tools"] = tools
+			curated = append(curated, tools...)
+		}
+	}
+	if len(curated) > 0 {
+		slices.Sort(curated)
+		text += fmt.Sprintf(" Operations with task_tools are served by %s; call that tool instead.", strings.Join(slices.Compact(curated), ", "))
+	}
+	return agentOutput{fields: map[string]any{"operations": operations}, text: text}, nil
+}
+
+// taskTools names the registered tools bound to an operationId, sorted.
+func (d dispatcher) taskTools(operationID string) []string {
+	if operationID == "" {
+		return nil
+	}
+	var tools []string
+	for tool, ids := range d.bindings {
+		if slices.Contains(ids, operationID) {
+			tools = append(tools, tool)
+		}
+	}
+	slices.Sort(tools)
+	return tools
 }
 
 func (d dispatcher) apiGet(ctx context.Context, in apiGetInput) (agentOutput, error) {
@@ -59,7 +91,7 @@ func (d dispatcher) apiGet(ctx context.Context, in apiGetInput) (agentOutput, er
 func (d dispatcher) api(ctx context.Context, in apiInput) (agentOutput, error) {
 	method := strings.ToUpper(in.Method)
 	if method == http.MethodGet {
-		return agentOutput{}, fmt.Errorf("GET requires zz_api_get")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "GET requires zz_api_get", nil)
 	}
 	if in.ContentType == "" {
 		in.ContentType = "application/json"
@@ -70,13 +102,14 @@ func (d dispatcher) api(ctx context.Context, in apiInput) (agentOutput, error) {
 func (d dispatcher) apiCall(ctx context.Context, in apiGetInput, req request) (agentOutput, error) {
 	path := in.Path
 	if !strings.HasPrefix(path, "/zzrouter/v1/") || strings.ContainsAny(path, "\\%?#") || strings.Contains(path, "..") || strings.Contains(path, "//") {
-		return agentOutput{}, fmt.Errorf("use a literal /zzrouter/v1/ management path without encoding or traversal")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "use a literal /zzrouter/v1/ management path without encoding or traversal", nil)
 	}
 	if d.cfg.EligibleAPIRoute == nil {
-		return agentOutput{}, fmt.Errorf("route catalog is unavailable")
+		return agentOutput{}, newToolError(http.StatusInternalServerError, codeInternal, "route catalog is unavailable", nil)
 	}
-	if err := d.cfg.EligibleAPIRoute(req.method, path); err != nil {
-		return agentOutput{}, err
+	operationID, err := d.cfg.EligibleAPIRoute(req.method, path)
+	if err != nil {
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, err.Error(), err)
 	}
 	req.path, req.query = requestPath{path}, url.Values{}
 	for key, value := range in.Query {
@@ -87,5 +120,11 @@ func (d dispatcher) apiCall(ctx context.Context, in apiGetInput, req request) (a
 		return agentOutput{}, err
 	}
 	// Preserve any JSON value, while keeping the structured result an object for legacy clients.
-	return agentOutput{fields: map[string]any{"response": reply}, text: "REST request completed; interpret the response using /openapi.yaml."}, nil
+	out := agentOutput{fields: map[string]any{"response": reply}, text: "REST request completed; interpret the response using /openapi.yaml."}
+	// Served, not refused: a binding means a tool uses the route, not that it covers every option.
+	if tools := d.taskTools(operationID); len(tools) > 0 {
+		out.fields["task_tools"] = tools
+		out.text = fmt.Sprintf("REST request completed. %s serves this route; use it next.", strings.Join(tools, " or "))
+	}
+	return out, nil
 }

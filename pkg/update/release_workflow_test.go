@@ -58,3 +58,19 @@ func TestReleaseWorkflowUsesTagSigning(t *testing.T) {
 	require.Contains(t, s, "/.github/workflows/release.yaml@${{ github.ref }}")
 	require.NotContains(t, s, "workflow_dispatch:")
 }
+
+func TestReleaseManifestPrecedesSignedChecksums(t *testing.T) {
+	b, err := os.ReadFile("../../.github/workflows/release.yaml")
+	require.NoError(t, err)
+	s := string(b)
+	manifest := strings.Index(s, "- name: Generate release manifest")
+	checksums := strings.Index(s, "- name: Generate checksums")
+	require.GreaterOrEqual(t, manifest, 0)
+	require.Greater(t, checksums, manifest)
+	require.Contains(t, s[manifest:checksums], "version --json")
+	require.Contains(t, s[manifest:checksums], "zzrouter-linux-amd64.tar.gz")
+	require.Contains(t, s[manifest:checksums], "cluster_protocol: .cluster_protocol")
+	require.Contains(t, s[manifest:checksums], "min_cluster_protocol: .min_cluster_protocol")
+	require.Contains(t, s, "sha256sum *.tar.gz *.zip sbom.*.cyclonedx.json release.json > checksums.txt")
+	require.Contains(t, s, "            artifacts/release.json\n")
+}

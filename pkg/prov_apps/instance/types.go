@@ -15,6 +15,15 @@ const (
 	StatusRestarting Status = "restarting"
 )
 
+// StartedBy says what started a run: a management call, an inference request, or another client of its daemon.
+type StartedBy string
+
+const (
+	StartedByAPI      StartedBy = "api"
+	StartedByRequest  StartedBy = "request"
+	StartedByExternal StartedBy = "external"
+)
+
 // IsTerminal returns true if the status represents a final state (stopped or failed).
 // Terminal instances should not block lifecycle operations like upgrade or uninstall.
 func (s Status) IsTerminal() bool {
@@ -65,13 +74,13 @@ type InstanceInfo struct {
 	Model            string `json:"model,omitempty"`
 	// Endpoint is the per-request endpoint label this instance serves
 	// ("chat", "embeddings", "reranking"). Empty defaults to chat.
-	// Surfaced so cluster-wide consumers (e.g. /runs/ensure) can
-	// distinguish multi-endpoint launches for one model.
+	// Surfaced so run listings can distinguish multi-endpoint launches for one model.
 	Endpoint              string            `json:"endpoint,omitempty"`
 	SourceRepo            string            `json:"source_repo,omitempty"`
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
 	Processor             string            `json:"processor,omitempty"`
 	ContextLength         int               `json:"context_length,omitempty"`
+	ExpiresAt             string            `json:"expires_at,omitempty"` // when the daemon serving the run unloads it idle
 	ProcessID             int               `json:"process_id,omitempty"`
 	Port                  int               `json:"port"`
 	Status                Status            `json:"status"`
@@ -83,7 +92,9 @@ type InstanceInfo struct {
 	LastActivity          string            `json:"last_activity,omitempty"`
 	LastHealthCheck       string            `json:"last_health_check,omitempty"`
 	ErrorMessage          string            `json:"error_message,omitempty"`
-	WaitingOn             string            `json:"waiting_on,omitempty"` // run a queued launch waits for
+	WaitingOn             string            `json:"waiting_on,omitempty"`   // run a queued launch waits for
+	EvictedRuns           []EvictedRun      `json:"evicted_runs,omitempty"` // idle runs this launch stopped for GPU memory
+	StartedBy             StartedBy         `json:"started_by,omitempty"`
 	Failure               *FailureInfo      `json:"failure,omitempty"`
 	ActiveRequests        int64             `json:"active_requests,omitempty"`
 	MaxConcurrentRequests int               `json:"max_concurrent_requests,omitempty"`
@@ -97,6 +108,14 @@ type InstanceInfo struct {
 	// config (an external daemon's model) or the node predates the field;
 	// either way it reads as unknown.
 	ParametersStatus *ParametersStatus `json:"parameters_status,omitempty"`
+}
+
+// EvictedRun is an idle run a launch stopped to fit its GPU memory budget.
+type EvictedRun struct {
+	RunID string `json:"run_id"`
+	Model string `json:"model"`
+	// FreedMiB is the GPU memory the driver attributed to the run when it was stopped.
+	FreedMiB int64 `json:"freed_mib"`
 }
 
 // Resolved is what one launch computed from config: the values its

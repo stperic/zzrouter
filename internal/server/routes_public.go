@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/logging"
 	"github.com/stperic/zzrouter/pkg/prov_apps/upstream"
@@ -30,9 +30,6 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// a subset of these and are registered on their own engine on a worker,
 	// so that subset is built by a function both roles call.
 	s.bindCompatServices(routingRouter)
-	s.services.Model.SetOnModelDelete(func(modelName string) {
-		s.model.AutoRoute.SyncAfterDelete(modelName)
-	})
 	s.services.Search = NewModelSearchService(func() *pkgConfig.AppsConfig { return s.appsConfig }, s.model.Pricing)
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
 	s.services.Load = NewLoadService(s, routingRouter).
@@ -54,15 +51,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			s.jobs,
 		)
 	}
-	// EnsureRun resolves a bare model name → CachedModel via the cache;
-	// the cache already handles SourceID alias resolution so the agent
-	// can pass either form of the name.
-	s.services.Runs.WithModelLookup(func(ctx context.Context, name string) *cache.CachedModel {
-		cm, err := s.model.Cache.LookupModel(ctx, name)
-		if err != nil {
-			return nil
-		}
-		return cm
+	s.services.Runs.WithModelResolver(func(ctx context.Context, name string) (*resolver.Resolved, error) {
+		return s.ResolveModel(ctx, name, "")
 	})
 	s.services.Apps = NewAppsService(s, routingRouter)
 	s.services.Nodes = NewNodesService(s, routingRouter, func(address string) string {
@@ -100,7 +90,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.Models.RegisterPublicRoutes(router)
 
 	// Runs: List, launch, stop, load, preview, restart, metrics, config, ports, batch
-	s.controllers.Runs.RegisterPublicRoutes(router)
+	s.controllers.Runs.RegisterPublicRoutes(router, s.idempotent)
 
 	// Params: Schema, get/set/delete parameters, ignore
 	s.controllers.Params.RegisterPublicRoutes(router)
@@ -115,7 +105,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.System.RegisterPublicRoutes(router)
 
 	// Deployments: List, deploy, stop
-	s.controllers.Deployments.RegisterPublicRoutes(router)
+	s.controllers.Deployments.RegisterPublicRoutes(router, s.idempotent)
 
 	// Registries: agent-friendly pre-pull discovery (e.g., GGUF variants in a HF repo).
 	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }, func() *pkgConfig.AppsConfig { return s.appsConfig }).RegisterPublicRoutes(router)
@@ -139,7 +129,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			s.model.Pricing,
 			s.config.Coordinator.Routing.GetRoutePrefix(),
 		)
-		s.controllers.ModelGroups.RegisterPublicRoutes(router)
+		s.controllers.ModelGroups.RegisterPublicRoutes(router, s.idempotent)
 	}
 
 	// Provider Status: Provider-level health/cooldown and rate limit status
@@ -172,7 +162,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// runs every listener, returns the per-listener ReloadReport.
 	// Route is registered even when s.configStore is nil so
 	// disabled-feature probes get 503 rather than a silent 404.
-	registerConfigReloadRoute(router, s.configStore)
+	registerConfigReloadRoute(router, s.configStore, s.publishCatalog)
 
 	// Update: Auto-update management
 	// Lazy getter: setupRoutes runs before the scheduler is constructed
@@ -181,7 +171,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// update.enabled: true.
 	updateController := NewUpdateController(func() *update.Scheduler { return s.updateScheduler })
 	updateController.server = s
-	updateController.RegisterRoutes(router)
+	updateController.RegisterRoutes(router, s.idempotent)
 
 	// Pricing: token-cost pricing data lookup.
 	// Routes are registered even when the store is nil so disabled-feature
@@ -208,7 +198,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		}
 
 		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc)
-		providersController.RegisterPublicRoutes(router)
+		providersController.publishCatalog = s.publishCatalog
+		providersController.RegisterPublicRoutes(router, s.idempotent)
 	}
 
 	// Inference Logs: Query and stream inference request logs

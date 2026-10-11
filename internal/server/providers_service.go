@@ -207,7 +207,7 @@ func (s *ProvidersService) routeRaw(ctx context.Context, method, path, node stri
 		return nil, newRoutedTransportError(err, node)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 	return resp.Body, nil
 }

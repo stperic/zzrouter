@@ -42,17 +42,7 @@ type (
 	StreamNormalizer    = normalizer.StreamNormalizer
 )
 
-var (
-	NewResponseNormalizers = normalizer.NewRegistry
-
-	// Function-value aliases preserve server-local call-site spelling.
-	// Callers pre-extraction used `applyBodyNormalizer`, `newNormalizingReader`,
-	// `composeStreamTransforms`; the generic helpers now live in
-	// pkg/dispatch/normalizer with capitalized names.
-	applyBodyNormalizer     = normalizer.ApplyBody
-	newNormalizingReader    = normalizer.NewStreamReader
-	composeStreamTransforms = normalizer.ComposeStream
-)
+var NewResponseNormalizers = normalizer.NewRegistry
 
 // ===== pkg/dispatch/affinity re-exports =====
 
@@ -69,10 +59,8 @@ var newResponseAffinity = affinity.New
 // here rather than peppering `wire.X` everywhere.
 
 var (
-	isStreamingResponse        = wire.IsStreaming
-	mergeUpstreamHeaders       = wire.MergeUpstreamHeaders
-	sendSSEComment             = wire.SendSSEComment
-	forceUsageReporting        = wire.ForceUsageReporting
-	copyStreamWithMetrics      = wire.CopyWithMetrics
-	captureNonStreamingMetrics = wire.CaptureNonStreamingMetrics
+	isStreamingResponse  = wire.IsStreaming
+	mergeUpstreamHeaders = wire.MergeUpstreamHeaders
+	sendSSEComment       = wire.SendSSEComment
+	forceUsageReporting  = wire.ForceUsageReporting
 )

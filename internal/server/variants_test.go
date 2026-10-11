@@ -23,6 +23,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -89,11 +90,10 @@ func TestVariants_LaunchLoadsTheBaseWeights(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
 
-	res, err := s.buildInstanceConfig(t.Context(), variantAgent, "llamacpp", "chat", nil, nil)
+	res, err := s.providers.appMgr.PreviewLaunch(prov_apps.EnsureRequest{Model: variantAgent, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat}, 8080)
 	require.NoError(t, err)
-	assert.Equal(t, variantAgent, res.LaunchReq.Model, "the run is the variant's")
-	require.Len(t, res.LaunchReq.Files, 1)
-	assert.Equal(t, qwenModel+".gguf", filepath.Base(res.LaunchReq.Files[0].NodePath))
+	assert.Equal(t, variantAgent, res.Model, "the run is the variant's")
+	assert.Equal(t, qwenModel+".gguf", filepath.Base(res.ModelPath))
 }
 
 // A write that touches one model answers with that model's resolution,
@@ -382,10 +382,10 @@ func TestVariants_ChainFindsTheServingRun(t *testing.T) {
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 
 	deps := &chainServerDeps{s: s}
-	got, ok := deps.AppInstance(variantChat)
+	got, ok := deps.AppInstance(variantChat, "llamacpp")
 	require.True(t, ok)
 	assert.Equal(t, "base-run", got.ID)
-	_, ok = deps.AppInstance(variantAgent)
+	_, ok = deps.AppInstance(variantAgent, "llamacpp")
 	assert.False(t, ok, "a variant with its own launch has no run yet")
 	assert.Equal(t, 0.7, deps.RequestDefaults("llamacpp", variantChat, "/v1/chat/completions")["temperature"])
 }

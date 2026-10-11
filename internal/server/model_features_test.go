@@ -139,3 +139,30 @@ type staticModelResolver struct{ provider string }
 func (r staticModelResolver) Resolve(_ context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
 	return &resolver.Resolved{ModelName: ref.Model, Provider: r.provider}, nil
 }
+
+func TestNarrowToWireEndpoint_DerivedShimsAndNative(t *testing.T) {
+	cfg := &pkgConfig.AppsConfig{}
+	for name, eps := range map[string][]string{
+		"chat":   {"chat_completions"},
+		"native": {"chat_completions", "messages", "responses"},
+	} {
+		require.NoError(t, cfg.AddApp(name, pkgConfig.ServiceConfig{Enabled: new(true), Mode: "external", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: "http://example.test"}, Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: eps}}))
+	}
+	s := &Server{appsConfig: cfg}
+	for _, endpoint := range []string{"messages", "responses"} {
+		t.Run(endpoint, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, nil)
+			r := &resolver.Resolved{ModelName: "m", Provider: "chat"}
+			mode, ok := s.narrowToWireEndpoint(c, "m", r, endpoint, endpoint+"_compat")
+			require.True(t, ok)
+			assert.Equal(t, wireModeCompat, mode)
+			r.Candidates = []fallback.Candidate{{Model: "m", App: "chat"}, {Model: "m", App: "native"}}
+			mode, ok = s.narrowToWireEndpoint(c, "m", r, endpoint, endpoint+"_compat")
+			require.True(t, ok)
+			assert.Equal(t, wireModeNative, mode)
+			require.Len(t, r.Candidates, 1)
+			assert.Equal(t, "native", r.Provider)
+		})
+	}
+}

@@ -48,40 +48,61 @@ type Launch struct {
 	WireModel string
 }
 
-// Build resolves an admitted model into an argv, expanding the
-// launch placeholders (see config.PlaceholderModelPath and friends) and
-// appending runtime parameters as CLI flags.
+// ResolvedModel carries the local weights selected before memory admission.
+type ResolvedModel struct {
+	Name string
+	Path string
+}
+
+// ResolveModel selects the base weights a launch uses, once, before memory admission. A variant
+// runs its base's weights under its own name. Build decides whether the weights must exist.
+func ResolveModel(svc config.ServiceConfig, model string) ResolvedModel {
+	if model == "" {
+		return ResolvedModel{}
+	}
+	path, _ := resolveModelToPath(svc.WeightsOf(model), featureGlobs(&svc)...)
+	return ResolvedModel{Name: model, Path: path}
+}
+
+// Directory returns the repository directory of the selected local weights.
+func (m ResolvedModel) Directory() string {
+	if m.Path == "" {
+		return ""
+	}
+	info, err := os.Stat(m.Path)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return m.Path
+	}
+	if dir, found := manifestDir(m.Path); found {
+		return dir
+	}
+	return filepath.Dir(m.Path)
+}
+
+// Build resolves an admitted model into an argv, expanding the launch placeholders (see
+// config.PlaceholderModelPath and friends) and appending runtime parameters as CLI flags.
 //
-// An engine that references ${MODEL_PATH} must be pointed at weights that
-// exist: resolution failure is a launch failure here rather than an opaque
-// "no such file" from the engine several seconds later.
-func (cb *CommandBuilder) Build(model string, port int, params map[string]string) (Launch, error) {
+// An engine that references ${MODEL_PATH} must be pointed at weights that exist: a missing path is a
+// launch failure here rather than an opaque "no such file" from the engine several seconds later.
+func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string) (Launch, error) {
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
 	}
-
 	exec := &cb.serviceConfig.Runtime.Execution
 	if exec.Command == "" {
 		return Launch{}, fmt.Errorf("no command configured")
 	}
-
-	// The auto_deploy chain appends "#variant" to carry the resolved file
-	// through to the launcher; it addresses weights, never the name.
-	modelClean := model
-	if i := strings.Index(modelClean, "#"); i > 0 {
-		modelClean = modelClean[:i]
-	}
-
-	// A variant runs its base's weights under its own name: ${MODEL} is
-	// the name, ${MODEL_PATH} the weights.
-	var modelPath string
+	// The auto_deploy chain appends "#variant" to carry the resolved file; it addresses weights, never the name.
+	modelClean, _, _ := strings.Cut(model.Name, "#")
+	modelPath := ""
 	if argsReferenceModelPath(exec.Args) {
-		weights := cb.serviceConfig.WeightsOf(model)
-		resolved, ok := resolveModelToPath(weights, featureGlobs(cb.serviceConfig)...)
-		if !ok {
-			return Launch{}, fmt.Errorf("%w: %q is not in the local model store", ErrModelNotLocal, weights)
+		if model.Path == "" {
+			return Launch{}, fmt.Errorf("%w: %q is not in the local model store", ErrModelNotLocal, cb.serviceConfig.WeightsOf(model.Name))
 		}
-		modelPath = resolved
+		modelPath = model.Path
 	}
 
 	args := make([]string, 0, len(exec.Args))
@@ -344,23 +365,4 @@ func featureGlobs(svc *config.ServiceConfig) []string {
 		globs = append(globs, feature.Files...)
 	}
 	return globs
-}
-
-// ModelDirectory resolves base weights through the same local lookup as launch.
-func ModelDirectory(svc config.ServiceConfig, model string) (string, bool) {
-	p, ok := resolveModelToPath(svc.WeightsOf(model), featureGlobs(&svc)...)
-	if !ok {
-		return "", false
-	}
-	info, err := os.Stat(p)
-	if err != nil {
-		return "", false
-	}
-	if info.IsDir() {
-		return p, true
-	}
-	if dir, found := manifestDir(p); found {
-		return dir, true
-	}
-	return filepath.Dir(p), true
 }

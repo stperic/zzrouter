@@ -73,7 +73,7 @@ func TestMCPModelsFilterUsesCatalogNamesAndSourceAliases(t *testing.T) {
 				m := value.(map[string]any)
 				names = append(names, m["name"].(string))
 				if m["name"] == "qwen2.5" {
-					require.Equal(t, map[string]any{"wire_endpoints": []any{"chat_completions"}, "features": map[string]any{"vision": "unsupported"}}, m["details"])
+					require.Equal(t, map[string]any{"wire_endpoints": []any{"chat_completions", "messages_compat", "responses_compat"}, "features": map[string]any{"vision": "unsupported"}}, m["details"])
 				}
 				if m["name"] == "unrelated-local-name" {
 					require.Equal(t, "vendor/qwen2.5", m["source_id"])

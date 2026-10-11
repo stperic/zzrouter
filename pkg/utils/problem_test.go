@@ -226,31 +226,6 @@ func TestNewOpenAIInvalidRequest(t *testing.T) {
 	}
 }
 
-func TestNewOpenAINodeError(t *testing.T) {
-	message := "Internal server error"
-	result := NewOpenAINodeError(message)
-
-	if result == nil {
-		t.Fatal("NewOpenAINodeError() returned nil")
-	}
-
-	if result.Error.Type != "server_error" {
-		t.Errorf("Type = %v, want %v", result.Error.Type, "server_error")
-	}
-
-	if result.Error.Message != message {
-		t.Errorf("Message = %v, want %v", result.Error.Message, message)
-	}
-
-	if result.Error.Code != nil {
-		t.Errorf("Code should be nil for generic server errors (reserved for specific sub-codes), got %v", *result.Error.Code)
-	}
-
-	if result.Error.Param != nil {
-		t.Errorf("Param should be nil, got %v", result.Error.Param)
-	}
-}
-
 func TestProblemDetails_AllFields(t *testing.T) {
 	problem := NewProblemDetails(404, "Resource Not Found", "The requested resource was not found", "/api/resource/123")
 

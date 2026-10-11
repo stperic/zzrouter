@@ -25,6 +25,31 @@ Shipped provider files are embedded in the node; initialization
 materializes this tree. The coordinator owns provider writes. Workers receive
 managed copies through peer synchronization.
 
+## Node GPU policy
+
+`node.yaml` controls memory reclamation locally; it is not part of provider sync:
+
+```yaml
+gpu:
+  evict_idle_on_memory_pressure: false
+```
+
+The default is off. Enable it on each node that may stop idle zzRouter runs to
+admit a launch whose GPU budget cannot fit. Restart the node after changing it.
+Only healthy running instances with zero active request leases and no queued
+launch waiting on them qualify. Oldest activity goes first, and nothing is
+stopped unless the eligible holders cover the memory shortfall. Unknown holder
+sizes count as zero. Other processes are never reclaimed.
+
+After stopping, admission waits up to 5 seconds for asynchronous driver memory
+release, checking every 100 ms with a 64 MiB tolerance, then retries once.
+The existing fit error remains the refusal when reclamation is disabled or
+insufficient. Keep-alive expiry still uses the same eligibility rule.
+
+The launch reports what it stopped: its run's `evicted_runs` and its run job's
+`meta.evicted_runs` list each run id, model and the MiB it held. A lookup of an
+evicted run answers 404 naming the live run that evicted it.
+
 ## Parameter tiers
 
 Effective launch settings resolve from provider defaults, model-family defaults,

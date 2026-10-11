@@ -1,6 +1,10 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
+)
 
 // ExternalProvider is a daemon that runs independently of zzRouter and
 // exposes an HTTP endpoint we connect to (today: ollama). zzRouter may
@@ -35,11 +39,12 @@ type ExternalProvider struct {
 // endpoint, optional model-URL template (for web links), and a healthcheck.
 // No Execution.Command — the daemon manages its own lifecycle.
 type ExternalRuntime struct {
-	Endpoint    string            `yaml:"endpoint" json:"endpoint"`
-	ModelURL    string            `yaml:"model_url,omitempty" json:"model_url,omitempty"`
-	KeepAlive   string            `yaml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
-	API         *APIConfig        `yaml:"api,omitempty" json:"api,omitempty"`
-	HealthCheck HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
+	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
+	Endpoint        string             `yaml:"endpoint" json:"endpoint"`
+	ModelURL        string             `yaml:"model_url,omitempty" json:"model_url,omitempty"`
+	KeepAlive       string             `yaml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
+	API             *APIConfig         `yaml:"api,omitempty" json:"api,omitempty"`
+	HealthCheck     HealthcheckConfig  `yaml:"health_check,omitempty" json:"health_check,omitempty"`
 }
 
 func (p *ExternalProvider) Kind() Kind             { return KindExternal }
@@ -55,6 +60,12 @@ func (p *ExternalProvider) IsAutoDiscovery() bool { return p.Enabled == nil }
 // external daemons: protocol + endpoint. Credentials are optional (Ollama
 // runs without auth by default), but auth_type must be one zzRouter knows.
 func (p *ExternalProvider) Validate() error {
+	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if err := p.Runtime.FailurePatterns.Compile(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := validateFeatures(p.Features); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
@@ -108,7 +119,7 @@ func NewOllamaConnectProvider(name, endpoint, token string) *ExternalProvider {
 			API:      api,
 		},
 		Capabilities: &AppCapabilities{
-			WireEndpoints: []string{"chat_completions", "completions", "embeddings", "responses_compat"},
+			WireEndpoints: []string{"chat_completions", "completions", "embeddings"},
 		},
 	}
 }

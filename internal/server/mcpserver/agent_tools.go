@@ -21,6 +21,10 @@ const (
 	DefaultChatTokens = 64
 	// MaxChatTokens bounds the cost of this smoke-test surface.
 	MaxChatTokens = 256
+	// ToolProbeTokens leaves room for reasoning before a tool call while bounding probe cost.
+	ToolProbeTokens = 4096
+	probeFunction   = "lookup_weather"
+	probeMessage    = "What is the current weather in Paris? Call lookup_weather with city Paris to find out; do not guess."
 	// DefaultLogLines gives diagnostic context without dumping a whole log.
 	DefaultLogLines = 200
 	// MaxLogLines bounds line count before the dispatcher enforces its byte cap.
@@ -73,7 +77,7 @@ type runInput struct {
 	Node  string `json:"node,omitempty" jsonschema:"Optional owning node name, never an address."`
 }
 type retryInput struct {
-	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key; reuse it when retrying the same operation."`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key, unique per operation: keys are remembered across sessions, so a new operation needs a key never used before. Reuse it only when retrying the same operation."`
 }
 type previewInput struct {
 	Model       string            `json:"model" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
@@ -138,8 +142,9 @@ type patchInput struct {
 type chatInput struct {
 	Node      string `json:"node,omitempty" jsonschema:"Optional serving node name. Addresses the model as name@node."`
 	Model     string `json:"model" jsonschema:"Model name to smoke test through the coordinator."`
-	Message   string `json:"message" jsonschema:"One short user message."`
-	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum reply tokens. Default 64, capped at 256."`
+	Message   string `json:"message,omitempty" jsonschema:"One short user message for plain chat; ignored when tools is true."`
+	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum plain-chat reply tokens. Default 64, capped at 256; ignored for tools probes, which use 4096."`
+	Tools     bool   `json:"tools,omitempty" jsonschema:"Send one fixed harmless probe tool and report whether the model called it as structured tool_calls; uses its own fixed message even if message was supplied."`
 }
 type logsInput struct {
 	pageInput
@@ -174,12 +179,12 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel with zz_job_cancel and deployment_id.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, status and errors; use zz_logs to diagnose or zz_chat to smoke test a ready model.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, status, started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, the idle runs its launch stopped to free GPU memory; use zz_logs to diagnose or zz_chat to smoke test a ready model. A run no longer listed answers 404 with what is still readable.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_preview", Description: "Check zz_models first and select its exact local name. Only if absent, use zz_model_search, zz_model_download and zz_job, then check zz_models again. Preview with an enabled provider; returns full_command, parameters and sources, then call zz_run_start.", Annotations: read}, []string{"previewRuns"}, dispatcher.preview)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. After zz_run_preview, start its exact local name with an enabled native provider. Returns run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job; follow the job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model with one short user message through the coordinator. A bare name works when one node holds it; otherwise pass node. Returns reply text, model and token usage; inspect zz_logs if it fails. This is a smoke test, not an inference surface.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model through the coordinator; pass message for plain chat or tools: true for a fixed tool-calling probe. A bare name works when one node holds it; otherwise pass node. A model with no run is started for the chat (zz_runs lists it with started_by request). Returns reply, model, token usage and, for probes, tool_call: verified, parser_missing, truncated or inconclusive with next steps. Inspect zz_logs if it fails.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, or every line matching grep across the whole log, with follow forced off. A stopped run's log stays readable with the node it ran on. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
@@ -198,7 +203,7 @@ func (in pageInput) values() (url.Values, error) {
 		in.Limit = DefaultListLimit
 	}
 	if in.Limit < 1 || in.Limit > MaxListLimit || in.Offset < 0 {
-		return nil, fmt.Errorf("limit must be 1 to %d and offset must be nonnegative", MaxListLimit)
+		return nil, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("limit must be 1 to %d and offset must be nonnegative", MaxListLimit), nil)
 	}
 	return url.Values{"limit": {strconv.Itoa(in.Limit)}, "offset": {strconv.Itoa(in.Offset)}}, nil
 }
@@ -212,7 +217,7 @@ func childPath(prefix routePrefix, id, suffix string) (requestPath, error) {
 	return path, err
 }
 
-func jsonBody(input any, omit ...string) ([]byte, error) {
+func jsonBody(input any, omit []string) ([]byte, error) {
 	raw, err := json.Marshal(input)
 	if err != nil || len(omit) == 0 {
 		return raw, err
@@ -304,7 +309,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	if nested != "" {
 		data, ok := response.Data.(map[string]any)
 		if !ok {
-			return agentOutput{}, fmt.Errorf("decode %s results: expected object", label)
+			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s results: expected object", label), nil)
 		}
 		total, _ := data["total"].(float64)
 		if pagination, ok := data["pagination"].(map[string]any); ok {
@@ -314,7 +319,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	}
 	items, ok := response.Data.([]any)
 	if !ok && response.Data != nil {
-		return agentOutput{}, fmt.Errorf("decode %s list: expected array", label)
+		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s list: expected array", label), nil)
 	}
 	limit, _ := strconv.Atoi(query.Get("limit"))
 	offset, _ := strconv.Atoi(query.Get("offset"))
@@ -328,7 +333,7 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 	for _, item := range items[:min(len(items), limit)] {
 		object, ok := item.(map[string]any)
 		if !ok {
-			return agentOutput{}, fmt.Errorf("decode %s item: expected object", label)
+			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode %s item: expected object", label), nil)
 		}
 		out = append(out, selectFields(object, fields))
 	}
@@ -362,7 +367,7 @@ func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, erro
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port status waiting_on error_message failure parameters_status"
+	fields := "id:run_id provider model node port status started_by waiting_on evicted_runs error_message failure parameters_status"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err
@@ -420,12 +425,12 @@ func (d dispatcher) download(ctx context.Context, in downloadInput) (agentOutput
 
 func (d dispatcher) cancelJob(ctx context.Context, in cancelInput) (agentOutput, error) {
 	if (in.JobID == "") == (in.DeploymentID == "") {
-		return agentOutput{}, fmt.Errorf("supply exactly one of job_id or deployment_id")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "supply exactly one of job_id or deployment_id", nil)
 	}
 	prefix, id := jobsRoute, in.JobID
 	if in.DeploymentID != "" {
 		if in.Node != "" {
-			return agentOutput{}, fmt.Errorf("deployment cancellation covers all its nodes; omit node")
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "deployment cancellation covers all its nodes; omit node", nil)
 		}
 		prefix, id = routePrefix(string(deploymentsRoute)+"/"), in.DeploymentID
 	}
@@ -468,7 +473,7 @@ func (d dispatcher) params(ctx context.Context, in paramsInput) (agentOutput, er
 
 func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, error) {
 	if in.Patch == nil {
-		return agentOutput{}, fmt.Errorf("patch must be a merge-patch object")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "patch must be a merge-patch object", nil)
 	}
 	q := url.Values{"node": {in.Node}, "model": {in.Model}}
 	if in.RestartAffected {
@@ -481,28 +486,90 @@ func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error)
 	if in.Node != "" {
 		in.Model += "@" + in.Node
 	}
-	if in.MaxTokens == 0 {
-		in.MaxTokens = DefaultChatTokens
+	tokens := ToolProbeTokens
+	if in.Tools {
+		in.Message = probeMessage
+	} else {
+		if in.Message == "" {
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "message is required for plain chat", nil)
+		}
+		if in.MaxTokens == 0 {
+			in.MaxTokens = DefaultChatTokens
+		}
+		if in.MaxTokens < 1 {
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "max_tokens must be positive", nil)
+		}
+		tokens = min(in.MaxTokens, MaxChatTokens)
 	}
-	if in.MaxTokens < 1 {
-		return agentOutput{}, fmt.Errorf("max_tokens must be positive")
+	body := map[string]any{"model": in.Model, "messages": []map[string]string{{"role": "user", "content": in.Message}}, "stream": false, "max_tokens": tokens}
+	if in.Tools {
+		// Required or named choices can bypass the engine's tool parser through guided decoding.
+		body["tool_choice"] = "auto"
+		body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
+			"name": probeFunction, "description": "Look up the current weather in a city.",
+			"parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"city"}},
+		}}}
 	}
 	var reply struct {
-		Model   string `json:"model"`
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage map[string]any `json:"usage"`
+		Model   string         `json:"model"`
+		Choices []chatChoice   `json:"choices"`
+		Usage   map[string]any `json:"usage"`
 	}
-	if err := d.call(ctx, request{method: http.MethodPost, path: chatRoute.path(), jsonBody: map[string]any{"model": in.Model, "messages": []map[string]string{{"role": "user", "content": in.Message}}, "stream": false, "max_tokens": min(in.MaxTokens, MaxChatTokens)}, contentType: "application/json"}, &reply); err != nil {
+	if err := d.call(ctx, request{method: http.MethodPost, path: chatRoute.path(), jsonBody: body, contentType: "application/json"}, &reply); err != nil {
 		return agentOutput{}, err
 	}
 	if len(reply.Choices) == 0 {
-		return agentOutput{}, fmt.Errorf("chat response has no choices; inspect zz_logs")
+		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "chat response has no choices; inspect zz_logs", nil)
 	}
-	return agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}, nil
+	out := agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}
+	if in.Tools {
+		out.fields["tool_call"], out.text = reply.Choices[0].probeResult()
+	}
+	return out, nil
+}
+
+type toolCallOutcome string
+
+const (
+	toolCallVerified      toolCallOutcome = "verified"
+	toolCallParserMissing toolCallOutcome = "parser_missing"
+	toolCallTruncated     toolCallOutcome = "truncated"
+	toolCallInconclusive  toolCallOutcome = "inconclusive"
+)
+
+type chatChoice struct {
+	FinishReason string `json:"finish_reason"`
+	Message      struct {
+		Content   string `json:"content"`
+		ToolCalls []struct {
+			Function struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			} `json:"function"`
+		} `json:"tool_calls"`
+	} `json:"message"`
+}
+
+func (choice chatChoice) probeResult() (toolCallOutcome, string) {
+	if choice.FinishReason == "length" {
+		return toolCallTruncated, "Tool probe truncated at its token budget; inspect zz_logs and the model publisher's reasoning settings, then probe again."
+	}
+	for _, call := range choice.Message.ToolCalls {
+		if call.Function.Name != probeFunction {
+			continue
+		}
+		var arguments string
+		var args map[string]json.RawMessage
+		var city string
+		// The OpenAI wire carries arguments as a JSON string; an object breaks SDK clients, so it does not verify.
+		if json.Unmarshal(call.Function.Arguments, &arguments) == nil && json.Unmarshal([]byte(arguments), &args) == nil && json.Unmarshal(args["city"], &city) == nil && strings.TrimSpace(city) != "" {
+			return toolCallVerified, "Tool calling verified by a structured probe call; use this model for tool requests."
+		}
+	}
+	if len(choice.Message.ToolCalls) == 0 && strings.Contains(choice.Message.Content, probeFunction) {
+		return toolCallParserMissing, "Tool probe appeared as text: set the provider's tool-calling parameters for this model with zz_params_set using the publisher's serving instructions, restart the run with zz_run_restart, then probe again."
+	}
+	return toolCallInconclusive, "Tool probe inconclusive; probe again or read the model publisher's model card for tool-calling support and serving instructions."
 }
 
 func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error) {
@@ -513,7 +580,7 @@ func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error)
 		in.Lines = DefaultLogLines
 	}
 	if in.Lines < 1 {
-		return agentOutput{}, fmt.Errorf("lines must be positive")
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "lines must be positive", nil)
 	}
 	q := url.Values{"follow": {"false"}, "lines": {strconv.Itoa(min(in.Lines, MaxLogLines))}}
 	if in.Grep != "" {

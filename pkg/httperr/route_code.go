@@ -1,8 +1,6 @@
 package httperr
 
-// RouteErrorCode is the closed-enum code set for cluster-routing failures,
-// i.e. the cases where the coordinator could not reach or understand an
-// upstream node. Each value is stable on the wire.
+// RouteErrorCode is the closed-enum code set for cluster routing and job lookup failures.
 //
 // The enum exists so a routing failure stays sanitized (no raw Go error
 // text reaches the client) while still being actionable: callers branch on
@@ -10,11 +8,19 @@ package httperr
 type RouteErrorCode string
 
 const (
+	CodeCapacityExceeded        RouteErrorCode = "capacity_exceeded"
+	CodeQueueWaitExpired        RouteErrorCode = "queue_wait_expired"
+	CodeReleaseManifestMissing  RouteErrorCode = "release_manifest_missing"
+	CodeProtocolCutoverRequired RouteErrorCode = "protocol_cutover_required"
+	// CodeJobNotFound means no local job exists and every peer confirmed absence.
+	CodeJobNotFound RouteErrorCode = "job_not_found"
+
 	// CodeModelNodeAmbiguous requires an explicit node for replicated remote models.
 	CodeModelNodeAmbiguous RouteErrorCode = "model_node_ambiguous"
 
 	// CodeNodeUnreachable is a transport failure against a named node: the
-	// node is offline, unpaired, or its cluster certificate is not valid.
+	// node is offline, unpaired, or its cluster certificate is not valid. Job
+	// lookup also uses it when a peer that may own the job did not answer.
 	CodeNodeUnreachable RouteErrorCode = "node_unreachable"
 
 	// CodeClusterUnavailable is a broadcast with no reachable peer, or a
@@ -32,4 +38,6 @@ const (
 	// CodeUpstreamShape is a successful transport whose body did not match
 	// the shape this endpoint expected, which signals peer version skew.
 	CodeUpstreamShape RouteErrorCode = "upstream_shape"
+
+	CodeUpstreamStreamInterrupted RouteErrorCode = "upstream_stream_interrupted"
 )

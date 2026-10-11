@@ -170,7 +170,7 @@ func (r *Registry) DeleteModelByNameAndSource(ctx context.Context, modelName, so
 	}
 
 	// A GGUF model is a weights variant: every shard of a split set goes.
-	if model.Format == metadata.FormatGGUF {
+	if model.Format == metadata.FormatGGUF && !model.Incomplete {
 		return r.deleteGGUFVariant(model.FullPath)
 	}
 

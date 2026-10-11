@@ -15,6 +15,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -65,9 +66,7 @@ func (*problemResponder) RequestTooLarge(c *gin.Context, detail string) {
 }
 
 func (*problemResponder) TooManyRequests(c *gin.Context, detail string, retryAfterSeconds int) {
-	if retryAfterSeconds > 0 {
-		c.Header("Retry-After", intSeconds(retryAfterSeconds))
-	}
+	httperr.SetRetryAfter(c.Writer.Header(), time.Duration(retryAfterSeconds)*time.Second)
 	RespondWithProblem(c, 429, "Too Many Requests", detail)
 }
 
@@ -90,6 +89,7 @@ func (*problemResponder) GatewayTimeout(c *gin.Context, detail string) {
 // WriteError renders e as problem+json, with e.Extra as extension
 // members.
 func (*problemResponder) WriteError(w http.ResponseWriter, req *http.Request, e httperr.Error) {
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	title := e.Title
 	if title == "" {
 		title = http.StatusText(e.Status)

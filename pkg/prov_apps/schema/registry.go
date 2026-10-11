@@ -80,10 +80,4 @@ func Lookup(provider, param string) (ParamShape, bool) {
 	return ParamShape{}, false
 }
 
-// KnownProvider reports whether the Go spine knows the provider at all.
-func KnownProvider(provider string) bool {
-	_, ok := Registry[provider]
-	return ok
-}
-
 func fptr(v float64) *float64 { return &v }

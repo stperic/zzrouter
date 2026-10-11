@@ -26,8 +26,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	anthropicproto "github.com/stperic/zzrouter/pkg/protocol/anthropic"
 	openaiproto "github.com/stperic/zzrouter/pkg/protocol/openai"
@@ -80,12 +80,6 @@ func newResponderSet() *responderSet {
 	}
 }
 
-// intSeconds renders a positive int as its decimal string form.
-// Shared between the three dialect responders for Retry-After
-// formatting. Kept in this file because it is the only spot where a
-// small numeric helper is used by more than one responder_*.go file.
-func intSeconds(n int) string { return strconv.Itoa(n) }
-
 func newOpenAIResponder() *openaiproto.Responder {
 	return openaiproto.New(
 		openaiproto.WithInternalLogger(func(reqID, detail string) {
@@ -119,4 +113,28 @@ func writeJSONBody(w http.ResponseWriter, status int, contentType string, body a
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
 	_, _ = w.Write(data)
+}
+
+func endBrokenStream(w http.ResponseWriter, req *http.Request, res wire.Result) {
+	e, failed := res.Failure()
+	if !failed {
+		return
+	}
+	ender, ok := w.(httperr.StreamEnder)
+	if !ok {
+		ender, ok = dialectOf(req).(httperr.StreamEnder)
+	}
+	if !ok {
+		panic(http.ErrAbortHandler)
+	}
+	if res.MidLine {
+		_, _ = w.Write([]byte("\n"))
+	}
+	ender.EndStream(w, e)
+}
+
+func failBrokenBody(w http.ResponseWriter, req *http.Request, res wire.Result) {
+	if e, failed := res.Failure(); failed {
+		dialectOf(req).WriteError(w, req, e)
+	}
 }

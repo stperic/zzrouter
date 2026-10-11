@@ -6,15 +6,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -27,6 +28,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const defaultEventChannelSize = 64
@@ -76,6 +78,7 @@ type ProviderAppManager struct {
 	// are dropped via the default branch in emitEvent.
 	auditEvents    chan Event
 	catalogChanged func()
+	publishCatalog func() error
 
 	// idleExpiry receives instance IDs when keep-alive timers fire.
 	// The idleReaper goroutine listens and auto-stops expired instances.
@@ -87,6 +90,10 @@ type ProviderAppManager struct {
 	startOnce      sync.Once
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+	// startsCtx is shutdownCtx's child for background on-demand starts, cancelled first by Stop.
+	startsCtx      context.Context
+	startsCancel   context.CancelFunc
+	onDemandStarts sync.WaitGroup
 
 	// parentCtx ferries WithParentContext's value across the option-
 	// loop boundary; consumed by NewProviderAppManager to seed
@@ -123,13 +130,12 @@ type ProviderAppManager struct {
 	// leaves a run's source unstated.
 	modelSource func(ctx context.Context, model string) string
 
-	// launchGroup coalesces concurrent LaunchInstance calls for the
-	// same (provider, model) so simultaneous POST /runs or /runs/load
-	// don't spawn racing instances. First caller runs the full launch
-	// flow; subsequent callers wait and receive the same *Instance.
-	// Key: "<provider>:<model>" (forbidden characters aren't possible
-	// in either field — validated upstream).
-	launchGroup singleflight.Group
+	// flights holds the start in flight per run key; flightsMu guards only the map.
+	flightsMu      sync.Mutex
+	flights        map[string]*flight
+	localCatalog   func(context.Context, string) (bool, error)
+	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
+	resolveBackend func(string) (*backend.Resolved, bool)
 
 	// nodename is this node's cluster name, used to resolve the node
 	// tiers of the parameter tree. Optional; nil means Tier 0 only.
@@ -137,10 +143,12 @@ type ProviderAppManager struct {
 
 	// localizeParams turns configured parameter values into what this
 	// node's engine is given. Optional; nil passes them through.
-	localizeParams    ParamLocalizer
-	runtimeChecks     install.RuntimeChecksResolver
-	installPolicyFile string
-	memoryBudget      func(provider string) (*schema.MemoryBudget, error)
+	localizeParams            ParamLocalizer
+	runtimeChecks             install.RuntimeChecksResolver
+	installPolicyFile         string
+	memoryBudget              func(provider string) (*schema.MemoryBudget, error)
+	memorySnapshot            func(context.Context) ([]gpu.MemoryDevice, error)
+	evictIdleOnMemoryPressure bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
 	memoryAdmission  chan struct{}
@@ -148,6 +156,11 @@ type ProviderAppManager struct {
 	services         map[string]*managedService
 	servicesStarted  atomic.Bool
 	servicesObserved chan struct{}
+	// sightings holds, per served provider, the models its daemon reported with no run on the last reconcile.
+	sightingsMu sync.Mutex
+	sightings   map[string]map[string]bool
+	// seams pause the start path where tests must interleave; nil in production.
+	seams struct{ beforeLaunch, processStarted, flightRemoved func() }
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -169,6 +182,21 @@ type Localized struct {
 
 // Option configures a ProviderAppManager.
 type Option func(*ProviderAppManager)
+
+// WithLocalCatalog supplies this node's catalog membership for base weights.
+func WithLocalCatalog(fn func(context.Context, string) (bool, error)) Option {
+	return func(m *ProviderAppManager) { m.localCatalog = fn }
+}
+
+// WithStartObserver records only actual cold-start attempts.
+func WithStartObserver(fn func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))) Option {
+	return func(m *ProviderAppManager) { m.observeStart = fn }
+}
+
+// WithBackendResolver supplies the target for providers with their own endpoint.
+func WithBackendResolver(fn func(string) (*backend.Resolved, bool)) Option {
+	return func(m *ProviderAppManager) { m.resolveBackend = fn }
+}
 
 // WithHTTPClient sets a shared HTTP client for all provider connections.
 func WithHTTPClient(client *http.Client) Option {
@@ -203,14 +231,19 @@ func WithModelValidator(fn func(context.Context, string) error) Option {
 
 // ValidateModel checks a name before any canonicalization or warm reuse.
 func (m *ProviderAppManager) ValidateModel(ctx context.Context, model string) error {
-	if m.validateModel != nil {
-		if err := m.validateModel(ctx, model); err != nil {
-			if errors.Is(err, config.ErrModelNameConflict) {
-				return err
-			}
-			slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)
-		}
+	if m.validateModel == nil {
+		return nil
 	}
+	return AdmissionRefusal(model, m.validateModel(ctx, model))
+}
+
+// AdmissionRefusal keeps the admission errors that refuse a model name;
+// any other is missing evidence, and admission fails open on it.
+func AdmissionRefusal(model string, err error) error {
+	if err == nil || errors.Is(err, config.ErrModelNameConflict) || errors.Is(err, ErrModelIncomplete) {
+		return err
+	}
+	slog.Warn("Model admission evidence unavailable; continuing", "model", model, "error", err)
 	return nil
 }
 
@@ -292,6 +325,11 @@ func WithMemoryBudget(resolve func(provider string) (*schema.MemoryBudget, error
 	return func(m *ProviderAppManager) { m.memoryBudget = resolve }
 }
 
+// WithIdleMemoryEviction enables node-local reclamation of idle GPU runs.
+func WithIdleMemoryEviction(enabled bool) Option {
+	return func(m *ProviderAppManager) { m.evictIdleOnMemoryPressure = enabled }
+}
+
 // NewProviderAppManager creates a new manager from apps config.
 func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*ProviderAppManager, error) {
 	m := &ProviderAppManager{
@@ -301,7 +339,10 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		idleExpiry:      make(chan string, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
+		memorySnapshot:  gpu.MemorySnapshotContext,
 		services:        make(map[string]*managedService),
+		flights:         make(map[string]*flight),
+		sightings:       make(map[string]map[string]bool),
 	}
 
 	// Options first so WithParentContext can supply the ctx parent.
@@ -313,9 +354,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
-	m.shutdownCtx = ctx
-	m.shutdownCancel = cancel
+	m.setShutdownCtx(parent)
 
 	// Defaults for anything not set by options
 	if m.httpClient == nil {
@@ -330,7 +369,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	// Create port pool manager
 	portMgr, err := port.NewAppPoolManager(appsConfig)
 	if err != nil {
-		cancel()
+		m.shutdownCancel()
 		return nil, err
 	}
 	m.ports = portMgr
@@ -407,17 +446,22 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		// Replace the background context with the caller's context so that
 		// the server's shutdown propagates to the manager's goroutines.
 		m.shutdownCancel()
-		childCtx, cancel := context.WithCancel(ctx)
-		m.shutdownCtx = childCtx
-		m.shutdownCancel = cancel
+		m.setShutdownCtx(ctx)
+		childCtx := m.shutdownCtx
 
 		go m.eventLoop()
 		go m.idleReaper()
 		m.servicesObserved = make(chan struct{})
 		m.servicesStarted.Store(true)
 		go m.observeServices(childCtx)
-		m.reconcileServices()
+		m.reconcileServices(false)
 	})
+}
+
+// setShutdownCtx derives the manager's lifetime context, and the background-start context under it.
+func (m *ProviderAppManager) setShutdownCtx(parent context.Context) {
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)    //nolint:gosec // G118: Stop calls the stored cancel
+	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx) //nolint:gosec // G118: Stop calls the stored cancel
 }
 
 // eventLoop drains the audit channel and logs all provider events.
@@ -469,20 +513,20 @@ func (m *ProviderAppManager) idleReaper() {
 			if !exists {
 				continue
 			}
-			// Only stop if still running and idle (re-check in case activity arrived)
-			if !inst.IsRunning() || inst.GetActiveRequests() > 0 || !inst.ShouldUnload() {
+			activity := inst.GetLastActivity()
+			keepAlive, lastActivity := inst.IdleSnapshot()
+			if !m.evictable(inst) || !idleExpired(keepAlive, lastActivity, utils.Now()) {
+				continue
+			}
+			release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: inst, Activity: activity}})
+			if !claimed {
 				continue
 			}
 			slog.Info("auto-stopping idle instance", "instance", id, "provider", inst.Provider, "model", inst.Model, "keep_alive", inst.GetKeepAlive())
-			// Bound the StopInstance call: a hung subprocess shouldn't
-			// wedge the reaper. Derive from shutdownCtx so a manager
-			// Stop also unblocks (the previous Background ctx couldn't
-			// be cancelled by anything).
-			stopCtx, stopCancel := context.WithTimeout(m.shutdownCtx, constants.ClusterActionTimeout)
-			if err := m.StopInstance(stopCtx, id); err != nil {
+			if err := m.stopClaimedIdle(m.shutdownCtx, inst); err != nil {
 				slog.Warn("failed to auto-stop idle instance", "instance", id, "error", err)
 			}
-			stopCancel()
+			release()
 		case <-m.shutdownCtx.Done():
 			return
 		}
@@ -492,6 +536,11 @@ func (m *ProviderAppManager) idleReaper() {
 // WithCatalogChanged invalidates serving metadata after lifecycle changes.
 func WithCatalogChanged(fn func()) Option {
 	return func(m *ProviderAppManager) { m.catalogChanged = fn }
+}
+
+// WithCatalogPublication supplies the publication a run job completes after.
+func WithCatalogPublication(fn func() error) Option {
+	return func(m *ProviderAppManager) { m.publishCatalog = fn }
 }
 
 func (m *ProviderAppManager) logEvent(e Event) {
@@ -724,12 +773,16 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 	fp := fresh.Fingerprint()
 	m.mu.Lock()
 	unchanged := fresh != nil && m.lastReloadFP == fp
+	before := m.appsConfig
 	m.appsConfig = fresh
 	m.lastReloadFP = fp
 	m.mu.Unlock()
+	if !unchanged {
+		m.retireUnserved(before)
+	}
 
 	if fresh == nil {
-		m.reconcileServices()
+		m.reconcileServices(false)
 		return config.DispositionApplied
 	}
 	if unchanged {
@@ -751,7 +804,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 
 	// 3. Version cache: detect versions for newly enabled providers
 	m.syncVersions(fresh)
-	m.reconcileServices()
+	m.reconcileServices(false)
 
 	return config.DispositionApplied
 }
@@ -828,6 +881,43 @@ func (m *ProviderAppManager) Protocol(name string) (protocol.FullProvider, bool)
 	return p, true
 }
 
+// servedTarget is daemonOf for an enabled served provider, the only one a start or a reconcile uses.
+func (m *ProviderAppManager) servedTarget(name string) (protocol.ModelLoader, protocol.Target, bool) {
+	_, cfg, found := m.resolveConfigKey(name)
+	loader, resolved, ok := m.daemonOf(name)
+	if !found || !ok || !cfg.IsEnabled() || Lifecycle(cfg) != LifecycleServed {
+		return nil, protocol.Target{}, false
+	}
+	return loader, protocol.TargetOf(resolved), true
+}
+
+// daemonOf is how this node reaches a provider's daemon, from its config, enabled or not.
+func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backend.Resolved, bool) {
+	key, cfg, found := m.resolveConfigKey(name)
+	p := m.protocols.Of(key, m.AppsConfig().Find(key))
+	loader, loads := p.(protocol.ModelLoader)
+	resolved, ok := backend.Target(&cfg)
+	return loader, resolved, found && loads && ok
+}
+
+// providerLists is a provider without runs answering whether it serves model; unreachable is not "absent".
+func (m *ProviderAppManager) providerLists(ctx context.Context, provider, model string) (listed, reachable bool) {
+	p, ok := m.Protocol(provider)
+	if !ok || m.resolveBackend == nil {
+		return false, false
+	}
+	resolved, ok := m.resolveBackend(provider)
+	if !ok {
+		return false, false
+	}
+	models, err := p.ListModels(ctx, protocol.TargetOf(resolved))
+	if err != nil {
+		slog.Debug("Provider model list unavailable", "provider", provider, "error", err)
+		return false, false
+	}
+	return slices.ContainsFunc(models, func(info protocol.ModelInfo) bool { return info.Name == model || info.FullID == model }), true
+}
+
 // --- Version cache ---
 
 // ProviderVersion returns the cached version for a provider, or "unknown".
@@ -868,13 +958,25 @@ func (m *ProviderAppManager) GetInstance(id string) (*instance.Instance, bool) {
 	return m.instances.Get(id)
 }
 
-// GetInstanceByModel returns the instance serving a model. The name is
-// canonicalized the same way a launch canonicalizes it, so a model looked
-// up by the alias it was launched with resolves to the instance that
-// launch created. Without that, a caller who launches by repo id can
-// never find the run again: the registry holds it under the local name.
-func (m *ProviderAppManager) GetInstanceByModel(model string) (*instance.Instance, bool) {
-	return m.instances.GetByModel(m.CanonicalModelName(model))
+// GetInstanceByModel returns the run a start of model on provider and endpoint would reuse.
+func (m *ProviderAppManager) GetInstanceByModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
+	if key, svc, ok := m.resolveConfigKey(provider); ok {
+		return m.instances.GetByModelEndpoint(m.runModel(key, svc, model), string(runEndpoint(svc, endpoint)))
+	}
+	model = m.CanonicalModelName(model)
+	if run, ok := m.instances.GetByModelEndpoint(model, string(EndpointOrDefault(endpoint))); ok {
+		return run, true
+	}
+	// No provider named: a served daemon lists the model under its own name.
+	var run *instance.Instance
+	found := false
+	m.AppsConfig().RangeApps(func(key string, svc config.ServiceConfig) bool {
+		if Lifecycle(svc) == LifecycleServed {
+			run, found = m.instances.GetByModel(m.daemonName(key, svc, model))
+		}
+		return !found
+	})
+	return run, found
 }
 
 // CanonicalModelName maps a caller-supplied model name onto the name this

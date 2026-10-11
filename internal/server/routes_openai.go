@@ -73,26 +73,11 @@ func (s *Server) registerOpenAIRoutes() int {
 		RequestIDMiddleware(),
 		s.auth.OptionalAuthMiddleware(),
 	)
-	// Per-route idempotency middleware for the inference paths.
-	// Each route gets its own store so a client reusing the same
-	// Idempotency-Key across different routes (e.g. /chat/completions
-	// then /completions) doesn't replay the wrong route's response —
-	// same key + different route = different operation.
-	// Streaming bodies bypass via skipIdempotencyOnStreamingBody (the
-	// cache would otherwise buffer the entire SSE chunk sequence and
-	// replay it instantly, breaking live-stream timing).
-	newInferenceIdemMiddleware := func() gin.HandlerFunc {
-		return newIdempotencyStore().middlewareWithBodySkip(skipIdempotencyOnStreamingBody)
-	}
 	{
 		// Core inference endpoints. Idempotency-Key dedup closes the
 		// agent-retry double-billing risk on non-streaming requests.
-		openai.POST("/chat/completions",
-			newInferenceIdemMiddleware(),
-			ih.handleChatCompletions)
-		openai.POST("/completions",
-			newInferenceIdemMiddleware(),
-			ih.handleCompletions)
+		s.idempotent(openai, "POST", "/chat/completions", skipIdempotencyOnStreamingBody, ih.handleChatCompletions)
+		s.idempotent(openai, "POST", "/completions", skipIdempotencyOnStreamingBody, ih.handleCompletions)
 		openai.GET("/models", mh.handleModels)
 		openai.GET("/models/*model", mh.handleModelByID)
 		openai.DELETE("/models/*model", mh.handleDeleteModelByID)
@@ -107,9 +92,7 @@ func (s *Server) registerOpenAIRoutes() int {
 
 		// JSON-body pass-through (model field routing). /responses
 		// also accepts stream:true bodies; same predicate applies.
-		openai.POST("/responses",
-			newInferenceIdemMiddleware(),
-			s.handleResponses)
+		s.idempotent(openai, "POST", "/responses", skipIdempotencyOnStreamingBody, s.handleResponses)
 		openai.POST("/audio/speech", ih.handleAudioSpeech)
 
 		// Multipart pass-through. All chat-default — these endpoints route

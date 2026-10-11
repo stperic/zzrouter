@@ -28,7 +28,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
-	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -101,15 +100,14 @@ func validateEnvValue(key, value string) error {
 // ParamsExecutor handles direct local parameter operations.
 // All config mutations are serialized by the AppsConfigStore.
 type ParamsExecutor struct {
+	publishCatalog   func() error
 	installAuthority func(context.Context, string, pkgConfig.ServiceConfig) error
 	appsConfig       func() *pkgConfig.AppsConfig
-	backend          *backend.Resolver
 	configStore      *pkgConfig.AppsConfigStore
 	nodename         func() string
 	knownNodes       func() map[string]bool
 	router           routing.Router
 	services         providerServices
-	protocol         func(provider string) (protocol.FullProvider, bool)
 	httpClient       *http.Client
 	isWorker         func() bool   // nil on standalone
 	coordURL         func() string // coordinator base URL on workers; "" when unknown
@@ -137,7 +135,6 @@ func NewParamsExecutor(
 	knownNodes func() map[string]bool,
 	router routing.Router,
 	services providerServices,
-	protocol func(provider string) (protocol.FullProvider, bool),
 	httpClient *http.Client,
 	isWorker func() bool,
 	coordURL func() string,
@@ -148,13 +145,11 @@ func NewParamsExecutor(
 
 	return &ParamsExecutor{
 		appsConfig:  appsConfig,
-		backend:     backend.NewResolver(appsConfig),
 		configStore: configStore,
 		nodename:    nodename,
 		knownNodes:  knownNodes,
 		router:      router,
 		services:    services,
-		protocol:    protocol,
 		httpClient:  httpClient,
 		isWorker:    isWorker,
 		coordURL:    coordURL,
@@ -576,6 +571,9 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 	// fan-out by the time the mutation returns, so this waits on it
 	// rather than starting anything.
 	sync := e.awaitSync.await(c)
+	if !publishOr503(c, e.publishCatalog) {
+		return
+	}
 	runs := e.runs.report(c.Request.Context(), provider, sync, restart)
 
 	// Respond with refreshed resolved view + new ETag.
@@ -973,31 +971,6 @@ func (e *ParamsExecutor) RetiredHandler(c *gin.Context) {
 	}
 	c.Header("Content-Type", "application/problem+json")
 	c.JSON(http.StatusGone, problem)
-}
-
-func (e *ParamsExecutor) listRunningModelNames(ctx context.Context, provider string) []string {
-	if e.protocol == nil {
-		return nil
-	}
-	providerImpl, ok := e.protocol(provider)
-	if !ok {
-		return nil
-	}
-	resolved, ok := e.backend.Resolve(provider)
-	if !ok {
-		return nil
-	}
-	tctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	models, err := providerImpl.ListRunningModels(tctx, protocol.TargetOf(resolved))
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(models))
-	for _, m := range models {
-		names = append(names, m.Name)
-	}
-	return names
 }
 
 // checkHealth probes the provider's own endpoint, sending the credential

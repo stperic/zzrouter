@@ -105,10 +105,10 @@ func TestRuntimeProbeUsesCanonicalEnvironmentGuard(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "python")
 	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nprintf 'ZZROUTER_RUNTIME_CHECKS=[{\"name\":\"secret\",\"passed\":true,\"actual\":\"%s\",\"reason\":\"\"}]\\n' \"${ZZROUTER_TEST_SERVER_SECRET:-absent}\"\n"), 0o700))
 	checks := schema.RuntimeChecks{Checks: []string{"pip_check"}, Kernels: "unknown"}
-	result := runRuntimeChecks(t.Context(), path, checks, nil)
+	result := runRuntimeChecksSnapshot(t.Context(), path, checks, nil, nil)
 	require.Len(t, result, 1)
 	assert.Equal(t, "absent", result[0].Actual)
-	result = runRuntimeChecks(t.Context(), path, checks, map[string]string{"LD_PRELOAD": "/not/executed"})
+	result = runRuntimeChecksSnapshot(t.Context(), path, checks, map[string]string{"LD_PRELOAD": "/not/executed"}, nil)
 	require.Len(t, result, 1)
 	assert.False(t, result[0].Passed)
 	assert.Contains(t, result[0].Reason, "LD_PRELOAD")

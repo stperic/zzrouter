@@ -9,9 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 )
 
-// What a launch stores is what a restart replays. LaunchInstance keeps
+// What a launch stores is what a restart replays. EnsureRun keeps
 // the parameters it was handed as the request tier and re-reads tiers
 // 0-3 from current config on every relaunch, which is what lets a
 // restart pick up a parameter change at all
@@ -24,7 +25,7 @@ import (
 // exactly that — it walked the tiers, then passed the merged map as the
 // request — so a run started this way could never see a later edit,
 // however many times it was restarted.
-func TestBuildInstanceConfig_HandsTheManagerTheCallersTierOnly(t *testing.T) {
+func TestEnsureRun_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "tier-model", "gguf")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
@@ -51,13 +52,13 @@ func TestBuildInstanceConfig_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
 
-	res, err := server.buildInstanceConfig(t.Context(), "tier-model", provider, "chat",
-		map[string]string{"seed": "42"}, nil)
+	server.providers.appMgr.ReloadConfig(server.appsConfig)
+	res, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: "tier-model", Provider: provider, Parameters: map[string]string{"seed": "42"}})
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]string{"seed": "42"}, res.LaunchReq.Parameters,
+	assert.Equal(t, map[string]string{"seed": "42"}, res.Run.SnapshotConfig().Parameters,
 		"the launch request must carry the caller's parameters and nothing else; "+
 			"a configured value in here is replayed on every restart as the caller's own")
-	assert.NotContains(t, res.LaunchReq.Parameters, "ctx-size",
-		"the tier tree is resolved inside LaunchInstance, once")
+	assert.NotContains(t, res.Run.SnapshotConfig().Parameters, "ctx-size",
+		"the tier tree is resolved inside EnsureRun, once")
 }

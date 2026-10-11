@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -868,6 +869,9 @@ func (w *responsesStreamWriter) WriteHeader(code int) {
 }
 
 func (w *responsesStreamWriter) Write(p []byte) (int, error) {
+	if w.completedSent {
+		return len(p), nil
+	}
 	if !w.headerWritten {
 		w.WriteHeader(http.StatusOK)
 	}
@@ -895,23 +899,7 @@ func (w *responsesStreamWriter) Write(p []byte) (int, error) {
 // emitFailure emits a terminal response.failed event with a stable
 // machine-readable code. Idempotent via completedSent.
 func (w *responsesStreamWriter) emitFailure(code string) {
-	if w.completedSent {
-		return
-	}
-	w.completedSent = true
-	failed := w.envelopeEvent("failed")
-	setEnvelopeField(failed, "error", map[string]any{
-		"code":    code,
-		"message": "translation shim aborted: " + code,
-	})
-	if zz := extractZzFromUsage(w.finalUsage); zz != nil {
-		setEnvelopeField(failed, "zzrouter", zz)
-	}
-	w.emitEvent("response.failed", failed)
-	_, _ = w.ResponseWriter.Write([]byte("data: [DONE]\n\n"))
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	w.endWithError(map[string]any{"code": code, "message": "translation shim aborted: " + code})
 }
 
 // emitUpstreamError translates a chat-side mid-stream error frame into
@@ -924,10 +912,6 @@ func (w *responsesStreamWriter) emitFailure(code string) {
 // for .added events. finalize() honours this by early-returning on
 // completedSent.
 func (w *responsesStreamWriter) emitUpstreamError(raw json.RawMessage) {
-	if w.completedSent {
-		return
-	}
-	w.completedSent = true
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
 		obj = map[string]any{
@@ -935,16 +919,29 @@ func (w *responsesStreamWriter) emitUpstreamError(raw json.RawMessage) {
 			"message": "upstream emitted an unparseable error frame",
 		}
 	}
+	w.endWithError(obj)
+}
+
+func (w *responsesStreamWriter) endWithError(obj map[string]any) {
+	if w.completedSent {
+		return
+	}
+	w.completedSent = true
+	w.buf.Reset()
 	failed := w.envelopeEvent("failed")
 	setEnvelopeField(failed, "error", obj)
 	if zz := extractZzFromUsage(w.finalUsage); zz != nil {
 		setEnvelopeField(failed, "zzrouter", zz)
 	}
 	w.emitEvent("response.failed", failed)
-	_, _ = w.ResponseWriter.Write([]byte("data: [DONE]\n\n"))
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// EndStream emits a failed Responses envelope through the existing terminal gate.
+func (w *responsesStreamWriter) EndStream(_ http.ResponseWriter, e httperr.Error) {
+	w.endWithError(map[string]any{"type": e.Type, "code": e.Code, "message": e.Message})
 }
 
 // drainFrames pulls complete `\n\n`-terminated SSE frames out of the
@@ -1004,6 +1001,9 @@ type chatChunk struct {
 }
 
 func (w *responsesStreamWriter) handleChunk(payload []byte) {
+	if w.completedSent {
+		return
+	}
 	var chunk chatChunk
 	if err := json.Unmarshal(payload, &chunk); err != nil {
 		return
@@ -1268,9 +1268,8 @@ func (w *responsesStreamWriter) emitEvent(name string, payload map[string]any) {
 	}
 }
 
-// Close flushes any buffered SSE frame and emits the terminal
-// response.completed event when the upstream forgot to send `[DONE]`.
-// Idempotent.
+// Close flushes any buffered SSE frame and completes a turn the relay judged
+// complete without `[DONE]`; a cut one already got response.failed. Idempotent.
 func (w *responsesStreamWriter) Close() {
 	if w.buf.Len() > 0 {
 		w.buf.Write([]byte("\n\n"))

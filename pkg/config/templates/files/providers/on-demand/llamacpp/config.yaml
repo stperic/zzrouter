@@ -120,7 +120,7 @@ capabilities:
   default_variant: "Q4_K_M"
   # Wire endpoints llama-server natively serves. /v1/responses absent :
   # see ggml-org/llama.cpp#14702. Router uses translation shim for it.
-  wire_endpoints: [chat_completions, completions, embeddings, messages, responses_compat]
+  wire_endpoints: [chat_completions, completions, embeddings, messages]
 
 defaults:
   parameters:
@@ -141,6 +141,37 @@ defaults:
         reranking: "true"
 
 runtime:
+  failure_patterns:
+    - pattern: "cudaMalloc failed: out of memory"
+      isRegex: false
+      class: memory
+    - pattern: "(?i)failed to allocate[^\\n]*buffer"
+      isRegex: true
+      class: memory
+    - pattern: "(?s)Jinja Exception: (.*)"
+      isRegex: true
+      class: chat_template_rejected
+    - pattern: "image input is not supported"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "image input not supported"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "does not support image input"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "does not support images"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "images are not supported"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "image inputs are not supported"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "model does not support multimodal requests"
+      isRegex: false
+      class: unsupported_input
   port_range: [8080, 8089]
   base_port: 8080
   keep_alive: 30m
@@ -184,7 +215,5 @@ runtime:
             isRegex: false
         failure:
           - pattern: "error:"
-            isRegex: false
-          - pattern: "out of memory"
             isRegex: false
       timeout: 120s

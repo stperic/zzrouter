@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,6 +16,37 @@ func names(vs []Variant) []string {
 		out[i] = v.Name
 	}
 	return out
+}
+
+func TestComplete_IndexedWeightsAndFeatures(t *testing.T) {
+	for _, ext := range []string{"safetensors", "bin"} {
+		t.Run(ext, func(t *testing.T) {
+			dir := t.TempDir()
+			first, second := "model-00001."+ext, "model-00002."+ext
+			index := "model." + ext + ".index.json"
+			require.NoError(t, os.WriteFile(filepath.Join(dir, first), []byte("weights"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, index), []byte(`{"weight_map":{"a":"`+first+`","b":"`+second+`"}}`), 0o600))
+			complete, err := Complete(dir)
+			require.NoError(t, err)
+			assert.False(t, complete)
+			complete, err = Complete(filepath.Join(dir, first))
+			require.NoError(t, err)
+			assert.False(t, complete)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, second), []byte("weights"), 0o600))
+			complete, err = Complete(dir)
+			require.NoError(t, err)
+			assert.True(t, complete)
+			require.NoError(t, integrity.RecordFiles(dir, "org/model", "", integrity.FileChecksum{RelativePath: second, Feature: "vision", Size: 7}))
+			complete, err = Complete(dir)
+			require.NoError(t, err)
+			assert.False(t, complete, "feature files cannot supply a required weights shard")
+		})
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "weights.npz"), []byte("weights"), 0o600))
+	complete, err := Complete(dir)
+	require.NoError(t, err)
+	assert.True(t, complete)
 }
 
 // A split GGUF is one variant, in shard order, whether it sits at the top
@@ -96,4 +128,14 @@ func TestVariantOf(t *testing.T) {
 
 	_, ok = VariantOf(filepath.Join(dir, "m-q8-00001-of-00002.gguf"))
 	assert.False(t, ok)
+}
+
+func TestWeightsExcludesFeaturesAndMetadata(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.safetensors", "b.safetensors", "projector.safetensors", "config.json", "tokenizer.json"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("contents"), 0600))
+	}
+	files, err := Weights(dir, []string{"projector.safetensors"})
+	require.NoError(t, err)
+	require.Equal(t, []File{{Path: "a.safetensors", Size: 8}, {Path: "b.safetensors", Size: 8}}, files)
 }

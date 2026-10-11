@@ -110,7 +110,7 @@ capabilities:
   priority: 3
   # Ollama exposes /v1/chat/completions, /v1/completions, /v1/embeddings
   # (and its native /api/* surface). No /v1/responses today.
-  wire_endpoints: [chat_completions, completions, embeddings, responses_compat]
+  wire_endpoints: [chat_completions, completions, embeddings]
 discovery:
   # LOAD-BEARING: this block is the only discovery.detection rule the
   # runtime still reads. zzRouter's generic provider-discovery engine was
@@ -144,6 +144,22 @@ defaults:
     OLLAMA_NUM_PARALLEL: "2"
 
 runtime:
+  failure_patterns:
+    - pattern: "(?i)model requires more system memory[^\\n]*than is available"
+      isRegex: true
+      class: memory
+    - pattern: "cudaMalloc failed: out of memory"
+      isRegex: false
+      class: memory
+    - pattern: "(?i)failed to allocate[^\\n]*buffer"
+      isRegex: true
+      class: memory
+    - pattern: "this model does not support images"
+      isRegex: false
+      class: unsupported_input
+    - pattern: "does not support tools"
+      isRegex: false
+      class: tool_calling_not_enabled
   endpoint: http://localhost:11434
   model_url: "https://ollama.com/library/%s"
   # none: the daemon takes no credential, so a caller's zzRouter key stops

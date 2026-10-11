@@ -457,7 +457,7 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 	if resp.StatusCode >= 400 {
 		// Aggregator collapses to the inner body when all peers fail; surface as Problem Details rather than 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	var nodesData struct {

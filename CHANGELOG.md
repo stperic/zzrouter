@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Add optional `readiness_probe.stall_timeout` to detect silent engine starts.
+  vLLM now allows 900s overall and fails after 240s without output; existing
+  installs receive these values through managed provider reconciliation.
+- Cluster protocol and minimum advance from 2 to 3: older workers reject
+  `readiness_probe.stall_timeout` during strict provider configuration loading.
+  Upgrade all peers together following
+  [the protocol maintenance procedure](docs/protocol_versioning.md).
+
+- Add opt-in node GPU memory reclamation through
+  `gpu.evict_idle_on_memory_pressure` in `node.yaml` (default off). Launches that
+  cannot fit stop eligible idle runs in activity order, wait briefly for memory
+  release, and retry admission once. Keep-alive expiry shares the eligibility
+  check and cannot claim a run with an active lease.
+
+- Derive Messages and Responses translations for all providers declaring
+  Chat Completions without the corresponding native API. Shipped provider
+  configs now declare native endpoints only, and reconciliation carries that to
+  existing installs. An explicit `*_compat` entry still loads and means the same
+  thing. Catalogs and running snapshots report the same effective endpoints.
+- Provider-declared engine failure classes now cover startup, process exit and
+  inference. Memory exhaustion returns 409 `out_of_range`; input, template and
+  tool-calling refusals return their specific 400 codes. Generic server errors
+  keep their status. Existing installs receive the declarations through reconcile.
+- Cluster protocol and minimum advance from 1 to 2: older provider schemas
+  reject `runtime.failure_patterns`. Upgrade all peers together following
+  [the protocol maintenance procedure](docs/protocol_versioning.md).
+
 - Removed `model_defaults`, the release-managed per-model-family tier. No
   release shipped data in it after 0.1.0. Per-family settings belong in the
   operator's `models` tier, which accepts glob patterns. `/resolved` no longer

@@ -39,7 +39,7 @@ func NewOpenAIProvider(name string, defaultPort int, protocol string, httpClient
 		providerType: utils.NormalizeAppType(name),
 		defaultPort:  defaultPort,
 		httpClient:   httpClient,
-		connector:    connectivity.NewProviderConnector(),
+		connector:    connectivity.NewProviderConnector(httpClient.Transport),
 		protocol:     protocol,
 	}
 }
@@ -101,27 +101,6 @@ func (p *OpenAIProvider) ListModels(ctx context.Context, t Target) ([]ModelInfo,
 		})
 	}
 	return models, nil
-}
-
-func (p *OpenAIProvider) ListRunningModels(_ context.Context, _ Target) ([]RunningModelInfo, error) {
-	return []RunningModelInfo{}, nil
-}
-
-func (p *OpenAIProvider) LoadModel(ctx context.Context, t Target, model string, _ map[string]string) error {
-	models, err := p.ListModels(ctx, t)
-	if err != nil {
-		return err
-	}
-	for _, m := range models {
-		if m.Name == model || m.FullID == model {
-			return nil
-		}
-	}
-	return fmt.Errorf("model %q not found", model)
-}
-
-func (p *OpenAIProvider) UnloadModel(_ context.Context, _ Target, _ string) error {
-	return fmt.Errorf("%s: model unloading not implemented", p.providerType)
 }
 
 func (p *OpenAIProvider) DeleteModel(_ context.Context, _ Target, _ string) error {

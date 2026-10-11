@@ -6,12 +6,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // ReadinessProbe defines how to determine if a process is ready.
 type ReadinessProbe struct {
-	LogPatterns LogPatterns   `yaml:"logPatterns" json:"log_patterns"`
-	Timeout     time.Duration `yaml:"timeout" json:"timeout"`
+	FailureClassifier *httperr.Classifier `yaml:"-" json:"-"`
+	LogPatterns       LogPatterns         `yaml:"logPatterns" json:"log_patterns"`
+	StallTimeout      time.Duration       `yaml:"stall_timeout,omitempty" json:"stall_timeout,omitempty"`
+	Timeout           time.Duration       `yaml:"timeout" json:"timeout"`
 
 	// Serve, when set, is the authority on readiness: log patterns say the
 	// process started, this says it can serve. Engines that open their
@@ -49,6 +53,9 @@ func (rp *ReadinessProbe) Validate() error {
 	}
 	if rp.Serve != nil && rp.Serve.Path == "" {
 		return fmt.Errorf("readiness serve check must have a path")
+	}
+	if rp.StallTimeout < 0 {
+		return fmt.Errorf("readiness probe stall timeout must be non-negative")
 	}
 	if rp.Timeout <= 0 {
 		return fmt.Errorf("readiness probe timeout must be positive")

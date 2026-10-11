@@ -24,7 +24,7 @@ import (
 
 // chunkedSuccessRemote returns a stub worker that replies with a
 // chunked NDJSON success frame — the same encoding the worker's gin
-// writer produces when streamResponseWithFlush relays a non-streaming
+// writer produces when writeOllamaResponse relays a non-streaming
 // Ollama daemon response. This is the shape that pre-fix coord ate.
 func chunkedSuccessRemote(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
@@ -60,8 +60,8 @@ func TestPullClusterRoute_RelaysSuccessFrame(t *testing.T) {
 			require.Equal(t, "worker-1", node)
 			return remote.URL, nil
 		},
-		getMTLSClient:        func() *http.Client { return http.DefaultClient },
-		invalidateModelCache: func() { invalidates.Add(1) },
+		getMTLSClient:  func() *http.Client { return http.DefaultClient },
+		publishCatalog: func() error { invalidates.Add(1); return nil },
 	}
 
 	body := []byte(`{"model":"smollm:135m@worker-1","stream":false}`)
@@ -115,7 +115,7 @@ func TestPullClusterRoute_NoInvalidateOn4xx(t *testing.T) {
 		httpStreamingClient:   http.DefaultClient,
 		getClusterNodeMTLSURL: func(string) (string, error) { return remote.URL, nil },
 		getMTLSClient:         func() *http.Client { return http.DefaultClient },
-		invalidateModelCache:  func() { invalidates.Add(1) },
+		publishCatalog:        func() error { invalidates.Add(1); return nil },
 	}
 
 	body := []byte(`{"model":"nope:1b@worker-1"}`)

@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -60,15 +61,7 @@ const (
 const ManifestFileName = ".zzrouter-manifest.json"
 
 // partialSuffix marks a file still being downloaded into a model directory.
-const partialSuffix = ".zzpart"
-
-// CreatePartial creates the file a download writes dest into until it is
-// complete. It sits beside dest, so the final rename never crosses a
-// filesystem, and its name is unique, so two downloads of one file never
-// write into each other.
-func CreatePartial(dest string) (*os.File, error) {
-	return os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*"+partialSuffix)
-}
+const partialSuffix = download.PartialSuffix
 
 // IsBookkeeping reports whether name is the manifest (or a write of it) or
 // a download in progress, which no walk of a model directory counts as
@@ -767,7 +760,8 @@ func (v *IntegrityVerifier) VerifyModel(ctx context.Context, modelPath string) (
 
 // VerifyAndCopy verifies a model from source, copies to destination, and verifies the copy.
 // This is the zero-trust copy operation: verify source → copy → verify destination.
-// The context can be used to cancel the operation.
+// The context can be used to cancel the operation. include, when non-nil,
+// selects the manifest files to check; nil checks every file.
 func (v *IntegrityVerifier) VerifyAndCopy(ctx context.Context, srcPath, dstPath string) (*VerifyResult, error) {
 	// Step 1: Verify source
 	srcResult, err := v.VerifyModel(ctx, srcPath)
@@ -837,13 +831,14 @@ func (v *IntegrityVerifier) VerifyAndCopy(ctx context.Context, srcPath, dstPath 
 
 // QuickVerify performs a fast verification using file metadata only (no hashing).
 // Use this for frequent checks; use VerifyModel for thorough verification.
-// The context can be used to cancel the operation.
+// The context can be used to cancel the operation. include, when non-nil,
+// selects the manifest files to check; nil checks every file.
 //
 // Returns:
 //   - (true, nil): quick verification passed
 //   - (false, nil): verification failed (missing file, size mismatch, etc.)
 //   - (false, error): a system-level failure occurred
-func (v *IntegrityVerifier) QuickVerify(ctx context.Context, modelPath string) (bool, error) {
+func (v *IntegrityVerifier) QuickVerify(ctx context.Context, modelPath string, include func(FileChecksum) bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -882,6 +877,9 @@ func (v *IntegrityVerifier) QuickVerify(ctx context.Context, modelPath string) (
 		}
 		if !strings.HasPrefix(absFilePath, absModelPath+string(filepath.Separator)) && absFilePath != absModelPath {
 			return false, fmt.Errorf("path traversal detected: %s", expected.RelativePath)
+		}
+		if include != nil && !include(expected) {
+			continue
 		}
 
 		// Use Lstat to detect symlinks (consistent with VerifyModel)

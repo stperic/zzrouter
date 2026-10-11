@@ -14,8 +14,11 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config/backend"
-	"github.com/stperic/zzrouter/pkg/dispatch/chain"
 	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -70,6 +73,7 @@ func (d *chainServerDeps) InjectUsageMetadata() bool {
 
 // ===== Runtime =====
 
+// ProxyForwardDetached preserves the send error and its request-write evidence.
 func (d *chainServerDeps) ProxyForwardDetached(ctx context.Context, method, url string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
 	return d.s.proxy.ForwardDetached(ctx, method, url, headers, up, body)
 }
@@ -82,35 +86,57 @@ func (d *chainServerDeps) ValidateModel(ctx context.Context, model string) error
 	return d.s.validateModel(ctx, model)
 }
 
-func (d *chainServerDeps) AppInstance(model string) (*instance.Instance, bool) {
+func (d *chainServerDeps) AppInstance(model, provider string) (*instance.Instance, bool) {
 	if d.s.providers.appMgr == nil {
 		return nil, false
 	}
-	// Canonicalized like every by-name lookup, so an alias, or a variant
-	// its base's process serves, finds the run.
-	return d.s.providers.appMgr.GetInstanceByModel(model)
+	// Resolved as a start resolves it: an alias, a variant's base or a daemon's tag finds the run.
+	return d.s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.EndpointChat)
 }
 
-func (d *chainServerDeps) InstanceRequest(req *http.Request, inst *instance.Instance, body []byte) []byte {
+// LocalRun is the ready run serving a local model, or nil when its provider serves it without one.
+func (d *chainServerDeps) LocalRun(model, provider string) (*instance.Instance, error) {
+	if !d.s.hasRuns(provider) {
+		return nil, nil //nolint:nilnil // no run is the answer for a provider without runs
+	}
+	return d.s.loadModelViaNodeAPI(model, provider, string(prov_apps.EndpointChat))
+}
+
+func (d *chainServerDeps) RunUpstream(inst *instance.Instance) (string, backend.Upstream, error) {
+	return d.s.providers.appMgr.Upstream(inst)
+}
+
+func (d *chainServerDeps) LeaseInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	return d.s.openInstance(req, inst)
+}
+
+func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte {
 	req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
-	prepared, _ := d.s.instanceRequest(req, inst)
+	prepared, _ := d.s.instanceRequest(req, lease.Instance())
 	return prepared
 }
 
-func (d *chainServerDeps) NewLoadExecutor() chain.LoadExecutor {
-	// Each call returns a fresh adapter closure. The underlying Server-
-	// side LoadExecutor is constructed per call to match the pre-
-	// extraction behaviour of fallback_proxy's startModelAsync.
-	return func(ctx context.Context, model, provider string) error {
-		exec := d.s.newLoadExecutor()
-		_, err := exec.LoadLocalModel(ctx, &LoadModelRequest{
-			ModelName: model,
-			Provider:  provider,
-		})
-		return err
-	}
+func (d *chainServerDeps) StartOnDemand(model, provider string) error {
+	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Detached: true, Origin: prov_apps.OriginRequest})
+	return err
 }
 
 func (d *chainServerDeps) TrackProviderRateLimit(app string, resp *http.Response) {
 	d.s.trackProviderRateLimit(app, resp)
+}
+
+func (d *chainServerDeps) FailureClassifier(app string) *httperr.Classifier {
+	return d.s.failureClassifier(app)
+}
+
+func (*chainServerDeps) FinishRelay(w http.ResponseWriter, req *http.Request, resp *http.Response, res wire.Result) {
+	if isStreamingResponse(resp) {
+		endBrokenStream(w, req, res)
+	} else {
+		failBrokenBody(w, req, res)
+	}
+}
+
+func (d *chainServerDeps) BufferedShape(meta wire.RoutingMetadata, recorder *llm.InferenceRecorder) func([]byte) []byte {
+	return normalizedBody(d.s.inference.normalizers, meta.Provider, meta, recorder)
 }

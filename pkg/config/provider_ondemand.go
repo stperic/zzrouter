@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // OnDemandProvider is a provider that zzRouter launches per model request
@@ -39,15 +41,16 @@ type OnDemandProvider struct {
 // a Docker-based on-demand variant doesn't silently lose its config
 // during the bridge.
 type OnDemandRuntime struct {
-	PortRange             []int             `yaml:"port_range" json:"port_range"`
-	BasePort              int               `yaml:"base_port" json:"base_port"`
-	KeepAlive             string            `yaml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
-	MaxConcurrentRequests int               `yaml:"max_concurrent_requests,omitempty" json:"max_concurrent_requests,omitempty"`
-	QueueTimeout          string            `yaml:"queue_timeout,omitempty" json:"queue_timeout,omitempty"`
-	Execution             ExecutionConfig   `yaml:"execution" json:"execution"`
-	HealthCheck           HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
-	Container             *ContainerConfig  `yaml:"container,omitempty" json:"container,omitempty"`
-	Resources             *ResourcesConfig  `yaml:"resources,omitempty" json:"resources,omitempty"`
+	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
+	PortRange             []int              `yaml:"port_range" json:"port_range"`
+	BasePort              int                `yaml:"base_port" json:"base_port"`
+	KeepAlive             string             `yaml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
+	MaxConcurrentRequests int                `yaml:"max_concurrent_requests,omitempty" json:"max_concurrent_requests,omitempty"`
+	QueueTimeout          string             `yaml:"queue_timeout,omitempty" json:"queue_timeout,omitempty"`
+	Execution             ExecutionConfig    `yaml:"execution" json:"execution"`
+	HealthCheck           HealthcheckConfig  `yaml:"health_check,omitempty" json:"health_check,omitempty"`
+	Container             *ContainerConfig   `yaml:"container,omitempty" json:"container,omitempty"`
+	Resources             *ResourcesConfig   `yaml:"resources,omitempty" json:"resources,omitempty"`
 }
 
 // Provider interface satisfaction.
@@ -66,6 +69,15 @@ func (p *OnDemandProvider) IsAutoDiscovery() bool { return p.Enabled == nil }
 // pool, and a valid execution type. Command may be empty for template
 // entries awaiting configurator fill.
 func (p *OnDemandProvider) Validate() error {
+	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if _, err := p.Runtime.HealthCheck.ReadinessProbe.StallDuration(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if err := p.Runtime.FailurePatterns.Compile(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := providerToServiceConfig(p).ValidateInstall(); err != nil {
 		return err
 	}

@@ -594,6 +594,7 @@ type sseChunkData struct {
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
 		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
 		PromptTokens        int     `json:"prompt_tokens"`
@@ -617,12 +618,22 @@ type sseChunkData struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
+
+	done bool
 }
+
+// ended reports whether the frame says the reply is complete.
+func (c *sseChunkData) ended() bool {
+	return c.done || (len(c.Choices) > 0 && c.Choices[0].FinishReason != "")
+}
+
+// errStreamCut is a stream that closed with no [DONE] and no finish reason.
+var errStreamCut = errors.New("the stream ended before the reply completed")
 
 // UnmarshalSSEValue implements sseparser.UnmarshalerSSEValue
 func (c *sseChunkData) UnmarshalSSEValue(v string) error {
-	// Handle stream end marker
 	if v == "[DONE]" {
+		c.done = true
 		return nil
 	}
 	// Skip empty values (can happen with keep-alive events)
@@ -679,15 +690,20 @@ func (c *Client) ChatCompletionsStream(ctx context.Context, req ChatRequest, cal
 	// Use sseparser to read SSE stream
 	scanner := sseparser.NewStreamScanner(resp.Body)
 
+	ended := false
 	for {
 		var event sseEvent
 		_, err := scanner.UnmarshalNext(&event)
 		if err != nil {
-			if errors.Is(err, sseparser.ErrStreamEOF) {
-				return nil
+			if !errors.Is(err, sseparser.ErrStreamEOF) {
+				return fmt.Errorf("error reading stream: %w", err)
 			}
-			return fmt.Errorf("error reading stream: %w", err)
+			if !ended {
+				return errStreamCut
+			}
+			return nil
 		}
+		ended = ended || event.Data.ended()
 
 		// Handle custom status_update events (model loading progress)
 		if event.Event == "status_update" {

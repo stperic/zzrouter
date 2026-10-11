@@ -106,6 +106,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		httpStreamingClient: connMgr.GetStreamingClient(),
 		connManager:         connMgr, // Store reference for metrics
 		listenerReady:       make(chan struct{}),
+		idempotency:         newIdempotencyStore(),
 	}
 	s.shutdownCtx, s.shutdownCancel = context.WithCancel(context.Background())
 	s.node = NewNodeIdentity(cfg)
@@ -126,7 +127,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.inference.normalizers = normalizers
 	s.proxy = NewProxyClient(s.httpStreamingClient, s.coordWorkerMTLSClient, normalizers, s.trackProviderRateLimit,
 		func() bool { return s.config.Coordinator.Routing.InjectUsageMetadata },
-		s.GetNodename)
+		s.GetNodename, s.failureClassifier)
 	s.inference.affinity = newResponseAffinity(0)
 
 	// Initialize the model subsystem. Pricing wires up front; Cache and
@@ -227,14 +228,13 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.appsConfig,
 		prov_apps.WithHTTPClient(s.httpClient),
 		prov_apps.WithJobsRegistry(s.jobs),
+		prov_apps.WithCatalogPublication(s.publishCatalog),
 		prov_apps.WithCatalogChanged(func() {
 			if s.model.Cache != nil {
 				s.model.Cache.Invalidate()
 			}
 			s.publishSelfSnapshot()
-			if s.cluster.signaler != nil {
-				s.cluster.signaler.NotifyCacheRefresh()
-			}
+			s.notifyCoordinatorAsync()
 		}),
 		prov_apps.WithNodename(s.node.Nodename),
 		prov_apps.WithInstallPolicy(cfg.Providers.InstallPolicyFile),
@@ -244,11 +244,15 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// was started twice, the second time under its file stem. One
 		// canonicalizer, applied where the launch is keyed.
 		prov_apps.WithModelCanonicalizer(s.resolveCanonicalModelName),
-		prov_apps.WithModelValidator(s.checkCatalogVariantConflict),
+		prov_apps.WithModelValidator(s.checkCatalogModelAdmission),
 		prov_apps.WithModelSource(s.modelSource),
+		prov_apps.WithLocalCatalog(s.localCatalogContains),
+		prov_apps.WithBackendResolver(s.backend.Resolve),
+		prov_apps.WithStartObserver(s.observeModelStart),
 		prov_apps.WithParamLocalizer(assetParamLocalizer(s.configStore)),
 		prov_apps.WithRuntimeChecks(providerRuntimeChecks(s.configStore)),
 		prov_apps.WithMemoryBudget(providerMemoryBudget(s.configStore)),
+		prov_apps.WithIdleMemoryEviction(cfg.GPU.EvictIdleOnMemoryPressure),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize provider manager: %w", err)
@@ -359,7 +363,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 		// Wire Cache — must happen after NodeCache is built. AutoRoute is
 		// set via SetAutoRoute below (breaks the construction cycle:
-		// autoroute.New needs Cache.GetAllModels and Cache.Invalidate).
+		// autoroute.New needs Cache.GetAllModels).
 		s.model.Cache = cache.New(cache.Config{
 			InventoryStatus: s.providerInventoryStatus,
 			ModelDetails: func(provider, model string, details map[string]any) map[string]any {
@@ -410,22 +414,16 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			},
 		})
 
-		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.Invalidate, s.model.Cache.GetAllModels)
+		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.GetAllModels)
 		s.model.Cache.SetAutoRoute(s.model.AutoRoute)
 
 		// Set callback to invalidate/refresh cache when downloads complete
-		s.model.Downloads.SetOnCompleteCallback(func() {
-			if cfg.Cluster.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
-			} else {
-				s.model.Cache.Invalidate()
-			}
-		})
+		s.model.Downloads.SetOnCompleteCallback(s.publishCatalog)
 
 		// Workers notify the coord that its per-endpoint snapshot is stale.
 		s.SetOnFinalizeCallback(func(_ string) {
 			if s.IsWorker() {
-				s.cluster.signaler.NotifyCacheRefresh()
+				s.notifyCoordinatorAsync()
 			}
 		})
 

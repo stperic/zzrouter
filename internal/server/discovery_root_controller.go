@@ -38,7 +38,7 @@ type apiDiscoveryResponse struct {
 // refuses its requests. zzRouter ships no templates; the engine's flag for
 // one is whichever parameter the provider's schema types as an asset.
 const chatTemplatesGuide = "Engines render each request with the chat template inside the model's weights. " +
-	"When it refuses a request, llama.cpp answers 400 chat_template_rejected; vLLM and MLX return the template's own message. " +
+	"A declared template refusal answers 400 chat_template_rejected with the engine's reason. " +
 	"Admin fix: GET /providers/{name}/schema and take the parameter of type asset described as a chat template. " +
 	"PUT /providers/{name}/assets/{asset} with the template text as the raw body. " +
 	"PATCH /providers/{name}/parameters?restart=affected (application/merge-patch+json) with " +

@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // Provider is the base interface for all provider implementations.
@@ -12,18 +14,21 @@ type Provider interface {
 	DefaultPort() int
 }
 
-// ModelLister can list available and running models.
+// ModelLister can list available models.
 type ModelLister interface {
 	Provider
 	ListModels(ctx context.Context, t Target) ([]ModelInfo, error)
-	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
 }
 
 // ModelLoader can load and unload models.
 type ModelLoader interface {
 	Provider
-	LoadModel(ctx context.Context, t Target, model string, params map[string]string) error
+	// LoadModel loads model for the daemon to expire after keepAlive idle (never when negative, its default when nil).
+	LoadModel(ctx context.Context, t Target, model string, keepAlive *time.Duration) error
 	UnloadModel(ctx context.Context, t Target, model string) error
+	ListRunningModels(ctx context.Context, t Target) ([]RunningModelInfo, error)
+	// Identity is the name the daemon reports model loaded under.
+	Identity(model string) string
 }
 
 // ModelDeleter can delete models from disk/storage.
@@ -45,11 +50,9 @@ type ModelDisplayer interface {
 	DisplayTable(models []DisplayModel, command string)
 }
 
-// FullProvider is the union of all composable interfaces.
-// Most providers implement all of these.
+// FullProvider provides catalog and inspection operations for every protocol.
 type FullProvider interface {
 	ModelLister
-	ModelLoader
 	ModelDeleter
 	ModelInspector
 	ModelDisplayer
@@ -73,18 +76,10 @@ type ModelInfo struct {
 	Extra      map[string]any
 }
 
-// RunningModelInfo represents a running model.
+// RunningModelInfo is a model a daemon lists loaded, under its name.
 type RunningModelInfo struct {
-	Name          string
-	Digest        string
-	ExpiresAt     time.Time
-	ContextLength int
-	Size          int64
-	SizeVRAM      int64
-	Format        string
-	Family        string
-	ParameterSize string
-	QuantLevel    string
+	Name string
+	instance.Loaded
 }
 
 // DisplayModel represents model data for table display.

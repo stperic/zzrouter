@@ -188,7 +188,6 @@ type ModelGroupsController struct {
 	routeEvents    *route_events.Bus
 	pricing        *pricing.Store
 	routePrefix    string
-	idemStore      *idempotencyStore
 }
 
 // NewModelGroupsController creates a new model groups controller. The
@@ -216,29 +215,24 @@ func NewModelGroupsController(
 		routeEvents:    routeEvents,
 		pricing:        pricingStore,
 		routePrefix:    routePrefix,
-		idemStore:      newIdempotencyStore(),
 	}
 }
 
-// RegisterPublicRoutes registers model group routes on the public API.
-// All state-mutating routes accept an Idempotency-Key header (24h
-// replay window); retries with the same key + same body return the
-// recorded response without re-executing.
-func (ctrl *ModelGroupsController) RegisterPublicRoutes(router *gin.RouterGroup) {
-	idem := ctrl.idemStore.middleware()
+// RegisterPublicRoutes registers model group reads and idempotent mutations.
+func (ctrl *ModelGroupsController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	router.GET("/model-groups", ctrl.ListModelGroups)
 	router.GET("/model-groups/schema", ctrl.GetRoutesSchema)
 	router.GET("/model-groups/events", ctrl.handleRouteEventsStream)
 	router.GET("/model-groups/:name", ctrl.GetModelGroup)
 	router.GET("/model-groups/:name/state", ctrl.GetModelGroupState)
 	router.GET("/model-groups/:name/history", ctrl.GetModelGroupHistory)
-	router.PUT("/model-groups/:name", idem, ctrl.CreateOrUpdateModelGroup)
-	router.PATCH("/model-groups/:name", idem, ctrl.PatchModelGroup)
-	router.DELETE("/model-groups/:name", idem, ctrl.DeleteModelGroup)
-	router.PUT("/model-groups/:name/replicas/:replica", idem, ctrl.PutReplica)
-	router.PATCH("/model-groups/:name/replicas/:replica", idem, ctrl.PatchReplica)
-	router.DELETE("/model-groups/:name/replicas/:replica", idem, ctrl.DeleteReplica)
-	router.DELETE("/model-groups/:name/owner", idem, ctrl.ReleaseModelGroupOwner)
+	idempotent(router, "PUT", "/model-groups/:name", nil, ctrl.CreateOrUpdateModelGroup)
+	idempotent(router, "PATCH", "/model-groups/:name", nil, ctrl.PatchModelGroup)
+	idempotent(router, "DELETE", "/model-groups/:name", nil, ctrl.DeleteModelGroup)
+	idempotent(router, "PUT", "/model-groups/:name/replicas/:replica", nil, ctrl.PutReplica)
+	idempotent(router, "PATCH", "/model-groups/:name/replicas/:replica", nil, ctrl.PatchReplica)
+	idempotent(router, "DELETE", "/model-groups/:name/replicas/:replica", nil, ctrl.DeleteReplica)
+	idempotent(router, "DELETE", "/model-groups/:name/owner", nil, ctrl.ReleaseModelGroupOwner)
 	router.POST("/model-groups/preview", ctrl.PreviewRoutes)
 	router.POST("/model-groups/:name/preview", ctrl.PreviewRoute)
 	router.POST("/model-groups/reload", ctrl.ReloadModelGroups)
@@ -275,7 +269,7 @@ type replicaResponse struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 	CooldownSeconds   float64        `json:"cooldown_seconds,omitempty"`
@@ -417,7 +411,7 @@ type replicaRequest struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 }
@@ -580,7 +574,7 @@ type replicaUpsertRequest struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	OnDemand          bool           `json:"on_demand,omitempty"`
 	GPUMemoryRequired string         `json:"gpu_memory_required,omitempty"`
-	MaxRetries        int            `json:"max_retries,omitempty"`
+	MaxRetries        *int           `json:"max_retries,omitempty"`
 	Tags              []string       `json:"tags,omitempty"`
 	Params            map[string]any `json:"params,omitempty"`
 }

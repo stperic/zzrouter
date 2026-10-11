@@ -33,6 +33,8 @@ type StopReason string
 const (
 	StopReasonUser  StopReason = "user"  // explicit StopInstance call
 	StopReasonCrash StopReason = "crash" // process exited unexpectedly
+	// StopReasonMemoryPressure: an idle run stopped to admit a launch's GPU memory budget.
+	StopReasonMemoryPressure StopReason = "memory_pressure"
 )
 
 // FailureCause classifies why a launch or running instance failed.
@@ -44,7 +46,7 @@ type FailureCause string
 
 const (
 	FailureReadiness FailureCause = "readiness_fail" // readiness probe failed
-	FailureLaunchErr FailureCause = "launch_err"     // LaunchInstance returned error
+	FailureLaunchErr FailureCause = "launch_err"     // EnsureRun returned error
 	FailureOther     FailureCause = "other"          // catch-all for emit sites without a typed Cause
 )
 

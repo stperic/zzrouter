@@ -59,9 +59,4 @@
 // regardless of what the caller passed — the caller-supplied detail
 // is retained on the API only so it lands in server-side logs for
 // correlation. See responder.go for the per-method rules.
-//
-// An OPAQUE mode (WithOpaqueErrors) collapses every error response to
-// its HTTP status code with no body. It is intended for production
-// deployments where even sanitized error messages are considered
-// leakage — matching LocalAI's OPAQUE_ERRORS behavior.
 package openai

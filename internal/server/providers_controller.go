@@ -32,6 +32,7 @@ type ProviderRegistrar interface {
 }
 
 type ProvidersController struct {
+	publishCatalog   func() error
 	appsService      *AppsService                  // runtime status: list, get, enable/disable (always available)
 	versionsService  *ProviderVersionsService      // upstream release reporting (nil on workers: checks are coordinator-side)
 	providersService *ProvidersService             // lifecycle: install, upgrade, uninstall (nil on workers)
@@ -65,7 +66,7 @@ func NewProvidersController(appsSvc *AppsService, providersSvc *ProvidersService
 }
 
 // RegisterPublicRoutes registers the unified /providers route hierarchy.
-func (ctrl *ProvidersController) RegisterPublicRoutes(router *gin.RouterGroup) {
+func (ctrl *ProvidersController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	// Runtime status (always available)
 	router.GET("/providers", ctrl.ListProviders)
 	router.GET("/providers/catalog", ctrl.ListProviderCatalog)
@@ -89,9 +90,9 @@ func (ctrl *ProvidersController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	if ctrl.providersService != nil {
 		router.GET("/providers/:name/status", ctrl.GetProviderStatus)
 		router.GET("/providers/:name/environment", ctrl.GetProviderEnvironment)
-		router.POST("/providers/:name/install", ctrl.InstallProvider)
+		idempotent(router, "POST", "/providers/:name/install", nil, ctrl.InstallProvider)
 		router.GET("/providers/:name/install/status", ctrl.GetStepStatus)
-		router.POST("/providers/:name/install/preflight", ctrl.PreflightInstall)
+		idempotent(router, "POST", "/providers/:name/install/preflight", nil, ctrl.PreflightInstall)
 		router.POST("/providers/:name/install/plan", ctrl.GetInstallPlan)
 		router.POST("/providers/:name/install/verify", ctrl.VerifyInstall)
 		router.POST("/providers/:name/install/verify-step", ctrl.VerifyInstallStep)
@@ -456,6 +457,9 @@ func (ctrl *ProvidersController) VerifyProvider(c *gin.Context) {
 		// MUST report the drift rather than lying with a 200.
 		if err := ctrl.registrar.FinalizeOnboarding(name); err != nil {
 			respondFinalizeErr(c, "verify succeeded but finalize failed", err)
+			return
+		}
+		if !publishOr503(c, ctrl.publishCatalog) {
 			return
 		}
 		respondSuccess(c, "Provider verified", gin.H{

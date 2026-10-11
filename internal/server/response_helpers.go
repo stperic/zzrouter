@@ -220,11 +220,6 @@ func respondAccepted(c *gin.Context, message string, data any) {
 	})
 }
 
-// respondNoContent sends a 204 No Content response for successful deletions
-func respondNoContent(c *gin.Context) {
-	c.Status(http.StatusNoContent)
-}
-
 // Version endpoints for cluster host validation
 // ==========================================
 

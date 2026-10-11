@@ -1,9 +1,14 @@
 package prov_apps
 
 import (
+	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // EventType identifies the kind of lifecycle event.
@@ -77,4 +82,38 @@ type Event struct {
 	Reason   obsruns.StopReason   `json:"reason,omitempty"`
 	Cause    obsruns.FailureCause `json:"cause,omitempty"`
 	Time     time.Time            `json:"time"`
+}
+
+// runEvent is an event of type t about run.
+func runEvent(t EventType, run *instance.Instance, message string) Event {
+	return Event{Type: t, Provider: run.Provider, Instance: run.ID, Model: run.Model, Message: message, Time: utils.Now()}
+}
+
+// record writes e as one line of run's log, then emits it.
+func (m *ProviderAppManager) record(run *instance.Instance, e Event) {
+	if run.LogFilePath != "" {
+		f, _, err := m.runLogFile(run)
+		if err == nil {
+			_, err = fmt.Fprintf(f, "%s %s\n", e.Time.Format(time.RFC3339), e.Message)
+			err = errors.Join(err, f.Close())
+		}
+		if err != nil {
+			slog.Warn("Failed to write a run's log", "run", run.ID, "error", err)
+		}
+	}
+	m.emitEvent(e)
+}
+
+// failedEvent is run's failure for cause, reported as err.
+func failedEvent(run *instance.Instance, cause obsruns.FailureCause, err error) Event {
+	event := runEvent(EventInstanceFailed, run, err.Error())
+	event.Error, event.Cause = err, cause
+	return event
+}
+
+// stoppedEvent is run's stop for reason.
+func stoppedEvent(run *instance.Instance, reason obsruns.StopReason, message string) Event {
+	event := runEvent(EventInstanceStopped, run, message)
+	event.Reason = reason
+	return event
 }

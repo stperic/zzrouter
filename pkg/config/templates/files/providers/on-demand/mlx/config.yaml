@@ -71,9 +71,8 @@ requirements:
     max: "3.14"
 capabilities:
   formats: [mlx]
-  # mlx_lm.server only exposes /v1/chat/completions + /v1/models.
-  # The Responses and Anthropic Messages APIs go through translation shims.
-  wire_endpoints: [chat_completions, responses_compat, messages_compat]
+  # mlx_lm.server exposes Chat; zzRouter derives Messages and Responses translations.
+  wire_endpoints: [chat_completions]
 
 defaults:
   parameters:
@@ -83,6 +82,28 @@ defaults:
     processor_type: "Metal GPU"
 
 runtime:
+  failure_patterns:
+    - pattern: "kIOGPUCommandBufferCallbackErrorOutOfMemory"
+      isRegex: false
+      class: memory
+    - pattern: "[malloc] Unable to allocate"
+      isRegex: false
+      class: memory
+    - pattern: "[metal::malloc] Unable to allocate"
+      isRegex: false
+      class: memory
+    - pattern: "[metal::malloc] Resource limit"
+      isRegex: false
+      class: memory
+    - pattern: "[metal::malloc] Attempting to allocate"
+      isRegex: false
+      class: memory
+    - pattern: "Only 'text' content type is supported."
+      isRegex: false
+      class: unsupported_input
+    - pattern: "jinja2.exceptions.TemplateError:"
+      isRegex: false
+      class: chat_template_rejected
   port_range: [8090, 8099]
   base_port: 8090
   keep_alive: 30m
@@ -115,8 +136,6 @@ runtime:
       logPatterns:
         failure:
           - pattern: "Traceback (most recent call last)"
-            isRegex: false
-          - pattern: "out of memory"
             isRegex: false
         success:
           # mlx_lm starts its listener before loading weights, so this line

@@ -43,7 +43,7 @@ type OllamaServiceImpl struct {
 	getClusterNodeURL     func(string) (string, error)
 	getClusterNodeMTLSURL func(string) (string, error)
 	getMTLSClient         func() *http.Client
-	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte)
+	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error)
 	httpClient            *http.Client
 	hasRouter             bool
 
@@ -55,15 +55,7 @@ type OllamaServiceImpl struct {
 	// Ollama's flat error shape.
 	dispatchInference func(c *gin.Context, body []byte, modelName, endpointType string) error
 
-	// invalidateModelCache forces the next ListModels call to re-scan all
-	// sources (including the Ollama daemon's /api/tags). Called after a
-	// successful /api/pull on both local and cluster routes so the new
-	// model appears on /v1/models + /v1/chat/completions without a
-	// separate /zzrouter/v1/deployments registration. The worker also
-	// invalidates its own cache via pullLocalProxy on the worker side;
-	// the coord-side hook is what surfaces the worker-pulled model on
-	// the coord's catalog without waiting for periodic peer-sync.
-	invalidateModelCache func()
+	publishCatalog func() error
 }
 
 // NewOllamaService creates a new OllamaService
@@ -77,11 +69,11 @@ func NewOllamaService(
 	getClusterNodeURL func(string) (string, error),
 	getClusterNodeMTLSURL func(string) (string, error),
 	getMTLSClient func() *http.Client,
-	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte),
+	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error),
 	httpClient *http.Client,
 	hasRouter bool,
 	dispatchInference func(c *gin.Context, body []byte, modelName, endpointType string) error,
-	invalidateModelCache func(),
+	publishCatalog func() error,
 ) OllamaService {
 	return &OllamaServiceImpl{
 		ollamaDaemon:          ollamaDaemon,
@@ -97,7 +89,7 @@ func NewOllamaService(
 		httpClient:            httpClient,
 		hasRouter:             hasRouter,
 		dispatchInference:     dispatchInference,
-		invalidateModelCache:  invalidateModelCache,
+		publishCatalog:        publishCatalog,
 	}
 }
 
@@ -204,19 +196,7 @@ func (s *OllamaServiceImpl) pullLocalProxy(c *gin.Context, modelName string, ins
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	writeOllamaResponse(c, resp)
-
-	// Successful upstream pull → invalidate the model cache so the next
-	// /v1/models or /v1/chat/completions sees the new entry without a
-	// separate /zzrouter/v1/deployments registration. The Ollama
-	// connector queries the daemon's /api/tags during re-scan, so the
-	// pulled model surfaces automatically. Only fires on 2xx upstream:
-	// a streamed pull error keeps the cache as-is.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && s.invalidateModelCache != nil {
-		s.invalidateModelCache()
-	}
-
-	return nil
+	return writeOllamaMutation(c, resp, s.publishCatalog)
 }
 
 // pullClusterRoute routes deploy request to remote cluster host
@@ -283,26 +263,16 @@ func (s *OllamaServiceImpl) pullClusterRoute(c *gin.Context, targetNode, modelNa
 
 	utils.LogDebugf("⏱️  [PERF] Starting response stream (total setup time: %v)", time.Since(startTime))
 
-	writeOllamaResponse(c, resp)
-
-	// Successful cluster pull → invalidate coord's catalog so the next
-	// /v1/models reflects the worker-pulled model without waiting for
-	// the periodic peer-sync. The worker invalidates its own cache via
-	// pullLocalProxy; this is the symmetric coord-side hook.
-	// Caveat: pkg/model/cache shared-mode short-circuits the
-	// cross-worker fetch on Invalidate, so on shared-mode coords this
-	// call is effectively a no-op for cluster pulls and /v1/models
-	// lags until shared-mode-aware sync catches up.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && s.invalidateModelCache != nil {
-		s.invalidateModelCache()
-	}
-
-	utils.LogDebugf("⏱️  [PERF] Stream completed (total time: %v)", time.Since(startTime))
-	return nil
+	return writeOllamaMutation(c, resp, s.publishCatalog)
 }
 
 // ManagementCommand handles Ollama management commands (create, delete, copy, show, push)
 func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, modelLookup bool) error {
+	var publish func() error
+	switch endpoint {
+	case "/api/create", "/api/copy", "/api/delete":
+		publish = s.publishCatalog
+	}
 	body, err := c.GetRawData()
 	if err != nil {
 		return newProblemError(http.StatusBadRequest, "Bad Request", "failed to read request body")
@@ -357,7 +327,7 @@ func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, m
 					fmt.Sprintf("model %q not found", modelName))
 			}
 		}
-		s.proxyToOllamaProvider(c, daemon, endpoint, body)
+		s.proxyToOllamaProvider(c, daemon, endpoint, body, publish)
 		return nil
 	}
 
@@ -368,7 +338,7 @@ func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, m
 	}
 
 	slog.Info("Proxying Ollama request", "endpoint", endpoint, "ollama_url", daemon.Endpoint)
-	s.proxyToOllamaProvider(c, daemon, endpoint, body)
+	s.proxyToOllamaProvider(c, daemon, endpoint, body, publish)
 	return nil
 }
 

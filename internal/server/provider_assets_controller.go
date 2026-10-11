@@ -169,6 +169,7 @@ func (ctrl *ProviderAssetsController) Delete(c *gin.Context) {
 		respondAssetError(c, err)
 		return
 	}
+	ctrl.awaitSync.await(c)
 	c.Status(http.StatusNoContent)
 }
 

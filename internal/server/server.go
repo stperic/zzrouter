@@ -65,6 +65,8 @@ type Server struct {
 		// because it fires on three triggers, not one: a config mutation,
 		// a worker coming up, and the maintenance tick.
 		syncFanOut *providerSyncFanOut
+		// readinessWoken runs after a readiness waiter wakes, so tests can order it; nil in production.
+		readinessWoken func()
 	}
 
 	cluster struct {
@@ -149,18 +151,21 @@ type Server struct {
 	// MCP stdio bridge serialization
 	mcpGateway *MCPGateway
 
+	// idempotency is shared by every route that honours Idempotency-Key; the key scopes by method and path.
+	idempotency *idempotencyStore
+
 	// fsnotify-driven cache invalidator. Closes the disk-state-vs-cache
 	// drift class of bug; nil when the models root doesn't exist yet
 	// (pre-deploy state) or fsnotify init failed.
 	modelsWatcher *modelsWatcher
 }
 
-// GetInstanceByModel returns instance info for a loaded model.
-func (s *Server) GetInstanceByModel(modelName string) (*instance.Instance, bool) {
+// GetInstanceByModel returns the run serving a model on provider ("" for any).
+func (s *Server) GetInstanceByModel(provider, modelName string) (*instance.Instance, bool) {
 	if s.providers.appMgr == nil {
 		return nil, false
 	}
-	return s.providers.appMgr.GetInstanceByModel(modelName)
+	return s.providers.appMgr.GetInstanceByModel(provider, modelName, prov_apps.EndpointChat)
 }
 
 // openAIModelRuntimeLookup answers /v1/models' "is this model hot?" question

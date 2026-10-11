@@ -2,6 +2,7 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFailureCauseSurvivesLaterExit(t *testing.T) {
+	inst := NewInstance("id", "provider", "model", 0, 0, 0)
+	cause := errors.New("typed startup cause")
+	inst.SetWaitingOn("other-run")
+	inst.MarkFailedError(cause)
+	<-inst.LeftStarting()
+	assert.ErrorIs(t, inst.FailureCause(), cause)
+	assert.Empty(t, inst.WaitingOn())
+	inst.MarkFailedWithExit("process exited", new(1), "")
+	inst.MarkFailedError(errors.New("later failure"))
+	assert.ErrorIs(t, inst.FailureCause(), cause)
+	assert.Equal(t, 1, *inst.ToInfo("").Failure.ExitCode)
+
+	stopped := NewInstance("stopped", "provider", "model", 0, 0, 0)
+	stopped.SetStatus(StatusStopped)
+	stopped.MarkFailedError(cause)
+	assert.Nil(t, stopped.FailureCause())
+	assert.Equal(t, StatusStopped, stopped.GetStatus())
+}
 
 func TestFailureSnapshot_PreservesCauseAndExit(t *testing.T) {
 	inst := NewInstance("id", "provider", "arbitrary-model", 8000, 0, 0)

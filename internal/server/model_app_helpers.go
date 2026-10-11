@@ -6,15 +6,12 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
-	"strconv"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -24,6 +21,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -143,8 +141,7 @@ func (s *Server) findCapableProvider(modelName string) (string, string, error) {
 		if errors.As(err, &notFound) {
 			// Hint at the cloud-deployment on-ramp — agents often pass a
 			// catalog ID (e.g. "openai/gpt-4o") expecting it to work
-			// without a prior registration step. The same hint already
-			// fires from /runs/ensure for cloud-only providers.
+			// without a prior registration step.
 			return "", "", fmt.Errorf(
 				"model %q not found in registry; if this is a cloud-served model, register it via POST /zzrouter/v1/deployments first",
 				modelName)
@@ -183,191 +180,147 @@ func (s *Server) findCapableProvider(modelName string) (string, string, error) {
 	return provider, canonical, nil
 }
 
-// forwardToInstance forwards request to a running instance via reverse proxy
-// Handles both local and remote instances using getInstanceBackendNode
-// proxyToInstance is the shared implementation for forwarding requests to running instances.
-// When quiet is true, request/response logging is suppressed (used for the fast path).
-func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
-	// Concurrency gating: acquire a slot before proxying
-	if err := inst.AcquireConcurrency(req.Context()); err != nil {
-		if errors.Is(err, instance.ErrAtCapacity) {
-			failBeforeBackend(w, req, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
-			return
-		}
-		// Context cancelled (client disconnect)
-		slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
-		return
-	}
-	defer inst.ReleaseConcurrency()
+func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
+	hints, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
+	return inst.Acquire(req.Context(), hints)
+}
 
-	// Record activity for local instances, applying any per-request hints
-	// parsed at the handler edge (see CtxKeyRequestHints).
-	if getInstanceBackendNode(inst) == constants.Localhost {
-		ov, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-		if err := s.providers.appMgr.Instances().UpdateActivity(inst.ID, ov); err != nil && !quiet {
-			utils.LogErrorf("Warning: Failed to record activity for instance %s: %v", inst.ID, err)
-		}
-	}
-
-	// Build instance URL (handles local and remote instances)
-	backendNode := getInstanceBackendNode(inst)
-	instanceURL := fmt.Sprintf("http://%s:%d", backendNode, inst.Port)
-	targetURL, err := url.Parse(instanceURL)
+// openRun leases a local run and resolves its target; on failure it answers through fail unless the client is gone.
+func (s *Server) openRun(req *http.Request, inst *instance.Instance, recorder *llm.InferenceRecorder, fail func(httperr.Error)) (*instance.Lease, *url.URL, backend.Upstream, bool) {
+	lease, err := s.openInstance(req, inst)
 	if err != nil {
-		writeError(w, req, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "invalid instance URL", Code: "invalid_instance_url"})
-		return
+		if failure, ok := renderAdmissionError(err); ok {
+			fail(failure)
+		} else {
+			slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
+		}
+		return nil, nil, backend.Upstream{}, false
 	}
+	base, up, err := s.providers.appMgr.Upstream(inst)
+	var target *url.URL
+	if err == nil {
+		target, err = url.Parse(backend.PassthroughTarget(base, req.URL.Path, req.URL.RawQuery))
+	}
+	if err != nil {
+		lease.Release()
+		fail(instanceSendFailure(recorder, err))
+		return nil, nil, backend.Upstream{}, false
+	}
+	return lease, target, up, true
+}
 
+// sendToInstance is the one way a request reaches a leased local run; a streaming one gets the
+// lease's first-byte and idle deadlines.
+func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body []byte, target *url.URL, up backend.Upstream) (*http.Response, error) {
+	ctx := req.Context()
+	var wrap func(io.ReadCloser) io.ReadCloser
+	if wire.StreamFromBody(body) {
+		ctx, wrap = lease.WatchStream(ctx)
+	}
+	proxyReq := req.Clone(ctx)
+	proxyReq.URL = target
+	proxyReq.Host = target.Host
+	proxyReq.RequestURI = ""
+	proxyReq.Close = false
+	if body != nil {
+		proxyReq.Body = io.NopCloser(bytes.NewReader(body))
+		proxyReq.ContentLength = int64(len(body))
+		proxyReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	}
+	proxyReq.Header = upstreamHeaders(req.Header, up)
+	// Engine servers refuse a JSON body sent without its type; a multipart body always names its own.
+	if proxyReq.Header.Get("Content-Type") == "" {
+		proxyReq.Header.Set("Content-Type", "application/json")
+	}
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+		proxyReq.Header.Del(header)
+	}
+	resp, err := s.httpStreamingClient.Do(proxyReq)
+	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, instance.ErrFirstByteTimeout) {
+			return nil, cause
+		}
+		return nil, err
+	}
+	if wrap != nil {
+		resp.Body = wrap(resp.Body)
+	}
+	return resp, nil
+}
+
+func instanceSendFailure(recorder *llm.InferenceRecorder, err error) httperr.Error {
+	failure := httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"}
+	errType := "backend_unreachable"
+	if errors.Is(err, instance.ErrFirstByteTimeout) {
+		failure.Status, failure.Code, failure.Message = http.StatusGatewayTimeout, string(httperr.CodeUpstreamTimeout), "The model instance did not begin responding in time."
+		errType = failure.Code
+	}
+	recordWireError(recorder, errType, err)
+	return failure
+}
+
+func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
 	recorder := requestRecorder(req.Context(), model, inst.Provider)
-	recorder.SetServer(backendNode, inst.Port)
+	lease, target, up, ok := s.openRun(req, inst, recorder, func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	if !ok {
+		return
+	}
+	defer lease.Release()
+	recorder.SetServer(target.Hostname(), portFromURL(target))
 
 	inflightToken := obsproxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
-		inst.Provider, model, backendNode)
+		inst.Provider, model, target.Hostname())
 	defer obsproxy.DecInflight(req.Context(), inflightToken)
 
 	body, restoreModel := s.instanceRequest(req, inst)
-	if body != nil {
-		recorder.SetUpstreamRequestData(body)
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
+	recorder.SetUpstreamRequestData(body)
+	if !quiet {
+		slog.Info("Forwarding request to instance", "id", inst.ID, "target", target.Host, "path", req.URL.Path)
 	}
-	// Read out here rather than inside ModifyResponse: whether the caller
-	// asked to see usage is a property of the request, and the response
-	// closure has no business reaching back into the inbound context for
-	// it.
-	suppressUsage := suppressUsageFrameFromContext(req.Context())
-
-	// Create reverse proxy
-	// FlushInterval = -1 flushes immediately after every write to the client.
-	// Required for SSE (text/event-stream) and chunked JSON streaming.
-	proxy := &httputil.ReverseProxy{
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(targetURL)
-			pr.Out.Host = targetURL.Host
-			// An engine zzRouter launched takes no credential: the caller's
-			// key is for zzRouter, and the engine must not be able to log it.
-			scrubForUpstream(pr.Out.Header, backend.Engine())
-		},
-		FlushInterval: -1,
-	}
-
-	proxy.ModifyResponse = func(resp *http.Response) error {
-		if !quiet {
-			utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
-				resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, resp.TransferEncoding)
-		}
-
-		resp.Header.Set("X-Accel-Buffering", "no")
-		// Same normalization ForwardToBackend does: drop the engine's own
-		// identity before stamping ours. A local instance was answering
-		// with the engine's Server header and no node at all, so the one
-		// header agents use to confirm where a request ran was missing on
-		// exactly the path that serves local models.
-		stripUpstreamIdentifyingHeaders(resp.Header)
-		resp.Header.Set(constants.HeaderServingProvider, inst.Provider)
-		// Translate the loopback sentinel to the real coord hostname so
-		// agents see a stable cluster identity. For genuinely-remote
-		// instances the field already carries the worker node name.
-		servingNode := getInstanceBackendNode(inst)
-		if servingNode == constants.Localhost {
-			servingNode = s.GetNodename()
-		}
-		resp.Header.Set(constants.HeaderServingNode, servingNode)
-
-		// Backend errors: rewrite to the surface-appropriate envelope
-		// before the reverse proxy flushes to the client. /api/*
-		// (Ollama-native) keeps the upstream's flat {"error":"..."}
-		// shape; /v1/* (OpenAI-compat) gets the closed-vocab normalizer.
-		// applyRewrittenError handles the response-mutation idiom that
-		// httputil.ReverseProxy.ModifyResponse requires.
-		if resp.StatusCode >= 400 {
-			applyRewrittenError(req, resp)
-			return nil
-		}
-
-		if resp.Header.Get("Content-Type") == "text/event-stream" {
-			resp.Header.Set("Cache-Control", "no-cache")
-			resp.Header.Set("Connection", "keep-alive")
-		}
-		if len(resp.TransferEncoding) > 0 {
-			resp.Header.Set("Cache-Control", "no-cache")
-			resp.Header.Set("Connection", "keep-alive")
-			if !quiet {
-				utils.LogDebugf("Detected chunked transfer encoding")
-			}
-		}
-
-		// Local providers have no marginal cost — surface that via the
-		// cost-truth contract's "zzrouter, 0" pair rather than omitting
-		// the cost block (which would be ambiguous with "we forgot to
-		// record"). Set on the meta directly so it can't get clobbered
-		// by recordProxyMetrics' SetExtendedUsage(_,_,0,"") overwrite
-		// during captureNonStreamingMetrics.
-		meta := s.localRoutingMetadata(req, inst, servingNode, restoreModel)
-		meta.SuppressUsageFrame = suppressUsage
-
-		if !isStreamingResponse(resp) {
-			captureNonStreamingMetrics(resp, recorder)
-			if normalize := s.inference.normalizers.Body(inst.Provider); normalize != nil {
-				if err := applyBodyNormalizer(resp, normalize); err != nil && !quiet {
-					utils.LogDebugf("Body normalizer failed for %s: %v", inst.Provider, err)
-				}
-			}
-			// Inject the root zzrouter block. Local-provider responses
-			// end up here without going through
-			// ProxyClient.ForwardToBackend, so this is the inject point
-			// that gives them parity with cloud-routed inference
-			// responses.
-			if body, err := io.ReadAll(resp.Body); err == nil {
-				_ = resp.Body.Close()
-				body = wire.MaybeInjectRoutingMetadata(body, meta, recorder)
-				resp.Body = io.NopCloser(bytes.NewReader(body))
-				resp.ContentLength = int64(len(body))
-				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-			}
-		} else {
-			// Meter first, then transform: the injection closure reads the
-			// live recorder, so it has to run after the chunk it stamps has
-			// been observed. Unconditional, because a stream with no
-			// transform still has to be recorded — that asymmetry is why
-			// local streaming inference never reached the inference log.
-			resp.Body = wire.NewMeteringReader(resp.Body, recorder)
-			if transform := s.localStreamTransform(meta, inst.Provider, recorder); transform != nil {
-				resp.Body = newNormalizingReader(resp.Body, transform)
-				// The rewrite changes the body's length, so the engine's
-				// declared one would cut the client off mid-stream.
-				resp.Header.Del("Content-Length")
-				resp.ContentLength = -1
-			}
-		}
-		return nil
-	}
-
-	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+	resp, err := s.sendToInstance(req, lease, body, target, up)
+	if err != nil {
 		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
-		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to connect to model instance", Code: "instance_unavailable"})
+		writeError(w, req, instanceSendFailure(recorder, err))
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if !quiet {
+		utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
+			resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, resp.TransferEncoding)
 	}
 
-	if !quiet {
-		slog.Info("Forwarding request to instance", "id", inst.ID, "instance_url", instanceURL, "path", req.URL.Path)
+	mergeUpstreamHeaders(w.Header(), resp.Header)
+	stripUpstreamIdentifyingHeaders(w.Header())
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set(constants.HeaderServingProvider, inst.Provider)
+	servingNode := s.GetNodename()
+	w.Header().Set(constants.HeaderServingNode, servingNode)
+	if resp.StatusCode >= 400 {
+		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
+		writeRewrittenError(w, req, resp, inst.FailureClassifier)
+		return
 	}
-	proxy.ServeHTTP(w, req)
-	if !quiet {
-		slog.Info("Request forwarded successfully to instance", "id", inst.ID)
+
+	meta := s.localRoutingMetadata(req, inst, servingNode, restoreModel)
+	meta.SuppressUsageFrame = suppressUsageFrameFromContext(req.Context())
+	if !isStreamingResponse(resp) {
+		failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(s.inference.normalizers, inst.Provider, meta, recorder), recorder))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	result := streamWithUsageInject(req, w, resp, s.inference.normalizers, inst.Provider, meta, recorder)
+	if result.Outcome == wire.ClientGone {
+		panic(http.ErrAbortHandler)
 	}
 }
-
-// capacityRetryAfterSeconds is the Retry-After for a full instance: slots
-// free as soon as an in-flight request finishes.
-const capacityRetryAfterSeconds = 5
 
 // failBeforeBackend reports a failure that happens before any backend
 // byte. A streaming request whose dialect streams failures in band gets
 // it inside a fresh 200 stream (a bare status leaves OpenWebUI stuck);
-// everything else gets the status with the capacity retry delay.
+// everything else gets the status.
 func failBeforeBackend(w http.ResponseWriter, req *http.Request, e httperr.Error) {
 	d := dialectOf(req)
 	if streamer, inBand := d.(httperr.InBandStreamer); inBand && isStreamingRequest(req) {
@@ -375,7 +328,6 @@ func failBeforeBackend(w http.ResponseWriter, req *http.Request, e httperr.Error
 		streamer.StreamError(w, e)
 		return
 	}
-	w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds))
 	d.WriteError(w, req, e)
 }
 
@@ -387,19 +339,10 @@ func openEventStream(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// isStreamingRequest checks if the original request body has "stream": true.
+// isStreamingRequest reports whether the engine-facing body (translated already, if it was) streams.
 func isStreamingRequest(req *http.Request) bool {
-	body, ok := req.Context().Value(CtxKeyOriginalBody).([]byte)
-	if !ok {
-		return false
-	}
-	var r struct {
-		Stream bool `json:"stream"`
-	}
-	if json.Unmarshal(body, &r) == nil {
-		return r.Stream
-	}
-	return false
+	body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+	return wire.StreamFromBody(body)
 }
 
 // extractTagsFromExtra extracts HuggingFace tags from model Extra metadata.
@@ -445,13 +388,6 @@ func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error 
 	return newProblemError(http.StatusBadRequest, "Bad Request", fmt.Sprintf("provider %q is configured but disabled on this node; %s, then retry", name, next))
 }
 
-// isProviderEnabledInConfig checks if provider is enabled in provider config
-func isProviderEnabledInConfig(appsConfig *pkgConfig.AppsConfig, providerType string) bool {
-	normalizedType := utils.NormalizeAppType(providerType)
-	providerConfig, exists := appsConfig.LookupApp(normalizedType)
-	return exists && providerConfig.IsEnabled()
-}
-
 // instanceRequest is what an instance is sent for this request, and the
 // model name to answer in. Every path that posts a request to an instance
 // uses it, so what an engine receives cannot differ by path.
@@ -469,8 +405,8 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 	if original, ok := req.Context().Value(CtxKeyOriginalBody).([]byte); ok && len(original) > 0 {
 		clientModel = wire.ModelFromBody(original)
 		body = s.applyRequestDefaults(req.Context(), inst.Provider, clientModel, req.URL.Path, original)
-		if translateModel(inst, clientModel) {
-			body = wire.SetModelIfPresent(body, inst.WireModel)
+		if clientModel != "" {
+			body = wire.SetModelIfPresent(body, s.providers.appMgr.RequestModel(inst, clientModel))
 		}
 	}
 	answerAs = clientModelFromContext(req.Context())
@@ -480,20 +416,22 @@ func (s *Server) instanceRequest(req *http.Request, inst *instance.Instance) (bo
 	return body, answerAs
 }
 
-// translateModel reports whether this instance's engine keys on a token
-// other than the one the client sent, i.e. whether the model name has to
-// be rewritten on the way in.
-//
-// The outbound direction is not gated on this. WireModel is only set for
-// instances zzRouter launches, so an external engine leaves it empty --
-// and an external engine still answers with its own token. Ollama echoes
-// its registry name, which drops the @node suffix the catalog advertises,
-// so the id in the response no longer matches any catalog entry. The
-// response is restored to whatever the client sent whenever that is
-// known; which concrete replica served it is reported by the zzrouter
-// block, not by overwriting the client's own handle for the model.
-func translateModel(inst *instance.Instance, clientModel string) bool {
-	return clientModel != "" && inst.WireModel != "" && inst.WireModel != clientModel
+// forwardToRun relays a native request to a leased local run, with the run's body at the run's target.
+func (s *Server) forwardToRun(w http.ResponseWriter, req *http.Request, inst *instance.Instance) {
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	lease, target, up, ok := s.openRun(req, inst, requestRecorder(req.Context(), model, inst.Provider), func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	if !ok {
+		return
+	}
+	defer lease.Release()
+	body, _ := s.instanceRequest(req, inst)
+	s.proxy.ForwardToBackend(w, req, inst.Provider, target.String(), up, body)
+}
+
+// hasRuns reports whether provider serves its models through runs; one without is forwarded to as it is.
+func (s *Server) hasRuns(provider string) bool {
+	svc, ok := s.providerConfig(provider)
+	return ok && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone
 }
 
 // modelInstance keeps provider selection intact when reusing an endpoint's run.
@@ -501,7 +439,7 @@ func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Inst
 	if s.providers.appMgr == nil {
 		return nil, false
 	}
-	inst, found := s.providers.appMgr.Instances().GetByModelEndpoint(model, endpoint)
+	inst, found := s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.Endpoint(endpoint))
 	if found && provider != "" && utils.NormalizeAppType(inst.Provider) != utils.NormalizeAppType(provider) {
 		return nil, false
 	}

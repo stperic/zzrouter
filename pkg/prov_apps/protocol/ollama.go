@@ -10,6 +10,8 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/connectivity"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol/formatting"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -18,6 +20,8 @@ import (
 type OllamaProvider struct {
 	name       string
 	httpClient *http.Client
+	// loadClient is httpClient without its timeout: a load is bounded by its caller's budget.
+	loadClient *http.Client
 	connector  *connectivity.ProviderConnector
 	// connected caches a successful first probe so the retry/breaker loop
 	// does not run on every call. It is per provider, not per Target: a
@@ -30,10 +34,13 @@ func NewOllamaProvider(httpClient *http.Client) *OllamaProvider {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: constants.HTTPDefaultTimeout}
 	}
+	loadClient := *httpClient
+	loadClient.Timeout = 0
 	return &OllamaProvider{
 		name:       "ollama",
 		httpClient: httpClient,
-		connector:  connectivity.NewProviderConnector(),
+		loadClient: &loadClient,
+		connector:  connectivity.NewProviderConnector(httpClient.Transport),
 	}
 }
 
@@ -152,35 +159,37 @@ func (p *OllamaProvider) ListRunningModels(ctx context.Context, t Target) ([]Run
 	result := make([]RunningModelInfo, 0, len(resp.Models))
 	for _, m := range resp.Models {
 		expiresAt, _ := time.Parse(time.RFC3339, m.ExpiresAt)
-		result = append(result, RunningModelInfo{
-			Name:          m.Name,
-			Digest:        m.Digest,
-			ExpiresAt:     expiresAt,
-			ContextLength: m.ContextLength,
-			Size:          m.Size,
-			SizeVRAM:      m.SizeVRAM,
-			Format:        m.Details.Format,
-			Family:        m.Details.Family,
-			ParameterSize: m.Details.ParameterSize,
-			QuantLevel:    m.Details.QuantLevel,
-		})
+		result = append(result, RunningModelInfo{Name: m.Name, Loaded: instance.Loaded{
+			Digest: m.Digest, ExpiresAt: expiresAt, ContextLength: m.ContextLength, Size: m.Size, VRAM: m.SizeVRAM,
+			Format: m.Details.Format, Family: m.Details.Family, ParameterSize: m.Details.ParameterSize, QuantLevel: m.Details.QuantLevel,
+		}})
 	}
 	return result, nil
 }
 
-func (p *OllamaProvider) LoadModel(ctx context.Context, t Target, model string, params map[string]string) error {
-	req := map[string]any{"model": model, "prompt": "", "stream": false}
-	for key, value := range params {
-		req[strings.ReplaceAll(key, "-", "_")] = value
+// keepLoaded is the keep_alive that keeps a model loaded until it is unloaded; a number, as the string is refused.
+const keepLoaded = -1
+
+func (p *OllamaProvider) LoadModel(ctx context.Context, t Target, model string, keepAlive *time.Duration) error {
+	body := map[string]any{"model": model, "prompt": "", "stream": false}
+	switch {
+	case keepAlive == nil:
+	case *keepAlive < 0:
+		body["keep_alive"] = keepLoaded
+	default:
+		body["keep_alive"] = int64((*keepAlive + time.Second - 1) / time.Second) // whole seconds, rounded up
 	}
-	resp, err := t.call(ctx, p.httpClient, http.MethodPost, "/api/generate", req)
+	resp, err := t.call(ctx, p.loadClient, http.MethodPost, "/api/generate", body)
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama load failed (status %d): %s", resp.StatusCode, string(resp.Body))
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound: // the daemon does not have it: the caller's to pull
+		return fmt.Errorf("%w: %s", process.ErrModelNotLocal, string(resp.Body))
 	}
-	return nil
+	return fmt.Errorf("ollama load failed (status %d): %s", resp.StatusCode, string(resp.Body))
 }
 
 func (p *OllamaProvider) UnloadModel(ctx context.Context, t Target, model string) error {
@@ -192,6 +201,23 @@ func (p *OllamaProvider) UnloadModel(ctx context.Context, t Target, model string
 		return fmt.Errorf("ollama unload failed (status %d): %s", resp.StatusCode, string(resp.Body))
 	}
 	return nil
+}
+
+const (
+	// defaultTag is the tag Ollama gives a model named without one.
+	defaultTag = ":latest"
+	// defaultRegistry and defaultNamespace are the prefixes Ollama leaves off the names it lists.
+	defaultRegistry  = "registry.ollama.ai/"
+	defaultNamespace = "library/"
+)
+
+// Identity names model as /api/ps reports it, short of case: no default prefixes, and a tag.
+func (p *OllamaProvider) Identity(model string) string {
+	model = strings.TrimPrefix(strings.TrimPrefix(model, defaultRegistry), defaultNamespace)
+	if model == "" || strings.Contains(model[strings.LastIndex(model, "/")+1:], ":") {
+		return model
+	}
+	return model + defaultTag
 }
 
 func (p *OllamaProvider) DeleteModel(ctx context.Context, t Target, model string) error {
@@ -242,7 +268,7 @@ func (p *OllamaProvider) ShowModel(ctx context.Context, t Target, model string) 
 				if r.Name == model {
 					result["running"] = true
 					result["context_length"] = r.ContextLength
-					result["size_vram"] = r.SizeVRAM
+					result["size_vram"] = r.VRAM
 					break
 				}
 			}

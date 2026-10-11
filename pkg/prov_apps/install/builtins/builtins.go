@@ -32,20 +32,6 @@ func NewDispatcher(serviceEnv install.ServiceEnvFunc, checks install.RuntimeChec
 	return d
 }
 
-// Register adds the built-in provider installers to an existing dispatcher.
-// Tests that want an empty dispatcher plus a curated subset of builtins
-// call install.NewDispatcher and pick which installers to register.
-//
-// All installers register unconditionally. Platform gating is YAML-driven
-// via ServiceConfig.Platforms at the coordinator and the same embedded
-// declarations inside each managed Python runtime's installer.
-//
-// serviceEnv is wired only into installers that start a long-lived process
-// from their plan; on-demand providers get their environment from the
-// instance launcher instead. May be nil (tests, and callers with no config
-// loaded yet).
-func Register(d *install.Dispatcher, serviceEnv install.ServiceEnvFunc) { register(d, serviceEnv, nil) }
-
 func register(d *install.Dispatcher, serviceEnv install.ServiceEnvFunc, checks install.RuntimeChecksResolver, recipes ...install.RecipeResolver) {
 	if checks == nil {
 		checks = shippedRuntimeChecks

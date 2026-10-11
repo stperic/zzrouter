@@ -36,7 +36,6 @@ type ModelService struct {
 	instanceProvider InstanceProvider // Instance management dependency
 	router           routing.Router
 	appsConfig       func() *pkgConfig.AppsConfig // Always returns current provider config
-	onModelDelete    func(modelName string)       // Optional callback after model deletion (for auto-route sync)
 }
 
 // NewModelService creates a new model service
@@ -51,11 +50,6 @@ func NewModelService(cache ModelCacheProvider, registry ModelRegistryProvider, h
 	}
 }
 
-// SetOnModelDelete sets an optional callback invoked after model deletion.
-func (s *ModelService) SetOnModelDelete(fn func(modelName string)) {
-	s.onModelDelete = fn
-}
-
 // ListModels handles listing models with caching and routing
 func (s *ModelService) ListModels(ctx context.Context, req *ListModelsRequest) ([]*cache.CachedModel, error) {
 	utils.LogDebugf("[PublicAPI] ListModels: node=%s, repo=%s, app=%s, model=%s, refresh=%v",
@@ -64,10 +58,10 @@ func (s *ModelService) ListModels(ctx context.Context, req *ListModelsRequest) (
 	ctx, cancel := ensureTimeout(ctx, DefaultServiceTimeout)
 	defer cancel()
 
-	// If refresh requested, invalidate cache (next request will rebuild)
 	if req.Refresh {
-		utils.LogDebugf("[PublicAPI] Refresh requested - invalidating cache")
-		s.cache.Invalidate()
+		if _, err := s.registry.RescanLocal(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Use centralized cache method (handles cache expiration, refresh, filtering)
@@ -139,7 +133,7 @@ func (s *ModelService) getModelDetails(ctx context.Context, model *cache.CachedM
 
 	if resp.StatusCode != 200 {
 		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body)
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
 	// Parse response (raw provider response)
@@ -211,26 +205,14 @@ func (s *ModelService) DeleteModels(ctx context.Context, req *DeleteModelsReques
 		return nil, err
 	}
 
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+
 	// Parse response
 	var deleteResp DeleteModelsResponse
 	if err := json.Unmarshal(resp.Body, &deleteResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	// Invalidate cache after deletion
-	if deleteResp.Deleted > 0 {
-		s.cache.Invalidate()
-		utils.LogDebugf("[PublicAPI] Cache invalidated after %d models deleted", deleteResp.Deleted)
-
-		// Auto-route sync: update routes for deleted models
-		if s.onModelDelete != nil {
-			for _, m := range req.Models {
-				s.onModelDelete(m.Name)
-			}
-			if req.Pattern != "" {
-				s.onModelDelete(req.Pattern)
-			}
-		}
 	}
 
 	utils.LogDebugf("[PublicAPI] Deleted %d models", deleteResp.Deleted)
@@ -304,9 +286,7 @@ func (s *ModelService) handleRescanModels(c *gin.Context) {
 			BadGateway(c, fmt.Sprintf("Rescan routing to %q failed", host))
 			return
 		}
-		if resp.StatusCode < http.StatusBadRequest {
-			s.cache.Invalidate()
-		}
+
 		c.Data(resp.StatusCode, "application/json", resp.Body)
 		return
 	}
@@ -317,9 +297,7 @@ func (s *ModelService) handleRescanModels(c *gin.Context) {
 		BadGateway(c, "Cluster rescan broadcast failed")
 		return
 	}
-	if resp.StatusCode < http.StatusBadRequest {
-		s.cache.Invalidate()
-	}
+
 	c.Data(resp.StatusCode, "application/json", resp.Body)
 }
 
@@ -414,6 +392,14 @@ func (s *ModelService) aggregateDeleteResponses(multiResp *routing.Response) (*r
 			continue
 		}
 
+		if status, ok := hostResp["status_code"].(float64); ok && status >= http.StatusBadRequest {
+			raw, err := json.Marshal(body)
+			if err != nil {
+				return nil, err
+			}
+			return nil, parseRoutedError(int(status), raw, nil)
+		}
+
 		// Extract deleted count (JSON numbers are float64)
 		if deleted, ok := body["deleted"].(float64); ok {
 			totalDeleted += int(deleted)
@@ -503,14 +489,14 @@ func (s *ModelService) handleGetModelInstance(c *gin.Context) {
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			RespondToError(c, parseRoutedError(resp.StatusCode, resp.Body))
+			RespondToError(c, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers))
 			return
 		}
 		if err := json.Unmarshal(resp.Body, &runs); err != nil {
 			BadGateway(c, "node returned an invalid run inventory")
 			return
 		}
-	} else if inst, found := s.instanceProvider.GetInstanceByModel(resolved.ModelName); found {
+	} else if inst, found := s.instanceProvider.GetInstanceByModel(resolved.Provider, resolved.ModelName); found {
 		runs.Instances = []instance.InstanceInfo{inst.ToInfo("")}
 	}
 	for _, run := range runs.Instances {

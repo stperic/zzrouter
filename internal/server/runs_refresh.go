@@ -36,8 +36,7 @@ type RunsReport struct {
 	Overridden []RunRef `json:"overridden,omitempty"`
 	// Unknown runs are ones whose node cannot say: it has not received
 	// the write, or the config would not relaunch the run. They are never
-	// restarted. A model an external daemon serves was not launched from
-	// config, so it is not in the report at all.
+	// restarted.
 	Unknown []RunRef `json:"unknown,omitempty"`
 	// RestartJobID names the job restarting the stale runs, when the
 	// write asked for it. Follow it on /jobs/:id.
@@ -113,8 +112,7 @@ func (r *runsRefresher) report(ctx context.Context, provider string, sync SyncRe
 		local = r.local()
 	}
 	for _, run := range listed.Data {
-		// No status: nothing launched the run from config here, as with a
-		// model an external daemon serves.
+		// No status: the run is terminal, or its node reports none.
 		if run.ParametersStatus == nil || run.ParametersStatus.Provider != provider || run.Status.IsTerminal() {
 			continue
 		}

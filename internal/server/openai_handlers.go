@@ -2,7 +2,7 @@
 //
 // Wire format is dictated by the OpenAI API spec: success responses use the
 // typed shapes in openai_types.go and errors use the OpenAI error envelope
-// (utils.OpenAIError) via OpenAIInvalidRequest / OpenAINodeError.
+// (utils.OpenAIError) via OpenAIInvalidRequest.
 package server
 
 import (
@@ -945,7 +945,7 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 	// proxyToInstance ModifyResponse, so the three sites can't drift.
 	if resp.StatusCode >= 400 {
 		mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
-		writeRewrittenError(c.Writer, c.Request, resp)
+		writeRewrittenError(c.Writer, c.Request, resp, nil)
 		return
 	}
 
@@ -969,9 +969,8 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 	if isStreaming {
-		streamWithUsageInject(c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+		streamWithUsageInject(c.Request, c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
 		return
 	}
-	captureNonStreamingMetrics(resp, recorder)
-	writeNormalizedBody(c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+	failBrokenBody(c.Writer, c.Request, wire.RelayBuffered(c.Writer, resp, normalizedBody(s.inference.normalizers, provider, meta, recorder), recorder))
 }

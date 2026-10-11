@@ -2,6 +2,8 @@ package httperr
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -102,6 +104,9 @@ type Responder interface {
 	NormalizeUpstreamError(status int, raw []byte) []byte
 }
 
+// StatusClientClosedRequest is nginx's 499: the caller went away before the answer, so nobody should retry on its behalf.
+const StatusClientClosedRequest = 499
+
 // InBandStreamer is the optional half of a Responder whose clients take
 // a failure on a streaming request inside a 200 stream rather than as a
 // status, the way http.Flusher is the optional half of a ResponseWriter.
@@ -116,6 +121,11 @@ type InBandStreamer interface {
 	// StreamError ends the stream with e, including whatever terminator
 	// the protocol has, and flushes.
 	StreamError(w http.ResponseWriter, e Error)
+}
+
+// StreamEnder reports a broken relay in band without a success terminator.
+type StreamEnder interface {
+	EndStream(w http.ResponseWriter, e Error)
 }
 
 // Error is one error zzRouter reports in its own voice. Each dialect
@@ -135,6 +145,20 @@ type Error struct {
 	// the body, such as the zzrouter quota block. Clients ignore members
 	// they do not know.
 	Extra map[string]any
+	// RetryAfter, when positive, is sent as a Retry-After header in whole seconds, rounded up.
+	RetryAfter time.Duration
+}
+
+// SetRetryAfter writes d as a Retry-After header in whole seconds, rounded up; d <= 0 writes nothing.
+func SetRetryAfter(h http.Header, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	secs := d / time.Second
+	if d%time.Second != 0 {
+		secs++
+	}
+	h.Set("Retry-After", strconv.FormatInt(int64(secs), 10))
 }
 
 // Error returns the actionable message while retaining structured wire fields.

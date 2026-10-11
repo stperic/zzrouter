@@ -61,16 +61,20 @@ func (s *Server) Start(ctx context.Context) error {
 	// health poll. Fires once the public listener is bound (before
 	// Serve accepts traffic) — no self-probe, no scheme guessing.
 	if s.role.Current().IsWorker() && s.cluster.signaler != nil {
-		//nolint:contextcheck // boot ping is fire-and-forget; the select below already honours s.shutdownCtx
+		s.refreshWG.Add(1)
 		go func() {
+			defer s.refreshWG.Done()
+			defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
 			select {
 			case <-s.listenerReady:
 			case <-s.shutdownCtx.Done():
 				return
 			}
-			s.cluster.signaler.NotifyCacheRefresh()
+			_ = s.cluster.signaler.NotifyCacheRefresh(s.shutdownCtx)
 		}()
 	}
+
+	s.idempotency.Start(ctx)
 
 	s.logNodeStart()
 	return s.startServing()
@@ -98,6 +102,8 @@ func (s *Server) Stop() error {
 	if s.access != nil {
 		s.access.FlushSpend()
 	}
+
+	s.idempotency.Stop()
 
 	httpErr := s.stopServing(ctx)
 

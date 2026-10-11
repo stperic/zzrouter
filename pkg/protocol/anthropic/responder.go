@@ -2,8 +2,10 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
-	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -59,9 +61,7 @@ func (r *Responder) RequestTooLarge(c *gin.Context, detail string) {
 }
 
 func (r *Responder) TooManyRequests(c *gin.Context, detail string, retryAfterSeconds int) {
-	if retryAfterSeconds > 0 {
-		c.Header("Retry-After", strconv.Itoa(retryAfterSeconds))
-	}
+	httperr.SetRetryAfter(c.Writer.Header(), time.Duration(retryAfterSeconds)*time.Second)
 	r.write(c, http.StatusTooManyRequests, detail)
 }
 
@@ -98,12 +98,16 @@ func (r *Responder) logInternal(c *gin.Context, detail string) {
 // Anthropic SDKs retry a 429 or 529 on their own, which a failure tucked
 // inside a 200 stream would defeat.
 func (*Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.Error) {
+	httperr.SetRetryAfter(w.Header(), e.RetryAfter)
 	body := map[string]any{}
 	for k, v := range e.Extra {
 		body[k] = v
 	}
 	for k, v := range envelopeWithRequestID(e.Status, e.Message, w.Header().Get("X-Request-ID")) {
 		body[k] = v
+	}
+	if e.Code != "" {
+		body["error"].(map[string]any)["code"] = e.Code
 	}
 	data, _ := json.Marshal(body)
 	w.Header().Set("Content-Type", "application/json")
@@ -123,4 +127,18 @@ func envelopeWithRequestID(status int, message, reqID string) map[string]any {
 		env["request_id"] = reqID
 	}
 	return env
+}
+
+// EndStream writes one Anthropic error event.
+func (*Responder) EndStream(w http.ResponseWriter, e httperr.Error) {
+	_ = writeStreamError(w, e)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func writeStreamError(w io.Writer, e httperr.Error) error {
+	data, _ := json.Marshal(Envelope(e.Status, e.Message))
+	_, err := fmt.Fprintf(w, "\nevent: error\ndata: %s\n\n", data)
+	return err
 }

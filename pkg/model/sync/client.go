@@ -3,9 +3,6 @@ package sync
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
@@ -356,8 +354,7 @@ func (c *Client) fileExistsWithChecksum(path, expectedSHA256 string) bool {
 	return strings.EqualFold(checksum, expectedSHA256)
 }
 
-// downloadFile downloads a single file with atomic write and checksum
-// verification.
+// Verify the manifest before rename so a bad peer cannot replace local weights.
 func (c *Client) downloadFile(
 	ctx context.Context,
 	sourceURL, model, format string,
@@ -373,109 +370,34 @@ func (c *Client) downloadFile(
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("download request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return 0, fmt.Errorf("download failed (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	tempPath := destPath + ".tmp." + shortID()
-	tempFile, err := os.Create(tempPath)
-	if err != nil {
-		return 0, fmt.Errorf("failed to create temp file: %w", err)
-	}
-
-	cleanupTemp := true
-	defer func() {
-		_ = tempFile.Close()
-		if cleanupTemp {
-			_ = os.Remove(tempPath)
-		}
-	}()
-
-	hasher := sha256.New()
-	multiWriter := io.MultiWriter(tempFile, hasher)
-
-	// +1 to detect oversized files.
-	limitedReader := io.LimitReader(resp.Body, c.maxFileSize+1)
-
-	var bytesDownloaded int64
-	startTime := utils.Now()
-	lastProgressTime := startTime
-	lastProgressBytes := int64(0)
-	buf := make([]byte, 32*1024) // 32KB buffer
-
-	for {
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		default:
-		}
-
-		n, readErr := limitedReader.Read(buf)
-		if n > 0 {
-			_, writeErr := multiWriter.Write(buf[:n])
-			if writeErr != nil {
-				return 0, fmt.Errorf("write error: %w", writeErr)
-			}
-			bytesDownloaded += int64(n)
-
-			if bytesDownloaded > c.maxFileSize {
-				return 0, fmt.Errorf("file exceeds maximum size limit (%d bytes)", c.maxFileSize)
-			}
-
+	lastTime, lastBytes := utils.Now(), int64(0)
+	previous := int64(0)
+	result, err := download.Fetch(c.httpClient, req, destPath, download.Options{
+		Hash: true, MaxSize: c.maxFileSize,
+		Progress: func(done, _ int64) {
 			now := utils.Now()
-			if now.Sub(lastProgressTime) >= time.Second && progressCallback != nil {
-				elapsed := now.Sub(lastProgressTime).Seconds()
-				speed := int64(float64(bytesDownloaded-lastProgressBytes) / elapsed)
-				progressCallback(bytesDownloaded, speed)
-				lastProgressTime = now
-				lastProgressBytes = bytesDownloaded
+			elapsed := now.Sub(lastTime).Seconds()
+			if progressCallback != nil && (done < previous || elapsed >= 1) {
+				speed := int64(0)
+				if done >= previous && elapsed > 0 {
+					speed = int64(float64(done-lastBytes) / elapsed)
+				}
+				progressCallback(done, speed)
 			}
-		}
-
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return 0, fmt.Errorf("read error: %w", readErr)
-		}
-	}
-
-	actualChecksum := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(actualChecksum, file.SHA256) {
-		return 0, fmt.Errorf("checksum mismatch: expected %s, got %s", file.SHA256, actualChecksum)
-	}
-
-	if bytesDownloaded != file.Size {
-		return 0, fmt.Errorf("size mismatch: expected %d, got %d", file.Size, bytesDownloaded)
-	}
-
-	if err := tempFile.Sync(); err != nil {
-		return 0, fmt.Errorf("failed to sync file: %w", err)
-	}
-	_ = tempFile.Close()
-
-	if err := os.Rename(tempPath, destPath); err != nil {
-		return 0, fmt.Errorf("failed to rename temp file: %w", err)
-	}
-
-	cleanupTemp = false
-	return bytesDownloaded, nil
-}
-
-// shortID returns an 8-char hex ID suitable for temp filename disambiguation.
-// crypto/rand failure falls back to a nanosecond-derived value because
-// cosmetic uniqueness is acceptable for temp files.
-func shortID() string {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%08x", utils.Now().UnixNano()&0xFFFFFFFF)
-	}
-	return hex.EncodeToString(b)
+			if done < previous || elapsed >= 1 {
+				lastTime, lastBytes = now, done
+			}
+			previous = done
+		},
+		Verify: func(result download.Result) error {
+			if !strings.EqualFold(result.SHA256, file.SHA256) {
+				return fmt.Errorf("checksum mismatch: expected %s, got %s", file.SHA256, result.SHA256)
+			}
+			if result.Size != file.Size {
+				return fmt.Errorf("size mismatch: expected %d, got %d", file.Size, result.Size)
+			}
+			return nil
+		},
+	})
+	return result.Size, err
 }

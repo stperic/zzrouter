@@ -1,11 +1,13 @@
 package mcpserver
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +23,7 @@ func TestAPIPathGuardNeverDispatches(t *testing.T) {
 		for _, path := range paths {
 			t.Run(name+path, func(t *testing.T) {
 				d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unsafe path dispatched") })
-				d.cfg.EligibleAPIRoute = func(string, string) error { t.Fatal("unsafe path reached catalog"); return nil }
+				d.cfg.EligibleAPIRoute = func(string, string) (string, error) { t.Fatal("unsafe path reached catalog"); return "", nil }
 				args := map[string]any{"path": path}
 				if name == "zz_api" {
 					args["method"] = "POST"
@@ -38,11 +40,11 @@ func TestAPISurfaceRefusalsComeFromCatalog(t *testing.T) {
 			t.Run(name+path, func(t *testing.T) {
 				d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("catalog-refused path dispatched") })
 				called := false
-				d.cfg.EligibleAPIRoute = func(method, actual string) error {
+				d.cfg.EligibleAPIRoute = func(method, actual string) (string, error) {
 					called = true
 					require.Equal(t, path, actual)
 					require.Contains(t, []string{"GET", "POST"}, method)
-					return fmt.Errorf("catalog refused surface")
+					return "", fmt.Errorf("catalog refused surface")
 				}
 				args := map[string]any{"path": path}
 				if name == "zz_api" {
@@ -67,7 +69,7 @@ func TestAPIMethodAndCatalogRefusals(t *testing.T) {
 		{"zz_api_get", map[string]any{"path": "/zzrouter/v1/jobs/j/stream"}},
 	} {
 		d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("refused call dispatched") })
-		d.cfg.EligibleAPIRoute = func(string, string) error { return fmt.Errorf("catalog refuses route") }
+		d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "", fmt.Errorf("catalog refuses route") }
 		require.Equal(t, true, callAgentTool(t, d, tc.name, tc.args)["isError"])
 	}
 }
@@ -98,10 +100,10 @@ func TestAPIJSONRequestsUseDispatcher(t *testing.T) {
 				require.JSONEq(t, tc.body, string(body))
 				writeFixture(t, w, []byte(`{"runs":{"restart_job_id":"j"}}`))
 			})
-			d.cfg.EligibleAPIRoute = func(method, path string) error {
+			d.cfg.EligibleAPIRoute = func(method, path string) (string, error) {
 				require.Equal(t, "PATCH", method)
 				require.Equal(t, "/zzrouter/v1/providers/llamacpp/parameters", path)
-				return nil
+				return "", nil
 			}
 			args := map[string]any{"method": "PATCH", "path": "/zzrouter/v1/providers/llamacpp/parameters", "query": map[string]string{"node": "worker"}, "body": tc.value, "idempotency_key": "retry", "if_match": "revision"}
 			if tc.contentType != "application/json" {
@@ -112,4 +114,77 @@ func TestAPIJSONRequestsUseDispatcher(t *testing.T) {
 			require.Equal(t, map[string]any{"response": map[string]any{"runs": map[string]any{"restart_job_id": "j"}}}, result["structuredContent"])
 		})
 	}
+}
+
+func taskToolSearch(string, int) ([]map[string]any, error) {
+	return []map[string]any{
+		{"method": "GET", "path": "/zzrouter/v1/jobs/{id}", "operationId": "getJob"},
+		{"method": "GET", "path": "/zzrouter/v1/widgets", "operationId": "listWidgets"},
+	}, nil
+}
+
+func TestAPISearchMarksTaskTools(t *testing.T) {
+	d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("search dispatched") })
+	d.cfg.SearchAPI = taskToolSearch
+	result := callAgentTool(t, d, "zz_api_search", map[string]any{"query": "jobs"})
+	require.NotEqual(t, true, result["isError"], result)
+	operations := result["structuredContent"].(map[string]any)["operations"].([]any)
+	require.Equal(t, []any{"zz_job"}, operations[0].(map[string]any)["task_tools"])
+	require.NotContains(t, operations[1].(map[string]any), "task_tools")
+	require.Contains(t, result["content"].([]any)[0].(map[string]any)["text"], "served by zz_job")
+}
+
+func TestAPIGetNamesTaskTool(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, operationID, tool string
+		args                            map[string]any
+	}{
+		{"zz_api_get", "GET", "getJob", "zz_job", map[string]any{"path": "/zzrouter/v1/jobs/run_1"}},
+		{"zz_api", "POST", "createRun", "zz_run_start", map[string]any{"path": "/zzrouter/v1/runs", "method": "POST"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, tc.method, r.Method)
+				writeFixture(t, w, []byte(`{"data":{"job_id":"run_1"}}`))
+			})
+			d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return tc.operationID, nil }
+			result := callAgentTool(t, d, tc.name, tc.args)
+			require.NotEqual(t, true, result["isError"], result)
+			require.Equal(t, map[string]any{"response": map[string]any{"data": map[string]any{"job_id": "run_1"}}, "task_tools": []any{tc.tool}}, result["structuredContent"])
+			require.Contains(t, result["content"].([]any)[0].(map[string]any)["text"], tc.tool+" serves this route; use it next.")
+		})
+	}
+}
+
+func TestAPIGetUncoveredRouteUnchanged(t *testing.T) {
+	for _, operationID := range []string{"", "listServerRoutes"} {
+		d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) { writeFixture(t, w, []byte(`{"count":1}`)) })
+		d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return operationID, nil }
+		result := callAgentTool(t, d, "zz_api_get", map[string]any{"path": "/zzrouter/v1/server/routes"})
+		require.NotEqual(t, true, result["isError"], result)
+		require.Equal(t, map[string]any{"response": map[string]any{"count": float64(1)}}, result["structuredContent"])
+		require.Equal(t, "REST request completed; interpret the response using /openapi.yaml.", result["content"].([]any)[0].(map[string]any)["text"])
+	}
+}
+
+func TestAPITaskToolsFollowRegisteredBindings(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) { writeFixture(t, w, []byte(`{}`)) })
+	d.cfg.SearchAPI = taskToolSearch
+	d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "listWidgets", nil }
+	d.bindings = map[string][]string{}
+	marks := func() (any, any) {
+		search, err := d.apiSearch(context.Background(), apiSearchInput{})
+		require.NoError(t, err)
+		get, err := d.apiGet(context.Background(), apiGetInput{Path: "/zzrouter/v1/widgets"})
+		require.NoError(t, err)
+		return search.fields["operations"].([]map[string]any)[1]["task_tools"], get.fields["task_tools"]
+	}
+	search, get := marks()
+	require.Nil(t, search)
+	require.Nil(t, get)
+	registerTool(nil, d.cfg, d.bindings, &mcp.Tool{Name: "zz_widgets"}, []string{"listWidgets"}, dispatcher.overview)
+	registerTool(nil, d.cfg, d.bindings, &mcp.Tool{Name: "zz_inventory"}, []string{"listNodes", "listWidgets"}, dispatcher.overview)
+	search, get = marks()
+	require.Equal(t, []string{"zz_inventory", "zz_widgets"}, search)
+	require.Equal(t, []string{"zz_inventory", "zz_widgets"}, get)
 }

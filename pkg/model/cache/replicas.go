@@ -43,7 +43,7 @@ func (mc *Cache) lookupReplicas(name, provider, node string) []*CachedModel {
 		return nil
 	}
 	eligible := func(m *CachedModel) bool {
-		return (provider == "" || strings.EqualFold(provider, m.Provider)) && (node == "" || strings.EqualFold(node, m.Node))
+		return !m.Incomplete && (provider == "" || strings.EqualFold(provider, m.Provider)) && (node == "" || strings.EqualFold(node, m.Node))
 	}
 	// Prefer names, then SourceID aliases, then suffixes.
 	canonical := ""

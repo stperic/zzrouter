@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -25,6 +26,13 @@ type updateApplyRequest struct {
 }
 
 type clusterUpdates struct{ server *Server }
+
+func (b clusterUpdates) Manifest(ctx context.Context, target string) (update.ReleaseManifest, error) {
+	if b.server.updateScheduler == nil {
+		return update.ReleaseManifest{}, fmt.Errorf("update scheduler is not initialized")
+	}
+	return b.server.updateScheduler.ReleaseManifest(ctx, target)
+}
 
 func (b clusterUpdates) Status(ctx context.Context, node string) (update.UpdateStatus, error) {
 	if node == b.server.node.Name() {
@@ -53,28 +61,47 @@ func (b clusterUpdates) Apply(ctx context.Context, node, target string) (string,
 	err = b.query(ctx, node, "/update/apply", http.MethodPost, body, &result)
 	return result.OperationID, err
 }
-func (b clusterUpdates) query(ctx context.Context, node, path, method string, body []byte, out any) error {
-	client := b.server.getClusterClient()
+func (b clusterUpdates) endpoint(node string) string {
 	if ep := b.server.resolveUpdateEndpoint(node); ep != nil {
-		node = ep.URL
+		return ep.URL
 	}
-	return queryUpdateNode(ctx, client, node, path, method, body, out)
+	return node
 }
 
-func queryUpdateNode(ctx context.Context, client mesh.ClusterClient, node, path, method string, body []byte, out any) error {
+func (b clusterUpdates) Window(ctx context.Context, node string) (version.ProtocolWindow, error) {
+	if node == b.server.node.Name() {
+		return version.LocalProtocolWindow(), nil
+	}
+	peer, err := queryUpdateVersion(ctx, b.server.getClusterClient(), b.endpoint(node))
+	return version.ProtocolWindow{Min: peer.MinClusterProtocol, Max: peer.ClusterProtocol}, err
+}
+
+func (b clusterUpdates) query(ctx context.Context, node, path, method string, body []byte, out any) error {
+	return queryUpdateNode(ctx, b.server.getClusterClient(), b.endpoint(node), path, method, body, out)
+}
+
+func queryUpdateVersion(ctx context.Context, client mesh.ClusterClient, node string) (version.VersionInfo, error) {
 	if client == nil {
-		return update.ErrNodeUnavailable
+		return version.VersionInfo{}, update.ErrNodeUnavailable
 	}
 	info, err := client.Unicast(ctx, node, "/zzrouter/v1/internal/version", &mesh.QueryParams{Method: http.MethodGet, Timeout: 10 * time.Second})
 	if err != nil {
-		return fmt.Errorf("%w: %s", update.ErrNodeUnavailable, err)
+		return version.VersionInfo{}, fmt.Errorf("%w: %s", update.ErrNodeUnavailable, err)
 	}
 	if info.StatusCode != http.StatusOK {
-		return fmt.Errorf("node %s version returned HTTP %d", node, info.StatusCode)
+		return version.VersionInfo{}, fmt.Errorf("node %s version returned HTTP %d", node, info.StatusCode)
 	}
 	var peer version.VersionInfo
 	if err := json.Unmarshal(info.Body, &peer); err != nil {
-		return fmt.Errorf("read node version: %w", err)
+		return version.VersionInfo{}, fmt.Errorf("read node version: %w", err)
+	}
+	return peer, nil
+}
+
+func queryUpdateNode(ctx context.Context, client mesh.ClusterClient, node, path, method string, body []byte, out any) error {
+	peer, err := queryUpdateVersion(ctx, client, node)
+	if err != nil {
+		return err
 	}
 	if !slices.Contains(peer.Capabilities, version.CapabilityClusterUpdates) {
 		return fmt.Errorf("node %s does not support cluster updates; upgrade it first", node)
@@ -355,4 +382,53 @@ func (s *Server) cancelUpdateRollout(id string) error {
 		return nil
 	}
 	return err
+}
+
+// updatePreflightRetryAfter gives an unreachable peer one health-probe cycle to come back.
+const updatePreflightRetryAfter = 5 * time.Second
+
+func (c *UpdateController) clusterApply(ctx *gin.Context, req updateApplyRequest) {
+	if req.Version == nil {
+		BadRequest(ctx, "version is required for a node update")
+		return
+	}
+	if err := update.ValidateVersion(*req.Version); err != nil {
+		BadRequest(ctx, err.Error())
+		return
+	}
+	if c.server == nil || c.server.updateRollouts == nil {
+		ServiceUnavailable(ctx, "cluster update control is not initialized")
+		return
+	}
+	nodes, err := c.server.selectUpdateNodes(req.Nodes)
+	if err != nil {
+		BadRequest(ctx, err.Error())
+		return
+	}
+	peers, err := c.server.selectUpdateNodes([]string{"all"})
+	if err != nil {
+		httperr.SetRetryAfter(ctx.Writer.Header(), updatePreflightRetryAfter)
+		RespondWithProblemOpts(ctx, http.StatusServiceUnavailable, "Service Unavailable", err.Error(), ProblemOpts{Code: string(httperr.CodeNodeUnreachable)})
+		return
+	}
+	sched := c.requireScheduler(ctx)
+	if sched == nil {
+		return
+	}
+	record, err := c.server.updateRollouts.Submit(ctx.Request.Context(), *req.Version, nodes, peers)
+	if err != nil {
+		var wire httperr.Error
+		if errors.As(err, &wire) {
+			if wire.Code == string(httperr.CodeNodeUnreachable) {
+				wire.RetryAfter = updatePreflightRetryAfter
+			}
+			respondSurfaceError(ctx, wire)
+		} else if errors.Is(err, update.ErrApplyInFlight) {
+			RespondToError(ctx, newProblemError(http.StatusConflict, "Conflict", err.Error()))
+		} else {
+			InternalNodeError(ctx, err.Error())
+		}
+		return
+	}
+	respondAccepted(ctx, "Node update job queued. Poll /zzrouter/v1/jobs/:id or /zzrouter/v1/update/status?nodes=all.", record)
 }

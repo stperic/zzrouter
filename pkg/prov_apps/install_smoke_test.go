@@ -194,7 +194,7 @@ func TestSmokeStrictStopRetainsUnconfirmedRun(t *testing.T) {
 	require.NoError(t, mgr.StopInstance(t.Context(), run.ID))
 	assert.False(t, run.StopUnconfirmed.Load())
 	assert.True(t, run.GetStatus().IsTerminal())
-	assert.Empty(t, mgr.instances.ListAll())
+	assert.Empty(t, mgr.instances.List())
 }
 
 func TestSmokeOptionsBoundAndRestricted(t *testing.T) {
@@ -331,7 +331,7 @@ func TestSmokeAdmissionBusyRetryAndExpiry(t *testing.T) {
 			} else {
 				require.ErrorIs(t, err, errSmokeBusy)
 			}
-			assert.Empty(t, mgr.instances.ListAll())
+			assert.Empty(t, mgr.instances.List())
 		})
 	}
 }
@@ -367,7 +367,7 @@ func TestSmokeCancellationStopsOwnedRunWithoutHoldingOtherRuntime(t *testing.T) 
 			mgr, err = NewProviderAppManager(cfg, WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(req *http.Request) (*http.Response, error) {
 				if mode == "removed" && req.URL.Path == "/v1/chat/completions" {
 					once.Do(func() {
-						runs := mgr.instances.ListAll()
+						runs := mgr.instances.List()
 						require.Len(t, runs, 1)
 						require.True(t, process.ProcessHasMarker(int32(runs[0].GetProcessID())))
 						closed := false
@@ -401,7 +401,7 @@ func TestSmokeCancellationStopsOwnedRunWithoutHoldingOtherRuntime(t *testing.T) 
 			} else {
 				require.Error(t, err)
 			}
-			assert.Empty(t, mgr.instances.ListAll(), "smoke cleanup must finish even with a canceled context")
+			assert.Empty(t, mgr.instances.List(), "smoke cleanup must finish even with a canceled context")
 		})
 	}
 }
@@ -414,12 +414,12 @@ func TestSmokeFrozenFeatureSelectionRefusesPredicateDrift(t *testing.T) {
 	fake.installed.Store(true)
 	mgr.installs.dispatcher.Register("test-runtime", fake)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
-	_, selected, _, err := mgr.featureRuntime(svc, "vendor/model")
+	_, selected, _, err := mgr.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "")
 	require.NoError(t, err)
 	require.Equal(t, "test-runtime", selected)
 	// Simulate the predicate disappearing while the launch waits on the selected gate.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	_, err = mgr.modelLaunchParameters(svc, LaunchRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat")
+	_, err = mgr.modelLaunchParameters(svc, process.ResolveModel(svc, "vendor/model"), EnsureRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat")
 	require.ErrorContains(t, err, "selected runtime changed")
 }
 
@@ -462,7 +462,7 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 	waiterContext := &smokeGateContext{Context: parent, selected: make(chan struct{})}
 	waiter := make(chan error, 1)
 	go func() {
-		_, err := mgr.LaunchInstance(waiterContext, LaunchRequest{Provider: "generic", Model: "registry-model"})
+		_, err := mgr.EnsureRun(waiterContext, EnsureRequest{Provider: "generic", Model: "registry-model"})
 		waiter <- err
 	}()
 	select {
@@ -476,7 +476,8 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 	default:
 		t.Error("waiting on one runtime must not hold node memory admission")
 	}
-	sibling, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "sibling", Model: "other-model"})
+	siblingResult, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "sibling", Model: "other-model"})
+	sibling := siblingResult.Run
 	require.NoError(t, err)
 	require.NoError(t, mgr.StopInstance(t.Context(), sibling.ID))
 	smoke := make(chan error, 1)

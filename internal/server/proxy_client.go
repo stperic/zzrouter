@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -46,6 +48,7 @@ func portFromURL(u *url.URL) int {
 // MCP, responses API). It owns the HTTP clients that reach upstreams and
 // the response normalizer registry.
 type ProxyClient struct {
+	failureClassifier   func(string) *httperr.Classifier
 	streamClient        *http.Client
 	clusterClient       func() *http.Client
 	normalizers         *ResponseNormalizers
@@ -80,7 +83,11 @@ func NewProxyClient(
 	onRateLimit func(provider string, resp *http.Response),
 	injectUsageMetadata func() bool,
 	localNode func() string,
+	failureClassifier func(string) *httperr.Classifier,
 ) *ProxyClient {
+	if failureClassifier == nil {
+		failureClassifier = func(string) *httperr.Classifier { return nil }
+	}
 	if injectUsageMetadata == nil {
 		injectUsageMetadata = func() bool { return false }
 	}
@@ -91,6 +98,7 @@ func NewProxyClient(
 		clusterClient = func() *http.Client { return nil }
 	}
 	return &ProxyClient{
+		failureClassifier:   failureClassifier,
 		streamClient:        streamClient,
 		clusterClient:       clusterClient,
 		normalizers:         normalizers,
@@ -194,16 +202,16 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 		if n := req.Header.Get(constants.HeaderServingNode); n != "" {
 			w.Header().Set(constants.HeaderServingNode, n)
 		}
-		writeRewrittenError(w, req, resp)
+		classifier := p.failureClassifier(providerType)
+		if up.IsCluster() {
+			classifier = nil
+		}
+		writeRewrittenError(w, req, resp, classifier)
 		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
 		return
 	}
 
 	streaming := isStreamingResponse(resp)
-
-	if !streaming {
-		captureNonStreamingMetrics(resp, recorder)
-	}
 
 	mergeUpstreamHeaders(w.Header(), resp.Header)
 	stripUpstreamIdentifyingHeaders(w.Header())
@@ -233,10 +241,10 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 	}
 
 	if streaming {
-		streamWithUsageInject(w, resp, p.normalizers, providerType, meta, recorder)
+		streamWithUsageInject(req, w, resp, p.normalizers, providerType, meta, recorder)
 		return
 	}
-	writeNormalizedBody(w, resp, p.normalizers, providerType, meta, recorder)
+	failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(p.normalizers, providerType, meta, recorder), recorder))
 }
 
 // ForwardDetached sends a request to a backend but does NOT write to the client.
@@ -244,13 +252,24 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 // The caller is responsible for closing resp.Body. up decides what of the
 // caller's headers travel.
 func (p *ProxyClient) ForwardDetached(ctx context.Context, method, targetURL string, headers http.Header, up backend.Upstream, body []byte) (*http.Response, error) {
+	var wroteRequest, traced atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GetConn: func(string) { traced.Store(true) },
+		// Cancellation can return before the write hooks run, so an acquired connection is uncertain.
+		GotConn:      func(httptrace.GotConnInfo) { wroteRequest.Store(true) },
+		WroteHeaders: func() { wroteRequest.Store(true) },
+		WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) },
+	})
 	proxyReq, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, &fallback.RequestError{Err: err}
 	}
 	proxyReq.Header = upstreamHeaders(headers, up)
-
-	return p.do(proxyReq, up)
+	resp, err := p.do(proxyReq, up)
+	if err != nil {
+		return resp, &fallback.RequestError{Err: err, WroteRequest: wroteRequest.Load() || !traced.Load()}
+	}
+	return resp, nil
 }
 
 // htmlSniffPrefixCap caps the number of body bytes we read to confirm the

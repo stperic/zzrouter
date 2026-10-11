@@ -22,31 +22,25 @@ import (
 // This gives users immediate load-balancing without manual route
 // configuration.
 type Manager struct {
-	groupStore      *group.GroupStore
-	routePrefix     string                      // prefix for auto-route names (e.g., "route-")
-	invalidateCache func()                      // triggers model cache invalidation
-	getAllModels    func() []*cache.CachedModel // reads all models from cache
-	events          *route_events.Bus           // optional fan-out for auto_route_* lifecycle events
+	groupStore   *group.GroupStore
+	routePrefix  string                      // prefix for auto-route names (e.g., "route-")
+	getAllModels func() []*cache.CachedModel // reads all models from cache
+	events       *route_events.Bus           // optional fan-out for auto_route_* lifecycle events
 }
 
 // New constructs an auto-route Manager. Callers supply:
 //   - groupStore: the underlying group catalog to mutate.
 //   - routePrefix: prepended to every auto-route key (e.g., "route-").
-//   - invalidateCache: called from Sync* to trigger a cache refresh;
-//     the refresh is the side-effect that actually drives reconciliation
-//     (via SyncAllFromCache on the refresh tail).
 //   - getAllModels: reads the current cache snapshot.
 func New(
 	groupStore *group.GroupStore,
 	routePrefix string,
-	invalidateCache func(),
 	getAllModels func() []*cache.CachedModel,
 ) *Manager {
 	return &Manager{
-		groupStore:      groupStore,
-		routePrefix:     routePrefix,
-		invalidateCache: invalidateCache,
-		getAllModels:    getAllModels,
+		groupStore:   groupStore,
+		routePrefix:  routePrefix,
+		getAllModels: getAllModels,
 	}
 }
 
@@ -109,26 +103,6 @@ func buildReplicasFromInstances(instances []*cache.CachedModel) []group.Replica 
 		})
 	}
 	return replicas
-}
-
-// SyncAfterPull triggers a cache refresh so that SyncAllFromCache (which runs
-// at the tail of RefreshCacheSync) detects the new model and creates routes
-// if needed. The model/repo/node identity of the freshly-pulled model is not
-// consulted — reconciliation walks the whole post-refresh cache.
-func (m *Manager) SyncAfterPull() {
-	if m == nil || m.invalidateCache == nil {
-		return
-	}
-	m.invalidateCache()
-}
-
-// SyncAfterDelete triggers a cache refresh so that SyncAllFromCache cleans up
-// routes for deleted models.
-func (m *Manager) SyncAfterDelete(modelName string) {
-	if m == nil || m.invalidateCache == nil {
-		return
-	}
-	m.invalidateCache()
 }
 
 // SyncAllFromCache scans the already-populated model cache for models that exist on

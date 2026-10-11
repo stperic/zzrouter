@@ -110,6 +110,7 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		configPath := filepath.Join(modelDir, "config.json")
 		extra := parseHuggingFaceConfig(configPath)
 		format := detectModelFormat(modelDir, modelName)
+		complete, err := layout.Complete(modelDir)
 
 		// GGUF repos: one entry per weights variant; a split set is one
 		// entry, and a feature's file is none.
@@ -135,6 +136,7 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		}
 
 		models = append(models, &metadata.ModelMetadata{
+			Incomplete: !complete || err != nil,
 			Name:       modelName,
 			FullPath:   modelDir,
 			Format:     format,

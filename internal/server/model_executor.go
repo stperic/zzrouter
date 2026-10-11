@@ -20,11 +20,10 @@ import (
 )
 
 // InternalExecutor handles direct execution against local providers
-// Routing remains with the caller; local mutations invalidate catalog evidence.
+// Routing remains with the caller; local mutations publish catalog evidence.
 type InternalExecutor struct {
-	modelDetails       func(string, string, map[string]any) map[string]any
-	inventoryStatus    func(context.Context, map[string]string) []cache.InventoryUnavailable
-	invalidateCache    func()
+	publishCatalog     func() error
+	modelCache         *cache.Cache
 	registry           *modelregistry.Registry
 	getNodename        func() string
 	ollamaDaemon       func() (*backend.Resolved, error)
@@ -32,7 +31,6 @@ type InternalExecutor struct {
 	getHFConnector     func() *huggingface.Connector
 	isCloudProvider    func(string) bool
 	configStore        *pkgConfig.AppsConfigStore
-	refreshCacheSync   func(context.Context) error
 	getResourceMetrics func() any
 }
 
@@ -45,7 +43,7 @@ func NewInternalExecutor(
 	getHFConnector func() *huggingface.Connector,
 	isCloudProvider func(string) bool,
 	configStore *pkgConfig.AppsConfigStore,
-	refreshCacheSync func(context.Context) error,
+	publishCatalog func() error,
 	getResourceMetrics func() any,
 ) *InternalExecutor {
 	return &InternalExecutor{
@@ -56,7 +54,7 @@ func NewInternalExecutor(
 		getHFConnector:     getHFConnector,
 		isCloudProvider:    isCloudProvider,
 		configStore:        configStore,
-		refreshCacheSync:   refreshCacheSync,
+		publishCatalog:     publishCatalog,
 		getResourceMetrics: getResourceMetrics,
 	}
 }
@@ -68,37 +66,11 @@ func (e *InternalExecutor) GetLocalModels(ctx context.Context) ([]map[string]any
 	return models, err
 }
 
-func (e *InternalExecutor) localModelSnapshot(ctx context.Context) ([]map[string]any, map[string]string, error) {
-	utils.LogDebugf("[InternalAPI] GetLocalModels called")
-
-	// Get models from registry
-	registry := e.registry
-	if registry == nil {
-		return nil, nil, fmt.Errorf("model registry not initialized")
+func (e *InternalExecutor) localModelSnapshot(ctx context.Context) ([]map[string]any, []cache.InventoryUnavailable, error) {
+	if e.modelCache == nil {
+		return nil, nil, fmt.Errorf("model cache not initialized")
 	}
-
-	models, failures, err := registry.ModelSnapshot(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list models: %w", err)
-	}
-
-	hostname := e.getNodename()
-
-	result := make([]map[string]any, 0, len(models))
-	for _, m := range models {
-		// Use ToOllamaFormat which handles ALL provider types (not just Ollama)
-		// This converts ModelMetadata → map[string]interface{} with proper formatting
-		modelMap := m.ToOllamaFormat(hostname)
-		result = append(result, modelMap)
-	}
-
-	var cfg *pkgConfig.AppsConfig
-	if e.configStore != nil {
-		cfg = e.configStore.Config()
-	}
-	result = cache.EnrichLocalItems(result, cfg, e.modelDetails)
-	utils.LogDebugf("[InternalAPI] Returning %d local models", len(result))
-	return result, failures, nil
+	return e.modelCache.LocalModelSnapshot(ctx)
 }
 
 // ShowLocalModel retrieves detailed model information from the actual provider
@@ -244,13 +216,9 @@ func (e *InternalExecutor) HandleInternalDeleteModels(c *gin.Context) {
 
 	utils.LogDebugf("[InternalAPI] Deleted %d models, %d errors", deleted, len(errors))
 
-	// Every node has admission evidence, including workers. A partial deletion
-	// also changes that evidence.
 	if deleted > 0 {
-		if e.invalidateCache != nil {
-			e.invalidateCache()
-		} else {
-			e.registry.InvalidateScanCache()
+		if !publishOr503(c, e.publishCatalog) {
+			return
 		}
 	}
 
@@ -299,9 +267,6 @@ func (e *InternalExecutor) deleteLocal(c *gin.Context, req *DeleteModelsRequest)
 			} else {
 				modelsToDelete = append(modelsToDelete, cloudModelNames...)
 
-				if err := e.refreshCacheSync(c.Request.Context()); err != nil {
-					slog.Warn("Cache refresh after cloud model removal failed", "error", err)
-				}
 				slog.Info("Cloud models removed", "count", len(cloudModelNames))
 			}
 		}
@@ -339,12 +304,12 @@ func (e *InternalExecutor) deleteLocal(c *gin.Context, req *DeleteModelsRequest)
 // ============================================================================
 
 // HandleInternalListModels is the INTERNAL endpoint for listing models
-// Called by the router to get actual model data - NO routing, NO cache
+// Local catalog publication also supplies the worker's admission evidence.
 // Endpoint: GET /zzrouter/internal/models
 func (e *InternalExecutor) HandleInternalListModels(c *gin.Context) {
 	utils.LogDebugf("[InternalAPI] /zzrouter/internal/models called from %s", c.ClientIP())
 
-	models, failures, err := e.localModelSnapshot(c.Request.Context())
+	models, unavailable, err := e.localModelSnapshot(c.Request.Context())
 	if err != nil {
 		utils.LogDebugf("[InternalAPI] Error getting local models: %v", err)
 		InternalNodeError(c, "Failed to get local models")
@@ -354,9 +319,7 @@ func (e *InternalExecutor) HandleInternalListModels(c *gin.Context) {
 	utils.LogDebugf("[InternalAPI] Returning %d models", len(models))
 
 	resp := gin.H{"models": models}
-	if e.inventoryStatus != nil {
-		resp["inventory_unavailable"] = e.inventoryStatus(c.Request.Context(), failures)
-	}
+	resp["inventory_unavailable"] = unavailable
 
 	// Piggyback resource metrics so the coordinator doesn't need a separate broadcast
 	if metrics := e.getResourceMetrics(); metrics != nil {
@@ -385,10 +348,8 @@ func (e *InternalExecutor) HandleInternalRescanModels(c *gin.Context) {
 		InternalNodeError(c, "model registry not initialized")
 		return
 	}
-	if e.invalidateCache != nil {
-		e.invalidateCache()
-	} else {
-		e.registry.InvalidateScanCache()
+	if !publishOr503(c, e.publishCatalog) {
+		return
 	}
 
 	models, err := e.GetLocalModels(c.Request.Context())

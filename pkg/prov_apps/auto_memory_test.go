@@ -35,11 +35,12 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	preview, err := mgr.prepareLaunch(svc, "generic", "chat", LaunchRequest{Provider: "generic", Model: "registry-model"}, 8640)
+	preview, err := processEngine{mgr}.prepare(svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
 	assert.NotContains(t, preview.resolved.Parameters, "dtype")
-	run, err := mgr.LaunchInstance(t.Context(), LaunchRequest{Provider: "generic", Model: "registry-model", Parameters: map[string]string{"memory_fraction": "auto", "tensor_parallel_size": "2"}})
+	runResult, err := mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "registry-model", Parameters: map[string]string{"memory_fraction": "auto", "tensor_parallel_size": "2"}})
+	run := runResult.Run
 	require.NoError(t, err)
 	assert.Equal(t, "0.3000", run.Resolved().Parameters["memory-fraction"])
 	assert.Equal(t, "memory-fraction", run.Resolved().AutoMemory)
@@ -64,8 +65,8 @@ func TestAutoMemoryIntentPreservesParameterStatusWithoutDiscovery(t *testing.T) 
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	mgr.ReloadConfig(cfg)
-	req := LaunchRequest{Provider: "vllm", Model: "vendor/model"}
-	prepared, err := mgr.prepareLaunch(svc, "vllm", "chat", req, 8100)
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
+	prepared, err := processEngine{mgr}.prepare(svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	prepared.resolved.Parameters["memory-fraction"] = "0.5"
 	run := instance.NewInstance("test", "vllm", "vendor/model", 8100, 0, 0)
@@ -109,4 +110,43 @@ func TestAutoMemoryNumericAliasesRemainUnchanged(t *testing.T) {
 	assert.Empty(t, key)
 	assert.Equal(t, original, params)
 	assert.NotContains(t, params, "gpu-memory-utilization")
+}
+
+func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix GPU observation fixture")
+	}
+	isolateProviderRoot(t)
+	mgr, svc, dir := featureLaunchFixture(t)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 9500' ;;\nesac\n"), 0700))
+	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+	require.NoError(t, os.Truncate(filepath.Join(dir, "weights.gguf"), 1024*1024*1024))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"num_hidden_layers":32,"num_key_value_heads":8,"num_attention_heads":32,"hidden_size":4096,"torch_dtype":"float16"}`), 0600))
+	svc.Defaults.Metadata = &config.AppMetadata{ContextParam: "max-model-len"}
+	svc.Defaults.Parameters["max-model-len"] = "2048"
+	svc.Defaults.Parameters["memory-fraction"] = "auto"
+	mgr.memoryBudget = func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "memory-fraction"}, nil
+	}
+	mgr.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "later.gguf"), []byte("later weights"), 0600))
+		return Localized{Params: params}, nil
+	}
+	req := EnsureRequest{Provider: "vllm", Model: "variant"}
+	inst := instance.NewInstance("need-argv", "vllm", req.Model, 8100, 0, 0)
+	inst.Endpoint = "chat"
+	run, err := mgr.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
+	require.NoError(t, err)
+	assert.Contains(t, run.args, filepath.Join(dir, "weights.gguf"))
+	require.Contains(t, run.args, "--memory-fraction")
+	for i, arg := range run.args {
+		if arg == "--memory-fraction" {
+			require.Less(t, i+1, len(run.args))
+			assert.Equal(t, "0.5914", run.args[i+1])
+		}
+	}
+	assert.Equal(t, "0.5914", inst.Resolved().Parameters["memory-fraction"])
+	assert.Equal(t, "memory-fraction", inst.Resolved().AutoMemory)
 }

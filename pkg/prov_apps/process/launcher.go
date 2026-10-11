@@ -35,6 +35,9 @@ type LaunchResult struct {
 	PID            int
 	ProcessGroupID int
 	Process        *os.Process
+	Command        *instance.LaunchCommand
+	StdinPipe      io.WriteCloser // nil when the pipe could not be made
+	JobHandle      uintptr        // Windows Job Object; 0 elsewhere
 	command        *exec.Cmd
 }
 
@@ -212,23 +215,14 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 			"pid", pid, "error", jobErr)
 	}
 
-	// Store process info + Windows handles on the instance.
-	inst.SetProcessInfo(pid, pgid, &instance.LaunchCommand{
-		Command:     originalCmd,
-		Args:        originalArgs,
-		Environment: envVars,
-	})
-	if stdinPipe != nil {
-		inst.SetStdinPipe(stdinPipe)
-	}
-	if jobHandle != 0 {
-		inst.SetJobHandle(jobHandle)
-	}
-
+	// The caller records the process and its Windows handles on the instance.
 	return &LaunchResult{
 		PID:            pid,
 		ProcessGroupID: pgid,
 		Process:        process.Process,
+		Command:        &instance.LaunchCommand{Command: originalCmd, Args: originalArgs, Environment: envVars},
+		StdinPipe:      stdinPipe,
+		JobHandle:      jobHandle,
 		command:        process,
 	}, nil
 }

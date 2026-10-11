@@ -4,7 +4,6 @@ package llm
 import (
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
-	"go.opentelemetry.io/otel/semconv/v1.40.0/genaiconv"
 
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 )
@@ -96,12 +95,6 @@ func RequestType(reqType string) attribute.KeyValue {
 	return RequestTypeKey.String(string(RequestTypeToOperation(reqType)))
 }
 
-// Operation returns the typed `gen_ai.operation.name` attribute. Prefer
-// this over RequestType when the caller already holds a typed value.
-func Operation(op genaiconv.OperationNameAttr) attribute.KeyValue {
-	return RequestTypeKey.String(string(op))
-}
-
 // RequestStream returns the zzrouter-namespaced streaming flag attribute.
 // No OTel GenAI canonical exists for this concept.
 func RequestStream(streaming bool) attribute.KeyValue {
@@ -120,12 +113,6 @@ func ResponseModel(name string) attribute.KeyValue {
 	return ResponseModelKey.String(genai.GateModelLabel(name))
 }
 
-// ResponseID returns the `gen_ai.response.id` attribute — the upstream's
-// response identifier (e.g. OpenAI's `id` field).
-func ResponseID(id string) attribute.KeyValue {
-	return ResponseIDKey.String(id)
-}
-
 // ServerAddress returns the `server.address` attribute — the upstream
 // backend host the request was dispatched to.
 func ServerAddress(addr string) attribute.KeyValue {
@@ -140,7 +127,7 @@ func ServerPort(port int) attribute.KeyValue {
 
 // ErrorType returns the `error.type` attribute. Caller-side closed-enum
 // values (e.g. upstream_rate_limited, model_not_found) match the metric-side
-// taxonomy enforced via SetErrorFromStatus / pre-backend tagging.
+// taxonomy enforced via pre-backend tagging.
 func ErrorType(errType string) attribute.KeyValue {
 	return ErrorTypeKey.String(errType)
 }

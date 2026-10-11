@@ -32,7 +32,7 @@ func mountModelGroupsTestRouter(t *testing.T, yaml string) *gin.Engine {
 		c.Next()
 	})
 	api := r.Group("/zzrouter/v1")
-	ctrl.RegisterPublicRoutes(api)
+	ctrl.RegisterPublicRoutes(api, (&Server{idempotency: newIdempotencyStore()}).idempotent)
 	return r
 }
 

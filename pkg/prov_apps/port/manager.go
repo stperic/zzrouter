@@ -330,7 +330,7 @@ func (m *AppPoolManager) getPool(provider string) (*Pool, bool) {
 }
 
 // EnsurePool registers a port pool for a provider if one doesn't already exist.
-// Called after a provider is installed/enabled mid-session so that LaunchInstance
+// Called after a provider is installed/enabled mid-session so that EnsureRun
 // can allocate ports without requiring a server restart.
 // Validates against overlapping port ranges before committing.
 func (m *AppPoolManager) EnsurePool(name string, svc config.ServiceConfig) error {

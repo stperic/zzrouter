@@ -31,7 +31,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 	}
 
 	// Apply the same tier opt-outs as launch.
-	if launch, err := m.ResolveLaunchParameters(LaunchRequest{Provider: provider, Model: model}); err == nil {
+	if launch, err := m.ResolveLaunchParameters(EnsureRequest{Provider: provider, Model: model}); err == nil {
 		for name, f := range svc.Features {
 			if len(f.Files) > 0 && states[name] == "present" && (launch.Params[f.Flag] == "" || launch.Params[f.Flag] == "false") {
 				states[name] = "available"
@@ -39,7 +39,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 		}
 	}
 	out["features"] = states
-	effective, _, _, err := m.featureRuntime(svc, model)
+	effective, _, _, err := m.featureRuntime(svc, process.ResolveModel(svc, model), "")
 	if err == nil && effective.Capabilities != nil {
 		out["wire_endpoints"] = append([]string{}, wireEndpoints(effective)...)
 	}
@@ -48,7 +48,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 		cfg := inst.SnapshotConfig()
 		if cfg.Provider == provider && cfg.Model == model && inst.IsRunning() {
 			if eps := inst.Resolved().WireEndpoints; eps != nil {
-				out["wire_endpoints"] = slices.Clone(eps)
+				out["wire_endpoints"] = eps
 				snapshot := inst.Resolved()
 				for name, f := range svc.Features {
 					if states[name] != "present" {
@@ -57,7 +57,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 					if len(f.Files) > 0 && (snapshot.Parameters[f.Flag] == "" || snapshot.Parameters[f.Flag] == "false") {
 						states[name] = "available"
 					}
-					if f.Runtime != "" && !slices.Equal(eps, f.WireEndpoints) {
+					if f.Runtime != "" && !slices.Equal(eps, config.EffectiveWireEndpoints(f.WireEndpoints)) {
 						states[name] = "available"
 					}
 				}
@@ -68,7 +68,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 }
 
 func (m *ProviderAppManager) modelFeatureState(svc config.ServiceConfig, model, name string, f config.Feature, details map[string]any) string {
-	dir, local := process.ModelDirectory(svc, model)
+	dir := process.ResolveModel(svc, model).Directory()
 	state := "unknown"
 	switch {
 	case len(f.Files) > 0:
@@ -82,7 +82,7 @@ func (m *ProviderAppManager) modelFeatureState(svc config.ServiceConfig, model, 
 			}
 		}
 	case f.Runtime != "":
-		if local {
+		if dir != "" {
 			qualifies, err := featurePredicate(dir, f.When)
 			if err == nil {
 				state = "unsupported"

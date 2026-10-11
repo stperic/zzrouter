@@ -35,12 +35,12 @@ func cleanupProviderManager(t *testing.T, m *ProviderAppManager) {
 		// testing cancels t.Context before cleanup, so shutdown needs its own budget.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		instances := m.instances.ListAll()
+		instances := m.instances.List()
 		assert.NoError(t, m.Stop(ctx))
 		for _, inst := range instances {
 			assert.NoError(t, inst.WaitForGoroutines(ctx), "instance %s must finish before fixture removal", inst.ID)
 		}
-		assert.Empty(t, m.instances.ListAll(), "cleanup must stop every fixture instance")
+		assert.Empty(t, m.instances.List(), "cleanup must stop every fixture instance")
 	})
 }
 
@@ -158,15 +158,16 @@ func TestProviderAppManager_Versions(t *testing.T) {
 	assert.Empty(t, versions)
 }
 
-func TestProviderAppManager_LaunchInstance(t *testing.T) {
+func TestProviderAppManager_EnsureRun(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 	assert.NotEmpty(t, inst.ID)
 	assert.Equal(t, "vllm", inst.Provider)
@@ -178,7 +179,7 @@ func TestProviderAppManager_LaunchInstance(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, inst.ID, got.ID)
 
-	gotByModel, ok := m.GetInstanceByModel("llama3")
+	gotByModel, ok := m.GetInstanceByModel("", "llama3", EndpointChat)
 	assert.True(t, ok)
 	assert.Equal(t, inst.ID, gotByModel.ID)
 
@@ -193,10 +194,11 @@ func TestProviderAppManager_StopInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 
 	err = m.StopInstance(context.Background(), inst.ID)
@@ -211,12 +213,13 @@ func TestProviderAppManager_RestartInstance(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider:   "vllm",
 		Model:      "llama3",
 		Parameters: map[string]string{"temperature": "0.7"},
 		EnvVars:    map[string]string{"HF_TOKEN": "secret"},
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 	oldID := inst.ID
 
@@ -262,7 +265,7 @@ func TestProviderAppManager_LaunchAfterStop(t *testing.T) {
 
 	_ = m.Stop(context.Background())
 
-	_, err = m.LaunchInstance(context.Background(), LaunchRequest{
+	_, err = m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 	})
@@ -323,10 +326,11 @@ func TestProviderAppManager_Events(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 
 	select {
@@ -351,8 +355,8 @@ func TestProviderAppManager_Stop(t *testing.T) {
 	require.NoError(t, err)
 
 	// Launch some instances
-	_, _ = m.LaunchInstance(context.Background(), LaunchRequest{Provider: "vllm", Model: "a"})
-	_, _ = m.LaunchInstance(context.Background(), LaunchRequest{Provider: "vllm", Model: "b"})
+	_, _ = m.EnsureRun(context.Background(), EnsureRequest{Provider: "vllm", Model: "a"})
+	_, _ = m.EnsureRun(context.Background(), EnsureRequest{Provider: "vllm", Model: "b"})
 
 	err = m.Stop(context.Background())
 	require.NoError(t, err)
@@ -425,7 +429,7 @@ func TestInstallCoordinator_UpgradeRefusesRunning(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	_, _ = m.LaunchInstance(context.Background(), LaunchRequest{Provider: "vllm", Model: "llama3"})
+	_, _ = m.EnsureRun(context.Background(), EnsureRequest{Provider: "vllm", Model: "llama3"})
 
 	_, err = m.Install().UpgradeAsync(context.Background(), "vllm", "", nil)
 	assert.ErrorIs(t, err, ErrInstancesRunning)
@@ -499,12 +503,12 @@ func TestProviderAppManager_ReloadConfig_NilSafe(t *testing.T) {
 	assert.Empty(t, m.SupportedProviders(), "SupportedProviders should return empty after nil reload")
 }
 
-func TestProviderAppManager_LaunchInstance_InvalidProvider(t *testing.T) {
+func TestProviderAppManager_EnsureRun_InvalidProvider(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	_, err = m.LaunchInstance(context.Background(), LaunchRequest{
+	_, err = m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "nonexistent",
 		Model:    "llama3",
 	})
@@ -512,12 +516,12 @@ func TestProviderAppManager_LaunchInstance_InvalidProvider(t *testing.T) {
 	assert.ErrorIs(t, err, ErrProviderNotFound)
 }
 
-func TestProviderAppManager_LaunchInstance_DangerousEnvVar(t *testing.T) {
+func TestProviderAppManager_EnsureRun_DangerousEnvVar(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	_, err = m.LaunchInstance(context.Background(), LaunchRequest{
+	_, err = m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 		EnvVars:  map[string]string{"LD_PRELOAD": "/evil.so"},
@@ -530,12 +534,12 @@ func TestProviderAppManager_LaunchInstance_DangerousEnvVar(t *testing.T) {
 	}
 }
 
-func TestProviderAppManager_LaunchInstance_InvalidParams(t *testing.T) {
+func TestProviderAppManager_EnsureRun_InvalidParams(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	_, err = m.LaunchInstance(context.Background(), LaunchRequest{
+	_, err = m.EnsureRun(context.Background(), EnsureRequest{
 		Provider:   "vllm",
 		Model:      "llama3",
 		Parameters: map[string]string{"key;inject": "value"},
@@ -544,15 +548,16 @@ func TestProviderAppManager_LaunchInstance_InvalidParams(t *testing.T) {
 	assert.ErrorIs(t, err, ErrParameterValidation)
 }
 
-func TestProviderAppManager_LaunchInstance_HealthURL(t *testing.T) {
+func TestProviderAppManager_EnsureRun_HealthURL(t *testing.T) {
 	m, err := NewProviderAppManager(testAppsConfig())
 	require.NoError(t, err)
 	defer func() { _ = m.Stop(context.Background()) }()
 
-	inst, err := m.LaunchInstance(context.Background(), LaunchRequest{
+	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider: "vllm",
 		Model:    "llama3",
 	})
+	inst := instResult.Run
 	require.NoError(t, err)
 
 	// vllm config has health_check.path = /v1/models

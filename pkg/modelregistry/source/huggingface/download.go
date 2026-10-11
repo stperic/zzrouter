@@ -2,10 +2,7 @@ package huggingface
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
@@ -91,7 +89,7 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		dest := filepath.Join(dir, filepath.FromSlash(f.file.Name))
 		sum, err := hfc.fetch(ctx, req.Repo, f.file, dest, func(n int64) {
 			done += n
-			if now := utils.Now(); now.Sub(last) >= progressInterval {
+			if now := utils.Now(); n < 0 || now.Sub(last) >= progressInterval {
 				last = now
 				report("downloading")
 			}
@@ -210,74 +208,26 @@ func missing(files []planned, manifest *integrity.ModelManifest, dir string) (fe
 	return fetch, held
 }
 
-// fetch downloads one file to dest through its partial path and returns
-// its SHA256. The partial is removed on any failure, cancellation
-// included, so an interrupted download leaves nothing behind.
-func (hfc *Connector) fetch(ctx context.Context, repo string, file metadata.TreeFileEntry, dest string, progress func(int64)) (sum string, err error) {
-	req, err := hfc.newGet(ctx,
-		fmt.Sprintf("%s%s/resolve/main/%s", hfc.downloadBase, repo, encodeRepoFilePath(file.Name)))
+func (hfc *Connector) fetch(ctx context.Context, repo string, file metadata.TreeFileEntry, dest string, progress func(int64)) (string, error) {
+	req, err := hfc.newGet(ctx, fmt.Sprintf("%s%s/resolve/main/%s", hfc.downloadBase, repo, encodeRepoFilePath(file.Name)))
 	if err != nil {
 		return "", err
 	}
-	resp, err := (&http.Client{Timeout: httpTimeout}).Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", err
-	}
-	out, err := integrity.CreatePartial(dest)
-	if err != nil {
-		return "", err
-	}
-	partial := out.Name()
-	defer func() {
-		_ = out.Close()
-		if err != nil {
-			_ = os.Remove(partial)
-		}
-	}()
-
-	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(out, hasher, progressWriter(progress)), contextReader{ctx, resp.Body}); err != nil {
-		return "", err
-	}
-	sum = hex.EncodeToString(hasher.Sum(nil))
-	if want := strings.ToLower(strings.TrimSpace(file.SHA256)); want != "" && sum != want {
-		return "", fmt.Errorf("sha256 mismatch for %s: got %s, want %s", file.Name, sum, want)
-	}
-	if err := out.Close(); err != nil {
-		return "", err
-	}
-	// On Windows this fails while an engine holds dest open; the
-	// download reports it rather than replacing a file in use.
-	return sum, os.Rename(partial, dest)
-}
-
-// progressWriter reports the bytes written through it.
-type progressWriter func(int64)
-
-func (p progressWriter) Write(b []byte) (int, error) {
-	if p != nil {
-		p(int64(len(b)))
-	}
-	return len(b), nil
-}
-
-// contextReader stops a copy between reads once ctx is done.
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (c contextReader) Read(b []byte) (int, error) {
-	if err := c.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return c.r.Read(b)
+	var done int64
+	result, err := download.Fetch(&http.Client{Timeout: httpTimeout}, req, dest, download.Options{
+		Hash: true,
+		Progress: func(n, _ int64) {
+			if progress != nil {
+				progress(n - done)
+			}
+			done = n
+		},
+		Verify: func(result download.Result) error {
+			if want := strings.ToLower(strings.TrimSpace(file.SHA256)); want != "" && result.SHA256 != want {
+				return fmt.Errorf("sha256 mismatch for %s: got %s, want %s", file.Name, result.SHA256, want)
+			}
+			return nil
+		},
+	})
+	return result.SHA256, err
 }

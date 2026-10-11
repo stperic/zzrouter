@@ -98,7 +98,7 @@ type ProgressReporter interface {
 
 // ServiceEnvFunc reports the environment a provider's config declares for
 // the long-lived process it starts, and is wired into the installers that
-// start one (see builtins.Register).
+// start one (see builtins.NewDispatcher).
 //
 // Read when a plan is BUILT rather than when the installer is registered,
 // so an edited config lands on the next start without re-wiring anything.
@@ -213,8 +213,7 @@ type Dispatcher struct {
 
 // NewDispatcher creates an empty install dispatcher. The built-in provider
 // installers live in pkg/prov_apps/install/builtins; call
-// builtins.NewDispatcher to get a pre-wired dispatcher, or this
-// constructor + builtins.Register to populate an existing one. Keeping
+// builtins.NewDispatcher to get a pre-wired dispatcher. Keeping
 // the two apart means install root has no knowledge of concrete providers.
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{

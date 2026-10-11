@@ -5,27 +5,22 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
-	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -76,13 +71,14 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		return fmt.Errorf("%s", problem.Message)
 	}
 
-	// A provider with its own endpoint (external, service, cloud) is
-	// forwarded to; only on-demand providers go on to a running instance.
-	if resolved, ok := s.backend.Resolve(providerType); ok {
-		body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
-		target := backend.PassthroughTarget(resolved.Endpoint, req.URL.Path, req.URL.RawQuery)
-		s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
-		return nil
+	// A provider without runs is forwarded to; every other one serves through a run.
+	if !s.hasRuns(providerType) {
+		if resolved, ok := s.backend.Resolve(providerType); ok {
+			body, _ := req.Context().Value(CtxKeyOriginalBody).([]byte)
+			target := backend.PassthroughTarget(resolved.Endpoint, req.URL.Path, req.URL.RawQuery)
+			s.proxy.ForwardToBackend(w, req, providerType, target, resolved.Upstream, body)
+			return nil
+		}
 	}
 
 	// For on-demand apps, check if model is already running (also handles
@@ -179,20 +175,15 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		// loadInternal, wrong for the 503 an unavailable provider gets.
 		// Stashing the classified type unconditionally keeps the metric
 		// label equal to the body's error.type on every branch.
-		*req = *proxy.SetErrorTypeOnRequest(req, lf.errType)
-		recordErrorOnContext(req.Context(), lf.code, lf.message)
-		failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code}
+		failure := lf.wire()
+		*req = *proxy.SetErrorTypeOnRequest(req, failure.Type)
+		recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 		if sseStarted {
 			// Already committed to 200: the error can only travel inside
 			// the stream. Same type/code/message as the header path, so a
 			// caller reading error.code gets one answer either way.
 			streamer.StreamError(w, failure)
 			return err
-		}
-		// Only meaningful on the header path: once the stream is
-		// committed there is no header left to set.
-		if lf.retryAfterSecs > 0 {
-			w.Header().Set("Retry-After", strconv.Itoa(lf.retryAfterSecs))
 		}
 		dialect.WriteError(w, req, failure)
 		return err
@@ -211,46 +202,27 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	return nil
 }
 
-// loadModelViaNodeAPI loads a LOCAL model directly via executor. No
-// routing needed — we're already on the correct node.
+// loadModelViaNodeAPI is a local model's ready run, started if need be: we are already on its node.
 func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (*instance.Instance, error) {
-	executor := s.newLoadExecutor()
-	req := &LoadModelRequest{
-		ModelName: modelName,
-		Provider:  providerType,
-		Endpoint:  endpoint,
+	inst, err := s.ensureLocalRun(prov_apps.EnsureRequest{Model: modelName, Provider: providerType, Endpoint: prov_apps.Endpoint(endpoint)})
+	if err == nil && inst == nil {
+		return nil, loadInternal("the provider serves this model without a run")
 	}
+	return inst, err
+}
 
-	resp, err := executor.LoadLocalModel(context.Background(), req)
+// ensureLocalRun is req's ready run, nil when its provider serves the model without one; the start outlives the request.
+func (s *Server) ensureLocalRun(req prov_apps.EnsureRequest) (*instance.Instance, error) {
+	req.Origin = prov_apps.OriginRequest
+	result, err := s.providers.appMgr.EnsureRun(context.Background(), req)
 	if err != nil {
 		return nil, classifyLoadFailure(err)
 	}
-
-	// Handle error responses (but 409 Conflict is OK — means model is
-	// already running). The executor's own status code is what separates
-	// a model that was never downloaded from an engine that died, so
-	// carry it instead of flattening the response to its message.
-	if resp.Error != "" && resp.StatusCode != http.StatusConflict {
-		message := resp.Error
-		if resp.Details != "" {
-			message = fmt.Sprintf("%s: %s", resp.Error, resp.Details)
-		}
-		return nil, newLoadFailure(resp.StatusCode, message)
-	}
-
-	// Get instance from local registry
-	inst, found := s.providers.appMgr.Instances().Get(resp.InstanceID)
-	if !found {
-		return nil, loadInternal(fmt.Sprintf("instance %s not found after loading", resp.InstanceID))
-	}
-
-	// Wait for local instance to be ready if still starting
-	if inst.GetStatus() == instance.StatusStarting {
-		slog.Info("Model is starting locally, waiting for ready", "model_name", modelName)
+	if inst := result.Run; inst != nil && inst.GetStatus() == instance.StatusStarting {
+		slog.Info("Model is starting locally, waiting for ready", "model_name", req.Model)
 		return s.waitForLocalInstance(inst)
 	}
-
-	return inst, nil
+	return result.Run, nil
 }
 
 // waitForLocalInstance waits for a local instance to become ready.
@@ -258,7 +230,7 @@ func (s *Server) loadModelViaNodeAPI(modelName, providerType, endpoint string) (
 // The budget runs from when the INSTANCE started, not from when this
 // request arrived. A provider may declare a readiness window far longer
 // than a request should be held open (MLX allows 600s against this
-// package's 120s), and doLoadLocalModel hands an already-starting
+// package's 120s), and EnsureRun hands an already-starting
 // instance straight back, so measuring per-request gave every caller in
 // that window a fresh full-length hang against the same slow load.
 // Measuring from the instance means the first caller waits, and the ones
@@ -270,57 +242,34 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 	}
 	if budget <= 0 {
 		return nil, loadStillWarming(fmt.Sprintf(
-			"instance '%s' is still loading; retry shortly", inst.ID))
+			"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-
-	ticker := time.NewTicker(constants.ProgressPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID))
-		case <-ticker.C:
-			currentInstance, found := s.providers.appMgr.Instances().Get(inst.ID)
-			if !found {
-				return nil, loadInternal(fmt.Sprintf("instance '%s' disappeared while waiting", inst.ID))
-			}
-
-			switch currentInstance.GetStatus() {
-			case instance.StatusRunning:
-				slog.Info("Instance is now ready", "id", currentInstance.ID, "port", currentInstance.Port)
-				return currentInstance, nil
-			case instance.StatusFailed:
-				if refusal := currentInstance.Refusal(); refusal != nil {
-					return nil, classifyLoadFailure(refusal)
-				}
-				// GetErrorMessage takes the instance mutex; direct field
-				// access races with MarkFailed's write (Status atomic and
-				// the ErrorMessage write are not co-synchronized).
-				return nil, newLoadFailure(http.StatusBadGateway,
-					fmt.Sprintf("instance '%s' failed to start: %s", currentInstance.ID, currentInstance.GetErrorMessage()))
-			default:
-				// Still starting, continue polling.
-			}
-		}
+	// Wait on the run held, never the registry: a failed run that was replaced still has its cause.
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil, loadStillWarming(fmt.Sprintf(
+			"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
+	case <-inst.LeftStarting():
 	}
-}
-
-// getInstanceBackendNode extracts the backend host from instance.
-// Returns "localhost" for local instances, or the remote host from
-// HealthURL for remote instances.
-func getInstanceBackendNode(inst *instance.Instance) string {
-	if inst.HealthURL != "" && !strings.Contains(inst.HealthURL, constants.Localhost) {
-		// Extract host from HealthURL (e.g., "http://192.0.2.10:8080/health" → "192.0.2.10")
-		if u, err := url.Parse(inst.HealthURL); err == nil && u.Hostname() != "" {
-			return u.Hostname()
-		}
+	if s.providers.readinessWoken != nil {
+		s.providers.readinessWoken()
 	}
-	return constants.Localhost
+	// The failure first: replacing a failed run stops it, which moves its status past Failed.
+	if cause := inst.FailureCause(); cause != nil {
+		return nil, classifyLoadFailure(fmt.Errorf("instance %q failed to start: %w", inst.ID, cause))
+	}
+	if message := inst.GetErrorMessage(); message != "" {
+		return nil, loadEngineFailed(fmt.Sprintf("instance '%s' failed to start: %s", inst.ID, message))
+	}
+	if inst.GetStatus() == instance.StatusRunning {
+		slog.Info("Instance is now ready", "id", inst.ID, "port", inst.Port)
+		return inst, nil
+	}
+	// Stopped while waiting: a retry finds the model's next run.
+	return nil, classifyLoadFailure(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
 }
 
 // streamFromInstance streams response from instance when SSE headers are
@@ -328,65 +277,32 @@ func getInstanceBackendNode(inst *instance.Instance) string {
 // stream through streamer. Only called from HandleLocalModel after the
 // SSE preamble, which only an in-band streamer opens.
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
-	// Concurrency gating: acquire a slot before streaming.
-	if err := inst.AcquireConcurrency(req.Context()); err != nil {
-		if errors.Is(err, instance.ErrAtCapacity) {
-			streamer.StreamError(w, httperr.Error{Status: http.StatusTooManyRequests, Type: "rate_limit_error",
-				Message: capacityErrorMessage(inst), Code: "capacity_exceeded"})
-		}
-		// Context cancelled = client disconnected, nothing to write.
+	model, _ := req.Context().Value(CtxKeyModel).(string)
+	rec := requestRecorder(req.Context(), model, inst.Provider)
+	lease, target, up, ok := s.openRun(req, inst, rec, func(e httperr.Error) { streamer.StreamError(w, e) })
+	if !ok {
 		return
 	}
-	defer inst.ReleaseConcurrency()
-
-	// Only update activity for local instances, applying any per-request
-	// keep_alive override parsed at the handler edge (see
-	// CtxKeyRequestHints).
-	if getInstanceBackendNode(inst) == constants.Localhost {
-		ov, _ := req.Context().Value(CtxKeyRequestHints).(*keepalive.Override)
-		_ = s.providers.appMgr.Instances().UpdateActivity(inst.ID, ov)
-	}
+	defer lease.Release()
 
 	body, answerAs := s.instanceRequest(req, inst)
-	rec, _ := req.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
 	rec.SetUpstreamRequestData(body)
-	backendNode := getInstanceBackendNode(inst)
-	rec.SetServer(backendNode, inst.Port)
-	backendURL := fmt.Sprintf("http://%s:%d%s", backendNode, inst.Port, req.URL.Path)
+	rec.SetServer(target.Hostname(), portFromURL(target))
 
-	// In-flight saturation: cold-load streaming dispatches via
-	// httpStreamingClient.Do directly, not through proxyToInstance, so
-	// it needs its own Inc/Dec wrap. Without this, every cold-load
-	// streaming request would be invisible to saturation alerts.
-	model, _ := req.Context().Value(CtxKeyModel).(string)
 	inflightToken := proxy.IncInflight(req.Context(),
 		string(obsgenai.OperationName(req.URL.Path)),
-		inst.Provider, model, backendNode)
+		inst.Provider, model, target.Hostname())
 	defer proxy.DecInflight(req.Context(), inflightToken)
 
-	// Create a streaming context derived from request context. This
-	// ensures the backend request is cancelled if the client disconnects
-	// but removes any timeout (streaming can run indefinitely).
-	streamCtx, cancel := context.WithCancel(req.Context())
-	defer cancel()
-
-	backendReq, _ := http.NewRequestWithContext(streamCtx, req.Method, backendURL, bytes.NewReader(body))
-	backendReq.Header = upstreamHeaders(req.Header, backend.Engine())
-	backendReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpStreamingClient.Do(backendReq)
+	resp, err := s.sendToInstance(req, lease, body, target, up)
 	if err != nil {
-		// Same cause the header path calls api_error/backend_unreachable
-		// (proxy_client.go): the backend was unreachable, which is upstream
-		// visible rather than a zzRouter fault.
-		streamer.StreamError(w, httperr.Error{Status: http.StatusBadGateway, Type: "api_error",
-			Message: fmt.Sprintf("Backend error: %v", err), Code: "backend_unreachable"})
+		streamer.StreamError(w, instanceSendFailure(rec, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req))
+		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req), inst.FailureClassifier)
 		if rec != nil {
 			rec.SetError(failure.Type, failure.Message)
 			rec.RecordCompletion(0, 0)
@@ -395,24 +311,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 		return
 	}
 
-	// Metered and shaped exactly like the warm path. This used to be
-	// CopyWithFlush, which is CopyWithMetrics with a nil recorder: a
-	// cold load that outran ModelLoadGrace streamed its whole answer
-	// while the inference log recorded no tokens and no cost, and the
-	// terminal usage frame reached callers who never asked for it.
-	// Same local instances, same surface, opposite behaviour from its
-	// sibling in proxyToInstance.
-	servingNode := backendNode
-	if servingNode == constants.Localhost {
-		servingNode = s.GetNodename()
-	}
-	meta := s.localRoutingMetadata(req, inst, servingNode, answerAs)
-	copyStreamWithMetrics(w, resp.Body, rec, s.localStreamTransform(meta, inst.Provider, rec))
-}
-
-// capacityErrorMessage returns a standardized capacity error message for
-// a given instance.
-func capacityErrorMessage(inst *instance.Instance) string {
-	return fmt.Sprintf("This model's provider (%s) is at capacity (%d concurrent). Please retry shortly.",
-		inst.Provider, inst.ConcurrencyLimit())
+	meta := s.localRoutingMetadata(req, inst, s.GetNodename(), answerAs)
+	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	endBrokenStream(w, req, result)
 }

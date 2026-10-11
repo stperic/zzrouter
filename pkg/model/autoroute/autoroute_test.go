@@ -39,7 +39,7 @@ func TestAutoRoute_SyncAllFromCache_SetsAutoManaged(t *testing.T) {
 		{Name: "llama3", Provider: "ollama", Node: "node-a"},
 		{Name: "llama3", Provider: "vllm", Node: "node-b"},
 	}
-	m := New(store, "route-", func() {}, func() []*cache.CachedModel { return models })
+	m := New(store, "route-", func() []*cache.CachedModel { return models })
 	m.SyncAllFromCache()
 
 	g := store.Get("route-llama3")
@@ -64,17 +64,15 @@ func TestAutoRoute_BuildReplicasFromInstances(t *testing.T) {
 
 func TestAutoRoute_NilManager(t *testing.T) {
 	var m *Manager
-	m.SyncAfterPull()
-	m.SyncAfterDelete("llama3")
+	m.SyncAllFromCache()
 }
 
 func TestAutoRoute_NilGroupStore(t *testing.T) {
 	m := &Manager{}
-	m.SyncAfterPull()
-	m.SyncAfterDelete("llama3")
+	m.SyncAllFromCache()
 }
 
-func TestAutoRoute_SyncAfterDelete_UserGroup(t *testing.T) {
+func TestAutoRoute_SyncAllFromCache_UserGroup(t *testing.T) {
 	store := group.NewGroupStore()
 
 	err := store.Set("llama3", group.ModelGroup{
@@ -86,8 +84,8 @@ func TestAutoRoute_SyncAfterDelete_UserGroup(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	m := &Manager{groupStore: store}
-	m.SyncAfterDelete("llama3")
+	m := New(store, "", func() []*cache.CachedModel { return []*cache.CachedModel{} })
+	m.SyncAllFromCache()
 
 	group := store.Get("llama3")
 	require.NotNil(t, group)
@@ -115,7 +113,7 @@ func TestAutoRoute_PublishesAutoRouteGenerated(t *testing.T) {
 	})
 	defer unsub()
 
-	m := New(store, "route-", func() {}, func() []*cache.CachedModel { return models })
+	m := New(store, "route-", func() []*cache.CachedModel { return models })
 	m.SetEventBus(bus)
 	m.SyncAllFromCache()
 
@@ -146,7 +144,7 @@ func TestAutoRoute_PublishesAutoRouteRevoked(t *testing.T) {
 	// Return an empty (non-nil) slice so SyncAllFromCache walks the
 	// cleanup branch — the nil short-circuit at the top is meant for
 	// "cache not yet populated", not "cache emptied".
-	m := New(store, "route-", func() {}, func() []*cache.CachedModel { return []*cache.CachedModel{} })
+	m := New(store, "route-", func() []*cache.CachedModel { return []*cache.CachedModel{} })
 	m.SetEventBus(bus)
 	m.SyncAllFromCache()
 
@@ -190,7 +188,7 @@ func TestAutoRoute_CleanupSparesUserNamedGroup(t *testing.T) {
 		Replicas:    []group.Replica{{Name: "gone@ollama@node-a", Model: "gone", App: "ollama", Node: "node-a"}},
 	}))
 
-	m := New(store, "route-", func() {}, func() []*cache.CachedModel { return []*cache.CachedModel{} })
+	m := New(store, "route-", func() []*cache.CachedModel { return []*cache.CachedModel{} })
 	m.SyncAllFromCache()
 
 	assert.NotNil(t, store.Get("prod-chat"),

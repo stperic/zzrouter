@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +63,9 @@ func replicaItem(node, provider string) map[string]any {
 
 func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"})
-	worker := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true})
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "qwen.gguf"), []byte("GGUF"), 0o600))
+	worker := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true}, root, "worker")
 	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
 	client := routingCatalog(t, coordinator, []map[string]any{replicaItem("worker", "llamacpp")})
 	routingCatalog(t, worker, []map[string]any{replicaItem("worker", "llamacpp")})
@@ -71,15 +75,13 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	require.NoError(t, worker.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = worker.providers.appMgr.Instances().Remove(inst.ID) })
 	var engineCalls int
-	previousTransport := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	http.DefaultTransport = mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+	worker.httpStreamingClient = &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 		engineCalls++
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.Equal(t, "qwen", body["model"])
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"model":"qwen","choices":[{"message":{"role":"assistant","content":"worker reply"}}],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}`))}, nil
-	})
+	})}
 	compat := buildWorkerCompatEngine(worker)
 	require.NoError(t, coordinator.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{Name: "worker", URL: "http://worker.test:9090", ClusterURL: "https://worker.test:9091"}))
 	var hops int
@@ -197,13 +199,11 @@ func TestReplicaRoutingPrefixedSharedVariantKeepsDefaults(t *testing.T) {
 	inst.MarkRunning()
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
-	previous := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previous })
 	var sent map[string]any
-	http.DefaultTransport = mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+	s.httpStreamingClient = &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&sent))
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"model":"m","choices":[{"message":{"role":"assistant","content":"ok"}}]}`))}, nil
-	})
+	})}
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"llamacpp/`+variantChat+`","messages":[{"role":"user","content":"hi"}]}`))
 	request.Header.Set("X-API-Key", TestAdminKey)
 	request.Header.Set("Content-Type", "application/json")

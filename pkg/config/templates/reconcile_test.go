@@ -5,7 +5,6 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -416,28 +415,6 @@ func TestShippedAssetsAreAddressable(t *testing.T) {
 	}
 }
 
-// Every engine the release launches serves the Anthropic Messages API,
-// natively or through the translation, so an Anthropic-API agent can use
-// any model the cluster runs. Which way is the engine's own declaration.
-func TestEveryShippedEngineServesMessages(t *testing.T) {
-	entries, err := fs.ReadDir(AppsFS, providersRoot+"/on-demand")
-	require.NoError(t, err)
-	require.NotEmpty(t, entries)
-	for _, e := range entries {
-		body, err := fs.ReadFile(AppsFS, providersRoot+"/on-demand/"+e.Name()+"/config.yaml")
-		require.NoError(t, err, e.Name())
-		var doc struct {
-			Capabilities struct {
-				WireEndpoints []string `yaml:"wire_endpoints"`
-			} `yaml:"capabilities"`
-		}
-		require.NoError(t, yaml.Unmarshal(body, &doc), e.Name())
-		wire := doc.Capabilities.WireEndpoints
-		assert.True(t, slices.Contains(wire, "messages") || slices.Contains(wire, "messages_compat"),
-			"%s declares neither messages nor messages_compat: %v", e.Name(), wire)
-	}
-}
-
 func TestReconcileSeedsFeatures(t *testing.T) {
 	tmpl := []byte("features:\n  vision:\n    default: true\n    files: [mmproj-*.gguf]\n    flag: mmproj\n")
 	for _, tc := range []struct {
@@ -597,4 +574,63 @@ func TestReconcileRefreshesShippedPinsWithoutChangingOperatorTuning(t *testing.T
 	changed, err = ReconcileManagedSpine(dir)
 	require.NoError(t, err)
 	assert.Empty(t, changed, "second pass must be idempotent")
+}
+
+func TestReconcileManagedSpineAddsFailurePatterns(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, InstallDefaults(dir))
+	for _, rel := range []string{"on-demand/llamacpp/config.yaml", "on-demand/vllm/config.yaml", "on-demand/mlx/config.yaml", "external/ollama/config.yaml"} {
+		file := filepath.Join(dir, filepath.FromSlash(rel))
+		raw, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var doc map[string]any
+		require.NoError(t, yaml.Unmarshal(raw, &doc))
+		runtime := doc["runtime"].(map[string]any)
+		expected := runtime["failure_patterns"]
+		delete(runtime, "failure_patterns")
+		stale, err := yaml.Marshal(doc)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(file, stale, 0600))
+		changed, err := ReconcileManagedSpine(dir)
+		require.NoError(t, err)
+		require.Contains(t, changed, rel)
+		repaired, err := os.ReadFile(file)
+		require.NoError(t, err)
+		require.NoError(t, yaml.Unmarshal(repaired, &doc))
+		assert.Equal(t, expected, doc["runtime"].(map[string]any)["failure_patterns"])
+	}
+	changed, err := ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	assert.Empty(t, changed)
+}
+
+func TestReconcileVllmReadinessStall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, InstallDefaults(dir))
+	rel := "on-demand/vllm/config.yaml"
+	file := filepath.Join(dir, filepath.FromSlash(rel))
+	raw, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	readiness := doc["runtime"].(map[string]any)["health_check"].(map[string]any)["readiness_probe"].(map[string]any)
+	require.Equal(t, "240s", readiness["stall_timeout"])
+	require.Equal(t, "900s", readiness["timeout"])
+	delete(readiness, "stall_timeout")
+	readiness["timeout"] = "300s"
+	stale, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, stale, 0600))
+	changed, err := ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Contains(t, changed, rel)
+	repaired, err := os.ReadFile(file)
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(repaired, &doc))
+	readiness = doc["runtime"].(map[string]any)["health_check"].(map[string]any)["readiness_probe"].(map[string]any)
+	require.Equal(t, "240s", readiness["stall_timeout"])
+	require.Equal(t, "900s", readiness["timeout"])
+	changed, err = ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	require.Empty(t, changed)
 }

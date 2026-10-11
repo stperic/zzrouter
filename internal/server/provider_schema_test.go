@@ -87,12 +87,14 @@ func TestAssetParamLocalizer_UsesNodeSchemaAndOverlay(t *testing.T) {
 // The node's provider manager resolves asset parameters: a launch naming
 // an asset this node does not have is refused before any argv is built.
 func TestServerManagerLocalizesAssetParams(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "m.gguf"), []byte("GGUF"), 0o600))
 	cfg := DefaultTestNodeConfig()
 	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createTestNodeWithModelsDir(t, cfg, root, "test-host")
 	require.NoError(t, server.configStore.SetProviderEnabled("llamacpp", true))
 
-	_, err := server.providers.appMgr.LaunchInstance(t.Context(), prov_apps.LaunchRequest{
+	_, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{
 		Provider: "llamacpp", Model: "m",
 		Parameters: map[string]string{"chat-template-file": "absent.jinja"},
 	})

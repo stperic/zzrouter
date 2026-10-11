@@ -100,6 +100,7 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		MaxConcurrentRequests: rt.MaxConcurrentRequests,
 		QueueTimeout:          rt.QueueTimeout,
 		Execution:             rt.Execution,
+		FailurePatterns:       rt.FailurePatterns,
 		HealthCheck:           rt.HealthCheck,
 		Container:             rt.Container,
 		Resources:             rt.Resources,
@@ -111,11 +112,12 @@ func runtimeToExternal(rt *AppRuntimeConfig) ExternalRuntime {
 		return ExternalRuntime{}
 	}
 	return ExternalRuntime{
-		Endpoint:    rt.Endpoint,
-		ModelURL:    rt.ModelURLFmt,
-		KeepAlive:   rt.KeepAlive,
-		API:         rt.API,
-		HealthCheck: rt.HealthCheck,
+		Endpoint:        rt.Endpoint,
+		ModelURL:        rt.ModelURLFmt,
+		KeepAlive:       rt.KeepAlive,
+		API:             rt.API,
+		FailurePatterns: rt.FailurePatterns,
+		HealthCheck:     rt.HealthCheck,
 	}
 }
 

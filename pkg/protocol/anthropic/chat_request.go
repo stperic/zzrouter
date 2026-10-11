@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -133,12 +134,17 @@ func ToChatRequest(body []byte) (ChatRequest, error) {
 	if req.Metadata != nil && req.Metadata.UserID != "" {
 		chat["user"] = req.Metadata.UserID
 	}
-	if tools := chatTools(req.Tools); len(tools) > 0 {
+	tools := chatTools(req.Tools)
+	if len(tools) > 0 {
 		chat["tools"] = tools
-		if req.ToolChoice != nil {
-			if choice := chatToolChoice(*req.ToolChoice, tools); choice != nil {
-				chat["tool_choice"] = choice
-			}
+	}
+	if req.ToolChoice != nil {
+		choice, err := chatToolChoice(*req.ToolChoice, req.Tools)
+		if err != nil {
+			return ChatRequest{}, err
+		}
+		if len(tools) > 0 {
+			chat["tool_choice"] = choice
 			if req.ToolChoice.DisableParallelToolUse {
 				chat["parallel_tool_calls"] = false
 			}
@@ -346,13 +352,17 @@ func toolResultContent(b block, param string) (string, []map[string]any, error) 
 	return text, images, nil
 }
 
-// chatTools renders client tools as functions. A server tool (a typed
-// tool with no input schema, such as web search) has no Chat Completions
-// form and is left out; the engine cannot run it.
+// callable reports whether the engine can be given t. A server tool (a
+// typed tool with no input schema, such as web search) has no Chat
+// Completions form.
+func (t tool) callable() bool { return len(t.InputSchema) > 0 }
+
+// chatTools renders client tools as functions, leaving out what the engine
+// cannot run.
 func chatTools(tools []tool) []map[string]any {
 	var out []map[string]any
 	for _, t := range tools {
-		if len(t.InputSchema) == 0 {
+		if !t.callable() {
 			continue
 		}
 		fn := map[string]any{"name": t.Name, "parameters": t.InputSchema}
@@ -364,26 +374,30 @@ func chatTools(tools []tool) []map[string]any {
 	return out
 }
 
-// chatToolChoice maps tool_choice; an unknown type, or a named tool that
-// was left out, leaves the engine's default (auto).
-func chatToolChoice(c toolChoice, tools []map[string]any) any {
+// chatToolChoice maps tool_choice. A choice that forces a tool the engine
+// will not have is refused, never relaxed to auto.
+func chatToolChoice(c toolChoice, tools []tool) (any, error) {
 	switch c.Type {
 	case "auto":
-		return "auto"
-	case "any":
-		return "required"
+		return "auto", nil
 	case "none":
-		return "none"
-	case "tool":
-		for _, t := range tools {
-			fn, ok := t["function"].(map[string]any)
-			if ok && fn["name"] == c.Name {
-				return map[string]any{"type": "function", "function": map[string]any{"name": c.Name}}
-			}
+		return "none", nil
+	case "any":
+		if slices.ContainsFunc(tools, tool.callable) {
+			return "required", nil
 		}
-		return nil
+		return nil, refuse("tool_choice", "forces a tool call, but no tool has an input_schema this model's engine can call")
+	case "tool":
+		i := slices.IndexFunc(tools, func(t tool) bool { return t.Name == c.Name })
+		switch {
+		case i < 0:
+			return nil, refuse("tool_choice.name", "names %q, which is not in tools", c.Name)
+		case !tools[i].callable():
+			return nil, refuse(fmt.Sprintf("tools.%d", i), "is named by tool_choice but has no input_schema; this model's engine cannot run it")
+		}
+		return map[string]any{"type": "function", "function": map[string]any{"name": c.Name}}, nil
 	default:
-		return nil
+		return nil, refuse("tool_choice.type", "must be auto, any, tool or none, not %q", c.Type)
 	}
 }
 

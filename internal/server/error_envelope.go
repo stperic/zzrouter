@@ -25,32 +25,22 @@ import (
 //
 // After return, the response is fully written — caller should `return`
 // from the handler immediately.
-func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Response) {
-	applyRewrittenError(req, resp)
+func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Response, classifier *httperr.Classifier) {
+	applyRewrittenError(req, resp, classifier)
 	h := w.Header()
 	h.Del("Content-Length")
 	h.Del("Content-Encoding")
 	h.Set("Content-Type", resp.Header.Get("Content-Type"))
 	h.Set("Content-Length", resp.Header.Get("Content-Length"))
-	if resp.StatusCode == http.StatusBadRequest {
+	if resp.Header.Get("Retry-After") == "" {
 		h.Del("Retry-After")
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// applyRewrittenError mutates a *http.Response in place with the
-// surface-appropriate rewritten error envelope. Used by the
-// httputil.ReverseProxy.ModifyResponse hook in proxyToInstance — that
-// API mutates the response struct rather than writing to a separate
-// writer.
-//
-// Closes the original resp.Body and replaces it with a bytes.Reader
-// over the rewritten body. Stale upstream Content-Encoding is
-// stripped; Content-Length + ContentLength are sized to the new body.
-// The response consumer closes the replacement body.
-func applyRewrittenError(req *http.Request, resp *http.Response) {
-	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req))
+func applyRewrittenError(req *http.Request, resp *http.Response, classifier *httperr.Classifier) {
+	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req), classifier)
 }
 
 // ollamaSurfaceErrorBody renders an upstream backend error in the
@@ -76,6 +66,7 @@ func ollamaSurfaceErrorBody(status int, raw []byte) []byte {
 					var inner struct {
 						Message string `json:"message"`
 						Error   string `json:"error"`
+						Code    any    `json:"code"`
 					}
 					if json.Unmarshal(errRaw, &inner) == nil {
 						msg := inner.Message
@@ -83,7 +74,11 @@ func ollamaSurfaceErrorBody(status int, raw []byte) []byte {
 							msg = inner.Error
 						}
 						if msg != "" {
-							body, _ := json.Marshal(map[string]string{"error": msg})
+							flat := map[string]string{"error": msg}
+							if code, ok := inner.Code.(string); ok && code != "" {
+								flat["code"] = code
+							}
+							body, _ := json.Marshal(flat)
 							return body
 						}
 					}
@@ -98,4 +93,12 @@ func ollamaSurfaceErrorBody(status int, raw []byte) []byte {
 	}
 	body, _ := json.Marshal(map[string]string{"error": msg})
 	return body
+}
+
+func (s *Server) failureClassifier(provider string) *httperr.Classifier {
+	cfg, ok := s.providerConfig(provider)
+	if !ok || cfg.Runtime == nil {
+		return nil
+	}
+	return &cfg.Runtime.FailurePatterns
 }

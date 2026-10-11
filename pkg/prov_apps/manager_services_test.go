@@ -99,7 +99,7 @@ func TestManagedServiceBootStopRestartAndShutdown(t *testing.T) {
 	_, err := m.ControlProviderService(context.Background(), "generic-daemon", "stop")
 	require.NoError(t, err)
 	require.False(t, serviceStatus(t, m).Running)
-	m.reconcileServices()
+	m.reconcileServices(false)
 	require.False(t, serviceStatus(t, m).Desired, "an unrelated config reload must preserve a manual stop")
 	_, err = m.ControlProviderService(context.Background(), "generic-daemon", "start")
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestOSServiceManualStopPreservesSupervisor(t *testing.T) {
 			require.Equal(t, 1, manager.starts)
 			_, err := m.ControlProviderService(context.Background(), "generic-daemon", "stop")
 			require.NoError(t, err)
-			m.reconcileServices()
+			m.reconcileServices(false)
 			require.Equal(t, 1, manager.starts)
 			status := serviceStatus(t, m)
 			require.Equal(t, name, status.Supervisor)
@@ -287,7 +287,7 @@ func TestAutomaticReconcileChecksManualIntentInsideLifecycleGate(t *testing.T) {
 	unlock, err := m.installs.acquireProvider(context.Background(), "generic-daemon")
 	require.NoError(t, err)
 	finished := make(chan struct{})
-	go func() { m.reconcileServices(); close(finished) }()
+	go func() { m.reconcileServices(false); close(finished) }()
 	select {
 	case <-finished:
 		t.Fatal("reconciliation bypassed the lifecycle gate")
@@ -305,6 +305,37 @@ func TestAutomaticReconcileChecksManualIntentInsideLifecycleGate(t *testing.T) {
 	}
 	require.False(t, serviceStatus(t, m).Desired)
 	require.Zero(t, serviceStatus(t, m).PID)
+}
+
+func TestBootReconcileBlockedByAnExitingDaemonIsRetried(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	m.servicesStarted.Store(true)
+	installer, err := m.installs.Dispatcher().Get("generic-daemon")
+	require.NoError(t, err)
+	binary, args := installer.(install.DaemonInstaller).DaemonCommand()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := host.CommandContext(ctx, binary, args...)
+	cmd.Env, err = process.ChildEnvironment(m.providerServiceEnv("generic-daemon"))
+	require.NoError(t, err)
+	started, done := make(chan int, 1), make(chan error, 1)
+	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the previous node's daemon did not start")
+	}
+	m.reconcileServices(false)
+	require.False(t, serviceStatus(t, m).Desired, "a daemon this node cannot identify is never claimed")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the previous node's daemon did not exit")
+	}
+	m.reconcileServices(true)
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	require.True(t, serviceStatus(t, m).Desired)
 }
 
 func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {

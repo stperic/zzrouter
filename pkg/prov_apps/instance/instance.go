@@ -4,15 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -32,14 +33,15 @@ const defaultLogBufferSize = 100
 //     code path BEFORE Registry.Register publishes the instance, then
 //     treated as immutable. No lock needed because there is no
 //     concurrent reader yet. Fields: ID, Provider, LaunchMode, Model,
-//     SourceRepo, SizeBytes, Processor, ContextLength, Port, HealthURL,
+//     SourceRepo, Port, HealthURL,
 //     Config, KeepAlive (initial), LogFilePath, LaunchCommand,
-//     IdleExpiry, Logs.
+//     IdleExpiry, Logs, FailureClassifier, StartedBy.
 //
 //  2. **Mu-protected mutable** — written by Set/Mark/Stamp/Update
 //     methods that take i.mu. Fields: Status, ErrorMessage, StartedAt,
 //     FailedAt, LastHealthCheck, LastHealthy, LastActivity, KeepAlive
-//     (after StampActivityWithHints), ProcessID, ProcessGroupID.
+//     (after StampActivityWithHints), ProcessID, ProcessGroupID,
+//     SizeBytes, Processor, ContextLength (SetLoaded).
 //
 // Direct field writes from outside this package are restricted to
 // bootstrap-only fields and only between NewInstance and Register.
@@ -48,13 +50,16 @@ const defaultLogBufferSize = 100
 // call site and keeps the write surface auditable if locking is ever
 // added.
 type Instance struct {
-	ID         string     `json:"id"`
-	Provider   string     `json:"provider"`
-	LaunchMode LaunchMode `json:"launch_mode"`
-	Model      string     `json:"model,omitempty"`
+	FailureClassifier *httperr.Classifier `json:"-"`
+	ID                string              `json:"id"`
+	Provider          string              `json:"provider"`
+	LaunchMode        LaunchMode          `json:"launch_mode"`
+	Model             string              `json:"model,omitempty"`
 
 	// StopUnconfirmed keeps a runtime occupied until its process reaper drains.
 	StopUnconfirmed atomic.Bool `json:"-"`
+	// ending is held by the one stop or retirement ending the run; a failed stop gives it back.
+	ending atomic.Bool
 
 	// String not prov_apps.Endpoint to avoid a back-import (prov_apps imports instance).
 	Endpoint   string `json:"endpoint,omitempty"`
@@ -80,6 +85,7 @@ type Instance struct {
 	LastHealthy     time.Time `json:"last_healthy"`
 	LastActivity    time.Time `json:"last_activity"`
 	ErrorMessage    string    `json:"error_message,omitempty"`
+	loaded          Loaded
 	failure         *FailureInfo
 	// StreamJobID is the pkg/jobs handle ID used by clients to watch
 	// launch progress via /zzrouter/v1/jobs/:id/stream?node=<node>.
@@ -87,6 +93,7 @@ type Instance struct {
 	// without a jobs registry. Named to avoid collision with `jobHandle`
 	// below (Windows process-group handle).
 	StreamJobID   string         `json:"stream_job_id,omitempty"`
+	StartedBy     StartedBy      `json:"started_by,omitempty"`
 	KeepAlive     time.Duration  `json:"keep_alive"`
 	LogFilePath   string         `json:"log_file_path,omitempty"`
 	LaunchCommand *LaunchCommand `json:"launch_command,omitempty"`
@@ -105,9 +112,12 @@ type Instance struct {
 
 	// admitted is set once the run's claim on memory is accounted for; a
 	// starting run that is not admitted is queued behind waitingOn.
-	admitted  bool
-	waitingOn string
-	refusal   error
+	admitted     bool
+	waitingOn    string
+	evictedRuns  []EvictedRun
+	failureCause error
+	// stopClaimed/launchClaimed: which side signalled the process; a stop may retry its own claim.
+	stopClaimed, launchClaimed bool
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
 
@@ -137,12 +147,17 @@ type Instance struct {
 
 	// Active request counter (atomic)
 	activeRequests int64 `json:"-"`
+	// Reservations keep later victims idle while earlier stops drain.
+	idleStopClaimed bool `json:"-"`
 
 	// Concurrency semaphore: nil = unlimited, buffered chan = gated.
 	// Initialized at most once via InitConcurrencyLimit (guarded by concurrencyOnce).
-	concurrencyOnce sync.Once     `json:"-"`
-	concurrencySem  chan struct{} `json:"-"`
-	queueTimeout    time.Duration `json:"-"`
+	concurrencyOnce   sync.Once     `json:"-"`
+	concurrencySem    chan struct{} `json:"-"`
+	queueTimeout      time.Duration `json:"-"`
+	queueMu           sync.Mutex    `json:"-"`
+	waiters           int           `json:"-"`
+	maxQueuedRequests int           `json:"-"`
 
 	// IdleExpiry receives the instance ID when the keep-alive timer fires.
 	// The manager listens on this to auto-stop idle instances.
@@ -193,6 +208,12 @@ func (i *Instance) Cancel() {
 	}
 }
 
+// ClaimEnd takes the right to end the run; false while another stop or retirement holds it.
+func (i *Instance) ClaimEnd() bool { return i.ending.CompareAndSwap(false, true) }
+
+// ReleaseEnd gives the right back after a stop that failed, so a retry can take it.
+func (i *Instance) ReleaseEnd() { i.ending.Store(false) }
+
 // --- Thread-safe status reads ---
 
 // GetStatus returns the current status.
@@ -223,6 +244,17 @@ func (i *Instance) IsHealthy() bool {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.Status == StatusRunning
+}
+
+// Evictable reports whether a running or unhealthy run has no active leases and no stop claimed.
+func (i *Instance) Evictable() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.evictableLocked()
+}
+
+func (i *Instance) evictableLocked() bool {
+	return (i.Status == StatusRunning || i.Status == StatusUnhealthy) && i.GetActiveRequests() == 0 && !i.idleStopClaimed
 }
 
 // IsRunning returns true if the instance is running or unhealthy.
@@ -271,23 +303,16 @@ func (i *Instance) Admit() bool {
 	return true
 }
 
-// MarkRefused fails a queued run its admission refused, keeping the error
-// so callers classify it as they would an inline refusal. Like any failed
-// run it keeps its port until it is stopped or replaced.
-func (i *Instance) MarkRefused(err error) {
-	i.MarkFailed(err.Error())
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.Status == StatusFailed {
-		i.refusal, i.waitingOn = err, ""
-	}
+// MarkFailedError retains the typed cause before publishing the failed state.
+func (i *Instance) MarkFailedError(err error) {
+	i.markFailedWithExit(err.Error(), err, nil, "")
 }
 
-// Refusal returns the admission error of a refused queued run.
-func (i *Instance) Refusal() error {
+// FailureCause returns the typed error retained by a failed run.
+func (i *Instance) FailureCause() error {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.refusal
+	return i.failureCause
 }
 
 // Admitted reports whether the run's memory claim is accounted for.
@@ -309,6 +334,20 @@ func (i *Instance) WaitingOn() string {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.waitingOn
+}
+
+// SetEvictedRuns records the idle runs this launch stopped to be admitted.
+func (i *Instance) SetEvictedRuns(runs []EvictedRun) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.evictedRuns = slices.Clone(runs)
+}
+
+// EvictedRuns returns the idle runs this launch stopped to be admitted.
+func (i *Instance) EvictedRuns() []EvictedRun {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return slices.Clone(i.evictedRuns)
 }
 
 // MarkRunning transitions to running state.
@@ -384,6 +423,19 @@ func (i *Instance) SetLogFilePath(path string) {
 	i.LogFilePath = path
 }
 
+// ClaimTermination returns the recorded pid when the caller is to signal it,
+// else 0. Whichever of a stop and the launching goroutine claims first owns
+// the signal; only a stop may claim again, to retry its own failed stop.
+func (i *Instance) ClaimTermination(byStop bool) int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.ProcessID <= 0 || i.launchClaimed || (i.stopClaimed && !byStop) {
+		return 0
+	}
+	i.stopClaimed, i.launchClaimed = byStop, !byStop
+	return i.ProcessID
+}
+
 // GetProcessID returns the process ID under lock.
 func (i *Instance) GetProcessID() int {
 	i.mu.RLock()
@@ -426,11 +478,8 @@ func (i *Instance) lastActivityTime() time.Time {
 	return i.lastUsedAt
 }
 
-// snapshotKeepAlive reads KeepAlive and the most recent activity
-// timestamp atomically under i.mu.RLock. Used by IsIdle / IsExpired /
-// ShouldUnload so all three see a consistent view across a concurrent
-// StampActivityWithHints write.
-func (i *Instance) snapshotKeepAlive() (keepAlive time.Duration, activity time.Time) {
+// IdleSnapshot reads keep-alive and last activity under one lock, the inputs of the idle rule.
+func (i *Instance) IdleSnapshot() (keepAlive time.Duration, activity time.Time) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.KeepAlive, i.lastActivityTime()
@@ -441,6 +490,42 @@ func (i *Instance) GetLastActivity() time.Time {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	return i.lastActivityTime()
+}
+
+// Loaded is what the daemon serving a run reports of its model.
+type Loaded struct {
+	Size, VRAM                                        int64
+	ContextLength                                     int
+	ExpiresAt                                         time.Time // when the daemon unloads it idle
+	Digest, Format, Family, ParameterSize, QuantLevel string
+}
+
+// percentWhole is a whole share in percent.
+const percentWhole = 100
+
+// SetLoaded records, for listings, what the daemon serving the run reports of its model.
+func (i *Instance) SetLoaded(l Loaded) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.loaded, i.SizeBytes, i.ContextLength = l, l.Size, l.ContextLength
+	switch {
+	case l.Size <= 0:
+		i.Processor = ""
+	case l.VRAM >= l.Size:
+		i.Processor = "100% GPU"
+	case l.VRAM <= 0:
+		i.Processor = "100% CPU"
+	default:
+		gpu := float64(l.VRAM) / float64(l.Size) * percentWhole
+		i.Processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", gpu, percentWhole-gpu)
+	}
+}
+
+// Loaded returns what SetLoaded recorded.
+func (i *Instance) Loaded() Loaded {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.loaded
 }
 
 // --- Keep-alive ---
@@ -459,12 +544,12 @@ func (i *Instance) UpdateLastUsed() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.lastUsedAt = utils.Now()
-	i.resetKeepAliveTimerLocked()
+	i.resetKeepAliveTimerLocked(false)
 }
 
 // StampActivityWithHints applies any non-nil request hints, stamps activity
 // timestamps (LastActivity and lastUsedAt), and resets the keep-alive timer
-// — all under a single lock so IsIdle/IsExpired observers see a consistent
+// — all under a single lock so idle observers see a consistent
 // view.
 //
 // ov may be nil (no overrides). Individual Override fields may be nil; only
@@ -484,10 +569,22 @@ func (i *Instance) StampActivityWithHints(ov *keepalive.Override) {
 		}
 	}
 
+	i.stampLocked(false)
+}
+
+// released drops one hold under the idle rule's lock, so the reaper never sees the count without the re-armed timer.
+func (i *Instance) released() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	atomic.AddInt64(&i.activeRequests, -1)
+	i.stampLocked(true)
+}
+
+func (i *Instance) stampLocked(release bool) {
 	now := utils.Now()
 	i.LastActivity = now
 	i.lastUsedAt = now
-	i.resetKeepAliveTimerLocked()
+	i.resetKeepAliveTimerLocked(release)
 }
 
 // GetLastUsedAt returns the last-used timestamp.
@@ -513,42 +610,8 @@ func (i *Instance) StopKeepAliveTimer() {
 	}
 }
 
-// IsIdle returns true if the instance has been idle longer than keep-alive.
-func (i *Instance) IsIdle() bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive <= 0 || activity.IsZero() {
-		return false
-	}
-	return time.Since(activity) > keepAlive
-}
-
-// IsExpired returns true if the instance has exceeded its keep-alive duration.
-func (i *Instance) IsExpired(now time.Time) bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive <= 0 || activity.IsZero() {
-		return false
-	}
-	return now.After(activity.Add(keepAlive))
-}
-
-// ShouldUnload returns true if the instance should be unloaded. Uses one
-// snapshot for the keep-alive read AND the activity comparison so the
-// negative/zero/idle branches see a consistent view.
-func (i *Instance) ShouldUnload() bool {
-	keepAlive, activity := i.snapshotKeepAlive()
-	if keepAlive < 0 {
-		return false // indefinite
-	}
-	if keepAlive == 0 {
-		return true // immediate
-	}
-	if activity.IsZero() {
-		return false
-	}
-	return time.Since(activity) > keepAlive
-}
-
-func (i *Instance) resetKeepAliveTimerLocked() {
+// resetKeepAliveTimerLocked arms expiry: below zero never, zero only as a request releases the run.
+func (i *Instance) resetKeepAliveTimerLocked(release bool) {
 	if i.keepAliveTimer != nil {
 		if !i.keepAliveTimer.Stop() {
 			select {
@@ -558,7 +621,8 @@ func (i *Instance) resetKeepAliveTimerLocked() {
 		}
 	}
 
-	if i.KeepAlive <= 0 {
+	// A run being stopped arms nothing: its stop has already cleared the timer.
+	if i.KeepAlive < 0 || (i.KeepAlive == 0 && !release) || (i.ctx != nil && i.ctx.Err() != nil) {
 		i.keepAliveTimer = nil
 		return
 	}
@@ -578,16 +642,6 @@ func (i *Instance) resetKeepAliveTimerLocked() {
 
 // --- Active request tracking (atomic) ---
 
-// IncrementActiveRequests atomically increments the active request counter.
-func (i *Instance) IncrementActiveRequests() int64 {
-	return atomic.AddInt64(&i.activeRequests, 1)
-}
-
-// DecrementActiveRequests atomically decrements the active request counter.
-func (i *Instance) DecrementActiveRequests() int64 {
-	return atomic.AddInt64(&i.activeRequests, -1)
-}
-
 // GetActiveRequests returns the current number of active requests.
 func (i *Instance) GetActiveRequests() int64 {
 	return atomic.LoadInt64(&i.activeRequests)
@@ -595,77 +649,24 @@ func (i *Instance) GetActiveRequests() int64 {
 
 // --- Concurrency gating ---
 
-// InitConcurrencyLimit initializes the per-instance concurrency semaphore.
-// max <= 0 means unlimited (no gating). A negative queueTimeout
-// (constants.QueueUntilCallerDeadline) queues for as long as the caller
-// waits. Thread-safe; subsequent calls are no-ops.
-func (i *Instance) InitConcurrencyLimit(max int, queueTimeout time.Duration) {
-	if max <= 0 {
+// ConcurrencyConfig is an instance's admission policy. A zero MaxConcurrentRequests means
+// unlimited; a negative QueueTimeout waits as long as the caller does.
+type ConcurrencyConfig struct {
+	MaxConcurrentRequests int
+	MaxQueuedRequests     int // 0 = never queue: refuse whenever no slot is free
+	QueueTimeout          time.Duration
+}
+
+// InitConcurrencyLimit sets the admission policy once; later calls are no-ops.
+func (i *Instance) InitConcurrencyLimit(cfg ConcurrencyConfig) {
+	if cfg.MaxConcurrentRequests <= 0 {
 		return
 	}
 	i.concurrencyOnce.Do(func() {
-		i.concurrencySem = make(chan struct{}, max)
-		i.queueTimeout = queueTimeout
+		i.concurrencySem = make(chan struct{}, cfg.MaxConcurrentRequests)
+		i.queueTimeout = cfg.QueueTimeout
+		i.maxQueuedRequests = cfg.MaxQueuedRequests
 	})
-}
-
-// AcquireConcurrency blocks until a concurrency slot is available, the context
-// is cancelled, or the queue timeout expires. Returns nil on success.
-// If the semaphore is nil (unlimited), returns immediately.
-// On success, also increments the active request counter.
-func (i *Instance) AcquireConcurrency(ctx context.Context) error {
-	if i.concurrencySem == nil {
-		i.IncrementActiveRequests()
-		return nil
-	}
-	// Fast path: try non-blocking acquire first (avoids timer allocation)
-	select {
-	case i.concurrencySem <- struct{}{}:
-		i.IncrementActiveRequests()
-		return nil
-	default:
-	}
-	// No slot available. A zero timeout rejects at the door; a negative one
-	// holds the caller until its own context ends, which is the only bound
-	// that matches what the caller will actually sit through.
-	if i.queueTimeout == 0 {
-		return ErrAtCapacity
-	}
-	if i.queueTimeout < 0 {
-		select {
-		case i.concurrencySem <- struct{}{}:
-			i.IncrementActiveRequests()
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	timer := time.NewTimer(i.queueTimeout)
-	defer timer.Stop()
-	select {
-	case i.concurrencySem <- struct{}{}:
-		i.IncrementActiveRequests()
-		return nil
-	case <-timer.C:
-		return ErrAtCapacity
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// ReleaseConcurrency releases a concurrency slot and decrements the active
-// request counter. Must be called exactly once for each successful AcquireConcurrency.
-func (i *Instance) ReleaseConcurrency() {
-	if n := i.DecrementActiveRequests(); n < 0 {
-		// Self-heal + log: a mismatched release is a programming error that
-		// should not cause the idle reaper to see negative counts.
-		atomic.StoreInt64(&i.activeRequests, 0)
-		slog.Warn("ReleaseConcurrency called without matching Acquire", "instance", i.ID, "corrected_from", n)
-	}
-	if i.concurrencySem == nil {
-		return
-	}
-	<-i.concurrencySem
 }
 
 // ConcurrencyLimit returns the max concurrent requests (0 = unlimited).
@@ -807,9 +808,11 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Status:                i.Status,
 		HealthURL:             rewriteHealthURLHost(i.HealthURL, hostname),
 		Node:                  hostname,
-		KeepAlive:             i.KeepAlive.String(),
+		KeepAlive:             FormatKeepAlive(i.KeepAlive),
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
+		EvictedRuns:           slices.Clone(i.evictedRuns),
+		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),
 		MaxConcurrentRequests: i.ConcurrencyLimit(),
@@ -830,6 +833,9 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 	}
 	if !i.LastHealthCheck.IsZero() {
 		info.LastHealthCheck = i.LastHealthCheck.Format(time.RFC3339)
+	}
+	if !i.loaded.ExpiresAt.IsZero() {
+		info.ExpiresAt = i.loaded.ExpiresAt.Format(time.RFC3339)
 	}
 
 	return info
@@ -883,4 +889,12 @@ func copyStringMap(m map[string]string) map[string]string {
 	cp := make(map[string]string, len(m))
 	maps.Copy(cp, m)
 	return cp
+}
+
+// FormatKeepAlive writes a keep-alive as its parameter reads: -1 for never.
+func FormatKeepAlive(d time.Duration) string {
+	if d < 0 {
+		return "-1"
+	}
+	return d.String()
 }

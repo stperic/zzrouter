@@ -24,7 +24,7 @@ func TestManagementErrorsAlwaysCarryACode(t *testing.T) {
 		wantCode string
 	}{
 		{"unknown provider", http.MethodGet, "/zzrouter/v1/providers/nope/versions", nil, "not_found"},
-		{"unknown job", http.MethodGet, "/zzrouter/v1/jobs/job_nope", nil, "not_found"},
+		{"unknown job", http.MethodGet, "/zzrouter/v1/jobs/job_nope", nil, "job_not_found"},
 		{"unknown inference log", http.MethodGet, "/zzrouter/v1/inference-logs/nope", nil, "not_found"},
 		{"unknown model usage", http.MethodGet, "/zzrouter/v1/usage/models/nope", nil, "not_found"},
 		{"missing key", http.MethodGet, "/zzrouter/v1/providers", nil, "unauthorized"},

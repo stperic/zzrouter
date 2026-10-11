@@ -7,7 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	processinfo "github.com/shirou/gopsutil/v4/process"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -21,7 +23,13 @@ var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 type MemoryHolder struct {
 	gpu.MemoryProcess
 	Run       string `json:"run,omitempty"`
+	Model     string `json:"model,omitempty"`
 	Ownership string `json:"ownership"`
+}
+
+// RunRef identifies the zzRouter run behind a process, by id and the model it serves.
+type RunRef struct {
+	ID, Model string
 }
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
@@ -45,7 +53,7 @@ func (e *MemoryFitError) Error() string {
 			size = fmt.Sprintf("%d MiB", *h.MemoryMiB)
 		}
 		if h.Run != "" {
-			held = append(held, fmt.Sprintf("zzRouter run %s (pid %d, %s)", h.Run, h.PID, size))
+			held = append(held, fmt.Sprintf("zzRouter run %s serving %s (pid %d, %s)", h.Run, h.Model, h.PID, size))
 		} else {
 			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
 		}
@@ -56,22 +64,38 @@ func (e *MemoryFitError) Error() string {
 	case e.AttributionReason != "":
 		msg += "; holders unknown: " + e.AttributionReason
 	}
-	return msg + "; release memory or reduce the configured budget"
+	return msg
 }
 
-// CheckMemoryBudget compares a resolved fraction-of-total budget on each selected GPU.
-func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]string) error {
+// Unwrap gives admission the same typed cause as an engine allocation failure.
+func (e *MemoryFitError) Unwrap() error {
+	return &httperr.EngineFailure{Class: httperr.FailureMemory, Message: e.Error()}
+}
+
+// maxMemoryDevices bounds device selection before any observation or allocation.
+const maxMemoryDevices = 64
+
+// AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses. auto becomes the
+// model's need when it is known, which must fit beside the safety margin, else the free fraction left
+// after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]RunRef) error {
 	if budget.Kind != "fraction_total" {
 		return nil
 	}
-	fraction, err := strconv.ParseFloat(parameters[budget.Parameter], 64)
-	if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
-		return fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+	auto := parameters[budget.Parameter] == "auto"
+	var fraction float64
+	if !auto {
+		var err error
+		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
+		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
+			return fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+		}
 	}
 	count := 1
 	if value := parameters[budget.DeviceCountParameter]; value != "" {
+		var err error
 		count, err = strconv.Atoi(value)
-		if err != nil || count < 1 || count > 64 {
+		if err != nil || count < 1 || count > maxMemoryDevices {
 			return fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
 		}
 	}
@@ -79,22 +103,66 @@ func CheckMemoryBudget(budget schema.MemoryBudget, parameters, environment map[s
 	if err != nil {
 		return err
 	}
+	sized := auto && need.Total() > 0
+	switch {
+	case sized:
+		if budget.AutoSafetyMarginMiB < 0 {
+			return fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
+		}
+		fraction = needFraction(need, selected)
+	case auto:
+		if fraction, err = autoFraction(budget, selected, owners); err != nil {
+			return err
+		}
+	}
 	for _, device := range selected {
 		required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
-		if required <= device.FreeMiB {
-			continue
+		if sized {
+			required += safetyMargin(budget, device)
 		}
-		failure := &MemoryFitError{Parameter: budget.Parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
-		for _, process := range device.Processes {
-			holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
-			if run := owners[process.PID]; run != "" {
-				holder.Run, holder.Ownership = run, "zzrouter"
-			}
-			failure.Holders = append(failure.Holders, holder)
+		if required > device.FreeMiB {
+			return memoryFitError(budget.Parameter, device, required, owners)
 		}
-		return failure
+	}
+	if auto {
+		parameters[budget.Parameter] = strconv.FormatFloat(fraction, 'f', 4, 64)
 	}
 	return nil
+}
+
+// memoryFitError names every process holding the device, marking zzRouter's own runs.
+func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners map[int]RunRef) *MemoryFitError {
+	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
+	for _, process := range device.Processes {
+		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
+		if run, ok := runOwning(process.PID, owners); ok {
+			holder.Run, holder.Model, holder.Ownership = run.ID, run.Model, "zzrouter"
+		}
+		failure.Holders = append(failure.Holders, holder)
+	}
+	return failure
+}
+
+// runOwning returns the run whose process is pid or one of its ancestors: engines hold the GPU from
+// child processes. An ancestry it cannot read is nobody's.
+func runOwning(pid int, owners map[int]RunRef) (RunRef, bool) {
+	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
+		if run, ok := owners[pid]; ok {
+			return run, true
+		}
+		seen[pid] = true
+		parent, err := parentPID(int32(pid))
+		if err != nil {
+			return RunRef{}, false
+		}
+		pid = int(parent)
+	}
+	return RunRef{}, false
+}
+
+// parentPID reads a process's parent; tests replace it.
+var parentPID = func(pid int32) (int32, error) {
+	return (&processinfo.Process{Pid: pid}).Ppid()
 }
 
 func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, count int) ([]gpu.MemoryDevice, error) {

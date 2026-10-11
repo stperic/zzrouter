@@ -52,7 +52,7 @@ func buildCoordInternalEngine(s *Server) *gin.Engine {
 	systemExecutor := NewSystemExecutor(
 		s.node, s.role, s.providers.appMgr, s.model.Registry,
 		s.GetSystemInfo, s.GetConnectionPoolStats,
-		s.model.Cache.Invalidate, s.RefreshClusterEndpointsAsync,
+		s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync,
 		s.RefreshClusterEndpoint,
 		s.MarkClusterEndpointDown,
 	)

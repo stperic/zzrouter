@@ -32,6 +32,6 @@ func TestAutoMemoryAmbiguousAliasesAreClientErrors(t *testing.T) {
 	err := fmt.Errorf("%w: ambiguous memory parameter spellings", process.ErrMemoryBudgetInvalid)
 	assert.Equal(t, http.StatusBadRequest, classifyLoadFailure(err).status)
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
-	respondProviderErr(c, err)
+	RespondToError(c, err)
 	assert.Equal(t, http.StatusBadRequest, response.Code)
 }

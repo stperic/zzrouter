@@ -30,10 +30,10 @@ func (c *UpdateController) scheduler() *update.Scheduler {
 }
 
 // RegisterRoutes registers admin update reads and mutations.
-func (c *UpdateController) RegisterRoutes(router *gin.RouterGroup) {
+func (c *UpdateController) RegisterRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	router.GET("/update/status", c.HandleGetStatus)
 	router.POST("/update/check", c.HandleCheckNow)
-	router.POST("/update/apply", c.HandleApplyNow)
+	idempotent(router, "POST", "/update/apply", nil, c.HandleApplyNow)
 	router.POST("/update/rollback", c.HandleRollback)
 	router.GET("/update/history", c.HandleGetHistory)
 	router.GET("/update/settings", c.HandleUpdateSettings)
@@ -93,33 +93,7 @@ func (c *UpdateController) HandleApplyNow(ctx *gin.Context) {
 		return
 	}
 	if req.Version != nil || req.Nodes != nil {
-		if req.Version == nil {
-			BadRequest(ctx, "version is required for a node update")
-			return
-		}
-		if err := update.ValidateVersion(*req.Version); err != nil {
-			BadRequest(ctx, err.Error())
-			return
-		}
-		if c.server == nil || c.server.updateRollouts == nil {
-			ServiceUnavailable(ctx, "cluster update control is not initialized")
-			return
-		}
-		nodes, err := c.server.selectUpdateNodes(req.Nodes)
-		if err != nil {
-			BadRequest(ctx, err.Error())
-			return
-		}
-		record, err := c.server.updateRollouts.Submit(*req.Version, nodes)
-		if err != nil {
-			if errors.Is(err, update.ErrApplyInFlight) {
-				RespondToError(ctx, newProblemError(http.StatusConflict, "Conflict", err.Error()))
-			} else {
-				InternalNodeError(ctx, err.Error())
-			}
-			return
-		}
-		respondAccepted(ctx, "Node update job queued. Poll /zzrouter/v1/jobs/:id or /zzrouter/v1/update/status?nodes=all.", record)
+		c.clusterApply(ctx, req)
 		return
 	}
 	sched := c.requireScheduler(ctx)

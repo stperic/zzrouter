@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 )
 
 // A load failure has to survive the seam between the executor, which is
@@ -30,31 +31,31 @@ func TestClassifyLoadFailure(t *testing.T) {
 	}{
 		{
 			name:    "model was never downloaded is the caller's problem, not a server fault",
-			err:     newLoadFailure(http.StatusNotFound, "Model file not found"),
-			message: "Model file not found",
+			err:     fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal),
+			message: "Model file not found: " + prov_apps.ErrModelNotLocal.Error(),
 			status:  http.StatusNotFound,
-			errType: "invalid_request_error",
+			errType: "not_found_error",
 			code:    "model_not_found",
 		},
 		{
 			name:    "rejected request keeps its 400",
-			err:     newLoadFailure(http.StatusBadRequest, "unknown provider"),
-			message: "unknown provider",
+			err:     fmt.Errorf("unknown provider: %w", prov_apps.ErrParameterValidation),
+			message: "unknown provider: " + prov_apps.ErrParameterValidation.Error(),
 			status:  http.StatusBadRequest,
 			errType: "invalid_request_error",
 			code:    "invalid_request",
 		},
 		{
 			name:    "provider unavailable stays retryable",
-			err:     newLoadFailure(http.StatusServiceUnavailable, "provider down"),
-			message: "provider down",
+			err:     fmt.Errorf("provider down: %w", prov_apps.ErrShutdown),
+			message: "provider down: " + prov_apps.ErrShutdown.Error(),
 			status:  http.StatusServiceUnavailable,
 			errType: "api_error",
 			code:    "provider_unavailable",
 		},
 		{
 			name:    "engine that died on startup is a bad gateway",
-			err:     newLoadFailure(http.StatusBadGateway, "instance 'x' failed to start: boom"),
+			err:     loadEngineFailed("instance 'x' failed to start: boom"),
 			message: "instance 'x' failed to start: boom",
 			status:  http.StatusBadGateway,
 			errType: "api_error",
@@ -102,16 +103,16 @@ func TestClassifyLoadFailure(t *testing.T) {
 // Retrying is only advertised where it can work: a model still coming
 // up says come back, a model that cannot load says nothing of the kind.
 func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
-	assert.Positive(t, classifyLoadFailure(loadStillWarming("warming")).retryAfterSecs,
+	assert.Positive(t, classifyLoadFailure(loadStillWarming("warming")).retryAfter,
 		"a still-loading model must tell the caller to come back")
 
 	for name, err := range map[string]error{
-		"engine died":   newLoadFailure(http.StatusBadGateway, "failed to start"),
-		"never pulled":  newLoadFailure(http.StatusNotFound, "Model file not found"),
+		"engine died":   loadEngineFailed("failed to start"),
+		"never pulled":  fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal),
 		"our own fault": loadInternal("instance disappeared"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Zero(t, classifyLoadFailure(err).retryAfterSecs,
+			assert.Zero(t, classifyLoadFailure(err).retryAfter,
 				"retrying this cannot succeed, so do not invite it")
 		})
 	}
@@ -121,7 +122,7 @@ func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
 // picks up context on the way out silently falls back to 502.
 func TestClassifyLoadFailureUnwraps(t *testing.T) {
 	wrapped := fmt.Errorf("loading %q: %w", "some-model",
-		newLoadFailure(http.StatusNotFound, "Model file not found"))
+		fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal))
 
 	lf := classifyLoadFailure(wrapped)
 
@@ -134,8 +135,9 @@ func TestClassifyLoadFailureUnwraps(t *testing.T) {
 // branches agree, only that each was individually reasonable.
 func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 	for _, cause := range []error{
-		newLoadFailure(http.StatusNotFound, "Model file not found"),
-		newLoadFailure(http.StatusBadGateway, "instance 'x' failed to start: boom"),
+		fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal),
+		loadEngineFailed("instance 'x' failed to start: boom"),
+		fmt.Errorf("instance x failed: %w", &httperr.EngineFailure{Class: httperr.FailureMemory, Message: "allocation failed"}),
 		loadStillWarming("instance 'x' is still loading"),
 		loadInternal("instance 'x' disappeared"),
 		errors.New("something unclassified"),
@@ -161,7 +163,7 @@ func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 				} `json:"error"`
 			}
 			require.NoError(t, json.Unmarshal(hdr.Body.Bytes(), &fromHeader))
-			frame, _, _ := strings.Cut(sse.Body.String(), "\n\n")
+			frame, _, _ := strings.Cut(strings.TrimLeft(sse.Body.String(), "\n"), "\n\n")
 			payload := strings.TrimPrefix(frame, "data: ")
 			require.NoError(t, json.Unmarshal([]byte(payload), &fromStream))
 
@@ -184,4 +186,20 @@ func TestLoadFailureKeepsItsCause(t *testing.T) {
 	lf := classifyLoadFailure(sentinel)
 
 	assert.ErrorIs(t, lf, sentinel, "errors.Is must still reach the original cause")
+}
+
+func TestClassifyLoadFailureEngineClass(t *testing.T) {
+	for _, class := range []httperr.FailureClass{httperr.FailureMemory, httperr.FailureUnsupportedInput, httperr.FailureChatTemplateRejected, httperr.FailureToolCallingNotEnabled} {
+		cause := &httperr.EngineFailure{Class: class, Message: "declared failure"}
+		for _, wrapped := range []error{cause, loadEngineFailed(cause.Error()).withCause(cause), fmt.Errorf("cold load: %w", cause)} {
+			failure := classifyLoadFailure(wrapped)
+			want := (&httperr.EngineFailure{Class: class, Message: wrapped.Error()}).HTTPError()
+			assert.Equal(t, want.Status, failure.status)
+			assert.Equal(t, want.Code, failure.code)
+			assert.Equal(t, want.Message, failure.message)
+			assert.Zero(t, failure.retryAfter)
+			assert.ErrorIs(t, failure, wrapped)
+		}
+	}
+	assert.Equal(t, http.StatusBadGateway, classifyLoadFailure(errors.New("CUDA out of memory")).status)
 }

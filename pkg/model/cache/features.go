@@ -27,8 +27,9 @@ func (m *CachedModel) FeatureState(name string) string {
 	return "unknown"
 }
 
-// WireEndpoints returns the node's effective endpoints and whether it
-// supplied a declaration, including an explicitly empty one.
+// WireEndpoints returns the node's effective endpoints, derived when the
+// catalog ingested them, and whether it supplied a declaration, including an
+// explicitly empty one.
 func (m *CachedModel) WireEndpoints() ([]string, bool) {
 	if m == nil {
 		return nil, false

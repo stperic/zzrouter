@@ -22,9 +22,11 @@ package version
 // Protocol 1 is the first public release's wire: pairing, internal routes,
 // provider sync with assets, model defaults, variants and features, typed
 // install recipes, and the cluster update routes.
+// Protocol 2 adds failure_patterns, which older provider schemas reject.
+// Protocol 3 adds readiness_probe.stall_timeout, which older provider schemas reject.
 const (
-	ClusterProtocolVersion    = 1
-	MinClusterProtocolVersion = 1
+	ClusterProtocolVersion    = 3
+	MinClusterProtocolVersion = 3
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

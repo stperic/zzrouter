@@ -9,6 +9,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stperic/zzrouter/pkg/jobs"
 )
@@ -74,7 +76,7 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 	tool.InputSchema = objectSchema[In]{}
 	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		var out Out
-		d, err := newDispatcher(ctx, cfg)
+		d, err := newDispatcher(ctx, cfg, bindings)
 		if err == nil {
 			out, err = handler(d, ctx, in)
 		}
@@ -156,10 +158,10 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) {
 	path, err := pathSegment(jobsRoute, input.JobID)
 	if err != nil {
-		return jobOutput{}, fmt.Errorf("job_id: %w", err)
+		return jobOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "job_id: "+err.Error(), nil)
 	}
 	if input.WaitSeconds < DefaultWaitSeconds || input.WaitSeconds > MaxWaitSeconds {
-		return jobOutput{}, fmt.Errorf("wait_seconds must be between %d and %d", DefaultWaitSeconds, MaxWaitSeconds)
+		return jobOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("wait_seconds must be between %d and %d", DefaultWaitSeconds, MaxWaitSeconds), nil)
 	}
 	// Bound in-flight REST calls, not just the delay between polls.
 	pollCtx, cancel := context.WithCancel(ctx)
@@ -210,7 +212,7 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) 
 				out.JobID, out.State = input.JobID, "still running, call zz_job again"
 				return out, nil
 			}
-			return jobOutput{}, fmt.Errorf("job wait interrupted: %w", pollCtx.Err())
+			return jobOutput{}, newToolError(httperr.StatusClientClosedRequest, codeInterrupted, fmt.Sprintf("job wait interrupted: %v", pollCtx.Err()), pollCtx.Err())
 		case <-timer.C:
 		}
 	}

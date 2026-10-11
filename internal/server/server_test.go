@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -20,6 +22,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
+	"github.com/stretchr/testify/assert"
 )
 
 // nilAppsConfig is a test helper that returns a nil-returning appsConfig accessor.
@@ -104,13 +107,6 @@ func TestParamRuleBuilders(t *testing.T) {
 		rule := OptionalQueryParamWithDefault("sort", "asc")
 		if rule.Default != "asc" {
 			t.Errorf("Default = %q, want %q", rule.Default, "asc")
-		}
-	})
-
-	t.Run("RequiredQueryParam", func(t *testing.T) {
-		rule := RequiredQueryParam("id")
-		if !rule.Required {
-			t.Error("Required should be true")
 		}
 	})
 
@@ -577,20 +573,6 @@ func TestRespondList(t *testing.T) {
 	}
 }
 
-func TestRespondNoContent(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-
-	respondNoContent(c)
-
-	// Gin's Status() sets internal state; check Writer.Status()
-	// The httptest.Recorder's code is set when headers are flushed
-	// which gin does lazily. We check gin's internal status instead.
-	if status := c.Writer.Status(); status != http.StatusNoContent {
-		t.Errorf("status = %d, want %d", status, http.StatusNoContent)
-	}
-}
-
 // ============================================================================
 // Problem Details Tests
 // ============================================================================
@@ -753,40 +735,23 @@ func (m *mockFlusher) Flush() {
 func TestStreamNDJSON(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	flusher := &mockFlusher{ResponseRecorder: recorder}
-
-	// Simulate NDJSON input
-	input := `{"status":"pulling"}
-{"status":"verifying"}
-{"status":"done"}`
-
-	err := streamNDJSON(flusher, flusher, strings.NewReader(input))
-	if err != nil {
-		t.Errorf("streamNDJSON() error = %v", err)
-	}
-
-	// Should have flushed after each line
-	if flusher.flushed != 3 {
-		t.Errorf("flushed = %d, want 3", flusher.flushed)
-	}
-
-	// Output should contain all lines
-	output := recorder.Body.String()
-	if !strings.Contains(output, "pulling") {
-		t.Error("output should contain 'pulling'")
-	}
-	if !strings.Contains(output, "done") {
-		t.Error("output should contain 'done'")
-	}
+	c, _ := gin.CreateTestContext(flusher)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/pull", nil)
+	httperr.AttachResponder(newOllamaResponder())(c)
+	input := "{\"status\":\"pulling\"}\n{\"status\":\"verifying\"}\n{\"status\":\"success\"}\n"
+	writeOllamaResponse(c, &http.Response{StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": {"application/x-ndjson"}}, Body: io.NopCloser(strings.NewReader(input))})
+	assert.Equal(t, input, recorder.Body.String())
+	assert.Greater(t, flusher.flushed, 0)
 }
 
 func TestStreamResponseWithFlush_NonFlushable(t *testing.T) {
-	// Test with a ResponseRecorder which does implement Flusher
-	input := strings.NewReader("test data")
 	w := httptest.NewRecorder()
-	err := streamResponseWithFlush(w, input)
-	if err != nil {
-		t.Errorf("streamResponseWithFlush() error = %v", err)
-	}
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/blobs/digest", nil)
+	writeOllamaResponse(c, &http.Response{StatusCode: http.StatusOK,
+		Header: http.Header{}, Body: io.NopCloser(strings.NewReader("test data"))})
+	assert.Equal(t, "test data", w.Body.String())
 }
 
 // ============================================================================
@@ -1298,22 +1263,6 @@ func TestRespondSuccess(t *testing.T) {
 // Validation Rule Builder Tests (Extended)
 // ============================================================================
 
-func TestRequiredQueryParam(t *testing.T) {
-	rule := RequiredQueryParam("search")
-	if rule.Name != "search" {
-		t.Errorf("Name = %q, want 'search'", rule.Name)
-	}
-	if rule.Source != ParamSourceQuery {
-		t.Error("Source should be ParamSourceQuery")
-	}
-	if !rule.Required {
-		t.Error("Required should be true")
-	}
-	if rule.MinLength != 1 {
-		t.Errorf("MinLength = %d, want 1", rule.MinLength)
-	}
-}
-
 // ============================================================================
 // Mock Providers for ModelService Tests
 // ============================================================================
@@ -1381,7 +1330,7 @@ func (m *mockModelRegistry) RescanLocal() (map[string]any, error) {
 
 type mockInstanceProvider struct{}
 
-func (m *mockInstanceProvider) GetInstanceByModel(modelName string) (*instance.Instance, bool) {
+func (m *mockInstanceProvider) GetInstanceByModel(_, modelName string) (*instance.Instance, bool) {
 	return nil, false
 }
 

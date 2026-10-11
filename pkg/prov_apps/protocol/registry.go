@@ -72,6 +72,14 @@ func (r *Registry) GetAll() map[string]FullProvider {
 	return result
 }
 
+// Of returns key's provider, built for p when the registry no longer holds it (a disabled provider); nil for neither.
+func (r *Registry) Of(key string, p config.Provider) FullProvider {
+	if held, err := r.Get(key); err == nil || p == nil {
+		return held
+	}
+	return r.createProvider(key, p)
+}
+
 // Register adds or replaces a provider in the registry from its typed
 // config. Used when a provider is enabled at runtime (e.g., after
 // verify).
@@ -134,6 +142,11 @@ func (r *Registry) Sync(cfg *config.AppsConfig) {
 	}
 }
 
+// LoadsModels matches the load-capable protocol mapping; cloud APIs only expose catalogs.
+func LoadsModels(mode string, wire config.AppProtocol) bool {
+	return mode != constants.AppModeCloud && wire == config.ProtocolOllama
+}
+
 // createProvider builds a concrete FullProvider for the given typed
 // provider. Kind-scoped type switches happen once here; callers pass a
 // config.Provider through, no ServiceConfig involved.
@@ -146,12 +159,12 @@ func (r *Registry) createProvider(key string, p config.Provider) FullProvider {
 	case *config.CloudProvider:
 		return NewOpenAIProvider(key, 0, string(config.ProtocolOpenAI), r.httpClient)
 	case *config.OnDemandProvider:
-		if tp.Protocol == config.ProtocolOllama {
+		if LoadsModels(string(tp.Kind()), tp.Protocol) {
 			return NewOllamaProvider(r.httpClient)
 		}
 		return NewOpenAIProvider(key, constants.DefaultVLLMPort, string(tp.Protocol), r.httpClient)
 	case *config.ExternalProvider:
-		if tp.Protocol == config.ProtocolOllama {
+		if LoadsModels(string(tp.Kind()), tp.Protocol) {
 			return NewOllamaProvider(r.httpClient)
 		}
 		return NewOpenAIProvider(key, constants.DefaultVLLMPort, string(tp.Protocol), r.httpClient)
