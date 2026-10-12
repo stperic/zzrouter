@@ -624,7 +624,11 @@ class Proxy(httpserver.BaseHTTPRequestHandler):
         t = time.time()
         if blocked:
             code, rh = 200, {"Content-Type": "application/json"}
-            rb = json.dumps({"jsonrpc": "2.0", "id": rpc.get("id"), "result": {"isError": True, "content": [{"type": "text", "text": "Campaign ownership guard: deletion requires node-wide absence, a completed owned download, and a post-download zz_models read with model equal to the physical name or source_id, node selected, total=1 and has_more=false. Wildcards do not prove exact identity."}], "structuredContent": {"status": 409, "code": "campaign_ownership_guard"}}}).encode()
+            result = {"isError": True, "content": [{"type": "text", "text": "Campaign ownership guard: deletion requires node-wide exact source_id absence, a completed zz_model_download with that same exact source_id as model plus the selected node and provider, and a post-download zz_models read with model equal to the physical name or source_id, node selected, total=1 and has_more=false. Wildcards do not prove exact identity."}], "structuredContent": {"status": 409, "code": "campaign_ownership_guard"}}
+            protocol = self.headers.get("MCP-Protocol-Version") or (params.get("_meta") or {}).get("io.modelcontextprotocol/protocolVersion", "")
+            if isinstance(protocol, str) and protocol >= "2026-07-28":
+                result["resultType"] = "complete"
+            rb = json.dumps({"jsonrpc": "2.0", "id": rpc.get("id"), "result": result}).encode()
         else:
             req = urllib.request.Request(COORD + self.path, data=body, method=self.command, headers=fwd)
             t = time.time()
@@ -845,7 +849,7 @@ def scenarios(node, provider):
         "prompt": f"On node {node}, choose a tiny disposable physical model supported by {provider}. First query zz_models "
                   f"with its full exact registry model/source_id (include the tag for tagged registries) and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
                   "Choose another model if anything is present. Never delete a pre-existing model or any pinned model. "
-                  "Download that absent model through zz_model_download using the same exact full registry identifier, including its tag, follow its node job to done, then query zz_models "
+                  f"Download that absent model through zz_model_download with node={node} and provider={provider}, using the same exact full registry identifier, including its tag, follow its node job to done, then query zz_models "
                   "with model equal to the returned physical name or source_id, node and provider selected. Require total=1, has_more=false and the matching physical source_id; do not use a wildcard. Do not start a run. Delete only that new physical name with "
                   "zz_model_delete, its provider/node/source_id selectors and a fresh idempotency key. Finally query "
                   "zz_models with the exact physical name and node, OMIT provider, and prove total=0 and has_more=false. Stop if any precondition fails; "
