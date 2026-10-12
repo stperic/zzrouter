@@ -79,6 +79,53 @@ class CampaignEvidenceTest(unittest.TestCase):
         self.assertIsNone(c.gguf_choice(files, 4, True))
         self.assertEqual(c.gguf_choice(files, 40, True)["file"], "Qwen3-27B-Q8_0.gguf")
 
+class ModelDetailEvidenceTest(unittest.TestCase):
+    def setUp(self):
+        # Synthetic physical detail and a later repository page with two builds.
+        entry = {"name": "tiny-q4", "source_id": "repo", "source_repo": "huggingface", "node": "n", "provider": "p",
+                 "show": {"name": "tiny-q4", "source_id": "repo", "source_repo": "huggingface", "node": "n", "assigned_app": "p",
+                          "model_info": {"context": 2048}, "template_present": True, "capabilities": ["completion"], "has_parameters": False}}
+        exact = call("zz_models", {"model": "tiny-q4", "node": "n", "provider": "p"},
+                     {"total": 1, "has_more": False, "models": [entry]})
+        broad = call("zz_models", {"model": "repo", "node": "n", "provider": "p"},
+                     {"total": 2, "has_more": False, "models": [entry, {**entry, "name": "tiny-fp16"}]})
+        self.ctx = {"node": "n", "scenario": {"provider": "p"}, "left": [], "calls": [exact, broad],
+                    "rj": {"model": "tiny-q4", "source_id": "repo", "context": {"context": 2048}, "template_present": True,
+                           "capabilities": ["completion"], "has_parameters": False, "detail_error": None}}
+
+    def test_exact_detail_survives_later_repository_page(self):
+        self.assertTrue(passed(c.check_model_detail(self.ctx)))
+        source = copy.deepcopy(self.ctx); source["calls"][0]["args"]["model"] = "repo"
+        self.assertTrue(passed(c.check_model_detail(source)))
+        broad_only = copy.deepcopy(self.ctx); broad_only["calls"].pop(0)
+        self.assertFalse(passed(c.check_model_detail(broad_only)))
+
+    def test_selected_detail_stays_strict_and_uses_latest_exact_evidence(self):
+        mutations = [lambda x: x["args"].update(model="*tiny*"), lambda x: x["args"].update(node="other"),
+                     lambda x: x["args"].update(provider="other"), lambda x: x["evidence"].update(total=2),
+                     lambda x: x["evidence"].update(has_more=True), lambda x: x["evidence"].update(capture_overflow=True),
+                     lambda x: x["evidence"]["models"][0].update(source_id="other"),
+                     lambda x: x["evidence"]["models"][0]["show"].update(node="other"),
+                     lambda x: x["evidence"]["models"][0]["show"].update(assigned_app="other"),
+                     lambda x: x["evidence"]["models"][0]["show"].update(source_repo="other"),
+                     lambda x: x["evidence"]["models"][0]["show"].update(model_info={"context": 4096}),
+                     lambda x: x["evidence"]["models"][0].pop("show")]
+        for mutate in mutations:
+            bad = copy.deepcopy(self.ctx); mutate(bad["calls"][0])
+            self.assertFalse(passed(c.check_model_detail(bad)))
+        latest = copy.deepcopy(self.ctx); latest["calls"].append(copy.deepcopy(latest["calls"][0]))
+        latest["calls"][-1]["evidence"]["models"][0]["show"]["model_info"] = {"context": 4096}
+        self.assertFalse(passed(c.check_model_detail(latest)))
+        for mutate in (lambda x: x["evidence"]["models"][0].update(name="other"),
+                       lambda x: x["evidence"].update(models=[]),
+                       lambda x: x["evidence"].update(models=[], capture_overflow=True)):
+            malformed = copy.deepcopy(self.ctx); malformed["calls"].append(copy.deepcopy(malformed["calls"][0]))
+            mutate(malformed["calls"][-1])
+            self.assertFalse(passed(c.check_model_detail(malformed)))
+        forged = copy.deepcopy(self.ctx); forged["rj"]["capabilities"] = ["vision"]
+        self.assertFalse(passed(c.check_model_detail(forged)))
+
+
 class DisposableOwnershipTest(unittest.TestCase):
     def setUp(self):
         self.args = {"model": "tiny", "node": "n", "provider": "p", "source_id": "repo", "idempotency_key": "unique"}

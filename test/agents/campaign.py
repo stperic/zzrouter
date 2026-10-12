@@ -954,13 +954,20 @@ def check_recent_jobs(ctx):
 
 
 def check_model_detail(ctx):
-    calls = tool_calls(ctx, "zz_models", True)
-    call = calls[-1] if calls else {}
+    rj = ctx["rj"] or {}
+    provider, node = ctx["scenario"]["provider"], ctx["node"]
+    call = {}
+    for candidate in reversed(tool_calls(ctx, "zz_models", True)):
+        args, fields = candidate.get("args") or {}, candidate.get("evidence") or {}
+        entries = fields.get("models") or []
+        selector = str(args.get("model") or "").casefold()
+        addressed = selector == str(rj.get("model") or "").casefold() or (selector == str(rj.get("source_id") or "").casefold() and len(entries) <= 1)
+        if selector and addressed and args.get("provider") == provider and args.get("node") == node:
+            call = candidate
+            break
     args, fields = call.get("args") or {}, call.get("evidence") or {}
     entries = fields.get("models") or []
     entry = entries[0] if len(entries) == 1 else {}
-    rj = ctx["rj"] or {}
-    provider, node = ctx["scenario"]["provider"], ctx["node"]
     exact = str(args.get("model") or "").casefold() in {str(entry.get(k) or "").casefold() for k in ("name", "source_id")}
     selected = entry.get("provider") == provider and entry.get("node") == node
     show, refusal = entry.get("show"), entry.get("show_unavailable") or {}
