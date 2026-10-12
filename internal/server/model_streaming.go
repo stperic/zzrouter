@@ -36,34 +36,23 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 		endpoint = "chat"
 	}
 
-	// FAST PATH: Check if model is already running (on-demand instances
-	// launched via runs API). Must be checked BEFORE findCapableProvider,
-	// as dynamically launched models may not be in the model registry but
-	// are ready to serve.
-	existingInstance, found := s.modelInstance(model, endpoint, providerType)
+	// A bound running model may be absent from the catalog.
+	existingInstance, found := s.modelInstance(resolved, endpoint)
 	if found && existingInstance.GetStatus() == instance.StatusRunning {
 		s.proxyToInstance(w, req, existingInstance, true)
 		return nil
 	}
 
-	// If resolution found no provider, find it locally. A model that has no capable
-	// provider maps to OpenAI's canonical "model_not_found" envelope —
-	// type=invalid_request_error, code=model_not_found, HTTP 404 — so
-	// stock OpenAI SDK clients can switch on error.type without needing
-	// to learn a zzRouter-specific value.
 	if providerType == "" {
-		var err error
-		providerType, _, err = s.findCapableProvider(model)
-		if err != nil {
-			if problem := s.providerInventoryFailure(s.missingInventoryNode(req), "", true); problem != nil {
-				recordErrorOnContext(req.Context(), problem.Code, problem.Message)
-				writeError(w, req, *problem)
-				return fmt.Errorf("%s", problem.Message)
-			}
-			recordErrorOnContext(req.Context(), "model_not_found", err.Error())
-			writeError(w, req, httperr.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Message: err.Error(), Code: "model_not_found"})
-			return err
+		if problem := s.providerInventoryFailure(s.missingInventoryNode(req), "", true); problem != nil {
+			recordErrorOnContext(req.Context(), problem.Code, problem.Message)
+			writeError(w, req, *problem)
+			return fmt.Errorf("%s", problem.Message)
 		}
+		err := fmt.Errorf("model %q not found in registry; if this is a cloud-served model, register it via POST /zzrouter/v1/deployments first", model)
+		recordErrorOnContext(req.Context(), "model_not_found", err.Error())
+		writeError(w, req, httperr.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Message: err.Error(), Code: "model_not_found"})
+		return err
 	}
 	if problem := s.providerInventoryFailure(s.node.Nodename(), providerType, false); problem != nil {
 		recordErrorOnContext(req.Context(), problem.Code, problem.Message)
@@ -80,10 +69,6 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 			return nil
 		}
 	}
-
-	// For on-demand apps, check if model is already running (also handles
-	// starting status).
-	existingInstance, found = s.modelInstance(model, endpoint, providerType)
 
 	// Only this handler's own surfaces (/v1 and the responses/realtime
 	// wrappers) reach here, and OpenAI's `stream` defaults to false when

@@ -98,9 +98,8 @@ func (s *Server) admitProviderInventory(c *gin.Context, resolved *resolver.Resol
 			node = s.node.Nodename()
 		}
 	}
-	if resolved.Provider == "" && s.node.IsLocalNode(node) && s.providers.appMgr != nil {
-		if running, found := s.providers.appMgr.GetInstanceByModel("", resolved.ModelName, prov_apps.EndpointChat); found && running.GetStatus() == instance.StatusRunning {
-			resolved.Provider = running.Provider
+	if s.node.IsLocalNode(node) && s.providers.appMgr != nil {
+		if running, found := s.modelInstance(resolved, "chat"); found && running.GetStatus() == instance.StatusRunning {
 			return true
 		}
 	}

@@ -323,7 +323,7 @@ func TestVariants_ResponsesAffinityCannotBypassConflict(t *testing.T) {
 	}))
 	s.model.Cache.Invalidate()
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
-	require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), variantChat, "llamacpp", "", "responses", "responses_compat"))
+	require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), &resolver.Resolved{ModelName: variantChat, Provider: "llamacpp"}, "responses", "responses_compat"))
 	addConflictingWeights(t, s, variantChat)
 	s.inference.affinity.Record("resp_pinned", "llamacpp")
 	require.NoError(t, s.model.Groups.Set("pinned-group", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "variant", App: "llamacpp", Model: variantChat}}}))
@@ -531,4 +531,22 @@ func TestVariants_PreviewGuardsUnpublishedLocalConflict(t *testing.T) {
 	_, err = s.newLoadExecutor().PreviewLocalRun(t.Context(), &PreviewRunRequest{Provider: "llamacpp", ModelName: variantAgent})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusConflict, answeredStatus(err))
+}
+
+func TestWireBindingContractGroupAliases(t *testing.T) {
+	s := variantNode(t)
+	defineVariants(t, s)
+	run := instance.NewInstance("alias-run", "llamacpp", qwenModel, 12345, -1, 1)
+	run.Endpoint = "chat"
+	run.SetResolved(instance.Resolved{WireEndpoints: []string{"responses"}})
+	run.MarkRunning(false, nil)
+	require.NoError(t, s.providers.appMgr.Instances().Register(run))
+	t.Cleanup(func() { require.NoError(t, s.providers.appMgr.Instances().Remove(run.ID)) })
+	for _, target := range []*resolver.Resolved{
+		{ModelName: variantChat, Provider: "llamacpp", GroupName: "group"},
+		s.responseAffinityTarget(variantChat, "llamacpp"),
+		{ModelName: qwenModel, RequestModel: variantChat, Provider: "llamacpp"},
+	} {
+		require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), target, "responses", "responses_compat"))
+	}
 }

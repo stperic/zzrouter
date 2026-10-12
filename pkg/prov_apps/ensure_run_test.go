@@ -281,3 +281,55 @@ func TestEnsureRunSmokeTimeoutRetainsPreparationOwner(t *testing.T) {
 		assert.Empty(t, m.instances.List(), "timed-out smoke must leave no late run or process")
 	})
 }
+
+func TestCanonicalRunLookupContract(t *testing.T) {
+	calls := 0
+	r := newServedRig(t, WithModelCanonicalizer(func(model string) string {
+		calls++
+		if model == "alias" {
+			return servedModel
+		}
+		return model
+	}))
+	run := instance.NewInstance("warm", "ollama", servedLoaded, 0, -1, 1)
+	run.Endpoint = "chat"
+	run.MarkRunning(false, nil)
+	require.NoError(t, r.m.instances.Register(run))
+	got, found := r.m.GetInstanceByCanonicalModel("ollama", servedModel, EndpointChat)
+	require.True(t, found)
+	assert.Same(t, run, got)
+	assert.Zero(t, calls, "canonical inference lookup never invokes replica/alias resolution")
+	_, found = r.m.GetInstanceByCanonicalModel("other", servedLoaded, EndpointChat)
+	assert.False(t, found, "another provider cannot borrow this run")
+	got, found = r.m.GetInstanceByModel("ollama", "alias", EndpointChat)
+	require.True(t, found)
+	assert.Same(t, run, got)
+	assert.Equal(t, 1, calls, "management alias adapter resolves once")
+}
+
+func TestCanonicalRunLookupContractProviderAliases(t *testing.T) {
+	cfg := aliasTestConfig(t)
+	svc, ok := cfg.LookupApp("fake")
+	require.True(t, ok)
+	runtime := *svc.Runtime
+	runtime.PortRange, runtime.BasePort = []int{8210, 8215}, 8210
+	svc.Runtime = &runtime
+	require.NoError(t, cfg.AddApp("llamacpp", svc))
+	m, err := NewProviderAppManager(cfg)
+	require.NoError(t, err)
+	cleanupProviderManager(t, m)
+	run := instance.NewInstance("display-provider", "llama.cpp", "m", 0, -1, 1)
+	run.Endpoint = "chat"
+	run.MarkRunning(false, nil)
+	require.NoError(t, m.instances.Register(run))
+	for _, provider := range []string{"llama.cpp", "llamacpp"} {
+		got, found := m.GetInstanceByCanonicalModel(provider, "m", EndpointChat)
+		require.True(t, found, provider)
+		assert.Same(t, run, got)
+		got, found = m.GetInstanceByModel(provider, "m", EndpointChat)
+		require.True(t, found, provider)
+		assert.Same(t, run, got)
+	}
+	_, found := m.GetInstanceByCanonicalModel("fake", "m", EndpointChat)
+	assert.False(t, found, "different configured keys retain provider authority")
+}

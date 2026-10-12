@@ -253,7 +253,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
 	if err != nil {
 		llm.SetSpanError(span, err)
 		recorder.SetError("model_resolve_failed", err.Error())
@@ -355,7 +355,7 @@ func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string) (*res
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil, false
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
 	if err != nil {
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend, "", string(genai.OperationName(c.FullPath())))
@@ -432,7 +432,7 @@ func (s *Server) narrowToWireEndpoint(c *gin.Context, model string, resolved *re
 	if len(resolved.Candidates) > 0 {
 		byMode := map[wireEndpointMode][]fallback.Candidate{}
 		for _, cand := range resolved.Candidates {
-			mode := servedAs(s.targetWireMode(c.Request.Context(), cand.Model, cand.App, cand.Node, native, compat))
+			mode := servedAs(s.targetWireMode(c.Request.Context(), &resolver.Resolved{ModelName: cand.Model, Provider: cand.App, Node: cand.Node}, native, compat))
 			byMode[mode] = append(byMode[mode], cand)
 		}
 		for _, mode := range []wireEndpointMode{wireModeNative, wireModeCompat} {
@@ -444,7 +444,7 @@ func (s *Server) narrowToWireEndpoint(c *gin.Context, model string, resolved *re
 				return mode, true
 			}
 		}
-	} else if mode := servedAs(s.targetWireMode(c.Request.Context(), resolved.ModelName, resolved.Provider, resolved.Node, native, compat)); mode != wireModeUnsupported {
+	} else if mode := servedAs(s.targetWireMode(c.Request.Context(), resolved, native, compat)); mode != wireModeUnsupported {
 		return mode, true
 	}
 	declare := fmt.Sprintf("%q", native)

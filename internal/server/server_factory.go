@@ -56,6 +56,7 @@ import (
 	obsspend "github.com/stperic/zzrouter/pkg/observability/spend"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -336,7 +337,14 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// Initialize model resolver (default uses cache-based resolution)
 	defaultResolver := resolver.NewDefault(resolver.DefaultConfig{Replicas: func(ctx context.Context, name, provider, node, registry string, exact ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
 		return s.model.Cache.LookupReplicas(ctx, name, provider, node, registry, exact...)
-	}, Parse: s.splitModelRef, Nodename: s.node.Nodename, IsLocalNode: s.node.IsLocalNode, CanRoute: s.IsCoordinator})
+	}, Parse: s.splitModelRef, Nodename: s.node.Nodename, IsLocalNode: s.node.IsLocalNode, CanRoute: s.IsCoordinator,
+		WarmLocalIdentity: func(model, provider string) (string, string, bool) {
+			if run, found := s.providers.appMgr.GetInstanceByCanonicalModel(provider, model, prov_apps.EndpointChat); found && run.GetStatus() == instance.StatusRunning {
+				return run.Model, run.Provider, true
+			}
+			return "", "", false
+		},
+	})
 	s.model.Resolver = defaultResolver
 
 	// Load model groups and virtual keys from their respective config files.

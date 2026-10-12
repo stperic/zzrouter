@@ -69,7 +69,7 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint})
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
 	if err != nil {
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend,
