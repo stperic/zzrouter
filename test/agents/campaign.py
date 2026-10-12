@@ -624,7 +624,7 @@ class Proxy(httpserver.BaseHTTPRequestHandler):
         t = time.time()
         if blocked:
             code, rh = 200, {"Content-Type": "application/json"}
-            rb = json.dumps({"jsonrpc": "2.0", "id": rpc.get("id"), "result": {"isError": True, "content": [{"type": "text", "text": "Campaign ownership guard: deletion requires node-wide absence, a completed owned download, and an exact physical identity."}], "structuredContent": {"status": 409, "code": "campaign_ownership_guard"}}}).encode()
+            rb = json.dumps({"jsonrpc": "2.0", "id": rpc.get("id"), "result": {"isError": True, "content": [{"type": "text", "text": "Campaign ownership guard: deletion requires node-wide absence, a completed owned download, and a post-download zz_models read with model equal to the physical name or source_id, node selected, total=1 and has_more=false. Wildcards do not prove exact identity."}], "structuredContent": {"status": 409, "code": "campaign_ownership_guard"}}}).encode()
         else:
             req = urllib.request.Request(COORD + self.path, data=body, method=self.command, headers=fwd)
             t = time.time()
@@ -810,7 +810,8 @@ def prepare_probe(node, provider, mode, sc):
     if not ok or item.get("source_id") != pick["repo"]:
         return False, f"selected physical fixture not ready: {detail}"
     endpoint = "embeddings" if mode == "embed" else "chat"
-    sc["prompt"] = f"Start the already downloaded physical model {pick['name']} on node {node} with {provider} and endpoint={endpoint}. Follow its launch job to done before probing with zz_chat probe={mode}. Require verdict=verified and report dimensions for embeddings. Stop only the run you started by its run_id." + tail(provider) + " JSON keys: verdict, dimensions (number or null)."
+    output = "verdict, dimensions (positive number)" if mode == "embed" else "verdict"
+    sc["prompt"] = f"Start the already downloaded physical model {pick['name']} on node {node} with {provider} and endpoint={endpoint}. Follow its launch job to done before probing only with zz_chat probe={mode}. Require verdict=verified. Stop only the run you started by its run_id." + tail(provider) + f" JSON keys: {output}."
     return True, detail
 
 
@@ -844,7 +845,7 @@ def scenarios(node, provider):
                   f"with its full exact registry model/source_id (include the tag for tagged registries) and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
                   "Choose another model if anything is present. Never delete a pre-existing model or any pinned model. "
                   "Download that absent model through zz_model_download, follow its node job to done, then query zz_models "
-                  "for the exact physical catalog identity. Do not start a run. Delete only that new physical name with "
+                  "with model equal to the returned physical name or source_id, node and provider selected. Require total=1, has_more=false and the matching physical source_id; do not use a wildcard. Do not start a run. Delete only that new physical name with "
                   "zz_model_delete, its provider/node/source_id selectors and a fresh idempotency key. Finally query "
                   "zz_models with the exact physical name and node, OMIT provider, and prove total=0 and has_more=false. Stop if any precondition fails; "
                   "do not use zz_api, shell, SSH or a native API for deletion."
@@ -883,7 +884,8 @@ def scenarios(node, provider):
             "id": "tool-calling",
             "prompt": f"On node {node}, make {big['name']} serve tool calls with {provider}: start it, prove tool calling with "
                       "zzRouter's tool-call probe, and if the probe or a refusal says the engine needs tool-calling settings, "
-                      "set them for this model only, restart the run and probe again until it is verified. Then stop it."
+                      "set them for this model only, restart the run and probe again until it is verified. Then stop it. "
+                      "A stop reply with status=stopped confirms completion; verify absence with the zz_runs collection, without querying the stopped run_id."
                       + tail(provider) + " JSON keys: verified (bool), settings_changed (object or null), stopped (bool).",
             "check": check_tool_calling,
             "expect_error": "tool_calling_not_enabled",

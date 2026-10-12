@@ -95,6 +95,7 @@ class DisposableOwnershipTest(unittest.TestCase):
         mutations = [lambda x: x[0]["args"].update(provider="p"), lambda x: x[0]["evidence"].update(total=1),
                      lambda x: x[2]["args"].update(node="other"), lambda x: x[2]["args"].update(job_id="wrong"),
                      lambda x: x[2]["evidence"].update(state="failed"), lambda x: x[3]["args"].update(model="unrelated"),
+                     lambda x: x[3]["args"].update(model="*tiny*"),
                      lambda x: x[3]["evidence"]["models"][0].update(variant_of="base"),
                      lambda x: x[3]["evidence"]["models"][0].update(is_cloud=True),
                      lambda x: x[1]["args"].update(file="other.gguf")]
