@@ -52,7 +52,7 @@ func TestEmbeddingProbeContract(t *testing.T) {
 func TestVisionProbeContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, behavior, want string
-	}{{"image evidence", "pixels", "verified"}, {"image ignored", "red", "inconclusive"}, {"text only", "text", "inconclusive"}, {"truncated", "length", "inconclusive"}} {
+	}{{"image evidence", "pixels", "verified"}, {"reasoning before answer", "reasoning", "verified"}, {"image ignored", "red", "inconclusive"}, {"text only", "text", "inconclusive"}, {"truncated", "length", "inconclusive"}} {
 		t.Run(tc.name, func(t *testing.T) {
 			images := map[string]bool{}
 			calls := 0
@@ -61,7 +61,7 @@ func TestVisionProbeContract(t *testing.T) {
 				require.Equal(t, "/v1/chat/completions", r.URL.Path)
 				var body map[string]any
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-				require.EqualValues(t, 16, body["max_tokens"])
+				require.LessOrEqual(t, body["max_tokens"].(float64), float64(MaxChatTokens))
 				require.Equal(t, false, body["stream"])
 				message := body["messages"].([]any)[0].(map[string]any)
 				parts := message["content"].([]any)
@@ -84,6 +84,10 @@ func TestVisionProbeContract(t *testing.T) {
 				images[answer] = true
 				finish := "stop"
 				switch tc.behavior {
+				case "reasoning":
+					if body["max_tokens"].(float64) < 64 {
+						answer, finish = "", "length"
+					}
 				case "red":
 					answer = "red"
 				case "text":

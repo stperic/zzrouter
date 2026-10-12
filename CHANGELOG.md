@@ -4,6 +4,8 @@
 
 ### Highlights
 
+- Ollama preloading supports embedding-only models through a capability-neutral empty-input request.
+
 - MCP server for coding agents: `POST /zzrouter/v1/mcp` (coordinator, admin
   key) serves task-level `zz_*` tools for models, providers, runs, jobs and
   updates, plus a spec-searchable escape hatch. Setup in
@@ -24,6 +26,9 @@
 
 ### Behaviour changes
 
+- MCP startup guidance names job collections and capability probes, and source
+  metadata fields are distinguished from serving details. Vision probes allow
+  up to 256 tokens per image so reasoning models can reach a visible answer.
 - Run and provider refusals use one wire table for status, retry delay and
   diagnostics. Cold-load responses retain memory-budget details and explicit
   run/job extensions; streaming and native dialects keep their existing shapes.

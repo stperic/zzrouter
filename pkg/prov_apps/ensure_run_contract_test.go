@@ -735,7 +735,7 @@ const (
 	settle        = 50 * time.Millisecond      // a window in which nothing must happen
 )
 
-// daemonCall is one /api/generate the daemon received.
+// daemonCall is one load or unload the daemon received.
 type daemonCall struct {
 	model     string
 	unload    bool
@@ -787,7 +787,7 @@ func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 	case "/api/ps":
 		d.set(func(d *fakeDaemon) { d.psAuth = append(d.psAuth, req.Header.Get("Authorization")) })
 		return d.ps()
-	case "/api/generate":
+	case "/api/embed", "/api/generate":
 		var body map[string]any
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			return nil, err
@@ -1086,7 +1086,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 				failureHeld := newBarrier()
 				r.daemon.set(func(d *fakeDaemon) {
 					d.beforeRequest = func(req *http.Request) {
-						if req.URL.Path == "/api/generate" {
+						if req.URL.Path == "/api/embed" {
 							failureHeld.hold()
 						}
 					}
@@ -1233,6 +1233,9 @@ func TestEnsureRunContractServed(t *testing.T) {
 		t.Run("a dropped model retires its run", func(t *testing.T) {
 			r := newServedRig(t)
 			run := r.running(t, served)
+			ctx, cancel := context.WithTimeout(t.Context(), contractWait)
+			defer cancel()
+			require.NoError(t, run.WaitForGoroutines(ctx))
 			r.daemon.drop(servedLoaded)
 			r.tick(t)
 			require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
@@ -1362,7 +1365,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		assert.Equal(t, float64(-1), calls[0].keepAlive, "a number: the string \"-1\" is a 400")
 		assert.Equal(t, float64(300), calls[1].keepAlive, "the provider's keep-alive, in seconds")
 		for _, call := range calls {
-			assert.ElementsMatch(t, []string{"model", "prompt", "stream", "keep_alive"}, slices.Collect(maps.Keys(call.body)), "no parameter reaches the daemon")
+			assert.ElementsMatch(t, []string{"model", "input", "keep_alive"}, slices.Collect(maps.Keys(call.body)), "no parameter reaches the daemon")
 		}
 		for _, served := range []*instance.Instance{run, plain} {
 			assert.Negative(t, served.GetKeepAlive(), "the daemon expires a served model, not zzRouter")
@@ -1705,7 +1708,10 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 		time.Sleep(settle)
 		assert.True(t, r.daemon.isLoaded("z:latest"), "a held run is not ended")
 		lease.Release()
-		require.Eventually(t, func() bool { return !r.daemon.isLoaded("z:latest") }, contractWait, 10*time.Millisecond)
+		require.Eventually(t, func() bool {
+			_, listed := r.m.instances.Get(zero.ID)
+			return !r.daemon.isLoaded("z:latest") && !listed
+		}, contractWait, 10*time.Millisecond)
 		_, listed := r.m.instances.Get(zero.ID)
 		assert.False(t, listed)
 	})

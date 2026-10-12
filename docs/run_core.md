@@ -21,7 +21,8 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   same paths; the engine interface (`engine.go`) holds what differs.
 - **Served runs** are keyed by the daemon's name for the model, take no port, and log their lifecycle where
   a process run logs its engine. A load sends the run's keep-alive only when it is explicit (number -1
-  pins); the daemon applies it, and zzRouter arms a timer only for a client's keep_alive hint. Each load
+  pins); the daemon applies it, while zzRouter's reaper handles explicit zero and client hints. Loads use
+  empty-input `/api/embed` so completion and embedding-only models share one lifecycle. Each load
   lists the daemon as it lands: what it holds is recorded, and ready runs it dropped are reported in the
   load's `evicted_runs`. The services ticker reconciles the rest (retire what the daemon dropped, adopt what
   it holds on two sightings, never while a load is in flight) and retries a managed daemon whose start was

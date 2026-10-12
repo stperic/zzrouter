@@ -23,7 +23,7 @@ import (
 func TestProviderCallsSendTheConfiguredCredential(t *testing.T) {
 	loads := make(chan string, 2)
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/generate" {
+		if r.URL.Path == "/api/embed" {
 			loads <- r.Header.Get("Authorization")
 		}
 		w.Header().Set("Content-Type", "application/json")

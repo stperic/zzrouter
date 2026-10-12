@@ -171,7 +171,7 @@ func (p *OllamaProvider) ListRunningModels(ctx context.Context, t Target) ([]Run
 const keepLoaded = -1
 
 func (p *OllamaProvider) LoadModel(ctx context.Context, t Target, model string, keepAlive *time.Duration) error {
-	body := map[string]any{"model": model, "prompt": "", "stream": false}
+	body := map[string]any{"model": model, "input": []string{}}
 	switch {
 	case keepAlive == nil:
 	case *keepAlive < 0:
@@ -179,7 +179,7 @@ func (p *OllamaProvider) LoadModel(ctx context.Context, t Target, model string, 
 	default:
 		body["keep_alive"] = int64((*keepAlive + time.Second - 1) / time.Second) // whole seconds, rounded up
 	}
-	resp, err := t.call(ctx, p.loadClient, http.MethodPost, "/api/generate", body)
+	resp, err := t.call(ctx, p.loadClient, http.MethodPost, "/api/embed", body)
 	if err != nil {
 		return err
 	}
