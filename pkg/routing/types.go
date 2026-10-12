@@ -139,6 +139,7 @@ type Router interface {
 
 	// MultiRoute routes to multiple nodes with different request bodies per node
 	// Used for operations where each item has its own target node (e.g., deletion)
+	// A sole "*" body broadcasts while retaining every node's status and body.
 	MultiRoute(ctx context.Context, path string, method string, hostBodies map[string][]byte) (*Response, error)
 }
 

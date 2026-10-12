@@ -55,6 +55,7 @@ type Instance struct {
 	Provider          string              `json:"provider"`
 	LaunchMode        LaunchMode          `json:"launch_mode"`
 	Model             string              `json:"model,omitempty"`
+	weights           Weights
 
 	// StopUnconfirmed keeps a runtime occupied until its process reaper drains.
 	StopUnconfirmed atomic.Bool `json:"-"`
@@ -897,4 +898,27 @@ func FormatKeepAlive(d time.Duration) string {
 		return "-1"
 	}
 	return d.String()
+}
+
+// Weights is a run's physical reservation, separate from its addressed name.
+type Weights struct {
+	Model, Source, Backend string
+	Paths                  []string
+}
+
+// SetWeights replaces a queued reservation while the manager holds catalog permission.
+func (i *Instance) SetWeights(weights Weights) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	weights.Paths = slices.Clone(weights.Paths)
+	i.weights = weights
+}
+
+// Weights returns the physical reservation without exposing mutable state.
+func (i *Instance) Weights() Weights {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	weights := i.weights
+	weights.Paths = slices.Clone(weights.Paths)
+	return weights
 }

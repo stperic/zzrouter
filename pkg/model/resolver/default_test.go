@@ -28,7 +28,7 @@ func TestDefaultReplicaSelection(t *testing.T) {
 			cfg := DefaultConfig{
 				Parse:    func(s string) (string, string, string) { return s, "", "" },
 				Nodename: func() string { return "coord" }, IsLocalNode: func(s string) bool { return s == "coord" || s == "" || s == "localhost" }, CanRoute: func() bool { return true },
-				Replicas: func(_ context.Context, name, provider, node string) ([]*cache.CachedModel, error) {
+				Replicas: func(_ context.Context, name, provider, node, _ string, _ ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
 					require.Equal(t, "m", name)
 					require.Equal(t, tc.hint, node)
 					return tc.replicas, nil
@@ -51,7 +51,7 @@ func TestDefaultReplicaSelection(t *testing.T) {
 }
 
 func TestDefaultCarriesProviderAndSharedVariant(t *testing.T) {
-	cfg := DefaultConfig{Parse: func(s string) (string, string, string) { require.Equal(t, "alias", s); return s, "", "" }, Nodename: func() string { return "coord" }, IsLocalNode: func(s string) bool { return s == "coord" }, CanRoute: func() bool { return true }, Replicas: func(_ context.Context, name, provider, node string) ([]*cache.CachedModel, error) {
+	cfg := DefaultConfig{Parse: func(s string) (string, string, string) { require.Equal(t, "alias", s); return s, "", "" }, Nodename: func() string { return "coord" }, IsLocalNode: func(s string) bool { return s == "coord" }, CanRoute: func() bool { return true }, Replicas: func(_ context.Context, name, provider, node, _ string, _ ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
 		require.Equal(t, "alias", name)
 		require.Equal(t, "llamacpp", provider)
 		require.Equal(t, "worker", node)

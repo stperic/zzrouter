@@ -161,7 +161,7 @@ func TestCatalogMutationDeletePublishesBeforeAdmission(t *testing.T) {
 						require.Equal(t, "available", m.FeatureState("vision"))
 					} else {
 						require.False(t, found, "deleted model remains available to admission")
-						replicas, err := node.model.Cache.LookupReplicas(t.Context(), "weights", "llamacpp", location)
+						replicas, err := node.model.Cache.LookupReplicas(t.Context(), "weights", "llamacpp", location, "")
 						require.NoError(t, err)
 						require.Empty(t, replicas)
 					}
@@ -360,7 +360,7 @@ func TestCatalogMutationPublicationFailuresAreReported(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			target, _, dir := mutationNodes(t, "coordinator")
 			e := target.newInternalExecutor()
-			e.publishCatalog = func() error { return failure }
+			e.publishCatalog = func(context.Context) error { return failure }
 			c, rec := mutationContext(t, http.MethodDelete, "/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
 			switch operation {
 			case "delete":
@@ -497,7 +497,7 @@ func TestCatalogMutationRoutedDeleteReportsPublicationFailure(t *testing.T) {
 			target, _, dir := mutationNodes(t, "coordinator")
 			engine := gin.New()
 			e := target.newInternalExecutor()
-			e.publishCatalog = func() error { return errors.New("publication refused") }
+			e.publishCatalog = func(context.Context) error { return errors.New("publication refused") }
 			engine.DELETE("/zzrouter/v1/internal/models", e.HandleInternalDeleteModels)
 			svc := NewModelService(target, target, target, target, mutationRouter{engine: engine}, func() *config.AppsConfig { return target.appsConfig })
 			req := &DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}}
@@ -536,6 +536,14 @@ func TestCatalogMutationOllamaPathsPublishBeforeSuccess(t *testing.T) {
 	for _, path := range []string{"/api/pull", "/api/create", "/api/copy", "/api/delete"} {
 		t.Run(path, func(t *testing.T) {
 			target, _, dir := mutationNodes(t, "coordinator")
+			if path == "/api/delete" {
+				present, _, _, _ := deletionDaemon(t, target, "ollama-publish", func() error { return os.WriteFile(filepath.Join(dir, "fresh.gguf"), []byte("GGUF"), 0600) })
+				response := makeAuthRequest(t, target, "DELETE", path, TestAdminKey, map[string]any{"model": "ollama-publish/m"})
+				require.Equal(t, 200, response.Code, string(response.Body))
+				require.False(t, present.Load())
+				require.True(t, target.model.Cache.HasModel("fresh"))
+				return
+			}
 			client := &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) {
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "fresh.gguf"), []byte("GGUF"), 0600))
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"status":"success"}`))}, nil
@@ -567,6 +575,16 @@ func TestCatalogMutationWorkerRefreshListPublishesBeforeResponse(t *testing.T) {
 func TestCatalogMutationOllamaCommandSelection(t *testing.T) {
 	for _, command := range []string{"create", "copy", "delete", "show", "push"} {
 		t.Run(command, func(t *testing.T) {
+			if command == "delete" {
+				node := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+				present, calls, _, _ := deletionDaemon(t, node, "ollama-selection")
+				response := makeAuthRequest(t, node, "DELETE", "/api/delete", TestAdminKey, map[string]any{"model": "ollama-selection/m"})
+				require.Equal(t, 200, response.Code, string(response.Body))
+				require.False(t, present.Load())
+				require.EqualValues(t, 1, calls.Load())
+				require.False(t, node.model.Cache.HasModel("m"))
+				return
+			}
 			called := false
 			s := &OllamaServiceImpl{
 				ollamaDaemon:   func() (*backend.Resolved, error) { return &backend.Resolved{}, nil },

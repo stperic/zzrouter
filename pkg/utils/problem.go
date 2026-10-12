@@ -30,15 +30,18 @@ import (
 // targeted. Code is typed as a plain string so this package stays
 // dependency-free; construction sites supply the typed constant.
 type ProblemDetails struct {
-	Type      string       `json:"type"`
-	Title     string       `json:"title"`
-	Status    int          `json:"status"`
-	Detail    string       `json:"detail,omitempty"`
-	Instance  string       `json:"instance,omitempty"`
-	RequestID string       `json:"request_id,omitempty"`
-	Code      string       `json:"code,omitempty"`
-	Node      string       `json:"node,omitempty"`
-	Errors    []ParamError `json:"errors,omitempty"`
+	Deleted         *int         `json:"deleted,omitempty"`
+	MutationApplied bool         `json:"mutation_applied,omitempty"`
+	RunID           string       `json:"run_id,omitempty"`
+	Type            string       `json:"type"`
+	Title           string       `json:"title"`
+	Status          int          `json:"status"`
+	Detail          string       `json:"detail,omitempty"`
+	Instance        string       `json:"instance,omitempty"`
+	RequestID       string       `json:"request_id,omitempty"`
+	Code            string       `json:"code,omitempty"`
+	Node            string       `json:"node,omitempty"`
+	Errors          []ParamError `json:"errors,omitempty"`
 }
 
 // ParamError is one machine-readable per-key failure, and the only such

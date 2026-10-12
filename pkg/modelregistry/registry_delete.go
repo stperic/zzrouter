@@ -2,12 +2,16 @@ package modelregistry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
@@ -77,126 +81,88 @@ func (r *Registry) ValidateHuggingFaceModel(ctx context.Context, modelID string)
 	return r.huggingfaceConnector.ModelExists(cctx, modelID)
 }
 
-// findModelByNameAndSource finds a model by name and source type (helper
-// for deletion). Returns a not-found error if no model matches.
-func (r *Registry) findModelByNameAndSource(modelName, source string) (*metadata.ModelMetadata, error) {
-	switch strings.ToLower(source) {
-	case metadata.SourceOllama:
-		// Ollama models are managed by Ollama API, not our registry.
-		return nil, fmt.Errorf("ollama models are managed by Ollama API")
-
-	case metadata.SourceHuggingFace:
-		models, err := r.huggingfaceConnector.ScanModels()
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range models {
-			if MatchPattern(m.Name, modelName) {
-				return m, nil
-			}
-		}
-		// GGUF files from HuggingFace are stored as individual files,
-		// not directories, so they won't be in the HuggingFace
-		// connector's ScanModels() results. Check cached models for
-		// GGUF files with SourceRepo = HuggingFace.
-		var found *metadata.ModelMetadata
-		err = r.withModels(func(cachedModels []*metadata.ModelMetadata) error {
-			for _, m := range cachedModels {
-				if m.Format == metadata.FormatGGUF && m.SourceRepo == metadata.SourceHuggingFace {
-					if MatchPattern(m.Name, modelName) {
-						found = m
-						return nil
-					}
-				}
-			}
-			return fmt.Errorf("model not found: %s", modelName)
-		})
-		if err != nil && found == nil {
-			return nil, err
-		}
-		if found != nil {
-			return found, nil
-		}
-
-	default:
-		// Search in standalone models (GGUF, etc.).
-		// For empty source, also check HuggingFace models that are
-		// GGUF files (they're stored as files, not directories).
-		var found *metadata.ModelMetadata
-		err := r.withModels(func(models []*metadata.ModelMetadata) error {
-			for _, m := range models {
-				if source == "" && m.Format == metadata.FormatGGUF {
-					// Include GGUF models regardless of SourceRepo.
-					if MatchPattern(m.Name, modelName) {
-						found = m
-						return nil
-					}
-				} else if m.SourceRepo != metadata.SourceHuggingFace && m.SourceRepo != metadata.SourceOllama {
-					// Non-HuggingFace, non-Ollama models.
-					if MatchPattern(m.Name, modelName) {
-						found = m
-						return nil
-					}
-				}
-			}
-			return fmt.Errorf("model not found: %s", modelName)
-		})
-		if err != nil {
-			return nil, err
-		}
-		if found != nil {
-			return found, nil
-		}
-	}
-	return nil, fmt.Errorf("model not found: %s", modelName)
+// DeletionTarget freezes physical files or the observed daemon for execution without lookup.
+type DeletionTarget struct {
+	Model   *metadata.ModelMetadata
+	Paths   []string
+	Backend *backend.Resolved
 }
 
-// DeleteModelByNameAndSource deletes a model by name and source type.
-// The caller's ctx bounds any upstream API call; the Ollama branch
-// layers a derived WithTimeout(ollama.APITimeout) on top to protect
-// against a stuck upstream.
-func (r *Registry) DeleteModelByNameAndSource(ctx context.Context, modelName, source string) error {
-	if strings.ToLower(source) == metadata.SourceOllama {
-		cctx, cancel := context.WithTimeout(ctx, ollama.APITimeout)
-		defer cancel()
-		return r.ollamaConnector.DeleteModel(cctx, modelName)
+// SelectDeletion freezes a catalog entry's physical deletion identity.
+func (r *Registry) SelectDeletion(model *metadata.ModelMetadata) (DeletionTarget, error) {
+	target := DeletionTarget{Model: model}
+	if model.SourceRepo == metadata.SourceOllama {
+		resolved, ok := backend.NewResolver(r.appsConfigFn).Resolve(model.AssignedApp)
+		if ok {
+			resolved.Endpoint = config.NormalizeEndpoint(resolved.Endpoint)
+		}
+		if !ok || !backend.SameEndpoint(resolved.Endpoint, model.Backend) {
+			return target, httperr.Error{Status: 503, Code: string(httperr.CodeClusterUnavailable), Message: "selected provider inventory no longer matches its backend; rescan the catalog"}
+		}
+		target.Backend = resolved
+		return target, nil
 	}
+	target.Paths = []string{model.FullPath}
+	if model.Format == metadata.FormatGGUF && !model.Incomplete {
+		if variant, ok := layout.VariantOf(model.FullPath); ok {
+			target.Paths = nil
+			for _, file := range variant.Files {
+				target.Paths = append(target.Paths, filepath.Join(filepath.Dir(model.FullPath), filepath.FromSlash(file.Path)))
+			}
+		}
+	}
+	return target, nil
+}
 
-	//nolint:contextcheck // ListAllModels is ctx-less across 25 call sites; buildModelList bridges with its own
-	// deadline and says so. Threading ctx through that chain is a refactor, not a lint fix.
-	model, err := r.findModelByNameAndSource(modelName, source)
+// DeleteSelected executes exactly the identity selected under deletion ownership.
+func (r *Registry) DeleteSelected(ctx context.Context, target DeletionTarget) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if target.Backend != nil {
+		err := r.ollamaConnector.DeleteModel(ctx, target.Model.Name, target.Backend)
+		var refusal httperr.Error
+		knownRefusal := errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500
+		return !knownRefusal, err // transport and 5xx outcomes may have applied the deletion
+	}
+	changed := false
+	for _, path := range target.Paths {
+		if err := ctx.Err(); err != nil {
+			return changed, err
+		}
+		if err := r.DeleteModel(path); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
+}
+
+// DeleteModelByNameAndSource keeps direct registry callers on exact selected execution.
+func (r *Registry) DeleteModelByNameAndSource(ctx context.Context, modelName, source string) error {
+	models, failures, err := r.ModelSnapshot(ctx)
 	if err != nil {
 		return err
 	}
-
-	// A GGUF model is a weights variant: every shard of a split set goes.
-	if model.Format == metadata.FormatGGUF && !model.Incomplete {
-		return r.deleteGGUFVariant(model.FullPath)
-	}
-
-	// For HuggingFace models that are directories (not GGUF files), use
-	// the connector.
-	if strings.ToLower(source) == metadata.SourceHuggingFace {
-		if err := r.huggingfaceConnector.DeleteModel(model.Name); err != nil {
-			return err
-		}
-		return nil
-	}
-	// For standalone models, just delete the file.
-	return r.DeleteModel(model.FullPath)
-}
-
-// deleteGGUFVariant removes every file of the variant whose first file is
-// path, leaving the repository's other variants and feature files.
-func (r *Registry) deleteGGUFVariant(path string) error {
-	v, ok := layout.VariantOf(path)
-	if !ok {
-		return r.DeleteModel(path)
-	}
-	for _, f := range v.Files {
-		if err := r.DeleteModel(filepath.Join(filepath.Dir(path), filepath.FromSlash(f.Path))); err != nil {
-			return err
+	var selected *metadata.ModelMetadata
+	for _, model := range models {
+		if strings.EqualFold(model.Name, modelName) && (source == "" || strings.EqualFold(model.SourceRepo, source)) {
+			if selected != nil {
+				return httperr.Error{Status: 409, Code: string(httperr.CodeModelSourceAmbiguous), Message: "model has several physical sources; select exact catalog identity"}
+			}
+			selected = model
 		}
 	}
-	return nil
+	if selected == nil {
+		if len(failures) > 0 {
+			return httperr.Error{Status: 503, Message: "model inventory is unavailable"}
+		}
+		return httperr.Error{Status: 404, Code: string(httperr.CodeUnknownModel), Message: "model is absent from the local catalog"}
+	}
+	target, err := r.SelectDeletion(selected)
+	if err != nil {
+		return err
+	}
+	_, err = r.DeleteSelected(ctx, target)
+	return err
 }

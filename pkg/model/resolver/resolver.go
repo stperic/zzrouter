@@ -10,10 +10,18 @@ import (
 	"context"
 
 	"github.com/stperic/zzrouter/pkg/fallback"
+	"github.com/stperic/zzrouter/pkg/model/cache"
 )
 
 // Reference carries the client's model spelling and separately trusted routing hints.
-type Reference struct{ Model, Provider, Node string }
+type Reference struct {
+	SourceID string
+	// Exact selects physical management names, including incomplete weights.
+	Exact                           bool
+	Model, Provider, Node, Registry string
+	// DefaultProvider scopes direct names without bypassing group resolution.
+	DefaultProvider string
+}
 
 // Resolved is the result of resolving a client-facing model name to a
 // concrete routing target.
@@ -32,6 +40,9 @@ type Resolved struct {
 
 	// Provider is the app key from provider config (e.g., "ollama", "vllm", "groq")
 	Provider string
+
+	// Replica is the selected read-only catalog identity, nil for an uncataloged name or group.
+	Replica *cache.CachedModel
 
 	// GroupName is set when resolved via a model group (empty for direct models)
 	GroupName string

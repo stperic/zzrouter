@@ -44,7 +44,7 @@ func exerciseMCPClient(t *testing.T, endpoint, protocol string, client *http.Cli
 	require.Contains(t, session.InitializeResult().Instructions, "zz_api_search")
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 25)
+	require.Len(t, tools.Tools, 26)
 	if protocol == "2026-07-28" {
 		require.Equal(t, int((5 * time.Minute).Milliseconds()), tools.TTLMs)
 	}
@@ -175,6 +175,10 @@ func TestMCPOperationBindings(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	operations := mcpBoundOperations(t)
 	bindings := mcpserver.OperationBindings()
+	require.Equal(t, []string{"listJobs", "getJob"}, bindings["zz_job"])
+	require.Equal(t, []string{"listModels", "showModels"}, bindings["zz_models"])
+	require.Equal(t, []string{"deleteModels"}, bindings["zz_model_delete"])
+	require.Equal(t, []string{"openaiCreateChatCompletion", "openaiCreateEmbedding"}, bindings["zz_chat"])
 	require.Equal(t, []string{"listRegistriesHuggingfaceVariants"}, bindings["zz_model_files"])
 	require.Equal(t, []string{"listProviders", "getProviderStatus"}, bindings["zz_providers"])
 	for _, name := range []string{"zz_api_search", "zz_api_get", "zz_api"} {

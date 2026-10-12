@@ -135,7 +135,11 @@ func TestDeleteGGUFVariant_RemovesEveryShard(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644))
 	}
 
-	require.NoError(t, r.deleteGGUFVariant(filepath.Join(dir, "m-q4-00001-of-00002.gguf")))
+	target, err := r.SelectDeletion(&metadata.ModelMetadata{FullPath: filepath.Join(dir, "m-q4-00001-of-00002.gguf"), Format: metadata.FormatGGUF})
+	require.NoError(t, err)
+	changed, err := r.DeleteSelected(t.Context(), target)
+	require.NoError(t, err)
+	require.True(t, changed)
 	left, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	require.Len(t, left, 1)

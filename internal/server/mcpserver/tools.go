@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -48,24 +49,14 @@ type nodeHealth struct {
 	Status string `json:"status"`
 }
 type jobInput struct {
-	JobID       string `json:"job_id" jsonschema:"Job id returned by an operation. Follow it until state is done or failed."`
+	pageInput
+	JobID       string `json:"job_id,omitempty" jsonschema:"Optional job id. Omit to list recent jobs on the coordinator or selected node; supply it to read or wait for one job."`
 	Node        string `json:"node,omitempty" jsonschema:"Optional owning node name, never an address."`
 	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"Seconds to poll before returning progress. Default 0, maximum 45. Call again if still running."`
-}
-type jobOutput struct {
-	JobID    string     `json:"job_id"`
-	State    jobs.Phase `json:"state"`
-	Progress int        `json:"progress"`
-	Step     string     `json:"step,omitempty"`
-	Result   jobs.Meta  `json:"result,omitempty"`
-	Error    string     `json:"error,omitempty"`
 }
 
 func (out overviewOutput) summary() string {
 	return fmt.Sprintf("Cluster %s: %d nodes, %d unhealthy nodes. zz_nodes gives a node's OS, GPU, memory and disk.", out.Health, len(out.Nodes), len(out.UnhealthyNodes))
-}
-func (out jobOutput) summary() string {
-	return fmt.Sprintf("Job %s: %s, %d%%.", out.JobID, out.State, out.Progress)
 }
 
 func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg Config, bindings map[string][]string, tool *mcp.Tool, ids []string, handler func(dispatcher, context.Context, In) (Out, error)) {
@@ -91,7 +82,7 @@ func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	bindings := map[string][]string{}
 	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"getJob"}, dispatcher.job)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Omit job_id to list recent jobs on the coordinator or selected node, with limit and offset; this is not a cluster-wide list. Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"listJobs", "getJob"}, dispatcher.job)
 	registerAgentTools(s, cfg, bindings)
 	registerAPITools(s, cfg, bindings)
 	return bindings
@@ -155,13 +146,24 @@ func (d dispatcher) overview(ctx context.Context, _ overviewInput) (overviewOutp
 	return out, nil
 }
 
-func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) {
+func (d dispatcher) job(ctx context.Context, input jobInput) (out agentOutput, err error) {
+	if input.JobID == "" {
+		if input.WaitSeconds != 0 {
+			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "wait_seconds requires job_id", nil)
+		}
+		return d.list(ctx, routePrefix(strings.TrimSuffix(string(jobsRoute), "/")).path(), input.pageInput, url.Values{"node": {input.Node}}, "", "job_id node kind phase:state percent:progress step err:error", "jobs")
+	}
+	defer func() {
+		if err == nil {
+			out.text = fmt.Sprintf("Job %s: %s, %v%%.", out.fields["job_id"], out.fields["state"], out.fields["progress"])
+		}
+	}()
 	path, err := pathSegment(jobsRoute, input.JobID)
 	if err != nil {
-		return jobOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "job_id: "+err.Error(), nil)
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "job_id: "+err.Error(), nil)
 	}
 	if input.WaitSeconds < DefaultWaitSeconds || input.WaitSeconds > MaxWaitSeconds {
-		return jobOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("wait_seconds must be between %d and %d", DefaultWaitSeconds, MaxWaitSeconds), nil)
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, fmt.Sprintf("wait_seconds must be between %d and %d", DefaultWaitSeconds, MaxWaitSeconds), nil)
 	}
 	// Bound in-flight REST calls, not just the delay between polls.
 	pollCtx, cancel := context.WithCancel(ctx)
@@ -173,26 +175,26 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) 
 	}
 	stop := context.AfterFunc(d.outer.ctx, cancel) //nolint:contextcheck // Decision 2 bridges outer cancellation without copying auth values.
 	defer stop()
-	out := jobOutput{JobID: input.JobID, State: "still running, call zz_job again"}
+	out = agentOutput{fields: map[string]any{"job_id": input.JobID, "state": "still running, call zz_job again", "progress": 0}}
 	for {
 		var response struct {
 			Data jobs.Event `json:"data"`
 		}
 		if err := d.call(pollCtx, request{method: http.MethodGet, path: path, query: url.Values{"node": {input.Node}}}, &response); err != nil {
 			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-				out.JobID, out.State = input.JobID, "still running, call zz_job again"
+				out.fields["job_id"], out.fields["state"] = input.JobID, "still running, call zz_job again"
 				return out, nil
 			}
-			return jobOutput{}, err
+			return agentOutput{}, err
 		}
 		ev := response.Data
-		out = jobOutput{JobID: ev.JobID, State: ev.Phase, Progress: ev.Percent, Step: ev.Step, Error: ev.Err}
+		out.fields = map[string]any{"job_id": ev.JobID, "state": string(ev.Phase), "progress": ev.Percent, "step": ev.Step, "error": ev.Err}
 		if ev.Phase.IsTerminal() {
-			out.Result = ev.Meta
-			delete(out.Result, "health_url")
-			if id, ok := out.Result["instance_id"]; ok {
-				out.Result["run_id"] = id
-				delete(out.Result, "instance_id")
+			out.fields["result"] = ev.Meta
+			delete(ev.Meta, "health_url")
+			if id, ok := ev.Meta["instance_id"]; ok {
+				ev.Meta["run_id"] = id
+				delete(ev.Meta, "instance_id")
 			}
 			return out, nil
 		}
@@ -201,7 +203,7 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) 
 		}
 		// No time left for another poll: answer now rather than race the deadline.
 		if deadline, ok := pollCtx.Deadline(); ok && time.Until(deadline) <= jobPollInterval {
-			out.JobID, out.State = input.JobID, "still running, call zz_job again"
+			out.fields["job_id"], out.fields["state"] = input.JobID, "still running, call zz_job again"
 			return out, nil
 		}
 		timer := time.NewTimer(jobPollInterval)
@@ -209,10 +211,10 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (jobOutput, error) 
 		case <-pollCtx.Done():
 			timer.Stop()
 			if errors.Is(pollCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-				out.JobID, out.State = input.JobID, "still running, call zz_job again"
+				out.fields["job_id"], out.fields["state"] = input.JobID, "still running, call zz_job again"
 				return out, nil
 			}
-			return jobOutput{}, newToolError(httperr.StatusClientClosedRequest, codeInterrupted, fmt.Sprintf("job wait interrupted: %v", pollCtx.Err()), pollCtx.Err())
+			return agentOutput{}, newToolError(httperr.StatusClientClosedRequest, codeInterrupted, fmt.Sprintf("job wait interrupted: %v", pollCtx.Err()), pollCtx.Err())
 		case <-timer.C:
 		}
 	}

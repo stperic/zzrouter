@@ -579,37 +579,12 @@ func (h *OpenAIModelHandlers) handleDeleteModelByID(c *gin.Context) {
 		return
 	}
 
-	matches, err := h.modelService.ListModels(c.Request.Context(), &ListModelsRequest{Model: modelID})
-	if err != nil || len(matches) == 0 {
-		param := "model"
-		code := "model_not_found"
-		c.JSON(http.StatusNotFound, utils.NewOpenAIError(
-			"invalid_request_error",
-			"The model '"+modelID+"' does not exist",
-			&param,
-			&code,
-		))
+	response, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: modelID, Node: c.GetHeader("X-Node")})
+	if err != nil {
+		RespondToError(c, err)
 		return
 	}
-
-	resp, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{
-		Pattern: matches[0].Name,
-	})
-	if err != nil || resp == nil || resp.Deleted == 0 {
-		c.JSON(http.StatusInternalServerError, utils.NewOpenAIError(
-			"api_error",
-			"Failed to delete model '"+modelID+"'",
-			nil,
-			nil,
-		))
-		return
-	}
-
-	c.JSON(http.StatusOK, OpenAIModelDeleteResponse{
-		ID:      matches[0].Name,
-		Object:  "model",
-		Deleted: true,
-	})
+	c.JSON(http.StatusOK, OpenAIModelDeleteResponse{ID: response.Model, Object: "model", Deleted: response.Deleted > 0})
 }
 
 func newOpenAIModel(id string, created int64, ownedBy string) OpenAIModelObject {

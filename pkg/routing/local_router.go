@@ -84,6 +84,12 @@ func (r *LocalOnlyRouter) MultiRoute(
 	method string,
 	hostBodies map[string][]byte,
 ) (*Response, error) {
+	if body, all := hostBodies["*"]; all {
+		if len(hostBodies) != 1 {
+			return nil, fmt.Errorf("wildcard multi-route cannot be combined with explicit nodes")
+		}
+		hostBodies = map[string][]byte{r.nodeName: body}
+	}
 	if len(hostBodies) == 0 {
 		return &Response{
 			StatusCode: 200,

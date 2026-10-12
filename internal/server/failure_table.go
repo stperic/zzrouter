@@ -6,6 +6,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/openaicompat"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
@@ -62,6 +63,10 @@ var failureTable = []failureRow{
 
 // knownFailure is err on the wire when zzRouter can name it; an unnamed error's status is the surface's call.
 func knownFailure(err error) (httperr.Error, bool) {
+	var absent cache.ErrModelNotFound
+	if errors.As(err, &absent) {
+		return httperr.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: string(httperr.CodeUnknownModel), Message: absent.Error()}, true
+	}
 	var classified *httperr.EngineFailure
 	if errors.As(err, &classified) {
 		return (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError(), true

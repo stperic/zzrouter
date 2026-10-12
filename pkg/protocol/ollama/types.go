@@ -37,6 +37,7 @@ type PullRequest struct {
 type ManagementRequest struct {
 	Model       string `json:"model,omitempty"`
 	Name        string `json:"name,omitempty"`
+	Verbose     bool   `json:"verbose,omitempty"`
 	Source      string `json:"source,omitempty"`
 	Destination string `json:"destination,omitempty"`
 }

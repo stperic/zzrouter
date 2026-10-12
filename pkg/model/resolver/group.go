@@ -32,7 +32,7 @@ func NewGroup(groupStore *group.GroupStore, fallback Resolver) *Group {
 //  3. If not found, delegate to fallback (direct-model path).
 func (r *Group) Resolve(ctx context.Context, ref Reference) (*Resolved, error) {
 	modelName := ref.Model
-	if ref.Node != "" {
+	if ref.Node != "" || ref.Provider != "" || ref.Registry != "" {
 		return r.fallback.Resolve(ctx, ref)
 	}
 

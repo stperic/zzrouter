@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	if err != nil {
 		return nil, err
 	}
-	inst, err := m.registerRun(ctx, req, selection.config)
+	inst, err := m.registerRun(ctx, req, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +90,17 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 }
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
-func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
+func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
 	}
-	inst, err := m.newRun(ctx, req, svcCfg, allocatedPort)
+	inst, err := m.newRun(ctx, req, selection.config, allocatedPort)
+	if err == nil {
+		weights := m.reserveWeights(ctx, req, selection)
+		inst.SetWeights(weights)
+		inst.SourceRepo = weights.Source
+	}
 	if err == nil {
 		err = m.instances.Register(inst)
 	}
@@ -140,10 +146,6 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 			healthPath = svcCfg.Runtime.HealthCheck.Path
 		}
 		inst.HealthURL = fmt.Sprintf("http://localhost:%d%s", port, healthPath)
-	}
-	if m.modelSource != nil {
-		weights, _, _ := strings.Cut(svcCfg.WeightsOf(req.Model), "#")
-		inst.SourceRepo = m.modelSource(ctx, weights)
 	}
 
 	// Initialize concurrency limiter from provider config
@@ -231,11 +233,17 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
 	endpoint := inst.Endpoint
 	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
-	if err == nil {
-		var evicted []instance.EvictedRun
-		evicted, err = m.admitMemory(ctx, selection.key, features)
-		inst.SetEvictedRuns(evicted)
+	if err != nil {
+		return admittedRun{}, err
 	}
+	var featurePaths []string
+	for _, feature := range features.Config.Features {
+		if path := features.Params[feature.Flag]; len(feature.Files) > 0 && filepath.IsAbs(path) {
+			featurePaths = append(featurePaths, path)
+		}
+	}
+	evicted, err := m.admitMemory(ctx, selection.key, features)
+	inst.SetEvictedRuns(evicted)
 	var prepared preparedLaunch
 	if err == nil {
 		prepared, err = m.prepareLaunchFeatures(features, selection.key, endpoint, inst.Port)
@@ -246,17 +254,16 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	inst.SetResolved(prepared.resolved)
 	// An incomplete download reaches the engine as a corrupt-tensor crash
 	// tens of seconds in; catching it here names the actual problem.
-	var featurePaths []string
-	for _, feature := range prepared.config.Features {
-		if path := prepared.parameters.Params[feature.Flag]; len(feature.Files) > 0 && path != "" {
-			featurePaths = append(featurePaths, path)
-		}
-	}
-	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths); err != nil {
+	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths, selection.model.SourcePath()); err != nil {
 		return admittedRun{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return admittedRun{}, err
+	}
+	if len(featurePaths) > 0 {
+		weights := inst.Weights()
+		weights.Paths = append(weights.Paths, featurePaths...)
+		inst.SetWeights(weights)
 	}
 	inst.WireModel = prepared.launch.WireModel
 	return admittedRun{
@@ -330,6 +337,12 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, nil, err
 	}
 	defer unlock()
+	ctx, release, err := m.catalogPermit(ctx, 1)
+	if err != nil {
+		return admittedRun{}, nil, err
+	}
+	defer release()
+	inst.SetWeights(m.reserveWeights(ctx, req, selection))
 	select {
 	case m.memoryAdmission <- struct{}{}:
 	case <-ctx.Done():
@@ -439,7 +452,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	}
 	need := process.Need{}
 	if features.Params[budget.Parameter] == "auto" {
-		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
+		need, _ = process.ModelMemoryNeed(features.model, features.Config, features.Params)
 	}
 	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
 	var fit *process.MemoryFitError

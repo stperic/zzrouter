@@ -6,22 +6,36 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// LookupReplicas canonicalizes aliases and variants, keeping one replica per provider/node.
+// ReplicaSelection selects an exact physical model and optional source identity.
+type ReplicaSelection struct {
+	Exact    bool
+	SourceID string
+}
+
+// LookupReplicas canonicalizes aliases and variants, retaining each physical source per provider/node.
 // An explicit node reads only current evidence; unpinned misses wait for catalog population.
-func (mc *Cache) LookupReplicas(ctx context.Context, name, provider, node string) ([]*CachedModel, error) {
+func (mc *Cache) LookupReplicas(ctx context.Context, name, provider, node, registry string, options ...ReplicaSelection) ([]*CachedModel, error) {
 	if node == "" {
 		if err := mc.ensurePopulated(ctx); err != nil {
 			return nil, err
 		}
 	}
-	replicas := mc.lookupReplicas(name, provider, node)
+	selection := ReplicaSelection{}
+	if len(options) > 0 {
+		selection = options[0]
+	}
+	replicas := mc.lookupReplicas(name, provider, node, registry, selection)
+	if selection.Exact && len(replicas) == 0 && len(mc.UnavailableInventories(node, provider)) > 0 {
+		return nil, httperr.Error{Status: 503, Code: string(httperr.CodeClusterUnavailable), Message: "selected model inventory is unavailable; rescan when the provider is reachable"}
+	}
 	for _, replica := range replicas {
 		nodeUnavailable := false
 		for _, failure := range mc.UnavailableInventories(replica.Node, replica.Provider) {
-			if failure.Node != "" && failure.Provider == "" {
+			if failure.Node != "" && (failure.Provider == "" || selection.Exact) {
 				nodeUnavailable = true
 			}
 		}
@@ -31,29 +45,40 @@ func (mc *Cache) LookupReplicas(ctx context.Context, name, provider, node string
 		}
 	}
 	if len(replicas) > 0 {
+		if selection.Exact {
+			return nil, httperr.Error{Status: 503, Code: string(httperr.CodeClusterUnavailable), Message: "selected model inventory is unavailable"}
+		}
 		return nil, fmt.Errorf("model %q is known on node %q, whose inventory is unavailable", name, replicas[0].Node)
 	}
 	return replicas, nil
 }
 
-func (mc *Cache) lookupReplicas(name, provider, node string) []*CachedModel {
+func (mc *Cache) lookupReplicas(name, provider, node, registry string, options ...ReplicaSelection) []*CachedModel {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 	if !mc.valid {
 		return nil
 	}
-	eligible := func(m *CachedModel) bool {
-		return !m.Incomplete && (provider == "" || strings.EqualFold(provider, m.Provider)) && (node == "" || strings.EqualFold(node, m.Node))
+	// Management names are literal; inference also accepts SourceID aliases and suffixes.
+	selection := ReplicaSelection{}
+	if len(options) > 0 {
+		selection = options[0]
 	}
-	// Prefer names, then SourceID aliases, then suffixes.
+	management := selection.Exact
+	passes := 3
+	if management {
+		passes = 1
+	}
 	canonical := ""
-	for pass := range 3 {
+	alias := false
+	for pass := range passes {
 		for _, m := range mc.models {
-			if !eligible(m) {
+			if !replicaEligible(m, provider, node, registry, selection) {
 				continue
 			}
 			if (pass == 0 && strings.EqualFold(name, m.Name)) || (pass == 1 && m.SourceID != "" && strings.EqualFold(name, m.SourceID)) || (pass == 2 && strings.EqualFold(name, utils.FormatModelName(m.Name))) {
 				canonical = m.Name
+				alias = pass == 1
 				break
 			}
 		}
@@ -62,12 +87,13 @@ func (mc *Cache) lookupReplicas(name, provider, node string) []*CachedModel {
 		}
 	}
 	var result []*CachedModel
-	seen := map[providerNode]bool{}
+	type identity struct{ node, provider, source, id string }
+	seen := map[identity]bool{}
 	for _, m := range mc.models {
-		if canonical == "" || !eligible(m) || !strings.EqualFold(m.Name, canonical) {
+		if canonical == "" || !replicaEligible(m, provider, node, registry, selection) || !strings.EqualFold(m.Name, canonical) || (alias && !strings.EqualFold(m.SourceID, name)) {
 			continue
 		}
-		key := providerNode{strings.ToLower(m.Node), strings.ToLower(m.Provider)}
+		key := identity{strings.ToLower(m.Node), strings.ToLower(m.Provider), strings.ToLower(m.SourceRepo), strings.ToLower(m.SourceID)}
 		if seen[key] {
 			continue
 		}
@@ -87,4 +113,9 @@ func (mc *Cache) lookupReplicas(name, provider, node string) []*CachedModel {
 		return result[i].Node < result[j].Node
 	})
 	return result
+}
+
+// replicaEligible applies the exact source/provider/node constraints before canonicalization.
+func replicaEligible(m *CachedModel, provider, node, registry string, selection ReplicaSelection) bool {
+	return (selection.Exact || !m.Incomplete) && (provider == "" || strings.EqualFold(provider, m.Provider)) && (node == "" || strings.EqualFold(node, m.Node)) && (registry == "" || strings.EqualFold(registry, m.SourceRepo)) && (selection.SourceID == "" || strings.EqualFold(selection.SourceID, m.SourceID))
 }

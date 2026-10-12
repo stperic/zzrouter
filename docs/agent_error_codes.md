@@ -23,6 +23,11 @@ live only in `runtime.failure_patterns`.
 | `error.code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
 | `model_node_ambiguous` | 409 | Several remote nodes hold the name, and none locally. | Choose a `name@node` reference from the detail, or set X-Node. |
+| `model_source_ambiguous` | 409 | Same-name physical sources share the selected provider and node. | For deletion, supply catalog provider/registry/source_id selectors. Detail and inference also accept an exact source_id model alias. |
+| `model_in_use` | 409 | A registry-held run reserves the selected physical weights, including queued or stopping runs. | Stop the named `run_id` and confirm its release before deleting. |
+| `model_referenced` | 409 | A configured variant references the selected weights. | Remove the named `models` entry through the parameters API first. |
+| `model_not_deletable` | 409 | The selected identity is cloud configuration, a logical variant or a group. | Remove its configuration entry rather than physical weights. |
+| `model_detail_unsupported` | 501 | The selected catalog identity has no detail reader. | Keep catalog evidence and use serving probes, or inspect a group's exact model. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
 | `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models`; trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |

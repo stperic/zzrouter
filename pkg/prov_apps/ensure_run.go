@@ -100,7 +100,11 @@ func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared prep
 	if prepared.decision.Act != ActStart {
 		return ctx, prepared, prepared.decision.Err
 	}
-	selection, err := m.resolveLaunch(&req)
+	selection := prepared.selection
+	var err error
+	if req.selectedRuntime == "" {
+		selection, err = m.resolveLaunch(&req)
+	}
 	if err != nil {
 		return ctx, prepared, err
 	}
@@ -244,16 +248,11 @@ func (m *ProviderAppManager) decideAndExecuteStart(ctx context.Context, prepared
 	if err := ctx.Err(); err != nil {
 		return EnsureResult{}, err
 	}
-	if !prepared.req.Detached {
-		var err error
-		ctx, prepared, err = m.prepareColdStart(ctx, prepared)
-		if err != nil {
-			return EnsureResult{}, err
-		}
+	selection, err := m.resolveLaunch(&prepared.req)
+	if err != nil {
+		return EnsureResult{}, err
 	}
-	if prepared.decision.Act == ActReuse {
-		return prepared.answer()
-	}
+	prepared.selection = selection
 	if prepared.req.Origin != OriginInstall {
 		unlock, err := m.installs.acquireProvider(ctx, prepared.req.selectedRuntime)
 		if err != nil {
@@ -261,6 +260,16 @@ func (m *ProviderAppManager) decideAndExecuteStart(ctx context.Context, prepared
 		}
 		defer unlock()
 	}
+	ctx, release, err := m.catalogPermit(ctx, 1)
+	if err != nil {
+		return EnsureResult{}, err
+	}
+	defer release()
+	ctx, prepared, err = m.prepareColdStart(ctx, prepared)
+	if err != nil {
+		return EnsureResult{}, err
+	}
+
 	prepared.decision, prepared.existing = m.decide(ctx, prepared)
 	return m.executeStart(ctx, prepared)
 }

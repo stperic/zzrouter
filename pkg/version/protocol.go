@@ -24,9 +24,11 @@ package version
 // install recipes, and the cluster update routes.
 // Protocol 2 adds failure_patterns, which older provider schemas reject.
 // Protocol 3 adds readiness_probe.stall_timeout, which older provider schemas reject.
+// Protocol 4 preserves selected provider/source identity and compact metadata on internal model show.
+// Protocol 5 requires guarded exact model deletion and physical run reservations.
 const (
-	ClusterProtocolVersion    = 3
-	MinClusterProtocolVersion = 3
+	ClusterProtocolVersion    = 5
+	MinClusterProtocolVersion = 5
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

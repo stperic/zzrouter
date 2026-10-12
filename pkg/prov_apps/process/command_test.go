@@ -17,12 +17,33 @@ import (
 func withModelsRoot(t *testing.T, models ...string) string {
 	t.Helper()
 	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	for _, m := range models {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, m), 0o755))
 	}
 	modelregistry.SetModelsRootDirOverride(root)
 	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
 	return root
+}
+
+func TestDeletionLaunchFreezesSymlinkContract(t *testing.T) {
+	root := withModelsRoot(t, "org/model")
+	a, b, alias := filepath.Join(root, "a.gguf"), filepath.Join(root, "b.gguf"), filepath.Join(root, "org/model/alias.gguf")
+	for _, file := range []string{a, b} {
+		require.NoError(t, os.WriteFile(file, []byte("GGUF"), 0600))
+	}
+	require.NoError(t, os.Symlink(a, alias))
+	cfg := config.ServiceConfig{Runtime: &config.AppRuntimeConfig{Execution: config.ExecutionConfig{Command: "engine", Args: []string{"${MODEL_PATH}"}}}}
+	selected := ResolveModel(cfg, "org/model#alias.gguf")
+	held := selected.WeightPaths()
+	require.Len(t, held, 1)
+	require.NoError(t, os.Remove(alias))
+	require.NoError(t, os.Symlink(b, alias))
+	launch, err := NewCommandBuilder(&cfg).Build(selected, 8080, nil)
+	require.NoError(t, err)
+	require.Equal(t, held[0], launch.ModelPath, "argv must use the physical path held by the reservation")
+	require.Equal(t, held[0], launch.Args[0])
 }
 
 func argAfter(t *testing.T, args []string, flag string) string {

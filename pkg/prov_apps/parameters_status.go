@@ -67,6 +67,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 	if configured, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
 		fromConfig, fromConfigEnv = configured.Params, configured.Environment
 	}
+	freezeFeaturePaths(svcCfg, req.Parameters)
 	overridden := heldKeys(parametersPath, req.Parameters, fromConfig)
 	overridden = append(overridden, heldKeys(environmentPath, req.EnvVars, fromConfigEnv)...)
 

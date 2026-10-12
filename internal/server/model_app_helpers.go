@@ -38,7 +38,7 @@ func (s *Server) resolveCanonicalModelName(model string) string {
 	if model == "" || s.model.Cache == nil {
 		return model
 	}
-	replicas, err := s.model.Cache.LookupReplicas(context.Background(), model, "", "")
+	replicas, err := s.model.Cache.LookupReplicas(context.Background(), model, "", "", "")
 	if err == nil {
 		for _, replica := range replicas {
 			if s.node.IsLocalNode(replica.Node) {

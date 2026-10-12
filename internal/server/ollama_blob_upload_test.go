@@ -60,14 +60,14 @@ func TestOllamaDirectCallsCarryTheDaemonsCredential(t *testing.T) {
 			&config.APIConfig{AuthType: config.AuthTypeBearer, Token: "daemon-token"})}, nil
 	}
 	svc := &OllamaServiceImpl{ollamaDaemon: daemon, httpClient: srv.Client()}
-	exec := NewInternalExecutor(nil, nil, daemon, srv.Client(), nil, nil, nil, nil, nil)
+	exec := NewInternalExecutor(nil, nil, nil, srv.Client(), nil, nil, nil, nil, nil)
 
 	ctx := context.Background()
 	d, _ := daemon()
 	calls := map[string]func(){
 		"HEAD /api/blobs/sha256:abc":  func() { _, _ = svc.CheckBlob(ctx, "sha256:abc") },
 		"POST /api/show (pre-flight)": func() { _, _ = svc.ollamaModelExists(ctx, d, "m") },
-		"POST /api/show (details)":    func() { _, _ = exec.getOllamaModelDetails(ctx, "m", false) },
+		"POST /api/show (details)":    func() { _, _ = exec.getOllamaModelDetails(ctx, d, "m", false) },
 	}
 	for name, call := range calls {
 		clear(seen)

@@ -10,7 +10,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -94,6 +97,7 @@ type ProviderAppManager struct {
 	startsCtx      context.Context
 	startsCancel   context.CancelFunc
 	onDemandStarts sync.WaitGroup
+	catalog        *semaphore.Weighted
 
 	// parentCtx ferries WithParentContext's value across the option-
 	// loop boundary; consumed by NewProviderAppManager to seed
@@ -334,6 +338,7 @@ func WithIdleMemoryEviction(enabled bool) Option {
 func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*ProviderAppManager, error) {
 	m := &ProviderAppManager{
 		appsConfig:      appsConfig,
+		catalog:         semaphore.NewWeighted(catalogReaders),
 		instances:       instance.NewRegistry(),
 		versions:        newVersionCache(),
 		auditEvents:     make(chan Event, defaultEventChannelSize),
@@ -897,6 +902,9 @@ func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backe
 	p := m.protocols.Of(key, m.AppsConfig().Find(key))
 	loader, loads := p.(protocol.ModelLoader)
 	resolved, ok := backend.Target(&cfg)
+	if ok {
+		resolved.Endpoint = protocol.TargetOf(resolved).Endpoint()
+	}
 	return loader, resolved, found && loads && ok
 }
 

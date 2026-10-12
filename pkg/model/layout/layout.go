@@ -341,3 +341,19 @@ func isTensorWeights(p string) bool {
 	}
 	return false
 }
+
+// PhysicalPath resolves aliases when recording a physical weights reservation.
+func PhysicalPath(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	for ancestor := path; ; ancestor = filepath.Dir(ancestor) {
+		if resolved, err := filepath.EvalSymlinks(ancestor); err == nil {
+			rel, _ := filepath.Rel(ancestor, path)
+			return filepath.Join(resolved, rel)
+		}
+		if filepath.Dir(ancestor) == ancestor {
+			return filepath.Clean(path)
+		}
+	}
+}

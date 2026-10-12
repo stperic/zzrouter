@@ -45,7 +45,7 @@ func (s *Server) modelIsCloudBacked(ctx context.Context, modelName string) bool 
 	ctx, cancel := context.WithTimeout(ctx, constants.HTTPShortTimeout)
 	defer cancel()
 
-	replicas, err := s.model.Cache.LookupReplicas(ctx, name, provider, node)
+	replicas, err := s.model.Cache.LookupReplicas(ctx, name, provider, node, "")
 	if err != nil {
 		return true
 	}

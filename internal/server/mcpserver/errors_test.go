@@ -221,7 +221,7 @@ func TestToolErrorEveryRegisteredTool(t *testing.T) {
 	args := map[string]map[string]any{
 		"zz_overview": {}, "zz_nodes": {}, "zz_providers": {}, "zz_models": {}, "zz_runs": {}, "zz_logs": {},
 		"zz_update_status": {}, "zz_update_check": {}, "zz_update_apply": {},
-		"zz_model_search": {"query": "m"}, "zz_model_files": {"model": "org/m"}, "zz_model_download": {"model": "m"},
+		"zz_model_search": {"query": "m"}, "zz_model_files": {"model": "org/m"}, "zz_model_download": {"model": "m"}, "zz_model_delete": {"model": "m"},
 		"zz_provider_install": {"provider": "p"}, "zz_run_preview": {"model": "m", "provider": "p"},
 		"zz_run_start": {"model": "m", "provider": "p"}, "zz_run_restart": {"run_id": "r"}, "zz_run_stop": {"run_id": "r"},
 		"zz_chat": {"model": "m", "message": "hi"}, "zz_job": {"job_id": "j"}, "zz_job_cancel": {"job_id": "j"},

@@ -133,7 +133,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 	executor := NewInternalExecutor(
 		s.model.Registry,
 		s.node.Nodename,
-		s.ollamaDaemon,
+		func() *pkgConfig.AppsConfig { return s.appsConfig },
 		s.httpClient,
 		func() *huggingface.Connector {
 			if s.model.Registry == nil {
@@ -143,10 +143,12 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 		},
 		func(app string) bool { return isCloudProvider(s.appsConfig, app) },
 		s.configStore,
-		s.publishCatalog,
+		func(ctx context.Context) error { _, err := s.RescanLocal(ctx); return err },
 		getResourceMetrics,
 	)
 	executor.modelCache = s.model.Cache
+	executor.deletionManager = s.providers.appMgr
+
 	return executor
 }
 
@@ -171,7 +173,7 @@ func (s *Server) newOllamaService() OllamaService {
 }
 
 func (s *Server) publishCatalog() error {
-	_, err := s.RescanLocal()
+	_, err := s.RescanLocal(context.Background())
 	return err
 }
 

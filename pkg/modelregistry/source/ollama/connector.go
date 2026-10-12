@@ -30,6 +30,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -211,6 +212,9 @@ func (oc *Connector) ListModels(ctx context.Context) ([]*metadata.ModelMetadata,
 // enumerate external Ollama backends (ollama-connect instances); the
 // connector's HTTP timeouts still apply.
 func (oc *Connector) ListTags(ctx context.Context, daemon *backend.Resolved, providerName string) ([]*metadata.ModelMetadata, error) {
+	selected := *daemon
+	selected.Endpoint = config.NormalizeEndpoint(selected.Endpoint)
+	daemon = &selected
 	req, err := daemon.NewRequest(ctx, http.MethodGet, "/api/tags", nil)
 	if err != nil {
 		return nil, err
@@ -274,6 +278,7 @@ func (oc *Connector) ListTags(ctx context.Context, daemon *backend.Resolved, pro
 		}
 		models = append(models, &metadata.ModelMetadata{
 			Name:             m.Name,
+			Backend:          daemon.Endpoint,
 			FullPath:         "", // Ollama manages its own files
 			Format:           m.Details.Format,
 			Quantization:     m.Details.QuantizationLevel,
@@ -297,8 +302,14 @@ func (oc *Connector) ListTags(ctx context.Context, daemon *backend.Resolved, pro
 // DeleteModel deletes a model from Ollama.
 //
 // ctx carries the caller's deadline and cancellation.
-func (oc *Connector) DeleteModel(ctx context.Context, modelName string) error {
-	daemon, err := oc.Daemon()
+func (oc *Connector) DeleteModel(ctx context.Context, modelName string, selected ...*backend.Resolved) error {
+	var daemon *backend.Resolved
+	var err error
+	if len(selected) > 0 {
+		daemon = selected[0]
+	} else {
+		daemon, err = oc.Daemon()
+	}
 	if err != nil {
 		return err
 	}
@@ -326,7 +337,7 @@ func (oc *Connector) DeleteModel(ctx context.Context, modelName string) error {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama delete failed with status %d", resp.StatusCode)
+		return httperr.Error{Status: resp.StatusCode, Message: fmt.Sprintf("Ollama model deletion returned HTTP %d", resp.StatusCode)}
 	}
 
 	return nil

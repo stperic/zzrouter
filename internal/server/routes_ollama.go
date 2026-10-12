@@ -77,7 +77,7 @@ func (s *Server) registerOllamaRoutes() {
 		ollama.GET("/ps", h.handleOllamaPs)
 		ollama.POST("/pull", h.handleOllamaPull)
 		ollama.POST("/create", h.ollamaManagementHandler("/api/create", false))
-		ollama.DELETE("/delete", h.ollamaManagementHandler("/api/delete", true))
+		ollama.DELETE("/delete", h.handleOllamaDelete)
 		ollama.POST("/copy", h.ollamaManagementHandler("/api/copy", true))
 		// /api/show flows through ModelService (the canonical show path with
 		// cluster routing) and enriches with auto-route metadata when the

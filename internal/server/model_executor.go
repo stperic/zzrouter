@@ -4,29 +4,34 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // InternalExecutor handles direct execution against local providers
 // Routing remains with the caller; local mutations publish catalog evidence.
 type InternalExecutor struct {
-	publishCatalog     func() error
+	publishCatalog     func(context.Context) error
+	deletionManager    *prov_apps.ProviderAppManager
 	modelCache         *cache.Cache
 	registry           *modelregistry.Registry
 	getNodename        func() string
-	ollamaDaemon       func() (*backend.Resolved, error)
+	appsConfig         func() *pkgConfig.AppsConfig
 	httpClient         *http.Client
 	getHFConnector     func() *huggingface.Connector
 	isCloudProvider    func(string) bool
@@ -38,18 +43,18 @@ type InternalExecutor struct {
 func NewInternalExecutor(
 	registry *modelregistry.Registry,
 	getNodename func() string,
-	ollamaDaemon func() (*backend.Resolved, error),
+	appsConfig func() *pkgConfig.AppsConfig,
 	httpClient *http.Client,
 	getHFConnector func() *huggingface.Connector,
 	isCloudProvider func(string) bool,
 	configStore *pkgConfig.AppsConfigStore,
-	publishCatalog func() error,
+	publishCatalog func(context.Context) error,
 	getResourceMetrics func() any,
 ) *InternalExecutor {
 	return &InternalExecutor{
 		registry:           registry,
 		getNodename:        getNodename,
-		ollamaDaemon:       ollamaDaemon,
+		appsConfig:         appsConfig,
 		httpClient:         httpClient,
 		getHFConnector:     getHFConnector,
 		isCloudProvider:    isCloudProvider,
@@ -73,230 +78,129 @@ func (e *InternalExecutor) localModelSnapshot(ctx context.Context) ([]map[string
 	return e.modelCache.LocalModelSnapshot(ctx)
 }
 
-// ShowLocalModel retrieves detailed model information from the actual provider
-// NO cache lookup, NO routing - just call the provider directly
-func (e *InternalExecutor) ShowLocalModel(ctx context.Context, modelName string, verbose bool) (map[string]any, error) {
-	utils.LogDebugf("[InternalAPI] ShowLocalModel: model=%s, verbose=%v", modelName, verbose)
-
-	// 1. Find model in local registry
-	registry := e.registry
-	if registry == nil {
-		return nil, fmt.Errorf("model registry not initialized")
-	}
-
-	models, err := registry.ListAllModels()
+// ShowLocalModel reads current local source evidence for the selected physical identity.
+func (e *InternalExecutor) ShowLocalModel(ctx context.Context, req *ShowModelRequest) (map[string]any, error) {
+	target, weights, err := e.localShowTarget(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list models: %w", err)
+		return nil, err
 	}
-
-	var targetModel *metadata.ModelMetadata
-	for _, m := range models {
-		if m.Name == modelName {
-			targetModel = m
-			break
-		}
+	app := req.App
+	if target != nil {
+		app = target.AssignedApp
 	}
-
-	if targetModel == nil {
-		return nil, fmt.Errorf("model '%s' not found in local registry", modelName)
+	source := constants.RepoOllama
+	if target != nil {
+		source = target.SourceRepo
 	}
-
-	utils.LogDebugf("[InternalAPI] Found model: %s (source: %s)", targetModel.Name, targetModel.SourceRepo)
-
-	// 2. Call the appropriate provider based on source
 	var details map[string]any
-	var providerErr error
-
-	switch targetModel.SourceRepo {
+	switch source {
 	case constants.RepoOllama:
-		utils.LogDebugf("[InternalAPI] Calling Ollama API for: %s", targetModel.Name)
-		details, providerErr = e.getOllamaModelDetails(ctx, targetModel.Name, verbose)
+		backend, ok := backend.NewResolver(e.appsConfig).Resolve(app)
+		if !ok {
+			return nil, newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable", "selected provider backend is unavailable", httperr.CodeClusterUnavailable, e.getNodename())
+		}
+		details, err = e.getOllamaModelDetails(ctx, backend, weights, req.Verbose)
 	case constants.RepoHuggingFace:
-		utils.LogDebugf("[InternalAPI] Calling HuggingFace connector for: %s", targetModel.SourceID)
-		details, providerErr = e.getHuggingFaceModelDetails(ctx, targetModel.SourceID)
+		connector := e.getHFConnector()
+		if connector == nil {
+			return nil, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "HuggingFace metadata reader is unavailable")
+		}
+		details, err = connector.ShowModel(ctx, target.SourceID)
 	default:
-		utils.LogDebugf("[InternalAPI] Error: show command not supported for %s models (model: %s)", targetModel.SourceRepo, modelName)
-		return nil, fmt.Errorf("show command not supported for %s models", targetModel.SourceRepo)
+		return nil, newRouteProblemError(http.StatusNotImplemented, "Not Implemented", "this model source has no detail reader; use the catalog and serving probes", httperr.CodeModelDetailUnsupported, e.getNodename())
 	}
-
-	if providerErr != nil {
-		utils.LogDebugf("[InternalAPI] Error from provider for %s: %v", modelName, providerErr)
-		return nil, fmt.Errorf("failed to get model details from provider: %w", providerErr)
+	if err != nil {
+		var wire httperr.Error
+		var routed *RoutedError
+		if errors.As(err, &wire) || errors.As(err, &routed) {
+			return nil, err
+		}
+		return nil, newRoutedTransportError(err, e.getNodename())
 	}
-
-	// 3. Add metadata
-	details["node"] = e.getNodename()
-	details["source_repo"] = targetModel.SourceRepo
-	details["name"] = targetModel.Name            // Ensure canonical name
-	details["_provider"] = targetModel.SourceRepo // Carries provider identity for client formatting.
-
-	utils.LogDebugf("[InternalAPI] Successfully retrieved %d fields from provider", len(details))
+	addressed := req.ModelName
+	if target != nil && weights == req.ModelName {
+		addressed = target.Name
+	}
+	details["name"], details["node"], details["assigned_app"], details["_provider"] = addressed, e.getNodename(), app, source
+	if target != nil {
+		details["source_repo"], details["source_id"] = target.SourceRepo, target.SourceID
+	}
+	if req.Compact {
+		return compactModelShow(details)
+	}
 	return details, nil
+}
+
+// localShowTarget selects current physical metadata before the provider read.
+func (e *InternalExecutor) localShowTarget(ctx context.Context, req *ShowModelRequest) (*metadata.ModelMetadata, string, error) {
+	if e.registry == nil {
+		return nil, "", newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model registry is unavailable", httperr.CodeClusterUnavailable, e.getNodename())
+	}
+	models, failures, err := e.registry.ModelSnapshot(ctx)
+	if err != nil {
+		return nil, "", newRoutedTransportError(err, e.getNodename())
+	}
+	if failures[req.App] != "" {
+		return nil, "", newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable", "selected provider inventory is unavailable", httperr.CodeClusterUnavailable, e.getNodename())
+	}
+	weights := req.ModelName
+	provider, configured := e.appsConfig().LookupApp(req.App)
+	if configured {
+		weights = provider.WeightsOf(weights)
+	}
+	weights, _, _ = strings.Cut(weights, "#")
+	var target *metadata.ModelMetadata
+	for _, model := range models {
+		nameMatches := strings.EqualFold(model.Name, weights) || (req.SourceID == "" && strings.EqualFold(model.SourceID, weights))
+		providerMatches := req.App == "" || strings.EqualFold(model.AssignedApp, req.App)
+		sourceMatches := req.Registry == "" || strings.EqualFold(model.SourceRepo, req.Registry)
+		idMatches := req.SourceID == "" || strings.EqualFold(model.SourceID, req.SourceID)
+		if !nameMatches || !providerMatches || !sourceMatches || !idMatches {
+			continue
+		}
+		if target != nil {
+			return nil, "", newRouteProblemError(http.StatusConflict, "Conflict", "model has several physical sources; use an exact source_id from GET /zzrouter/v1/models", httperr.CodeModelSourceAmbiguous, e.getNodename())
+		}
+		target = model
+	}
+	uncataloged := target == nil && req.AllowUncataloged && configured && provider.Protocol == pkgConfig.ProtocolOllama
+	if target == nil && !uncataloged {
+		if len(failures) > 0 && req.App == "" {
+			return nil, "", newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model inventory is unavailable", httperr.CodeClusterUnavailable, e.getNodename())
+		}
+		return nil, "", newProblemError(http.StatusNotFound, "Not Found", "model is absent from the local catalog")
+	}
+	return target, weights, nil
 }
 
 // getOllamaModelDetails calls Ollama's /api/show endpoint
-func (e *InternalExecutor) getOllamaModelDetails(ctx context.Context, modelName string, verbose bool) (map[string]any, error) {
-	slog.Info("[InternalAPI/Ollama] Calling /api/show for", "for", modelName)
-
-	// Get Ollama endpoint from config (required - no default)
-	daemon, err := e.ollamaDaemon()
+func (e *InternalExecutor) getOllamaModelDetails(ctx context.Context, daemon *backend.Resolved, modelName string, verbose bool) (map[string]any, error) {
+	body, err := json.Marshal(map[string]any{"name": modelName, "verbose": verbose})
 	if err != nil {
-		return nil, fmt.Errorf("ollama not configured: %w", err)
+		return nil, err
 	}
-	reqBody := map[string]any{
-		"name":    modelName,
-		"verbose": verbose,
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
+	req, err := daemon.NewRequest(ctx, http.MethodPost, "/api/show", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Use context-aware request to support cancellation and timeouts
-	req, err := daemon.NewRequest(ctx, http.MethodPost, "/api/show", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ollama request failed: %w", err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama returned status %d", resp.StatusCode)
-	}
-
-	var result map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode ollama response: %w", err)
-	}
-
-	slog.Info("[InternalAPI/Ollama] Success: fields returned", "Success", len(result))
-	return result, nil
-}
-
-// getHuggingFaceModelDetails calls HuggingFace connector.
-func (e *InternalExecutor) getHuggingFaceModelDetails(ctx context.Context, sourceID string) (map[string]any, error) {
-	slog.Info("[InternalAPI/HuggingFace] Calling ShowModel for", "for", sourceID)
-
-	hfConnector := e.getHFConnector()
-	if hfConnector == nil {
-		return nil, fmt.Errorf("huggingface connector not available")
-	}
-
-	details, err := hfConnector.ShowModel(ctx, sourceID)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("huggingface request failed: %w", err)
+		return nil, err
 	}
-
-	slog.Info("[InternalAPI/HuggingFace] Success: fields returned", "Success", len(details))
-	return details, nil
-}
-
-// HandleInternalDeleteModels is the INTERNAL endpoint for deleting models
-// This is called by the router to delete models locally
-// NO routing logic, NO cache - just execute deletion
-//
-// Endpoint: DELETE /zzrouter/internal/models
-func (e *InternalExecutor) HandleInternalDeleteModels(c *gin.Context) {
-	var req DeleteModelsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "Invalid request")
-		return
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseRoutedError(resp.StatusCode, body, resp.Header)
 	}
-
-	utils.LogDebugf("[InternalAPI] HandleInternalDeleteModels: pattern=%s, models=%d, paths=%d",
-		req.Pattern, len(req.Models), len(req.Paths))
-
-	deleted, errors := e.deleteLocal(c, &req)
-
-	utils.LogDebugf("[InternalAPI] Deleted %d models, %d errors", deleted, len(errors))
-
-	if deleted > 0 {
-		if !publishOr503(c, e.publishCatalog) {
-			return
-		}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil || result == nil {
+		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "provider model detail must be one JSON object", httperr.CodeUpstreamShape, e.getNodename())
 	}
-
-	// Use struct for consistency (matches DeleteModelsResponse)
-	response := DeleteModelsResponse{
-		Deleted: deleted,
-		Errors:  errors,
-	}
-	c.JSON(http.StatusOK, response)
-}
-
-// deleteLocal deletes models from the local model registry
-func (e *InternalExecutor) deleteLocal(c *gin.Context, req *DeleteModelsRequest) (int, []string) {
-	if e.registry == nil {
-		return 0, []string{"Model registry not initialized"}
-	}
-
-	registry := e.registry
-	var modelsToDelete []string
-	var errors []string
-
-	// Handle specific models array (new format)
-	// NOTE: ModelService.MultiRoute ensures only models for this host are sent here
-	if len(req.Models) > 0 {
-		// Separate cloud and local models to batch cloud deletions
-		cloudModelsByProvider := map[string][]string{}
-		var cloudModelNames []string
-
-		for _, model := range req.Models {
-			if e.isCloudProvider(model.Registry) {
-				cloudModelsByProvider[model.Registry] = append(cloudModelsByProvider[model.Registry], model.Name)
-				cloudModelNames = append(cloudModelNames, model.Name)
-				continue
-			}
-			if err := registry.DeleteModelByNameAndSource(c.Request.Context(), model.Name, model.Registry); err != nil {
-				errors = append(errors, fmt.Sprintf("%s: %v", model.Name, err))
-			} else {
-				modelsToDelete = append(modelsToDelete, model.Name)
-			}
-		}
-
-		// Batch-remove all cloud models in a single config write
-		if len(cloudModelsByProvider) > 0 {
-			if err := e.configStore.RemoveCloudModels(cloudModelsByProvider); err != nil {
-				errors = append(errors, fmt.Sprintf("cloud model removal: %v", err))
-			} else {
-				modelsToDelete = append(modelsToDelete, cloudModelNames...)
-
-				slog.Info("Cloud models removed", "count", len(cloudModelNames))
-			}
-		}
-
-		return len(modelsToDelete), errors
-	}
-
-	// Handle pattern-based deletion
-	if req.Pattern != "" {
-		models := registry.FindModelsByPattern(req.Pattern)
-		for _, model := range models {
-			if err := registry.DeleteModelByNameAndSource(c.Request.Context(), model.Name, model.SourceRepo); err != nil {
-				errors = append(errors, fmt.Sprintf("%s: %v", model.Name, err))
-			} else {
-				modelsToDelete = append(modelsToDelete, model.Name)
-			}
-		}
-		return len(modelsToDelete), errors
-	}
-
-	// Handle path-based deletion
-	if len(req.Paths) > 0 {
-		deleted, errs := registry.DeleteModels(req.Paths)
-		for _, err := range errs {
-			errors = append(errors, err.Error())
-		}
-		return deleted, errors
-	}
-
-	return 0, []string{"No deletion criteria provided"}
+	return result, nil
 }
 
 // ============================================================================
@@ -348,7 +252,7 @@ func (e *InternalExecutor) HandleInternalRescanModels(c *gin.Context) {
 		InternalNodeError(c, "model registry not initialized")
 		return
 	}
-	if !publishOr503(c, e.publishCatalog) {
+	if !publishOr503(c, func() error { return e.publishCatalog(c.Request.Context()) }) {
 		return
 	}
 
@@ -388,22 +292,15 @@ func (e *InternalExecutor) HandleInternalRescanModels(c *gin.Context) {
 // Called by the router to get actual model data - NO routing, NO cache
 // Endpoint: GET /zzrouter/internal/models/show?model=<name>&verbose=<bool>
 func (e *InternalExecutor) HandleInternalShowModel(c *gin.Context) {
-	modelName := QueryModel(c)
-	verbose := c.Query("verbose") == "true"
-
-	utils.LogDebugf("[InternalAPI] /zzrouter/internal/models/show: model=%s, verbose=%v", modelName, verbose)
-
-	if modelName == "" {
+	req := &ShowModelRequest{ModelName: QueryModel(c), App: QueryProvider(c), Registry: QueryRegistry(c), SourceID: c.Query("source_id"), Verbose: c.Query("verbose") == "true", Compact: c.Query("compact") == "true", AllowUncataloged: c.Query("allow_uncataloged") == "true"}
+	if req.ModelName == "" {
 		BadRequest(c, "model parameter is required")
 		return
 	}
-
-	details, err := e.ShowLocalModel(c.Request.Context(), modelName, verbose)
+	details, err := e.ShowLocalModel(c.Request.Context(), req)
 	if err != nil {
-		utils.LogDebugf("[InternalAPI] Error showing model: %v", err)
-		NotFound(c, err.Error())
+		RespondToError(c, err)
 		return
 	}
-
 	c.JSON(http.StatusOK, details)
 }

@@ -204,7 +204,7 @@ func TestRegisteredRunKeepAlive(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 			svc, _ := cfg.LookupApp("fake")
-			run, err := mgr.registerRun(t.Context(), EnsureRequest{Provider: "fake", Model: "m"}, svc)
+			run, err := mgr.registerRun(t.Context(), EnsureRequest{Provider: "fake", Model: "m"}, launchSelection{config: svc})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, run.GetKeepAlive())
 			keepAlive, activity := run.IdleSnapshot()
