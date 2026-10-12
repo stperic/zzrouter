@@ -26,6 +26,8 @@
 
 ### Behaviour changes
 
+- Warm local runs retain their provider and launched wire endpoints after catalog
+  invalidation, so translated Messages and Responses stay on the correct API.
 - MCP startup guidance names job collections and capability probes, and source
   metadata fields are distinguished from serving details. Vision probes allow
   up to 256 tokens per image so reasoning models can reach a visible answer.

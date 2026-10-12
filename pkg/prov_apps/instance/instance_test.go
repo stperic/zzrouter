@@ -367,6 +367,21 @@ func TestInstanceToInfoReportsSelectedRuntime(t *testing.T) {
 	assert.Equal(t, "requested-runtime", inst.SnapshotConfig().Runtime)
 }
 
+func TestResolvedWireEndpointsContract(t *testing.T) {
+	for _, endpoints := range [][]string{nil, {}, {"messages"}} {
+		inst := NewInstance("test-id", "provider", "model", 8000, time.Minute, 1)
+		inst.SetResolved(Resolved{WireEndpoints: endpoints})
+		assert.Equal(t, endpoints, inst.Resolved().WireEndpoints)
+		if len(endpoints) > 0 {
+			endpoints[0] = "changed-input"
+			got := inst.Resolved()
+			assert.Equal(t, "messages", got.WireEndpoints[0])
+			got.WireEndpoints[0] = "changed-output"
+			assert.Equal(t, "messages", inst.Resolved().WireEndpoints[0])
+		}
+	}
+}
+
 func TestRewriteHealthURLHost(t *testing.T) {
 	cases := []struct {
 		name     string
