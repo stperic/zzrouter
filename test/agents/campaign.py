@@ -788,14 +788,6 @@ def describe(role):
     return " ".join(w for w in (role["family"], role["size"], role.get("variant", "")) if w)
 
 
-def prepare_recent_jobs(node, sc):
-    code, d, _ = http("GET", "/zzrouter/v1/jobs?" + urlencode({"node": node, "limit": 2}))
-    rows = d.get("data")
-    if code != 200 or not isinstance(rows, list):
-        return False, f"recent job reference unavailable: {code}"
-    sc["job_ids"] = [j["job_id"] for j in rows]
-    return True, f"reference ids={sc['job_ids']}"
-
 
 def prepare_probe(node, provider, mode, sc):
     text = (MATRIX.get((node, provider)) or {}).get("text")
@@ -810,7 +802,7 @@ def prepare_probe(node, provider, mode, sc):
     if mode == "embed" and isinstance(wires, list) and "embeddings" not in wires:
         sc.update(pick=text, expected="not_supported", refusal_status=404, refusal_code="backend_error", expect_error="Not Found", capability_absent=True)
         code, d, _ = chat(f"{text['name']}@{node}", "Say OK", 2)
-        sc["prompt"] = f"The ready text fixture {text['name']} on {node} with {provider} explicitly does not advertise embeddings. Probe it once with zz_chat probe=embed and report the exact refusal. Do not launch or change settings." + tail(provider) + " JSON keys: verdict (not_supported), dimensions (null), status, code."
+        sc["prompt"] = f"The ready text fixture {text['name']} on {node} with {provider} explicitly does not advertise embeddings. Probe it once with zz_chat probe=embed and report the exact refusal. Do not launch or change settings." + tail(provider) + " JSON keys: verdict (the exact request-local verdict, null if absent), dimensions (null), status, code."
         return code == 200, f"ready text={code}; advertised embeddings absent"
     pick = sc["pick"]
     ok, detail = deploy(node, provider, pick, ["vision"] if mode == "vision" and pick.get("projector") else None)
@@ -830,14 +822,15 @@ def scenarios(node, provider):
                   "Report the collection total and whether another page exists. Do not start or cancel anything."
                   + tail(provider) + " JSON keys: total, has_more.",
         "check": check_recent_jobs,
-        "setup": lambda: prepare_recent_jobs(node, out[0]),
     }, {
         "id": "model-detail",
         "provider": provider,
         "prompt": f"On node {node}, find a small {describe(ROLES['text'])} model supported by {provider}. If it is absent, "
                   "download it through the supported zzRouter tools and follow its job. Query zz_models with the exact "
                   f"catalog name or source_id, provider {provider} and node {node}. Report the source-reported context "
-                  "map, template presence, capabilities and whether parameters were reported. Use null for missing "
+                  "map, template presence, capabilities and whether parameters were reported, using only show.model_info, "
+                  "show.template_present, show.capabilities and presence of show.parameters. Never use details.wire_endpoints "
+                  "or details.features for these source fields. Use null for missing "
                   "metadata; do not infer it or describe metadata as serving verification. If detail is explicitly "
                   "unsupported, report its code and null metadata. Do not start a run."
                   " Use only inventory, model discovery/catalog/download and job tools. Set has_parameters to false "
@@ -946,8 +939,13 @@ def check_recent_jobs(ctx):
     page = isinstance(jobs, list) and type(total) is int and total >= 0 and len(jobs) == min(2, total)
     owned = page and all(j.get("node") == ctx["node"] and j.get("job_id") and j.get("kind") and j.get("state") for j in jobs)
     unique = owned and len({j["job_id"] for j in jobs}) == len(jobs)
-    expected = ctx["scenario"].get("job_ids") if "scenario" in ctx else None
-    return [("complete recent job page", unique and fields.get("has_more") is (total > 2) and (expected is None or [j["job_id"] for j in jobs] == expected), jobs),
+    verified = unique
+    if unique:
+        for job in jobs:
+            code, current, _ = http("GET", f"/zzrouter/v1/jobs/{job['job_id']}?" + urlencode({"node": ctx["node"]}))
+            current = current.get("data") or current
+            verified = verified and code == 200 and all(current.get(k) == job.get(k) for k in ("job_id", "node", "kind"))
+    return [("complete recent job page", verified and fields.get("has_more") is (total > 2), jobs),
             ("used node-selected collection", bool(calls) and args.get("node") == ctx["node"] and fields.get("node") == ctx["node"] and args.get("limit") == 2 and args.get("offset", 0) == 0, args),
             ("collection metadata present", type(fields.get("total")) is int and isinstance(fields.get("has_more"), bool), fields),
             ("agent claim matches collection", bool(fields) and rj.get("total") == fields.get("total") and rj.get("has_more") == fields.get("has_more"), rj)]
@@ -986,7 +984,7 @@ def delete_ownership(calls, args):
         present = calls[pi]
         a, e = present.get("args") or {}, present.get("evidence") or {}
         entries = e.get("models") or []
-        if present["tool"] != "zz_models" or present.get("is_error") is not False or a.get("node") != node or a.get("provider") != provider or a.get("model") not in (name, source) or e.get("total") != 1 or e.get("has_more") is not False or len(entries) != 1:
+        if present["tool"] != "zz_models" or present.get("is_error") is not False or a.get("node") != node or a.get("provider") not in (None, "", provider) or a.get("model") not in (name, source) or e.get("total") != 1 or e.get("has_more") is not False or len(entries) != 1:
             continue
         m = entries[0]
         if any(m.get(k) != v for k, v in (("name", name), ("source_id", source), ("node", node), ("provider", provider))) or m.get("variant_of") or m.get("is_cloud"):
@@ -999,7 +997,7 @@ def delete_ownership(calls, args):
                 continue
             absent = any(c["tool"] == "zz_models" and c.get("is_error") is False and (c.get("args") or {}).get("model") == source and (c.get("args") or {}).get("node") == node and not (c.get("args") or {}).get("provider") and (c.get("evidence") or {}).get("total") == 0 and (c.get("evidence") or {}).get("has_more") is False for c in calls[:di])
             jobs = {r.get("job_id") for r in de.get("nodes") or [] if r.get("node") == node and r.get("job_id")}
-            done = any(c["tool"] == "zz_job" and c.get("is_error") is False and (c.get("args") or {}).get("job_id") in jobs and (c.get("args") or {}).get("node") == node and (c.get("evidence") or {}).get("state") == "done" for c in calls[di + 1:pi])
+            done = any(c["tool"] == "zz_job" and c.get("is_error") is False and (c.get("args") or {}).get("job_id") in jobs and (c.get("args") or {}).get("node") in (None, "", node) and (c.get("evidence") or {}).get("state") == "done" for c in calls[di + 1:pi])
             if absent and jobs and done:
                 return True
     return False
@@ -1096,7 +1094,7 @@ def check_capability_probe(ctx, mode):
     expected = ctx["scenario"].get("expected", "verified")
     positive = expected == "verified"
     typed = fields.get("status") == ctx["scenario"].get("refusal_status", 400) and fields.get("code") == ctx["scenario"].get("refusal_code", "unsupported_input")
-    outcome = calls and ((not calls[-1].get("is_error") and fields.get("probe") == mode and verdict == "verified") if positive else (calls[-1].get("is_error") and typed))
+    outcome = calls and ((not calls[-1].get("is_error") and fields.get("probe") == mode and verdict == "verified") if positive else (calls[-1].get("is_error") and typed and verdict in (None, "not_supported")))
     ready = any((not (c.get("evidence") or {}).get("job_id") and (c.get("evidence") or {}).get("status") in ("ready", "running")) or any(j["tool"] == "zz_job" and j.get("is_error") is False and (j.get("args") or {}).get("job_id") == (c.get("evidence") or {}).get("job_id") and (j.get("args") or {}).get("node") == node and (j.get("evidence") or {}).get("state") == "done" for j in ctx["calls"][ctx["calls"].index(c) + 1:ctx["calls"].index(calls[-1])]) for c in starts)
     stopped = any(stop["tool"] == "zz_run_stop" and stop.get("is_error") is False and (stop.get("args") or {}).get("run_id") == (start.get("evidence") or {}).get("run_id") and (start.get("evidence") or {}).get("run_id") for start in starts for stop in ctx["calls"][ctx["calls"].index(calls[-1]) + 1:]) if calls else False
     out = [("ready launch followed and owned run stopped", ready and stopped if positive else ctx["scenario"].get("capability_absent", False), starts),
@@ -1104,7 +1102,7 @@ def check_capability_probe(ctx, mode):
            ("started with selected provider" if positive else "no incompatible launch", bool(starts) if positive else not tool_calls(ctx, "zz_run_start"), provider),
            ("no owned runs left", not ctx["left"], ctx["left"]),
            ("expected capability evidence returned", bool(outcome), fields),
-           ("agent claim matches evidence", bool(fields) and rj.get("verdict") == ("not_supported" if not positive else verdict) and (positive or (rj.get("status") == fields.get("status") and rj.get("code") == fields.get("code") and rj.get("dimensions") is None)), rj)]
+           ("agent claim matches evidence", bool(fields) and rj.get("verdict") == verdict and (positive or (rj.get("status") == fields.get("status") and rj.get("code") == fields.get("code") and rj.get("dimensions") is None)), rj)]
     if mode == "embed" and verdict == "verified":
         out.append(("dimensions match", type(fields.get("dimensions")) is int and fields["dimensions"] > 0 and rj.get("dimensions") == fields.get("dimensions"), fields))
     return out

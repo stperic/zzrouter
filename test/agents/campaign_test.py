@@ -19,13 +19,28 @@ class CampaignEvidenceTest(unittest.TestCase):
         def ctx(f):
             return {"node": "n", "rj": {"total": f["total"], "has_more": f["has_more"]},
                     "calls": [call("zz_job", {"node": "n", "limit": 2}, c.call_evidence(f))]}
-        self.assertTrue(passed(c.check_recent_jobs(ctx(fields))))
-        for mutation in (lambda f: f.pop("jobs"), lambda f: f["jobs"].pop(),
-                         lambda f: f["jobs"][0].update(node="other"),
-                         lambda f: f["jobs"][1].update(job_id="j1")):
-            bad = copy.deepcopy(fields); mutation(bad)
-            self.assertFalse(passed(c.check_recent_jobs(ctx(bad))))
-        self.assertTrue(passed(c.check_recent_jobs(ctx({"node": "n", "total": 0, "has_more": False, "jobs": []}))))
+        from unittest.mock import patch
+        def source(method, path):
+            job = next((j for j in fields["jobs"] if f"/{j['job_id']}?" in path), {})
+            return 200, {"data": job}, 0
+        with patch.object(c, "http", side_effect=source):
+            self.assertTrue(passed(c.check_recent_jobs(ctx(fields))))
+            for mutation in (lambda f: f.pop("jobs"), lambda f: f["jobs"].pop(),
+                             lambda f: f["jobs"][0].update(node="other"),
+                             lambda f: f["jobs"][1].update(job_id="j1")):
+                bad = copy.deepcopy(fields); mutation(bad)
+                self.assertFalse(passed(c.check_recent_jobs(ctx(bad))))
+            self.assertTrue(passed(c.check_recent_jobs(ctx({"node": "n", "total": 0, "has_more": False, "jobs": []}))))
+
+    def test_recent_jobs_verifies_independent_public_source(self):
+        from unittest.mock import patch
+        job = {"job_id": "j", "node": "n", "kind": "run", "state": "done"}
+        ctx = {"node": "n", "rj": {"total": 1, "has_more": False},
+               "calls": [call("zz_job", {"node": "n", "limit": 2}, {"node": "n", "total": 1, "has_more": False, "jobs": [job]})]}
+        for code, raw in [(404, {}), (200, {**job, "job_id": "wrong"}), (200, {**job, "node": "wrong"}), (200, {**job, "kind": "download"})]:
+            with patch.object(c, "http", return_value=(code, {"data": raw}, 0)) as native:
+                self.assertFalse(passed(c.check_recent_jobs(ctx)))
+                native.assert_called_once_with("GET", "/zzrouter/v1/jobs/j?node=n")
 
     def test_positive_probe_requires_verified_endpoint_and_dimensions(self):
         starts = call("zz_run_start", {"model": "m", "provider": "p", "node": "n", "endpoint": "embeddings"}, {"run_id": "r", "job_id": "j"})
@@ -49,6 +64,12 @@ class CampaignEvidenceTest(unittest.TestCase):
                "calls": [call("zz_chat", {"model": "m", "node": "n", "probe": "embed"},
                               c.call_evidence({"verdict": "not_supported", "status": 400, "code": "unsupported_input"}), True)]}
         self.assertTrue(passed(c.check_capability_probe(ctx, "embed")))
+        absent = copy.deepcopy(ctx); absent["scenario"].update(refusal_status=404, refusal_code="backend_error")
+        absent["calls"][-1]["evidence"] = {"status": 404, "code": "backend_error"}
+        absent["rj"] = {"verdict": None, "dimensions": None, "status": 404, "code": "backend_error"}
+        self.assertTrue(passed(c.check_capability_probe(absent, "embed")))
+        inconclusive = copy.deepcopy(absent); inconclusive["calls"][-1]["evidence"]["verdict"] = "inconclusive"; inconclusive["rj"]["verdict"] = "inconclusive"
+        self.assertFalse(passed(c.check_capability_probe(inconclusive, "embed")))
         bad = copy.deepcopy(ctx); bad["calls"][-1]["evidence"]["code"] = "model_load_failed"
         self.assertFalse(passed(c.check_capability_probe(bad, "embed")))
 
@@ -69,6 +90,8 @@ class DisposableOwnershipTest(unittest.TestCase):
 
     def test_ownership_fails_closed(self):
         self.assertTrue(c.delete_ownership(self.trace, self.args))
+        automatic = copy.deepcopy(self.trace); automatic[2]["args"].pop("node"); automatic[3]["args"].pop("provider")
+        self.assertTrue(c.delete_ownership(automatic, self.args))
         mutations = [lambda x: x[0]["args"].update(provider="p"), lambda x: x[0]["evidence"].update(total=1),
                      lambda x: x[2]["args"].update(node="other"), lambda x: x[2]["args"].update(job_id="wrong"),
                      lambda x: x[2]["evidence"].update(state="failed"), lambda x: x[3]["args"].update(model="unrelated"),
