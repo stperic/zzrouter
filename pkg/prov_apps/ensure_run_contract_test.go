@@ -22,6 +22,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
@@ -745,20 +746,21 @@ type daemonCall struct {
 // fakeDaemon is an Ollama daemon: loads, unloads and lists models, and can be
 // held, failed, made unreachable or made to report stale state.
 type fakeDaemon struct {
-	mu          sync.Mutex
-	loaded      map[string]time.Time
-	calls       []daemonCall
-	hold        chan struct{}
-	entered     chan struct{}
-	loadStatus  int
-	loadDelay   time.Duration
-	unreachable bool
-	psErr       bool
-	psHook      func()
-	stale       map[string]bool
-	unloadHold  chan struct{} // an unload drops the model, then answers once this closes
-	psAuth      []string      // the Authorization header of each listing
-	holdsOne    bool          // a load unloads every other model, as a daemon short of memory does
+	mu            sync.Mutex
+	loaded        map[string]time.Time
+	calls         []daemonCall
+	hold          chan struct{}
+	entered       chan struct{}
+	loadStatus    int
+	loadDelay     time.Duration
+	unreachable   bool
+	psErr         bool
+	psHook        func()
+	beforeRequest func(*http.Request)
+	stale         map[string]bool
+	unloadHold    chan struct{} // an unload drops the model, then answers once this closes
+	psAuth        []string      // the Authorization header of each listing
+	holdsOne      bool          // a load unloads every other model, as a daemon short of memory does
 }
 
 func newFakeDaemon() *fakeDaemon {
@@ -771,8 +773,11 @@ func daemonReply(status int, body string) *http.Response {
 
 func (d *fakeDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 	d.mu.Lock()
-	unreachable := d.unreachable
+	unreachable, before := d.unreachable, d.beforeRequest
 	d.mu.Unlock()
+	if before != nil {
+		before(req)
+	}
 	if unreachable {
 		return nil, errors.New("dial tcp: connection refused")
 	}
@@ -1078,7 +1083,13 @@ func TestEnsureRunContractServed(t *testing.T) {
 			t.Run(failure, func(t *testing.T) {
 				b := newBarrier()
 				r := newServedRig(t, modelSourceBarrier(b, nil))
+				failureHeld := newBarrier()
 				r.daemon.set(func(d *fakeDaemon) {
+					d.beforeRequest = func(req *http.Request) {
+						if req.URL.Path == "/api/generate" {
+							failureHeld.hold()
+						}
+					}
 					d.loadStatus = http.StatusInternalServerError
 					d.unreachable = failure == "unreachable"
 				})
@@ -1092,6 +1103,8 @@ func TestEnsureRunContractServed(t *testing.T) {
 					require.NoError(t, o.err)
 					assert.Same(t, run, o.result.Run)
 				}
+				failureHeld.reached(t)
+				failureHeld.open()
 				awaitLeft(t, run)
 				require.Error(t, run.FailureCause(), "every holder reads the load's cause")
 				assert.Equal(t, instance.StatusFailed, run.GetStatus())
@@ -1871,4 +1884,121 @@ func TestEnsureRunContractServedRaces(t *testing.T) {
 		assert.Equal(t, instance.StatusRunning, run.GetStatus())
 		assert.Len(t, r.m.instances.List(), 1, "the lower-cased listing is the same model, not one to adopt")
 	})
+}
+
+// TestEnsureRunContractIdle pins the reaper contract independently of its scheduling mechanism.
+func TestEnsureRunContractIdle(t *testing.T) {
+	for _, limit := range []string{"0", "25ms", "-1"} {
+		t.Run(limit, func(t *testing.T) {
+			r := newContractRig(t, false)
+			r.m.Start(t.Context())
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "idle", Parameters: map[string]string{"keep-alive": limit}})})[0]
+			require.NoError(t, o.err)
+			run := o.result.Run
+			lease, err := run.Acquire(t.Context(), nil)
+			require.NoError(t, err)
+			t.Cleanup(lease.Release)
+			awaitRunning(t, run)
+			time.Sleep(75 * time.Millisecond)
+			require.Equal(t, instance.StatusRunning, run.GetStatus(), "a held lease never expires")
+			lease.Release()
+			if limit == "-1" {
+				time.Sleep(75 * time.Millisecond)
+				assert.Equal(t, instance.StatusRunning, run.GetStatus(), "a pin never expires idle")
+			} else {
+				eventually(t, func() bool { return !r.m.instances.Has(run.ID) }, "idle run must stop after its final lease")
+			}
+		})
+	}
+	t.Run("tree and request precedence", func(t *testing.T) {
+		r := newContractRig(t, false, WithNodename(func() string { return "worker" }))
+		fresh := &config.AppsConfig{}
+		r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
+			svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"budget": "0.55", "keep-alive": "2m"}}
+			svc.Models = map[string]config.ModelSpec{"idle": {Parameters: map[string]string{"keep-alive": "3m"}}}
+			svc.Nodes = map[string]config.NodeSpec{"worker": {Parameters: map[string]string{"keep-alive": "4m"}, Models: map[string]config.NodeModelSpec{"idle": {Parameters: map[string]string{"keep-alive": "-1"}}}}}
+			require.NoError(t, fresh.AddApp(name, svc))
+			return true
+		})
+		r.m.ReloadConfig(fresh)
+		o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "idle"})})[0]
+		require.NoError(t, o.err)
+		awaitRunning(t, o.result.Run)
+		assert.Negative(t, o.result.Run.GetKeepAlive(), "node x model must replace provider/model/node limits")
+		other := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "override", Parameters: map[string]string{"keep-alive": "10m"}})})[0]
+		require.NoError(t, other.err)
+		assert.Equal(t, 10*time.Minute, other.result.Run.GetKeepAlive())
+	})
+}
+
+func TestEnsureRunContractIdleBurst(t *testing.T) {
+	r := newContractRig(t, false)
+	svc, ok := r.m.AppsConfig().LookupApp("generic")
+	require.True(t, ok)
+	for n := range 90 {
+		run, err := r.m.newRun(t.Context(), EnsureRequest{Provider: "generic", Model: fmt.Sprint(n), Parameters: map[string]string{"keep-alive": "0"}}, svc, 0)
+		require.NoError(t, err)
+		require.NoError(t, r.m.instances.Register(run))
+		run.MarkRunning()
+		lease, err := run.Acquire(t.Context(), nil)
+		require.NoError(t, err)
+		lease.Release()
+	}
+	// Expiry notifications before Start must retain all registry state, even beyond the old buffer.
+	time.Sleep(75 * time.Millisecond)
+	r.m.Start(t.Context())
+	eventually(t, func() bool { return len(r.m.instances.List()) == 0 }, "every released zero run must stop")
+}
+
+func TestEnsureRunContractIdleRefresh(t *testing.T) {
+	r := newContractRig(t, false)
+	r.m.Start(t.Context())
+	o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "refresh", Parameters: map[string]string{"keep-alive": "25ms"}})})[0]
+	require.NoError(t, o.err)
+	lease, err := o.result.Run.Acquire(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(lease.Release)
+	awaitRunning(t, o.result.Run)
+	pin := -time.Second
+	o.result.Run.StampActivityWithHints(&keepalive.Override{Duration: &pin})
+	lease.Release()
+	time.Sleep(75 * time.Millisecond)
+	assert.Equal(t, instance.StatusRunning, o.result.Run.GetStatus(), "an obsolete deadline cannot expire a newer pin")
+	zero := time.Duration(0)
+	lease, err = o.result.Run.Acquire(t.Context(), &keepalive.Override{Duration: &zero})
+	require.NoError(t, err)
+	time.Sleep(25 * time.Millisecond)
+	require.Equal(t, instance.StatusRunning, o.result.Run.GetStatus())
+	lease.Release()
+	eventually(t, func() bool { return !r.m.instances.Has(o.result.Run.ID) }, "updated zero ends at release")
+}
+
+func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
+	r := newContractRig(t, true, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
+	}))
+	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
+	}
+	edit := func(limit string) {
+		fresh := &config.AppsConfig{}
+		r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
+			svc.Models = map[string]config.ModelSpec{"two": {Parameters: map[string]string{config.KeepAliveParameter: limit}}}
+			require.NoError(t, fresh.AddApp(name, svc))
+			return true
+		})
+		r.m.ReloadConfig(fresh)
+	}
+	edit("0")
+	first := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "one"})})[0]
+	require.NoError(t, first.err)
+	second := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "two"})})[0]
+	require.NoError(t, second.err)
+	require.Equal(t, first.result.Run.ID, second.result.Run.WaitingOn())
+	edit("-1")
+	r.ready(t)
+	awaitRunning(t, first.result.Run)
+	awaitRunning(t, second.result.Run)
+	assert.Negative(t, second.result.Run.GetKeepAlive(), "admitted idle policy must match the re-resolved launch")
+	assert.Equal(t, "-1", second.result.Run.Resolved().Parameters[config.KeepAliveParameter])
 }

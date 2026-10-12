@@ -362,7 +362,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"status":             string(inst.GetStatus()),
 		"port":               inst.Port,
 		"health_url":         inst.HealthURL,
-		"started_at":         inst.StartedAt.Format(time.RFC3339),
+		"started_at":         inst.GetStartedAt().Format(time.RFC3339),
 		"message":            message,
 		"files_mounted":      len(req.Files),
 		"parameters_applied": len(req.Parameters),
@@ -472,7 +472,7 @@ func (e *RunsExecutor) HandleInternalGetRunHealth(c *gin.Context) {
 	}
 
 	// Calculate uptime
-	uptime := time.Since(inst.StartedAt)
+	uptime := time.Since(inst.GetStartedAt())
 
 	// Determine health status
 	healthStatus := "unknown"

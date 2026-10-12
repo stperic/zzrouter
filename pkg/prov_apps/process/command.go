@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/security"
@@ -109,6 +110,9 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
 	}
+	if _, err := runsettings.Parse(params, false); err != nil {
+		return Launch{}, err
+	}
 	exec := &cb.serviceConfig.Runtime.Execution
 	if exec.Command == "" {
 		return Launch{}, fmt.Errorf("no command configured")
@@ -133,7 +137,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, cb.excludedParams())...)
+		args = append(args, buildParameterArgs(params, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
 	}
 
 	wireModel := modelClean
@@ -281,11 +285,6 @@ func resolveDirToFile(path, hint string, excluded ...string) string {
 		return path
 	}
 	return filepath.Join(path, filepath.FromSlash(v.Files[0].Path))
-}
-
-// excludedParams is retired; the exclusion blocklist is gone per the v5 plan.
-func (cb *CommandBuilder) excludedParams() []string {
-	return nil
 }
 
 // buildParameterArgs converts a parameter map to CLI flag arguments.

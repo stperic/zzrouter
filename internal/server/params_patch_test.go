@@ -562,3 +562,25 @@ func TestParametersPatch_ReportsRunsAndChecksRestart(t *testing.T) {
 func ptrDefaults(parameters, environment map[string]json.RawMessage) *defaultsPatch {
 	return &defaultsPatch{Parameters: parameters, Environment: environment}
 }
+
+func TestParametersPatch_RunSettings(t *testing.T) {
+	cfg := DefaultTestNodeConfig()
+	cfg.SeedProvidersDir = true
+	server := createTestNode(t, cfg)
+	path := "/zzrouter/v1/providers/vllm/parameters"
+	resp := makeAuthRequest(t, server, "PATCH", path, TestAdminKey, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"keep-alive": "2m", "evict-idle-on-memory-pressure": true}}})
+	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	svc, ok := server.configStore.Config().LookupApp("vllm")
+	require.True(t, ok)
+	settings, err := pkgConfig.ParseRunSettings(pkgConfig.FlattenParameters(svc.Resolve("", "").Parameters), false)
+	require.NoError(t, err)
+	assert.True(t, settings.EvictIdle)
+	for _, params := range []map[string]any{{"keep-alive": "bad"}, {"keep-alive": 0}, {"evict-idle-on-memory-pressure": "true"}} {
+		resp = makeAuthRequest(t, server, "PATCH", path, TestAdminKey, map[string]any{"defaults": map[string]any{"parameters": params}})
+		assert.Equal(t, http.StatusBadRequest, resp.Code, "body=%s", resp.Body)
+	}
+	resp = makeAuthRequest(t, server, "PATCH", path, TestAdminKey, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"evict-idle-on-memory-pressure": nil}}})
+	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)
+	svc, _ = server.configStore.Config().LookupApp("vllm")
+	assert.NotContains(t, svc.Defaults.Parameters, "evict-idle-on-memory-pressure")
+}

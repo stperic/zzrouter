@@ -23,6 +23,7 @@ type Registry struct {
 	instances map[string]*Instance // instanceID → Instance
 	modelMap  map[string]string    // modelEndpointKey(model, endpoint) → instanceID
 	portMap   map[int]string       // port → instanceID
+	changed   chan struct{}
 	mu        sync.RWMutex
 }
 
@@ -39,8 +40,20 @@ func modelEndpointKey(model, endpoint string) string {
 func NewRegistry() *Registry {
 	return &Registry{
 		instances: make(map[string]*Instance),
+		changed:   make(chan struct{}, 1),
 		modelMap:  make(map[string]string),
 		portMap:   make(map[int]string),
+	}
+}
+
+// Changes coalesces registry membership and instance idle-state mutations. It is never closed.
+func (r *Registry) Changes() <-chan struct{} { return r.changed }
+
+// NotifyChanged wakes observers to re-read current state; the notification is not a stop command.
+func (r *Registry) NotifyChanged() {
+	select {
+	case r.changed <- struct{}{}:
+	default:
 	}
 }
 
@@ -72,6 +85,10 @@ func (r *Registry) Register(inst *Instance) error {
 		}
 	}
 
+	inst.mu.Lock()
+	inst.idleChanged = r.changed
+	inst.notifyIdleLocked()
+	inst.mu.Unlock()
 	r.instances[inst.ID] = inst
 	if inst.Model != "" {
 		r.modelMap[modelEndpointKey(inst.Model, inst.Endpoint)] = inst.ID
@@ -152,6 +169,7 @@ func (r *Registry) Remove(id string) error {
 	}
 
 	delete(r.instances, id)
+	r.NotifyChanged()
 	if inst.Model != "" {
 		delete(r.modelMap, modelEndpointKey(inst.Model, inst.Endpoint))
 	}
@@ -189,14 +207,7 @@ func (r *Registry) UpdateStatus(id string, status Status, errorMsg string) error
 	return nil
 }
 
-// UpdateActivity updates the last activity time for an instance and applies
-// any non-nil per-request hints (e.g. keep_alive override). Passing a nil
-// hints pointer preserves the prior behavior: timestamps are stamped and
-// the keep-alive timer is reset using the instance's configured value.
-//
-// Both LastActivity and lastUsedAt are set atomically under a single lock
-// (inside Instance.StampActivityWithHints) to prevent TOCTOU inconsistencies
-// in idle policy snapshots.
+// UpdateActivity applies request hints and stamps the authoritative idle state.
 func (r *Registry) UpdateActivity(id string, ov *keepalive.Override) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -298,6 +309,7 @@ func (r *Registry) CleanupExpiredFailures() int {
 
 		if status == StatusFailed && !inst.StopUnconfirmed.Load() && !failedAt.IsZero() && now.Sub(failedAt) > FailedInstanceTTL {
 			delete(r.instances, id)
+			r.NotifyChanged()
 			if inst.Model != "" {
 				delete(r.modelMap, modelEndpointKey(inst.Model, inst.Endpoint))
 			}

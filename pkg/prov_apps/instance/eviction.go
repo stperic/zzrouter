@@ -11,6 +11,7 @@ import (
 type IdleStopCandidate struct {
 	Instance *Instance
 	Activity time.Time
+	Idle     *IdleState // expiry claims also revalidate duration and release eligibility
 }
 
 // ClaimIdleStops reserves a complete idle set against new leases until release.
@@ -32,7 +33,7 @@ func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), claimed boo
 	}
 	for _, candidate := range ordered {
 		inst := candidate.Instance
-		if !inst.evictableLocked() || !inst.lastActivityTime().Equal(candidate.Activity) {
+		if !inst.evictableLocked() || !inst.LastActivity.Equal(candidate.Activity) || (candidate.Idle != nil && inst.idleSnapshotLocked() != *candidate.Idle) {
 			return nil, false
 		}
 	}
@@ -44,6 +45,7 @@ func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), claimed boo
 			inst := candidate.Instance
 			inst.mu.Lock()
 			inst.idleStopClaimed = false
+			inst.notifyIdleLocked()
 			inst.mu.Unlock()
 		}
 	}), true

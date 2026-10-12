@@ -11,6 +11,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 )
 
 // defaultEndpoint mirrors prov_apps.EndpointChat; can't import the typed
@@ -95,6 +97,11 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 	if name, base, ok := s.Variant(model); ok {
 		out.From = base
 		cells = []string{base, name}
+	}
+
+	// The legacy runtime value is the default tier, overridden by the tree.
+	if s.Runtime != nil && s.Runtime.KeepAlive != "" {
+		out.Parameters[KeepAliveParameter] = ResolvedValue{Value: s.Runtime.KeepAlive, Tier: TierDefault}
 	}
 
 	// Tier 0 — defaults.
@@ -217,8 +224,8 @@ func IsAuto(v string) bool { return v == autoValue }
 // common case allocates nothing.
 func FilterAutoValues(parameters map[string]string) map[string]string {
 	hasAuto := false
-	for _, v := range parameters {
-		if v == autoValue {
+	for k, v := range parameters {
+		if v == autoValue && !runsettings.IsParameter(k) {
 			hasAuto = true
 			break
 		}
@@ -228,7 +235,7 @@ func FilterAutoValues(parameters map[string]string) map[string]string {
 	}
 	filtered := make(map[string]string, len(parameters))
 	for k, v := range parameters {
-		if v != autoValue {
+		if v != autoValue || runsettings.IsParameter(k) {
 			filtered[k] = v
 		}
 	}

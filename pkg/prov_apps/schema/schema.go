@@ -6,6 +6,8 @@ import (
 	"maps"
 	"path"
 
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,7 +87,10 @@ func LoadYAMLSchema(data []byte) (*YAMLSchema, error) {
 // Returns the merged schema plus any conflict errors (collected rather than
 // fail-fast so startup reports all of them).
 func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
-	out := &ProviderSchema{Parameters: make(map[string]ParamShape)}
+	out := &ProviderSchema{Parameters: map[string]ParamShape{
+		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Idle duration, 0 after release, -1 indefinitely"},
+		runsettings.EvictIdleParameter: {Kind: ParamBool, Description: "Reclaim idle runs when this launch cannot fit"},
+	}}
 	for k, v := range Registry[provider] {
 		out.Parameters[k] = v
 	}

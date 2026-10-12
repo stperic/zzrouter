@@ -369,10 +369,21 @@ func TestKeepAliveNeverReachesTheLaunch(t *testing.T) {
 	preview, err := m.PreviewLaunch(req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, preview.Args, "--keep-alive")
-	assert.NotContains(t, preview.Params, "keep-alive")
+	assert.Equal(t, "10m", preview.Params["keep-alive"], "run policy remains visible in resolved parameters")
 	assert.Contains(t, preview.Args, "--max-model-len")
-	keepAlive, explicit, err := runKeepAlive(svc, req)
+	settings, err := m.runSettings(svc, req)
 	require.NoError(t, err)
-	assert.True(t, explicit)
-	assert.Equal(t, 10*time.Minute, keepAlive)
+	assert.True(t, settings.KeepAliveExplicit)
+	assert.Equal(t, 10*time.Minute, settings.KeepAlive)
+}
+
+func TestRunSettingsPreviewAndStartRejectSameValues(t *testing.T) {
+	m, _, _ := featureLaunchFixture(t)
+	for _, key := range []string{"keep-alive", "evict-idle-on-memory-pressure", "keep_alive", "evict_idle_on_memory_pressure"} {
+		req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{key: "auto"}}
+		_, err := m.PreviewLaunch(req, 8100)
+		assert.ErrorIs(t, err, ErrParameterValidation, "preview %s", key)
+		_, err = m.EnsureRun(t.Context(), req)
+		assert.ErrorIs(t, err, ErrParameterValidation, "start %s", key)
+	}
 }

@@ -128,7 +128,8 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	if err != nil {
 		return nil, nil, err
 	}
-	keepAlive, explicit, _ := runKeepAlive(svc, req) // prepare checked it
+	settings, _ := e.m.runSettings(svc, req) // prepare checked it
+	keepAlive, explicit := settings.KeepAlive, settings.KeepAliveExplicit
 	// The daemon applies an explicit keep-alive, else its own default; zero is zzRouter's: end at release.
 	var daemonKeepAlive *time.Duration
 	if explicit && keepAlive != 0 {
@@ -241,14 +242,17 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 }
 
 // prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent.
-func (servedEngine) prepare(svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
-	keepAlive, explicit, err := runKeepAlive(svc, req)
+func (e servedEngine) prepare(svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
+	settings, err := e.m.runSettings(svc, req)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
 	params := map[string]string{}
-	if explicit {
-		params[keepAliveParameter] = instance.FormatKeepAlive(keepAlive)
+	if settings.KeepAliveExplicit {
+		params[keepAliveParameter] = instance.FormatKeepAlive(settings.KeepAlive)
+	}
+	if settings.EvictIdleExplicit {
+		params[config.EvictIdleParameter] = fmt.Sprint(settings.EvictIdle)
 	}
 	return preparedLaunch{
 		launch:     process.Launch{WireModel: req.Model}, // runModel named it as the daemon does

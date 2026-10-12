@@ -234,7 +234,7 @@ func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(reg.Stop)
 	f.mgr.jobsRegistry = reg
-	f.mgr.evictIdleOnMemoryPressure = true
+	f.mgr.idleEvictionDefault = true
 	idle := instance.NewInstance("idle", "generic", "idle-model", 0, -1, 10)
 	idle.SetStatus(instance.StatusRunning)
 	idle.SetProcessInfo(9000001, 0, nil)
