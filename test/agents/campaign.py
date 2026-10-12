@@ -841,7 +841,7 @@ def scenarios(node, provider):
         "id": "model-delete",
         "provider": provider,
         "prompt": f"On node {node}, choose a tiny disposable physical model supported by {provider}. First query zz_models "
-                  f"with its exact registry model/source_id and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
+                  f"with its full exact registry model/source_id (include the tag for tagged registries) and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
                   "Choose another model if anything is present. Never delete a pre-existing model or any pinned model. "
                   "Download that absent model through zz_model_download, follow its node job to done, then query zz_models "
                   "for the exact physical catalog identity. Do not start a run. Delete only that new physical name with "
@@ -1020,7 +1020,7 @@ def cleanup_download(download, calls, node, provider):
     args, evidence = download.get("args") or {}, download.get("evidence") or {}
     if args.get("node") != node or args.get("provider") != provider:
         return False, "unselected download retained for inspection"
-    trace = list(calls)
+    trace = [c for c in calls if c["tool"] != "zz_model_download" or c is download]
     jobs = [j["job_id"] for j in evidence.get("nodes") or [] if j.get("node") == node and j.get("job_id")]
     if not jobs:
         return False, "download has no owned job; retained for inspection"
@@ -1047,6 +1047,8 @@ def cleanup_download(download, calls, node, provider):
     code, inventory, _ = http("GET", "/zzrouter/v1/models?" + urlencode({"node": node, "model": source, "refresh": "true", "limit": 1000}))
     if code != 200 or inventory.get("has_more"):
         return False, "owned source inventory unavailable; retained"
+    owned = any(delete_ownership(trace, {"node": node, "provider": provider, "model": m.get("name"), "source_id": source})
+                for c in trace if c["tool"] == "zz_models" for m in (c.get("evidence") or {}).get("models") or [])
     for raw in inventory.get("data") or []:
         if raw.get("source_id") != source or raw.get("assigned_app") != provider:
             continue
@@ -1055,9 +1057,12 @@ def cleanup_download(download, calls, node, provider):
         trace.append({"tool": "zz_models", "is_error": False, "args": {"node": node, "provider": provider, "model": m["name"]}, "evidence": {"total": 1, "has_more": False, "models": [m]}})
         if not delete_ownership(trace, selected):
             return False, "physical ownership unproven; retained"
+        owned = True
         code, result, _ = http("DELETE", "/zzrouter/v1/models", selected)
         if code != 200 or (result.get("data") or {}).get("errors") or (result.get("data") or {}).get("deleted") != 1:
             return False, f"owned physical cleanup refused: {code}"
+    if not owned:
+        return False, "successful download has no proven physical identity; retained for inspection"
     code, inventory, _ = http("GET", "/zzrouter/v1/models?" + urlencode({"node": node, "model": source, "refresh": "true", "limit": 1000}))
     if code != 200 or inventory.get("total") != 0:
         return False, "owned physical source remains after cleanup"

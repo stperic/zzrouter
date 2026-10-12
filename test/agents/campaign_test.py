@@ -138,6 +138,32 @@ class DisposableOwnershipTest(unittest.TestCase):
         self.assertTrue(ok, detail)
         self.assertEqual(http.call_args_list[2].args[:2], ("DELETE", "/zzrouter/v1/models"))
 
+    def test_empty_inventory_requires_actual_physical_proof(self):
+        from unittest.mock import patch
+        alias = copy.deepcopy(self.trace)
+        alias[0]["args"]["model"] = "repo-alias"
+        alias[1]["args"]["model"] = "repo-alias"
+        unrelated = self.trace + [call("zz_model_download", {"node": "n", "provider": "p", "model": "repo", "file": "other.gguf"},
+                                       {"nodes": [{"node": "n", "job_id": "j2"}]}),
+                                  call("zz_job", {"node": "n", "job_id": "j2"}, {"state": "done"})]
+        for trace in (self.trace[:3], alias, unrelated):
+            replies = [(200, {"phase": "done"}, 0), (200, {"data": [], "total": 0, "has_more": False}, 0),
+                       (200, {"data": [], "total": 0, "has_more": False}, 0)]
+            with patch.object(c, "http", side_effect=replies) as http:
+                ok, detail = c.cleanup_download(next(x for x in reversed(trace) if x["tool"] == "zz_model_download"), trace, "n", "p")
+            self.assertFalse(ok)
+            self.assertIn("retained", detail)
+            self.assertTrue(all(x.args[0] != "DELETE" for x in http.call_args_list))
+
+    def test_owned_identity_already_absent_still_cleans_up(self):
+        from unittest.mock import patch
+        replies = [(200, {"phase": "done"}, 0), (200, {"data": [], "total": 0, "has_more": False}, 0),
+                   (200, {"data": [], "total": 0, "has_more": False}, 0)]
+        with patch.object(c, "http", side_effect=replies) as http:
+            ok, detail = c.cleanup_disposable(self.trace, "n", "p")
+        self.assertTrue(ok, detail)
+        self.assertTrue(all(x.args[0] != "DELETE" for x in http.call_args_list))
+
     def test_pending_cleanup_uses_public_cancel_route(self):
         from unittest.mock import patch
         replies = [(200, {"phase": "running"}, 0), (202, {"accepted": True}, 0), (200, {"phase": "cancelled"}, 0)]
