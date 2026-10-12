@@ -206,7 +206,7 @@ def hf_candidates(role, provider):
 
 def gguf_choice(variants, limit, largest):
     fits = sorted((v for v in variants if v.get("quantization") and v.get("size_bytes") and v["size_bytes"] / GiB <= limit
-                   and "mtp" not in v["file"].lower() and not (largest and v.get("quantization") in FULL_PRECISION)),
+                   and not any(mark in v["file"].lower() for mark in ("mtp", "dflash", "draft", "speculative")) and not (largest and v.get("quantization") in FULL_PRECISION)),
                   key=lambda v: v["size_bytes"])
     if not fits:
         return None
@@ -298,7 +298,7 @@ def deploy(node, provider, pick, features=None):
     jobs = [n.get("job_id") for n in ((d.get("data") or {}).get("nodes") or []) if n.get("job_id")]
     results = [wait_job(j, timeout=AGENT_TIMEOUT) for j in jobs]
     failed = [r for r in results if job_phase(r) not in JOB_SUCCESS]
-    return code in (200, 201, 202) and not failed, f"{code} jobs={len(jobs)} {json.dumps(failed or d)[:240]}"
+    return code in (200, 201, 202) and not failed and pick["name"] in catalog(node, provider), f"{code} jobs={len(jobs)} {json.dumps(failed or d)[:240]}"
 
 
 def ensure(R, node, provider, role, pick, features=None):
@@ -579,6 +579,31 @@ def direct_cloud(R, node):
 CALLS, CALLS_LOCK = [], threading.Lock()
 
 
+def call_evidence(fields):
+    if not isinstance(fields, dict):
+        return {}
+    evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail") if k in fields}
+    if isinstance(fields.get("jobs"), list):
+        evidence["jobs"] = [{k: row[k] for k in ("job_id", "node", "kind", "state") if k in row} for row in fields["jobs"][:2] if isinstance(row, dict)]
+    if isinstance(fields.get("nodes"), list):
+        evidence["nodes"] = [{k: row[k] for k in ("node", "job_id", "status", "error") if k in row} for row in fields["nodes"][:4] if isinstance(row, dict)]
+    if isinstance(fields.get("models"), list):
+        evidence["models"] = []
+        for entry in fields["models"][:2]:
+            if not isinstance(entry, dict):
+                continue
+            item = {k: entry[k] for k in ("name", "source_id", "source_repo", "node", "provider", "show_unavailable", "variant_of", "is_cloud", "details") if k in entry}
+            show = entry.get("show")
+            if isinstance(show, dict):
+                item["show"] = {k: show[k] for k in ("name", "node", "assigned_app", "source_id", "source_repo", "model_info", "template_present", "capabilities") if k in show}
+                item["show"]["has_parameters"] = "parameters" in show
+            if len(json.dumps(item)) <= 16384:
+                evidence["models"].append(item)
+            else:
+                evidence["capture_overflow"] = True
+    return evidence if len(json.dumps(evidence)) <= 32768 else {"capture_overflow": True}
+
+
 class Proxy(httpserver.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -593,28 +618,38 @@ class Proxy(httpserver.BaseHTTPRequestHandler):
             rpc = json.loads(body) if body else {}
         except ValueError:
             pass
-        req = urllib.request.Request(COORD + self.path, data=body, method=self.command, headers=fwd)
+        params = rpc.get("params") or {}
+        args = params.get("arguments") or {}
+        blocked = rpc.get("method") == "tools/call" and (params.get("name") == "zz_model_delete" and not delete_ownership(calls_for(scen), args) or params.get("name") == "zz_api" and args.get("method", "").upper() == "DELETE")
         t = time.time()
-        try:
-            r = urllib.request.urlopen(req, timeout=900); code, rb, rh = r.status, r.read(), r.headers
-        except urllib.error.HTTPError as e:
-            code, rb, rh = e.code, e.read(), e.headers
+        if blocked:
+            code, rh = 200, {"Content-Type": "application/json"}
+            rb = json.dumps({"jsonrpc": "2.0", "id": rpc.get("id"), "result": {"isError": True, "content": [{"type": "text", "text": "Campaign ownership guard: deletion requires node-wide absence, a completed owned download, and an exact physical identity."}], "structuredContent": {"status": 409, "code": "campaign_ownership_guard"}}}).encode()
+        else:
+            req = urllib.request.Request(COORD + self.path, data=body, method=self.command, headers=fwd)
+            t = time.time()
+            try:
+                r = urllib.request.urlopen(req, timeout=900); code, rb, rh = r.status, r.read(), r.headers
+            except urllib.error.HTTPError as e:
+                code, rb, rh = e.code, e.read(), e.headers
         if isinstance(rpc, dict) and rpc.get("method") == "tools/call":
             text = rb.decode("utf-8", "replace")
             payload = text
             for line in text.splitlines():  # SSE-framed reply
                 if line.startswith("data:"):
                     payload = line[5:]
-            is_err = None
+            is_err, evidence = None, {}
             try:
                 res = json.loads(payload)
                 is_err = bool(res.get("error")) or bool((res.get("result") or {}).get("isError"))
+                fields = (res.get("result") or {}).get("structuredContent") or {}
+                evidence = call_evidence(fields)
             except ValueError:
                 pass
             p = rpc.get("params") or {}
             with CALLS_LOCK:
                 CALLS.append({"scenario": scen, "tool": p.get("name"), "args": p.get("arguments"), "status": code,
-                              "is_error": is_err, "ms": int((time.time() - t) * 1000), "resp": payload[:600]})
+                              "is_error": is_err, "ms": int((time.time() - t) * 1000), "resp": payload[:600], "evidence": evidence})
         self.send_response(code)
         for k, v in rh.items():
             if k.lower() not in ("transfer-encoding", "content-length", "connection"):
@@ -753,9 +788,76 @@ def describe(role):
     return " ".join(w for w in (role["family"], role["size"], role.get("variant", "")) if w)
 
 
+def prepare_recent_jobs(node, sc):
+    code, d, _ = http("GET", "/zzrouter/v1/jobs?" + urlencode({"node": node, "limit": 2}))
+    rows = d.get("data")
+    if code != 200 or not isinstance(rows, list):
+        return False, f"recent job reference unavailable: {code}"
+    sc["job_ids"] = [j["job_id"] for j in rows]
+    return True, f"reference ids={sc['job_ids']}"
+
+
+def prepare_probe(node, provider, mode, sc):
+    text = (MATRIX.get((node, provider)) or {}).get("text")
+    if not text:
+        return False, "no safe text fixture for provider capability discovery"
+    if not text.get("present"):
+        ok, detail = deploy(node, provider, text)
+        if not ok:
+            return False, detail
+    item = catalog(node, provider).get(text["name"]) or {}
+    wires = (item.get("details") or {}).get("wire_endpoints")
+    if mode == "embed" and isinstance(wires, list) and "embeddings" not in wires:
+        sc.update(pick=text, expected="not_supported", refusal_status=404, refusal_code="backend_error", expect_error="Not Found", capability_absent=True)
+        code, d, _ = chat(f"{text['name']}@{node}", "Say OK", 2)
+        sc["prompt"] = f"The ready text fixture {text['name']} on {node} with {provider} explicitly does not advertise embeddings. Probe it once with zz_chat probe=embed and report the exact refusal. Do not launch or change settings." + tail(provider) + " JSON keys: verdict (not_supported), dimensions (null), status, code."
+        return code == 200, f"ready text={code}; advertised embeddings absent"
+    pick = sc["pick"]
+    ok, detail = deploy(node, provider, pick, ["vision"] if mode == "vision" and pick.get("projector") else None)
+    item = catalog(node, provider).get(pick["name"]) or {}
+    if not ok or item.get("source_id") != pick["repo"]:
+        return False, f"selected physical fixture not ready: {detail}"
+    endpoint = "embeddings" if mode == "embed" else "chat"
+    sc["prompt"] = f"Start the already downloaded physical model {pick['name']} on node {node} with {provider} and endpoint={endpoint}. Follow its launch job to done before probing with zz_chat probe={mode}. Require verdict=verified and report dimensions for embeddings. Stop only the run you started by its run_id." + tail(provider) + " JSON keys: verdict, dimensions (number or null)."
+    return True, detail
+
+
 def scenarios(node, provider):
     cell = MATRIX.get((node, provider)) or {}
-    out = []
+    out = [{
+        "id": "recent-jobs",
+        "prompt": f"List the two most recent zzRouter jobs owned by node {node}, without supplying a job id. "
+                  "Report the collection total and whether another page exists. Do not start or cancel anything."
+                  + tail(provider) + " JSON keys: total, has_more.",
+        "check": check_recent_jobs,
+        "setup": lambda: prepare_recent_jobs(node, out[0]),
+    }, {
+        "id": "model-detail",
+        "provider": provider,
+        "prompt": f"On node {node}, find a small {describe(ROLES['text'])} model supported by {provider}. If it is absent, "
+                  "download it through the supported zzRouter tools and follow its job. Query zz_models with the exact "
+                  f"catalog name or source_id, provider {provider} and node {node}. Report the source-reported context "
+                  "map, template presence, capabilities and whether parameters were reported. Use null for missing "
+                  "metadata; do not infer it or describe metadata as serving verification. If detail is explicitly "
+                  "unsupported, report its code and null metadata. Do not start a run."
+                  " Use only inventory, model discovery/catalog/download and job tools. Set has_parameters to false "
+                  "when detail exists without parameters, or null when detail is unsupported."
+                  + tail(provider) + " JSON keys: model, source_id, context, template_present, capabilities, has_parameters, detail_error.",
+        "check": check_model_detail,
+    }, {
+        "id": "model-delete",
+        "provider": provider,
+        "prompt": f"On node {node}, choose a tiny disposable physical model supported by {provider}. First query zz_models "
+                  f"with its exact registry model/source_id and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
+                  "Choose another model if anything is present. Never delete a pre-existing model or any pinned model. "
+                  "Download that absent model through zz_model_download, follow its node job to done, then query zz_models "
+                  "for the exact physical catalog identity. Do not start a run. Delete only that new physical name with "
+                  "zz_model_delete, its provider/node/source_id selectors and a fresh idempotency key. Finally query "
+                  "zz_models with the exact physical name and node, OMIT provider, and prove total=0 and has_more=false. Stop if any precondition fails; "
+                  "do not use zz_api, shell, SSH or a native API for deletion."
+                  + tail(provider) + " JSON keys: model, source_id, deleted (number), absent (bool).",
+        "check": check_model_delete,
+    }]
     if cell.get("text"):
         out.append({
             "id": "find-run",
@@ -776,6 +878,12 @@ def scenarios(node, provider):
             "pick": vision,
             "provider": provider,
         })
+    for mode, pick in (("embed", cell.get("embed")), ("vision", vision)):
+        if pick:
+            sc = {"id": f"probe-{mode}", "pick": pick, "provider": provider, "expected": "verified",
+                  "check": lambda ctx, mode=mode: check_capability_probe(ctx, mode)}
+            sc["setup"] = lambda sc=sc, mode=mode: prepare_probe(node, provider, mode, sc)
+            out.append(sc)
     big = cell.get("big")
     if big:
         out.append({
@@ -828,10 +936,184 @@ def check_find_run(ctx):
             ("no runs left on node", not ctx["left"], ctx["left"])]
 
 
+def check_recent_jobs(ctx):
+    calls = [c for c in tool_calls(ctx, "zz_job", True) if not (c["args"] or {}).get("job_id")]
+    fields = (calls[-1].get("evidence") or {}) if calls else {}
+    args = (calls[-1].get("args") or {}) if calls else {}
+    rj = ctx["rj"] or {}
+    jobs = fields.get("jobs")
+    total = fields.get("total")
+    page = isinstance(jobs, list) and type(total) is int and total >= 0 and len(jobs) == min(2, total)
+    owned = page and all(j.get("node") == ctx["node"] and j.get("job_id") and j.get("kind") and j.get("state") for j in jobs)
+    unique = owned and len({j["job_id"] for j in jobs}) == len(jobs)
+    expected = ctx["scenario"].get("job_ids") if "scenario" in ctx else None
+    return [("complete recent job page", unique and fields.get("has_more") is (total > 2) and (expected is None or [j["job_id"] for j in jobs] == expected), jobs),
+            ("used node-selected collection", bool(calls) and args.get("node") == ctx["node"] and fields.get("node") == ctx["node"] and args.get("limit") == 2 and args.get("offset", 0) == 0, args),
+            ("collection metadata present", type(fields.get("total")) is int and isinstance(fields.get("has_more"), bool), fields),
+            ("agent claim matches collection", bool(fields) and rj.get("total") == fields.get("total") and rj.get("has_more") == fields.get("has_more"), rj)]
+
+
+def check_model_detail(ctx):
+    calls = tool_calls(ctx, "zz_models", True)
+    call = calls[-1] if calls else {}
+    args, fields = call.get("args") or {}, call.get("evidence") or {}
+    entries = fields.get("models") or []
+    entry = entries[0] if len(entries) == 1 else {}
+    rj = ctx["rj"] or {}
+    provider, node = ctx["scenario"]["provider"], ctx["node"]
+    exact = str(args.get("model") or "").casefold() in {str(entry.get(k) or "").casefold() for k in ("name", "source_id")}
+    selected = entry.get("provider") == provider and entry.get("node") == node
+    show, refusal = entry.get("show"), entry.get("show_unavailable") or {}
+    unsupported = refusal.get("status") == 501 and refusal.get("code") == "model_detail_unsupported"
+    identity = isinstance(show, dict) and show.get("name") == entry.get("name") and show.get("assigned_app") == provider and show.get("node") == node and show.get("source_id") == entry.get("source_id") and show.get("source_repo") == entry.get("source_repo")
+    metadata = show or {}
+    claims = all(k in rj and rj[k] == metadata.get(v) for k, v in (("context", "model_info"), ("template_present", "template_present"), ("capabilities", "capabilities"), ("has_parameters", "has_parameters")))
+    return [("exact selected catalog entry", bool(args.get("model")) and exact and selected and args.get("provider") == provider and args.get("node") == node and fields.get("total") == 1 and fields.get("has_more") is False, args),
+            ("detail carries selected identity or typed unsupported", identity or unsupported, entry),
+            ("agent metadata matches source evidence", claims and rj.get("model") == entry.get("name") and rj.get("source_id") == entry.get("source_id") and rj.get("detail_error") == (refusal.get("code") if unsupported else None), rj),
+            ("bounded evidence captured", not fields.get("capture_overflow"), fields.get("capture_overflow")),
+            ("metadata scenario used no serving or lifecycle calls", not any(c["tool"] in ("zz_run_start", "zz_run_restart", "zz_run_stop", "zz_chat", "zz_api") for c in ctx["calls"]), [c["tool"] for c in ctx["calls"]]),
+            ("no owned runs left", not ctx["left"], ctx["left"])]
+
+
+
+def delete_ownership(calls, args):
+    """Prove a physical identity was absent node-wide and downloaded by this scenario."""
+    node, provider, name, source = (args.get(k) for k in ("node", "provider", "model", "source_id"))
+    if not all((node, provider, name, source)):
+        return False
+    for pi in range(len(calls) - 1, -1, -1):
+        present = calls[pi]
+        a, e = present.get("args") or {}, present.get("evidence") or {}
+        entries = e.get("models") or []
+        if present["tool"] != "zz_models" or present.get("is_error") is not False or a.get("node") != node or a.get("provider") != provider or a.get("model") not in (name, source) or e.get("total") != 1 or e.get("has_more") is not False or len(entries) != 1:
+            continue
+        m = entries[0]
+        if any(m.get(k) != v for k, v in (("name", name), ("source_id", source), ("node", node), ("provider", provider))) or m.get("variant_of") or m.get("is_cloud"):
+            continue
+        for di, download in enumerate(calls[:pi]):
+            da, de = download.get("args") or {}, download.get("evidence") or {}
+            if download["tool"] != "zz_model_download" or download.get("is_error") is not False or da.get("node") != node or da.get("provider") != provider or da.get("model") != source:
+                continue
+            if da.get("file") and gguf_name(da["file"]).casefold() != name.casefold():
+                continue
+            absent = any(c["tool"] == "zz_models" and c.get("is_error") is False and (c.get("args") or {}).get("model") == source and (c.get("args") or {}).get("node") == node and not (c.get("args") or {}).get("provider") and (c.get("evidence") or {}).get("total") == 0 and (c.get("evidence") or {}).get("has_more") is False for c in calls[:di])
+            jobs = {r.get("job_id") for r in de.get("nodes") or [] if r.get("node") == node and r.get("job_id")}
+            done = any(c["tool"] == "zz_job" and c.get("is_error") is False and (c.get("args") or {}).get("job_id") in jobs and (c.get("args") or {}).get("node") == node and (c.get("evidence") or {}).get("state") == "done" for c in calls[di + 1:pi])
+            if absent and jobs and done:
+                return True
+    return False
+
+
+def cleanup_disposable(calls, node, provider):
+    """Reconcile every captured download, retaining any unproven physical identity."""
+    issues = []
+    for download in [c for c in calls if c["tool"] == "zz_model_download"]:
+        try:
+            ok, detail = cleanup_download(download, calls, node, provider)
+        except Exception as exc:
+            ok, detail = False, f"cleanup interrupted ({type(exc).__name__}); resources retained"
+        if not ok:
+            issues.append(detail)
+    return not issues, "; ".join(issues) if issues else "no disposable resources remain"
+
+
+def cleanup_download(download, calls, node, provider):
+    args, evidence = download.get("args") or {}, download.get("evidence") or {}
+    if args.get("node") != node or args.get("provider") != provider:
+        return False, "unselected download retained for inspection"
+    trace = list(calls)
+    jobs = [j["job_id"] for j in evidence.get("nodes") or [] if j.get("node") == node and j.get("job_id")]
+    if not jobs:
+        return False, "download has no owned job; retained for inspection"
+    for job in jobs:
+        path = f"/zzrouter/v1/jobs/{job}?" + urlencode({"node": node})
+        code, state, _ = http("GET", path)
+        if code != 200:
+            return False, f"owned job unavailable: {job}"
+        if job_phase(state) not in JOB_TERMINAL:
+            code, _, _ = http("DELETE", f"/zzrouter/v1/jobs/{job}?" + urlencode({"node": node}), {})
+            if code != 202:
+                return False, f"owned job cancellation refused: {job}"
+            end = time.time() + 60
+            while time.time() < end and job_phase(state) not in JOB_TERMINAL:
+                time.sleep(1); code, state, _ = http("GET", path)
+            if code != 200 or job_phase(state) not in JOB_TERMINAL:
+                return False, f"owned job did not terminate: {job}"
+        if job_phase(state) not in JOB_SUCCESS:
+            return False, f"partial/failed download retained for inspection: {job}"
+        trace.append({"tool": "zz_job", "is_error": False, "args": {"node": node, "job_id": job}, "evidence": {"state": "done"}})
+    if download.get("is_error") is not False:
+        return False, "uncertain download retained for inspection after reconciling its jobs"
+    source = args.get("model")
+    code, inventory, _ = http("GET", "/zzrouter/v1/models?" + urlencode({"node": node, "model": source, "refresh": "true", "limit": 1000}))
+    if code != 200 or inventory.get("has_more"):
+        return False, "owned source inventory unavailable; retained"
+    for raw in inventory.get("data") or []:
+        if raw.get("source_id") != source or raw.get("assigned_app") != provider:
+            continue
+        m = {**raw, "provider": raw.get("assigned_app")}
+        selected = {"node": node, "provider": provider, "model": m["name"], "source_id": source}
+        trace.append({"tool": "zz_models", "is_error": False, "args": {"node": node, "provider": provider, "model": m["name"]}, "evidence": {"total": 1, "has_more": False, "models": [m]}})
+        if not delete_ownership(trace, selected):
+            return False, "physical ownership unproven; retained"
+        code, result, _ = http("DELETE", "/zzrouter/v1/models", selected)
+        if code != 200 or (result.get("data") or {}).get("errors") or (result.get("data") or {}).get("deleted") != 1:
+            return False, f"owned physical cleanup refused: {code}"
+    code, inventory, _ = http("GET", "/zzrouter/v1/models?" + urlencode({"node": node, "model": source, "refresh": "true", "limit": 1000}))
+    if code != 200 or inventory.get("total") != 0:
+        return False, "owned physical source remains after cleanup"
+    return True, "owned source is absent"
+
+
+def check_model_delete(ctx):
+    calls, rj = ctx["calls"], ctx["rj"] or {}
+    attempts = [(i, c) for i, c in enumerate(calls) if c["tool"] == "zz_model_delete"]
+    index, deletion = attempts[-1] if attempts else (-1, {})
+    args, effects = deletion.get("args") or {}, deletion.get("evidence") or {}
+    owned = index >= 0 and delete_ownership(calls[:index], args)
+    selected = args.get("node") == ctx["node"] and args.get("provider") == ctx["scenario"]["provider"]
+    absent = any(c["tool"] == "zz_models" and c.get("is_error") is False and (c.get("args") or {}).get("model") == args.get("model") and (c.get("args") or {}).get("node") == args.get("node") and not (c.get("args") or {}).get("provider") and (c.get("evidence") or {}).get("total") == 0 and (c.get("evidence") or {}).get("has_more") is False for c in calls[index + 1:]) if index >= 0 else False
+    return [("proven new physical identity on selected node", owned and selected, args),
+            ("one exact deletion completed", len(attempts) == 1 and deletion.get("is_error") is False and bool(args.get("idempotency_key")) and effects.get("model") == args.get("model") and effects.get("node") == args.get("node") and effects.get("deleted") == 1 and not effects.get("errors"), effects),
+            ("node-wide post-delete absence", absent and rj.get("absent") is True, rj),
+            ("agent claims match effects", rj.get("model") == args.get("model") and rj.get("source_id") == args.get("source_id") and rj.get("deleted") == effects.get("deleted"), rj),
+            ("no escape or owned runs", not any(c["tool"] in (*ESCAPE_HATCH, "zz_run_start", "zz_run_restart", "zz_chat") for c in calls) and not ctx["left"], ctx["left"])]
+
+
+def check_capability_probe(ctx, mode):
+    calls = [c for c in tool_calls(ctx, "zz_chat") if (c["args"] or {}).get("probe") == mode]
+    fields = (calls[-1].get("evidence") or {}) if calls else {}
+    rj = ctx["rj"] or {}
+    verdict = fields.get("verdict")
+    pick, node, provider = ctx["scenario"]["pick"]["name"], ctx["node"], ctx["scenario"]["provider"]
+    args = (calls[-1].get("args") or {}) if calls else {}
+    addressed = ((args.get("model") == pick and args.get("node") == node) or
+                 (args.get("model") == f"{pick}@{node}" and not args.get("node")))
+    starts = [c for c in tool_calls(ctx, "zz_run_start", True) if calls and ctx["calls"].index(c) < ctx["calls"].index(calls[-1]) and (c["args"] or {}).get("model") == pick
+              and (c["args"] or {}).get("node") == node and (c["args"] or {}).get("provider") == provider
+              and (c["args"] or {}).get("endpoint", "chat") == ("embeddings" if mode == "embed" else "chat")]
+    expected = ctx["scenario"].get("expected", "verified")
+    positive = expected == "verified"
+    typed = fields.get("status") == ctx["scenario"].get("refusal_status", 400) and fields.get("code") == ctx["scenario"].get("refusal_code", "unsupported_input")
+    outcome = calls and ((not calls[-1].get("is_error") and fields.get("probe") == mode and verdict == "verified") if positive else (calls[-1].get("is_error") and typed))
+    ready = any((not (c.get("evidence") or {}).get("job_id") and (c.get("evidence") or {}).get("status") in ("ready", "running")) or any(j["tool"] == "zz_job" and j.get("is_error") is False and (j.get("args") or {}).get("job_id") == (c.get("evidence") or {}).get("job_id") and (j.get("args") or {}).get("node") == node and (j.get("evidence") or {}).get("state") == "done" for j in ctx["calls"][ctx["calls"].index(c) + 1:ctx["calls"].index(calls[-1])]) for c in starts)
+    stopped = any(stop["tool"] == "zz_run_stop" and stop.get("is_error") is False and (stop.get("args") or {}).get("run_id") == (start.get("evidence") or {}).get("run_id") and (start.get("evidence") or {}).get("run_id") for start in starts for stop in ctx["calls"][ctx["calls"].index(calls[-1]) + 1:]) if calls else False
+    out = [("ready launch followed and owned run stopped", ready and stopped if positive else ctx["scenario"].get("capability_absent", False), starts),
+           ("used addressed capability probe", bool(calls) and addressed, args),
+           ("started with selected provider" if positive else "no incompatible launch", bool(starts) if positive else not tool_calls(ctx, "zz_run_start"), provider),
+           ("no owned runs left", not ctx["left"], ctx["left"]),
+           ("expected capability evidence returned", bool(outcome), fields),
+           ("agent claim matches evidence", bool(fields) and rj.get("verdict") == ("not_supported" if not positive else verdict) and (positive or (rj.get("status") == fields.get("status") and rj.get("code") == fields.get("code") and rj.get("dimensions") is None)), rj)]
+    if mode == "embed" and verdict == "verified":
+        out.append(("dimensions match", type(fields.get("dimensions")) is int and fields["dimensions"] > 0 and rj.get("dimensions") == fields.get("dimensions"), fields))
+    return out
+
+
 def check_tool_calling(ctx):
     rj = ctx["rj"] or {}
-    probes = [c for c in tool_calls(ctx, "zz_chat", True) if (c["args"] or {}).get("tools") is True]
-    verified = any('"verified"' in c["resp"] for c in probes)
+    probes = [c for c in tool_calls(ctx, "zz_chat", True) if (c["args"] or {}).get("probe") == "tools"]
+    verified = any((c.get("evidence") or {}).get("tool_call") == "verified" and (c.get("evidence") or {}).get("verdict") == "verified" for c in probes)
     return [("probed with tools", bool(probes), len(probes)),
             ("probe verified tool calling", verified, [c["resp"][:160] for c in probes][-1:]),
             ("agent claims match the probe", rj.get("verified") is verified, rj),
@@ -895,31 +1177,36 @@ def run_scenario(R, node, label, sc, agents, only, out):
         if only and only not in sid:
             continue
         wd = os.path.join(out, "mcp", sid); os.makedirs(wd, exist_ok=True)
-        json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
         stop_runs(node)
         if "setup" in sc:
             ok, detail = sc["setup"]()
             R.add("mcp", node, f"{label}.{agent}", "precondition", ok, detail)
             if not ok:
                 continue
+        json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
         before = {r["id"] for r in runs(node)}
         drive = run_claude_mcp if agent == "claude" else run_codex_mcp
-        text, meta, secs = drive(sid, sc["prompt"], wd)
-        time.sleep(2)
-        left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
-        calls = calls_for(sid)
-        json.dump(calls, open(os.path.join(wd, "calls.json"), "w"), indent=1)
-        ctx = {"node": node, "calls": calls, "text": text, "rj": result_json(text), "left": left, "scenario": sc}
-        failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
-        R.add("mcp", node, f"{label}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),
-              f"{secs}s calls={len(calls)} failed={failed} meta={meta}", secs * 1000)
-        conf = confusion(calls, sc.get("expect_error"))
-        R.add("mcp", node, f"{label}.{agent}", "no agent confusion", not conf,
-              "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
-        for name, ok, detail in sc["check"](ctx):
-            R.add("mcp", node, f"{label}.{agent}", name, ok, detail)
-        R.add("mcp", node, f"{label}.{agent}", "node still healthy", node_healthy(node), "")
-        stop_runs(node)
+        try:
+            text, meta, secs = drive(sid, sc["prompt"], wd)
+            time.sleep(2)
+            left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
+            calls = calls_for(sid)
+            json.dump(calls, open(os.path.join(wd, "calls.json"), "w"), indent=1)
+            ctx = {"node": node, "calls": calls, "text": text, "rj": result_json(text), "left": left, "scenario": sc}
+            failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
+            R.add("mcp", node, f"{label}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),
+                  f"{secs}s calls={len(calls)} failed={failed} meta={meta}", secs * 1000)
+            conf = confusion(calls, sc.get("expect_error"))
+            R.add("mcp", node, f"{label}.{agent}", "no agent confusion", not conf,
+                  "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
+            for name, ok, detail in sc["check"](ctx):
+                R.add("mcp", node, f"{label}.{agent}", name, ok, detail)
+            R.add("mcp", node, f"{label}.{agent}", "node still healthy", node_healthy(node), "")
+        finally:
+            stop_runs(node)
+            if sc.get("id") == "model-delete":
+                ok, detail = cleanup_disposable(calls_for(sid), node, sc["provider"])
+                R.add("mcp", node, f"{label}.{agent}", "disposable cleanup", ok, detail)
 
 
 def track_mcp(R, node, cells, agents, only, out):
@@ -929,6 +1216,8 @@ def track_mcp(R, node, cells, agents, only, out):
                   "JSON keys: node, os, providers (list), model_count.",
         "check": check_inventory}, agents, only, out)
     for provider in cells:
+        R.add("mcp", node, f"{provider}.probe-embed", "embedding role configured", bool((MATRIX.get((node, provider)) or {}).get("embed")),
+              "Configure an embed role in the lab inventory for this node/provider; missing embedding coverage is a failure.")
         for sc in scenarios(node, provider):
             run_scenario(R, node, f"{provider}.{sc['id']}", sc, agents, only, out)
 
