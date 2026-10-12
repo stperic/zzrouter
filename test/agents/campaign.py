@@ -781,7 +781,7 @@ def analyze(out_dir):
 # ---------------------------------------------------------------- MCP scenarios (one set per cell)
 def tail(provider):
     return (f"\nUse only the zzrouter tools and the {provider} inference backend; no cloud providers. Model search's provider selects a registry such as huggingface or ollama. "
-            "When stopping an owned run, a reply with status=stopped confirms completion; verify absence with the zz_runs collection, without querying the stopped run_id. "
+            "A stop reply with status=stopped confirms its run_id was stopped; each evicted_runs entry confirms its listed run_id was stopped. Verify those IDs are absent from the node's zz_runs collection; do not query or stop those IDs, or chat their models to verify absence. "
             "Finish with exactly one line: RESULT: <compact JSON>.")
 
 
