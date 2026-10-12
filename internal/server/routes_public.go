@@ -52,7 +52,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		)
 	}
 	s.services.Runs.WithModelResolver(func(ctx context.Context, name string) (*resolver.Resolved, error) {
-		return s.ResolveModel(ctx, name, "")
+		return s.ResolveModel(ctx, resolver.Reference{Model: name})
 	})
 	s.services.Apps = NewAppsService(s, routingRouter)
 	s.services.Nodes = NewNodesService(s, routingRouter, func(address string) string {
@@ -87,7 +87,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// ========================================================================
 
 	// Models: List, show, delete, stats, rescans, card, defaults
-	s.controllers.Models.RegisterPublicRoutes(router)
+	s.controllers.Models.RegisterPublicRoutes(router, s.idempotent)
 
 	// Runs: List, launch, stop, load, preview, restart, metrics, config, ports, batch
 	s.controllers.Runs.RegisterPublicRoutes(router, s.idempotent)

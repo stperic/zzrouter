@@ -121,3 +121,38 @@ func TestInstanceInfo_StatusOnlyForLiveRuns(t *testing.T) {
 	inst.SetStatus(instance.StatusRunning)
 	assert.Nil(t, m.ListInstances("")[0].ParametersStatus, "a plain listing does not re-resolve every run")
 }
+
+func TestParametersStatus_RunSettings(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "tree", true: "request"}[explicit], func(t *testing.T) {
+			m := tierManager(t, "")
+			var params map[string]string
+			if explicit {
+				params = map[string]string{config.KeepAliveParameter: "10m"}
+			}
+			inst := launchLlama(t, m, params)
+			reloadWith(t, m, func(svc *config.ServiceConfig) {
+				svc.Models["llama3"].Parameters[config.KeepAliveParameter] = "3m"
+			})
+			got := m.ParametersStatus(inst)
+			if explicit {
+				assert.Equal(t, instance.ParametersCurrent, got.State)
+				assert.Contains(t, got.Overridden, "parameters.keep-alive")
+				assert.Equal(t, params, restartRequest(inst).Parameters)
+			} else {
+				assert.Equal(t, instance.ParametersStale, got.State)
+				assert.Contains(t, got.Changed, "parameters.keep-alive")
+			}
+		})
+	}
+}
+
+func TestParametersStatus_ServedEvictionSetting(t *testing.T) {
+	r := newServedRig(t)
+	r.edit(t, func(svc *config.ServiceConfig) {
+		svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{config.EvictIdleParameter: "true"}}
+	})
+	run := r.running(t, EnsureRequest{Provider: "ollama", Model: servedModel})
+	r.edit(t, func(svc *config.ServiceConfig) { svc.Defaults.Parameters[config.EvictIdleParameter] = "false" })
+	assert.Contains(t, r.m.ParametersStatus(run).Changed, "parameters.evict-idle-on-memory-pressure")
+}

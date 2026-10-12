@@ -171,10 +171,40 @@ func TestLocalProtocolWindowRejectsOutsidePeers(t *testing.T) {
 }
 
 func TestStallTimeoutProtocolCutover(t *testing.T) {
-	if ClusterProtocolVersion != 3 || MinClusterProtocolVersion != 3 {
-		t.Fatalf("stall_timeout requires protocol 3/3, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	if ClusterProtocolVersion < 3 || MinClusterProtocolVersion < 3 {
+		t.Fatalf("stall_timeout requires at least protocol 3/3, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
 	}
 	if err := LocalProtocolWindow().Check(2); err == nil {
 		t.Fatal("protocol 2 worker admitted despite rejecting stall_timeout")
+	}
+}
+
+func TestModelDetailProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 4 || MinClusterProtocolVersion < 4 {
+		t.Fatalf("selected model detail requires protocol 4/4, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(3); err == nil {
+		t.Fatal("protocol 3 worker admitted despite ignoring model detail identity and compaction")
+	}
+}
+
+func TestModelDeletionProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 5 || MinClusterProtocolVersion < 5 {
+		t.Fatalf("guarded deletion requires protocol 5/5, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(4); err == nil {
+		t.Fatal("old worker admitted without physical deletion ownership")
+	}
+}
+
+func TestRunSettingsProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion != 6 || MinClusterProtocolVersion != 6 {
+		t.Fatalf("tier run settings require protocol 6/6, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(5); err == nil {
+		t.Fatal("old worker admitted without tier settings or reserved argv handling")
+	}
+	if err := LocalProtocolWindow().Check(6); err != nil {
+		t.Fatal(err)
 	}
 }

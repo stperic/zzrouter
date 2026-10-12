@@ -169,13 +169,7 @@ func (s *Server) HandleLocalModel(w http.ResponseWriter, req *http.Request, reso
 	}
 
 	if err != nil {
-		lf := classifyLoadFailure(err)
-		// proxy.Middleware derives error.type from the status when nobody
-		// says otherwise, and its 5xx default is server_error — right for
-		// loadInternal, wrong for the 503 an unavailable provider gets.
-		// Stashing the classified type unconditionally keeps the metric
-		// label equal to the body's error.type on every branch.
-		failure := lf.wire()
+		failure := loadFailureWire(err)
 		*req = *proxy.SetErrorTypeOnRequest(req, failure.Type)
 		recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 		if sseStarted {
@@ -216,7 +210,7 @@ func (s *Server) ensureLocalRun(req prov_apps.EnsureRequest) (*instance.Instance
 	req.Origin = prov_apps.OriginRequest
 	result, err := s.providers.appMgr.EnsureRun(context.Background(), req)
 	if err != nil {
-		return nil, classifyLoadFailure(err)
+		return nil, err
 	}
 	if inst := result.Run; inst != nil && inst.GetStatus() == instance.StatusStarting {
 		slog.Info("Model is starting locally, waiting for ready", "model_name", req.Model)
@@ -259,7 +253,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 	}
 	// The failure first: replacing a failed run stops it, which moves its status past Failed.
 	if cause := inst.FailureCause(); cause != nil {
-		return nil, classifyLoadFailure(fmt.Errorf("instance %q failed to start: %w", inst.ID, cause))
+		return nil, fmt.Errorf("instance %q failed to start: %w", inst.ID, cause)
 	}
 	if message := inst.GetErrorMessage(); message != "" {
 		return nil, loadEngineFailed(fmt.Sprintf("instance '%s' failed to start: %s", inst.ID, message))
@@ -269,7 +263,7 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 		return inst, nil
 	}
 	// Stopped while waiting: a retry finds the model's next run.
-	return nil, classifyLoadFailure(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
+	return nil, &instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter}
 }
 
 // streamFromInstance streams response from instance when SSE headers are

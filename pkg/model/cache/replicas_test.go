@@ -52,11 +52,11 @@ func TestLookupReplicasWaitsForInvalidatedWorkerCatalog(t *testing.T) {
 				c.Invalidate()
 			}
 			require.Empty(t, c.GetAllModels(), "the fast path must miss")
-			pinned, err := c.LookupReplicas(t.Context(), "llama3", "", "gpu-1")
+			pinned, err := c.LookupReplicas(t.Context(), "llama3", "", "gpu-1", "")
 			require.NoError(t, err)
 			require.Empty(t, pinned, "explicit pins must not read retained invalidation evidence")
 			require.Equal(t, int32(0), client.calls.Load(), "pins do not populate")
-			replicas, err := c.LookupReplicas(t.Context(), "QWEN", "", "")
+			replicas, err := c.LookupReplicas(t.Context(), "QWEN", "", "", "")
 			require.NoError(t, err)
 			require.Len(t, replicas, 1)
 			require.Equal(t, "worker-1", replicas[0].Node)
@@ -78,7 +78,7 @@ func TestLookupReplicasCachesFailedBroadcast(t *testing.T) {
 			for range 20 {
 				requests.Go(func() {
 					<-start
-					replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+					replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "", "")
 					require.NoError(t, err)
 					require.Empty(t, replicas)
 				})
@@ -96,11 +96,11 @@ func TestLookupReplicasCachesFailedBroadcast(t *testing.T) {
 			require.NotEmpty(t, c.UnavailableInventories("", ""))
 			// Once failed discovery is published, a request must never wait for the worker again.
 			client.fail = false
-			replicas, err := c.LookupReplicas(t.Context(), "qwen", "", "")
+			replicas, err := c.LookupReplicas(t.Context(), "qwen", "", "", "")
 			require.NoError(t, err)
 			require.Empty(t, replicas)
 			require.Equal(t, int32(1), client.calls.Load())
-			replicas, err = c.LookupReplicas(t.Context(), "known", "", "")
+			replicas, err = c.LookupReplicas(t.Context(), "known", "", "", "")
 			if scoped {
 				require.ErrorContains(t, err, "worker-1")
 			} else {
@@ -110,7 +110,7 @@ func TestLookupReplicasCachesFailedBroadcast(t *testing.T) {
 			c.mu.Lock()
 			c.lastAttempt = time.Now().Add(-inventoryRetryInterval)
 			c.mu.Unlock()
-			replicas, err = c.LookupReplicas(t.Context(), "qwen", "", "")
+			replicas, err = c.LookupReplicas(t.Context(), "qwen", "", "", "")
 			require.NoError(t, err)
 			require.Len(t, replicas, 1)
 			require.Equal(t, int32(2), client.calls.Load())
@@ -135,13 +135,13 @@ func TestLookupReplicasAliasesVariantsProviderAndCase(t *testing.T) {
 		{"ORG/SOURCE", "", "base", 2}, {"BaSe", "LLAMACPP", "base", 1}, {"BASE+SHARED", "", "base", 1}, {"base+own", "", "base+own", 1},
 	} {
 		t.Run(tc.name+tc.provider, func(t *testing.T) {
-			got, err := c.LookupReplicas(t.Context(), tc.name, tc.provider, "")
+			got, err := c.LookupReplicas(t.Context(), tc.name, tc.provider, "", "")
 			require.NoError(t, err)
 			require.Len(t, got, tc.count)
 			require.Equal(t, strings.ToLower(tc.canonical), strings.ToLower(got[0].Model))
 		})
 	}
-	got, err := c.LookupReplicas(t.Context(), "base", "vllm", "worker-1")
+	got, err := c.LookupReplicas(t.Context(), "base", "vllm", "worker-1", "")
 	require.NoError(t, err)
 	require.Empty(t, got, "pinning cannot borrow a different provider")
 }
@@ -152,7 +152,7 @@ func TestLookupReplicasNamesPrecedeSourceAliases(t *testing.T) {
 		{"name": "foo", "source_id": "bar", "node": "one", "assigned_app": "llamacpp"},
 		{"name": "bar", "node": "two", "assigned_app": "llamacpp"},
 	})
-	got, err := c.LookupReplicas(t.Context(), "BAR", "", "")
+	got, err := c.LookupReplicas(t.Context(), "BAR", "", "", "")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, "bar", got[0].Name)
@@ -164,7 +164,7 @@ func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
 	var calls atomic.Int32
 	c.registry = func() *modelregistry.Registry { calls.Add(1); return nil }
 	c.node = &fakeNode{}
-	_, first := c.LookupReplicas(t.Context(), "unknown", "", "")
+	_, first := c.LookupReplicas(t.Context(), "unknown", "", "", "")
 	require.Error(t, first)
 	require.False(t, c.valid, "failed refresh must not claim a populated catalog")
 	require.True(t, c.lastUpdated.IsZero(), "no successful publication armed the interval")
@@ -172,7 +172,7 @@ func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
 	var requests sync.WaitGroup
 	for range 20 {
 		requests.Go(func() {
-			_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+			_, err := c.LookupReplicas(t.Context(), "unknown", "", "", "")
 			require.ErrorIs(t, err, first, "backoff must preserve lookup failure for anonymous cloud admission")
 		})
 	}
@@ -181,13 +181,13 @@ func TestCachePopulationFailedRefreshBackoff(t *testing.T) {
 	c.mu.Lock()
 	c.lastAttempt = time.Now().Add(-inventoryRetryInterval)
 	c.mu.Unlock()
-	_, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+	_, err := c.LookupReplicas(t.Context(), "unknown", "", "", "")
 	require.Error(t, err)
 	require.EqualValues(t, 2, calls.Load(), "expiry retries the failing refresh")
 	c.node = &fakeNode{name: "worker-1"}
 	c.Invalidate()
 	before := calls.Load()
-	replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "")
+	replicas, err := c.LookupReplicas(t.Context(), "unknown", "", "", "")
 	require.NoError(t, err, "invalidation clears backoff and permits immediate recovery")
 	require.Empty(t, replicas)
 	require.Equal(t, before+1, calls.Load())

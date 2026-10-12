@@ -19,7 +19,7 @@ import (
 // inside a 200 stream (a bare status leaves OpenWebUI stuck), Anthropic
 // as the status its SDK retries.
 func TestFailBeforeBackend_FollowsTheDialect(t *testing.T) {
-	capacity, ok := renderAdmissionError(&instance.AdmissionError{Reason: instance.ErrQueueFull, RetryAfter: instance.AdmissionRetryAfter})
+	capacity, ok := knownFailure(&instance.AdmissionError{Reason: instance.ErrQueueFull, RetryAfter: instance.AdmissionRetryAfter})
 	require.True(t, ok)
 
 	streaming := func(path string) *http.Request {

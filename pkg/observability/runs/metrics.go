@@ -31,8 +31,9 @@ import (
 type StopReason string
 
 const (
-	StopReasonUser  StopReason = "user"  // explicit StopInstance call
-	StopReasonCrash StopReason = "crash" // process exited unexpectedly
+	StopReasonUser  StopReason = "user"         // explicit StopInstance call
+	StopReasonIdle  StopReason = "idle_timeout" // expired idle limit
+	StopReasonCrash StopReason = "crash"        // process exited unexpectedly
 	// StopReasonMemoryPressure: an idle run stopped to admit a launch's GPU memory budget.
 	StopReasonMemoryPressure StopReason = "memory_pressure"
 )

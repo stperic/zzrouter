@@ -185,8 +185,8 @@ func (c *capturingCache) ListModels(ctx context.Context, host, repo, app, model 
 
 func (c *capturingCache) Invalidate() {}
 
-func (c *capturingCache) ResolveModel(_ context.Context, model, _ string) (*resolver.Resolved, error) {
-	return &resolver.Resolved{ModelName: model, Node: c.owner}, nil
+func (c *capturingCache) ResolveModel(_ context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
+	return &resolver.Resolved{ModelName: ref.Model, Node: c.owner}, nil
 }
 
 func (c *capturingCache) IsLocalNode(host string) bool { return host == "" || host == "localhost" }

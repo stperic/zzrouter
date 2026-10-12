@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/security"
@@ -50,8 +51,9 @@ type Launch struct {
 
 // ResolvedModel carries the local weights selected before memory admission.
 type ResolvedModel struct {
-	Name string
-	Path string
+	Name   string
+	Path   string
+	origin string
 }
 
 // ResolveModel selects the base weights a launch uses, once, before memory admission. A variant
@@ -61,25 +63,42 @@ func ResolveModel(svc config.ServiceConfig, model string) ResolvedModel {
 		return ResolvedModel{}
 	}
 	path, _ := resolveModelToPath(svc.WeightsOf(model), featureGlobs(&svc)...)
-	return ResolvedModel{Name: model, Path: path}
+	origin := path
+	if path != "" {
+		origin = filepath.Join(layout.PhysicalPath(filepath.Dir(path)), filepath.Base(path))
+		path = layout.PhysicalPath(path)
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			origin = path
+		}
+	}
+	return ResolvedModel{Name: model, Path: path, origin: origin}
+}
+
+// SourcePath retains the selected repository's manifest provenance for verification.
+func (m ResolvedModel) SourcePath() string {
+	if m.origin != "" {
+		return m.origin
+	}
+	return m.Path
 }
 
 // Directory returns the repository directory of the selected local weights.
 func (m ResolvedModel) Directory() string {
-	if m.Path == "" {
+	path := m.SourcePath()
+	if path == "" {
 		return ""
 	}
 	info, err := os.Stat(m.Path)
 	if err != nil {
 		return ""
 	}
-	if info.IsDir() {
-		return m.Path
+	if !info.IsDir() {
+		path = filepath.Dir(path)
 	}
-	if dir, found := manifestDir(m.Path); found {
+	if dir, found := manifestDir(path); found {
 		return dir
 	}
-	return filepath.Dir(m.Path)
+	return path
 }
 
 // Build resolves an admitted model into an argv, expanding the launch placeholders (see
@@ -90,6 +109,9 @@ func (m ResolvedModel) Directory() string {
 func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string) (Launch, error) {
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
+	}
+	if _, err := runsettings.Parse(params, false); err != nil {
+		return Launch{}, err
 	}
 	exec := &cb.serviceConfig.Runtime.Execution
 	if exec.Command == "" {
@@ -115,7 +137,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, cb.excludedParams())...)
+		args = append(args, buildParameterArgs(params, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
 	}
 
 	wireModel := modelClean
@@ -265,11 +287,6 @@ func resolveDirToFile(path, hint string, excluded ...string) string {
 	return filepath.Join(path, filepath.FromSlash(v.Files[0].Path))
 }
 
-// excludedParams is retired; the exclusion blocklist is gone per the v5 plan.
-func (cb *CommandBuilder) excludedParams() []string {
-	return nil
-}
-
 // buildParameterArgs converts a parameter map to CLI flag arguments.
 // Parameters named in excluded are skipped. Boolean "true" values emit
 // a flag-only argument (--flag), "false" values are omitted entirely.
@@ -365,4 +382,21 @@ func featureGlobs(svc *config.ServiceConfig) []string {
 		globs = append(globs, feature.Files...)
 	}
 	return globs
+}
+
+// WeightPaths freezes the selected file set for a run reservation.
+func (m ResolvedModel) WeightPaths() []string {
+	if m.Path == "" {
+		return nil
+	}
+	if layout.IsGGUF(m.Path) {
+		if variant, ok := layout.VariantOf(m.Path); ok {
+			paths := make([]string, 0, len(variant.Files))
+			for _, file := range variant.Files {
+				paths = append(paths, layout.PhysicalPath(filepath.Join(filepath.Dir(m.Path), filepath.FromSlash(file.Path))))
+			}
+			return paths
+		}
+	}
+	return []string{layout.PhysicalPath(m.Path)}
 }

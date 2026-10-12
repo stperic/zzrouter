@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
+
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 )
@@ -318,25 +320,10 @@ func (prc *AppRuntimeConfig) GetMaxConcurrentModels() int {
 //   - duration < 0: Keep loaded indefinitely
 //   - error if parsing fails
 func (prc *AppRuntimeConfig) GetKeepAliveDuration() (time.Duration, error) {
-	if prc == nil || prc.KeepAlive == "" {
-		return 5 * time.Minute, nil // Default: 5 minutes (like Ollama)
+	if prc == nil {
+		return runsettings.Duration("")
 	}
-
-	// Handle special values
-	if prc.KeepAlive == "0" {
-		return 0, nil // Unload immediately
-	}
-	if prc.KeepAlive == "-1" {
-		return -1, nil // Keep indefinitely
-	}
-
-	// Parse duration string (e.g., "5m", "1h", "30s")
-	duration, err := time.ParseDuration(prc.KeepAlive)
-	if err != nil {
-		return 0, fmt.Errorf("invalid keep_alive duration '%s': %w", prc.KeepAlive, err)
-	}
-
-	return duration, nil
+	return runsettings.Duration(prc.KeepAlive)
 }
 
 // ShouldKeepAlive returns true if models should be kept loaded

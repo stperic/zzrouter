@@ -11,8 +11,6 @@
 package server
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -20,7 +18,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
-	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/constants"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -201,37 +199,17 @@ func (h *OllamaHandlers) handleOllamaShow(c *gin.Context) {
 		return
 	}
 
-	// Strip the @node routing hint before catalog lookup; node selection
-	// happens in ShowModel via the App scope (cluster-aware) and the
-	// upstream proxy fallback. Same parse the inference path uses.
+	// The show owner resolves the provider and node, including uncataloged native requests.
 	modelName, nodeHint := splitOllamaAddr(rawName)
 
 	resp, err := h.modelService.ShowModel(c.Request.Context(), &ShowModelRequest{
-		ModelName: modelName,
-		Node:      nodeHint,
-		App:       "ollama",
+		ModelName:        modelName,
+		Node:             nodeHint,
+		Verbose:          req.Verbose,
+		AllowUncataloged: true,
 	})
 	if err != nil {
-		if _, notFound := err.(cache.ErrModelNotFound); notFound {
-			// zzrouter's catalog doesn't know about this model yet — likely
-			// pulled directly via /api/pull which doesn't sync the registry.
-			// Fall back to upstream Ollama so /api/show stays consistent
-			// with /api/chat + /api/generate (both work for Ollama-pulled
-			// models that bypass the catalog). Use the bare name (no
-			// @node suffix) since upstream Ollama doesn't speak that grammar.
-			if h.proxyShowToUpstream(c, modelName) {
-				return
-			}
-			OllamaError(c, http.StatusNotFound, "model '"+modelName+"' not found")
-			return
-		}
-		if multi, ok := err.(ErrMultipleMatches); ok {
-			OllamaError(c, http.StatusBadRequest,
-				"ambiguous model '"+multi.ModelName+"': matched on multiple nodes "+
-					fmt.Sprintf("%v", multi.Matches)+"; disambiguate with model@node (e.g. '"+multi.Matches[0]+"')")
-			return
-		}
-		OllamaError(c, http.StatusInternalServerError, "failed to show model: "+err.Error())
+		RespondToErrorOllama(c, err)
 		return
 	}
 
@@ -299,25 +277,15 @@ func (h *OllamaHandlers) ollamaEnabled() bool {
 	if cfg == nil {
 		return false
 	}
-	appCfg, ok := cfg.LookupApp("ollama")
-	return ok && appCfg.IsEnabled()
-}
-
-// proxyShowToUpstream forwards POST /api/show to the local Ollama daemon
-// when the zzrouter catalog has no entry for modelName. Returns true if a
-// response was written (success OR upstream's own 404), false if no local
-// Ollama endpoint is configured (caller falls back to the canonical 404).
-func (h *OllamaHandlers) proxyShowToUpstream(c *gin.Context, modelName string) bool {
-	daemon, err := h.ollamaDaemon()
-	if err != nil {
-		return false
-	}
-	body, err := json.Marshal(map[string]any{"model": modelName})
-	if err != nil {
-		return false
-	}
-	h.proxyToOllamaProvider(c, daemon, "/api/show", body, nil)
-	return true
+	enabled := false
+	cfg.RangeApps(func(name string, provider pkgConfig.ServiceConfig) bool {
+		if provider.IsEnabled() && (name == "ollama" || provider.Protocol == pkgConfig.ProtocolOllama) {
+			enabled = true
+			return false
+		}
+		return true
+	})
+	return enabled
 }
 
 func (h *OllamaHandlers) handleOllamaPs(c *gin.Context) {
@@ -397,4 +365,19 @@ func (h *OllamaHandlers) handleOllamaBlobsPost(c *gin.Context) {
 	if err := h.ollama.CreateBlob(c, params.GetString("digest")); err != nil && !c.Writer.Written() {
 		RespondToErrorOllama(c, err)
 	}
+}
+
+// handleOllamaDelete delegates physical ownership to the shared exact deletion service.
+func (h *OllamaHandlers) handleOllamaDelete(c *gin.Context) {
+	var req OllamaManagementRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		OllamaError(c, 400, "invalid model deletion request")
+		return
+	}
+	_, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: req.ModelName(), Node: c.GetHeader("X-Node"), DefaultProvider: constants.AppOllama})
+	if err != nil {
+		RespondToErrorOllama(c, err)
+		return
+	}
+	c.JSON(200, gin.H{})
 }

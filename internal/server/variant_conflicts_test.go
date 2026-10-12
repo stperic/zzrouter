@@ -82,7 +82,7 @@ func TestVariants_LateConflictBlocksColdAndWarmPaths(t *testing.T) {
 
 			for _, refresh := range []bool{false, true} {
 				if refresh {
-					_, err = s.RescanLocal()
+					_, err = s.RescanLocal(t.Context())
 					require.NoError(t, err)
 					require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 				}

@@ -83,3 +83,6 @@ func (t Target) call(ctx context.Context, client *http.Client, method, path stri
 	}
 	return &utils.HTTPResponse{Body: raw, StatusCode: resp.StatusCode}, nil
 }
+
+// Endpoint identifies the physical daemon observed through this target.
+func (t Target) Endpoint() string { return t.base }

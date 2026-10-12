@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 const (
@@ -57,6 +59,15 @@ type modelsInput struct {
 	Provider string `json:"provider,omitempty" jsonschema:"Optional provider name to filter models."`
 	Model    string `json:"model,omitempty" jsonschema:"Optional model name or pattern to filter models."`
 }
+type deleteModelInput struct {
+	retryInput
+	Provider string `json:"provider,omitempty" jsonschema:"Optional assigned provider from zz_models, to select one backend."`
+	Registry string `json:"registry,omitempty" jsonschema:"Optional source_repo from zz_models; addresses a literal physical catalog name."`
+	SourceID string `json:"source_id,omitempty" jsonschema:"Optional source_id from zz_models, required to disambiguate same-name physical sources."`
+	Model    string `json:"model" jsonschema:"Exact physical catalog name from zz_models; globs and logical variants cannot be deleted."`
+	Node     string `json:"node,omitempty" jsonschema:"Optional owning node name. Required when several remote nodes hold the model."`
+}
+
 type searchInput struct {
 	pageInput
 	Query    string `json:"query" jsonschema:"Model name or keywords to search for."`
@@ -84,7 +95,7 @@ type previewInput struct {
 	Provider    string            `json:"provider" jsonschema:"Enabled provider name to preview."`
 	Node        string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint    string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters  map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides."`
+	Parameters  map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
 	Environment map[string]string `json:"environment,omitempty" jsonschema:"Optional launch environment overrides."`
 }
 type startInput struct {
@@ -93,7 +104,7 @@ type startInput struct {
 	Provider   string            `json:"provider" jsonschema:"Enabled provider name to launch."`
 	Node       string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint   string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides."`
+	Parameters map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
 	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Optional launch environment overrides, replayed on restart."`
 	Runtime    string            `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
@@ -136,15 +147,15 @@ type paramsInput struct {
 }
 type patchInput struct {
 	paramsInput
-	Patch           map[string]any `json:"patch" jsonschema:"Merge-patch object with defaults, models or nodes tiers; each holds parameters, environment or endpoints. Null deletes a value at that tier."`
+	Patch           map[string]any `json:"patch" jsonschema:"Merge-patch object with defaults, models or nodes tiers; each holds parameters, environment, request or endpoints. Create a logical variant with models.<new-name>.from pointing to a physical base, plus optional parameters, environment or request settings. Null deletes a value at that tier."`
 	RestartAffected bool           `json:"restart_affected,omitempty" jsonschema:"Restart runs made stale by this patch. Follow any returned runs.restart_job_id with zz_job."`
 }
 type chatInput struct {
-	Node      string `json:"node,omitempty" jsonschema:"Optional serving node name. Addresses the model as name@node."`
-	Model     string `json:"model" jsonschema:"Model name to smoke test through the coordinator."`
-	Message   string `json:"message,omitempty" jsonschema:"One short user message for plain chat; ignored when tools is true."`
-	MaxTokens int    `json:"max_tokens,omitempty" jsonschema:"Maximum plain-chat reply tokens. Default 64, capped at 256; ignored for tools probes, which use 4096."`
-	Tools     bool   `json:"tools,omitempty" jsonschema:"Send one fixed harmless probe tool and report whether the model called it as structured tool_calls; uses its own fixed message even if message was supplied."`
+	Node      string    `json:"node,omitempty" jsonschema:"Optional serving node name. Addresses the model as name@node."`
+	Model     string    `json:"model" jsonschema:"Model name to smoke test through the coordinator."`
+	Message   string    `json:"message,omitempty" jsonschema:"One short user message for chat; ignored for fixed tools, embed and vision probes."`
+	MaxTokens int       `json:"max_tokens,omitempty" jsonschema:"Maximum chat reply tokens. Default 64, capped at 256; fixed probes ignore this setting."`
+	Probe     probeKind `json:"probe,omitempty" jsonschema:"Request-local smoke test: chat (default), tools, embed or vision. Fixed probes use their own input and token budgets."`
 }
 type logsInput struct {
 	pageInput
@@ -175,7 +186,8 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	write := &mcp.ToolAnnotations{DestructiveHint: new(bool)}
 	destructive := &mcp.ToolAnnotations{DestructiveHint: boolPointer(true)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_nodes", Description: "Find node names or inspect one node. Returns OS, roles, health, providers and hardware; use a node name in model and run tools. Memory, GPU and disk *_gb values are GiB (1024^3 bytes); compare them with a model's size_bytes divided by 1073741824.", Annotations: read}, []string{"listNodes", "getNode"}, dispatcher.nodes)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_models", Description: "Check available models before searching or downloading. The filter tests both local name and source_id, case-insensitively: exact (QWEN2.5 matches qwen2.5), the complete segment after the final / (QWEN2.5 matches org/qwen2.5), or a glob (*qwen2.5* matches org/qwen2.5-instruct). Matches are independent per entry; an exact hit does not suppress suffix hits. A partial name needs a glob. Returns names, formats, sizes and existing details.wire_endpoints and details.features when reported; these are serving capabilities, not a guessed model type. Select a local name for zz_run_preview.", Annotations: read}, []string{"listModels"}, dispatcher.models)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_models", Description: "Check available models before searching or downloading. The filter tests both local name and source_id, case-insensitively: exact (QWEN2.5 matches qwen2.5), the complete segment after the final / (QWEN2.5 matches org/qwen2.5), or a glob (*qwen2.5* matches org/qwen2.5-instruct). Matches are independent per entry; an exact hit does not suppress suffix hits. A partial name needs a glob. Returns names, formats, sizes and existing details.wire_endpoints and details.features when reported; these are serving capabilities, not a guessed model type. An exact name or source_id matching one total result also returns bounded show metadata: context, template presence, defaults and source-reported capabilities; use zz_chat to verify serving support. Select a local name for zz_run_preview.", Annotations: read}, []string{"listModels", "showModels"}, dispatcher.models)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_delete", Description: "Delete one exact physical model from zz_models. Refuses weights held by a run or referenced by a configured variant: stop the named run or remove the variant through zz_params_set first. Supply node for an ambiguous cluster identity, and provider/source_id from zz_models for an ambiguous source. Verify the model is absent with zz_models after success.", Annotations: destructive}, []string{"deleteModels"}, dispatcher.deleteModel)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel with zz_job_cancel and deployment_id.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
@@ -184,13 +196,13 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model through the coordinator; pass message for plain chat or tools: true for a fixed tool-calling probe. A bare name works when one node holds it; otherwise pass node. A model with no run is started for the chat (zz_runs lists it with started_by request). Returns reply, model, token usage and, for probes, tool_call: verified, parser_missing, truncated or inconclusive with next steps. Inspect zz_logs if it fails.", Annotations: write}, []string{"openaiCreateChatCompletion"}, dispatcher.chat)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model through the coordinator; pass message for chat, or probe: tools, embed or vision for fixed capability checks. A bare name works when one node holds it; otherwise pass node. A model with no run is started for the chat (zz_runs lists it with started_by request). Returns a request-local verdict: verified, not_supported or inconclusive, with next_steps. Tools also reports tool_call diagnostics; embed returns dimensions, never the vector. Vision checks two different images. Inspect zz_logs if it fails.", Annotations: write}, []string{"openaiCreateChatCompletion", "openaiCreateEmbedding"}, dispatcher.chat)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_logs", Description: "Diagnose a run with its last bounded log lines, or every line matching grep across the whole log, with follow forced off. A stopped run's log stays readable with the node it ran on. Without run_id, returns available run-log file metadata, not server log text; choose a run_id and call again.", Annotations: read}, []string{"listRunLogs", "listServerLogs"}, dispatcher.logs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work using job_id, or cancel a download using deployment_id. Returns cancellation acknowledgement; follow with zz_job to verify a job's terminal state.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_provider_install", Description: "Check prerequisites with preflight_only=true, then install with false; managed=false means no zzRouter-owned copy is installed and does not forbid installing. Successful installation enables the provider during finalization, before the job completes. Follow with zz_job, then zz_providers. If installation is not needed, use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query; cloud setup uses POST /zzrouter/v1/providers/{name}/verify after credentials are configured.", Annotations: write}, []string{"createProviderInstallPreflight", "createProviderInstall"}, dispatcher.install)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model, and in accepts every parameter it takes with type and description. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters", "getProviderSchema"}, dispatcher.params)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_set", Description: "Apply a tiered merge-patch to provider parameters or environment. Returns resolved values and affected runs; restart_affected starts needed restarts. Follow with zz_job for runs.restart_job_id, then zz_params_get.", Annotations: write}, []string{"patchProviderParameters"}, dispatcher.patch)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_set", Description: "Apply a tiered merge-patch to provider parameters or environment. Create a single-level logical variant with patch.models.<new-name>.from set to a physical base, plus optional parameters, environment or request defaults. Returns resolved values and affected runs; restart_affected starts needed restarts. Follow with zz_job for runs.restart_job_id, then zz_params_get.", Annotations: write}, []string{"patchProviderParameters"}, dispatcher.patch)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_status", Description: "Read update status for selected nodes. Returns availability, version, progress and errors; call zz_update_check to refresh availability, then zz_update_apply when an update is wanted.", Annotations: read}, []string{"getUpdateStatus"}, dispatcher.updateStatus)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_check", Description: "Check for a newer release on the coordinator. Returns availability, release and skipped reason; read zz_update_status or use zz_update_apply when an update is wanted.", Annotations: &mcp.ToolAnnotations{DestructiveHint: new(bool), IdempotentHint: true}}, []string{"createUpdateCheck"}, dispatcher.updateCheck)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_apply", Description: "Apply a pending coordinator update or an exact version on selected nodes; nodes may restart. Returns job_id when available; follow with zz_job, or zz_update_status when delegated to the privileged updater.", Annotations: destructive}, []string{"createUpdateApply"}, dispatcher.updateApply)
@@ -299,9 +311,10 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 		query[key] = values
 	}
 	var response struct {
-		Data    any  `json:"data"`
-		Total   int  `json:"total"`
-		HasMore bool `json:"has_more"`
+		Data     any            `json:"data"`
+		Total    int            `json:"total"`
+		HasMore  bool           `json:"has_more"`
+		Metadata map[string]any `json:"metadata"`
 	}
 	if err := d.call(ctx, request{method: http.MethodGet, path: path, query: query}, &response); err != nil {
 		return agentOutput{}, err
@@ -337,7 +350,11 @@ func (d dispatcher) list(ctx context.Context, path requestPath, page pageInput, 
 		}
 		out = append(out, selectFields(object, fields))
 	}
-	return agentOutput{fields: map[string]any{label: out, "total": response.Total, "has_more": response.HasMore}, text: fmt.Sprintf("Returned %d %s; has_more=%t.", len(out), label, response.HasMore)}, nil
+	result := map[string]any{label: out, "total": response.Total, "has_more": response.HasMore}
+	if node, ok := response.Metadata["node"]; ok {
+		result["node"] = node
+	}
+	return agentOutput{fields: result, text: fmt.Sprintf("Returned %d %s; has_more=%t.", len(out), label, response.HasMore)}, nil
 }
 
 func (d dispatcher) nodes(ctx context.Context, in nodesInput) (agentOutput, error) {
@@ -349,7 +366,42 @@ func (d dispatcher) nodes(ctx context.Context, in nodesInput) (agentOutput, erro
 }
 
 func (d dispatcher) models(ctx context.Context, in modelsInput) (agentOutput, error) {
-	return d.list(ctx, modelsRoute.path(), in.pageInput, url.Values{"node": {in.Node}, "provider": {in.Provider}, "model": {in.Model}}, "", "name source_id node assigned_app:provider format size is_cloud variant_of details", "models")
+	out, err := d.list(ctx, modelsRoute.path(), in.pageInput, url.Values{"node": {in.Node}, "provider": {in.Provider}, "model": {in.Model}}, "", "name source_id source_repo node assigned_app:provider format size is_cloud variant_of details", "models")
+	if err != nil {
+		return out, err
+	}
+	items, _ := out.fields["models"].([]map[string]any)
+	if in.Model == "" || strings.ContainsAny(in.Model, "*?[]") || len(items) != 1 || out.fields["total"] != 1 || out.fields["has_more"] != false {
+		return out, nil
+	}
+	entry := items[0]
+	name, _ := entry["name"].(string)
+	id, _ := entry["source_id"].(string)
+	if !strings.EqualFold(in.Model, name) && !strings.EqualFold(in.Model, id) {
+		return out, nil
+	}
+	node, _ := entry["node"].(string)
+	provider, _ := entry["provider"].(string)
+	registry, _ := entry["source_repo"].(string)
+	var show struct {
+		Data map[string]any `json:"data"`
+	}
+	err = d.call(ctx, request{method: http.MethodGet, path: routePrefix(string(modelsRoute) + "/show").path(), query: url.Values{"model": {in.Model}, "node": {node}, "provider": {provider}, "registry": {registry}, "compact": {"true"}}}, &show)
+	if err != nil {
+		var failure *toolError
+		if !errors.As(err, &failure) || failure.problem.Status != http.StatusNotImplemented || failure.problem.Code != string(httperr.CodeModelDetailUnsupported) {
+			return agentOutput{}, err
+		}
+		entry["show_unavailable"] = failure.problem
+		out.text = "Catalog identity retrieved; model detail is unsupported for this source. Use serving probes for request-local evidence."
+	} else {
+		if show.Data == nil {
+			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "compact model detail must be an object", nil)
+		}
+		entry["show"] = show.Data
+		out.text = "Exact model metadata retrieved; source-reported capabilities are separate from serving verification through zz_chat."
+	}
+	return out, nil
 }
 
 func (d dispatcher) search(ctx context.Context, in searchInput) (agentOutput, error) {
@@ -482,96 +534,6 @@ func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, erro
 	return d.childObject(ctx, request{method: http.MethodPatch, query: q, jsonBody: in.Patch, contentType: "application/merge-patch+json"}, providersRoute, in.Provider, "/parameters", in.Node, "parameters environment request from runs", "Parameters patched; follow with zz_job if runs.restart_job_id is present, then zz_params_get.")
 }
 
-func (d dispatcher) chat(ctx context.Context, in chatInput) (agentOutput, error) {
-	if in.Node != "" {
-		in.Model += "@" + in.Node
-	}
-	tokens := ToolProbeTokens
-	if in.Tools {
-		in.Message = probeMessage
-	} else {
-		if in.Message == "" {
-			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "message is required for plain chat", nil)
-		}
-		if in.MaxTokens == 0 {
-			in.MaxTokens = DefaultChatTokens
-		}
-		if in.MaxTokens < 1 {
-			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "max_tokens must be positive", nil)
-		}
-		tokens = min(in.MaxTokens, MaxChatTokens)
-	}
-	body := map[string]any{"model": in.Model, "messages": []map[string]string{{"role": "user", "content": in.Message}}, "stream": false, "max_tokens": tokens}
-	if in.Tools {
-		// Required or named choices can bypass the engine's tool parser through guided decoding.
-		body["tool_choice"] = "auto"
-		body["tools"] = []any{map[string]any{"type": "function", "function": map[string]any{
-			"name": probeFunction, "description": "Look up the current weather in a city.",
-			"parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"city"}},
-		}}}
-	}
-	var reply struct {
-		Model   string         `json:"model"`
-		Choices []chatChoice   `json:"choices"`
-		Usage   map[string]any `json:"usage"`
-	}
-	if err := d.call(ctx, request{method: http.MethodPost, path: chatRoute.path(), jsonBody: body, contentType: "application/json"}, &reply); err != nil {
-		return agentOutput{}, err
-	}
-	if len(reply.Choices) == 0 {
-		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "chat response has no choices; inspect zz_logs", nil)
-	}
-	out := agentOutput{fields: map[string]any{"reply": reply.Choices[0].Message.Content, "model": reply.Model, "usage": selectFields(reply.Usage, "prompt_tokens completion_tokens total_tokens")}, text: "Smoke test reply received; token usage is included."}
-	if in.Tools {
-		out.fields["tool_call"], out.text = reply.Choices[0].probeResult()
-	}
-	return out, nil
-}
-
-type toolCallOutcome string
-
-const (
-	toolCallVerified      toolCallOutcome = "verified"
-	toolCallParserMissing toolCallOutcome = "parser_missing"
-	toolCallTruncated     toolCallOutcome = "truncated"
-	toolCallInconclusive  toolCallOutcome = "inconclusive"
-)
-
-type chatChoice struct {
-	FinishReason string `json:"finish_reason"`
-	Message      struct {
-		Content   string `json:"content"`
-		ToolCalls []struct {
-			Function struct {
-				Name      string          `json:"name"`
-				Arguments json.RawMessage `json:"arguments"`
-			} `json:"function"`
-		} `json:"tool_calls"`
-	} `json:"message"`
-}
-
-func (choice chatChoice) probeResult() (toolCallOutcome, string) {
-	if choice.FinishReason == "length" {
-		return toolCallTruncated, "Tool probe truncated at its token budget; inspect zz_logs and the model publisher's reasoning settings, then probe again."
-	}
-	for _, call := range choice.Message.ToolCalls {
-		if call.Function.Name != probeFunction {
-			continue
-		}
-		var arguments string
-		var args map[string]json.RawMessage
-		var city string
-		// The OpenAI wire carries arguments as a JSON string; an object breaks SDK clients, so it does not verify.
-		if json.Unmarshal(call.Function.Arguments, &arguments) == nil && json.Unmarshal([]byte(arguments), &args) == nil && json.Unmarshal(args["city"], &city) == nil && strings.TrimSpace(city) != "" {
-			return toolCallVerified, "Tool calling verified by a structured probe call; use this model for tool requests."
-		}
-	}
-	if len(choice.Message.ToolCalls) == 0 && strings.Contains(choice.Message.Content, probeFunction) {
-		return toolCallParserMissing, "Tool probe appeared as text: set the provider's tool-calling parameters for this model with zz_params_set using the publisher's serving instructions, restart the run with zz_run_restart, then probe again."
-	}
-	return toolCallInconclusive, "Tool probe inconclusive; probe again or read the model publisher's model card for tool-calling support and serving instructions."
-}
-
 func (d dispatcher) logs(ctx context.Context, in logsInput) (agentOutput, error) {
 	if in.RunID == "" {
 		return d.list(ctx, serverLogsRoute.path(), in.pageInput, nil, "", "instance_id:run_id size modified is_compressed", "log_files")
@@ -614,4 +576,15 @@ const updateFields = "state current_version latest_version latest_release update
 
 func (d dispatcher) updateApply(ctx context.Context, in updateApplyInput) (agentOutput, error) {
 	return d.object(ctx, request{method: http.MethodPost, path: updateApplyRoute.path(), jsonBody: in, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "job_id id version nodes state action", "Update accepted; follow with zz_job when job_id is present, otherwise zz_update_status.")
+}
+
+func (d dispatcher) deleteModel(ctx context.Context, in deleteModelInput) (agentOutput, error) {
+	if strings.TrimSpace(in.Model) == "" || strings.ContainsAny(in.Model, "*?[]") {
+		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "model deletion requires one exact catalog name without glob syntax", nil)
+	}
+	body, err := json.Marshal(map[string]string{"model": in.Model, "node": in.Node, "provider": in.Provider, "registry": in.Registry, "source_id": in.SourceID})
+	if err != nil {
+		return agentOutput{}, err
+	}
+	return d.object(ctx, request{method: http.MethodDelete, path: modelsRoute.path(), body: body, idempotencyKey: in.IdempotencyKey}, "model node deleted errors", "Model deletion completed; verify absence with zz_models on the returned node.")
 }

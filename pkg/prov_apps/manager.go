@@ -10,7 +10,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
 	"time"
+
+	"golang.org/x/sync/semaphore"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -28,7 +31,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const defaultEventChannelSize = 64
@@ -80,9 +82,8 @@ type ProviderAppManager struct {
 	catalogChanged func()
 	publishCatalog func() error
 
-	// idleExpiry receives instance IDs when keep-alive timers fire.
-	// The idleReaper goroutine listens and auto-stops expired instances.
-	idleExpiry chan string
+	// reaperDone closes once idle scheduling and stops have drained.
+	reaperDone chan struct{}
 
 	mu             sync.RWMutex
 	shutdown       atomic.Bool // true once Stop() has drained instances; gates emitEvent
@@ -94,6 +95,7 @@ type ProviderAppManager struct {
 	startsCtx      context.Context
 	startsCancel   context.CancelFunc
 	onDemandStarts sync.WaitGroup
+	catalog        *semaphore.Weighted
 
 	// parentCtx ferries WithParentContext's value across the option-
 	// loop boundary; consumed by NewProviderAppManager to seed
@@ -143,12 +145,12 @@ type ProviderAppManager struct {
 
 	// localizeParams turns configured parameter values into what this
 	// node's engine is given. Optional; nil passes them through.
-	localizeParams            ParamLocalizer
-	runtimeChecks             install.RuntimeChecksResolver
-	installPolicyFile         string
-	memoryBudget              func(provider string) (*schema.MemoryBudget, error)
-	memorySnapshot            func(context.Context) ([]gpu.MemoryDevice, error)
-	evictIdleOnMemoryPressure bool
+	localizeParams      ParamLocalizer
+	runtimeChecks       install.RuntimeChecksResolver
+	installPolicyFile   string
+	memoryBudget        func(provider string) (*schema.MemoryBudget, error)
+	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
+	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
 	memoryAdmission  chan struct{}
@@ -327,17 +329,17 @@ func WithMemoryBudget(resolve func(provider string) (*schema.MemoryBudget, error
 
 // WithIdleMemoryEviction enables node-local reclamation of idle GPU runs.
 func WithIdleMemoryEviction(enabled bool) Option {
-	return func(m *ProviderAppManager) { m.evictIdleOnMemoryPressure = enabled }
+	return func(m *ProviderAppManager) { m.idleEvictionDefault = enabled }
 }
 
 // NewProviderAppManager creates a new manager from apps config.
 func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*ProviderAppManager, error) {
 	m := &ProviderAppManager{
 		appsConfig:      appsConfig,
+		catalog:         semaphore.NewWeighted(catalogReaders),
 		instances:       instance.NewRegistry(),
 		versions:        newVersionCache(),
 		auditEvents:     make(chan Event, defaultEventChannelSize),
-		idleExpiry:      make(chan string, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
 		services:        make(map[string]*managedService),
@@ -432,14 +434,16 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 //
 // Refuses to spin up goroutines if Stop has already run (shutdown set).
 // Without this gate, a Start-after-Stop call would spawn an idleReaper that
-// reads from the closed idleExpiry channel and an eventLoop that hangs
+// schedules idle stops and an eventLoop that hangs
 // forever (emit() drops via the shutdown gate so nothing arrives).
 func (m *ProviderAppManager) Start(ctx context.Context) {
 	if m == nil {
 		return
 	}
 	m.startOnce.Do(func() {
-		if m.shutdown.Load() {
+		m.mu.Lock()
+		if m.stopping.Load() || m.shutdown.Load() {
+			m.mu.Unlock()
 			slog.Warn("Start called after Stop; manager remains shutdown")
 			return
 		}
@@ -450,7 +454,9 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 		childCtx := m.shutdownCtx
 
 		go m.eventLoop()
+		m.reaperDone = make(chan struct{})
 		go m.idleReaper()
+		m.mu.Unlock()
 		m.servicesObserved = make(chan struct{})
 		m.servicesStarted.Store(true)
 		go m.observeServices(childCtx)
@@ -494,41 +500,6 @@ func (m *ProviderAppManager) eventLoop() {
 					return
 				}
 			}
-		}
-	}
-}
-
-// idleReaper listens for keep-alive expiry signals and auto-stops idle instances.
-// An instance is only stopped if it's still running and truly idle (no active requests,
-// last activity exceeds keep-alive). This handles the case where a request arrives
-// between timer fire and reaper processing.
-func (m *ProviderAppManager) idleReaper() {
-	for {
-		select {
-		case id, ok := <-m.idleExpiry:
-			if !ok {
-				return
-			}
-			inst, exists := m.instances.Get(id)
-			if !exists {
-				continue
-			}
-			activity := inst.GetLastActivity()
-			keepAlive, lastActivity := inst.IdleSnapshot()
-			if !m.evictable(inst) || !idleExpired(keepAlive, lastActivity, utils.Now()) {
-				continue
-			}
-			release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: inst, Activity: activity}})
-			if !claimed {
-				continue
-			}
-			slog.Info("auto-stopping idle instance", "instance", id, "provider", inst.Provider, "model", inst.Model, "keep_alive", inst.GetKeepAlive())
-			if err := m.stopClaimedIdle(m.shutdownCtx, inst); err != nil {
-				slog.Warn("failed to auto-stop idle instance", "instance", id, "error", err)
-			}
-			release()
-		case <-m.shutdownCtx.Done():
-			return
 		}
 	}
 }
@@ -777,6 +748,7 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 	m.appsConfig = fresh
 	m.lastReloadFP = fp
 	m.mu.Unlock()
+	m.instances.NotifyChanged()
 	if !unchanged {
 		m.retireUnserved(before)
 	}
@@ -897,6 +869,9 @@ func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backe
 	p := m.protocols.Of(key, m.AppsConfig().Find(key))
 	loader, loads := p.(protocol.ModelLoader)
 	resolved, ok := backend.Target(&cfg)
+	if ok {
+		resolved.Endpoint = protocol.TargetOf(resolved).Endpoint()
+	}
 	return loader, resolved, found && loads && ok
 }
 

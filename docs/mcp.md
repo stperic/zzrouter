@@ -58,7 +58,7 @@ Merge this into an existing `[features]` table rather than declaring it twice.
 |---|---|
 | Cluster and provider inventory | `zz_overview`, `zz_nodes`, `zz_providers` |
 | Provider installation | `zz_provider_install` |
-| Model discovery and download | `zz_model_search`, `zz_model_files`, `zz_model_download`, `zz_models` |
+| Model discovery, download and deletion | `zz_model_search`, `zz_model_files`, `zz_model_download`, `zz_model_delete`, `zz_models` |
 | Run lifecycle | `zz_run_preview`, `zz_run_start`, `zz_runs`, `zz_run_restart`, `zz_run_stop` |
 | Smoke test and diagnosis | `zz_chat`, `zz_logs` |
 | Follow or cancel work | `zz_job`, `zz_job_cancel` |
@@ -87,6 +87,36 @@ a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
+An exact `zz_models.model` name or source-id filter returning one total model
+also adds `show` to that entry. Case-insensitive exact matches qualify; globs,
+suffix-only matches, truncated pages and duplicate replicas keep the list form.
+Show metadata includes numeric context fields under `model_info`, template
+presence and reported parameters/capabilities when known. Missing evidence stays
+missing. Catalog `details.wire_endpoints/features` and source-reported metadata
+remain separate; use `zz_chat` to verify a serving request.
+
+Show requests retain the selected node, provider and physical source. A logical
+variant reads its base's metadata and keeps its addressed name. Explicitly
+unsupported detail retains the catalog entry with `show_unavailable`, an RFC 9457
+problem; auth, inventory, transport and malformed metadata failures remain tool
+errors. Full templates, model cards, licenses and tensors are omitted before
+the metadata reaches the MCP response cap. Full REST/native show stays available.
+
+Delete one physical model with `zz_model_delete`: use its exact `name` from
+`zz_models`, plus `node`, `provider`, `registry` and `source_id` when needed to
+identify one replica. Globs and suffix or repository aliases do not select weights
+for deletion. Incomplete physical models can be cleaned up. Cloud models, groups and logical
+variants are configuration: remove their entry with the supported configuration
+tools instead. A 409 `model_in_use` identifies the holding run to stop; a 409
+`model_referenced` identifies a variant to remove with `zz_params_set`.
+After success, query `zz_models` on that node to verify absence.
+
+Use an `idempotency_key` for deletion retries. A failure with
+`mutation_applied: true` and `deleted` reports completed effects and is replayed
+with the same key. Inspect the catalog before starting a new operation. Other
+failures remain retryable. Replay has the same bounded, in-memory lifetime as
+job-starting operations below.
+
 ## Follow jobs
 
 Job-starting tools return IDs immediately. `zz_run_start`, `zz_run_restart`,
@@ -98,6 +128,12 @@ server restarts. Only an accepted request is retained, and replay returns that a
 for a job-creating tool, the same `job_id`, even if that job later failed.
 A retry after an error runs again; after a failed job, use a new key.
 Use a fresh key to rerun preflight checks.
+
+Omit `job_id` from `zz_job` to list recent jobs on the coordinator, or set
+`node` to list one serving node's jobs. Use `limit` and `offset`; results include
+`jobs`, `total`, `has_more` and the answering `node`. Lists sort by most recent
+update, then job id, so an unchanged collection can be paged without duplicates.
+This does not fan out across the cluster. `wait_seconds` requires a `job_id`.
 
 Call `zz_job` with each returned `job_id` and
 `wait_seconds: 45`; if it is still running, call again. Downloads return jobs
@@ -113,16 +149,27 @@ to free GPU memory names them (`run_id`, `model`, `freed_mib`) in
 `evicted_runs`, both in its `zz_job` result and in `zz_runs`, and a lookup of an
 evicted run names the run that evicted it while that run is live.
 
-`zz_chat` accepts `model`, optional `node`, and `message` for plain chat. Plain
-chat uses 64 reply tokens by default, with `max_tokens` capped at 256. Set
-`tools: true` to send one fixed harmless `lookup_weather` function requiring a
-string `city` argument through the same chat route with `tool_choice: "auto"`.
-The probe uses its own Paris weather message even if `message` was supplied,
-and a fixed 4096-token budget to leave room for reasoning; `max_tokens` does
-not change that budget. The tool is never executed.
+`zz_chat` accepts `model`, optional `node`, and `probe: chat | tools | embed | vision`.
+The default is `chat`, which requires `message`, uses 64 reply tokens by default,
+and caps `max_tokens` at 256. A nonempty reply verifies this request; a truncated
+reply is inconclusive.
 
-Both modes return `reply`, `model` and `usage`. A probe also returns the
-request-local `tool_call` outcome, with next steps in the text block:
+`probe: tools` replaces `tools: true`. It sends one fixed harmless `lookup_weather`
+function requiring a string `city` argument through the same chat route with
+`tool_choice: "auto"`. It uses its own Paris weather message and a fixed 4096-token
+budget, ignoring caller `message` and `max_tokens`. The tool is never executed.
+
+`probe: embed` sends one fixed sentence through `/v1/embeddings`. A successful
+probe requires one nonempty finite numeric vector and returns `dimensions`,
+never the vector. `probe: vision` sends two different 16-by-16 solid-color images
+with the same neutral question in two chat requests, each capped at 16 reply
+tokens. Both answers must match their image. A constant answer cannot verify
+vision; truncation or a wrong answer is inconclusive. Fixed probes ignore caller
+`message` and `max_tokens`.
+
+Results include `probe`, a request-local `verdict` (`verified`, `not_supported`
+or `inconclusive`), and `next_steps`. Chat modes include `reply`, `model` and
+`usage`; vision's usage combines both requests. Tools also returns `tool_call`:
 
 | `tool_call` | Evidence and next step |
 |---|---|
@@ -131,12 +178,28 @@ request-local `tool_call` outcome, with next steps in the text block:
 | `truncated` | The first choice finished with `length`, taking precedence over other evidence. Inspect logs and publisher reasoning settings, then probe again. |
 | `inconclusive` | No valid probe call. Probe again or read the model card. |
 
-Classified refusals remain tool errors with their REST `code`, including
+Classified refusals remain tool errors with their REST status, `code` and problem
+fields. Only typed `unsupported_input` and `tool_calling_not_enabled` refusals
+add `probe`, `verdict: not_supported` and `next_steps` to that problem. Auth,
+routing, transport, malformed responses and other failures keep their errors;
+error prose never establishes a capability verdict. Existing refusals include
 `tool_calling_not_enabled` and `chat_template_rejected`. The former's remedy
 names vLLM's boolean `enable-auto-tool-choice: true` and an operator-selected
 `tool-call-parser` from the publisher's per-family serving instructions; set
 them with `zz_params_set`, restart the run and probe again. Template refusals
-carry the existing template remedy. No probe result is stored on a run.
+carry the existing template remedy. No probe result is stored on a run. Verification proves only the fixed request,
+not universal capability or a model family's declared support.
+
+Create a logical variant with `zz_params_set` using the existing merge patch:
+
+```json
+{"provider":"llamacpp","patch":{"models":{"my-variant":{"from":"physical-base","parameters":{"ctx-size":8192}}}}}
+```
+
+Use a physical base name from `zz_models`; variants cannot point to another
+variant. Optional `parameters`, `environment` and `request` settings belong
+beside `from`. Remove your variant with `{"models":{"my-variant":null}}` in
+`patch`. `zz_params_get` lists accepted provider parameters and their types.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
@@ -187,7 +250,9 @@ scripts/mcp-conformance.sh http://127.0.0.1:9091/zzrouter/v1/mcp
 ```
 
 The official suite cannot send an API key. Target a local key-injecting proxy
-or a loopback test setup, as described in the script. The suite is pinned to
+or a loopback test setup, as described in the script. Preserve the incoming
+`Host` header so the DNS rebinding checks exercise the server's host validation.
+The suite is pinned to
 `@modelcontextprotocol/conformance@0.1.16` with the checked-in expected-failure
 baseline; this version has no 2026-07-28 server scenarios. Add
 `--spec-version 2026-07-28` when a release supports them. Fixture-only tools and

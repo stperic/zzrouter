@@ -26,8 +26,9 @@ func TestStableOutputSchemasValidateIDs(t *testing.T) {
 	}{
 		{"run", objectSchema[runOutput]{}, `{"run_id":"r","job_id":"j"}`, `{"job_id":"j"}`},
 		{"download", objectSchema[downloadOutput]{}, `{"deployment_id":"d","nodes":[{"node":"worker","job_id":"j"}]}`, `{"deployment_id":7}`},
-		{"chat", objectSchema[chatOutput]{}, `{"reply":"hello","model":"m","usage":{"total_tokens":4}}`, `{"reply":"hello","model":"m","usage":{"total_tokens":"4"}}`},
-		{"probe", objectSchema[chatOutput]{}, `{"reply":"","model":"m","usage":{},"tool_call":"verified"}`, `{"reply":"","model":"m","usage":{},"tool_call":"refused"}`},
+		{"chat", objectSchema[chatOutput]{}, `{"probe":"chat","verdict":"verified","next_steps":"inspect logs","reply":"hello","model":"m","usage":{"total_tokens":4}}`, `{"probe":"chat","verdict":"verified","next_steps":"inspect logs","reply":"hello","model":"m","usage":{"total_tokens":"4"}}`},
+		{"probe", objectSchema[chatOutput]{}, `{"probe":"tools","verdict":"verified","next_steps":"inspect logs","reply":"","model":"m","usage":{},"tool_call":"verified"}`, `{"probe":"tools","verdict":"verified","next_steps":"inspect logs","reply":"","model":"m","usage":{},"tool_call":"refused"}`},
+		{"embed", objectSchema[chatOutput]{}, `{"probe":"embed","verdict":"verified","next_steps":"use embeddings","model":"m","dimensions":2,"usage":{}}`, `{"probe":"embed","verdict":"guessed","next_steps":"use embeddings","model":"m","dimensions":2,"usage":{}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := tc.schema.MarshalJSON()

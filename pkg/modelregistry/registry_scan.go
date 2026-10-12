@@ -162,7 +162,8 @@ func deduplicateByFullPath(models []*metadata.ModelMetadata) []*metadata.ModelMe
 		return models
 	}
 
-	seenByPath := make(map[string]bool, len(models))
+	type identity struct{ path, source, provider, name string }
+	seenByPath := make(map[identity]bool, len(models))
 	seenByNameAndSource := make(map[string]bool) // Key: "Name|SourceID|SourceRepo"
 	result := make([]*metadata.ModelMetadata, 0, len(models))
 
@@ -172,9 +173,9 @@ func deduplicateByFullPath(models []*metadata.ModelMetadata) []*metadata.ModelMe
 		}
 
 		// Primary deduplication: Use FullPath as the unique key
-		pathKey := m.FullPath
-		if pathKey == "" {
-			pathKey = m.Name
+		pathKey := identity{path: m.FullPath}
+		if m.FullPath == "" {
+			pathKey = identity{source: m.SourceRepo, provider: m.AssignedApp, name: m.Name}
 		}
 
 		// Secondary deduplication: For HuggingFace models, also check Name+SourceID

@@ -14,6 +14,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // A load failure has to survive the seam between the executor, which is
@@ -32,7 +33,7 @@ func TestClassifyLoadFailure(t *testing.T) {
 		{
 			name:    "model was never downloaded is the caller's problem, not a server fault",
 			err:     fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal),
-			message: "Model file not found: " + prov_apps.ErrModelNotLocal.Error(),
+			message: "Model file not found: " + prov_apps.ErrModelNotLocal.Error() + "; download or register it before starting; use POST /zzrouter/v1/deployments for a cloud model",
 			status:  http.StatusNotFound,
 			errType: "not_found_error",
 			code:    "model_not_found",
@@ -89,12 +90,11 @@ func TestClassifyLoadFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			lf := classifyLoadFailure(tt.err)
-			require.NotNil(t, lf)
-			assert.Equal(t, tt.status, lf.status)
-			assert.Equal(t, tt.errType, lf.errType)
-			assert.Equal(t, tt.code, lf.code)
-			assert.Equal(t, tt.message, lf.message,
+			lf := loadFailureWire(tt.err)
+			assert.Equal(t, tt.status, lf.Status)
+			assert.Equal(t, tt.errType, lf.Type)
+			assert.Equal(t, tt.code, lf.Code)
+			assert.Equal(t, tt.message, lf.Message,
 				"the message is part of the wire contract; a swapped positional field would show up here")
 		})
 	}
@@ -103,7 +103,7 @@ func TestClassifyLoadFailure(t *testing.T) {
 // Retrying is only advertised where it can work: a model still coming
 // up says come back, a model that cannot load says nothing of the kind.
 func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
-	assert.Positive(t, classifyLoadFailure(loadStillWarming("warming")).retryAfter,
+	assert.Positive(t, loadFailureWire(loadStillWarming("warming")).RetryAfter,
 		"a still-loading model must tell the caller to come back")
 
 	for name, err := range map[string]error{
@@ -112,22 +112,22 @@ func TestRetryAfterOnlyWhereRetryingHelps(t *testing.T) {
 		"our own fault": loadInternal("instance disappeared"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Zero(t, classifyLoadFailure(err).retryAfter,
+			assert.Zero(t, loadFailureWire(err).RetryAfter,
 				"retrying this cannot succeed, so do not invite it")
 		})
 	}
 }
 
-// classifyLoadFailure has to see through wrapping, or a failure that
+// loadFailureWire has to see through wrapping, or a failure that
 // picks up context on the way out silently falls back to 502.
 func TestClassifyLoadFailureUnwraps(t *testing.T) {
 	wrapped := fmt.Errorf("loading %q: %w", "some-model",
 		fmt.Errorf("Model file not found: %w", prov_apps.ErrModelNotLocal))
 
-	lf := classifyLoadFailure(wrapped)
+	lf := loadFailureWire(wrapped)
 
-	assert.Equal(t, http.StatusNotFound, lf.status)
-	assert.Equal(t, "model_not_found", lf.code)
+	assert.Equal(t, http.StatusNotFound, lf.Status)
+	assert.Equal(t, "model_not_found", lf.Code)
 }
 
 // The whole claim of this arc is that a load failure reads the same
@@ -142,10 +142,10 @@ func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 		loadInternal("instance 'x' disappeared"),
 		errors.New("something unclassified"),
 	} {
-		lf := classifyLoadFailure(cause)
+		lf := loadFailureWire(cause)
 
-		t.Run(lf.code+"/"+lf.message, func(t *testing.T) {
-			failure := httperr.Error{Status: lf.status, Type: lf.errType, Message: lf.message, Code: lf.code}
+		t.Run(lf.Code+"/"+lf.Message, func(t *testing.T) {
+			failure := lf
 
 			// Header path.
 			hdr := httptest.NewRecorder()
@@ -181,25 +181,29 @@ func TestStreamedAndHeaderFailuresAgree(t *testing.T) {
 
 // A classified failure must not sever the chain it was built from.
 func TestLoadFailureKeepsItsCause(t *testing.T) {
+	s := variantNode(t)
 	sentinel := errors.New("transport exploded")
-
-	lf := classifyLoadFailure(sentinel)
-
-	assert.ErrorIs(t, lf, sentinel, "errors.Is must still reach the original cause")
+	run := instance.NewInstance("failed", "llamacpp", qwenModel, 0, 0, 1)
+	run.MarkFailedError(sentinel)
+	_, err := s.waitForLocalInstance(run)
+	assert.ErrorIs(t, err, sentinel, "readiness producer retains the original cause")
+	wire := loadFailureWire(err)
+	assert.Equal(t, http.StatusBadGateway, wire.Status)
+	assert.Contains(t, wire.Message, sentinel.Error())
 }
 
 func TestClassifyLoadFailureEngineClass(t *testing.T) {
 	for _, class := range []httperr.FailureClass{httperr.FailureMemory, httperr.FailureUnsupportedInput, httperr.FailureChatTemplateRejected, httperr.FailureToolCallingNotEnabled} {
 		cause := &httperr.EngineFailure{Class: class, Message: "declared failure"}
 		for _, wrapped := range []error{cause, loadEngineFailed(cause.Error()).withCause(cause), fmt.Errorf("cold load: %w", cause)} {
-			failure := classifyLoadFailure(wrapped)
+			failure := loadFailureWire(wrapped)
 			want := (&httperr.EngineFailure{Class: class, Message: wrapped.Error()}).HTTPError()
-			assert.Equal(t, want.Status, failure.status)
-			assert.Equal(t, want.Code, failure.code)
-			assert.Equal(t, want.Message, failure.message)
-			assert.Zero(t, failure.retryAfter)
-			assert.ErrorIs(t, failure, wrapped)
+			assert.Equal(t, want.Status, failure.Status)
+			assert.Equal(t, want.Code, failure.Code)
+			assert.Equal(t, want.Message, failure.Message)
+			assert.Zero(t, failure.RetryAfter)
+			assert.ErrorIs(t, wrapped, cause, "producer wrappers retain typed causes before rendering")
 		}
 	}
-	assert.Equal(t, http.StatusBadGateway, classifyLoadFailure(errors.New("CUDA out of memory")).status)
+	assert.Equal(t, http.StatusBadGateway, loadFailureWire(errors.New("CUDA out of memory")).Status)
 }

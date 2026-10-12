@@ -14,13 +14,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
@@ -124,7 +124,7 @@ func TestReplicaRoutingSelectionAndSurfaceErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			routingCatalog(t, s, tc.models)
-			resolved, err := s.ResolveModel(t.Context(), tc.ref, "")
+			resolved, err := s.ResolveModel(t.Context(), resolver.Reference{Model: tc.ref})
 			if tc.ambiguous {
 				var wire httperr.Error
 				require.ErrorAs(t, err, &wire)
@@ -181,7 +181,7 @@ func TestReplicaRoutingPrefixedCloudRequiresAuthentication(t *testing.T) {
 	require.NoError(t, s.appsConfig.AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
 	client := routingCatalog(t, s, nil)
 	for _, name := range []string{"cloud-model", "paid/cloud-model"} {
-		resolved, err := s.ResolveModel(t.Context(), name, "")
+		resolved, err := s.ResolveModel(t.Context(), resolver.Reference{Model: name})
 		require.NoError(t, err)
 		require.Empty(t, resolved.Node)
 		require.Equal(t, "paid", resolved.Provider)
@@ -223,7 +223,7 @@ func (*replicaRecorder) CloseNotify() <-chan bool { return make(chan bool) }
 func TestReplicaRoutingUnknownNameWithWorkerDown(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	client := routingCatalog(t, s, []map[string]any{replicaItem("worker", "llamacpp")})
-	_, err := s.ResolveModel(t.Context(), "qwen", "")
+	_, err := s.ResolveModel(t.Context(), resolver.Reference{Model: "qwen"})
 	require.NoError(t, err)
 	client.failure = true
 	s.model.Cache.Invalidate()
@@ -239,7 +239,7 @@ func TestReplicaRoutingUnknownNameWithWorkerDown(t *testing.T) {
 	}
 	require.Less(t, time.Since(start), time.Second, "negative discovery must not block for ClusterQueryTimeout")
 	require.Equal(t, 2, client.calls)
-	_, err = s.ResolveModel(t.Context(), "qwen", "")
+	_, err = s.ResolveModel(t.Context(), resolver.Reference{Model: "qwen"})
 	var problem httperr.Error
 	require.ErrorAs(t, err, &problem)
 	require.Equal(t, http.StatusServiceUnavailable, problem.Status)
@@ -321,7 +321,7 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 			svc := NewLoadService(s, router).WithTierResolution(func() *config.AppsConfig { return s.appsConfig })
 			for _, name := range []string{"unknown", "qwen"} {
 				wantError := name == "qwen" && !unscoped
-				resolved, inferenceErr := s.ResolveModel(t.Context(), name, "")
+				resolved, inferenceErr := s.ResolveModel(t.Context(), resolver.Reference{Model: name})
 				target, targetErr := svc.launchTarget(t.Context(), "", name)
 				req := &LoadModelRequest{ModelName: name, Provider: "llamacpp"}
 				sources, mergeErr := svc.preMerge(t.Context(), req)

@@ -8,6 +8,12 @@ package httperr
 type RouteErrorCode string
 
 const (
+	// CodeModelInUse refuses physical deletion while a run holds the weights.
+	CodeModelInUse RouteErrorCode = "model_in_use"
+	// CodeModelReferenced refuses weights deletion while variants reference them.
+	CodeModelReferenced RouteErrorCode = "model_referenced"
+	// CodeModelNotDeletable identifies an addressed route or logical variant.
+	CodeModelNotDeletable       RouteErrorCode = "model_not_deletable"
 	CodeCapacityExceeded        RouteErrorCode = "capacity_exceeded"
 	CodeQueueWaitExpired        RouteErrorCode = "queue_wait_expired"
 	CodeReleaseManifestMissing  RouteErrorCode = "release_manifest_missing"
@@ -17,6 +23,11 @@ const (
 
 	// CodeModelNodeAmbiguous requires an explicit node for replicated remote models.
 	CodeModelNodeAmbiguous RouteErrorCode = "model_node_ambiguous"
+
+	// CodeModelSourceAmbiguous requires an exact source id for same-name physical weights.
+	CodeModelSourceAmbiguous RouteErrorCode = "model_source_ambiguous"
+	// CodeModelDetailUnsupported means catalog identity exists without a supported detail reader.
+	CodeModelDetailUnsupported RouteErrorCode = "model_detail_unsupported"
 
 	// CodeNodeUnreachable is a transport failure against a named node: the
 	// node is offline, unpaired, or its cluster certificate is not valid. Job

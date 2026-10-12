@@ -32,7 +32,7 @@ func (m *ProviderAppManager) evictable(inst *instance.Instance) bool {
 	return true
 }
 
-func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance.Instance) error {
+func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason) error {
 	stopCtx, cancel := context.WithTimeout(m.shutdownCtx, constants.ClusterActionTimeout)
 	defer cancel()
 	stopCancel := context.AfterFunc(ctx, cancel)
@@ -43,7 +43,7 @@ func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance
 	if err := stopCtx.Err(); err != nil {
 		return err
 	}
-	return m.stopInstance(stopCtx, inst.ID, obsruns.StopReasonMemoryPressure)
+	return m.stopInstance(stopCtx, inst.ID, reason)
 }
 
 // reclaimFor stops the least recently active idle runs covering fit's
@@ -90,7 +90,7 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 		if ctx.Err() != nil {
 			break
 		}
-		if err := m.stopClaimedIdle(ctx, victim); err != nil {
+		if err := m.stopClaimedIdle(ctx, victim, obsruns.StopReasonMemoryPressure); err != nil {
 			slog.Warn("failed to reclaim idle GPU run", "instance", victim.ID, "device", fit.Device, "error", err)
 			continue
 		}

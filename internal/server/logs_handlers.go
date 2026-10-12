@@ -450,7 +450,7 @@ func (l *LogsHandlers) respondLocalProbeStatus(c *gin.Context, instanceID string
 	respondSuccess(c, "Probe status retrieved", gin.H{
 		"instance_id": instanceID,
 		"status":      string(inst.GetStatus()),
-		"started_at":  inst.StartedAt.Format(time.RFC3339),
+		"started_at":  inst.GetStartedAt().Format(time.RFC3339),
 		"log_file":    inst.LogFilePath,
 	})
 }

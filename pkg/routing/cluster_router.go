@@ -118,7 +118,7 @@ func (r *ClusterAwareRouter) Broadcast(ctx context.Context, path, method string,
 	return r.broadcast(ctx, path, &mesh.QueryParams{
 		Method: method,
 		Body:   body,
-	})
+	}, false)
 }
 
 // Route is a convenience method that chooses Unicast or Broadcast based on target node
@@ -189,7 +189,7 @@ func (r *ClusterAwareRouter) localHTTPCall(ctx context.Context, req *Request) (*
 
 // broadcast executes on local + all cluster workers, then aggregates
 // Delegates to V1's cluster client which handles circuit breakers, health monitoring, etc.
-func (r *ClusterAwareRouter) broadcast(ctx context.Context, path string, params *mesh.QueryParams) (*Response, error) {
+func (r *ClusterAwareRouter) broadcast(ctx context.Context, path string, params *mesh.QueryParams, perNode bool) (*Response, error) {
 	var localResp *Response
 	var clusterResp *mesh.BroadcastResponse
 
@@ -203,6 +203,7 @@ func (r *ClusterAwareRouter) broadcast(ctx context.Context, path string, params 
 		Headers: params.Headers,
 		Timeout: params.Timeout,
 	})
+	nodes := []nodeResult{{host: r.nodeName, resp: localResp, err: localErr}}
 	if localErr != nil {
 		utils.LogDebugf("[ClusterRouter] Local execution error: %v (continuing with cluster only)", localErr)
 	}
@@ -214,9 +215,25 @@ func (r *ClusterAwareRouter) broadcast(ctx context.Context, path string, params 
 		broadcastResp, err := r.clusterClient.Broadcast(ctx, path, params)
 		if err != nil {
 			utils.LogDebugf("[ClusterRouter] Cluster broadcast error: %v (continuing with local only)", err)
+			nodes = append(nodes, nodeResult{host: "cluster", err: err})
 		} else {
 			clusterResp = broadcastResp
+			if perNode && clusterResp != nil {
+				for _, node := range clusterResp.Responses {
+					result := nodeResult{host: node.Node, err: node.Error}
+					if node.Response != nil {
+						result.resp = &Response{StatusCode: node.Response.StatusCode, Body: node.Response.Body}
+					}
+					nodes = append(nodes, result)
+				}
+				for _, err := range clusterResp.Errors {
+					nodes = append(nodes, nodeResult{host: "cluster", err: err})
+				}
+			}
 		}
+	}
+	if perNode {
+		return marshalNodeResults(nodes)
 	}
 
 	// 3. Aggregate: local + cluster responses
@@ -266,6 +283,12 @@ func (r *ClusterAwareRouter) MultiRoute(
 	method string,
 	hostBodies map[string][]byte,
 ) (*Response, error) {
+	if body, all := hostBodies["*"]; all {
+		if len(hostBodies) != 1 {
+			return nil, fmt.Errorf("wildcard multi-route cannot be combined with explicit nodes")
+		}
+		return r.broadcast(ctx, path, &mesh.QueryParams{Method: method, Body: body}, true)
+	}
 	if len(hostBodies) == 0 {
 		return &Response{
 			StatusCode: 200,
@@ -283,12 +306,7 @@ func (r *ClusterAwareRouter) MultiRoute(
 	sort.Strings(hosts)
 
 	// Fan out concurrently, collect results into index-aligned slice
-	type result struct {
-		host string
-		resp *Response
-		err  error
-	}
-	results := make([]result, len(hosts))
+	results := make([]nodeResult, len(hosts))
 
 	g, gctx := errgroup.WithContext(ctx)
 	for i, host := range hosts {
@@ -307,18 +325,31 @@ func (r *ClusterAwareRouter) MultiRoute(
 		})
 	}
 	_ = g.Wait()
+	return marshalNodeResults(results)
+}
 
-	// Assemble responses in deterministic order
+type nodeResult struct {
+	host string
+	resp *Response
+	err  error
+}
+
+// marshalNodeResults preserves per-node failures and effects without generic object merging.
+func marshalNodeResults(results []nodeResult) (*Response, error) {
+	sort.SliceStable(results, func(i, j int) bool { return results[i].host < results[j].host })
 	responses := make([]map[string]any, len(results))
 	for i, r := range results {
 		respData := map[string]any{
 			"node":        r.host,
-			"status_code": r.resp.StatusCode,
+			"status_code": http.StatusServiceUnavailable,
+		}
+		if r.resp != nil {
+			respData["status_code"] = r.resp.StatusCode
 		}
 		if r.err != nil {
 			utils.LogDebugf("[ClusterRouter] Routing to node '%s' failed: %v", r.host, r.err)
 			respData["error"] = r.err.Error()
-		} else if len(r.resp.Body) > 0 {
+		} else if r.resp != nil && len(r.resp.Body) > 0 {
 			var bodyData any
 			if err := json.Unmarshal(r.resp.Body, &bodyData); err == nil {
 				respData["body"] = bodyData

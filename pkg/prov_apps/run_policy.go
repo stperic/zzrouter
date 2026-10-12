@@ -103,7 +103,7 @@ func Decide(w Want, n Node) Decision {
 			return refuse(ErrProviderUnavailable)
 		}
 		if n.Absent {
-			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog; download or register it, using POST /zzrouter/v1/deployments for a cloud model", ErrModelNotLocal, w.Model))
+			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog", ErrModelNotLocal, w.Model))
 		}
 		return Decision{Act: ActReady}
 	case LifecycleServed:
@@ -145,7 +145,7 @@ func Decide(w Want, n Node) Decision {
 	case smoke && n.Runtime != "" && n.Runtime != w.Runtime:
 		return refuse(errors.New("smoke model does not use the runtime being installed"))
 	case !smoke && n.Absent: // a smoke tests the runtime being installed, not the catalog
-		return refuse(fmt.Errorf("%w: %s; download it with auto_deploy before starting", ErrModelNotLocal, w.Model))
+		return refuse(fmt.Errorf("%w: %s", ErrModelNotLocal, w.Model))
 	case n.Blocker == nil && !n.AdmissionHeld:
 		return Decision{Act: ActStart, Replace: replace}
 	case smoke:
@@ -189,7 +189,10 @@ func chooseEvictions(shortfall int64, candidates []evictionCandidate) []string {
 	return ids
 }
 
-// idleExpired is Ollama's keep-alive rule: below zero never, zero at once, else after keep-alive idle.
-func idleExpired(keepAlive time.Duration, lastActivity, now time.Time) bool {
-	return keepAlive == 0 || (keepAlive > 0 && !lastActivity.IsZero() && now.Sub(lastActivity) > keepAlive)
+// Expired is the idle rule: held leases, claims and pins never expire, zero expires after release.
+func Expired(r instance.IdleState, settings config.RunSettings, now time.Time) bool {
+	if (r.Status != instance.StatusRunning && r.Status != instance.StatusUnhealthy) || r.Leased || r.Claimed {
+		return false
+	}
+	return settings.KeepAlive == 0 && r.Released || settings.KeepAlive > 0 && !r.Activity.IsZero() && !now.Before(r.Activity.Add(settings.KeepAlive))
 }

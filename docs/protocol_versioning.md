@@ -19,6 +19,26 @@ when old peers would reject, misread or mis-handle the new bytes. Optional field
 that old peers safely ignore may keep the previous minimum for one release.
 A bug fix without a wire change does not require a bump.
 
+Protocol 6 raises the minimum from 5 to 6. Every worker resolves reserved
+run parameters `keep-alive` and `evict-idle-on-memory-pressure` through the
+provider tier tree and keeps them out of engine argv. Older workers ignore
+tree idle settings or pass eviction flags to engines. Upgrade all peers
+together using the maintenance procedure below.
+
+Protocol 5 raised the minimum from 4 to 5. Internal model deletion carries an
+exact physical name, provider, registry and source id. Every serving node must
+guard that target against frozen run reservations and configured variant references,
+and serialize deletion/publication with cold starts, queue admission and daemon
+adoption. Old workers can ignore these fields or delete held weights. All peers
+must upgrade together using the maintenance procedure below.
+
+Protocol 4 raised the minimum from 3 to 4. Internal model show preserves
+the selected provider, registry/source id, compact projection and native
+uncataloged-read selector. A protocol-3 worker ignores those selectors, which
+can select another source/backend or return oversized metadata. Upgrade every
+peer together using the maintenance procedure below; this change has no rolling
+compatibility window. Public full-detail callers retain their response shape.
+
 Document both old and new values, the contract change and upgrade procedure in
 the public changelog. A compatibility window requires explicit support for both
 versions in the relevant code and tests.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // ShowModel returns detailed information about a HuggingFace model in
@@ -46,21 +48,24 @@ func (hfc *Connector) ShowModel(ctx context.Context, modelID string) (map[string
 		}
 		result["model_info"] = modelInfo
 
-		// Infer capabilities from architecture naming conventions.
-		capabilities := []string{}
-		if architectures, ok := config["architectures"].([]any); ok && len(architectures) > 0 {
-			if arch, ok := architectures[0].(string); ok {
-				if strings.Contains(arch, "CausalLM") {
-					capabilities = append(capabilities, "completion")
-				}
-				if strings.Contains(arch, "Vision") || strings.Contains(arch, "VL") {
-					capabilities = append(capabilities, "vision")
+		if info, err := os.Stat(filepath.Join(modelPath, "chat_template.jinja")); err == nil && info.Mode().IsRegular() {
+			result["template_present"] = info.Size() > 0
+		}
+		for _, filename := range []string{"generation_config.json", "tokenizer_config.json"} {
+			data, err := os.ReadFile(filepath.Join(modelPath, filename))
+			var value map[string]any
+			if err != nil || json.Unmarshal(data, &value) != nil || value == nil {
+				continue
+			}
+			if filename == "generation_config.json" {
+				result["parameters"] = value
+			} else if template, reported := value["chat_template"].(string); reported {
+				if _, known := result["template_present"]; !known {
+					result["template_present"] = strings.TrimSpace(template) != ""
 				}
 			}
 		}
-		if len(capabilities) > 0 {
-			result["capabilities"] = capabilities
-		}
+
 	} else {
 		apiURL := fmt.Sprintf("%s%s", hfc.apiBase, modelID)
 		req, err := hfc.newGet(ctx, apiURL)
@@ -75,12 +80,13 @@ func (hfc *Connector) ShowModel(ctx context.Context, modelID string) (map[string
 		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("model not found on HuggingFace (status %d)", resp.StatusCode)
+			return nil, httperr.Error{Status: resp.StatusCode, Message: fmt.Sprintf("HuggingFace model metadata returned HTTP %d", resp.StatusCode)}
 		}
 
+		body, err := io.ReadAll(resp.Body)
 		var apiData map[string]any
-		if err := json.NewDecoder(resp.Body).Decode(&apiData); err != nil {
-			return nil, fmt.Errorf("failed to parse HuggingFace API response: %w", err)
+		if err != nil || json.Unmarshal(body, &apiData) != nil || apiData == nil {
+			return nil, httperr.Error{Status: http.StatusBadGateway, Code: string(httperr.CodeUpstreamShape), Message: "HuggingFace model metadata must be one JSON object"}
 		}
 
 		details := make(map[string]any)

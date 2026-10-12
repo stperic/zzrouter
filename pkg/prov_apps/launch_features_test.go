@@ -21,6 +21,8 @@ import (
 func featureLaunchFixture(t *testing.T) (*ProviderAppManager, config.ServiceConfig, string) {
 	t.Helper()
 	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	previousRoot, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	modelregistry.SetModelsRootDirOverride(root)
@@ -47,7 +49,7 @@ func landProjector(t *testing.T, dir, digest string) {
 }
 
 func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
-	for _, scenario := range []string{"missing projector", "missing sibling", "vision enabled", "vision opted out", "enabled projector removed during preparation", "explicit missing projector"} {
+	for _, scenario := range []string{"missing projector", "missing sibling", "vision enabled", "vision opted out", "enabled projector removed during preparation", "explicit missing projector", "symlink weights outside"} {
 		t.Run(scenario, func(t *testing.T) {
 			m, svc, dir := featureLaunchFixture(t)
 			landProjector(t, dir, "digest")
@@ -56,6 +58,12 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 				integrity.FileChecksum{RelativePath: "weights.gguf", Size: 7},
 				integrity.FileChecksum{RelativePath: "sibling.gguf", Size: 7}))
 			req := EnsureRequest{Provider: "vllm", Model: "vendor/model#weights.gguf"}
+			if scenario == "symlink weights outside" {
+				outside := filepath.Join(t.TempDir(), "weights.gguf")
+				require.NoError(t, os.WriteFile(outside, []byte("weights"), 0600))
+				require.NoError(t, os.Remove(filepath.Join(dir, "weights.gguf")))
+				require.NoError(t, os.Symlink(outside, filepath.Join(dir, "weights.gguf")))
+			}
 			if scenario == "missing projector" || scenario == "vision opted out" || scenario == "explicit missing projector" {
 				require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
 			}
@@ -77,6 +85,10 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 			inst := instance.NewInstance("selected-files", "vllm", req.Model, 8100, 0, 0)
 			inst.Endpoint = "chat"
 			run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
+			if scenario == "symlink weights outside" {
+				require.Error(t, err, "launch verification must retain the selected source's manifest")
+				return
+			}
 			if scenario == "enabled projector removed during preparation" || scenario == "explicit missing projector" {
 				require.ErrorIs(t, err, process.ErrModelIncomplete)
 				return
@@ -101,6 +113,58 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 	inst.Endpoint = "chat"
 	_, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
 	require.ErrorIs(t, err, process.ErrModelIncomplete)
+}
+
+func TestDeletionFeatureOriginContract(t *testing.T) {
+	_, svc, dir := featureLaunchFixture(t)
+	outside := filepath.Join(t.TempDir(), "weights.gguf")
+	require.NoError(t, os.WriteFile(outside, []byte("weights"), 0600))
+	require.NoError(t, os.Remove(filepath.Join(dir, "weights.gguf")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "weights.gguf")))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-projector.gguf"), []byte("projector"), 0600))
+	localized, err := LocalizeModelFeatures(svc, "vendor/model#weights.gguf", map[string]string{})
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(dir, "a-projector.gguf"), localized.Params["mmproj"], "feature files belong to the selected repository")
+}
+
+func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
+	m, svc, dir := featureLaunchFixture(t)
+	first, second := filepath.Join(t.TempDir(), "first.gguf"), filepath.Join(t.TempDir(), "second.gguf")
+	for _, file := range []string{first, second} {
+		require.NoError(t, os.WriteFile(file, []byte("projector"), 0600))
+	}
+	alias := filepath.Join(dir, "a-projector.gguf")
+	require.NoError(t, os.Symlink(first, alias))
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model#weights.gguf", Parameters: map[string]string{"mmproj": alias}}
+	selected := process.ResolveModel(svc, req.Model)
+	inst := instance.NewInstance("feature-owner", "vllm", req.Model, 8100, 0, 0)
+	inst.Endpoint = "chat"
+	inst.Config = instance.Config{Provider: req.Provider, Model: req.Model, Port: 8100, Parameters: req.Parameters}
+	inst.SetWeights(instance.Weights{Model: "vendor/model", Paths: selected.WeightPaths()})
+	run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: selected})
+	require.NoError(t, err)
+	physical, err := filepath.EvalSymlinks(first)
+	require.NoError(t, err)
+	require.Contains(t, run.args, physical, "argv must use the same frozen feature identity as deletion ownership")
+	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(inst).State, "unchanged configuration must remain current")
+	preview, err := m.PreviewLaunch(req, 8100)
+	require.NoError(t, err)
+	require.Contains(t, preview.Args, physical, "preview and live launch must use the same feature preparation")
+	cfg := copyReservationConfig(t, m.AppsConfig())
+	require.NoError(t, cfg.UpdateApp("vllm", func(sc *config.ServiceConfig) error {
+		sc.Defaults.Parameters["mmproj"] = alias
+		return nil
+	}))
+	m.ReloadConfig(cfg)
+	require.NotContains(t, m.ParametersStatus(inst).Overridden, "parameters.mmproj", "an identical config/request alias is not an override")
+	inst.MarkRunning()
+	require.NoError(t, m.instances.Register(inst))
+	t.Cleanup(func() { _ = m.instances.Remove(inst.ID) })
+	require.NoError(t, os.Remove(alias))
+	require.NoError(t, os.Symlink(second, alias))
+	require.Error(t, m.WithModelDeletion(t.Context(), func(ctx context.Context) error {
+		return m.CheckModelDeletion(ctx, instance.Weights{Model: "projector", Paths: []string{first}})
+	}))
 }
 
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
@@ -305,10 +369,21 @@ func TestKeepAliveNeverReachesTheLaunch(t *testing.T) {
 	preview, err := m.PreviewLaunch(req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, preview.Args, "--keep-alive")
-	assert.NotContains(t, preview.Params, "keep-alive")
+	assert.Equal(t, "10m", preview.Params["keep-alive"], "run policy remains visible in resolved parameters")
 	assert.Contains(t, preview.Args, "--max-model-len")
-	keepAlive, explicit, err := runKeepAlive(svc, req)
+	settings, err := m.runSettings(svc, req)
 	require.NoError(t, err)
-	assert.True(t, explicit)
-	assert.Equal(t, 10*time.Minute, keepAlive)
+	assert.True(t, settings.KeepAliveExplicit)
+	assert.Equal(t, 10*time.Minute, settings.KeepAlive)
+}
+
+func TestRunSettingsPreviewAndStartRejectSameValues(t *testing.T) {
+	m, _, _ := featureLaunchFixture(t)
+	for _, key := range []string{"keep-alive", "evict-idle-on-memory-pressure", "keep_alive", "evict_idle_on_memory_pressure"} {
+		req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{key: "auto"}}
+		_, err := m.PreviewLaunch(req, 8100)
+		assert.ErrorIs(t, err, ErrParameterValidation, "preview %s", key)
+		_, err = m.EnsureRun(t.Context(), req)
+		assert.ErrorIs(t, err, ErrParameterValidation, "start %s", key)
+	}
 }

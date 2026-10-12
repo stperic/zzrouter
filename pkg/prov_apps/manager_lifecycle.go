@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,7 +30,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	if err != nil {
 		return nil, err
 	}
-	inst, err := m.registerRun(ctx, req, selection.config)
+	inst, err := m.registerRun(ctx, req, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +90,17 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 }
 
 // registerRun allocates a port and registers a starting, not yet admitted run.
-func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig) (*instance.Instance, error) {
+func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
 		return nil, fmt.Errorf("port allocation failed: %w", err)
 	}
-	inst, err := m.newRun(ctx, req, svcCfg, allocatedPort)
+	inst, err := m.newRun(ctx, req, selection.config, allocatedPort)
+	if err == nil {
+		weights := m.reserveWeights(ctx, req, selection)
+		inst.SetWeights(weights)
+		inst.SourceRepo = weights.Source
+	}
 	if err == nil {
 		err = m.instances.Register(inst)
 	}
@@ -107,13 +113,13 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 
 // newRun builds a starting, not yet admitted run for req on port, 0 for none.
 func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig, port int) (*instance.Instance, error) {
-	keepAlive, _, err := runKeepAlive(svcCfg, req)
+	settings, err := m.runSettings(svcCfg, req)
 	if err != nil {
 		return nil, err
 	}
 	endpoint := string(EndpointOrDefault(req.Endpoint))
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
-	inst := instance.NewInstance(id, req.Provider, req.Model, port, keepAlive, 0)
+	inst := instance.NewInstance(id, req.Provider, req.Model, port, settings.KeepAlive, 0)
 	inst.Endpoint = endpoint
 	inst.StartedBy = instance.StartedByAPI
 	if req.Origin == OriginRequest {
@@ -141,10 +147,6 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 		}
 		inst.HealthURL = fmt.Sprintf("http://localhost:%d%s", port, healthPath)
 	}
-	if m.modelSource != nil {
-		weights, _, _ := strings.Cut(svcCfg.WeightsOf(req.Model), "#")
-		inst.SourceRepo = m.modelSource(ctx, weights)
-	}
 
 	// Initialize concurrency limiter from provider config
 	if svcCfg.Runtime != nil && svcCfg.Runtime.MaxConcurrentRequests > 0 {
@@ -155,22 +157,18 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 		})
 	}
 
-	// Wire keep-alive expiry to the manager's idle reaper
-	inst.IdleExpiry = m.idleExpiry
 	return inst, nil
 }
 
-// keepAliveParameter is the start parameter that sets a run's keep-alive.
-const keepAliveParameter = "keep-alive"
+const keepAliveParameter = config.KeepAliveParameter
 
-// runKeepAlive is a run's idle limit, the start's own else its provider's; explicit is false for the default.
-func runKeepAlive(svcCfg config.ServiceConfig, req EnsureRequest) (keepAlive time.Duration, explicit bool, err error) {
-	if raw, ok := req.Parameters[keepAliveParameter]; ok {
-		keepAlive, err = (&config.AppRuntimeConfig{KeepAlive: raw}).GetKeepAliveDuration()
-		return keepAlive, true, err
+func (m *ProviderAppManager) runSettings(svc config.ServiceConfig, req EnsureRequest) (config.RunSettings, error) {
+	params := mergeStringMaps(config.FlattenParameters(svc.ResolveEndpoint(m.localNodename(), req.Model, string(EndpointOrDefault(req.Endpoint))).Parameters), req.Parameters)
+	settings, err := config.ParseRunSettings(params, m.idleEvictionDefault)
+	if err != nil {
+		return config.RunSettings{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
-	keepAlive, err = svcCfg.Runtime.GetKeepAliveDuration()
-	return keepAlive, svcCfg.Runtime != nil && svcCfg.Runtime.KeepAlive != "", err
+	return settings, nil
 }
 
 // releaseRun undoes registerRun for a run no process was started for. It
@@ -231,11 +229,17 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
 	endpoint := inst.Endpoint
 	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
-	if err == nil {
-		var evicted []instance.EvictedRun
-		evicted, err = m.admitMemory(ctx, selection.key, features)
-		inst.SetEvictedRuns(evicted)
+	if err != nil {
+		return admittedRun{}, err
 	}
+	var featurePaths []string
+	for _, feature := range features.Config.Features {
+		if path := features.Params[feature.Flag]; len(feature.Files) > 0 && filepath.IsAbs(path) {
+			featurePaths = append(featurePaths, path)
+		}
+	}
+	evicted, err := m.admitMemory(ctx, selection.key, features)
+	inst.SetEvictedRuns(evicted)
 	var prepared preparedLaunch
 	if err == nil {
 		prepared, err = m.prepareLaunchFeatures(features, selection.key, endpoint, inst.Port)
@@ -243,20 +247,24 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	if err != nil {
 		return admittedRun{}, err
 	}
+	settings, err := config.ParseRunSettings(prepared.parameters.Params, m.idleEvictionDefault)
+	if err != nil {
+		return admittedRun{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+	}
+	inst.SetKeepAlive(settings.KeepAlive)
 	inst.SetResolved(prepared.resolved)
 	// An incomplete download reaches the engine as a corrupt-tensor crash
 	// tens of seconds in; catching it here names the actual problem.
-	var featurePaths []string
-	for _, feature := range prepared.config.Features {
-		if path := prepared.parameters.Params[feature.Flag]; len(feature.Files) > 0 && path != "" {
-			featurePaths = append(featurePaths, path)
-		}
-	}
-	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths); err != nil {
+	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths, selection.model.SourcePath()); err != nil {
 		return admittedRun{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return admittedRun{}, err
+	}
+	if len(featurePaths) > 0 {
+		weights := inst.Weights()
+		weights.Paths = append(weights.Paths, featurePaths...)
+		inst.SetWeights(weights)
 	}
 	inst.WireModel = prepared.launch.WireModel
 	return admittedRun{
@@ -330,6 +338,12 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, nil, err
 	}
 	defer unlock()
+	ctx, release, err := m.catalogPermit(ctx, 1)
+	if err != nil {
+		return admittedRun{}, nil, err
+	}
+	defer release()
+	inst.SetWeights(m.reserveWeights(ctx, req, selection))
 	select {
 	case m.memoryAdmission <- struct{}{}:
 	case <-ctx.Done():
@@ -439,11 +453,15 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	}
 	need := process.Need{}
 	if features.Params[budget.Parameter] == "auto" {
-		need, _ = process.ModelMemoryNeed(features.model.Path, features.Config, features.Params)
+		need, _ = process.ModelMemoryNeed(features.model, features.Config, features.Params)
 	}
 	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
 	var fit *process.MemoryFitError
-	if !m.evictIdleOnMemoryPressure || !errors.As(err, &fit) {
+	settings, settingsErr := config.ParseRunSettings(features.Params, m.idleEvictionDefault)
+	if settingsErr != nil {
+		return nil, fmt.Errorf("%w: %w", ErrParameterValidation, settingsErr)
+	}
+	if !settings.EvictIdle || !errors.As(err, &fit) {
 		return nil, err
 	}
 	evicted := m.reclaimFor(ctx, fit)
@@ -737,7 +755,6 @@ func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance
 
 	// Stop background activity even if the engine cannot end the model.
 	inst.Cancel()
-	inst.StopKeepAliveTimer()
 	if down != nil {
 		if err := down(ctx, inst); err != nil {
 			return err
@@ -850,12 +867,19 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 
 	// Background starts end before the instance drain, so none registers a run after it.
 	m.startsCancel()
+	var stopErr error
+	if m.reaperDone != nil {
+		select {
+		case <-m.reaperDone:
+		case <-ctx.Done():
+			stopErr = ctx.Err()
+		}
+	}
 	done := make(chan struct{})
 	go func() {
 		m.onDemandStarts.Wait()
 		close(done)
 	}()
-	var stopErr error
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -911,10 +935,6 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	if err := m.stopServices(ctx); err != nil && stopErr == nil {
 		stopErr = err
 	}
-
-	// idleExpiry is closed because the idleReaper ranges over it and
-	// needs the close-signal to exit; no external senders.
-	close(m.idleExpiry)
 
 	return stopErr
 }
@@ -1092,8 +1112,6 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 	for name := range req.Parameters {
 		sources[name] = config.TierRequest.String()
 	}
-	delete(params, keepAliveParameter) // a run setting (runKeepAlive), never an engine's
-	delete(sources, keepAliveParameter)
 	return params, env, sources
 }
 
@@ -1107,6 +1125,9 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 // Split out from EnsureRun so the parameters-to-argv contract can be
 // tested without starting a process.
 func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
+	if _, err := config.ParseRunSettings(params, m.idleEvictionDefault); err != nil {
+		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+	}
 	if err := process.ValidateParameters(params); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}

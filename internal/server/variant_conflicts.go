@@ -35,9 +35,7 @@ func writeModelAdmissionError(w http.ResponseWriter, req *http.Request, err erro
 	if !ok {
 		failure = httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "backend_unavailable", Message: err.Error()}
 	}
-	if failure.Code == "" {
-		failure.Code = inferenceCode(failure.Status)
-	}
+	failure.Code = inferenceCode(err, failure)
 	recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 	writeError(w, req, failure)
 }

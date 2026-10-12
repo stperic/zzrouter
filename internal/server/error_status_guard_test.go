@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -110,7 +111,7 @@ func TestProviderSentinels_EveryExportedErrorHasARow(t *testing.T) {
 func TestAdmissionStatusGuard(t *testing.T) {
 	for _, reason := range []error{instance.ErrQueueFull, instance.ErrQueueWaitExpired} {
 		admission := &instance.AdmissionError{Reason: reason, RetryAfter: 1500 * time.Millisecond}
-		failure, ok := renderAdmissionError(fmt.Errorf("wrapped: %w", admission))
+		failure, ok := knownFailure(fmt.Errorf("wrapped: %w", admission))
 		require.True(t, ok)
 		assert.Equal(t, http.StatusServiceUnavailable, failure.Status)
 		assert.Equal(t, admission.RetryAfter, failure.RetryAfter)
@@ -120,7 +121,11 @@ func TestAdmissionStatusGuard(t *testing.T) {
 		assert.Equal(t, "2", w.Header().Get("Retry-After"))
 	}
 	for _, err := range []error{context.Canceled, context.DeadlineExceeded, instance.ErrAtCapacity} {
-		_, ok := renderAdmissionError(err)
-		assert.False(t, ok)
+		var admission *instance.AdmissionError
+		assert.False(t, errors.As(err, &admission), "bare causes cannot trigger request-slot rendering")
+		if err != instance.ErrAtCapacity {
+			_, ok := knownFailure(err)
+			assert.False(t, ok)
+		}
 	}
 }

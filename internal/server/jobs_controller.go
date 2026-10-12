@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -134,33 +135,29 @@ func (c *JobsController) RegisterInternalRoutes(router *gin.RouterGroup) {
 // unicast list, distinct from cluster-wide fan-out which remains
 // deferred (plan doc §Design decisions).
 func (c *JobsController) ListJobs(ctx *gin.Context) {
-	if c.handleRemote(ctx, c.proxyList) {
-		return
-	}
-	kind := jobs.Kind(ctx.Query("kind"))
-	events := c.registry.List(kind)
-	// The spec advertises ?limit, and total/has_more only mean anything
-	// if something actually pages. Uses the shared helpers so this route
-	// pages the way every other list endpoint does.
 	pagination, ok := ParsePagination(ctx)
 	if !ok {
 		return
 	}
-	page, total, hasMore := ApplyPagination(events, pagination)
-	respondJobPage(ctx, page, total, hasMore, c.nodeName)
+	if c.handleRemote(ctx, func(ctx *gin.Context, node string) { c.proxyList(ctx, node, pagination) }) {
+		return
+	}
+	respondJobList(ctx, c.registry.List(jobs.Kind(ctx.Query("kind"))), c.nodeName, pagination)
 }
 
 // respondJobList writes the collection envelope shared by every list
 // endpoint on the management surface. Both the local answer and the
 // ?node=<peer> answer go through here, so the public shape of GET /jobs
 // no longer depends on which node happens to own the job.
-func respondJobList(ctx *gin.Context, events []jobs.Event, node string) {
-	respondJobPage(ctx, events, len(events), false, node)
-}
-
-// respondJobPage is respondJobList for a caller that has already paged.
-func respondJobPage(ctx *gin.Context, events []jobs.Event, total int, hasMore bool, node string) {
-	respondListWithMetadata(ctx, events, total, hasMore, map[string]any{"node": node})
+func respondJobList(ctx *gin.Context, events []jobs.Event, node string, pagination PaginationParams) {
+	slices.SortFunc(events, func(a, b jobs.Event) int {
+		if order := b.At.Compare(a.At); order != 0 {
+			return order
+		}
+		return strings.Compare(a.JobID, b.JobID)
+	})
+	page, total, hasMore := ApplyPagination(events, pagination)
+	respondListWithMetadata(ctx, page, total, hasMore, map[string]any{"node": node})
 }
 
 // GetJob returns the latest event snapshot for a single job. When
@@ -480,7 +477,7 @@ func (c *JobsController) upstreamURL(ctx *gin.Context, node, pathSuffix string, 
 // body through, the payload is lifted into the public collection
 // envelope: a caller asking for one peer's jobs should not get a
 // different shape than a caller asking for the local node's.
-func (c *JobsController) proxyList(ctx *gin.Context, node string) {
+func (c *JobsController) proxyList(ctx *gin.Context, node string, pagination PaginationParams) {
 	upstream, ok := c.upstreamURL(ctx, node, "", true)
 	if !ok {
 		return
@@ -507,7 +504,7 @@ func (c *JobsController) proxyList(ctx *gin.Context, node string) {
 	if body.Node == "" {
 		body.Node = node
 	}
-	respondJobList(ctx, body.Jobs, body.Node)
+	respondJobList(ctx, body.Jobs, body.Node, pagination)
 }
 
 // upstreamBodyLimit caps the peer body the coordinator will read, both
