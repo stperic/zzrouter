@@ -162,7 +162,7 @@ budget, ignoring caller `message` and `max_tokens`. The tool is never executed.
 `probe: embed` sends one fixed sentence through `/v1/embeddings`. A successful
 probe requires one nonempty finite numeric vector and returns `dimensions`,
 never the vector. `probe: vision` sends two different 16-by-16 solid-color images
-with the same neutral question in two chat requests, each capped at 16 reply
+with the same neutral question in two chat requests, each capped at 256 reply
 tokens. Both answers must match their image. A constant answer cannot verify
 vision; truncation or a wrong answer is inconclusive. Fixed probes ignore caller
 `message` and `max_tokens`.

@@ -65,7 +65,7 @@ func (d dispatcher) chat(ctx context.Context, in chatInput) (out agentOutput, er
 			"parameters": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string", "minLength": 1}}, "required": []string{"city"}},
 		}}}
 	case probeVision:
-		checks, body["max_tokens"] = 2, 16
+		checks, body["max_tokens"] = 2, MaxChatTokens
 	default:
 		return out, newToolError(http.StatusBadRequest, codeInvalidInput, "probe must be chat, tools, embed or vision", nil)
 	}

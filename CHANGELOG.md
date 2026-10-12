@@ -26,6 +26,9 @@
 
 ### Behaviour changes
 
+- MCP startup guidance names job collections and capability probes, and source
+  metadata fields are distinguished from serving details. Vision probes allow
+  up to 256 tokens per image so reasoning models can reach a visible answer.
 - Run and provider refusals use one wire table for status, retry delay and
   diagnostics. Cold-load responses retain memory-budget details and explicit
   run/job extensions; streaming and native dialects keep their existing shapes.
