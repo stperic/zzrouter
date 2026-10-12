@@ -1,6 +1,10 @@
 package instance
 
-import "github.com/stperic/zzrouter/pkg/constants"
+import (
+	"slices"
+
+	"github.com/stperic/zzrouter/pkg/constants"
+)
 
 // Status represents the lifecycle state of a provider instance.
 type Status string
@@ -137,7 +141,7 @@ type Resolved struct {
 func (r Resolved) clone() Resolved {
 	return Resolved{
 		Runtime: r.Runtime, AutoMemory: r.AutoMemory,
-		Execution: r.Execution, WireEndpoints: append([]string(nil), r.WireEndpoints...),
+		Execution: r.Execution, WireEndpoints: slices.Clone(r.WireEndpoints),
 		Parameters:  copyStringMap(r.Parameters),
 		Environment: copyStringMap(r.Environment),
 		Files:       copyStringMap(r.Files),

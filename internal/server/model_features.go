@@ -6,8 +6,10 @@ import (
 	"slices"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/protocol"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -28,27 +30,31 @@ func (s *Server) catalogTarget(ctx context.Context, model, provider, node string
 	return m
 }
 
-func (s *Server) modelWireMode(m *cache.CachedModel, native, compat string) wireEndpointMode {
-	if eps, reported := m.WireEndpoints(); reported {
-		if slices.Contains(eps, native) {
-			return wireModeNative
-		}
-		if compat != "" && slices.Contains(eps, compat) {
-			return wireModeCompat
-		}
-		return wireModeUnsupported
-	}
-	if m == nil {
-		return wireModeUnknown
-	}
-	return s.providerWireMode(m.Provider, native, compat)
-}
-
 func (s *Server) targetWireMode(ctx context.Context, model, provider, node, native, compat string) wireEndpointMode {
+	if s.node != nil && s.node.IsLocalNode(node) {
+		if run, found := s.modelInstance(model, "chat", provider); found && run.GetStatus() == instance.StatusRunning {
+			if eps := run.Resolved().WireEndpoints; eps != nil {
+				return wireModeForEndpoints(config.EffectiveWireEndpoints(eps), native, compat)
+			}
+		}
+	}
 	if m := s.catalogTarget(ctx, model, provider, node); m != nil {
-		return s.modelWireMode(m, native, compat)
+		if eps, reported := m.WireEndpoints(); reported {
+			return wireModeForEndpoints(eps, native, compat)
+		}
+		provider = m.Provider
 	}
 	return s.providerWireMode(provider, native, compat)
+}
+
+func wireModeForEndpoints(endpoints []string, native, compat string) wireEndpointMode {
+	if slices.Contains(endpoints, native) {
+		return wireModeNative
+	}
+	if compat != "" && slices.Contains(endpoints, compat) {
+		return wireModeCompat
+	}
+	return wireModeUnsupported
 }
 
 // narrowToVision removes known ineligible replicas before endpoint selection

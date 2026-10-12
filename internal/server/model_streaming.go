@@ -212,9 +212,10 @@ func (s *Server) ensureLocalRun(req prov_apps.EnsureRequest) (*instance.Instance
 	if err != nil {
 		return nil, err
 	}
-	if inst := result.Run; inst != nil && inst.GetStatus() == instance.StatusStarting {
-		slog.Info("Model is starting locally, waiting for ready", "model_name", req.Model)
-		return s.waitForLocalInstance(inst)
+	if inst := result.Run; inst != nil {
+		if status := inst.GetStatus(); status == instance.StatusStarting || status.IsTerminal() {
+			return s.waitForLocalInstance(inst)
+		}
 	}
 	return result.Run, nil
 }
@@ -230,23 +231,26 @@ func (s *Server) ensureLocalRun(req prov_apps.EnsureRequest) (*instance.Instance
 // Measuring from the instance means the first caller waits, and the ones
 // behind it get told to come back instead of queueing on it.
 func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instance, error) {
-	budget := constants.ModelStreamingTimeout
-	if started := inst.GetStartedAt(); !started.IsZero() {
-		budget -= utils.Now().Sub(started)
-	}
-	if budget <= 0 {
-		return nil, loadStillWarming(fmt.Sprintf(
-			"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
-	}
-
 	// Wait on the run held, never the registry: a failed run that was replaced still has its cause.
-	timer := time.NewTimer(budget)
-	defer timer.Stop()
 	select {
-	case <-timer.C:
-		return nil, loadStillWarming(fmt.Sprintf(
-			"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
 	case <-inst.LeftStarting():
+	default:
+		budget := constants.ModelStreamingTimeout
+		if started := inst.GetStartedAt(); !started.IsZero() {
+			budget -= utils.Now().Sub(started)
+		}
+		if budget <= 0 {
+			return nil, loadStillWarming(fmt.Sprintf(
+				"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
+		}
+		timer := time.NewTimer(budget)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return nil, loadStillWarming(fmt.Sprintf(
+				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
+		case <-inst.LeftStarting():
+		}
 	}
 	if s.providers.readinessWoken != nil {
 		s.providers.readinessWoken()

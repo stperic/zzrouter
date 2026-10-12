@@ -160,13 +160,7 @@ func (s *Server) providerWireMode(provider, native, compat string) wireEndpointM
 	if !ok {
 		return wireModeUnknown
 	}
-	if svc.Capabilities.SupportsWireEndpoint(native) {
-		return wireModeNative
-	}
-	if compat != "" && svc.Capabilities.SupportsWireEndpoint(compat) {
-		return wireModeCompat
-	}
-	return wireModeUnsupported
+	return wireModeForEndpoints(svc.Capabilities.EffectiveWireEndpoints(), native, compat)
 }
 
 // handleResponses handles POST /v1/responses. When the client carries
