@@ -113,6 +113,11 @@ Missing evidence falls back to the provider's effective endpoints. Native and
 translated Messages/Responses routing uses this model/provider/node evidence;
 mixed replica groups prefer native endpoints before translation.
 
+A local running instance's launched wire endpoints take precedence over catalog
+or provider defaults, including while the catalog is invalidated. Its provider
+identity is retained before translation; remote targets use their node-reported
+catalog evidence. Nil launch evidence falls back; an empty list declares none.
+
 Images are inspected structurally in Chat `image_url`, Responses `input_image`,
 Messages `image` including nested tool results, Ollama chat message `images` and
 Ollama generate root `images`. Admission occurs before endpoint selection,
