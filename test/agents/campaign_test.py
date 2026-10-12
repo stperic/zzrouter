@@ -159,14 +159,26 @@ class DisposableOwnershipTest(unittest.TestCase):
             def send_header(self, *args): pass
             def end_headers(self): pass
         req = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "zz_model_delete", "arguments": self.args}}
-        e = Exchange(); body = json.dumps(req).encode(); e.rfile = io.BytesIO(body); e.wfile = io.BytesIO()
-        e.headers = {"Content-Length": str(len(body)), "X-Campaign-Scenario": "guard-unit"}
         from types import SimpleNamespace
         reply = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"isError": False, "structuredContent": {"deleted": 1}}}).encode()
-        with patch.object(c.urllib.request, "urlopen", return_value=SimpleNamespace(status=200, read=lambda: reply, headers={})) as upstream:
-            c.Proxy._go(e)
-        upstream.assert_not_called()
-        self.assertEqual(json.loads(e.wfile.getvalue())["result"]["structuredContent"]["code"], "campaign_ownership_guard")
+        cases = [(None, None, None), ("2025-06-18", None, None), ("2026-07-28", "2026-07-28", "complete"),
+                 (None, "2026-07-28", "complete")]  # Meta-only case covers formatting, not modern HTTP transport validity.
+        for header_version, meta_version, expected in cases:
+            with self.subTest(header=header_version, meta=meta_version):
+                request = copy.deepcopy(req)
+                if meta_version:
+                    request["params"]["_meta"] = {"io.modelcontextprotocol/protocolVersion": meta_version}
+                e = Exchange(); body = json.dumps(request).encode(); e.rfile = io.BytesIO(body); e.wfile = io.BytesIO()
+                e.headers = {"Content-Length": str(len(body)), "X-Campaign-Scenario": "guard-unit"}
+                if header_version:
+                    e.headers["MCP-Protocol-Version"] = header_version
+                with patch.object(c.urllib.request, "urlopen", return_value=SimpleNamespace(status=200, read=lambda: reply, headers={})) as upstream:
+                    c.Proxy._go(e)
+                upstream.assert_not_called()
+                result = json.loads(e.wfile.getvalue())["result"]
+                self.assertTrue(result["isError"])
+                self.assertEqual(result["structuredContent"]["code"], "campaign_ownership_guard")
+                self.assertEqual(result.get("resultType"), expected)
 
     def test_partial_cleanup_never_deletes(self):
         from unittest.mock import patch
