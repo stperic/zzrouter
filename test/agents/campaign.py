@@ -884,7 +884,8 @@ def scenarios(node, provider):
             "id": "tool-calling",
             "prompt": f"On node {node}, make {big['name']} serve tool calls with {provider}: start it, prove tool calling with "
                       "zzRouter's tool-call probe, and if the probe or a refusal says the engine needs tool-calling settings, "
-                      "set them for this model only, restart the run and probe again until it is verified. Then stop it."
+                      "set them for this model only, restart the run and probe again until it is verified. Then stop it. "
+                      "A stop reply with status=stopped confirms completion; verify absence with the zz_runs collection, without querying the stopped run_id."
                       + tail(provider) + " JSON keys: verified (bool), settings_changed (object or null), stopped (bool).",
             "check": check_tool_calling,
             "expect_error": "tool_calling_not_enabled",
