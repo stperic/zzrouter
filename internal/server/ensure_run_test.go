@@ -155,15 +155,15 @@ func TestEnsureServedLaunchLoadAndBatchShareOneRunWithoutPortPool(t *testing.T) 
 	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
 	var loads atomic.Int32
 	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/generate" {
+		if req.URL.Path != "/api/embed" {
 			return daemonListing(), nil // the daemon's listing, read as each load lands
 		}
 		loads.Add(1)
-		assert.Equal(t, "http://backend:11434/api/generate", req.URL.String())
+		assert.Equal(t, "http://backend:11434/api/embed", req.URL.String())
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 		assert.Equal(t, "local:latest", body["model"])
-		assert.Equal(t, false, body["stream"])
+		assert.Equal(t, []any{}, body["input"])
 		assert.Equal(t, float64(-1), body["keep_alive"])
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
 	})}
@@ -313,7 +313,7 @@ func TestEnsureServedProvidersShareOneRunPerModel(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
 	client := &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/generate" {
+		if req.URL.Path != "/api/embed" {
 			return daemonListing(), nil
 		}
 		calls.Add(1)

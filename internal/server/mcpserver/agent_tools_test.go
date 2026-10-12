@@ -370,6 +370,12 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 	assert.Contains(t, descriptions["zz_job"], "Omit job_id")
 	assert.Contains(t, descriptions["zz_params_set"], "models.<new-name>.from")
 	assert.Contains(t, descriptions["zz_chat"], "probe: tools, embed or vision")
+	for _, phrase := range []string{"Omit job_id", "recent jobs", "probe: tools, embed or vision"} {
+		require.Contains(t, instructions, phrase)
+	}
+	for _, phrase := range []string{"show.model_info", "show.template_present", "show.capabilities", "show.parameters", "omitted and then are unknown", "never substitute serving details"} {
+		require.Contains(t, descriptions["zz_models"], phrase)
+	}
 	require.Less(t, strings.Index(instructions, "Check zz_models first"), strings.Index(instructions, "zz_model_search"))
 
 }
@@ -432,4 +438,24 @@ func TestParamsGetIncludesAccepts(t *testing.T) {
 	data, err := json.Marshal(result["structuredContent"])
 	require.NoError(t, err)
 	require.JSONEq(t, `{"parameters":{"ctx-size":{"value":"4096","tier":"default"}},"accepts":{"n-gpu-layers":{"type":"int","description":"Number of layers to offload to GPU"}}}`, string(data))
+}
+
+func TestExactModelMetadataGuidanceContract(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/zzrouter/v1/models/show" {
+			writeFixture(t, w, []byte(`{"data":{"name":"m","model_info":{"context_length":8192},"template_present":true}}`))
+			return
+		}
+		writeFixture(t, w, []byte(`{"data":[{"name":"m","source_id":"org/m","source_repo":"huggingface","node":"n","assigned_app":"a"}],"total":1}`))
+	})
+	result := callAgentTool(t, d, "zz_models", map[string]any{"model": "m", "node": "n", "provider": "a"})
+	require.NotEqual(t, true, result["isError"], result)
+	content := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	for _, phrase := range []string{"show.model_info", "show.template_present", "show.capabilities", "show.parameters", "Omitted source fields are unknown", "details describes serving"} {
+		require.Contains(t, content, phrase)
+	}
+	models := result["structuredContent"].(map[string]any)["models"].([]any)
+	show := models[0].(map[string]any)["show"].(map[string]any)
+	require.NotContains(t, show, "capabilities")
+	require.NotContains(t, show, "parameters")
 }
