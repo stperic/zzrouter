@@ -26,6 +26,8 @@
 
 ### Behaviour changes
 
+- Inference retains a daemon load's failure when it finishes before startup
+  handoff. Completed runs keep their actual outcome after the startup deadline.
 - Warm local runs retain their provider and launched wire endpoints after catalog
   invalidation, so translated Messages and Responses stay on the correct API.
 - MCP startup guidance names job collections and capability probes, and source
