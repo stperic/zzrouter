@@ -4,6 +4,8 @@
 
 ### Highlights
 
+- Ollama preloading supports embedding-only models through a capability-neutral empty-input request.
+
 - MCP server for coding agents: `POST /zzrouter/v1/mcp` (coordinator, admin
   key) serves task-level `zz_*` tools for models, providers, runs, jobs and
   updates, plus a spec-searchable escape hatch. Setup in

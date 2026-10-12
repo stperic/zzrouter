@@ -277,7 +277,7 @@ func (d *servedDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 		delete(d.loaded, model)
 		return reply(`{"done":true}`), nil
 	}
-	if prompt, isLoad := body["prompt"]; isLoad && prompt == "" {
+	if input, isLoad := body["input"].([]any); req.URL.Path == "/api/embed" && isLoad && len(input) == 0 {
 		d.loaded[model] = true
 		return reply(`{"done":true}`), nil
 	}
