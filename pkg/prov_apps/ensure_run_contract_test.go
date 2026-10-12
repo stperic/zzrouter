@@ -1233,6 +1233,9 @@ func TestEnsureRunContractServed(t *testing.T) {
 		t.Run("a dropped model retires its run", func(t *testing.T) {
 			r := newServedRig(t)
 			run := r.running(t, served)
+			ctx, cancel := context.WithTimeout(t.Context(), contractWait)
+			defer cancel()
+			require.NoError(t, run.WaitForGoroutines(ctx))
 			r.daemon.drop(servedLoaded)
 			r.tick(t)
 			require.ErrorIs(t, run.FailureCause(), ErrModelDropped)
@@ -1705,7 +1708,10 @@ func TestEnsureRunContractServedEnds(t *testing.T) {
 		time.Sleep(settle)
 		assert.True(t, r.daemon.isLoaded("z:latest"), "a held run is not ended")
 		lease.Release()
-		require.Eventually(t, func() bool { return !r.daemon.isLoaded("z:latest") }, contractWait, 10*time.Millisecond)
+		require.Eventually(t, func() bool {
+			_, listed := r.m.instances.Get(zero.ID)
+			return !r.daemon.isLoaded("z:latest") && !listed
+		}, contractWait, 10*time.Millisecond)
 		_, listed := r.m.instances.Get(zero.ID)
 		assert.False(t, listed)
 	})
