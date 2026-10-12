@@ -154,7 +154,7 @@ func TestLoadLocalModel_ReportsARunningRunNamedByItsRepoID(t *testing.T) {
 func TestLoadLocalModelRefusesAnotherProvidersRun(t *testing.T) {
 	exec, mgr, launches := newAliasLoadExecutor(t)
 	existing := instance.NewInstance("other-run", "different-provider", aliasLoadFileStem, 8300, 0, 0)
-	existing.MarkRunning()
+	existing.MarkRunning(false, nil)
 	require.NoError(t, mgr.Instances().Register(existing))
 	t.Cleanup(func() { _ = mgr.Instances().Remove(existing.ID) })
 	resp, err := exec.LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: aliasLoadRepoID, Provider: aliasLoadProvider})

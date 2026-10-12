@@ -195,7 +195,7 @@ func (r *Registry) UpdateStatus(id string, status Status, errorMsg string) error
 	case StatusFailed:
 		inst.MarkFailed(errorMsg)
 	case StatusRunning:
-		inst.MarkRunning()
+		inst.MarkRunning(true, nil)
 	case StatusUnhealthy:
 		inst.MarkUnhealthy(errorMsg)
 	default:

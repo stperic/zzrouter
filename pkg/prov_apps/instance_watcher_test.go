@@ -279,7 +279,7 @@ func TestWatcher_QueuedThenAdmitted(t *testing.T) {
 	assert.Equal(t, "other-run", queuedEv.Meta["waiting_on"])
 	require.True(t, inst.Admit())
 	assert.Equal(t, "launching", next("launching").Meta["phase"])
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 }
 
 func TestRunJobPublicationPrecedesTerminal(t *testing.T) {

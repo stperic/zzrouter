@@ -41,7 +41,7 @@ func TestFailureSnapshot_PreservesCauseAndExit(t *testing.T) {
 	inst.MarkFailedWithExit("process exited unexpectedly", &code, "")
 	inst.MarkFailed("Process 42 is not running")
 	inst.MarkUnhealthy("Health check failures")
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	snapshot := inst.ToInfo("worker")
 	assert.Equal(t, "RuntimeError: incompatible runtime build", snapshot.ErrorMessage)
 	require.NotNil(t, snapshot.Failure)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -89,19 +90,49 @@ func runEvent(t EventType, run *instance.Instance, message string) Event {
 	return Event{Type: t, Provider: run.Provider, Instance: run.ID, Model: run.Model, Message: message, Time: utils.Now()}
 }
 
-// record writes e as one line of run's log, then emits it.
-func (m *ProviderAppManager) record(run *instance.Instance, e Event) {
+// prepareRecord opens/rotates outside the instance lock: logging may call user handlers.
+// Only append/close and audit enqueue belong in the running commit.
+func (m *ProviderAppManager) prepareRecord(run *instance.Instance, e Event) (commit, finish func()) {
+	var f *os.File
+	var err error
 	if run.LogFilePath != "" {
-		f, _, err := m.runLogFile(run)
-		if err == nil {
-			_, err = fmt.Fprintf(f, "%s %s\n", e.Time.Format(time.RFC3339), e.Message)
-			err = errors.Join(err, f.Close())
-		}
-		if err != nil {
-			slog.Warn("Failed to write a run's log", "run", run.ID, "error", err)
-		}
+		f, _, err = m.runLogFile(run)
 	}
-	m.emitEvent(e)
+	return func() {
+			if f != nil {
+				_, err = fmt.Fprintf(f, "%s %s\n", e.Time.Format(time.RFC3339), e.Message)
+				err = errors.Join(err, f.Close())
+				f = nil
+			}
+			m.enqueueEvent(e)
+		}, func() {
+			if f != nil {
+				err = errors.Join(err, f.Close())
+			}
+			if err != nil {
+				slog.Warn("Failed to write a run's log", "run", run.ID, "error", err)
+			}
+		}
+}
+
+// record commits a log line and audit event before notifying catalog observers.
+func (m *ProviderAppManager) record(run *instance.Instance, e Event) {
+	commit, finish := m.prepareRecord(run, e)
+	commit()
+	finish()
+	m.notifyCatalog(e)
+}
+
+// publishRunning commits lifecycle history with readiness, then permits reentrant observers.
+func (m *ProviderAppManager) publishRunning(run *instance.Instance, stampActivity bool, message string) bool {
+	event := runEvent(EventInstanceRunning, run, message)
+	commit, finish := m.prepareRecord(run, event)
+	accepted := run.MarkRunning(stampActivity, commit)
+	finish()
+	if accepted {
+		m.notifyCatalog(event)
+	}
+	return accepted
 }
 
 // failedEvent is run's failure for cause, reported as err.

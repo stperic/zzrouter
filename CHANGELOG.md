@@ -26,6 +26,13 @@
 
 ### Behaviour changes
 
+- Readiness, lifecycle logs and audit events commit together, so a retired start
+  cannot later announce itself as running. Stopping an adopted model also unloads
+  it when Stop wins before readiness publication.
+- Cold inference pinned to the local node binds its provider before selecting the
+  native or translated API. Provider assignment by name or metadata hints happens
+  during catalog publication, including models without a detected format.
+
 - Inference retains a daemon load's failure when it finishes before startup
   handoff. Completed runs keep their actual outcome after the startup deadline.
 - Warm local runs retain their provider and launched wire endpoints after catalog

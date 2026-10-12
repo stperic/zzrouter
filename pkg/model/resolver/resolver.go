@@ -15,7 +15,9 @@ import (
 
 // Reference carries the client's model spelling and separately trusted routing hints.
 type Reference struct {
-	SourceID string
+	// Inference opts direct requests into local target binding before wire selection.
+	Inference bool
+	SourceID  string
 	// Exact selects physical management names, including incomplete weights.
 	Exact                           bool
 	Model, Provider, Node, Registry string

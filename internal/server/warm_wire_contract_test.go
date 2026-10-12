@@ -65,7 +65,10 @@ func TestWarmWireContractInvalidCatalog(t *testing.T) {
 				s.model.Cache.Invalidate()
 				resolved, err := s.model.Resolver.Resolve(t.Context(), resolver.Reference{Model: "warm-model@" + s.node.Nodename()})
 				require.NoError(t, err)
-				require.Empty(t, resolved.Provider, "pinned invalid catalog has no provider evidence")
+				require.Empty(t, resolved.Provider, "management pin keeps evidence-only semantics")
+				resolved, err = s.model.Resolver.Resolve(t.Context(), resolver.Reference{Model: "warm-model@" + s.node.Nodename(), Inference: true})
+				require.NoError(t, err)
+				require.Equal(t, run.Provider, resolved.Provider, "inference binds the warm identity before wire selection")
 				body := `{"model":"warm-model@` + s.node.Nodename() + `","max_tokens":8,"system":"Be terse.","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello"},{"role":"user","content":"bye"}]}`
 				if endpoint == "responses" {
 					body = `{"model":"warm-model@` + s.node.Nodename() + `","input":"bye","max_output_tokens":8}`
@@ -109,7 +112,7 @@ func TestWarmWireContractSnapshotGuards(t *testing.T) {
 			run.SetResolved(instance.Resolved{WireEndpoints: tc.eps})
 			run.SetStatus(tc.status)
 			for _, endpoint := range []string{"messages", "responses"} {
-				assert.Equal(t, tc.want, s.targetWireMode(t.Context(), "warm-model", tc.provider, tc.node, endpoint, endpoint+"_compat"))
+				assert.Equal(t, tc.want, s.targetWireMode(t.Context(), &resolver.Resolved{ModelName: "warm-model", Provider: tc.provider, Node: tc.node}, endpoint, endpoint+"_compat"))
 			}
 		})
 	}
@@ -125,4 +128,26 @@ func TestWarmWireContractAdmissionRetainsProvider(t *testing.T) {
 	resolved, ok := s.resolveTarget(c, "warm-model@"+s.node.Nodename(), "")
 	require.True(t, ok)
 	assert.Equal(t, "mlx", resolved.Provider)
+}
+
+func TestWarmWireContractProviderDisplayAlias(t *testing.T) {
+	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	t.Cleanup(engine.Close)
+	s := createTestNodeWithDefaults(t)
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("llamacpp", config.ServiceConfig{Enabled: new(true), Mode: "external", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: engine.URL}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+	s.appsConfig = cfg
+	s.providers.appMgr.ReloadConfig(cfg)
+	run := instanceFor(t, engine, "alias-model", "alias-model")
+	run.Provider, run.Endpoint = "llama.cpp", "chat"
+	run.SetResolved(instance.Resolved{WireEndpoints: []string{"responses"}})
+	require.NoError(t, s.providers.appMgr.Instances().Register(run))
+	t.Cleanup(func() { require.NoError(t, s.providers.appMgr.Instances().Remove(run.ID)) })
+	s.model.Cache.Invalidate()
+	for _, provider := range []string{"llama.cpp", "llamacpp"} {
+		resolved, err := s.model.Resolver.Resolve(t.Context(), resolver.Reference{Model: "alias-model", Provider: provider, Node: s.node.Nodename(), Inference: true})
+		require.NoError(t, err)
+		require.Equal(t, "llama.cpp", resolved.Provider)
+		require.Equal(t, wireModeNative, s.targetWireMode(t.Context(), resolved, "responses", "responses_compat"), "warm snapshot beats translated config")
+	}
 }

@@ -200,7 +200,7 @@ func (s *Server) handleResponses(c *gin.Context) {
 					return
 				}
 			}
-			mode := s.targetWireMode(c.Request.Context(), targetModel.ModelName, providerKey, targetModel.Node, "responses", "responses_compat")
+			mode := s.targetWireMode(c.Request.Context(), targetModel, "responses", "responses_compat")
 			if resolved, ok := s.backend.Resolve(providerKey); ok && (mode == wireModeNative || mode == wireModeUnknown) {
 				if !s.admitImages(c, req.Model, body, targetModel) {
 					return

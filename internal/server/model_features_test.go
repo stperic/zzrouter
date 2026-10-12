@@ -59,7 +59,7 @@ func TestFeatureReplicaNarrowingPrecedesEndpointAndFallback(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, wireModeCompat, mode)
 	assert.Equal(t, "text", candidates[0].App, "input chain is not mutated")
-	assert.Equal(t, wireModeNative, s.targetWireMode(context.Background(), "same-model", "text", "worker", "messages", "messages_compat"))
+	assert.Equal(t, wireModeNative, s.targetWireMode(context.Background(), &resolver.Resolved{ModelName: "same-model", Provider: "text", Node: "worker"}, "messages", "messages_compat"))
 }
 
 func TestFeatureReplicaUnknownAndNoEligible(t *testing.T) {

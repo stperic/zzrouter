@@ -282,12 +282,15 @@ func (r *Registry) autoAssignApps(models []*metadata.ModelMetadata) {
 			continue
 		}
 
-		// Skip if no format detected.
-		if model.Format == "" {
-			continue
+		// Assignment may use hints; source format evidence stays unchanged.
+		format := model.Format
+		if format == "" {
+			format = DetectFormatFromName(model.Name)
 		}
-
-		provider, host := AutoAssignProvider(model.Name, model.Format, r.appsConfigFn())
+		if format == "" {
+			format = DetectFormatFromTags(extractTagsFromExtra(model.Extra))
+		}
+		provider, host := AutoAssignProvider(model.Name, format, r.appsConfigFn())
 		if provider != "" {
 			model.AssignedApp = provider
 			model.AssignedNode = host
@@ -295,4 +298,27 @@ func (r *Registry) autoAssignApps(models []*metadata.ModelMetadata) {
 			model.AssignedAt = utils.Now()
 		}
 	}
+}
+
+// extractTagsFromExtra extracts HuggingFace tags from model Extra metadata.
+// Tags are stored at Extra["huggingface"]["tags"] as []any (string elements).
+func extractTagsFromExtra(extra map[string]any) []string {
+	if extra == nil {
+		return nil
+	}
+	hf, ok := extra["huggingface"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawTags, ok := hf["tags"].([]any)
+	if !ok {
+		return nil
+	}
+	tags := make([]string, 0, len(rawTags))
+	for _, t := range rawTags {
+		if s, ok := t.(string); ok {
+			tags = append(tags, s)
+		}
+	}
+	return tags
 }

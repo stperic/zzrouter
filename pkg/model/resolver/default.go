@@ -21,6 +21,8 @@ type DefaultConfig struct {
 	Nodename    func() string
 	IsLocalNode func(string) bool
 	CanRoute    func() bool
+	// WarmLocalIdentity reads a run by canonical identity, without catalog I/O.
+	WarmLocalIdentity func(model, provider string) (servingModel, servingProvider string, found bool)
 }
 
 // NewDefault returns a replica-aware direct-name resolver.
@@ -51,38 +53,31 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 	if lookupNode != "" && r.cfg.IsLocalNode(lookupNode) {
 		lookupNode = r.cfg.Nodename()
 	}
-	replicas, err := r.cfg.Replicas(ctx, name, provider, lookupNode, ref.Registry, cache.ReplicaSelection{Exact: ref.Exact, SourceID: ref.SourceID})
+	localInference := ref.Inference && !ref.Exact && ref.Registry == "" && ref.SourceID == "" && (lookupNode == "" || r.cfg.IsLocalNode(lookupNode))
+	var warmModel, warmProvider string
+	var warm bool
+	if localInference && r.cfg.WarmLocalIdentity != nil {
+		warmModel, warmProvider, warm = r.cfg.WarmLocalIdentity(name, provider)
+	}
+	replicas, err := r.cfg.Replicas(ctx, name, provider, lookupNode, ref.Registry, cache.ReplicaSelection{Exact: ref.Exact, SourceID: ref.SourceID, Populate: localInference && lookupNode != "" && !warm})
 	if err != nil {
 		return nil, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Code: string(httperr.CodeClusterUnavailable), Message: "model inventory is unavailable; retry when the cluster is reachable"}
 	}
-	selectReplica := func(replica *cache.CachedModel) (*Resolved, error) {
-		for _, other := range replicas {
-			if strings.EqualFold(other.Provider, replica.Provider) && strings.EqualFold(other.Node, replica.Node) && (!strings.EqualFold(other.SourceRepo, replica.SourceRepo) || !strings.EqualFold(other.SourceID, replica.SourceID)) {
-				return nil, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: string(httperr.CodeModelSourceAmbiguous), Message: fmt.Sprintf("model %q has several physical sources on provider %q and node %q; use an exact source_id from GET /zzrouter/v1/models", name, replica.Provider, replica.Node)}
-			}
-		}
-		resolved.Replica = replica
-		resolved.ModelName, resolved.RequestModel, resolved.Provider = replica.Model, replica.Name, replica.Provider
-		if resolved.ModelName == "" {
-			resolved.ModelName = replica.Name
-		}
-		if !r.cfg.IsLocalNode(replica.Node) && r.cfg.CanRoute() {
-			resolved.Node = replica.Node
-		}
-		return resolved, nil
+	if len(replicas) == 0 && warm {
+		resolved.ModelName, resolved.Provider = warmModel, warmProvider
 	}
 	if nodeHint != "" {
 		if !r.cfg.IsLocalNode(nodeHint) && r.cfg.CanRoute() {
 			resolved.Node = nodeHint
 		}
 		if len(replicas) > 0 {
-			return selectReplica(replicas[0])
+			return r.selectReplica(resolved, replicas, replicas[0], localInference)
 		}
 		return resolved, nil
 	}
 	for _, replica := range replicas {
 		if r.cfg.IsLocalNode(replica.Node) {
-			return selectReplica(replica)
+			return r.selectReplica(resolved, replicas, replica, localInference)
 		}
 	}
 	nodes := map[string]*cache.CachedModel{}
@@ -98,7 +93,31 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 		return nil, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: string(httperr.CodeModelNodeAmbiguous), Message: fmt.Sprintf("model %q is available on several nodes; choose %s", modelName, strings.Join(choices, ", "))}
 	}
 	if len(replicas) > 0 {
-		return selectReplica(replicas[0])
+		return r.selectReplica(resolved, replicas, replicas[0], localInference)
+	}
+	return resolved, nil
+}
+
+// selectReplica commits the catalog identity before completing its provider binding.
+func (r *Default) selectReplica(resolved *Resolved, replicas []*cache.CachedModel, replica *cache.CachedModel, localInference bool) (*Resolved, error) {
+	name, provider := resolved.ModelName, resolved.Provider
+	for _, other := range replicas {
+		if strings.EqualFold(other.Provider, replica.Provider) && strings.EqualFold(other.Node, replica.Node) && (!strings.EqualFold(other.SourceRepo, replica.SourceRepo) || !strings.EqualFold(other.SourceID, replica.SourceID)) {
+			return nil, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: string(httperr.CodeModelSourceAmbiguous), Message: fmt.Sprintf("model %q has several physical sources on provider %q and node %q; use an exact source_id from GET /zzrouter/v1/models", name, replica.Provider, replica.Node)}
+		}
+	}
+	resolved.Replica = replica
+	resolved.ModelName, resolved.RequestModel, resolved.Provider = replica.Model, replica.Name, replica.Provider
+	if resolved.ModelName == "" {
+		resolved.ModelName = replica.Name
+	}
+	if resolved.Provider == "" && localInference && r.cfg.IsLocalNode(replica.Node) && r.cfg.WarmLocalIdentity != nil {
+		if _, servingProvider, found := r.cfg.WarmLocalIdentity(resolved.ModelName, provider); found {
+			resolved.Provider = servingProvider
+		}
+	}
+	if !r.cfg.IsLocalNode(replica.Node) && r.cfg.CanRoute() {
+		resolved.Node = replica.Node
 	}
 	return resolved, nil
 }

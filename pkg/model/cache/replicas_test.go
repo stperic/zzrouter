@@ -234,3 +234,14 @@ func TestFailedPopulationDoesNotOverwriteNewerPublication(t *testing.T) {
 	require.Nil(t, c.populateErr, "the newer catalog's successful publication remains authoritative")
 	require.NoError(t, c.ensurePopulated(t.Context()))
 }
+
+func TestReplicaPopulationContractPinnedOptIn(t *testing.T) {
+	c := newWorkerCache(t)
+	client := &replicaClusterClient{}
+	c.clusterClient = func() mesh.ClusterClient { return client }
+	replicas, err := c.LookupReplicas(t.Context(), "qwen", "", "worker-1", "", ReplicaSelection{Populate: true})
+	require.NoError(t, err)
+	require.Len(t, replicas, 1)
+	require.Equal(t, "worker-1", replicas[0].Node)
+	require.Equal(t, int32(1), client.calls.Load())
+}

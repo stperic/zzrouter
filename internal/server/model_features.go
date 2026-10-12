@@ -30,9 +30,10 @@ func (s *Server) catalogTarget(ctx context.Context, model, provider, node string
 	return m
 }
 
-func (s *Server) targetWireMode(ctx context.Context, model, provider, node, native, compat string) wireEndpointMode {
+func (s *Server) targetWireMode(ctx context.Context, resolved *resolver.Resolved, native, compat string) wireEndpointMode {
+	model, provider, node := resolved.ModelName, resolved.Provider, resolved.Node
 	if s.node != nil && s.node.IsLocalNode(node) {
-		if run, found := s.modelInstance(model, "chat", provider); found && run.GetStatus() == instance.StatusRunning {
+		if run, found := s.modelInstance(resolved, "chat"); found && run.GetStatus() == instance.StatusRunning {
 			if eps := run.Resolved().WireEndpoints; eps != nil {
 				return wireModeForEndpoints(config.EffectiveWireEndpoints(eps), native, compat)
 			}

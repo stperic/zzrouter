@@ -60,7 +60,7 @@ type Instance struct {
 	// StopUnconfirmed keeps a runtime occupied until its process reaper drains.
 	StopUnconfirmed atomic.Bool `json:"-"`
 	// ending is held by the one stop or retirement ending the run; a failed stop gives it back.
-	ending atomic.Bool
+	ending bool
 
 	// String not prov_apps.Endpoint to avoid a back-import (prov_apps imports instance).
 	Endpoint   string `json:"endpoint,omitempty"`
@@ -206,10 +206,22 @@ func (i *Instance) Cancel() {
 }
 
 // ClaimEnd takes the right to end the run; false while another stop or retirement holds it.
-func (i *Instance) ClaimEnd() bool { return i.ending.CompareAndSwap(false, true) }
+func (i *Instance) ClaimEnd() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.ending {
+		return false
+	}
+	i.ending = true
+	return true
+}
 
 // ReleaseEnd gives the right back after a stop that failed, so a retry can take it.
-func (i *Instance) ReleaseEnd() { i.ending.Store(false) }
+func (i *Instance) ReleaseEnd() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.ending = false
+}
 
 // --- Thread-safe status reads ---
 
@@ -350,17 +362,28 @@ func (i *Instance) EvictedRuns() []EvictedRun {
 	return slices.Clone(i.evictedRuns)
 }
 
-// MarkRunning transitions to running state.
-func (i *Instance) MarkRunning() {
+// MarkRunning commits readiness before releasing waiters. commit must not reenter
+// the instance or acquire registry locks; callbacks and warnings belong afterward.
+func (i *Instance) MarkRunning(stampActivity bool, commit func()) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.Status.IsTerminal() || i.Status == StatusStopping {
-		return
+	if i.ending || i.Status.IsTerminal() || i.Status == StatusStopping || (i.ctx != nil && i.ctx.Err() != nil) {
+		return false
 	}
-	i.setStatusLocked(StatusRunning)
 	i.LastHealthy = utils.Now()
+	if i.StartedAt.IsZero() {
+		i.StartedAt = i.LastHealthy
+	}
+	if stampActivity {
+		i.stampLocked(false)
+	}
 	i.ErrorMessage = ""
 	i.failure = nil
+	if commit != nil {
+		commit()
+	}
+	i.setStatusLocked(StatusRunning)
+	return true
 }
 
 // MarkUnhealthy transitions to unhealthy state with a reason.
@@ -457,15 +480,6 @@ func (i *Instance) SetLastHealthCheck(t time.Time) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.LastHealthCheck = t
-}
-
-// SetStartedAtIfZero sets StartedAt to now if not already set.
-func (i *Instance) SetStartedAtIfZero() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.StartedAt.IsZero() {
-		i.StartedAt = utils.Now()
-	}
 }
 
 // IdleState is an atomic snapshot of every input to idle expiry and its stop claim.

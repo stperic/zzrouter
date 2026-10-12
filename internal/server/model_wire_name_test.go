@@ -28,7 +28,7 @@ func instanceFor(t *testing.T, engine *httptest.Server, model, wireModel string)
 
 	inst := instance.NewInstance("test-instance", "mlx", model, port, 0, 0)
 	inst.WireModel = wireModel
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	return inst
 }
 

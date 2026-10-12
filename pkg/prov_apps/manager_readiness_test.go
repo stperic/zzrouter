@@ -112,7 +112,7 @@ func TestReadinessSilenceAfterReadyNeverFails(t *testing.T) {
 
 func TestReadinessHealthTransitionRetiresWatcher(t *testing.T) {
 	inst, _, done, _ := readinessWatch(t, startupProbe(time.Second, 2*time.Second), nil)
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	waitReadiness(t, done, 100*time.Millisecond)
 }
 
@@ -214,4 +214,15 @@ func TestReadinessOutputWhileAwaitingServe(t *testing.T) {
 			t.Fatal("serve readiness never resolved")
 		}
 	}
+}
+
+func TestReadinessPublicationContractEndClaim(t *testing.T) {
+	inst, writer, done, events := readinessWatch(t, startupProbe(time.Second, 2*time.Second), nil)
+	require.True(t, inst.ClaimEnd()) // status is still Starting, but retirement owns the run
+	_, err := writer.Write([]byte("READY\n"))
+	require.NoError(t, err)
+	waitReadiness(t, done, time.Second)
+	require.Equal(t, instance.StatusStarting, inst.GetStatus())
+	require.True(t, inst.GetStartedAt().IsZero())
+	require.Empty(t, events, "the watcher cannot publish a losing readiness transition")
 }

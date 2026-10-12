@@ -38,7 +38,7 @@ func TestInstance_StatusTransitions(t *testing.T) {
 
 	assert.Equal(t, StatusStarting, inst.GetStatus())
 
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	assert.Equal(t, StatusRunning, inst.GetStatus())
 	assert.True(t, inst.IsHealthy())
 	assert.True(t, inst.IsRunning())
@@ -68,7 +68,7 @@ func TestInstance_StatusTransitions_Concurrent(t *testing.T) {
 			defer wg.Done()
 			switch n % 4 {
 			case 0:
-				inst.MarkRunning()
+				inst.MarkRunning(false, nil)
 			case 1:
 				inst.MarkUnhealthy("test")
 			case 2:
@@ -338,7 +338,7 @@ func TestInstance_ToInfo(t *testing.T) {
 		Parameters: map[string]string{"key": "val"},
 		EnvVars:    map[string]string{"ENV": "test"},
 	}
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 
 	info := inst.ToInfo("node1")
 
@@ -405,16 +405,16 @@ func TestRewriteHealthURLHost(t *testing.T) {
 	}
 }
 
-func TestInstance_SetStartedAtIfZero(t *testing.T) {
+func TestInstance_MarkRunningFirstStamp(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 	require.True(t, inst.StartedAt.IsZero())
 
-	inst.SetStartedAtIfZero()
+	inst.MarkRunning(false, nil)
 	first := inst.StartedAt
 	assert.False(t, first.IsZero())
 
 	time.Sleep(time.Millisecond)
-	inst.SetStartedAtIfZero()
+	inst.MarkRunning(false, nil)
 	assert.Equal(t, first, inst.StartedAt) // should not change
 }
 
@@ -555,7 +555,7 @@ func TestInstance_LastActivityTime(t *testing.T) {
 // asked for after the run left is already closed.
 func TestLeftStartingClosesOnEveryExit(t *testing.T) {
 	for name, leave := range map[string]func(*Instance){
-		"running":   func(i *Instance) { i.MarkRunning() },
+		"running":   func(i *Instance) { i.MarkRunning(false, nil) },
 		"unhealthy": func(i *Instance) { i.MarkUnhealthy("x") },
 		"failed":    func(i *Instance) { i.MarkFailed("x") },
 		"stopping":  func(i *Instance) { i.SetStatus(StatusStopping) },
@@ -625,7 +625,7 @@ func TestStartedAtAccessorConcurrentReadiness(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range 100 {
-			inst.SetStartedAtIfZero()
+			inst.MarkRunning(false, nil)
 		}
 	}()
 	go func() {

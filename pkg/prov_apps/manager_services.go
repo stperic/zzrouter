@@ -799,7 +799,7 @@ func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.
 // adoptServed adopts on a second listing in a row: one alone may predate the stop that unloaded the model.
 func (m *ProviderAppManager) adoptServed(ctx context.Context, provider string, held map[string]protocol.RunningModelInfo, observed string) {
 	m.sightingsMu.Lock()
-	defer m.sightingsMu.Unlock()
+	var candidates []protocol.RunningModelInfo
 	seen, sighted := m.sightings[provider], make(map[string]bool)
 	for _, model := range held {
 		if m.holds(model.Name) {
@@ -809,9 +809,13 @@ func (m *ProviderAppManager) adoptServed(ctx context.Context, provider string, h
 			sighted[model.Name] = true
 			continue
 		}
-		m.adoptRun(ctx, provider, model, observed)
+		candidates = append(candidates, model)
 	}
 	m.sightings[provider] = sighted
+	m.sightingsMu.Unlock()
+	for _, model := range candidates {
+		m.adoptRun(ctx, provider, model, observed)
+	}
 }
 
 // adoptRun registers a run for a model another client loaded, unless a start or a run holds its key.
@@ -828,8 +832,6 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 	run.StartedBy = instance.StartedByExternal
 	run.KeepAlive = neverExpires // only a client's hint arms zzRouter's timer on a model it did not load
 	run.SetLoaded(model.Loaded)
-	run.MarkRunning()
-	run.SetStartedAtIfZero()
 	// As joinFlight decides: under m.mu against Stop, under flightsMu against a start of this key.
 	registered := false
 	m.mu.Lock()
@@ -843,7 +845,7 @@ func (m *ProviderAppManager) adoptRun(ctx context.Context, provider string, mode
 		_ = os.Remove(run.LogFilePath)
 		return
 	}
-	m.record(run, runEvent(EventInstanceRunning, run, "adopted (loaded by another client)"))
+	m.publishRunning(run, false, "adopted (loaded by another client)")
 }
 
 // holds reports a run of any provider and endpoint for a name the daemon lists, case aside.

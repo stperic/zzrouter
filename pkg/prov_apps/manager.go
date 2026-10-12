@@ -31,6 +31,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const defaultEventChannelSize = 64
@@ -935,12 +936,24 @@ func (m *ProviderAppManager) GetInstance(id string) (*instance.Instance, bool) {
 
 // GetInstanceByModel returns the run a start of model on provider and endpoint would reuse.
 func (m *ProviderAppManager) GetInstanceByModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
+	return m.GetInstanceByCanonicalModel(provider, m.CanonicalModelName(model), endpoint)
+}
+
+// GetInstanceByCanonicalModel reads a resolved run key without alias or catalog resolution.
+func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
 	if key, svc, ok := m.resolveConfigKey(provider); ok {
-		return m.instances.GetByModelEndpoint(m.runModel(key, svc, model), string(runEndpoint(svc, endpoint)))
+		run, found := m.instances.GetByModelEndpoint(m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint)))
+		if found {
+			runKey, _, known := m.resolveConfigKey(run.Provider)
+			found = known && runKey == key
+		}
+		return run, found
 	}
-	model = m.CanonicalModelName(model)
 	if run, ok := m.instances.GetByModelEndpoint(model, string(EndpointOrDefault(endpoint))); ok {
-		return run, true
+		return run, provider == "" || utils.NormalizeAppType(run.Provider) == utils.NormalizeAppType(provider)
+	}
+	if provider != "" {
+		return nil, false
 	}
 	// No provider named: a served daemon lists the model under its own name.
 	var run *instance.Instance
@@ -1090,18 +1103,27 @@ func (m *ProviderAppManager) HealthCheckConfig() health.MonitorConfig {
 // --- Event emission ---
 
 func (m *ProviderAppManager) emitEvent(e Event) {
+	m.enqueueEvent(e)
+	m.notifyCatalog(e)
+}
+
+func (m *ProviderAppManager) enqueueEvent(e Event) {
 	if m.shutdown.Load() {
 		return
-	}
-	switch e.Type {
-	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
-		if m.catalogChanged != nil {
-			m.catalogChanged()
-		}
 	}
 	select {
 	case m.auditEvents <- e:
 	default:
+	}
+}
+
+func (m *ProviderAppManager) notifyCatalog(e Event) {
+	if m.shutdown.Load() || m.catalogChanged == nil {
+		return
+	}
+	switch e.Type {
+	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
+		m.catalogChanged()
 	}
 }
 

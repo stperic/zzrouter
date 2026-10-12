@@ -18,8 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/model/cache"
-	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
@@ -121,63 +120,6 @@ func (s *Server) providerConfig(name string) (pkgConfig.ServiceConfig, bool) {
 		return pkgConfig.ServiceConfig{}, false
 	}
 	return s.configStore.Config().LookupApp(name)
-}
-
-// findCapableProvider finds a provider that can handle the given model.
-// Returns (provider, canonicalName, error). canonicalName is the cache's
-// indexByName key for the resolved model — it differs from modelName when
-// the caller addressed the model via SourceID alias (e.g. HF repo path).
-// Downstream callers must use canonicalName for instance lookups so the
-// existing-instance fast path matches across alias forms.
-//
-// LookupModel handles worker vs coordinator transparently and blocks on
-// one populate when the cache is invalid, so post-pull inference races
-// resolve correctly.
-func (s *Server) findCapableProvider(modelName string) (string, string, error) {
-	ctx := context.Background()
-	cachedModel, err := s.LookupModel(ctx, modelName)
-	if err != nil {
-		var notFound cache.ErrModelNotFound
-		if errors.As(err, &notFound) {
-			// Hint at the cloud-deployment on-ramp — agents often pass a
-			// catalog ID (e.g. "openai/gpt-4o") expecting it to work
-			// without a prior registration step.
-			return "", "", fmt.Errorf(
-				"model %q not found in registry; if this is a cloud-served model, register it via POST /zzrouter/v1/deployments first",
-				modelName)
-		}
-		return "", "", err
-	}
-
-	canonical := cachedModel.Name
-	if canonical == "" {
-		canonical = modelName
-	}
-
-	// Check if model already has assigned provider
-	if cachedModel.Provider != "" {
-		utils.LogInfof("Model '%s' (canonical=%q) assigned to provider '%s'", modelName, canonical, cachedModel.Provider)
-		return cachedModel.Provider, canonical, nil
-	}
-
-	// Auto-assign based on format, falling back to tags when format is unknown
-	modelFormat := cachedModel.Format
-	if modelFormat == "" {
-		modelFormat = modelregistry.DetectFormatFromName(modelName)
-	}
-	if modelFormat == "" {
-		if tags := extractTagsFromExtra(cachedModel.Extra); len(tags) > 0 {
-			modelFormat = modelregistry.DetectFormatFromTags(tags)
-		}
-	}
-	utils.LogInfof("Model '%s' has format '%s', finding capable provider...", modelName, modelFormat)
-
-	provider, _ := modelregistry.AutoAssignProvider(modelName, modelFormat, s.appsConfig)
-	if provider == "" {
-		return "", canonical, fmt.Errorf("no enabled provider supports format '%s' (model: %s)", modelFormat, modelName)
-	}
-
-	return provider, canonical, nil
 }
 
 func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*instance.Lease, error) {
@@ -346,29 +288,6 @@ func isStreamingRequest(req *http.Request) bool {
 	return wire.StreamFromBody(body)
 }
 
-// extractTagsFromExtra extracts HuggingFace tags from model Extra metadata.
-// Tags are stored at Extra["huggingface"]["tags"] as []any (string elements).
-func extractTagsFromExtra(extra map[string]any) []string {
-	if extra == nil {
-		return nil
-	}
-	hf, ok := extra["huggingface"].(map[string]any)
-	if !ok {
-		return nil
-	}
-	rawTags, ok := hf["tags"].([]any)
-	if !ok {
-		return nil
-	}
-	tags := make([]string, 0, len(rawTags))
-	for _, t := range rawTags {
-		if s, ok := t.(string); ok {
-			tags = append(tags, s)
-		}
-	}
-	return tags
-}
-
 // previewProviderError uses the target node's inventory to select one recovery action.
 func previewProviderError(mgr *prov_apps.ProviderAppManager, name string) error {
 	name = utils.NormalizeAppType(name)
@@ -435,14 +354,13 @@ func (s *Server) hasRuns(provider string) bool {
 	return ok && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone
 }
 
-// modelInstance keeps provider selection intact when reusing an endpoint's run.
-func (s *Server) modelInstance(model, endpoint, provider string) (*instance.Instance, bool) {
+// modelInstance preserves direct target identity; groups and affinity still resolve their aliases.
+func (s *Server) modelInstance(resolved *resolver.Resolved, endpoint string) (*instance.Instance, bool) {
 	if s.providers.appMgr == nil {
 		return nil, false
 	}
-	inst, found := s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.Endpoint(endpoint))
-	if found && provider != "" && utils.NormalizeAppType(inst.Provider) != utils.NormalizeAppType(provider) {
-		return nil, false
+	if resolved.RequestModel != "" {
+		return s.providers.appMgr.GetInstanceByCanonicalModel(resolved.Provider, resolved.ModelName, prov_apps.Endpoint(endpoint))
 	}
-	return inst, found
+	return s.providers.appMgr.GetInstanceByModel(resolved.Provider, resolved.ModelName, prov_apps.Endpoint(endpoint))
 }

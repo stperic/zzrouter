@@ -41,7 +41,7 @@ func TestOpenRunCanceledCallerWritesNothingContract(t *testing.T) {
 		t.Run(reason.Error(), func(t *testing.T) {
 			s := &Server{}
 			run := instance.NewInstance("r", "p", "m", 0, time.Minute, 1)
-			run.MarkRunning()
+			run.MarkRunning(false, nil)
 			ctx, cancel := context.WithCancel(t.Context())
 			if reason == context.DeadlineExceeded {
 				cancel()

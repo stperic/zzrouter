@@ -1,6 +1,6 @@
 # Run core: decision record
 
-Status: accepted 2026-10-10; R1 and R2 shipped 2026-10-11. Applies to `pkg/prov_apps` (EnsureRun, the run
+Status: accepted 2026-10-10; R1/R2 shipped 2026-10-11 and R3/R4 shipped 2026-10-12. Applies to `pkg/prov_apps` (EnsureRun, the run
 policy, the start mechanism, the engines).
 
 ## Decision
@@ -28,6 +28,16 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   it holds on two sightings, never while a load is in flight) and retries a managed daemon whose start was
   refused at boot. A pin survives a node restart only where the daemon runs as its own service.
 
+## Readiness publication
+
+Instance.mu excludes end claims and failed/stopping transitions from a successful readiness commit.
+MarkRunning stamps first readiness and, for process/health readiness, activity; it commits lifecycle log/audit
+before setting Running and releasing LeftStarting waiters. The manager opens/rotates log files before that
+lock and invokes warnings/catalog observers afterward. Ordinary events enqueue audit before catalog callbacks.
+Served, process and adopted runs share that manager publisher; health recovery retains its existing no-event
+transition. A served load that loses commitment undoes its landed model. An adopted run is already resident,
+so explicit Stop unloads it even if it wins before the first readiness stamp.
+
 ## Waiter contract
 
 A caller that joins a start in flight gets that start's outcome, the run or the error, judged by `Decide`
@@ -46,7 +56,7 @@ queueing, a stopping run, a smoke during a flight, and a stop before the process
 run core passes them under `-race -count=20` first. A behaviour test is never removed without a replacement that
 asserts the same outcome.
 
-## Still to come
+## Idle policy and error projection
 
 R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart; inference hints remain last-one-wins.
 

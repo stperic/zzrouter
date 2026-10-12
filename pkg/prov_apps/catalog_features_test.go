@@ -27,7 +27,7 @@ func TestCatalogFeatureFilesAndServingSnapshot(t *testing.T) {
 	inst := instance.NewInstance("catalog", "vllm", "variant", 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant"}
 	inst.SetResolved(instance.Resolved{Parameters: map[string]string{}, WireEndpoints: []string{"messages_compat"}})
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(inst))
 	assert.Equal(t, "available", state("variant"))
 	assert.Equal(t, []string{"messages_compat"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
@@ -64,7 +64,7 @@ func TestCatalogRuntimeFeatureStates(t *testing.T) {
 	inst := instance.NewInstance("old-runtime", "vllm", "variant", 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant"}
 	inst.SetResolved(instance.Resolved{WireEndpoints: config.EffectiveWireEndpoints(svc.Features["vision"].WireEndpoints)})
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(inst))
 	assert.Equal(t, "present", state(), "a run launched on the feature runtime keeps it present")
 	assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])

@@ -12,21 +12,23 @@ import (
 
 // ReplicaSelection selects an exact physical model and optional source identity.
 type ReplicaSelection struct {
+	// Populate opts a pinned inference lookup into the existing catalog population.
+	Populate bool
 	Exact    bool
 	SourceID string
 }
 
 // LookupReplicas canonicalizes aliases and variants, retaining each physical source per provider/node.
-// An explicit node reads only current evidence; unpinned misses wait for catalog population.
+// Pins read current evidence unless inference opts into population; unpinned reads populate.
 func (mc *Cache) LookupReplicas(ctx context.Context, name, provider, node, registry string, options ...ReplicaSelection) ([]*CachedModel, error) {
-	if node == "" {
-		if err := mc.ensurePopulated(ctx); err != nil {
-			return nil, err
-		}
-	}
 	selection := ReplicaSelection{}
 	if len(options) > 0 {
 		selection = options[0]
+	}
+	if node == "" || selection.Populate {
+		if err := mc.ensurePopulated(ctx); err != nil {
+			return nil, err
+		}
 	}
 	replicas := mc.lookupReplicas(name, provider, node, registry, selection)
 	if selection.Exact && len(replicas) == 0 && len(mc.UnavailableInventories(node, provider)) > 0 {

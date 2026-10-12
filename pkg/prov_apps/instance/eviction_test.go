@@ -123,7 +123,7 @@ func TestUnhealthyIdleRunIsEvictable(t *testing.T) {
 
 func TestIdleClaimRevalidatesHintAtSameActivity(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, time.Minute, 1)
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	instant := utils.Now()
 	restore := utils.SetClock(utils.FixedClock(instant))
 	defer restore()
