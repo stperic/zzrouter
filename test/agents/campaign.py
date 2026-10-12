@@ -845,7 +845,7 @@ def scenarios(node, provider):
         "prompt": f"On node {node}, choose a tiny disposable physical model supported by {provider}. First query zz_models "
                   f"with its full exact registry model/source_id (include the tag for tagged registries) and node {node}, OMIT provider to check every provider, and prove total=0 and has_more=false. "
                   "Choose another model if anything is present. Never delete a pre-existing model or any pinned model. "
-                  "Download that absent model through zz_model_download, follow its node job to done, then query zz_models "
+                  "Download that absent model through zz_model_download using the same exact full registry identifier, including its tag, follow its node job to done, then query zz_models "
                   "with model equal to the returned physical name or source_id, node and provider selected. Require total=1, has_more=false and the matching physical source_id; do not use a wildcard. Do not start a run. Delete only that new physical name with "
                   "zz_model_delete, its provider/node/source_id selectors and a fresh idempotency key. Finally query "
                   "zz_models with the exact physical name and node, OMIT provider, and prove total=0 and has_more=false. Stop if any precondition fails; "
