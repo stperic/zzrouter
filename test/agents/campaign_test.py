@@ -11,7 +11,62 @@ def passed(rows):
     return all(row[1] for row in rows)
 
 
+def probe_context(node="n"):
+    # Distilled from the full campaign's successful remote embedding trace.
+    job_args = {"job_id": "j"}
+    if node is not None:
+        job_args["node"] = node
+    return {"node": "n", "scenario": {"pick": {"name": "m"}, "provider": "p", "expected": "verified"},
+            "rj": {"verdict": "verified", "dimensions": 8}, "left": [], "calls": [
+                call("zz_run_start", {"model": "m", "provider": "p", "node": "n", "endpoint": "embeddings"}, {"run_id": "r", "job_id": "j"}),
+                call("zz_job", job_args, {"job_id": "j", "state": "done"}),
+                call("zz_chat", {"model": "m", "node": "n", "probe": "embed"}, {"probe": "embed", "verdict": "verified", "dimensions": 8}),
+                call("zz_run_stop", {"run_id": "r", "node": "n"}, {})]}
+
+
 class CampaignEvidenceTest(unittest.TestCase):
+    def test_probe_accepts_discovered_job_owner(self):
+        for node in (None, "", "n"):
+            with self.subTest(node=node):
+                self.assertTrue(passed(c.check_capability_probe(probe_context(node), "embed")))
+
+    def test_probe_rejects_missing_or_contradictory_job_identity(self):
+        for mutation in (
+                lambda x: x["args"].update(job_id="other"),
+                lambda x: x["evidence"].update(job_id="other"),
+                lambda x: x["evidence"].pop("job_id"),
+                lambda x: x["args"].update(node="other"),
+                lambda x: x["evidence"].update(state="running"),
+                lambda x: x.update(is_error=True)):
+            ctx = probe_context()
+            mutation(ctx["calls"][1])
+            self.assertFalse(passed(c.check_capability_probe(ctx, "embed")))
+
+    def test_probe_preserves_launch_order_and_owned_stop(self):
+        for field, value in (("model", "other"), ("provider", "other"), ("node", "other"), ("endpoint", "chat")):
+            ctx = probe_context()
+            ctx["calls"][0]["args"][field] = value
+            self.assertFalse(passed(c.check_capability_probe(ctx, "embed")))
+        ctx = probe_context()
+        ctx["calls"][1], ctx["calls"][2] = ctx["calls"][2], ctx["calls"][1]
+        self.assertFalse(passed(c.check_capability_probe(ctx, "embed")))
+        ctx = probe_context()
+        ctx["calls"][-1]["args"]["run_id"] = "other"
+        self.assertFalse(passed(c.check_capability_probe(ctx, "embed")))
+        ctx = probe_context()
+        ctx["calls"][0]["evidence"].pop("job_id")
+        ctx["calls"][0]["evidence"]["status"] = "ready"
+        ctx["calls"].pop(1)
+        self.assertTrue(passed(c.check_capability_probe(ctx, "embed")))
+
+    def test_probe_cannot_mix_ready_and_stopped_runs(self):
+        ctx = probe_context()
+        second = copy.deepcopy(ctx["calls"][0])
+        second["evidence"].update(run_id="other-run", job_id="other-job")
+        ctx["calls"].insert(2, second)
+        ctx["calls"][-1]["args"]["run_id"] = "other-run"
+        self.assertFalse(passed(c.check_capability_probe(ctx, "embed")))
+
     def test_recent_jobs_requires_real_node_owned_page(self):
         fields = {"node": "n", "total": 2, "has_more": False, "jobs": [
             {"job_id": "j1", "node": "n", "kind": "run", "state": "done"},
@@ -46,7 +101,7 @@ class CampaignEvidenceTest(unittest.TestCase):
         starts = call("zz_run_start", {"model": "m", "provider": "p", "node": "n", "endpoint": "embeddings"}, {"run_id": "r", "job_id": "j"})
         probe = call("zz_chat", {"model": "m", "node": "n", "probe": "embed"}, {"probe": "embed", "verdict": "verified", "dimensions": 8})
         ctx = {"node": "n", "scenario": {"pick": {"name": "m"}, "provider": "p", "expected": "verified"},
-               "rj": {"probe": "embed", "verdict": "verified", "dimensions": 8}, "left": [], "calls": [starts, call("zz_job", {"node": "n", "job_id": "j"}, {"state": "done"}), probe, call("zz_run_stop", {"run_id": "r"}, {})]}
+               "rj": {"probe": "embed", "verdict": "verified", "dimensions": 8}, "left": [], "calls": [starts, call("zz_job", {"node": "n", "job_id": "j"}, {"job_id": "j", "state": "done"}), probe, call("zz_run_stop", {"run_id": "r"}, {})]}
         self.assertTrue(passed(c.check_capability_probe(ctx, "embed")))
         for verdict in ("inconclusive", "not_supported"):
             bad = copy.deepcopy(ctx); bad["calls"][-2]["evidence"]["verdict"] = verdict; bad["rj"]["verdict"] = verdict
