@@ -49,7 +49,7 @@ func conflictRun(t *testing.T, s *Server, model string) *atomic.Int32 {
 	require.NoError(t, err)
 	inst := instance.NewInstance("conflict-run", "llamacpp", model, port, 0, 0)
 	inst.Endpoint = "chat"
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 	return calls
 }

@@ -658,10 +658,7 @@ func (m *ProviderAppManager) watchReadiness(inst *instance.Instance, rw *health.
 			return
 		}
 		if readyDetail != "" {
-			inst.MarkRunning()
-			inst.SetStartedAtIfZero()
-			inst.UpdateLastUsed()
-			m.emitEvent(runEvent(EventInstanceRunning, inst, fmt.Sprintf("Ready (%s)", readyDetail)))
+			m.publishRunning(inst, true, fmt.Sprintf("Ready (%s)", readyDetail))
 			return
 		}
 		timer.Reset(deadline.Sub(now))

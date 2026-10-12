@@ -71,7 +71,7 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	routingCatalog(t, worker, []map[string]any{replicaItem("worker", "llamacpp")})
 	inst := instance.NewInstance("worker-run", "llamacpp", "qwen", 8100, 0, 0)
 	inst.WireModel = "qwen"
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, worker.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = worker.providers.appMgr.Instances().Remove(inst.ID) })
 	var engineCalls int
@@ -158,7 +158,7 @@ func TestModelInstanceUsesWorkerRunInventory(t *testing.T) {
 	worker := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"})
 	routingCatalog(t, coordinator, []map[string]any{replicaItem("worker", "llamacpp")})
 	inst := instance.NewInstance("worker-run", "llamacpp", "qwen", 8100, 0, 0)
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, worker.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = worker.providers.appMgr.Instances().Remove(inst.ID) })
 	router := &previewWorkerRouter{worker: buildInternalEngine(worker)}
@@ -196,7 +196,7 @@ func TestReplicaRoutingPrefixedSharedVariantKeepsDefaults(t *testing.T) {
 	defineVariants(t, s)
 	inst := instance.NewInstance("base-run", "llamacpp", qwenModel, 8100, 0, 0)
 	inst.WireModel = qwenModel
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
 	var sent map[string]any
@@ -278,7 +278,7 @@ func TestModelInstanceProviderMatchIsShared(t *testing.T) {
 				coordinator.services.Model.router = &previewWorkerRouter{worker: buildInternalEngine(target)}
 			}
 			inst := instance.NewInstance("actual-run", "vllm", "qwen", 8100, 0, 0)
-			inst.MarkRunning()
+			inst.MarkRunning(false, nil)
 			require.NoError(t, target.providers.appMgr.Instances().Register(inst))
 			t.Cleanup(func() { _ = target.providers.appMgr.Instances().Remove(inst.ID) })
 			for _, tc := range []struct {

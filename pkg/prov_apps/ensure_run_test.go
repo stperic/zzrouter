@@ -19,7 +19,7 @@ func TestEnsureRunForceStopsAnotherProvidersRun(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, m.Stop(context.Background())) })
 	held := instance.NewInstance("other-provider", "other", "model", 8210, 0, 0)
-	held.MarkRunning()
+	held.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(held))
 	_, err = m.EnsureRun(t.Context(), EnsureRequest{Model: "model", Provider: "fake"})
 	require.ErrorIs(t, err, ErrRunHeldByOtherProvider)
@@ -128,7 +128,7 @@ func TestEnsureRunWarmReuseSkipsCatalogAndHeldInstallGate(t *testing.T) {
 			return false, nil
 		}
 		run := instance.NewInstance("warm", "fake", "missing-from-catalog", 8200, 0, 0)
-		run.MarkRunning()
+		run.MarkRunning(false, nil)
 		require.NoError(t, m.instances.Register(run))
 		unlock, err := m.installs.acquireProvider(t.Context(), "Fake")
 		require.NoError(t, err)
@@ -220,7 +220,7 @@ func TestDecideSelectsIndexedLiveEndpoint(t *testing.T) {
 	old.StopUnconfirmed.Store(true)
 	require.NoError(t, m.instances.Register(old))
 	live := instance.NewInstance("live", "fake", "model", 8200, 0, 0)
-	live.MarkRunning()
+	live.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(live))
 	req := EnsureRequest{Provider: "fake", Model: "model", Endpoint: EndpointChat}
 	decision, existing := m.decide(t.Context(), preparedStart{req: req})
@@ -240,7 +240,7 @@ func TestEnsureRunObserverRecordsColdAttemptsOnly(t *testing.T) {
 	_, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Model: "cold"})
 	require.ErrorIs(t, err, errTestStart)
 	warm := instance.NewInstance("warm", "fake", "warm", 8200, 0, 0)
-	warm.MarkRunning()
+	warm.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(warm))
 	result, err := m.EnsureRun(t.Context(), EnsureRequest{Provider: "fake", Model: "warm"})
 	require.NoError(t, err)

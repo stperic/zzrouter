@@ -212,18 +212,19 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		m.record(run, failedEvent(run, obsruns.FailureLaunchErr, err))
 		return
 	}
-	if run.Context().Err() != nil { // ended or retired while loading: the node asked the model gone
-		if loader, resolved, ok := m.daemonForRun(run); ok {
-			if err := loader.UnloadModel(m.shutdownCtx, protocol.TargetOf(resolved), run.WireModel); err != nil {
-				slog.Warn("Failed to unload a model whose run ended while it loaded", "run", run.ID, "error", err)
-			}
+	if run.Context().Err() == nil {
+		run.SetEvictedRuns(m.retireDisplaced(ctx, run))
+		if m.publishRunning(run, false, "loaded") {
+			return
 		}
-		return
 	}
-	run.SetEvictedRuns(m.retireDisplaced(ctx, run))
-	run.MarkRunning()
-	run.SetStartedAtIfZero()
-	m.record(run, runEvent(EventInstanceRunning, run, "loaded"))
+	// A load that landed after retirement uses the same cleanup as cancellation.
+	if loader, resolved, ok := m.daemonForRun(run); ok {
+		if err := loader.UnloadModel(m.shutdownCtx, protocol.TargetOf(resolved), run.WireModel); err != nil {
+			slog.Warn("Failed to unload a model whose run ended while it loaded", "run", run.ID, "error", err)
+		}
+	}
+
 }
 
 func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
@@ -231,7 +232,7 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 	if err := run.WaitForGoroutines(ctx); err != nil {
 		return fmt.Errorf("drain goroutines: %w", err)
 	}
-	if run.GetStartedAt().IsZero() {
+	if run.GetStartedAt().IsZero() && run.StartedBy != instance.StartedByExternal {
 		return nil // the load never landed, or undid itself on seeing the stop
 	}
 	loader, resolved, ok := e.m.daemonForRun(run)

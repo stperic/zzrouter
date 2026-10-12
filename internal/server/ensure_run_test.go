@@ -271,7 +271,7 @@ func TestLoadProviderAutodetectResolvesVariant(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 	run := instance.NewInstance("variant", "fake", variant, 8300, 0, 0)
-	run.MarkRunning()
+	run.MarkRunning(false, nil)
 	require.NoError(t, mgr.Instances().Register(run))
 	response, err := NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).LoadLocalModel(t.Context(), &LoadModelRequest{ModelName: variant})
 	require.NoError(t, err)

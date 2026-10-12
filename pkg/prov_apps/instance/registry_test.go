@@ -38,7 +38,7 @@ func TestRegistry_RegisterDuplicateModel(t *testing.T) {
 	r := NewRegistry()
 
 	inst1 := newTestInstance("inst-1", "vllm", "llama3", 8000)
-	inst1.MarkRunning()
+	inst1.MarkRunning(false, nil)
 	require.NoError(t, r.Register(inst1))
 
 	inst2 := newTestInstance("inst-2", "vllm", "llama3", 8001)
@@ -160,7 +160,7 @@ func TestRegistry_ListRunning(t *testing.T) {
 	r := NewRegistry()
 
 	inst1 := newTestInstance("inst-1", "vllm", "llama3", 8000)
-	inst1.MarkRunning()
+	inst1.MarkRunning(false, nil)
 	inst2 := newTestInstance("inst-2", "ollama", "mistral", 8001)
 	// inst2 stays in Starting
 
@@ -210,7 +210,7 @@ func TestRegistry_CleanupExpiredFailures(t *testing.T) {
 	require.NoError(t, r.Register(inst))
 
 	inst2 := newTestInstance("inst-2", "vllm", "mistral", 8001)
-	inst2.MarkRunning()
+	inst2.MarkRunning(false, nil)
 	require.NoError(t, r.Register(inst2))
 
 	removed := r.CleanupExpiredFailures()
@@ -223,7 +223,7 @@ func TestRegistry_Stats(t *testing.T) {
 	r := NewRegistry()
 
 	inst1 := newTestInstance("1", "vllm", "a", 8000)
-	inst1.MarkRunning()
+	inst1.MarkRunning(false, nil)
 	inst2 := newTestInstance("2", "vllm", "b", 8001)
 	inst2.MarkFailed("err")
 
@@ -288,12 +288,12 @@ func TestRegistry_PerEndpointInstancesCoexist(t *testing.T) {
 
 	chat := newTestInstance("inst-chat", "llamacpp", "qwen-0.5b", 8080)
 	chat.Endpoint = "chat"
-	chat.MarkRunning()
+	chat.MarkRunning(false, nil)
 	require.NoError(t, r.Register(chat))
 
 	embed := newTestInstance("inst-embed", "llamacpp", "qwen-0.5b", 8081)
 	embed.Endpoint = "embeddings"
-	embed.MarkRunning()
+	embed.MarkRunning(false, nil)
 	require.NoError(t, r.Register(embed))
 
 	gotChat, ok := r.GetByModelEndpoint("qwen-0.5b", "chat")
@@ -318,7 +318,7 @@ func TestRegistry_DuplicateModelEndpoint(t *testing.T) {
 
 	chat1 := newTestInstance("inst-chat-1", "llamacpp", "m", 8080)
 	chat1.Endpoint = "chat"
-	chat1.MarkRunning()
+	chat1.MarkRunning(false, nil)
 	require.NoError(t, r.Register(chat1))
 
 	chat2 := newTestInstance("inst-chat-2", "llamacpp", "m", 8081)
@@ -328,7 +328,7 @@ func TestRegistry_DuplicateModelEndpoint(t *testing.T) {
 
 	embed := newTestInstance("inst-embed", "llamacpp", "m", 8082)
 	embed.Endpoint = "embeddings"
-	embed.MarkRunning()
+	embed.MarkRunning(false, nil)
 	assert.NoError(t, r.Register(embed))
 }
 
@@ -339,12 +339,12 @@ func TestRegistry_RemoveOnlyClearsItsEndpointMapping(t *testing.T) {
 
 	chat := newTestInstance("inst-chat", "llamacpp", "m", 8080)
 	chat.Endpoint = "chat"
-	chat.MarkRunning()
+	chat.MarkRunning(false, nil)
 	require.NoError(t, r.Register(chat))
 
 	embed := newTestInstance("inst-embed", "llamacpp", "m", 8081)
 	embed.Endpoint = "embeddings"
-	embed.MarkRunning()
+	embed.MarkRunning(false, nil)
 	require.NoError(t, r.Register(embed))
 
 	require.NoError(t, r.Remove("inst-chat"))
@@ -379,5 +379,41 @@ func TestSanitizeModelName(t *testing.T) {
 
 	for _, tt := range tests {
 		assert.Equal(t, tt.expected, sanitizeModelName(tt.input))
+	}
+}
+
+func TestRegistryRunningPublicationContract(t *testing.T) {
+	for _, rejected := range []string{"", "ending", "cancelled", "stopping", "failed", "stopped"} {
+		t.Run(rejected, func(t *testing.T) {
+			r := NewRegistry()
+			run := newTestInstance("health", "p", "m", 0)
+			old := time.Unix(1, 0)
+			run.LastActivity = old
+			run.MarkUnhealthy("recovering")
+			require.NoError(t, r.Register(run))
+			switch rejected {
+			case "ending":
+				require.True(t, run.ClaimEnd())
+			case "cancelled":
+				run.Cancel()
+			case "stopping":
+				run.SetStatus(StatusStopping)
+			case "failed":
+				run.MarkFailed("failed")
+			case "stopped":
+				run.SetStatus(StatusStopped)
+			}
+			before := run.GetStatus()
+			require.NoError(t, r.UpdateStatus(run.ID, StatusRunning, ""))
+			if rejected == "" {
+				assert.Equal(t, StatusRunning, run.GetStatus())
+				assert.False(t, run.GetStartedAt().IsZero())
+				assert.True(t, run.GetLastActivity().After(old), "health recovery renews idle activity")
+			} else {
+				assert.Equal(t, before, run.GetStatus())
+				assert.True(t, run.GetStartedAt().IsZero())
+				assert.Equal(t, old, run.GetLastActivity())
+			}
+		})
 	}
 }

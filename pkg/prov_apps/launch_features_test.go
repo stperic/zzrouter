@@ -157,7 +157,7 @@ func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 	}))
 	m.ReloadConfig(cfg)
 	require.NotContains(t, m.ParametersStatus(inst).Overridden, "parameters.mmproj", "an identical config/request alias is not an override")
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(inst))
 	t.Cleanup(func() { _ = m.instances.Remove(inst.ID) })
 	require.NoError(t, os.Remove(alias))

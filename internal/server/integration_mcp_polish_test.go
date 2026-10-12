@@ -16,7 +16,7 @@ func TestMCPStopConfirmsRemovalAndRetainsFailures(t *testing.T) {
 	for _, id := range []string{"live", "failed"} {
 		inst := instance.NewInstance(id, "llamacpp", id, 0, 0, 0)
 		if id == "live" {
-			inst.MarkRunning()
+			inst.MarkRunning(false, nil)
 		} else {
 			inst.MarkFailed("test failure")
 		}

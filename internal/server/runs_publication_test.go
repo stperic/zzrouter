@@ -28,7 +28,7 @@ func textCatalogRun(t *testing.T, target *Server) *instance.Instance {
 	run := instance.NewInstance("text-run", "llamacpp", "weights", 0, 0, 0)
 	run.Config = instance.Config{Provider: run.Provider, Model: run.Model}
 	run.SetResolved(instance.Resolved{Parameters: map[string]string{}, WireEndpoints: []string{"chat_completions"}})
-	run.MarkRunning()
+	run.MarkRunning(false, nil)
 	require.NoError(t, target.providers.appMgr.Instances().Register(run))
 	return run
 }

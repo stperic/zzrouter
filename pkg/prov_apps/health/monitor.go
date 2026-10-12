@@ -167,8 +167,6 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 					if err := m.registry.UpdateStatus(instanceID, instance.StatusRunning, ""); err != nil {
 						slog.Warn("failed to update instance status", "instance", instanceID, "status", "running", "error", err)
 					}
-					current.SetStartedAtIfZero()
-					current.UpdateLastUsed()
 				}
 			} else {
 				// A starting instance is loading weights, and an engine that

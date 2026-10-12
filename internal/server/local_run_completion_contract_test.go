@@ -66,7 +66,7 @@ func TestLocalRunCompletionContractOldCompletedRun(t *testing.T) {
 			run.StartedAt = utils.Now().Add(-constants.ModelStreamingTimeout - time.Minute)
 			switch state {
 			case "ready":
-				run.MarkRunning()
+				run.MarkRunning(false, nil)
 			case "failed", "replaced":
 				run.MarkFailedError(cause)
 				if state == "replaced" {

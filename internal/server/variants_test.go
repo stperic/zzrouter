@@ -330,7 +330,7 @@ func TestVariants_SharedVariantIsServedByTheBaseProcess(t *testing.T) {
 	require.NoError(t, err)
 	inst := instance.NewInstance("base-run", "llamacpp", qwenModel, port, 0, 0)
 	inst.Endpoint = "chat"
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 
 	node := httptest.NewServer(s.engine)
@@ -378,7 +378,7 @@ func TestVariants_ChainFindsTheServingRun(t *testing.T) {
 	defineVariants(t, s)
 	inst := instance.NewInstance("base-run", "llamacpp", qwenModel, 18080, 0, 0)
 	inst.Endpoint = "chat"
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 
 	deps := &chainServerDeps{s: s}
@@ -484,7 +484,7 @@ func TestVariants_FallbackUsesServingInstancesWireModel(t *testing.T) {
 	inst := instance.NewInstance("fallback-base", "llamacpp", qwenModel, port, 0, 0)
 	inst.WireModel = wireName
 	inst.Endpoint = "chat"
-	inst.MarkRunning()
+	inst.MarkRunning(false, nil)
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 	raw := []byte(`{"model":"agent-group","messages":[{"role":"user","content":"hi"}]}`)
 	w := httptest.NewRecorder()

@@ -1090,18 +1090,27 @@ func (m *ProviderAppManager) HealthCheckConfig() health.MonitorConfig {
 // --- Event emission ---
 
 func (m *ProviderAppManager) emitEvent(e Event) {
+	m.enqueueEvent(e)
+	m.notifyCatalog(e)
+}
+
+func (m *ProviderAppManager) enqueueEvent(e Event) {
 	if m.shutdown.Load() {
 		return
-	}
-	switch e.Type {
-	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
-		if m.catalogChanged != nil {
-			m.catalogChanged()
-		}
 	}
 	select {
 	case m.auditEvents <- e:
 	default:
+	}
+}
+
+func (m *ProviderAppManager) notifyCatalog(e Event) {
+	if m.shutdown.Load() || m.catalogChanged == nil {
+		return
+	}
+	switch e.Type {
+	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
+		m.catalogChanged()
 	}
 }
 
