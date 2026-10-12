@@ -24,6 +24,10 @@
 
 ### Behaviour changes
 
+- Run and provider refusals use one wire table for status, retry delay and
+  diagnostics. Cold-load responses retain memory-budget details and explicit
+  run/job extensions; streaming and native dialects keep their existing shapes.
+
 - Run idle expiry uses one registry reaper. Held requests survive their idle
   window; zero keep-alive ends after release and negative values pin against
   idle expiry. `keep-alive` and `evict-idle-on-memory-pressure` resolve through

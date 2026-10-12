@@ -11,7 +11,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/openaicompat"
-	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -218,15 +217,7 @@ func failureWire(err error, unnamed int) httperr.Error {
 	if !ok {
 		return httperr.Error{Status: unnamed, Type: openaicompat.StatusToErrorType(unnamed), Message: utils.SanitizeErrorMessage(err.Error())}
 	}
-	var memory *process.MemoryFitError
-	if errors.As(err, &memory) {
-		wire.Title = "GPU memory budget cannot fit"
-		wire.Extra = map[string]any{"errors": []utils.ParamError{{
-			Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB,
-			Want: "required_mib <= free_mib on each selected device", Message: wire.Message,
-			Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads.",
-		}}}
-	}
+
 	return wire
 }
 

@@ -30,7 +30,7 @@ func TestAutoMemoryPatchValidationOnlyDeclaredFractionKey(t *testing.T) {
 
 func TestAutoMemoryAmbiguousAliasesAreClientErrors(t *testing.T) {
 	err := fmt.Errorf("%w: ambiguous memory parameter spellings", process.ErrMemoryBudgetInvalid)
-	assert.Equal(t, http.StatusBadRequest, classifyLoadFailure(err).status)
+	assert.Equal(t, http.StatusBadRequest, loadFailureWire(err).Status)
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
 	RespondToError(c, err)
 	assert.Equal(t, http.StatusBadRequest, response.Code)

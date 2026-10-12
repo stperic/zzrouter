@@ -189,8 +189,9 @@ func (s *Server) openInstance(req *http.Request, inst *instance.Instance) (*inst
 func (s *Server) openRun(req *http.Request, inst *instance.Instance, recorder *llm.InferenceRecorder, fail func(httperr.Error)) (*instance.Lease, *url.URL, backend.Upstream, bool) {
 	lease, err := s.openInstance(req, inst)
 	if err != nil {
-		if failure, ok := renderAdmissionError(err); ok {
-			fail(failure)
+		var admission *instance.AdmissionError
+		if errors.As(err, &admission) {
+			fail(failureWire(err, http.StatusServiceUnavailable))
 		} else {
 			slog.Debug("Client disconnected while waiting for concurrency slot", "instance", inst.ID)
 		}

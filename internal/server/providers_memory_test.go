@@ -33,16 +33,16 @@ func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	assert.Contains(t, problem.Errors[0].Hint, "PATCH")
 	assert.Equal(t, 503, answeredStatus(fmt.Errorf("observe: %w", process.ErrMemoryObservation)))
 	assert.Equal(t, 400, answeredStatus(fmt.Errorf("budget: %w", process.ErrMemoryBudgetInvalid)))
-	classified := classifyLoadFailure(fmt.Errorf("cold load: %w", refusal))
-	assert.Equal(t, 409, classified.status)
-	assert.Equal(t, "out_of_range", classified.code)
-	assert.Contains(t, classified.message, "required 9500 MiB, currently free 6000 MiB")
+	classified := loadFailureWire(fmt.Errorf("cold load: %w", refusal))
+	assert.Equal(t, 409, classified.Status)
+	assert.Equal(t, "out_of_range", classified.Code)
+	assert.Contains(t, classified.Message, "required 9500 MiB, currently free 6000 MiB")
 	wire := httptest.NewRecorder()
-	writeError(wire, nil, httperr.Error{Status: classified.status, Type: classified.errType, Code: classified.code, Message: classified.message})
+	writeError(wire, nil, classified)
 	assert.Equal(t, 409, wire.Code)
 	assert.Contains(t, wire.Body.String(), "required 9500 MiB, currently free 6000 MiB")
-	assert.Equal(t, 503, classifyLoadFailure(process.ErrMemoryObservation).status)
-	assert.Equal(t, 400, classifyLoadFailure(process.ErrMemoryBudgetInvalid).status)
+	assert.Equal(t, 503, loadFailureWire(process.ErrMemoryObservation).Status)
+	assert.Equal(t, 400, loadFailureWire(process.ErrMemoryBudgetInvalid).Status)
 }
 
 // A cold load that queued and was then refused answers like an inline
@@ -54,10 +54,11 @@ func TestQueuedRefusalKeepsItsStatusForColdLoad(t *testing.T) {
 	t.Cleanup(func() { _ = s.providers.appMgr.Instances().Remove(inst.ID) })
 	inst.MarkFailedError(fmt.Errorf("admission: %w", &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000}))
 	_, err := s.waitForLocalInstance(inst)
-	var lf *loadFailure
-	require.ErrorAs(t, err, &lf)
-	assert.Equal(t, 409, lf.status)
-	assert.Equal(t, "out_of_range", lf.code)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	lf := loadFailureWire(err)
+	assert.Equal(t, 409, lf.Status)
+	assert.Equal(t, "out_of_range", lf.Code)
 }
 
 func TestEngineFailureSurvivesColdLoad(t *testing.T) {
@@ -69,9 +70,8 @@ func TestEngineFailureSurvivesColdLoad(t *testing.T) {
 	inst.MarkFailedError(cause)
 	_, err := s.waitForLocalInstance(inst)
 	require.ErrorIs(t, err, cause)
-	var lf *loadFailure
-	require.ErrorAs(t, err, &lf)
-	assert.Equal(t, http.StatusConflict, lf.status)
-	assert.Equal(t, string(httperr.CodeOutOfRange), lf.code)
-	assert.Contains(t, lf.message, inst.ID)
+	lf := loadFailureWire(err)
+	assert.Equal(t, http.StatusConflict, lf.Status)
+	assert.Equal(t, string(httperr.CodeOutOfRange), lf.Code)
+	assert.Contains(t, lf.Message, inst.ID)
 }
