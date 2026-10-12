@@ -662,7 +662,6 @@ func (m *ProviderAppManager) retireRun(run *instance.Instance, why string, reaso
 		return // a stop in progress ends it
 	}
 	run.Cancel()
-	run.StopKeepAliveTimer()
 	m.releaseRun(run, fmt.Errorf("%w: %s", ErrModelDropped, why))
 	m.record(run, stoppedEvent(run, reason, why))
 }

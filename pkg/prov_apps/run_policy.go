@@ -189,7 +189,10 @@ func chooseEvictions(shortfall int64, candidates []evictionCandidate) []string {
 	return ids
 }
 
-// idleExpired is Ollama's keep-alive rule: below zero never, zero at once, else after keep-alive idle.
-func idleExpired(keepAlive time.Duration, lastActivity, now time.Time) bool {
-	return keepAlive == 0 || (keepAlive > 0 && !lastActivity.IsZero() && now.Sub(lastActivity) > keepAlive)
+// Expired is the idle rule: held leases, claims and pins never expire, zero expires after release.
+func Expired(r instance.IdleState, settings config.RunSettings, now time.Time) bool {
+	if (r.Status != instance.StatusRunning && r.Status != instance.StatusUnhealthy) || r.Leased || r.Claimed {
+		return false
+	}
+	return settings.KeepAlive == 0 && r.Released || settings.KeepAlive > 0 && !r.Activity.IsZero() && !now.Before(r.Activity.Add(settings.KeepAlive))
 }

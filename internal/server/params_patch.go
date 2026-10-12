@@ -288,7 +288,17 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag),
 			Message: fmt.Sprintf("unknown parameter %q", key)}
 	}
-	return validateAgainstShape(key, raw, shape)
+	if e := validateAgainstShape(key, raw, shape); e != nil {
+		return e
+	}
+	if key == pkgConfig.KeepAliveParameter {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		if _, err := pkgConfig.ParseRunSettings(map[string]string{key: value}, false); err != nil {
+			return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: err.Error()}
+		}
+	}
+	return nil
 }
 
 func validateAgainstShape(key string, raw json.RawMessage, shape schema.ParamShape) *utils.ParamError {

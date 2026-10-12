@@ -122,7 +122,6 @@ func TestLease_ReleaseRestampsActivity(t *testing.T) {
 			restore := utils.SetClock(utils.FixedClock(acquireAt))
 			t.Cleanup(restore)
 			inst := NewInstance("id", "p", "m", 0, time.Hour, 0)
-			t.Cleanup(inst.StopKeepAliveTimer)
 			hints := &keepalive.Override{Duration: &duration}
 			lease, err := inst.Acquire(context.Background(), hints)
 			require.NoError(t, err)
@@ -138,7 +137,6 @@ func TestLease_ReleaseRestampsActivity(t *testing.T) {
 			lease.Release()
 			assert.True(t, inst.GetLastActivity().After(acquireAt))
 			assert.Equal(t, releaseAt, inst.GetLastActivity())
-			assert.Equal(t, releaseAt, inst.GetLastUsedAt())
 			assert.Equal(t, otherDuration, inst.GetKeepAlive(), "a later request's keep_alive survives this release")
 			assert.Equal(t, int64(0), inst.GetActiveRequests())
 		})
@@ -159,22 +157,23 @@ func TestLease_UnlimitedStillCounts(t *testing.T) {
 	assert.Equal(t, int64(0), inst.GetActiveRequests())
 }
 
-func TestLease_ReleaseRearmsExpiredTimer(t *testing.T) {
+func TestLease_ReleaseNotifiesIdleAfterLongRequest(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 20*time.Millisecond, 0)
-	inst.IdleExpiry = make(chan string, 1)
-	t.Cleanup(inst.StopKeepAliveTimer)
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(inst))
+	<-registry.Changes()
 	lease := acquireTestLease(t, inst)
-	select {
-	case <-inst.IdleExpiry:
-	case <-time.After(2 * time.Second):
-		t.Fatal("acquire did not arm expiry")
-	}
-	require.Equal(t, int64(1), inst.GetActiveRequests())
+	<-registry.Changes()
+	require.True(t, inst.IdleSnapshot().Leased)
+	before := inst.GetLastActivity()
 	lease.Release()
 	select {
-	case id := <-inst.IdleExpiry:
-		assert.Equal(t, inst.ID, id)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Release did not re-arm expiry after a long request")
+	case <-registry.Changes():
+	case <-time.After(time.Second):
+		t.Fatal("release did not notify idle observer")
 	}
+	idle := inst.IdleSnapshot()
+	assert.False(t, idle.Leased)
+	assert.True(t, idle.Released)
+	assert.False(t, idle.Activity.Before(before))
 }

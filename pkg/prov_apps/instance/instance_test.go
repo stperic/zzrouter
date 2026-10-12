@@ -422,12 +422,19 @@ func TestInstance_Cancel(t *testing.T) {
 	}
 }
 
-func TestInstance_StopKeepAliveTimer(t *testing.T) {
-	inst := NewInstance("id", "p", "m", 0, time.Hour, 10)
-	inst.UpdateLastUsed() // starts the timer
-	inst.StopKeepAliveTimer()
-	// Should not panic, timer should be nil
-	inst.StopKeepAliveTimer()
+func TestInstance_ReadinessNotifiesIdle(t *testing.T) {
+	inst := NewInstance("id", "p", "m", 0, 0, 10)
+	registry := NewRegistry()
+	require.NoError(t, registry.Register(inst))
+	<-registry.Changes()
+	inst.UpdateLastUsed()
+	select {
+	case <-registry.Changes():
+	case <-time.After(time.Second):
+		t.Fatal("readiness did not notify idle observer")
+	}
+	assert.False(t, inst.IdleSnapshot().Released, "zero remains unarmed until release")
+	assert.False(t, inst.GetLastActivity().IsZero())
 }
 
 func TestInstance_WaitForGoroutines_CleanDrain(t *testing.T) {
@@ -498,12 +505,12 @@ func TestInstance_GetProcessGroupID_Concurrent(t *testing.T) {
 }
 
 func TestInstance_LastActivityTime(t *testing.T) {
-	t.Run("prefers LastActivity over lastUsedAt", func(t *testing.T) {
+	t.Run("reads the activity stamp", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, time.Hour, 10)
 
-		// Set lastUsedAt via UpdateLastUsed
+		// Stamp readiness activity
 		inst.UpdateLastUsed()
-		usedAt := inst.GetLastUsedAt()
+		usedAt := inst.GetLastActivity()
 
 		// Set LastActivity to a later time
 		later := usedAt.Add(time.Minute)
@@ -511,11 +518,11 @@ func TestInstance_LastActivityTime(t *testing.T) {
 		inst.LastActivity = later
 		inst.mu.Unlock()
 
-		// GetLastActivity should return LastActivity, not lastUsedAt
+		// Read the updated activity stamp
 		assert.Equal(t, later, inst.GetLastActivity())
 	})
 
-	t.Run("falls back to lastUsedAt", func(t *testing.T) {
+	t.Run("readiness sets activity", func(t *testing.T) {
 		inst := NewInstance("id", "p", "m", 0, time.Hour, 10)
 		inst.UpdateLastUsed()
 
@@ -570,9 +577,9 @@ func TestAdmit(t *testing.T) {
 
 func TestIdleSnapshotReadsKeepAliveAndActivity(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, time.Minute, 1)
-	keepAlive, activity := inst.IdleSnapshot()
-	assert.Equal(t, time.Minute, keepAlive)
-	assert.Equal(t, inst.GetLastActivity(), activity)
+	idle := inst.IdleSnapshot()
+	assert.Equal(t, time.Minute, idle.KeepAlive)
+	assert.Equal(t, inst.GetLastActivity(), idle.Activity)
 }
 
 // One side owns the signal: a launch claim excludes every stop, a stop claim excludes the launch, and a stop
@@ -594,4 +601,24 @@ func TestClaimTerminationOwner(t *testing.T) {
 func TestToInfoKeepAliveReadsAsItsParameter(t *testing.T) {
 	assert.Equal(t, "-1", NewInstance("pinned", "ollama", "m", 0, -1, 1).ToInfo("node").KeepAlive)
 	assert.Equal(t, "5m0s", NewInstance("timed", "vllm", "m", 8000, 5*time.Minute, 1).ToInfo("node").KeepAlive)
+}
+
+func TestStartedAtAccessorConcurrentReadiness(t *testing.T) {
+	inst := NewInstance("served", "ollama", "m", 0, -1, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			inst.SetStartedAtIfZero()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			_ = inst.GetStartedAt()
+		}
+	}()
+	wg.Wait()
+	assert.False(t, inst.GetStartedAt().IsZero())
 }

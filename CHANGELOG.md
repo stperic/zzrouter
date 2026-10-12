@@ -24,6 +24,17 @@
 
 ### Behaviour changes
 
+- Run idle expiry uses one registry reaper. Held requests survive their idle
+  window; zero keep-alive ends after release and negative values pin against
+  idle expiry. `keep-alive` and `evict-idle-on-memory-pressure` resolve through
+  provider, model, node, node × model and request parameters. Runtime keep-alive
+  and the node GPU eviction option supply compatibility defaults. Settings
+  changes appear in affected-run reports and apply on restart.
+- Cluster protocol and minimum advance from 5/5 to 6/6 for tier-resolved run
+  settings. Older workers can ignore idle overrides or forward policy flags
+  to engines. Upgrade every peer together using the maintenance procedure in
+  [protocol versioning](docs/protocol_versioning.md).
+
 - MCP `zz_models` returns compact model detail for one exact name or source-id
   match. Context metadata, template presence, defaults and source-reported
   capabilities stay separate from serving probes. Same-name physical sources

@@ -47,13 +47,8 @@ asserts the same outcome.
 
 ## Still to come
 
-R3: the reaper owns idle expiry (one timer heap, `Expired` in the policy); `keep_alive` and eviction on
-memory pressure become tier-tree settings (`runtime.keep_alive` their default tier); a served load sends
-typed options once a live check shows a later request does not reload the runner. R4: refusals reach the
-wire through one table only.
+R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart; inference hints remain last-one-wins.
 
-## Rejected
+The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends after release, held leases cannot expire, and negative values never expire idle. Pressure eviction may reclaim idle pins when enabled. Served nonzero runs and adopted models remain daemon-expired. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
 
-A rewrite of the whole lifecycle (process runner, launcher, readiness probes): sound and lab-verified, high
-risk, little bloat. Per-caller re-observation of the registry instead of a flight: it needs freshness stamps,
-and each one tried left a race.
+R4 remains: refusals reach the wire through one table, including Retry-After and typed extra fields. Typed Ollama load options remain pending the reviewer Windows-worker check that later requests preserve the runner and pin.

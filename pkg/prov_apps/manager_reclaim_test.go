@@ -216,8 +216,9 @@ func TestIdleReaperUsesEvictable(t *testing.T) {
 	f.older.StampActivityWithHints(&keepalive.Override{Duration: &zero})
 	f.newer.StampActivityWithHints(&keepalive.Override{Duration: &zero})
 	f.mgr.Start(t.Context())
-	f.mgr.idleExpiry <- f.newer.ID
-	f.mgr.idleExpiry <- f.older.ID
+	leaseOld, err := f.older.Acquire(t.Context(), nil)
+	require.NoError(t, err)
+	leaseOld.Release()
 	eventually(t, func() bool { return !f.mgr.instances.Has(f.older.ID) }, "expired idle run stopped")
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -302,4 +303,51 @@ func TestMemoryReclaimReservesWholeSetBeforeDrain(t *testing.T) {
 	assert.ErrorIs(t, <-attempted, instance.ErrStopping, "the later victim is reserved while the first drains")
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 	assert.Equal(t, instance.StatusStopped, f.newer.GetStatus())
+}
+
+func TestMemoryReclaimSettingOverridesLegacyDefault(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "off", true: "on"}[enabled], func(t *testing.T) {
+			f := newReclaimFixture(t, !enabled)
+			f.features.Params["evict-idle-on-memory-pressure"] = map[bool]string{false: "false", true: "true"}[enabled]
+			evicted, err := f.admit(t)
+			if enabled {
+				require.NoError(t, err)
+				assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, FreedMiB: 4500}}, evicted)
+				assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
+			} else {
+				f.assertOriginalFit(t, err)
+				assert.Empty(t, evicted)
+				assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+			}
+		})
+	}
+}
+
+func TestIdleReaperUnblockedByDependantAndClaim(t *testing.T) {
+	for _, block := range []string{"dependant", "claim"} {
+		t.Run(block, func(t *testing.T) {
+			f := newReclaimFixture(t, false)
+			zero := time.Duration(0)
+			lease, err := f.older.Acquire(t.Context(), &keepalive.Override{Duration: &zero})
+			require.NoError(t, err)
+			lease.Release()
+			var unblock func()
+			if block == "dependant" {
+				waiting := instance.NewInstance("waiting", "vllm", "pending", 0, -1, 1)
+				waiting.SetWaitingOn(f.older.ID)
+				require.NoError(t, f.mgr.instances.Register(waiting))
+				unblock = func() { waiting.Admit() }
+			} else {
+				release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
+				require.True(t, claimed)
+				unblock = release
+			}
+			f.mgr.Start(t.Context())
+			time.Sleep(25 * time.Millisecond)
+			assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+			unblock()
+			eventually(t, func() bool { return !f.mgr.instances.Has(f.older.ID) }, "removing idle protection must wake expiry")
+		})
+	}
 }

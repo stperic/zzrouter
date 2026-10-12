@@ -178,7 +178,7 @@ func TestIdleExpired(t *testing.T) {
 		{name: "immediate", want: true},
 		{name: "immediate without activity", zero: true, want: true},
 		{name: "before", keepAlive: time.Minute, idle: time.Second},
-		{name: "boundary", keepAlive: time.Minute, idle: time.Minute},
+		{name: "boundary", keepAlive: time.Minute, idle: time.Minute, want: true},
 		{name: "after", keepAlive: time.Minute, idle: time.Minute + time.Nanosecond, want: true},
 		{name: "no activity", keepAlive: time.Minute, zero: true},
 	} {
@@ -187,7 +187,7 @@ func TestIdleExpired(t *testing.T) {
 			if tc.zero {
 				activity = time.Time{}
 			}
-			assert.Equal(t, tc.want, idleExpired(tc.keepAlive, activity, now))
+			assert.Equal(t, tc.want, Expired(instance.IdleState{Status: instance.StatusRunning, Activity: activity, Released: true}, config.RunSettings{KeepAlive: tc.keepAlive}, now))
 		})
 	}
 }
@@ -207,8 +207,8 @@ func TestRegisteredRunKeepAlive(t *testing.T) {
 			run, err := mgr.registerRun(t.Context(), EnsureRequest{Provider: "fake", Model: "m"}, launchSelection{config: svc})
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, run.GetKeepAlive())
-			keepAlive, activity := run.IdleSnapshot()
-			assert.Equal(t, tc.want == 0, idleExpired(keepAlive, activity, utils.Now()))
+			idle := run.IdleSnapshot()
+			assert.Equal(t, false, Expired(idle, config.RunSettings{KeepAlive: idle.KeepAlive}, utils.Now()))
 			// Registry visibility lasts until the reaper actually ends the run.
 			assert.Contains(t, mgr.Instances().List(), run)
 		})
@@ -219,4 +219,20 @@ func TestRegisteredRunKeepAlive(t *testing.T) {
 func TestUnsetDecisionIsAnError(t *testing.T) {
 	_, err := preparedStart{}.answer()
 	require.ErrorIs(t, err, errUndecided)
+}
+
+func TestExpiredState(t *testing.T) {
+	now := utils.Now()
+	base := instance.IdleState{Status: instance.StatusRunning, Activity: now.Add(-time.Hour), Released: true}
+	for _, state := range []instance.IdleState{
+		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Leased: true},
+		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Claimed: true},
+		{Status: instance.StatusStarting, Activity: base.Activity, Released: true},
+		{Status: instance.StatusStopped, Activity: base.Activity, Released: true},
+	} {
+		assert.False(t, Expired(state, config.RunSettings{KeepAlive: time.Minute}, now))
+	}
+	assert.True(t, Expired(base, config.RunSettings{KeepAlive: 0}, now))
+	base.Released = false
+	assert.False(t, Expired(base, config.RunSettings{KeepAlive: 0}, now), "zero must wait for release")
 }

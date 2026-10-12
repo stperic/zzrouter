@@ -35,7 +35,7 @@ const defaultLogBufferSize = 100
 //     concurrent reader yet. Fields: ID, Provider, LaunchMode, Model,
 //     SourceRepo, Port, HealthURL,
 //     Config, KeepAlive (initial), LogFilePath, LaunchCommand,
-//     IdleExpiry, Logs, FailureClassifier, StartedBy.
+//     Logs, FailureClassifier, StartedBy.
 //
 //  2. **Mu-protected mutable** — written by Set/Mark/Stamp/Update
 //     methods that take i.mu. Fields: Status, ErrorMessage, StartedAt,
@@ -131,9 +131,9 @@ type Instance struct {
 
 	// mu protects mutable state: Status, ErrorMessage, timestamps, keep-alive state.
 	// Use RLock for reads, Lock for writes.
-	mu             sync.RWMutex `json:"-"`
-	lastUsedAt     time.Time    `json:"-"`
-	keepAliveTimer *time.Timer  `json:"-"`
+	mu           sync.RWMutex    `json:"-"`
+	idleChanged  chan<- struct{} `json:"-"`
+	idleReleased bool            `json:"-"`
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -159,10 +159,6 @@ type Instance struct {
 	queueMu           sync.Mutex    `json:"-"`
 	waiters           int           `json:"-"`
 	maxQueuedRequests int           `json:"-"`
-
-	// IdleExpiry receives the instance ID when the keep-alive timer fires.
-	// The manager listens on this to auto-stop idle instances.
-	IdleExpiry chan string `json:"-"`
 
 	// Windows Job Object handle. Zero on Unix or when not using Job Objects.
 	// Stored as uintptr to avoid importing golang.org/x/sys/windows here.
@@ -277,6 +273,7 @@ func (i *Instance) setStatusLocked(status Status) {
 		}
 	}
 	i.Status = status
+	i.notifyIdleLocked()
 }
 
 // LeftStarting is closed once the run is no longer starting.
@@ -301,6 +298,7 @@ func (i *Instance) Admit() bool {
 		return false
 	}
 	i.admitted, i.waitingOn = true, ""
+	i.notifyIdleLocked()
 	return true
 }
 
@@ -328,6 +326,7 @@ func (i *Instance) SetWaitingOn(id string) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.waitingOn = id
+	i.notifyIdleLocked()
 }
 
 // WaitingOn returns the run a queued run waits for, if known.
@@ -469,28 +468,37 @@ func (i *Instance) SetStartedAtIfZero() {
 	}
 }
 
-// lastActivityTime returns the most recent activity timestamp.
-// Prefers LastActivity (set by external tracking) over lastUsedAt (set by keep-alive).
-// Caller must hold at least i.mu.RLock.
-func (i *Instance) lastActivityTime() time.Time {
-	if !i.LastActivity.IsZero() {
-		return i.LastActivity
-	}
-	return i.lastUsedAt
+// IdleState is an atomic snapshot of every input to idle expiry and its stop claim.
+type IdleState struct {
+	KeepAlive                 time.Duration
+	Activity                  time.Time
+	Status                    Status
+	Leased, Claimed, Released bool
 }
 
-// IdleSnapshot reads keep-alive and last activity under one lock, the inputs of the idle rule.
-func (i *Instance) IdleSnapshot() (keepAlive time.Duration, activity time.Time) {
+// IdleSnapshot reads idle policy inputs under one lock.
+func (i *Instance) IdleSnapshot() IdleState {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.KeepAlive, i.lastActivityTime()
+	return i.idleSnapshotLocked()
+}
+
+func (i *Instance) idleSnapshotLocked() IdleState {
+	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Leased: i.GetActiveRequests() != 0, Claimed: i.idleStopClaimed, Released: i.idleReleased}
 }
 
 // GetLastActivity returns the last activity time.
 func (i *Instance) GetLastActivity() time.Time {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return i.lastActivityTime()
+	return i.LastActivity
+}
+
+func (i *Instance) notifyIdleLocked() {
+	select {
+	case i.idleChanged <- struct{}{}:
+	default:
+	}
 }
 
 // Loaded is what the daemon serving a run reports of its model.
@@ -531,6 +539,14 @@ func (i *Instance) Loaded() Loaded {
 
 // --- Keep-alive ---
 
+// SetKeepAlive records the admitted launch's resolved idle limit before readiness.
+func (i *Instance) SetKeepAlive(duration time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.KeepAlive = duration
+	i.notifyIdleLocked()
+}
+
 // GetKeepAlive returns the current keep-alive duration. Safe to read
 // concurrently with StampActivityWithHints, which mutates the field under
 // i.mu.
@@ -540,40 +556,20 @@ func (i *Instance) GetKeepAlive() time.Duration {
 	return i.KeepAlive
 }
 
-// UpdateLastUsed updates the last-used timestamp and resets the keep-alive timer.
-func (i *Instance) UpdateLastUsed() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.lastUsedAt = utils.Now()
-	i.resetKeepAliveTimerLocked(false)
-}
+// UpdateLastUsed stamps readiness activity.
+func (i *Instance) UpdateLastUsed() { i.StampActivityWithHints(nil) }
 
-// StampActivityWithHints applies any non-nil request hints, stamps activity
-// timestamps (LastActivity and lastUsedAt), and resets the keep-alive timer
-// — all under a single lock so idle observers see a consistent
-// view.
-//
-// ov may be nil (no overrides). Individual Override fields may be nil; only
-// the ones that are set take effect.
-//
-// Concurrency: last-one-wins. If two requests with different KeepAlive
-// values race, the last acquire of the lock determines the timer's new
-// deadline. The callers' own activity timestamps are both honored because
-// resetKeepAliveTimerLocked always fires fresh.
+// StampActivityWithHints applies the latest request hint and stamps activity atomically.
 func (i *Instance) StampActivityWithHints(ov *keepalive.Override) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-
-	if ov != nil {
-		if ov.Duration != nil {
-			i.KeepAlive = *ov.Duration
-		}
+	if ov != nil && ov.Duration != nil {
+		i.KeepAlive = *ov.Duration
 	}
-
 	i.stampLocked(false)
 }
 
-// released drops one hold under the idle rule's lock, so the reaper never sees the count without the re-armed timer.
+// released drops one lease and stamps its finish without overwriting a later hint.
 func (i *Instance) released() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -582,63 +578,9 @@ func (i *Instance) released() {
 }
 
 func (i *Instance) stampLocked(release bool) {
-	now := utils.Now()
-	i.LastActivity = now
-	i.lastUsedAt = now
-	i.resetKeepAliveTimerLocked(release)
-}
-
-// GetLastUsedAt returns the last-used timestamp.
-func (i *Instance) GetLastUsedAt() time.Time {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.lastUsedAt
-}
-
-// StopKeepAliveTimer stops the keep-alive timer.
-func (i *Instance) StopKeepAliveTimer() {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	if i.keepAliveTimer != nil {
-		if !i.keepAliveTimer.Stop() {
-			select {
-			case <-i.keepAliveTimer.C:
-			default:
-			}
-		}
-		i.keepAliveTimer = nil
-	}
-}
-
-// resetKeepAliveTimerLocked arms expiry: below zero never, zero only as a request releases the run.
-func (i *Instance) resetKeepAliveTimerLocked(release bool) {
-	if i.keepAliveTimer != nil {
-		if !i.keepAliveTimer.Stop() {
-			select {
-			case <-i.keepAliveTimer.C:
-			default:
-			}
-		}
-	}
-
-	// A run being stopped arms nothing: its stop has already cleared the timer.
-	if i.KeepAlive < 0 || (i.KeepAlive == 0 && !release) || (i.ctx != nil && i.ctx.Err() != nil) {
-		i.keepAliveTimer = nil
-		return
-	}
-
-	keepAlive := i.KeepAlive
-	id := i.ID
-	i.keepAliveTimer = time.AfterFunc(keepAlive, func() {
-		i.TryLog(fmt.Sprintf("Keep-alive expired after %v, scheduling unload", keepAlive))
-		if i.IdleExpiry != nil {
-			select {
-			case i.IdleExpiry <- id:
-			default:
-			}
-		}
-	})
+	i.LastActivity = utils.Now()
+	i.idleReleased = release
+	i.notifyIdleLocked()
 }
 
 // --- Active request tracking (atomic) ---

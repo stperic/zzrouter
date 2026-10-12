@@ -818,8 +818,9 @@ paths:
         refusal at that point fails the run and its job with the same 409
         detail.
 
-        A node with `gpu.evict_idle_on_memory_pressure` set stops idle runs
-        to make room instead of refusing. The launch names them in its run's
+        The tier-resolved `evict-idle-on-memory-pressure` run parameter stops
+        idle runs to make room when true. The node
+        `gpu.evict_idle_on_memory_pressure` is the fallback when absent. The launch names them in its run's
         `evicted_runs` and in its job's `meta.evicted_runs`.
 
         Returns 202 immediately with a pkg/jobs handle ID. Subscribe to
@@ -11241,7 +11242,8 @@ components:
           type: array
           description: |
             The idle runs this launch stopped to fit its GPU memory budget,
-            when the node sets `gpu.evict_idle_on_memory_pressure`. Absent
+            when resolved `evict-idle-on-memory-pressure` is true (the node GPU
+            option supplies the fallback). Absent
             when the launch stopped nothing. The run job's result carries
             the same list.
           items:

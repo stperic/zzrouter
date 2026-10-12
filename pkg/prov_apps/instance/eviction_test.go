@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,4 +119,20 @@ func TestUnhealthyIdleRunIsEvictable(t *testing.T) {
 	inst.SetStatus(StatusStarting)
 	assert.False(t, inst.Evictable())
 	inst.Cancel()
+}
+
+func TestIdleClaimRevalidatesHintAtSameActivity(t *testing.T) {
+	inst := NewInstance("id", "p", "m", 0, time.Minute, 1)
+	inst.MarkRunning()
+	instant := utils.Now()
+	restore := utils.SetClock(utils.FixedClock(instant))
+	defer restore()
+	lease, err := inst.Acquire(t.Context(), nil)
+	require.NoError(t, err)
+	lease.Release()
+	observed := inst.IdleSnapshot()
+	pin := -time.Second
+	inst.StampActivityWithHints(&keepalive.Override{Duration: &pin})
+	_, claimed := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: observed.Activity, Idle: &observed}})
+	assert.False(t, claimed, "equal timestamps cannot validate an obsolete duration or release state")
 }

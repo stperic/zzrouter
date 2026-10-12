@@ -189,10 +189,22 @@ func TestModelDetailProtocolCutoverContract(t *testing.T) {
 }
 
 func TestModelDeletionProtocolCutoverContract(t *testing.T) {
-	if ClusterProtocolVersion != 5 || MinClusterProtocolVersion != 5 {
+	if ClusterProtocolVersion < 5 || MinClusterProtocolVersion < 5 {
 		t.Fatalf("guarded deletion requires protocol 5/5, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
 	}
 	if err := LocalProtocolWindow().Check(4); err == nil {
 		t.Fatal("old worker admitted without physical deletion ownership")
+	}
+}
+
+func TestRunSettingsProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion != 6 || MinClusterProtocolVersion != 6 {
+		t.Fatalf("tier run settings require protocol 6/6, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(5); err == nil {
+		t.Fatal("old worker admitted without tier settings or reserved argv handling")
+	}
+	if err := LocalProtocolWindow().Check(6); err != nil {
+		t.Fatal(err)
 	}
 }

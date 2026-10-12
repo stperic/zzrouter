@@ -72,6 +72,9 @@ func (p *OnDemandProvider) Validate() error {
 	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
+	if err := providerToServiceConfig(p).ValidateRunSettings(); err != nil {
+		return err
+	}
 	if _, err := p.Runtime.HealthCheck.ReadinessProbe.StallDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
