@@ -36,7 +36,7 @@ func (mc *Cache) UnavailableInventories(node, provider string) []InventoryUnavai
 		if node != "" && !strings.EqualFold(key.node, node) {
 			continue
 		}
-		if provider != "" && key.provider != "" && key.provider != provider {
+		if provider != "" && key.provider != "" && !strings.EqualFold(key.provider, provider) {
 			continue
 		}
 		result = append(result, cloneInventory(unavailable))

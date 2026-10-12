@@ -12,6 +12,56 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 )
 
+func TestDeletionPhysicalPathRetainsFeatureVerificationContract(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "physical")
+	alias := filepath.Join(root, "alias")
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.Symlink(dir, alias))
+	writeModel(t, dir, "weights.gguf", "weights")
+	require.NoError(t, integrity.WriteManifest(dir, &integrity.ModelManifest{Version: 1, Files: []integrity.FileChecksum{{RelativePath: "weights.gguf", Size: 7}, {RelativePath: "mmproj.gguf", Size: 9, Feature: "vision"}}}))
+	physical, err := filepath.EvalSymlinks(filepath.Join(alias, "weights.gguf"))
+	require.NoError(t, err)
+	err = VerifyLocalWeights(t.Context(), physical, []string{filepath.Join(alias, "mmproj.gguf")})
+	require.ErrorIs(t, err, ErrModelIncomplete, "a selected missing feature cannot disappear when the weights path is frozen")
+}
+
+func TestDeletionDirectorySymlinkVerificationContract(t *testing.T) {
+	dir := t.TempDir()
+	writeModel(t, dir, "model.safetensors", "weights")
+	require.NoError(t, integrity.WriteManifest(dir, &integrity.ModelManifest{Version: 1, Files: []integrity.FileChecksum{{RelativePath: "model.safetensors", Size: 7}}}))
+	outside := filepath.Join(t.TempDir(), "outside.safetensors")
+	require.NoError(t, os.WriteFile(outside, []byte("weights"), 0600))
+	require.NoError(t, os.Remove(filepath.Join(dir, "model.safetensors")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "model.safetensors")))
+	require.Error(t, VerifyLocalWeights(t.Context(), dir, nil), "directory launches must retain manifest symlink rejection")
+}
+
+func TestDeletionShardSymlinkVerificationContract(t *testing.T) {
+	dir := t.TempDir()
+	first, second := "m-00001-of-00002.gguf", "m-00002-of-00002.gguf"
+	writeModel(t, dir, first, "weights")
+	writeModel(t, dir, second, "weights")
+	require.NoError(t, integrity.WriteManifest(dir, &integrity.ModelManifest{Version: 1, Files: []integrity.FileChecksum{{RelativePath: first, Size: 7}, {RelativePath: second, Size: 7}}}))
+	outside := filepath.Join(t.TempDir(), "outside.gguf")
+	require.NoError(t, os.WriteFile(outside, []byte("weights"), 0600))
+	require.NoError(t, os.Remove(filepath.Join(dir, second)))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, second)))
+	require.Error(t, VerifyLocalWeights(t.Context(), filepath.Join(dir, first), nil), "all selected shards must retain manifest symlink rejection")
+}
+
+func TestDeletionMainSymlinkVerificationContract(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "weights.gguf")
+	writeModel(t, dir, "weights.gguf", "weights")
+	require.NoError(t, integrity.WriteManifest(dir, &integrity.ModelManifest{Version: 1, Files: []integrity.FileChecksum{{RelativePath: "weights.gguf", Size: 7}}}))
+	outside := filepath.Join(t.TempDir(), "outside.gguf")
+	require.NoError(t, os.WriteFile(outside, []byte("weights"), 0600))
+	require.NoError(t, os.Remove(file))
+	require.NoError(t, os.Symlink(outside, file))
+	require.Error(t, VerifyLocalWeights(t.Context(), file, nil), "the original manifest must retain selected-file type validation")
+}
+
 func writeModel(t *testing.T, dir, name, contents string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

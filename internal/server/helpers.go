@@ -94,6 +94,30 @@ func (e *RoutedError) setRetryAfter(c *gin.Context) {
 // from the current request so operators can correlate logs across hops.
 func (e *RoutedError) Respond(c *gin.Context) {
 	e.setRetryAfter(c)
+	if httperr.FromContextOr(c, defaultAuthResponder).Name() != "problem" {
+		wire := httperr.Error{Status: e.StatusCode, Message: e.Error()}
+		if pd := e.ProblemDetails; pd != nil {
+			wire.Code, wire.Title = pd.Code, pd.Title
+			wire.Extra = map[string]any{}
+			if pd.Deleted != nil {
+				wire.Extra["deleted"] = *pd.Deleted
+			}
+			if pd.MutationApplied {
+				wire.Extra["mutation_applied"] = true
+			}
+			if pd.RunID != "" {
+				wire.Extra["run_id"] = pd.RunID
+			}
+			if pd.Node != "" {
+				wire.Extra["node"] = pd.Node
+			}
+			if len(pd.Errors) > 0 {
+				wire.Extra["errors"] = pd.Errors
+			}
+		}
+		respondSurfaceError(c, wire)
+		return
+	}
 	if e.ProblemDetails != nil {
 		pd := *e.ProblemDetails // copy by value so we don't mutate the shared error
 		pd.Instance = c.Request.URL.Path
@@ -328,7 +352,7 @@ func (s *Server) buildIncompatibleDeployError(hostname, model, repo string) stri
 
 // RouteToModelOrBroadcast uses the same target selection as inference and preview tiers.
 func (s *Server) RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error) {
-	resolved, err := s.ResolveModel(ctx, modelName, "")
+	resolved, err := s.ResolveModel(ctx, resolver.Reference{Model: modelName})
 	if err != nil {
 		return nil, err
 	}
@@ -343,8 +367,8 @@ func (s *Server) RouteToModelOrBroadcast(ctx context.Context, modelName, path, m
 }
 
 // ResolveModel shares group-first resolution with inference and management callers.
-func (s *Server) ResolveModel(ctx context.Context, modelName, nodeHint string) (*resolver.Resolved, error) {
-	return s.model.Resolver.Resolve(ctx, resolver.Reference{Model: modelName, Node: nodeHint})
+func (s *Server) ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
+	return s.model.Resolver.Resolve(ctx, ref)
 }
 
 // findMatchingModels finds models that match a name pattern (fuzzy matching)

@@ -8,12 +8,17 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeModelInUse":                "model_in_use",
+		"CodeModelReferenced":           "model_referenced",
+		"CodeModelNotDeletable":         "model_not_deletable",
 		"CodeCapacityExceeded":          "capacity_exceeded",
 		"CodeQueueWaitExpired":          "queue_wait_expired",
 		"CodeReleaseManifestMissing":    "release_manifest_missing",
 		"CodeProtocolCutoverRequired":   "protocol_cutover_required",
 		"CodeJobNotFound":               "job_not_found",
 		"CodeModelNodeAmbiguous":        "model_node_ambiguous",
+		"CodeModelSourceAmbiguous":      "model_source_ambiguous",
+		"CodeModelDetailUnsupported":    "model_detail_unsupported",
 		"CodeNodeUnreachable":           "node_unreachable",
 		"CodeClusterUnavailable":        "cluster_unavailable",
 		"CodeUpstreamTimeout":           "upstream_timeout",

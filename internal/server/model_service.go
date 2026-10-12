@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -59,7 +62,7 @@ func (s *ModelService) ListModels(ctx context.Context, req *ListModelsRequest) (
 	defer cancel()
 
 	if req.Refresh {
-		if _, err := s.registry.RescanLocal(); err != nil {
+		if _, err := s.registry.RescanLocal(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -74,111 +77,61 @@ func (s *ModelService) ListModels(ctx context.Context, req *ListModelsRequest) (
 	return models, nil
 }
 
-// ShowModel handles showing model details with routing
+// ShowModel uses the inference resolver and the serving node's metadata reader.
 func (s *ModelService) ShowModel(ctx context.Context, req *ShowModelRequest) (*ShowModelResponse, error) {
-	utils.LogDebugf("[PublicAPI] ShowModel: model=%s, node=%s, app=%s, verbose=%v",
-		req.ModelName, req.Node, req.App, req.Verbose)
-
 	ctx, cancel := ensureTimeout(ctx, DefaultServiceTimeout)
 	defer cancel()
-
-	// Step 1: Find the model in cache to determine target host
-	matches, err := s.cache.ListModels(ctx, req.Node, "", req.App, req.ModelName)
+	// Detail needs published identity even for pins; inference may route a catalog miss directly.
+	if _, err := s.cache.ListModels(ctx, req.Node, req.Registry, req.App, req.ModelName); err != nil {
+		return nil, err
+	}
+	ref := resolver.Reference{Model: req.ModelName, Provider: req.App, Node: req.Node, Registry: req.Registry}
+	if req.AllowUncataloged {
+		ref.DefaultProvider = constants.AppOllama
+	}
+	resolved, err := s.cache.ResolveModel(ctx, ref)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get cached models: %w", err)
+		return nil, err
 	}
-
-	// Step 2: Handle match scenarios
-	switch len(matches) {
-	case 0:
-		return nil, cache.ErrModelNotFound{ModelName: req.ModelName}
-	case 1:
-		// Cloud models have no /api/show-equivalent backend; the show envelope
-		// is a local-runtime detail surface. Direct callers to /v1/models/<id>.
-		if matches[0].IsCloud {
-			return nil, newProblemError(http.StatusNotImplemented, "Not Implemented",
-				"show is not supported for cloud-served models; use GET /v1/models/"+matches[0].Name+" for cloud catalog details")
-		}
-		return s.getModelDetails(ctx, matches[0], req.Verbose)
-	default:
-		// Multiple matches
-		matchStrings := make([]string, len(matches))
-		for i, m := range matches {
-			matchStrings[i] = fmt.Sprintf("%s@%s", m.Name, m.Node)
-		}
-		return nil, ErrMultipleMatches{
-			ModelName: req.ModelName,
-			Matches:   matchStrings,
-		}
+	if resolved.Node == "*" {
+		return nil, newProblemError(http.StatusBadRequest, "Bad Request", "model show requires one node, never a broadcast")
 	}
+	if resolved.GroupName != "" || (resolved.Replica != nil && resolved.Replica.IsCloud) {
+		return nil, newRouteProblemError(http.StatusNotImplemented, "Not Implemented", "model detail is unavailable for a group or cloud model; inspect GET /v1/models or select an exact catalog model with provider and node", httperr.CodeModelDetailUnsupported, resolved.Node)
+	}
+	model := resolved.RequestModel
+	if model == "" {
+		model = resolved.ModelName
+	}
+	query := url.Values{"model": {model}, "provider": {resolved.Provider}, "registry": {req.Registry}, "verbose": {strconv.FormatBool(req.Verbose)}, "compact": {strconv.FormatBool(req.Compact)}, "allow_uncataloged": {strconv.FormatBool(req.AllowUncataloged)}}
+	if resolved.Replica != nil {
+		query.Set("registry", resolved.Replica.SourceRepo)
+		query.Set("source_id", resolved.Replica.SourceID)
+	}
+	details, err := routeAndParse[map[string]any](ctx, s.router, http.MethodGet, "/zzrouter/v1/internal/models/show?"+query.Encode(), localIfEmpty(resolved.Node), nil)
+	if err != nil {
+		return nil, err
+	}
+	if *details == nil {
+		return nil, newRouteProblemError(http.StatusBadGateway, "Bad Gateway", "model detail must be a JSON object", httperr.CodeUpstreamShape, resolved.Node)
+	}
+	return s.mapToShowResponse(*details), nil
 }
 
-// getModelDetails routes the show request to the appropriate host
-func (s *ModelService) getModelDetails(ctx context.Context, model *cache.CachedModel, verbose bool) (*ShowModelResponse, error) {
-	utils.LogDebugf("[PublicAPI] Getting details for model=%s from node=%s", model.Name, model.Node)
-
-	// Build routing request to internal API
-	path := fmt.Sprintf("/zzrouter/v1/internal/models/show?model=%s&verbose=%v", url.QueryEscape(model.Name), verbose)
-	routingReq := &routing.Request{
-		Path:   path,
-		Node:   model.Node, // Route to specific host
-		Method: "GET",
-	}
-
-	// Route the request
-	resp, err := s.router.Route(ctx, routingReq)
-	if err != nil {
-		return nil, fmt.Errorf("routing failed: %w", err)
-	}
-
-	if resp.StatusCode != 200 {
-		// Preserve upstream status + Problem Details so RespondToError forwards 4xx verbatim instead of 500ing.
-		return nil, parseRoutedError(resp.StatusCode, resp.Body, resp.Headers)
-	}
-
-	// Parse response (raw provider response)
-	var details map[string]any
-	if err := json.Unmarshal(resp.Body, &details); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	// Convert to ShowModelResponse
-	return s.mapToShowResponse(details), nil
-}
-
-// mapToShowResponse converts raw provider response to ShowModelResponse
+// mapToShowResponse preserves the complete payload alongside the common fields.
 func (s *ModelService) mapToShowResponse(m map[string]any) *ShowModelResponse {
-	resp := &ShowModelResponse{
-		Details: m, // Store ALL provider fields
+	size, _ := m["size"].(float64)
+	return &ShowModelResponse{
+		Details:     m,
+		Name:        stringFromMaps("name", m),
+		Size:        int64(size),
+		Node:        stringFromMaps("node", m),
+		SourceRepo:  stringFromMaps("source_repo", m),
+		Format:      stringFromMaps("format", m),
+		ModifiedAt:  stringFromMaps("modified_at", m),
+		AssignedApp: stringFromMaps("assigned_app", m),
+		Digest:      stringFromMaps("digest", m),
 	}
-
-	// Extract common fields for convenience
-	if v, ok := m["name"].(string); ok {
-		resp.Name = v
-	}
-	if v, ok := m["size"].(float64); ok {
-		resp.Size = int64(v)
-	}
-	if v, ok := m["node"].(string); ok {
-		resp.Node = v
-	}
-	if v, ok := m["source_repo"].(string); ok {
-		resp.SourceRepo = v
-	}
-	if v, ok := m["format"].(string); ok {
-		resp.Format = v
-	}
-	if v, ok := m["modified_at"].(string); ok {
-		resp.ModifiedAt = v
-	}
-	if v, ok := m["assigned_app"].(string); ok {
-		resp.AssignedApp = v
-	}
-	if v, ok := m["digest"].(string); ok {
-		resp.Digest = v
-	}
-
-	return resp
 }
 
 // DeleteModels handles deleting models with routing
@@ -189,6 +142,42 @@ func (s *ModelService) DeleteModels(ctx context.Context, req *DeleteModelsReques
 	ctx, cancel := ensureTimeout(ctx, 60*time.Second)
 	defer cancel()
 
+	if err := req.Validate(); err != nil {
+		return nil, newProblemError(400, "Bad Request", err.Error())
+	}
+	if req.Model != "" {
+		if _, err := s.cache.ListModels(ctx, req.Node, req.Registry, req.Provider, req.Model); err != nil {
+			return nil, err
+		}
+		resolved, err := s.cache.ResolveModel(ctx, resolver.Reference{Model: req.Model, Node: req.Node, Provider: req.Provider, Registry: req.Registry, Exact: true, SourceID: req.SourceID, DefaultProvider: req.DefaultProvider})
+		if err != nil {
+			return nil, err
+		}
+		if resolved.GroupName != "" || (resolved.Replica != nil && (resolved.Replica.VariantOf != "" || resolved.Replica.IsCloud)) {
+			return nil, httperr.Error{Status: 409, Code: string(httperr.CodeModelNotDeletable), Message: "logical variants, groups and cloud models are configuration; use their supported management API instead of physical deletion"}
+		}
+		if resolved.Node == "*" {
+			return nil, newProblemError(400, "Bad Request", "exact deletion requires one node")
+		}
+		logical := false
+		s.appsConfig().RangeApps(func(provider string, cfg pkgConfig.ServiceConfig) bool {
+			if resolved.Provider != "" && !strings.EqualFold(provider, resolved.Provider) {
+				return true
+			}
+			_, _, logical = cfg.Variant(resolved.ModelName)
+			return !logical
+		})
+		if logical {
+			return nil, httperr.Error{Status: 409, Code: string(httperr.CodeModelNotDeletable), Message: "logical variants are configuration; remove the models entry through the parameters API"}
+		}
+		if resolved.Replica == nil {
+			return nil, cache.ErrModelNotFound{ModelName: req.Model}
+		}
+		selected := *req
+		selected.Model, selected.Provider, selected.Registry, selected.SourceID = resolved.Replica.Name, resolved.Replica.Provider, resolved.Replica.SourceRepo, resolved.Replica.SourceID
+		selected.Node = localIfEmpty(resolved.Node)
+		req = &selected
+	}
 	var resp *routing.Response
 	var err error
 
@@ -262,7 +251,7 @@ func (s *ModelService) handleRescanModels(c *gin.Context) {
 
 	// Local query: explicit local host or no cluster configured.
 	if s.cache.IsLocalNode(host) {
-		result, err := s.registry.RescanLocal()
+		result, err := s.registry.RescanLocal(c.Request.Context())
 		if err != nil {
 			InternalNodeError(c, "Failed to rescan models")
 			return
@@ -319,122 +308,84 @@ type CacheStatsProvider interface {
 	GetCacheStats() map[string]any
 }
 
-// deleteModelsMultiNode handles deletion where each model has its own target host
-// Groups models by host, routes to each host, and aggregates results
+// deleteModelsMultiNode routes legacy per-node batches through the existing router.
 func (s *ModelService) deleteModelsMultiNode(ctx context.Context, models []ModelToDelete) (*routing.Response, error) {
-	hostname := s.host.GetNodename()
-
-	// Group models by host
-	modelsByNode := make(map[string][]ModelToDelete)
-
+	grouped := map[string][]ModelToDelete{}
 	for _, model := range models {
-		host := model.Node
-		// Normalize: empty host or matching hostname means local
-		// Use the server's actual hostname so router's nodeName check matches
-		if host == "" || host == hostname {
-			host = hostname
+		node := model.Node
+		if node == "" || node == s.host.GetNodename() {
+			node = s.host.GetNodename()
 		}
-		modelsByNode[host] = append(modelsByNode[host], model)
+		grouped[node] = append(grouped[node], model)
 	}
-
-	utils.LogDebugf("[PublicAPI] Grouped %d models into %d hosts", len(models), len(modelsByNode))
-
-	// Build request body for each host
-	hostBodies := make(map[string][]byte, len(modelsByNode))
-	for host, hostModels := range modelsByNode {
-		hostReq := &DeleteModelsRequest{Models: hostModels}
-		body, err := json.Marshal(hostReq)
+	bodies := make(map[string][]byte, len(grouped))
+	for node, items := range grouped {
+		body, err := json.Marshal(DeleteModelsRequest{Models: items})
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request for host %s: %w", host, err)
+			return nil, err
 		}
-		hostBodies[host] = body
+		bodies[node] = body
 	}
-
-	// Route to all hosts using MultiRoute
-	multiResp, err := s.router.MultiRoute(ctx, "/zzrouter/v1/internal/models", "DELETE", hostBodies)
+	response, err := s.router.MultiRoute(ctx, "/zzrouter/v1/internal/models", http.MethodDelete, bodies)
 	if err != nil {
-		return nil, fmt.Errorf("multi-route failed: %w", err)
+		return nil, err
 	}
-
-	// Aggregate responses from all hosts
-	return s.aggregateDeleteResponses(multiResp)
+	return s.aggregateDeleteResponses(response)
 }
 
-// aggregateDeleteResponses aggregates DELETE responses from multiple hosts
-// This is operation-specific aggregation logic in the service layer
-func (s *ModelService) aggregateDeleteResponses(multiResp *routing.Response) (*routing.Response, error) {
-	// Parse multi-route response (array of host responses)
-	var hostResponses []map[string]any
-	if err := json.Unmarshal(multiResp.Body, &hostResponses); err != nil {
-		return nil, fmt.Errorf("failed to parse multi-route response: %w", err)
+// aggregateDeleteResponses preserves completed effects from every responding node.
+func (s *ModelService) aggregateDeleteResponses(response *routing.Response) (*routing.Response, error) {
+	var nodes []struct {
+		Node   string          `json:"node"`
+		Error  string          `json:"error"`
+		Status int             `json:"status_code"`
+		Body   json.RawMessage `json:"body"`
 	}
-
-	// Aggregate deletion results
-	totalDeleted := 0
-	var allErrors []string
-
-	for _, hostResp := range hostResponses {
-		host := "(unknown)"
-		if h, ok := hostResp["node"].(string); ok {
-			host = h
-		}
-
-		// Check for routing errors
-		if errMsg, ok := hostResp["error"].(string); ok {
-			allErrors = append(allErrors, fmt.Sprintf("%s: %s", host, errMsg))
+	if err := json.Unmarshal(response.Body, &nodes); err != nil {
+		return nil, fmt.Errorf("decode deletion responses: %w", err)
+	}
+	aggregate := DeleteModelsResponse{}
+	var failure *RoutedError
+	applied := false
+	for _, node := range nodes {
+		if node.Error != "" {
+			aggregate.Errors = append(aggregate.Errors, node.Node+": "+node.Error)
 			continue
 		}
-
-		// Parse the body from this host
-		body, ok := hostResp["body"].(map[string]any)
-		if !ok {
-			allErrors = append(allErrors, fmt.Sprintf("%s: invalid response format", host))
-			continue
-		}
-
-		if status, ok := hostResp["status_code"].(float64); ok && status >= http.StatusBadRequest {
-			raw, err := json.Marshal(body)
-			if err != nil {
-				return nil, err
+		if node.Status >= http.StatusBadRequest {
+			current := parseRoutedError(node.Status, node.Body, nil)
+			if failure == nil {
+				failure = current
 			}
-			return nil, parseRoutedError(int(status), raw, nil)
-		}
-
-		// Extract deleted count (JSON numbers are float64)
-		if deleted, ok := body["deleted"].(float64); ok {
-			totalDeleted += int(deleted)
-		} else {
-			// Log warning but continue - might be zero
-			utils.LogDebugf("[PublicAPI] Warning: No 'deleted' field in response from %s", host)
-		}
-
-		// Extract errors array if present
-		if errors, ok := body["errors"].([]any); ok {
-			for _, e := range errors {
-				if errStr, ok := e.(string); ok {
-					allErrors = append(allErrors, errStr)
+			if pd := current.ProblemDetails; pd != nil {
+				if pd.Deleted != nil {
+					aggregate.Deleted += *pd.Deleted
 				}
+				applied = applied || pd.MutationApplied
 			}
+			continue
 		}
+		var local DeleteModelsResponse
+		if err := json.Unmarshal(node.Body, &local); err != nil || string(node.Body) == "null" {
+			aggregate.Errors = append(aggregate.Errors, node.Node+": invalid deletion response")
+			continue
+		}
+		aggregate.Deleted += local.Deleted
+		aggregate.Errors = append(aggregate.Errors, local.Errors...)
 	}
-
-	// Build aggregated response
-	aggregated := DeleteModelsResponse{
-		Deleted: totalDeleted,
+	if failure != nil {
+		if failure.ProblemDetails == nil {
+			failure.ProblemDetails = utils.NewProblemDetails(failure.StatusCode, http.StatusText(failure.StatusCode), failure.Error(), "")
+		}
+		failure.ProblemDetails.Deleted = &aggregate.Deleted
+		failure.ProblemDetails.MutationApplied = applied || aggregate.Deleted > 0
+		return nil, failure
 	}
-	if len(allErrors) > 0 {
-		aggregated.Errors = allErrors
-	}
-
-	body, err := json.Marshal(aggregated)
+	body, err := json.Marshal(aggregate)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal aggregated response: %w", err)
+		return nil, err
 	}
-
-	return &routing.Response{
-		StatusCode: 200,
-		Body:       body,
-	}, nil
+	return &routing.Response{StatusCode: http.StatusOK, Body: body}, nil
 }
 
 // deleteModelsStandard handles pattern/path-based deletion
@@ -443,6 +394,13 @@ func (s *ModelService) deleteModelsStandard(ctx context.Context, req *DeleteMode
 	requestBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	if req.Node == "" || req.Node == "*" {
+		response, err := s.router.MultiRoute(ctx, "/zzrouter/v1/internal/models", http.MethodDelete, map[string][]byte{"*": requestBody})
+		if err != nil {
+			return nil, err
+		}
+		return s.aggregateDeleteResponses(response)
 	}
 
 	routingReq := &routing.Request{
@@ -472,7 +430,7 @@ func (s *ModelService) handleSaveModelDefaults(c *gin.Context) {
 func (s *ModelService) handleGetModelInstance(c *gin.Context) {
 	modelName := strings.TrimPrefix(c.Param("model"), "/")
 
-	resolved, err := s.cache.ResolveModel(c.Request.Context(), modelName, c.GetHeader("X-Node"))
+	resolved, err := s.cache.ResolveModel(c.Request.Context(), resolver.Reference{Model: modelName, Node: c.GetHeader("X-Node")})
 	if err != nil {
 		RespondToError(c, err)
 		return

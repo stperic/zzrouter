@@ -15,6 +15,8 @@ func (objectSchema[T]) MarshalJSON() ([]byte, error) {
 	schema, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
 		reflect.TypeFor[json.RawMessage](): {},
 		reflect.TypeFor[toolCallOutcome](): {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
+		reflect.TypeFor[probeKind]():       {Type: "string", Enum: []any{probeChat, probeTools, probeEmbed, probeVision}},
+		reflect.TypeFor[probeVerdict]():    {Type: "string", Enum: []any{probeVerified, probeNotSupported, probeInconclusive}},
 	}})
 	if err != nil {
 		return nil, err
@@ -83,13 +85,21 @@ type downloadNode struct {
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
+type probeOutput struct {
+	Probe     probeKind    `json:"probe"`
+	Verdict   probeVerdict `json:"verdict" jsonschema:"Evidence from this request only, not a stored capability claim."`
+	NextSteps string       `json:"next_steps"`
+}
 type chatOutput struct {
-	ToolCall toolCallOutcome `json:"tool_call,omitempty" jsonschema:"Request-local tool probe outcome: verified, parser_missing, truncated or inconclusive."`
-	Reply    string          `json:"reply"`
-	Model    string          `json:"model"`
-	Usage    struct {
-		PromptTokens     int `json:"prompt_tokens,omitempty"`
-		CompletionTokens int `json:"completion_tokens,omitempty"`
-		TotalTokens      int `json:"total_tokens,omitempty"`
-	} `json:"usage"`
+	probeOutput
+	Dimensions int             `json:"dimensions,omitempty"`
+	ToolCall   toolCallOutcome `json:"tool_call,omitempty" jsonschema:"Request-local tool probe outcome: verified, parser_missing, truncated or inconclusive."`
+	Reply      string          `json:"reply,omitempty"`
+	Model      string          `json:"model"`
+	Usage      tokenUsage      `json:"usage"`
+}
+type tokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
 }

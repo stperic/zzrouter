@@ -39,12 +39,12 @@ type attentionConfig struct {
 }
 
 // ModelMemoryNeed returns unknown when local weights, context or attention geometry cannot be sized.
-func ModelMemoryNeed(modelPath string, svc config.ServiceConfig, params map[string]string) (Need, bool) {
+func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string) (Need, bool) {
 	context, ok := contextLength(svc, params)
-	if !ok || modelPath == "" {
+	if !ok || model.Path == "" {
 		return Need{}, false
 	}
-	cfg, ok := readAttentionConfig((ResolvedModel{Path: modelPath}).Directory())
+	cfg, ok := readAttentionConfig(model.Directory())
 	if !ok {
 		return Need{}, false
 	}
@@ -52,7 +52,7 @@ func ModelMemoryNeed(modelPath string, svc config.ServiceConfig, params map[stri
 	if !ok {
 		return Need{}, false
 	}
-	weightBytes, ok := weightsBytes(modelPath, svc)
+	weightBytes, ok := weightsBytes(model.Path, svc)
 	if !ok {
 		return Need{}, false
 	}

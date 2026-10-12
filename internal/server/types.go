@@ -92,10 +92,14 @@ func (r *ListModelsRequest) Validate() error {
 
 // ShowModelRequest represents a request to show model details
 type ShowModelRequest struct {
-	ModelName string // Required: model name to show
-	Node      string // Optional: target specific host
-	App       string // Optional: filter by assigned_app
-	Verbose   bool   // Optional: verbose output
+	ModelName        string // Required: model name to show
+	Node             string // Optional: target specific host
+	App              string // Optional: filter by assigned_app
+	Registry         string // Optional: physical source registry
+	SourceID         string // Internal: selected source identity
+	Verbose          bool   // Optional: verbose output
+	Compact          bool   // Optional: bounded model metadata
+	AllowUncataloged bool   // Internal: native Ollama show may read an unlisted model on its selected backend
 }
 
 // Validate checks if the request is valid
@@ -108,13 +112,3 @@ func (r *ShowModelRequest) Validate() error {
 
 // ShowModelResponse + ModelRouteInfo moved to pkg/dispatch/adapter.
 // See dispatch_aliases.go for the server-side re-exports.
-
-// ErrMultipleMatches indicates multiple models matched the query
-type ErrMultipleMatches struct {
-	ModelName string
-	Matches   []string
-}
-
-func (e ErrMultipleMatches) Error() string {
-	return fmt.Sprintf("multiple models match '%s': %v", e.ModelName, e.Matches)
-}

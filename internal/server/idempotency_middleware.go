@@ -7,6 +7,7 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"io"
 	"net/http"
 	"sync"
@@ -183,7 +184,14 @@ func (s *idempotencyStore) complete(entry *idemEntry, status int, body []byte, c
 	entry.statusCode = status
 	entry.contentType = contentType
 	s.recordLocked(entry, body)
-	if status < 200 || status >= 300 || body == nil {
+	retain := status >= 200 && status < 300
+	if entry.key.method == http.MethodDelete && entry.key.path == "/zzrouter/v1/models" {
+		var outcome utils.ProblemDetails
+		if json.Unmarshal(body, &outcome) == nil && outcome.MutationApplied {
+			retain = true
+		}
+	}
+	if !retain || body == nil {
 		if body == nil {
 			entry.statusCode = 0 // An oversized response cannot be replayed; waiting duplicates must retry.
 		}

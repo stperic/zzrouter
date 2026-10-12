@@ -27,5 +27,3 @@ server:
   - completion-complete
   # Stateless transport provides no session for concurrent SSE streams.
   - server-sse-multiple-streams
-  # localhost-host-valid-accepted failed because the proxy rewrote Host.
-  - dns-rebinding-protection

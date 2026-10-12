@@ -19,13 +19,13 @@ type ModelCacheProvider interface {
 	ListModels(ctx context.Context, host, repo, app, model string) ([]*cache.CachedModel, error)
 	Invalidate()
 	RouteToModelOrBroadcast(ctx context.Context, modelName, path, method string, body []byte) (*routing.Response, error)
-	ResolveModel(ctx context.Context, modelName, nodeHint string) (*resolver.Resolved, error)
+	ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error)
 	IsLocalNode(host string) bool
 }
 
 // ModelRegistryProvider defines the interface for model registry access
 type ModelRegistryProvider interface {
-	RescanLocal() (map[string]any, error)
+	RescanLocal(context.Context) (map[string]any, error)
 }
 
 // InstanceProvider defines the interface for instance management

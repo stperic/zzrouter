@@ -118,7 +118,7 @@ func TestMCPWireListContract(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	expected := map[string]struct{ readOnly, destructive, idempotent bool }{
 		"zz_overview": {readOnly: true}, "zz_job": {readOnly: true}, "zz_nodes": {readOnly: true},
-		"zz_models": {readOnly: true}, "zz_model_search": {readOnly: true}, "zz_model_download": {},
+		"zz_models": {readOnly: true}, "zz_model_search": {readOnly: true}, "zz_model_download": {}, "zz_model_delete": {destructive: true},
 		"zz_runs": {readOnly: true}, "zz_run_preview": {readOnly: true}, "zz_run_start": {}, "zz_run_restart": {},
 		"zz_run_stop": {destructive: true}, "zz_chat": {}, "zz_logs": {readOnly: true}, "zz_job_cancel": {destructive: true},
 		"zz_providers": {readOnly: true}, "zz_provider_install": {}, "zz_params_get": {readOnly: true}, "zz_params_set": {},
@@ -179,7 +179,10 @@ func TestMCPWireObjectSubschemas(t *testing.T) {
 				switch tool["name"] {
 				case "zz_chat":
 					input := tool["inputSchema"].(map[string]any)
-					require.Equal(t, "boolean", input["properties"].(map[string]any)["tools"].(map[string]any)["type"])
+					inputProperties := input["properties"].(map[string]any)
+					require.NotContains(t, inputProperties, "tools")
+					require.ElementsMatch(t, []any{"chat", "tools", "embed", "vision"}, inputProperties["probe"].(map[string]any)["enum"])
+					require.ElementsMatch(t, []any{"verified", "not_supported", "inconclusive"}, properties["verdict"].(map[string]any)["enum"])
 					require.NotContains(t, input["required"], "message")
 					require.ElementsMatch(t, []any{"verified", "parser_missing", "truncated", "inconclusive"}, properties["tool_call"].(map[string]any)["enum"])
 				case "zz_overview":
@@ -280,7 +283,7 @@ func TestIntegrationMCPLegacySmoke(t *testing.T) {
 	defer session.Close()
 	tools, err := session.ListTools(ctx, nil)
 	require.NoError(t, err)
-	require.Len(t, tools.Tools, 25)
+	require.Len(t, tools.Tools, 26)
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "zz_overview", Arguments: map[string]any{}})
 	require.NoError(t, err)
 	require.False(t, result.IsError)

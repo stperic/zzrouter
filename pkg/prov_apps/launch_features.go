@@ -296,7 +296,16 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 	if err != nil {
 		return LaunchParameters{}, err
 	}
+	freezeFeaturePaths(svc, params)
 	return LaunchParameters{model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+}
+
+func freezeFeaturePaths(svc config.ServiceConfig, params map[string]string) {
+	for _, feature := range svc.Features {
+		if path := params[feature.Flag]; len(feature.Files) > 0 && filepath.IsAbs(path) {
+			params[feature.Flag] = layout.PhysicalPath(path)
+		}
+	}
 }
 
 // ResolveLaunchParameters resolves this node's tiers and selected feature

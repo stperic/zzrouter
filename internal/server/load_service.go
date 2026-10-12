@@ -9,6 +9,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -58,7 +59,7 @@ func (s *LoadService) launchTarget(ctx context.Context, node, model string) (str
 		return "", nil
 	}
 	if node == "" {
-		resolved, err := s.cache.ResolveModel(ctx, model, "")
+		resolved, err := s.cache.ResolveModel(ctx, resolver.Reference{Model: model})
 		if err != nil {
 			return "", err
 		}

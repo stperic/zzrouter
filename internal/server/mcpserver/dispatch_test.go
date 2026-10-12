@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stretchr/testify/require"
 )
 
@@ -180,16 +181,16 @@ func TestJobSnapshotsAndWait(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, tc.calls, calls)
 			if tc.name == "bounded" {
-				require.Equal(t, "still running, call zz_job again", string(out.State))
+				require.Equal(t, "still running, call zz_job again", out.fields["state"])
 			} else {
-				require.Equal(t, tc.phase, string(out.State))
+				require.Equal(t, tc.phase, out.fields["state"])
 			}
-			require.Equal(t, 60, out.Progress)
+			require.Equal(t, 60, out.fields["progress"])
 			if tc.phase == "done" {
-				require.Equal(t, "small", out.Result["model"])
+				require.Equal(t, "small", out.fields["result"].(jobs.Meta)["model"])
 			}
 			if tc.phase == "failed" {
-				require.Equal(t, "provider failed", out.Error)
+				require.Equal(t, "provider failed", out.fields["error"])
 			}
 		})
 	}
@@ -246,8 +247,8 @@ func TestJobInFlightWaitBound(t *testing.T) {
 	})
 	out, err := d.job(context.Background(), jobInput{JobID: "abc", WaitSeconds: 2})
 	require.NoError(t, err)
-	require.Equal(t, "abc", out.JobID)
-	require.Equal(t, "still running, call zz_job again", string(out.State))
+	require.Equal(t, "abc", out.fields["job_id"])
+	require.Equal(t, "still running, call zz_job again", out.fields["state"])
 	require.Equal(t, 2, calls)
 }
 
@@ -258,7 +259,7 @@ func writeFixture(t *testing.T, w http.ResponseWriter, body []byte) {
 }
 
 func TestPathSegment(t *testing.T) {
-	for _, id := range []string{"", ".", "..", "a/b", "a\\b", "a?b", "a#b", "a%b"} {
+	for _, id := range []string{".", "..", "a/b", "a\\b", "a?b", "a#b", "a%b"} {
 		t.Run(id, func(t *testing.T) {
 			d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unsafe id dispatched") })
 			_, err := d.job(context.Background(), jobInput{JobID: id})
@@ -300,8 +301,8 @@ func TestJobFirstPollWaitBound(t *testing.T) {
 	d := testDispatcher(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	out, err := d.job(context.Background(), jobInput{JobID: "slow-job", WaitSeconds: 1})
 	require.NoError(t, err)
-	require.Equal(t, "slow-job", out.JobID)
-	require.Equal(t, "still running, call zz_job again", string(out.State))
+	require.Equal(t, "slow-job", out.fields["job_id"])
+	require.Equal(t, "still running, call zz_job again", out.fields["state"])
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = d.job(ctx, jobInput{JobID: "slow-job", WaitSeconds: 1})

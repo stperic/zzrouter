@@ -27,6 +27,7 @@ type toolError struct {
 	problem utils.ProblemDetails
 	line    string
 	cause   error
+	probe   *probeOutput
 }
 
 func (e *toolError) Error() string { return e.line }
@@ -36,7 +37,7 @@ func (e *toolError) Unwrap() error { return e.cause }
 func newToolError(status int, code toolErrorCode, line string, cause error) *toolError {
 	var existing *toolError
 	if errors.As(cause, &existing) {
-		return &toolError{problem: existing.problem, line: line, cause: cause}
+		return &toolError{problem: existing.problem, line: line, cause: cause, probe: existing.probe}
 	}
 	title := http.StatusText(status)
 	if title == "" {
@@ -61,6 +62,12 @@ func toolErrorMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
 				var failure *toolError
 				if errors.As(call.GetError(), &failure) {
 					call.StructuredContent = failure.problem
+					if failure.probe != nil {
+						call.StructuredContent = struct {
+							utils.ProblemDetails
+							*probeOutput
+						}{failure.problem, failure.probe}
+					}
 				}
 			}
 		}

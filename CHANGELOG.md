@@ -24,6 +24,28 @@
 
 ### Behaviour changes
 
+- MCP `zz_models` returns compact model detail for one exact name or source-id
+  match. Context metadata, template presence, defaults and source-reported
+  capabilities stay separate from serving probes. Same-name physical sources
+  now require an exact source identity; identical names on different Ollama
+  backends remain separate catalog entries. Native show preserves its selected
+  backend and upstream error status.
+- MCP `zz_model_delete` deletes one exact physical model with node and source
+  selectors. REST, Ollama and OpenAI deletion share the same guarded path:
+  held weights and configured variant references return actionable 409 errors.
+  Starts, queued admission and daemon adoption share physical deletion ownership.
+  Retries replay completed deletions and failures that report applied effects.
+- Cluster protocol and minimum advance from 3/3 through 4/4 to 5/5: internal
+  model show retains source identity, and deletion requires exact worker selection
+  and frozen physical run reservations. Upgrade every peer together using the maintenance
+  procedure in [protocol versioning](docs/protocol_versioning.md).
+- MCP `zz_job` can list recent jobs when `job_id` is omitted. Local and
+  node-selected lists share deterministic paging; waits still require an id.
+- MCP `zz_chat` replaces `tools: true` with `probe: tools` and adds `embed`
+  and `vision` probes alongside default chat. Results carry request-local
+  evidence and next steps; classified capability refusals preserve their errors.
+  `zz_params_set` now explains how to create logical variants.
+
 - Overload answers 503 with `Retry-After` (codes `capacity_exceeded` and
   `queue_wait_expired`), not 429. A request waits at most 30 seconds for a
   run's slot by default.

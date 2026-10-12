@@ -22,6 +22,8 @@ import (
 func TestResolvedModelFeatureProvenanceAndPreview(t *testing.T) {
 	s, _ := assetTestNode(t)
 	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
 	previousRoot, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	modelregistry.SetModelsRootDirOverride(root)

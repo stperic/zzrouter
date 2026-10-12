@@ -334,8 +334,8 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	}
 
 	// Initialize model resolver (default uses cache-based resolution)
-	defaultResolver := resolver.NewDefault(resolver.DefaultConfig{Replicas: func(ctx context.Context, name, provider, node string) ([]*cache.CachedModel, error) {
-		return s.model.Cache.LookupReplicas(ctx, name, provider, node)
+	defaultResolver := resolver.NewDefault(resolver.DefaultConfig{Replicas: func(ctx context.Context, name, provider, node, registry string, exact ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
+		return s.model.Cache.LookupReplicas(ctx, name, provider, node, registry, exact...)
 	}, Parse: s.splitModelRef, Nodename: s.node.Nodename, IsLocalNode: s.node.IsLocalNode, CanRoute: s.IsCoordinator})
 	s.model.Resolver = defaultResolver
 

@@ -114,6 +114,8 @@ type DeleteRegistryResponse struct {
 func (c *Client) DeleteModelsFromRegistry(models []ModelMetadata) (*DeleteRegistryResponse, error) {
 	// Convert to the format expected by the server
 	type ModelToDelete struct {
+		Provider string `json:"provider,omitempty"`
+		SourceID string `json:"source_id,omitempty"`
 		Name     string `json:"name"`
 		Registry string `json:"registry"` // Matches list API parameter
 		Node     string `json:"node"`     // Which cluster node the model is on
@@ -133,6 +135,7 @@ func (c *Client) DeleteModelsFromRegistry(models []ModelMetadata) (*DeleteRegist
 		}
 		modelsToDelete[i] = ModelToDelete{
 			Name:     m.Name,
+			Provider: m.AssignedApp, SourceID: m.SourceID,
 			Registry: repo,
 			Node:     m.Node,
 		}

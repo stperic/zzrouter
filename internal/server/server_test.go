@@ -646,20 +646,6 @@ func TestErrModelNotFound(t *testing.T) {
 	}
 }
 
-func TestErrMultipleMatches(t *testing.T) {
-	err := ErrMultipleMatches{
-		ModelName: "llama",
-		Matches:   []string{"llama2", "llama3"},
-	}
-	got := err.Error()
-	if !strings.Contains(got, "llama") {
-		t.Errorf("Error() should contain model name, got %q", got)
-	}
-	if !strings.Contains(got, "llama2") {
-		t.Errorf("Error() should contain matches, got %q", got)
-	}
-}
-
 // ============================================================================
 // Helpers Tests
 // ============================================================================
@@ -1297,21 +1283,23 @@ func (m *mockModelCache) RouteToModelOrBroadcast(ctx context.Context, modelName,
 	return nil, nil
 }
 
-func (m *mockModelCache) ResolveModel(_ context.Context, modelName, nodeHint string) (*resolver.Resolved, error) {
+func (m *mockModelCache) ResolveModel(ctx context.Context, ref resolver.Reference) (*resolver.Resolved, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	r := &resolver.Resolved{ModelName: modelName, Node: nodeHint}
-	for _, cm := range m.models {
-		if cm != nil && cm.Name == modelName {
-			r.ModelName, r.Provider = cm.Name, cm.Provider
-			if nodeHint == "" {
-				r.Node = cm.Node
+	return resolver.NewDefault(resolver.DefaultConfig{
+		Parse:    func(s string) (string, string, string) { return s, "", "" },
+		Nodename: func() string { return "test" }, IsLocalNode: func(s string) bool { return s == "" || s == "localhost" || s == "test" }, CanRoute: func() bool { return true },
+		Replicas: func(_ context.Context, name, provider, node, registry string, _ ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
+			var models []*cache.CachedModel
+			for _, model := range m.models {
+				if model.Name == name && (provider == "" || model.Provider == provider) && (node == "" || model.Node == node) && (registry == "" || model.SourceRepo == registry) {
+					models = append(models, model)
+				}
 			}
-			break
-		}
-	}
-	return r, nil
+			return models, nil
+		},
+	}).Resolve(ctx, ref)
 }
 
 func (m *mockModelCache) IsLocalNode(host string) bool {
@@ -1324,7 +1312,7 @@ func (m *mockModelRegistry) GetModelRegistry() *modelregistry.Registry {
 	return nil
 }
 
-func (m *mockModelRegistry) RescanLocal() (map[string]any, error) {
+func (m *mockModelRegistry) RescanLocal(context.Context) (map[string]any, error) {
 	return map[string]any{"scanned": true}, nil
 }
 
@@ -1417,14 +1405,14 @@ func TestModelService_ShowModel(t *testing.T) {
 		mc := &mockModelCache{
 			models: []*cache.CachedModel{},
 		}
-		svc := NewModelService(mc, &mockModelRegistry{}, &mockNodeInfo{name: "test"}, &mockInstanceProvider{}, &mockRouter{}, nilAppsConfig)
+		svc := NewModelService(mc, &mockModelRegistry{}, &mockNodeInfo{name: "test"}, &mockInstanceProvider{}, &mockRouter{response: &routing.Response{StatusCode: 404}}, nilAppsConfig)
 
 		_, err := svc.ShowModel(context.Background(), &ShowModelRequest{ModelName: "nonexistent"})
 		if err == nil {
 			t.Error("expected error, got nil")
 		}
-		if _, ok := err.(cache.ErrModelNotFound); !ok {
-			t.Errorf("expected cache.ErrModelNotFound, got %T", err)
+		if routed, ok := err.(*RoutedError); !ok || routed.StatusCode != 404 {
+			t.Errorf("expected routed 404, got %v", err)
 		}
 	})
 
@@ -1437,13 +1425,14 @@ func TestModelService_ShowModel(t *testing.T) {
 		}
 		svc := NewModelService(mc, &mockModelRegistry{}, &mockNodeInfo{name: "test"}, &mockInstanceProvider{}, &mockRouter{}, nilAppsConfig)
 
-		_, err := svc.ShowModel(context.Background(), &ShowModelRequest{ModelName: "llama2"})
+		_, err := svc.ShowModel(context.Background(), &ShowModelRequest{ModelName: "llama2-7b"})
 		if err == nil {
 			t.Error("expected error, got nil")
 		}
-		if _, ok := err.(ErrMultipleMatches); !ok {
-			t.Errorf("expected ErrMultipleMatches, got %T", err)
+		if wire, ok := err.(httperr.Error); !ok || wire.Status != 409 || wire.Code != string(httperr.CodeModelNodeAmbiguous) {
+			t.Errorf("expected model_node_ambiguous 409, got %v", err)
 		}
+		assert.ErrorContains(t, err, "llama2-7b@node1, llama2-7b@node2")
 	})
 
 	t.Run("single match routes to host", func(t *testing.T) {

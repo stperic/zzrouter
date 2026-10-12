@@ -147,7 +147,7 @@ func TestAgentChatSmokeBounds(t *testing.T) {
 			require.NotEqual(t, true, result["isError"])
 			data, err := json.Marshal(result["structuredContent"])
 			require.NoError(t, err)
-			require.JSONEq(t, `{"reply":"hello","model":"m","usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`, string(data))
+			require.JSONEq(t, `{"reply":"hello","model":"m","usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4},"probe":"chat","verdict":"verified","next_steps":"Reply verified for this request; use zz_logs to diagnose later failures."}`, string(data))
 		})
 	}
 }
@@ -187,7 +187,7 @@ func TestAgentChatToolProbe(t *testing.T) {
 				require.JSONEq(t, `[{"type":"function","function":{"name":"lookup_weather","description":"Look up the current weather in a city.","parameters":{"type":"object","properties":{"city":{"type":"string","minLength":1}},"required":["city"]}}}]`, string(tools))
 				writeFixture(t, w, []byte(fmt.Sprintf(`{"model":"m","choices":[{"message":%s,"finish_reason":%q}],"usage":{"total_tokens":10}}`, tc.message, tc.finish)))
 			})
-			result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "node": "worker", "message": "ignored caller message", "tools": true, "max_tokens": 1})
+			result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "node": "worker", "message": "ignored caller message", "probe": "tools", "max_tokens": 1})
 			require.NotEqual(t, true, result["isError"], result)
 			fields := result["structuredContent"].(map[string]any)
 			require.Equal(t, tc.outcome, fields["tool_call"])
@@ -212,7 +212,7 @@ func TestAgentChatToolProbeWithoutMessage(t *testing.T) {
 		writeFixture(t, w, []byte(`{"choices":[{"message":{"content":"No weather available"}},{"message":{"tool_calls":[{"function":{"name":"lookup_weather","arguments":"{\"city\":\"Paris\"}"}}]}}]}`))
 	})
 	for _, tokens := range []int{0, -1, 99999} {
-		result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "tools": true, "max_tokens": tokens})
+		result := callAgentTool(t, d, "zz_chat", map[string]any{"model": "m", "probe": "tools", "max_tokens": tokens})
 		require.NotEqual(t, true, result["isError"], result)
 		require.Equal(t, "inconclusive", result["structuredContent"].(map[string]any)["tool_call"])
 	}
@@ -227,7 +227,7 @@ func TestAgentChatToolProbeClassifiedRefusal(t *testing.T) {
 				w.WriteHeader(failure.Status)
 				require.NoError(t, json.NewEncoder(w).Encode(utils.NewOpenAIError(failure.Type, failure.Message, nil, &failure.Code)))
 			})
-			result := callTool(t, d, "zz_chat", map[string]any{"model": "m", "tools": true})
+			result := callTool(t, d, "zz_chat", map[string]any{"model": "m", "probe": "tools"})
 			problem := resultProblem(t, result)
 			require.Equal(t, failure.Code, problem.Code)
 			require.Equal(t, failure.Status, problem.Status)
@@ -352,6 +352,9 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 		for field, schema := range tool.InputSchema.Properties {
 			require.NotEmpty(t, schema.Description, tool.Name+"."+field)
 		}
+		if tool.Name == "zz_params_set" {
+			assert.Contains(t, tool.InputSchema.Properties["patch"].Description, "models.<new-name>.from")
+		}
 	}
 	for _, name := range []string{"zz_run_preview", "zz_run_start"} {
 		require.Contains(t, descriptions[name], "Check zz_models first")
@@ -364,6 +367,9 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 	require.Contains(t, descriptions["zz_run_stop"], "404 by design")
 	require.Contains(t, descriptions["zz_run_start"], "job_id for zz_job")
 	require.Contains(t, descriptions["zz_job"], "Pass job_id here, not run_id")
+	assert.Contains(t, descriptions["zz_job"], "Omit job_id")
+	assert.Contains(t, descriptions["zz_params_set"], "models.<new-name>.from")
+	assert.Contains(t, descriptions["zz_chat"], "probe: tools, embed or vision")
 	require.Less(t, strings.Index(instructions, "Check zz_models first"), strings.Index(instructions, "zz_model_search"))
 
 }

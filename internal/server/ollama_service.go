@@ -268,9 +268,12 @@ func (s *OllamaServiceImpl) pullClusterRoute(c *gin.Context, targetNode, modelNa
 
 // ManagementCommand handles Ollama management commands (create, delete, copy, show, push)
 func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, modelLookup bool) error {
+	if endpoint == "/api/delete" {
+		return newProblemError(400, "Bad Request", "model deletion uses the guarded model service")
+	}
 	var publish func() error
 	switch endpoint {
-	case "/api/create", "/api/copy", "/api/delete":
+	case "/api/create", "/api/copy":
 		publish = s.publishCatalog
 	}
 	body, err := c.GetRawData()

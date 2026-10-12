@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,6 +51,8 @@ func TestMCPStopConfirmsRemovalAndRetainsFailures(t *testing.T) {
 
 func TestMCPModelsFilterUsesCatalogNamesAndSourceAliases(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
+	// Synthetic worker detail is explicitly unsupported; catalog filtering remains asserted.
+	s.services.Model.router = &mockRouter{response: &routing.Response{StatusCode: 501, Body: []byte(`{"title":"Not Implemented","status":501,"code":"model_detail_unsupported","detail":"synthetic worker has no detail reader"}`)}}
 	// Synthetic worker reports exercise the real catalog filter and MCP projection.
 	routingCatalog(t, s, []map[string]any{
 		{"name": "qwen2.5", "node": "worker", "assigned_app": "llamacpp", "source_id": "vendor/original", "details": map[string]any{"wire_endpoints": []string{"chat_completions"}, "features": map[string]string{"vision": "unsupported"}}},

@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -88,4 +89,20 @@ func PassthroughTarget(base, path, rawQuery string) string {
 		url += "?" + rawQuery
 	}
 	return url
+}
+
+// SameEndpoint compares physical endpoints without folding case-sensitive URL paths.
+func SameEndpoint(a, b string) bool {
+	normalize := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return raw
+		}
+		u.Scheme = strings.ToLower(u.Scheme)
+		u.Host = strings.ToLower(u.Host)
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawPath = strings.TrimRight(u.RawPath, "/")
+		return u.String()
+	}
+	return a != "" && b != "" && normalize(a) == normalize(b)
 }

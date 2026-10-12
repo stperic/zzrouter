@@ -16,6 +16,8 @@ import (
 // Internal format — converted to Ollama format at the API boundary via
 // ToOllamaFormat.
 type ModelMetadata struct {
+	// Backend is the endpoint observed with daemon inventory, never public catalog data.
+	Backend string `json:"-"`
 	// Incomplete marks entries lacking required weights.
 	Incomplete   bool      `json:"incomplete,omitempty"`
 	Name         string    `json:"name"`                   // Display name (e.g., "llama2-7b-chat")

@@ -119,7 +119,7 @@ type servedEngine struct{ m *ProviderAppManager }
 const neverExpires time.Duration = -1
 
 // servedRun builds a starting served run for req, and the keep-alive its daemon is given (nil: its own default).
-func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc config.ServiceConfig, configKey string) (*instance.Instance, *time.Duration, error) {
+func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc config.ServiceConfig, configKey string, observed ...string) (*instance.Instance, *time.Duration, error) {
 	load, err := e.prepare(svc, configKey, req, 0)
 	if err != nil {
 		return nil, nil, err
@@ -138,6 +138,15 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 		run.KeepAlive = neverExpires
 	}
 	run.WireModel = load.launch.WireModel
+	_, daemon, ok := e.m.daemonOf(req.Provider)
+	if !ok || (len(observed) > 0 && !backend.SameEndpoint(daemon.Endpoint, observed[0])) {
+		return nil, nil, ErrProviderUnavailable
+	}
+	weights := e.m.reserveWeights(ctx, req, launchSelection{key: configKey, config: svc})
+	weights.Backend = daemon.Endpoint
+	weights.Model = run.WireModel
+	run.SetWeights(weights)
+	run.SourceRepo = weights.Source
 	run.SetResolved(load.resolved)
 	run.Admit() // the daemon admits its own memory
 	logFile, logPath, err := e.m.runLogFile(run)
@@ -185,7 +194,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 	ctx, cancel := context.WithTimeout(m.startsCtx, budget)
 	defer cancel()
 	err := ErrProviderUnavailable
-	if loader, target, ok := m.servedTarget(run.Provider); ok {
+	if loader, target, ok := m.servedRunTarget(run); ok {
 		var unreachable *url.Error
 		if err = loader.LoadModel(ctx, target, run.WireModel, keepAlive); errors.As(err, &unreachable) {
 			err = fmt.Errorf("%w: %w", ErrProviderUnavailable, err)
@@ -203,7 +212,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		return
 	}
 	if run.Context().Err() != nil { // ended or retired while loading: the node asked the model gone
-		if loader, resolved, ok := m.daemonOf(run.Provider); ok {
+		if loader, resolved, ok := m.daemonForRun(run); ok {
 			if err := loader.UnloadModel(m.shutdownCtx, protocol.TargetOf(resolved), run.WireModel); err != nil {
 				slog.Warn("Failed to unload a model whose run ended while it loaded", "run", run.ID, "error", err)
 			}
@@ -224,7 +233,7 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 	if run.GetStartedAt().IsZero() {
 		return nil // the load never landed, or undid itself on seeing the stop
 	}
-	loader, resolved, ok := e.m.daemonOf(run.Provider)
+	loader, resolved, ok := e.m.daemonForRun(run)
 	if !ok {
 		return ErrProviderUnavailable
 	}
@@ -250,10 +259,26 @@ func (servedEngine) prepare(svc config.ServiceConfig, _ string, req EnsureReques
 }
 
 func (e servedEngine) upstream(run *instance.Instance) (string, backend.Upstream, error) {
-	if _, resolved, ok := e.m.daemonOf(run.Provider); ok {
+	if _, resolved, ok := e.m.daemonForRun(run); ok {
 		return resolved.Endpoint, resolved.Upstream, nil
 	}
 	return "", backend.Upstream{}, ErrProviderUnavailable
 }
 
 func (servedEngine) outlivesNode() bool { return true }
+
+// daemonForRun preserves physical endpoint identity while accepting its current credentials.
+func (m *ProviderAppManager) daemonForRun(run *instance.Instance) (protocol.ModelLoader, *backend.Resolved, bool) {
+	loader, target, ok := m.daemonOf(run.Provider)
+	if ok && run.Weights().Backend != "" && !backend.SameEndpoint(target.Endpoint, run.Weights().Backend) {
+		return nil, nil, false
+	}
+	return loader, target, ok
+}
+func (m *ProviderAppManager) servedRunTarget(run *instance.Instance) (protocol.ModelLoader, protocol.Target, bool) {
+	loader, target, ok := m.daemonForRun(run)
+	if !ok {
+		return nil, protocol.Target{}, false
+	}
+	return loader, protocol.TargetOf(target), true
+}

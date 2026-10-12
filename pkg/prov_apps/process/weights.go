@@ -17,11 +17,15 @@ import (
 var ErrModelIncomplete = layout.ErrIncomplete
 
 // VerifyLocalWeights checks required weights and only manifest files read by this launch.
-func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths []string) error {
+func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths []string, sourcePaths ...string) error {
 	if modelPath == "" {
 		return nil
 	}
-	modelPath = filepath.Clean(modelPath)
+	origin := modelPath
+	if len(sourcePaths) > 0 && sourcePaths[0] != "" {
+		origin = sourcePaths[0]
+	}
+	modelPath = layout.PhysicalPath(modelPath)
 	complete, err := layout.Complete(modelPath)
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", modelPath, err)
@@ -30,22 +34,29 @@ func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths []st
 		return fmt.Errorf("%w: %s (re-download to repair)", ErrModelIncomplete, modelPath)
 	}
 
-	dir, ok := manifestDir(modelPath)
+	info, statErr := os.Stat(modelPath)
+	sourceDir := filepath.Dir(origin)
+	if statErr == nil && info.IsDir() {
+		sourceDir = origin
+	}
+	dir, ok := manifestDir(sourceDir)
 	if !ok {
 		return nil
 	}
 
 	paths := append([]string{modelPath}, featurePaths...)
-	info, statErr := os.Stat(modelPath)
 	if layout.IsGGUF(modelPath) {
-		variant, _ := layout.VariantOf(modelPath)
+		variant, _ := layout.VariantOf(origin)
 		for _, f := range variant.Files {
-			paths = append(paths, filepath.Join(filepath.Dir(modelPath), filepath.FromSlash(f.Path)))
+			paths = append(paths, filepath.Join(filepath.Dir(origin), filepath.FromSlash(f.Path)))
 		}
 	}
+	for i := range paths {
+		paths[i] = layout.PhysicalPath(paths[i])
+	}
 	complete, err = integrity.NewIntegrityVerifier().QuickVerify(ctx, dir, func(f integrity.FileChecksum) bool {
-		p := filepath.Join(dir, f.RelativePath)
-		return slices.Contains(paths, p) || (statErr == nil && info.IsDir() && f.Feature == "" && strings.HasPrefix(p, modelPath+string(filepath.Separator)))
+		logical := filepath.Join(dir, f.RelativePath)
+		return logical == filepath.Clean(origin) || slices.Contains(paths, layout.PhysicalPath(logical)) || (statErr == nil && info.IsDir() && f.Feature == "" && strings.HasPrefix(logical, filepath.Clean(origin)+string(filepath.Separator)))
 	})
 	if err != nil {
 		return fmt.Errorf("verify %s: %w", dir, err)
@@ -60,20 +71,17 @@ func VerifyLocalWeights(ctx context.Context, modelPath string, featurePaths []st
 // modelPath. llama.cpp is pointed at a file inside it, possibly in a quant
 // subdirectory, so the search walks up from there, never past the models
 // root: a manifest above it belongs to no model.
-func manifestDir(modelPath string) (string, bool) {
-	dir := modelPath
-	if info, err := os.Stat(modelPath); err == nil && !info.IsDir() {
-		dir = filepath.Dir(modelPath)
-	}
+func manifestDir(dir string) (string, bool) {
 	root, err := modelregistry.GetModelsRootDir()
 	if err != nil {
 		root = dir
 	}
+	root = layout.PhysicalPath(root)
 	for {
 		if integrity.HasManifest(dir) {
 			return dir, true
 		}
-		if rel, err := filepath.Rel(root, dir); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		if rel, err := filepath.Rel(root, layout.PhysicalPath(dir)); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 			return "", false
 		}
 		dir = filepath.Dir(dir)
