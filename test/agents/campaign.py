@@ -780,7 +780,8 @@ def analyze(out_dir):
 
 # ---------------------------------------------------------------- MCP scenarios (one set per cell)
 def tail(provider):
-    return (f"\nUse only the zzrouter tools and only the {provider} provider; no cloud providers. "
+    return (f"\nUse only the zzrouter tools and the {provider} inference backend; no cloud providers. Model search's provider selects a registry such as huggingface or ollama. "
+            "When stopping an owned run, a reply with status=stopped confirms completion; verify absence with the zz_runs collection, without querying the stopped run_id. "
             "Finish with exactly one line: RESULT: <compact JSON>.")
 
 
@@ -884,8 +885,7 @@ def scenarios(node, provider):
             "id": "tool-calling",
             "prompt": f"On node {node}, make {big['name']} serve tool calls with {provider}: start it, prove tool calling with "
                       "zzRouter's tool-call probe, and if the probe or a refusal says the engine needs tool-calling settings, "
-                      "set them for this model only, restart the run and probe again until it is verified. Then stop it. "
-                      "A stop reply with status=stopped confirms completion; verify absence with the zz_runs collection, without querying the stopped run_id."
+                      "set them for this model only, restart the run and probe again until it is verified. Then stop it."
                       + tail(provider) + " JSON keys: verified (bool), settings_changed (object or null), stopped (bool).",
             "check": check_tool_calling,
             "expect_error": "tool_calling_not_enabled",
