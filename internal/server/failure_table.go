@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -10,74 +11,165 @@ import (
 	"github.com/stperic/zzrouter/pkg/openaicompat"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // failureRow is one decided answer; an empty code leaves each surface its generic one.
 type failureRow struct {
-	sentinel error
-	status   int
-	code     string
+	sentinel                      error
+	status                        int
+	code, message, title, errType string
+	retryAfter                    time.Duration
+	// resolve matches a typed payload and fills only its dynamic wire facts.
+	resolve func(error, *httperr.Error) bool
+	extra   func(error, httperr.Error) map[string]any
 }
 
 // failureTable is the decision record every surface reads; error_status_guard_test.go holds it complete.
 var failureTable = []failureRow{
-	{config.ErrModelNameConflict, http.StatusConflict, "model_name_conflict"},
+	{resolve: resolveExplicitWire},
+	{status: http.StatusNotFound, code: string(httperr.CodeUnknownModel), errType: "invalid_request_error", resolve: resolveCatalogMiss},
+	{title: "GPU memory budget cannot fit", resolve: resolveMemoryFit, extra: memoryFailureExtra},
+	{resolve: resolveEngineFailure},
+	{sentinel: instance.ErrQueueWaitExpired, status: http.StatusServiceUnavailable, code: string(httperr.CodeQueueWaitExpired), message: "The wait for this model's request slot expired. Please retry shortly.", resolve: resolveAdmission},
+	{sentinel: instance.ErrStopping, status: http.StatusServiceUnavailable, code: string(httperr.CodeCapacityExceeded), message: "This model's run is stopping. Please retry shortly.", resolve: resolveAdmission},
+	{status: http.StatusServiceUnavailable, code: string(httperr.CodeCapacityExceeded), message: "This model's request queue is full. Please retry shortly.", resolve: resolveAdmission},
+
+	{sentinel: config.ErrModelNameConflict, status: http.StatusConflict, code: "model_name_conflict"},
 	// Half-downloaded weights: the caller must repair the model, which 409 says and 400 does not.
-	{prov_apps.ErrModelIncomplete, http.StatusConflict, "model_incomplete"},
+	{sentinel: prov_apps.ErrModelIncomplete, status: http.StatusConflict, code: "model_incomplete"},
 
-	{errAutoDetectModelNotFound, http.StatusNotFound, ""},
-	{errAutoDetectMultipleProviders, http.StatusConflict, ""},
-	{prov_apps.ErrProviderNotFound, http.StatusNotFound, ""},
-	{prov_apps.ErrInstanceNotFound, http.StatusNotFound, ""},
+	{sentinel: errAutoDetectModelNotFound, status: http.StatusNotFound, code: ""},
+	{sentinel: errAutoDetectMultipleProviders, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrProviderNotFound, status: http.StatusNotFound, code: ""},
+	{sentinel: prov_apps.ErrInstanceNotFound, status: http.StatusNotFound, code: ""},
 
-	{prov_apps.ErrExternalService, http.StatusForbidden, ""},
+	{sentinel: prov_apps.ErrExternalService, status: http.StatusForbidden, code: ""},
 
-	{prov_apps.ErrInstallInProgress, http.StatusConflict, ""},
-	{prov_apps.ErrServiceDisabled, http.StatusConflict, ""},
-	{install.ErrStalePlan, http.StatusConflict, ""},
-	{prov_apps.ErrRunHeldByOtherProvider, http.StatusConflict, ""},
-	{prov_apps.ErrInstancesRunning, http.StatusConflict, ""},
-	{prov_apps.ErrProviderNotManaged, http.StatusConflict, ""},
-	{prov_apps.ErrProviderAlreadyInstalled, http.StatusConflict, ""},
-	{prov_apps.ErrInstanceAlreadyExists, http.StatusConflict, ""},
-	{prov_apps.ErrModelAlreadyLoaded, http.StatusConflict, ""},
-	{prov_apps.ErrPortConflict, http.StatusConflict, ""},
+	{sentinel: prov_apps.ErrInstallInProgress, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrServiceDisabled, status: http.StatusConflict, code: ""},
+	{sentinel: install.ErrStalePlan, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrRunHeldByOtherProvider, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrInstancesRunning, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrProviderNotManaged, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrProviderAlreadyInstalled, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrInstanceAlreadyExists, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrModelAlreadyLoaded, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrPortConflict, status: http.StatusConflict, code: ""},
 
-	{prov_apps.ErrUnsupportedPlatform, http.StatusBadRequest, ""},
-	{process.ErrMemoryBudgetInvalid, http.StatusBadRequest, ""},
-	{prov_apps.ErrModelNotLocal, http.StatusNotFound, ""},
-	{prov_apps.ErrParameterValidation, http.StatusBadRequest, ""},
-	{prov_apps.ErrPortOutOfRange, http.StatusBadRequest, ""},
-	{prov_apps.ErrDangerousEnvVar, http.StatusBadRequest, ""},
+	{sentinel: prov_apps.ErrUnsupportedPlatform, status: http.StatusBadRequest, code: ""},
+	{sentinel: process.ErrMemoryBudgetInvalid, status: http.StatusBadRequest, code: ""},
+	{sentinel: prov_apps.ErrModelNotLocal, status: http.StatusNotFound, code: "", resolve: resolveModelNotLocal},
+	{sentinel: prov_apps.ErrParameterValidation, status: http.StatusBadRequest, code: ""},
+	{sentinel: prov_apps.ErrPortOutOfRange, status: http.StatusBadRequest, code: ""},
+	{sentinel: prov_apps.ErrDangerousEnvVar, status: http.StatusBadRequest, code: ""},
 
-	{prov_apps.ErrProviderUnavailable, http.StatusServiceUnavailable, "provider_unavailable"},
+	{sentinel: prov_apps.ErrProviderUnavailable, status: http.StatusServiceUnavailable, code: "provider_unavailable"},
 	// The daemon dropped the model: the next request loads it again.
-	{prov_apps.ErrModelDropped, http.StatusServiceUnavailable, ""},
-	{prov_apps.ErrShutdown, http.StatusServiceUnavailable, ""},
-	{process.ErrMemoryObservation, http.StatusServiceUnavailable, ""},
-	{prov_apps.ErrAtCapacity, http.StatusServiceUnavailable, ""},
-	{prov_apps.ErrPortUnavailable, http.StatusServiceUnavailable, ""},
+	{sentinel: prov_apps.ErrModelDropped, status: http.StatusServiceUnavailable, code: ""},
+	{sentinel: prov_apps.ErrShutdown, status: http.StatusServiceUnavailable, code: ""},
+	{sentinel: process.ErrMemoryObservation, status: http.StatusServiceUnavailable, code: ""},
+	{sentinel: prov_apps.ErrAtCapacity, status: http.StatusServiceUnavailable, code: ""},
+	{sentinel: prov_apps.ErrPortUnavailable, status: http.StatusServiceUnavailable, code: ""},
+	{sentinel: errLoadWarming, status: http.StatusServiceUnavailable, code: "model_load_timeout", retryAfter: modelWarmupRetryAfter, resolve: resolveLoadState, extra: warmingFailureExtra},
+	{sentinel: errLoadInternal, status: http.StatusInternalServerError, code: "model_load_failed", errType: "server_error", resolve: resolveLoadState},
+	{sentinel: errLoadFailed, status: http.StatusBadGateway, code: "model_load_failed", resolve: resolveLoadState},
 }
 
-// knownFailure is err on the wire when zzRouter can name it; an unnamed error's status is the surface's call.
+// knownFailure is the one table lookup for every known run refusal.
 func knownFailure(err error) (httperr.Error, bool) {
-	var absent cache.ErrModelNotFound
-	if errors.As(err, &absent) {
-		return httperr.Error{Status: http.StatusNotFound, Type: "invalid_request_error", Code: string(httperr.CodeUnknownModel), Message: absent.Error()}, true
-	}
-	var classified *httperr.EngineFailure
-	if errors.As(err, &classified) {
-		return (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError(), true
-	}
-	if wire, ok := renderAdmissionError(err); ok {
-		return wire, true
+	if err == nil {
+		return httperr.Error{}, false
 	}
 	for _, row := range failureTable {
-		if errors.Is(err, row.sentinel) {
-			return httperr.Error{Status: row.status, Type: openaicompat.StatusToErrorType(row.status), Code: row.code, Message: utils.SanitizeErrorMessage(err.Error())}, true
+		if row.sentinel != nil && !errors.Is(err, row.sentinel) {
+			continue
 		}
+		wire := httperr.Error{Status: row.status, Type: openaicompat.StatusToErrorType(row.status), Code: row.code, Message: utils.SanitizeErrorMessage(err.Error()), RetryAfter: row.retryAfter}
+		if row.resolve != nil && !row.resolve(err, &wire) {
+			continue
+		}
+		if row.message != "" {
+			wire.Message = row.message
+		}
+		if row.title != "" {
+			wire.Title = row.title
+		}
+		if row.errType != "" {
+			wire.Type = row.errType
+		}
+		if row.extra != nil {
+			wire.Extra = row.extra(err, wire)
+		}
+		return wire, true
 	}
 	return httperr.Error{}, false
+}
+
+func resolveExplicitWire(err error, wire *httperr.Error) bool {
+	return errors.As(err, wire)
+}
+
+func resolveCatalogMiss(err error, wire *httperr.Error) bool {
+	var absent cache.ErrModelNotFound
+	if !errors.As(err, &absent) {
+		return false
+	}
+	wire.Message = absent.Error()
+	return true
+}
+
+func resolveEngineFailure(err error, wire *httperr.Error) bool {
+	var classified *httperr.EngineFailure
+	if !errors.As(err, &classified) {
+		return false
+	}
+	*wire = (&httperr.EngineFailure{Class: classified.Class, Message: err.Error()}).HTTPError()
+	return true
+}
+
+func resolveMemoryFit(err error, wire *httperr.Error) bool {
+	var fit *process.MemoryFitError
+	return errors.As(err, &fit) && resolveEngineFailure(err, wire)
+}
+
+func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
+	var memory *process.MemoryFitError
+	if !errors.As(err, &memory) {
+		return nil
+	}
+	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads."}}}
+}
+
+func resolveAdmission(err error, wire *httperr.Error) bool {
+	var admission *instance.AdmissionError
+	if !errors.As(err, &admission) {
+		return false
+	}
+	wire.RetryAfter = admission.RetryAfter
+	return true
+}
+
+func resolveLoadState(err error, wire *httperr.Error) bool {
+	var state *loadState
+	if !errors.As(err, &state) {
+		return false
+	}
+	wire.Message = utils.SanitizeErrorMessage(state.message)
+	return true
+}
+
+func warmingFailureExtra(err error, _ httperr.Error) map[string]any {
+	var state *loadState
+	if !errors.As(err, &state) || state.runID == "" {
+		return nil
+	}
+	return map[string]any{"run_id": state.runID, "job_id": state.jobID}
+}
+
+func resolveModelNotLocal(_ error, wire *httperr.Error) bool {
+	wire.Message += "; download or register it before starting; use POST /zzrouter/v1/deployments for a cloud model"
+	return true
 }

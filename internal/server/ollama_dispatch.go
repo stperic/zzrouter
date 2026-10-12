@@ -143,7 +143,7 @@ func (s *Server) serveLocalOllama(w http.ResponseWriter, req *http.Request, mode
 		unload := hints != nil && hints.Duration != nil && *hints.Duration == 0
 		inst, err := s.ensureLocalRun(prov_apps.EnsureRequest{Model: model, Provider: constants.AppOllama, Unload: unload}) //nolint:contextcheck // a load outlives the request that asked for it
 		if err != nil {
-			failure := classifyLoadFailure(err).wire()
+			failure := loadFailureWire(err)
 			recordErrorOnContext(req.Context(), failure.Code, failure.Message)
 			dialectOf(req).WriteError(w, req, failure)
 			return nil

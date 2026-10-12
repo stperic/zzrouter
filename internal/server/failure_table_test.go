@@ -25,13 +25,13 @@ func TestStillWarmingNamesTheRunToFollow(t *testing.T) {
 	run := instance.NewInstance("run-1", "llamacpp", "m", 8080, time.Minute, 0)
 	run.StreamJobID = "run_abc"
 
-	wire := loadStillWarming("still loading").forRun(run).wire()
+	wire := loadFailureWire(loadStillWarming("still loading").forRun(run))
 
 	assert.Equal(t, http.StatusServiceUnavailable, wire.Status)
 	assert.Equal(t, "model_load_timeout", wire.Code)
 	assert.Positive(t, wire.RetryAfter)
 	assert.Equal(t, map[string]any{"run_id": "run-1", "job_id": "run_abc"}, wire.Extra)
-	assert.Equal(t, wire.Extra, classifyLoadFailure(fmt.Errorf("load: %w", loadStillWarming("still loading").forRun(run))).wire().Extra)
+	assert.Equal(t, wire.Extra, loadFailureWire(fmt.Errorf("load: %w", loadStillWarming("still loading").forRun(run))).Extra)
 
 	w := httptest.NewRecorder()
 	writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), wire)
@@ -106,7 +106,17 @@ func answeredStatus(err error) int {
 // Each row answers with its decided status, through wrapping, on the real responder.
 func TestFailureTableRowsAnswerTheirStatus(t *testing.T) {
 	for _, row := range failureTable {
-		wrapped := fmt.Errorf("launch: %w", row.sentinel)
+		if row.sentinel == nil {
+			continue
+		} // Typed rows have payload-specific contract tests.
+		cause := row.sentinel
+		switch row.sentinel {
+		case instance.ErrQueueWaitExpired, instance.ErrStopping:
+			cause = &instance.AdmissionError{Reason: row.sentinel, RetryAfter: instance.AdmissionRetryAfter}
+		case errLoadWarming, errLoadInternal, errLoadFailed:
+			cause = &loadState{cause: row.sentinel, message: "load state"}
+		}
+		wrapped := fmt.Errorf("launch: %w", cause)
 		assert.Equal(t, row.status, answeredStatus(wrapped), row.sentinel.Error())
 	}
 }

@@ -103,7 +103,7 @@ func Decide(w Want, n Node) Decision {
 			return refuse(ErrProviderUnavailable)
 		}
 		if n.Absent {
-			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog; download or register it, using POST /zzrouter/v1/deployments for a cloud model", ErrModelNotLocal, w.Model))
+			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog", ErrModelNotLocal, w.Model))
 		}
 		return Decision{Act: ActReady}
 	case LifecycleServed:
@@ -145,7 +145,7 @@ func Decide(w Want, n Node) Decision {
 	case smoke && n.Runtime != "" && n.Runtime != w.Runtime:
 		return refuse(errors.New("smoke model does not use the runtime being installed"))
 	case !smoke && n.Absent: // a smoke tests the runtime being installed, not the catalog
-		return refuse(fmt.Errorf("%w: %s; download it with auto_deploy before starting", ErrModelNotLocal, w.Model))
+		return refuse(fmt.Errorf("%w: %s", ErrModelNotLocal, w.Model))
 	case n.Blocker == nil && !n.AdmissionHeld:
 		return Decision{Act: ActStart, Replace: replace}
 	case smoke:
