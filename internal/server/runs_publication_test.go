@@ -232,7 +232,7 @@ func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 				require.NotEmpty(t, launch.JobID)
 				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				defer cancel()
-				err = waitJobCompletion(ctx, func(context.Context) (jobs.Event, error) { return target.jobs.Get(launch.JobID) })
+				err = (&jobAccess{registry: target.jobs}).Wait(ctx, launch.JobID, "")
 				require.Error(t, err)
 				ev, err := target.jobs.Get(launch.JobID)
 				require.NoError(t, err)

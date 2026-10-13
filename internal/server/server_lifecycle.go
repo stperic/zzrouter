@@ -290,9 +290,6 @@ func (ml *maintenanceLoop) run() {
 // monotonic counter (one per maintenance tick) used to gate heavier
 // passes to a coarser cadence.
 func (s *Server) runMaintenance(tickCount int) {
-	if s.services.Deployments != nil {
-		s.services.Deployments.GetTracker().CleanCompletedDeployments(1 * time.Hour)
-	}
 	if s.model.Downloads != nil {
 		s.model.Downloads.CleanCompleted()
 	}
@@ -378,6 +375,9 @@ func (s *Server) handleRoleTransition(t role.Transition) {
 // because the subscriber runs under role.Manager's mutex and cannot
 // safely call role.Current() again (deadlock).
 func (s *Server) startCoordinatorSubsystems() error {
+	if s.services.Deployments != nil {
+		s.services.Deployments.Start()
+	}
 	s.openAuditSink()
 	s.access.Start(s.shutdownCtx)
 	s.providers.fallback.Start(s.shutdownCtx)
@@ -464,6 +464,9 @@ func (s *Server) closeAuditSink() {
 // startCommonSubsystems starts lifecycle-managed subsystems that run on
 // every node regardless of cluster mode.
 func (s *Server) startCommonSubsystems() error {
+	if s.services.Deployments != nil {
+		s.services.Deployments.Start()
+	}
 	if err := s.role.Start(s.shutdownCtx); err != nil {
 		return fmt.Errorf("start role manager: %w", err)
 	}
@@ -563,6 +566,7 @@ func (s *Server) startCommonSubsystems() error {
 //
 //nolint:unparam // symmetric with startCoordinatorSubsystems; reserved for stop-failure aggregation
 func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
+	s.services.Deployments.Stop(ctx)
 	s.model.Pricing.Stop()
 	s.mcpGateway.Stop()
 	s.inference.affinity.Stop()
@@ -614,6 +618,7 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
 // Returns the joined error from subsystems whose Stop can fail; others
 // are swallowed silently (they already log internally on failure paths).
 func (s *Server) stopCommonSubsystems(ctx context.Context) error {
+	s.services.Deployments.Stop(ctx)
 	var errs []error
 	// Provider processes first — they're child processes that must be
 	// stopped before their parent goroutines are gone.

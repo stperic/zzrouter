@@ -198,13 +198,25 @@ func TestModelDeletionProtocolCutoverContract(t *testing.T) {
 }
 
 func TestRunSettingsProtocolCutoverContract(t *testing.T) {
-	if ClusterProtocolVersion != 6 || MinClusterProtocolVersion != 6 {
+	if ClusterProtocolVersion < 6 || MinClusterProtocolVersion < 6 {
 		t.Fatalf("tier run settings require protocol 6/6, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
 	}
 	if err := LocalProtocolWindow().Check(5); err == nil {
 		t.Fatal("old worker admitted without tier settings or reserved argv handling")
 	}
-	if err := LocalProtocolWindow().Check(6); err != nil {
+	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeploymentLifecycleProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion != 7 || MinClusterProtocolVersion != 7 {
+		t.Fatal("observable placement requires protocol 7/7")
+	}
+	if err := LocalProtocolWindow().Check(6); err == nil {
+		t.Fatal("old worker admitted without observable placement acceptance")
+	}
+	if err := LocalProtocolWindow().Check(7); err != nil {
 		t.Fatal(err)
 	}
 }

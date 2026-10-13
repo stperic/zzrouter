@@ -2,10 +2,8 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
-	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -21,12 +19,7 @@ func (s *DeploymentsService) restartAfterDeploy(d *Deployment, plans map[string]
 		complete := map[string]bool{}
 		var failed []error
 		for _, node := range d.Nodes {
-			var err error
-			if node.JobID != "" {
-				err = waitRoutedJob(ctx, s.router, node.JobID, node.Node)
-			} else if node.Status != constants.StatusCompleted {
-				err = fmt.Errorf("deployment on %s has no successful job: %s", node.Node, node.Status)
-			}
+			err := s.tracker.WaitNode(ctx, d.ID, node.Node)
 			if err != nil {
 				failed = append(failed, err)
 			} else {

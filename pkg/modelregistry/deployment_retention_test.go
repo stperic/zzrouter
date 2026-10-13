@@ -14,16 +14,16 @@ func TestDeploymentTracker_EvictsFinishedDeployments(t *testing.T) {
 	tracker := NewDeploymentTracker()
 
 	stale := tracker.CreateDeployment("old", "gguf", "hf", "", []string{"a"})
-	require.NoError(t, tracker.UpdateDeploymentStatus(stale.ID, constants.StatusCompleted, "done"))
+	require.NoError(t, tracker.UpdateNode(stale.ID, "a", "", func(n *DeploymentNode) { n.Status = constants.StatusCompleted }))
 	tracker.mu.Lock()
 	tracker.deployments[stale.ID].UpdatedAt = time.Now().Add(-terminalRetention - time.Minute)
 	tracker.mu.Unlock()
 
 	recent := tracker.CreateDeployment("recent", "gguf", "hf", "", []string{"a"})
-	require.NoError(t, tracker.UpdateDeploymentStatus(recent.ID, constants.StatusCompleted, "done"))
+	require.NoError(t, tracker.UpdateNode(recent.ID, "a", "", func(n *DeploymentNode) { n.Status = constants.StatusCompleted }))
 
 	running := tracker.CreateDeployment("running", "gguf", "hf", "", []string{"a"})
-	require.NoError(t, tracker.UpdateDeploymentStatus(running.ID, constants.StatusDownloading, ""))
+	require.NoError(t, tracker.UpdateNode(running.ID, "a", "", func(n *DeploymentNode) { n.Status = constants.StatusDownloading }))
 
 	// The sweep runs on the next create.
 	tracker.CreateDeployment("trigger", "gguf", "hf", "", []string{"a"})
@@ -37,7 +37,7 @@ func TestDeploymentTracker_NeverEvictsInFlightHowever(t *testing.T) {
 	tracker := NewDeploymentTracker()
 
 	slow := tracker.CreateDeployment("slow", "gguf", "hf", "", []string{"a"})
-	require.NoError(t, tracker.UpdateDeploymentStatus(slow.ID, constants.StatusDownloading, ""))
+	require.NoError(t, tracker.UpdateNode(slow.ID, "a", "", func(n *DeploymentNode) { n.Status = constants.StatusDownloading }))
 	tracker.mu.Lock()
 	tracker.deployments[slow.ID].UpdatedAt = time.Now().Add(-24 * time.Hour)
 	tracker.mu.Unlock()

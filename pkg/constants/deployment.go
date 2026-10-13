@@ -23,7 +23,7 @@ const (
 	StatusDownloading Status = "downloading"
 	StatusCompleted   Status = "completed"
 	StatusFailed      Status = "failed"
-	StatusCancelled   Status = "cancelled" // deployment-level only
+	StatusCancelled   Status = "cancelled" // cancelled placement or deployment
 	StatusSkipped     Status = "skipped"   // node-level only (incompatible)
 )
 

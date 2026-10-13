@@ -10,14 +10,13 @@ import (
 	"net/url"
 	"strings"
 
-	"time"
+	"sync"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/routing"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ============================================================================
@@ -32,12 +31,18 @@ import (
 
 // DeploymentsService orchestrates a deployment across one or many target nodes.
 type DeploymentsService struct {
-	router     routing.Router
-	tracker    *DeploymentTracker
-	nodeInfo   NodeNamer
-	appsConfig func() *pkgConfig.AppsConfig
-	repoFiles  func(context.Context, string) ([]metadata.TreeFileEntry, error)
-	refresher  *runsRefresher
+	router         routing.Router
+	tracker        *DeploymentTracker
+	nodeInfo       NodeNamer
+	appsConfig     func() *pkgConfig.AppsConfig
+	repoFiles      func(context.Context, string) ([]metadata.TreeFileEntry, error)
+	refresher      *runsRefresher
+	jobs           *jobAccess
+	shutdown       func() context.Context
+	observerMu     sync.Mutex
+	observerCtx    context.Context
+	observerCancel context.CancelFunc
+	observerWG     *sync.WaitGroup
 
 	// resolveNodeURL returns a target node's public URL, used as the
 	// SourceURL when dispatching /sync/deploy. Optional — when nil,
@@ -48,12 +53,14 @@ type DeploymentsService struct {
 
 // NewDeploymentsService creates a DeploymentsService.
 func NewDeploymentsService(router routing.Router, nodeInfo NodeNamer, appsConfig func() *pkgConfig.AppsConfig) *DeploymentsService {
-	return &DeploymentsService{
+	s := &DeploymentsService{
 		router:     router,
 		tracker:    NewDeploymentTracker(),
 		nodeInfo:   nodeInfo,
 		appsConfig: appsConfig,
 	}
+	s.Start()
+	return s
 }
 
 // WithNodeURLResolver wires a node-name → public-URL resolver. When
@@ -189,7 +196,7 @@ func (s *DeploymentsService) Deploy(ctx context.Context, req *DeployRequest) (*D
 	// so the tracker reflects reality and the Active Deploys view
 	// doesn't show pointless rows for already-synced nodes.
 	for _, node := range haves {
-		_ = s.tracker.UpdateNodeStatus(d.ID, node, constants.StatusCompleted, "already present")
+		_ = s.tracker.UpdateNode(d.ID, node, "", func(n *DeploymentNode) { n.Status = constants.StatusCompleted })
 	}
 
 	for _, node := range needs {
@@ -198,8 +205,6 @@ func (s *DeploymentsService) Deploy(ctx context.Context, req *DeployRequest) (*D
 		}
 	}
 
-	status, message := aggregateStatus(s.tracker.GetDeployment(d.ID))
-	_ = s.tracker.UpdateDeploymentStatus(d.ID, status, message)
 	if req.Restart == restartAffected {
 		//nolint:contextcheck // the chain outlives this request and runs on its job context
 		jobID, err := s.restartAfterDeploy(s.tracker.GetDeployment(d.ID), plans)
@@ -258,43 +263,18 @@ func (s *DeploymentsService) dispatchDeployTarget(ctx context.Context, deploymen
 	result, err := routeAndParse[internalDeploymentResult](ctx, s.router, "POST", "/zzrouter/v1/internal/deployments", node, body)
 	if err != nil {
 		slog.Error("[DeploymentsService] Failed to start deployment", "node", node, "error", err)
-		_ = s.tracker.UpdateNodeStatus(deploymentID, node, constants.StatusFailed, err.Error())
-		return nil
+		return s.tracker.UpdateNode(deploymentID, node, "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusFailed, err.Error() })
 	}
 
-	if result.Key == "" {
-		msg := fmt.Sprintf("backend returned empty pull response for model %q", req.Model)
-		_ = s.tracker.UpdateNodeStatus(deploymentID, node, constants.StatusFailed, msg)
-		return nil
+	status := constants.Status(result.Status)
+	n := DeploymentNode{Node: node, Source: "internet", DownloadID: result.Key, JobID: result.JobID, Status: status}
+	if result.Key == "" || (result.Node != "" && result.Node != node && (s.jobs == nil || !s.jobs.ownsNode(node, result.Node))) ||
+		(status != constants.StatusCompleted && status != constants.StatusSkipped && status != constants.StatusFailed && status != constants.StatusDownloading && status != constants.StatusPending) {
+		n.Status, n.Error = constants.StatusFailed, "worker acceptance invalid; outcome unconfirmed and may still be running"
+	} else if status == constants.StatusFailed {
+		n.Error = result.Message
 	}
-
-	// A node answers terminally when there was nothing to fetch: a
-	// cloud model is registered with its provider on the spot. Writing
-	// `downloading` over that answer strands the deployment, because no
-	// producer will ever report progress against it.
-	//
-	// mapLiveStatus is the allowlist an unknown wire value must clear;
-	// cancelled is excluded because constants documents it as
-	// deployment-level only, so a node may not claim it.
-	if reported, ok := mapLiveStatus(result.Status); ok &&
-		reported.IsTerminal() && reported != constants.StatusCancelled {
-		errMsg := ""
-		if reported == constants.StatusFailed {
-			errMsg = result.Message
-		}
-		_ = s.tracker.UpdateNodeStatus(deploymentID, node, reported, errMsg)
-		_ = s.tracker.UpdateNodeDownloadID(deploymentID, node, result.Key)
-		if result.JobID != "" {
-			_ = s.tracker.UpdateNodeJobID(deploymentID, node, result.JobID)
-		}
-		return nil
-	}
-
-	_ = s.tracker.UpdateNodeStatus(deploymentID, node, constants.StatusDownloading, "")
-	_ = s.tracker.UpdateNodeDownloadID(deploymentID, node, result.Key)
-	if result.JobID != "" {
-		_ = s.tracker.UpdateNodeJobID(deploymentID, node, result.JobID)
-	}
+	s.acceptNode(ctx, deploymentID, n)
 	return nil
 }
 
@@ -390,167 +370,14 @@ type StopAllDownloadsResponse struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-// GetDeployment returns a tracked deployment by ID with per-node progress
-// merged from the authoritative DownloadManagers on each target node.
-func (s *DeploymentsService) GetDeployment(ctx context.Context, id string) *Deployment {
-	d := s.tracker.GetDeployment(id)
-	if d == nil {
-		return nil
-	}
-	s.mergeProgress(ctx, d)
-	return d
+// GetDeployment and ListDeployments read retained canonical snapshots.
+func (s *DeploymentsService) GetDeployment(_ context.Context, id string) *Deployment {
+	return s.tracker.GetDeployment(id)
 }
 
-// ListDeployments returns every tracked deployment (optionally filtered to
-// active) with per-node progress merged in.
-func (s *DeploymentsService) ListDeployments(ctx context.Context, activeOnly bool) []*Deployment {
-	deployments := s.tracker.ListDeployments(activeOnly)
-	for _, d := range deployments {
-		s.mergeProgress(ctx, d)
-	}
-	return deployments
-}
-
-// mergeProgress overlays live per-node download state from each target node's
-// internal /deployments endpoint onto the tracker's deployment snapshot.
-//
-// Design: compose on read. The tracker is authoritative for creation-time
-// fields (model, registry, node list, download IDs, cancellation intent). The
-// per-node DownloadManager is authoritative for live bytes/progress/speed.
-// Failures to reach a single node are logged and skipped — a missing node
-// must not blow up the whole response.
-//
-// mergeProgress mutates d in place and does NOT write back to the tracker.
-func (s *DeploymentsService) mergeProgress(ctx context.Context, d *Deployment) {
-	if d == nil || len(d.Nodes) == 0 {
-		return
-	}
-
-	ctx, cancel := ensureTimeout(ctx, constants.ClusterActionTimeout)
-	defer cancel()
-
-	// Group nodes with live downloads to fan out one call per target node.
-	byNode := make(map[string][]int, len(d.Nodes))
-	for i, n := range d.Nodes {
-		if n.DownloadID == "" {
-			continue
-		}
-		byNode[n.Node] = append(byNode[n.Node], i)
-	}
-
-	for node, idxs := range byNode {
-		envelope, err := routeAndParse[listDeploymentsEnvelope](
-			ctx, s.router, "GET", "/zzrouter/v1/internal/deployments", node, nil,
-		)
-		if err != nil {
-			slog.Debug("[DeploymentsService] mergeProgress: failed to fetch live downloads",
-				"node", node, "error", err)
-			continue
-		}
-
-		byKey := make(map[string]DownloadSummary, len(envelope.Data))
-		for _, s := range envelope.Data {
-			byKey[s.Key] = s
-		}
-
-		for _, i := range idxs {
-			dn := &d.Nodes[i]
-			live, ok := byKey[dn.DownloadID]
-			if !ok {
-				continue
-			}
-			dn.BytesDownloaded = live.BytesDownloaded
-			dn.BytesTotal = live.BytesTotal
-			dn.Progress = live.Progress
-			dn.Speed = live.Speed
-			if live.StartedAt != "" {
-				if t, err := time.Parse(time.RFC3339, live.StartedAt); err == nil {
-					dn.StartedAt = t
-				}
-			}
-			if mapped, ok := mapLiveStatus(live.Status); ok {
-				dn.Status = mapped
-			}
-			if constants.Status(live.Status).IsTerminal() {
-				if live.Error != "" {
-					dn.Error = live.Error
-				}
-				if dn.CompletedAt.IsZero() {
-					dn.CompletedAt = utils.Now()
-				}
-			}
-		}
-	}
-
-	// Recompute summary counters and aggregate status from the merged view.
-	d.UpdateSummary()
-	d.Status, d.Message = aggregateStatus(d)
-}
-
-// mapLiveStatus casts a live download status string to constants.Status.
-// Now that both sides share the same vocabulary, this is a simple cast with
-// an unknown-value guard. The second return is false for unrecognized values.
-func mapLiveStatus(live string) (constants.Status, bool) {
-	s := constants.Status(live)
-	switch s {
-	case constants.StatusPending,
-		constants.StatusDownloading,
-		constants.StatusCompleted,
-		constants.StatusFailed,
-		constants.StatusCancelled,
-		constants.StatusSkipped:
-		return s, true
-	}
-	return "", false
-}
-
-// aggregateStatus returns the deployment-level status+message implied by its
-// per-node slice. It is the only aggregator: Deploy calls it once the fan-out
-// settles and mergeProgress calls it after every live merge, so the status in
-// a POST response and the status on the next GET cannot disagree.
-//
-// Counting walks the node slice rather than the summary counters because
-// UpdateSummary has no bucket for every status a node can hold — a peer-sync
-// node sits in "syncing", which is neither complete nor failed, and reading
-// the counters alone reports it as a failure the moment it is dispatched.
-func aggregateStatus(d *Deployment) (constants.Status, string) {
-	if len(d.Nodes) == 0 {
-		return d.Status, d.Message
-	}
-
-	// Preserve terminal cancellation — a user cancel shouldn't be overwritten
-	// by the merge just because a late live update arrived.
-	if d.Status == constants.StatusCancelled {
-		return d.Status, d.Message
-	}
-
-	total := len(d.Nodes)
-	var inFlight, failed, skipped int
-	for _, n := range d.Nodes {
-		switch {
-		case !n.Status.IsTerminal():
-			inFlight++
-		case n.Status == constants.StatusFailed:
-			failed++
-		case n.Status == constants.StatusSkipped:
-			skipped++
-		}
-	}
-
-	switch {
-	case inFlight > 0:
-		return constants.StatusDownloading, fmt.Sprintf("Downloading on %d/%d nodes", inFlight, total)
-	case failed == total:
-		return constants.StatusFailed, "All nodes failed"
-	case failed > 0:
-		return constants.StatusFailed, fmt.Sprintf("%d/%d nodes failed", failed, total)
-	case skipped == total:
-		// Terminal and nothing went wrong, but nothing landed either; saying
-		// "complete" here would claim a deployment that never happened.
-		return constants.StatusCompleted, fmt.Sprintf("All %d nodes skipped", total)
-	default:
-		return constants.StatusCompleted, fmt.Sprintf("All %d nodes complete", total)
-	}
+// ListDeployments reads retained snapshots with canonical active filtering.
+func (s *DeploymentsService) ListDeployments(_ context.Context, activeOnly bool) []*Deployment {
+	return s.tracker.ListDeployments(activeOnly)
 }
 
 // CancelDeployment cancels a tracked deployment and stops every still-running
@@ -558,34 +385,21 @@ func aggregateStatus(d *Deployment) (constants.Status, string) {
 // do not block the cancel — a missing deployment returns an error so the
 // controller can 404.
 func (s *DeploymentsService) CancelDeployment(ctx context.Context, id string) error {
+	if err := s.tracker.CancelDeployment(id); err != nil {
+		return err
+	}
 	d := s.tracker.GetDeployment(id)
 	if d == nil {
-		return fmt.Errorf("deployment not found: %s", id)
+		return nil
 	}
 	if d.RestartJobID != "" && s.refresher != nil && s.refresher.jobs != nil {
 		_ = s.refresher.jobs.Cancel(d.RestartJobID)
 	}
 
 	for _, n := range d.Nodes {
-		if n.JobID != "" {
-			_, err := s.router.Route(ctx, &routing.Request{Method: "POST", Node: n.Node, Path: "/zzrouter/v1/internal/jobs/" + url.PathEscape(n.JobID) + "/cancel"})
-			if err != nil {
-				slog.Warn("failed to cancel placement job", "job", n.JobID, "error", err)
-			}
-		}
-		if n.DownloadID == "" {
-			continue
-		}
-		if _, err := s.StopDownload(ctx, &StopDownloadRequest{
-			DownloadID: n.DownloadID,
-			Node:       n.Node,
-		}); err != nil {
-			slog.Warn("[DeploymentsService] Failed to stop per-node download during cancel",
-				"deployment_id", id, "node", n.Node, "download_id", n.DownloadID, "error", err)
-		}
+		s.cancelJob(ctx, n)
 	}
-
-	return s.tracker.CancelDeployment(id)
+	return nil
 }
 
 // CancelDeploymentNode cancels a single node within a deployment. Returns a
@@ -611,36 +425,19 @@ func (s *DeploymentsService) CancelDeploymentNode(ctx context.Context, id, node 
 	}
 
 	switch target.Status {
-	case constants.StatusCompleted, constants.StatusFailed, constants.StatusSkipped:
+	case constants.StatusCompleted, constants.StatusFailed, constants.StatusSkipped, constants.StatusCancelled:
 		return newProblemError(http.StatusBadRequest, "Bad Request",
 			fmt.Sprintf("node %s is already in terminal state %q", node, target.Status))
 	}
 
-	if target.DownloadID != "" {
-		if _, err := s.StopDownload(ctx, &StopDownloadRequest{
-			DownloadID: target.DownloadID,
-			Node:       node,
-		}); err != nil {
-			slog.Warn("[DeploymentsService] Per-node cancel: remote stop failed; marking failed anyway",
-				"deployment_id", id, "node", node, "download_id", target.DownloadID, "error", err)
-		}
-	}
-	if target.JobID != "" {
-		_, err := s.router.Route(ctx, &routing.Request{Method: "POST", Node: node, Path: "/zzrouter/v1/internal/jobs/" + url.PathEscape(target.JobID) + "/cancel"})
-		if err != nil {
-			slog.Warn("failed to cancel placement job", "job", target.JobID, "error", err)
-		}
-	}
-
-	if err := s.tracker.UpdateNodeStatus(id, node, constants.StatusFailed, "cancelled by user"); err != nil {
+	if err := s.tracker.UpdateNode(id, node, "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusCancelled, "cancelled by user" }); err != nil {
 		return err
 	}
-
-	// Recompute aggregate status so the deployment reflects the change.
-	refreshed := s.tracker.GetDeployment(id)
-	if refreshed != nil {
-		status, message := aggregateStatus(refreshed)
-		_ = s.tracker.UpdateDeploymentStatus(id, status, message)
+	for _, accepted := range s.tracker.GetDeployment(id).Nodes {
+		if accepted.Node == node {
+			s.cancelJob(ctx, accepted)
+			break
+		}
 	}
 	return nil
 }
@@ -658,7 +455,7 @@ func (s *DeploymentsService) CancelNodeAcrossDeployments(ctx context.Context, no
 				continue
 			}
 			switch n.Status {
-			case constants.StatusCompleted, constants.StatusFailed, constants.StatusSkipped:
+			case constants.StatusCompleted, constants.StatusFailed, constants.StatusSkipped, constants.StatusCancelled:
 				continue
 			}
 			if err := s.CancelDeploymentNode(ctx, d.ID, node); err != nil {

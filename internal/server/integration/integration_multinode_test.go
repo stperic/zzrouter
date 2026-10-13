@@ -224,16 +224,16 @@ func TestDeploymentTracker(t *testing.T) {
 	assert.Equal(t, "internet", d.Nodes[1].Source)
 	assert.Equal(t, "internet", d.Nodes[2].Source)
 
-	err := tracker.UpdateDeploymentStatus(d.ID, constants.StatusDownloading, "Downloading to master")
+	err := tracker.UpdateNode(d.ID, "master", "", func(n *srv.DeploymentNode) { n.Status = constants.StatusDownloading })
 	require.NoError(t, err)
 
 	retrieved := tracker.GetDeployment(d.ID)
 	assert.Equal(t, constants.StatusDownloading, retrieved.Status)
 
-	err = tracker.UpdateNodeStatus(d.ID, "master", constants.StatusDownloading, "")
+	err = tracker.UpdateNode(d.ID, "master", "", func(n *srv.DeploymentNode) { n.Status, n.Error = constants.StatusDownloading, "" })
 	require.NoError(t, err)
 
-	err = tracker.UpdateNodeDownloadID(d.ID, "master", "master/huggingface/test-model")
+	err = tracker.UpdateNode(d.ID, "master", "", func(n *srv.DeploymentNode) { n.DownloadID = "master/huggingface/test-model" })
 	require.NoError(t, err)
 
 	retrieved = tracker.GetDeployment(d.ID)
@@ -241,7 +241,7 @@ func TestDeploymentTracker(t *testing.T) {
 	assert.Equal(t, 2, retrieved.NodesPending)
 	assert.Equal(t, "master/huggingface/test-model", retrieved.Nodes[0].DownloadID)
 
-	err = tracker.UpdateNodeProgress(d.ID, "master", 500, 1000, 100)
+	err = tracker.UpdateNode(d.ID, "master", "", func(n *srv.DeploymentNode) { n.BytesDownloaded, n.BytesTotal, n.Speed, n.Progress = 500, 1000, 100, 50 })
 	require.NoError(t, err)
 
 	retrieved = tracker.GetDeployment(d.ID)
@@ -249,7 +249,7 @@ func TestDeploymentTracker(t *testing.T) {
 	assert.Equal(t, int64(1000), retrieved.Nodes[0].BytesTotal)
 	assert.Equal(t, float64(50), retrieved.Nodes[0].Progress)
 
-	err = tracker.UpdateNodeStatus(d.ID, "master", constants.StatusCompleted, "")
+	err = tracker.UpdateNode(d.ID, "master", "", func(n *srv.DeploymentNode) { n.Status, n.Error = constants.StatusCompleted, "" })
 	require.NoError(t, err)
 
 	retrieved = tracker.GetDeployment(d.ID)

@@ -406,19 +406,14 @@ func (c *JobsController) resolveUpstream(ctx *gin.Context, node string) (string,
 		ctx.Abort()
 		return "", false
 	}
-	clusterURL := ep.ClusterURL
-	if clusterURL == "" {
-		derived, err := mesh.DeriveClusterURL(ep.URL, c.proxy.ClusterPort)
-		if err != nil {
-			RespondWithProblemOpts(ctx, http.StatusBadGateway, "Bad Gateway",
-				"derive cluster URL: "+err.Error(),
-				ProblemOpts{Code: string(httperr.CodeNodeUnreachable), Node: node})
-			ctx.Abort()
-			return "", false
-		}
-		clusterURL = derived
+	base, err := c.proxy.endpointURL(ep)
+	if err != nil {
+		RespondWithProblemOpts(ctx, http.StatusBadGateway, "Bad Gateway", "derive cluster URL: "+err.Error(),
+			ProblemOpts{Code: string(httperr.CodeNodeUnreachable), Node: node})
+		ctx.Abort()
+		return "", false
 	}
-	return clusterURL, true
+	return base, true
 }
 
 // internalJobsURL builds the upstream /internal/jobs path with
@@ -628,19 +623,7 @@ func (c *JobsController) proxyStream(ctx *gin.Context, node string) {
 		return
 	}
 
-	client, err := c.proxy.StreamClient()
-	if err != nil {
-		c.writeProxyError(ctx, node, err)
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodGet, upstream, nil)
-	if err != nil {
-		c.writeProxyError(ctx, node, err)
-		return
-	}
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := client.Do(req)
+	resp, err := c.proxy.openStream(ctx.Request.Context(), upstream)
 	if err != nil {
 		c.writeProxyError(ctx, node, err)
 		return

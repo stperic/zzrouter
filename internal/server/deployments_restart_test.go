@@ -48,7 +48,10 @@ func TestDeployRestartWaitsForDownloadAndScopesRuns(t *testing.T) {
 	router := &jobTestRouter{registry: reg}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
 	s.refresher = &runsRefresher{runs: f, jobs: reg}
-	d := &Deployment{ID: "deployment", Model: "org/model-GGUF", Nodes: []DeploymentNode{{Node: "worker", JobID: dl.ID()}}}
+	d := s.tracker.CreateDeployment("org/model-GGUF", "gguf", "hf", "", []string{"worker"})
+	s.jobs = &jobAccess{registry: reg}
+	s.acceptNode(t.Context(), d.ID, DeploymentNode{Node: "worker", Source: "internet", JobID: dl.ID(), Status: "downloading"})
+	t.Cleanup(func() { s.Stop(t.Context()) })
 	id, err := s.restartAfterDeploy(d, map[string]deployPlan{"worker": {Provider: "llamacpp", Download: &metadata.DownloadRequest{Repo: d.Model}}})
 	require.NoError(t, err)
 	ev, err := reg.Get(id)
@@ -99,12 +102,14 @@ func TestRestartRunsReadinessFailureIsNotSuccess(t *testing.T) {
 }
 
 func TestWaitJobCompletionStopsOnCancellationAndFailure(t *testing.T) {
+	reg := newTestJobsRegistry(t)
+	h, err := reg.StartDetached(jobs.KindDownload, "", nil)
+	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 	defer cancel()
-	err := waitJobCompletion(ctx, func(context.Context) (jobs.Event, error) { return jobs.Event{Phase: jobs.PhaseRunning}, nil })
+	err = (&jobAccess{registry: reg}).Wait(ctx, h.ID(), "")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
-	err = waitJobCompletion(t.Context(), func(context.Context) (jobs.Event, error) {
-		return jobs.Event{JobID: "failed", Phase: jobs.PhaseFailed, Err: "installer failed"}, nil
-	})
+	h.Fail(errors.New("installer failed"))
+	err = (&jobAccess{registry: reg}).Wait(t.Context(), h.ID(), "")
 	assert.ErrorContains(t, err, "installer failed")
 }

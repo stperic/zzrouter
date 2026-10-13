@@ -1,16 +1,10 @@
-// jobs_proxy.go — coord-side wiring for JobsController's cross-node
-// SSE proxy. Two hooks: a streaming-tuned mTLS client factory (fresh
-// per call to pick up role transitions) and an endpoint resolver
-// backed by the coordinator's mesh registry.
-//
-// Streaming tuning is why we don't reuse node.DialClient's transport
-// directly: DialClient sets no ResponseHeaderTimeout, so a half-open
-// worker would wedge the proxy goroutine past any useful bound. We
-// build a fresh transport atop DialClient's TLS config per call.
+// Coordinator wiring shares one streaming mTLS client and canonical endpoint
+// resolver between HTTP forwarding and lifecycle-owned job consumers.
 
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -24,8 +18,8 @@ import (
 
 // cachedJobsStreamClient returns a factory closure that lazily builds
 // the streaming mTLS client once and returns the same instance on
-// subsequent calls. Routes rebuild on role transition, so the cache
-// ties to the current listener identity without explicit invalidation.
+// subsequent calls. The listener identity lives with Server; role transitions swap routing
+// without rebuilding services or their transports.
 // Building a fresh *http.Transport per request would accumulate idle
 // connection pools and TLS sessions under streaming load.
 func (s *Server) cachedJobsStreamClient() func() (*http.Client, error) {
@@ -124,4 +118,31 @@ func (s *Server) resolveJobsEndpoint(node string) *mesh.Endpoint {
 		return ep
 	}
 	return nil
+}
+
+func (p *JobsProxy) endpointURL(ep *mesh.Endpoint) (string, error) {
+	if ep.ClusterURL != "" {
+		return ep.ClusterURL, nil
+	}
+	return mesh.DeriveClusterURL(ep.URL, p.ClusterPort)
+}
+
+func (p *JobsProxy) openStream(ctx context.Context, upstream string) (*http.Response, error) {
+	if p.StreamClient == nil {
+		return nil, errors.New("job stream client unavailable")
+	}
+	client, err := p.StreamClient()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	return client.Do(req)
+}
+
+func (s *Server) jobAccess() *jobAccess {
+	return &jobAccess{registry: s.jobs, local: s.node.IsLocalNode, proxy: s.jobsProxy, router: s.cluster.router}
 }
