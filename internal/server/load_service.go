@@ -10,6 +10,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -102,10 +103,10 @@ type LoadModelRequest struct {
 	// Closed set, empty means "chat": the launch keys an instance by
 	// whatever string it is handed, so an unvalidated value starts a
 	// process nothing can route to.
-	Endpoint    string            `json:"endpoint,omitempty" binding:"omitempty,oneof=chat embeddings reranking"`
-	Force       bool              `json:"force,omitempty"`
-	Parameters  map[string]string `json:"parameters,omitempty"`
-	Environment map[string]string `json:"environment,omitempty"`
+	Endpoint    string                 `json:"endpoint,omitempty" binding:"omitempty,oneof=chat embeddings reranking"`
+	Force       bool                   `json:"force,omitempty"`
+	Parameters  schema.ParameterValues `json:"parameters,omitempty"`
+	Environment map[string]string      `json:"environment,omitempty"`
 }
 
 // Validate validates the load model request

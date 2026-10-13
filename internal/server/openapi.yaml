@@ -11585,7 +11585,12 @@ components:
             Refused for cloud providers.
         parameters:
           type: object
-          additionalProperties: { type: string }
+          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - { type: number }
+              - { type: boolean }
 
     PreviewRunRequest:
       type: object
@@ -11601,7 +11606,12 @@ components:
         force:      { type: boolean }
         parameters:
           type: object
-          additionalProperties: { type: string }
+          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - { type: number }
+              - { type: boolean }
         environment:
           type: object
           additionalProperties: { type: string }
@@ -11634,7 +11644,12 @@ components:
             starting answers 409 instead.
         parameters:
           type: object
-          additionalProperties: { type: string }
+          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - { type: number }
+              - { type: boolean }
         environment:
           type: object
           additionalProperties: { type: string }

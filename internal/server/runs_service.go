@@ -17,6 +17,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -374,13 +375,13 @@ type LaunchRunRequest struct {
 	// launch. Opt-in: a typo in model_name with auto_deploy:false fails
 	// fast with model_not_found instead of triggering a multi-GB pull.
 	// Refused for cloud providers (those go through POST /deployments).
-	AutoDeploy   bool              `json:"auto_deploy,omitempty"`
-	Port         int               `json:"port,omitempty"`
-	Files        any               `json:"files,omitempty"` // Will be unmarshaled as []instance.FileMount
-	Parameters   map[string]string `json:"parameters,omitempty"`
-	EnvVars      map[string]string `json:"env_vars,omitempty"`
-	NativeConfig any               `json:"native_config,omitempty"` // Will be unmarshaled as *instance.NativeConfig
-	Node         string            `json:"node,omitempty"`          // Target cluster node for routing
+	AutoDeploy   bool                   `json:"auto_deploy,omitempty"`
+	Port         int                    `json:"port,omitempty"`
+	Files        any                    `json:"files,omitempty"` // Will be unmarshaled as []instance.FileMount
+	Parameters   schema.ParameterValues `json:"parameters,omitempty"`
+	EnvVars      map[string]string      `json:"env_vars,omitempty"`
+	NativeConfig any                    `json:"native_config,omitempty"` // Will be unmarshaled as *instance.NativeConfig
+	Node         string                 `json:"node,omitempty"`          // Target cluster node for routing
 }
 
 // UnmarshalJSON accepts `model` as an alias for `model_name`. `model_name`
