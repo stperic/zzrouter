@@ -582,11 +582,13 @@ CALLS, CALLS_LOCK = [], threading.Lock()
 def call_evidence(fields):
     if not isinstance(fields, dict):
         return {}
-    evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail") if k in fields}
+    evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail", "deployment_id", "accepted") if k in fields}
     if isinstance(fields.get("jobs"), list):
         evidence["jobs"] = [{k: row[k] for k in ("job_id", "node", "kind", "state") if k in row} for row in fields["jobs"][:2] if isinstance(row, dict)]
-    if isinstance(fields.get("nodes"), list):
-        evidence["nodes"] = [{k: row[k] for k in ("node", "job_id", "status", "error") if k in row} for row in fields["nodes"][:4] if isinstance(row, dict)]
+    if "nodes" in fields:
+        evidence["nodes"] = []  # Marker presence blocks refusal inference even when its contents cannot be captured.
+        if isinstance(fields["nodes"], list):
+            evidence["nodes"] = [{k: row[k] for k in ("node", "job_id", "status", "error") if k in row} for row in fields["nodes"][:4] if isinstance(row, dict)]
     if isinstance(fields.get("models"), list):
         evidence["models"] = []
         for entry in fields["models"][:2]:
@@ -1033,6 +1035,11 @@ def cleanup_download(download, calls, node, provider):
     args, evidence = download.get("args") or {}, download.get("evidence") or {}
     if args.get("node") != node or args.get("provider") != provider:
         return False, "unselected download retained for inspection"
+    # The deployment owner's typed400 refusal precedes creation and worker dispatch.
+    if (download.get("is_error") is True and evidence.get("status") == 400 and evidence.get("code") == "bad_request"
+            and not any(key in evidence for key in ("deployment_id", "accepted", "job_id", "nodes"))
+            and not evidence.get("capture_overflow")):
+        return True, "request refused before deployment acceptance"
     trace = [c for c in calls if c["tool"] != "zz_model_download" or c is download]
     jobs = [j["job_id"] for j in evidence.get("nodes") or [] if j.get("node") == node and j.get("job_id")]
     if not jobs:
@@ -1226,7 +1233,8 @@ def run_scenario(R, node, label, sc, agents, only, out):
             time.sleep(2)
             left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
             calls = calls_for(sid)
-            json.dump(calls, open(os.path.join(wd, "calls.json"), "w"), indent=1)
+            with open(os.path.join(wd, "calls.json"), "w") as stream:
+                json.dump(calls, stream, indent=1)
             ctx = {"node": node, "calls": calls, "text": text, "rj": result_json(text), "left": left, "scenario": sc}
             failed = [f"{c['tool']}:{c['status']}" for c in calls if c["is_error"]]
             R.add("mcp", node, f"{label}.{agent}", "agent finished", bool(text) and not text.startswith(("TIMEOUT", "Error")) and not (meta or {}).get("is_error"),

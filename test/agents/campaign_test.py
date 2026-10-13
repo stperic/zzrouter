@@ -342,6 +342,52 @@ class DisposableOwnershipTest(unittest.TestCase):
         self.assertEqual(http.call_args_list[2].args[:2], ("DELETE", "/zzrouter/v1/jobs/j2?node=n"))
         self.assertIn("j2", detail)
 
+    def test_demonstrated_predispatch_refusal_needs_no_cleanup(self):
+        from unittest.mock import patch
+        # Distilled from the preserved selected llama.cpp/ollama400 refusal.
+        download = call("zz_model_download", {"node": "n", "provider": "p", "model": "smollm2:135m", "registry": "ollama"},
+                        {"status": 400, "code": "bad_request", "detail": "provider is not eligible"}, error=True)
+        with patch.object(c, "http", side_effect=AssertionError("refused request must not trigger cleanup")) as http:
+            ok, detail = c.cleanup_disposable([download], "n", "p")
+        self.assertTrue(ok, detail)
+        http.assert_not_called()
+
+    def test_refused_looking_unknown_calls_retain_resources(self):
+        from unittest.mock import patch
+        download = call("zz_model_download", {"node": "n", "provider": "p", "model": "repo"},
+                        {"status": 400, "code": "bad_request"}, error=True)
+        cases = [lambda d: d.update(is_error=None), lambda d: d.update(is_error=False),
+                 lambda d: d["args"].update(node="other"), lambda d: d["args"].update(provider="other"),
+                 lambda d: d["evidence"].pop("status"), lambda d: d["evidence"].pop("code"),
+                 lambda d: d["evidence"].update(status=503), lambda d: d["evidence"].update(status="400"),
+                 lambda d: d["evidence"].update(code="mcp_invalid_input"),
+                 lambda d: d["evidence"].update(capture_overflow=True)]
+        cases += [lambda d, key=key, value=value: d["evidence"].update({key: value})
+                  for key, values in (("accepted", [True, False, None]), ("deployment_id", ["d", "", None]),
+                                      ("job_id", ["j", "", None]), ("nodes", [[], None, [{}]])) for value in values]
+        for mutate in cases:
+            attempt = copy.deepcopy(download); mutate(attempt)
+            with self.subTest(attempt=attempt), patch.object(c, "http", return_value=(503, {}, 0)) as http:
+                ok, detail = c.cleanup_disposable([attempt], "n", "p")
+                self.assertFalse(ok, detail)
+                self.assertTrue(all(x.args[0] != "DELETE" for x in http.call_args_list))
+
+    def test_capture_preserves_acceptance_marker_presence_for_cleanup(self):
+        from unittest.mock import patch
+        cases = [("accepted", False), ("accepted", None), ("deployment_id", ""), ("job_id", ""),
+                 ("nodes", None), ("nodes", {"node": "n", "job_id": "j"}),
+                 ("nodes", ["unexpected"]), ("nodes", [None] * 4 + [{"node": "n", "job_id": "j"}])]
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                fields = {"status": 400, "code": "bad_request", key: value}
+                evidence = c.call_evidence(fields)
+                self.assertIn(key, evidence, "absence cannot be inferred from filtered capture")
+                download = call("zz_model_download", {"node": "n", "provider": "p", "model": "repo"}, evidence, error=True)
+                with patch.object(c, "http", return_value=(503, {}, 0)) as http:
+                    ok, detail = c.cleanup_disposable([download], "n", "p")
+                self.assertFalse(ok, detail)
+                self.assertTrue(all(x.args[0] != "DELETE" for x in http.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

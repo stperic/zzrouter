@@ -31,6 +31,9 @@
   and use the public request identity. Job lists, snapshots and cancellation
   replies validate their expected success shape; transport failures use the
   shared sanitized routing error codes.
+- Campaign cleanup distinguishes proven pre-dispatch download refusals from
+  accepted or uncertain work. Captured acceptance markers retain conservative
+  ownership checks; failed calls and confusion findings remain recorded.
 - Deployments retain worker-job progress and terminal outcomes before any client
   read. Peer sync follows its own immutable job, and cancelling a deployment
   cannot stop a newer download using the same key. Per-node cancellation reports
