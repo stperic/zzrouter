@@ -162,7 +162,7 @@ peers means the local registry is the complete lookup.
 
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
-| `job_not_found` | 404 | No local job exists and every peer confirmed absence. Jobs live in memory on the node that runs them and are evicted after the completed-job retention window; `detail` gives the duration from `jobs.DefaultCompletedTTL`. | Check the job ID. An evicted job cannot be recovered by retrying the lookup. |
+| `job_not_found` | 404 | Confirmed absence within the selected node or complete searched scope. Jobs are in memory; retention cleanup or a node restart can cause absence. | Check the job ID and recent jobs on its node. Absence does not establish how the job ended. |
 | `node_unreachable` | 503 | A peer that may own the job did not answer definitively, so absence is unconfirmed. | Honor `Retry-After` and retry the lookup. |
 
 ### Cluster update rollout preflight

@@ -98,7 +98,7 @@ func (a *jobAccess) Observe(ctx context.Context, id, node string, consume func(j
 			return baseErr
 		}
 		var resp *http.Response
-		resp, err = a.proxy.openStream(ctx, internalJobsURL(base, "/"+url.PathEscape(id)+"/stream", nil))
+		resp, err = a.proxy.open(ctx, http.MethodGet, internalJobsURL(base, "/"+url.PathEscape(id)+"/stream", nil), "text/event-stream")
 		if err == nil {
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -197,7 +197,7 @@ func jobFrame(name string, raw []byte) (jobs.Event, bool, error) {
 func validateJobEvent(ev jobs.Event, id, owner, epoch string) error {
 	if ev.JobID != id || ev.Node != owner || ev.Epoch == "" ||
 		(epoch != "" && ev.Epoch != epoch) ||
-		(ev.Phase != jobs.PhasePending && ev.Phase != jobs.PhaseRunning && !ev.Phase.IsTerminal()) {
+		ev.Validate() != nil {
 		return fmt.Errorf("invalid job identity or phase for %s on %s", id, owner)
 	}
 	return nil
