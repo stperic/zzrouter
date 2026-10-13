@@ -91,7 +91,7 @@ const maxMemoryDevices = 64
 // model's need when it is known, which must fit beside the safety margin, else the free fraction left
 // after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
 func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
-	if budget.Kind == "reserve_mib" {
+	if budget.Kind == schema.MemoryReserveMiB {
 		reserved, err := PrepareMemoryBudget(budget, parameters, environment, devices)
 		if err != nil {
 			return err
@@ -109,9 +109,9 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		}
 		return nil
 	}
-	auto := budget.Kind == "fraction_total" && parameters[budget.Parameter] == "auto"
+	auto := budget.Kind == schema.MemoryFractionTotal && parameters[budget.Parameter] == "auto"
 	var fraction float64
-	if budget.Kind == "fraction_total" && !auto {
+	if budget.Kind == schema.MemoryFractionTotal && !auto {
 		var err error
 		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
 		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
@@ -130,7 +130,7 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if err != nil {
 		return err
 	}
-	if budget.Kind != "fraction_total" {
+	if budget.Kind != schema.MemoryFractionTotal {
 		for _, device := range selected {
 			fit := memoryFitError(budget.Parameter, device, device.FreeMiB, owners)
 			if fit.FreeMiB < device.FreeMiB {
@@ -259,7 +259,7 @@ const MiBPerGiB int64 = 1024
 
 // PrepareMemoryBudget validates and pins a reservation using the same snapshot for its complement.
 func PrepareMemoryBudget(budget schema.MemoryBudget, params, env map[string]string, devices []gpu.MemoryDevice) (map[string]int64, error) {
-	if budget.Kind != "reserve_mib" {
+	if budget.Kind != schema.MemoryReserveMiB {
 		return nil, nil
 	}
 	selected, err := memoryDevicesForLaunch(devices, env, 1)

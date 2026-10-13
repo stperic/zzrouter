@@ -23,6 +23,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // LocalizeModelFeatures supplies present file features without replacing any
@@ -219,11 +220,6 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if err := svc.ValidatePlatform(runtime.GOOS, runtime.GOARCH); err != nil {
 		return LaunchParameters{}, fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
 	}
-	if svc.RunScope == config.RunScopeNode && svc.Requirements != nil {
-		if result, checked := preflight.GPU(gpu.WithInventory(ctx, gpu.List(false)), svc.Requirements.GPU); checked && !result.Passed {
-			return LaunchParameters{}, fmt.Errorf("%w: provider %s: %s; %s", ErrUnsupportedPlatform, svc.Name, result.Message, result.Hint)
-		}
-	}
 	if req.Runtime != "" && req.DisposablePlanID == "" && req.Origin != OriginInstall {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
@@ -252,6 +248,14 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	}
 	if req.selectedRuntime != "" && runtime != req.selectedRuntime {
 		return LaunchParameters{}, fmt.Errorf("selected runtime changed while waiting; retry launch")
+	}
+	if req.Origin != OriginInstall && svc.Requirements != nil {
+		_, managed := m.installs.managedInstaller(runtime)
+		if !managed {
+			if result, checked := preflight.GPU(gpu.WithInventory(ctx, gpu.List(false)), svc.Requirements.GPU); checked && !result.Passed {
+				return LaunchParameters{}, fmt.Errorf("%w: provider %s: %s; %s", ErrUnsupportedPlatform, svc.Name, result.Message, result.Hint)
+			}
+		}
 	}
 	executable := ""
 	var toolkit install.ToolkitSelection
@@ -316,7 +320,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if err != nil {
 		return LaunchParameters{}, err
 	}
-	if budget != nil && budget.Kind == "reserve_mib" {
+	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
 		cards := m.memoryInventory(ctx)
 		if err := ctx.Err(); err != nil {
 			return LaunchParameters{}, err
@@ -330,19 +334,15 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		if len(devices) == 0 {
 			return LaunchParameters{}, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
 		}
-		childEnv, err := process.ChildEnvironment(env)
+		visible, err := visibleDeviceEnvironment(env)
 		if err != nil {
 			return LaunchParameters{}, err
 		}
-		for _, entry := range childEnv {
-			if key, value, _ := strings.Cut(entry, "="); key == "CUDA_VISIBLE_DEVICES" {
-				env[key] = value
-			}
-		}
-		commitments, err = process.PrepareMemoryBudget(*budget, params, env, devices)
+		commitments, err = process.PrepareMemoryBudget(*budget, params, visible, devices)
 		if err != nil {
 			return LaunchParameters{}, err
 		}
+		maps.Copy(env, visible)
 	}
 	freezeFeaturePaths(svc, params)
 	return LaunchParameters{Commitments: commitments, model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil

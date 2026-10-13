@@ -195,6 +195,11 @@ func (c *InstallCoordinator) Installer(name string) (install.ProviderInstaller, 
 	return inst, err
 }
 
+func (c *InstallCoordinator) managedInstaller(name string) (install.ProviderInstaller, bool) {
+	inst, err := c.dispatcher.Get(name)
+	return inst, err == nil && inst.IsInstalled()
+}
+
 // Progress returns the current install progress for a provider, or nil.
 func (c *InstallCoordinator) Progress(provider string) *install.InstallProgress {
 	return c.progress.Get(provider)

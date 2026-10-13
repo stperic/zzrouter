@@ -3,7 +3,6 @@ package schema
 import (
 	"bytes"
 	"fmt"
-
 	"regexp"
 
 	"gopkg.in/yaml.v3"
@@ -25,6 +24,19 @@ type RuntimeChecks struct {
 	ToolkitMinimum map[string]string `yaml:"toolkit_minimum,omitempty" json:"toolkit_minimum,omitempty"`
 	Workaround     map[string]string `yaml:"workaround,omitempty" json:"workaround,omitempty"`
 }
+
+const (
+	// MemoryReserveMiB keeps reserved capacity distinct from measured usage.
+	MemoryReserveMiB = "reserve_mib"
+	// MemoryFractionTotal gives fraction knobs a common admission rule.
+	MemoryFractionTotal = "fraction_total"
+	// MemoryLayers identifies knobs whose layer counts do not measure capacity.
+	MemoryLayers = "layers"
+	// MemoryUnified identifies memory shared by the system and accelerator.
+	MemoryUnified = "unified"
+	// MemoryExternal leaves admission with the provider's own engine.
+	MemoryExternal = "external"
+)
 
 // MemoryBudget declares how an engine's knob requests device memory.
 type MemoryBudget struct {
@@ -151,19 +163,19 @@ func (m *MemoryBudget) validate() error {
 			return fmt.Errorf("invalid memory parameter %q", parameter)
 		}
 	}
-	if m.ComplementParameter != "" && (m.Kind != "reserve_mib" || m.ComplementParameter == m.Parameter) {
-		return fmt.Errorf("complement parameter requires a distinct reserve_mib parameter")
+	if m.ComplementParameter != "" && (m.Kind != MemoryReserveMiB || m.ComplementParameter == m.Parameter) {
+		return fmt.Errorf("complement parameter requires a distinct %s parameter", MemoryReserveMiB)
 	}
 	switch m.Kind {
-	case "reserve_mib":
+	case MemoryReserveMiB:
 		if m.Parameter == "" || m.DeviceCountParameter != "" {
-			return fmt.Errorf("reserve_mib requires a parameter and one device")
+			return fmt.Errorf("%s requires a parameter and one device", MemoryReserveMiB)
 		}
-	case "fraction_total":
+	case MemoryFractionTotal:
 		if m.Parameter == "" {
 			return fmt.Errorf("fraction budget requires parameter")
 		}
-	case "layers", "unified", "external":
+	case MemoryLayers, MemoryUnified, MemoryExternal:
 	default:
 		return fmt.Errorf("unknown memory budget %q", m.Kind)
 	}

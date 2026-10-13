@@ -108,7 +108,7 @@ func (m ResolvedModel) Directory() string {
 //
 // An engine that references ${MODEL_PATH} must be pointed at weights that exist: a missing path is a
 // launch failure here rather than an opaque "no such file" from the engine several seconds later.
-func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string, excluded ...string) (Launch, error) {
+func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string) (Launch, error) {
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
 	}
@@ -139,7 +139,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, append([]string{config.KeepAliveParameter, config.EvictIdleParameter}, excluded...))...)
+		args = append(args, buildParameterArgs(params, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
 	}
 
 	wireModel := modelClean

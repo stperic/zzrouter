@@ -1038,12 +1038,11 @@ func (m *ProviderAppManager) ProviderStatus(name string) (*ProviderStatus, error
 		return nil, ErrProviderNotFound
 	}
 
-	managed := false
+	inst, managed := m.installs.managedInstaller(name)
 	var managedProcess process.Presence
 	// Version cache is keyed by config key (e.g., "llamacpp"), installer by display name (e.g., "llama.cpp").
 	version := m.ProviderVersion(configKey)
-	if inst, err := m.installs.Dispatcher().Get(name); err == nil {
-		managed = inst.IsInstalled()
+	if inst != nil {
 		if v, err := inst.InstalledVersion(); err == nil && v != "" {
 			version = v
 		}
@@ -1199,8 +1198,11 @@ func WithSelfHost(resolve func() string) Option {
 }
 
 func (m *ProviderAppManager) providerInstalled(key string, svc config.ServiceConfig, managed bool, version string) bool {
+	if managed {
+		return true
+	}
 	if svc.RunScope == config.RunScopeNode {
 		return detect.Runnable(key, &svc)
 	}
-	return managed || (version != "" && version != versionUnknown)
+	return version != "" && version != versionUnknown
 }

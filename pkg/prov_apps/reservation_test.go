@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -302,4 +303,64 @@ func TestReservationPreparationPropagatesContext(t *testing.T) {
 	}
 	_, err := r.m.PreviewLaunch(ctx, EnsureRequest{Provider: "generic"}, 8740)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestReservationArgvFilteringKeepsResolvedParameters(t *testing.T) {
+	r := reservationRig(t, false)
+	req := EnsureRequest{Provider: "generic"}
+	features, err := r.m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	before := maps.Clone(features.Params)
+	r.m.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+		require.NotContains(t, params, "gpu-reserve-mib")
+		params["argv-only"] = "localized"
+		return Localized{Params: params}, nil
+	}
+	prepared, err := r.m.prepareLaunchFeatures(features, "generic", "", 8740)
+	require.NoError(t, err)
+	require.Equal(t, before, features.Params)
+	require.Equal(t, before, prepared.resolved.Parameters)
+	require.Equal(t, before, prepared.parameters.Params)
+	require.Equal(t, "9000", prepared.resolved.Parameters["gpu-reserve-mib"])
+	require.NotContains(t, prepared.launch.Args, "--gpu-reserve-mib")
+	require.Contains(t, prepared.launch.Args, "--argv-only")
+}
+
+func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
+	for _, override := range []string{"", "GPU-B"} {
+		t.Run(map[string]string{"": "inherited", "GPU-B": "override"}[override], func(t *testing.T) {
+			t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+			r := reservationRig(t, false)
+			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 24576}, {UUID: "GPU-B", TotalMiB: 32768, FreeMiB: 32768}}
+			if override == "GPU-B" {
+				devices[0].FreeMiB = 0
+			} else {
+				devices[1].FreeMiB = 0
+			}
+			r.m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+				return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}, {UUID: "GPU-B", TotalMemoryMiB: 32768}}
+			}
+			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return devices, nil }
+			req := EnsureRequest{Provider: "generic"}
+			expected, complement := "GPU-A", "15"
+			if override != "" {
+				req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": override}
+				expected, complement = override, "23"
+			}
+			reserved, err := r.m.ResolveLaunchParameters(t.Context(), req)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
+			require.Equal(t, expected, reserved.Environment["CUDA_VISIBLE_DEVICES"])
+			require.Equal(t, complement, reserved.Params["reserve-vram"])
+			_, err = r.m.admitMemory(t.Context(), "generic", reserved)
+			require.NoError(t, err)
+			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
+			require.Equal(t, complement, reserved.Params["reserve-vram"])
+			req.Provider, req.Model = "other", "llm"
+			fraction, err := r.m.ResolveLaunchParameters(t.Context(), req)
+			require.NoError(t, err)
+			_, err = r.m.admitMemory(t.Context(), "other", fraction)
+			require.NoError(t, err)
+		})
+	}
 }

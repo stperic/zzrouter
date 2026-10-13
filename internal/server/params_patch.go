@@ -116,7 +116,7 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 		if !isEnv && mergedSchema.Diagnostics != nil && mergedSchema.Diagnostics.Memory != nil {
 			budget := mergedSchema.Diagnostics.Memory
 			var value string
-			if budget.Kind == "fraction_total" && key == budget.Parameter && json.Unmarshal(raw, &value) == nil && value == "auto" {
+			if budget.Kind == schema.MemoryFractionTotal && key == budget.Parameter && json.Unmarshal(raw, &value) == nil && value == "auto" {
 				return nil
 			}
 		}

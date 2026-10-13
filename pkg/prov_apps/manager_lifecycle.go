@@ -424,7 +424,7 @@ func (m *ProviderAppManager) launchBudget(provider string) (*schema.MemoryBudget
 	if err != nil {
 		return nil, fmt.Errorf("memory budget declaration: %w", err)
 	}
-	if budget == nil || budget.Kind == "external" {
+	if budget == nil || budget.Kind == schema.MemoryExternal {
 		return nil, nil //nolint:nilnil // no budget is not an error
 	}
 	return budget, nil
@@ -453,17 +453,8 @@ func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, err
 	return nil, nil //nolint:nilnil // no blocker is not an error
 }
 
-// admitMemory checks a launch's GPU memory budget, evicting idle runs when
-// the node allows it, and returns the runs it evicted.
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) ([]instance.EvictedRun, error) {
-	budget, err := m.launchBudget(provider)
-	if err != nil || budget == nil {
-		return nil, err
-	}
-	if budget.Kind != "fraction_total" && budget.Kind != "reserve_mib" && !slices.ContainsFunc(m.memoryRuns(), func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
-		return nil, nil
-	}
-	env, err := process.ChildEnvironment(features.Environment)
+func visibleDeviceEnvironment(environment map[string]string) (map[string]string, error) {
+	env, err := process.ChildEnvironment(environment)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +464,23 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 		if key == "CUDA_VISIBLE_DEVICES" {
 			visible[key] = value
 		}
+	}
+	return visible, nil
+}
+
+// admitMemory checks a launch's GPU memory budget, evicting idle runs when
+// the node allows it, and returns the runs it evicted.
+func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) ([]instance.EvictedRun, error) {
+	budget, err := m.launchBudget(provider)
+	if err != nil || budget == nil {
+		return nil, err
+	}
+	if budget.Kind != schema.MemoryFractionTotal && budget.Kind != schema.MemoryReserveMiB && !slices.ContainsFunc(m.memoryRuns(), func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
+		return nil, nil
+	}
+	visible, err := visibleDeviceEnvironment(features.Environment)
+	if err != nil {
+		return nil, err
 	}
 	need := process.Need{}
 	if features.Params[budget.Parameter] == "auto" {
@@ -1151,7 +1159,7 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 //
 // Split out from EnsureRun so the parameters-to-argv contract can be
 // tested without starting a process.
-func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string, excluded ...string) (process.Launch, map[string]string, error) {
+func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
 	if _, err := config.ParseRunSettings(params, m.idleEvictionDefault); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
@@ -1166,7 +1174,7 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 		}
 		params, files = local.Params, local.Files
 	}
-	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params, excluded...)
+	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params)
 	if err != nil {
 		return process.Launch{}, nil, fmt.Errorf("failed to build command: %w", err)
 	}
@@ -1209,11 +1217,12 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, co
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	var excluded []string
-	if budget != nil && budget.Kind == "reserve_mib" {
-		excluded = append(excluded, budget.Parameter)
+	argvParams := params
+	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
+		argvParams = maps.Clone(params)
+		delete(argvParams, budget.Parameter)
 	}
-	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, params, excluded...)
+	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, argvParams)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
