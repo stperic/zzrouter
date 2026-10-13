@@ -5,9 +5,9 @@ parameters:
     min: 1
     description: GPU memory reserved for this run in MiB
   reserve-vram:
-    type: int
+    type: float
     min: 0
-    description: Allocator complement derived from device total and reservation in whole GiB
+    description: Exact allocator complement derived from device total and reservation in GiB
   listen:
     type: string
     description: ComfyUI bind address, use 127.0.0.1 for single-host access

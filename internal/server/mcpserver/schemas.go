@@ -5,6 +5,7 @@ import (
 	"reflect"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // objectSchema preserves validation while avoiding SDK boolean subschemas on the wire.
@@ -13,10 +14,11 @@ type objectSchema[T any] struct{}
 func (objectSchema[T]) MarshalJSON() ([]byte, error) {
 	// RawMessage is any JSON value, rather than its Go byte-slice representation.
 	schema, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
-		reflect.TypeFor[json.RawMessage](): {},
-		reflect.TypeFor[toolCallOutcome](): {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
-		reflect.TypeFor[probeKind]():       {Type: "string", Enum: []any{probeChat, probeTools, probeEmbed, probeVision}},
-		reflect.TypeFor[probeVerdict]():    {Type: "string", Enum: []any{probeVerified, probeNotSupported, probeInconclusive}},
+		reflect.TypeFor[json.RawMessage]():        {},
+		reflect.TypeFor[schema.ParameterValues](): {Type: "object", AdditionalProperties: &jsonschema.Schema{Types: []string{"string", "number", "boolean"}}},
+		reflect.TypeFor[toolCallOutcome]():        {Type: "string", Enum: []any{toolCallVerified, toolCallParserMissing, toolCallTruncated, toolCallInconclusive}},
+		reflect.TypeFor[probeKind]():              {Type: "string", Enum: []any{probeChat, probeTools, probeEmbed, probeVision}},
+		reflect.TypeFor[probeVerdict]():           {Type: "string", Enum: []any{probeVerified, probeNotSupported, probeInconclusive}},
 	}})
 	if err != nil {
 		return nil, err

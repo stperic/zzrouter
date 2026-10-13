@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 const (
@@ -91,22 +92,22 @@ type retryInput struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key, unique per operation: keys are remembered across sessions, so a new operation needs a key never used before. Reuse it only when retrying the same operation."`
 }
 type previewInput struct {
-	Model       string            `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
-	Provider    string            `json:"provider" jsonschema:"Enabled provider name to preview."`
-	Node        string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
-	Endpoint    string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters  map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
-	Environment map[string]string `json:"environment,omitempty" jsonschema:"Optional launch environment overrides."`
+	Model       string                 `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
+	Provider    string                 `json:"provider" jsonschema:"Enabled provider name to preview."`
+	Node        string                 `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
+	Endpoint    string                 `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
+	Parameters  schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
+	Environment map[string]string      `json:"environment,omitempty" jsonschema:"Optional launch environment overrides."`
 }
 type startInput struct {
 	retryInput
-	Model      string            `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
-	Provider   string            `json:"provider" jsonschema:"Enabled provider name to launch."`
-	Node       string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
-	Endpoint   string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters map[string]string `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
-	EnvVars    map[string]string `json:"env_vars,omitempty" jsonschema:"Optional launch environment overrides, replayed on restart."`
-	Runtime    string            `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
+	Model      string                 `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
+	Provider   string                 `json:"provider" jsonschema:"Enabled provider name to launch."`
+	Node       string                 `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
+	Endpoint   string                 `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
+	Parameters schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
+	EnvVars    map[string]string      `json:"env_vars,omitempty" jsonschema:"Optional launch environment overrides, replayed on restart."`
+	Runtime    string                 `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
 type restartInput struct {
 	runInput

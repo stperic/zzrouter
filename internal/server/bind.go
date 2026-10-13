@@ -35,6 +35,7 @@ import (
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -185,6 +186,7 @@ func writeBindError(c *gin.Context, err error) {
 	// JSON syntax, type, or unknown binding error — do not leak internal types.
 	var syntaxErr *json.SyntaxError
 	var unmarshalTypeErr *json.UnmarshalTypeError
+	var parameterValueErr *schema.ParameterValueError
 	switch name, isUnknownField := unknownFieldName(err); {
 	case isUnknownField:
 		// encoding/json reports this as an untyped error, so the prefix is
@@ -197,6 +199,8 @@ func writeBindError(c *gin.Context, err error) {
 	case errors.As(err, &unmarshalTypeErr):
 		BadRequest(c, fmt.Sprintf("invalid type for field %q: expected %s",
 			unmarshalTypeErr.Field, unmarshalTypeErr.Type.String()))
+	case errors.As(err, &parameterValueErr):
+		BadRequest(c, parameterValueErr.Error())
 	case errors.Is(err, io.EOF):
 		BadRequest(c, "request body is required")
 	default:

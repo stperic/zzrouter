@@ -42,6 +42,59 @@ func callAgentTool(t *testing.T, d dispatcher, name string, args map[string]any)
 	return response["result"].(map[string]any)
 }
 
+func TestRunToolsAcceptParameterScalars(t *testing.T) {
+	for _, tool := range []string{"zz_run_start", "zz_run_preview"} {
+		t.Run(tool, func(t *testing.T) {
+			calls := 0
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var body struct {
+					Parameters map[string]string `json:"parameters"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				require.Equal(t, map[string]string{"gpu-reserve-mib": "16384", "flag": "false", "decimal": "0.5", "exponent": "1000", "str": "auto"}, body.Parameters)
+				writeFixture(t, w, []byte(`{"data":{"id":"r","provider":"studio","full_command":"studio"}}`))
+			})
+			result := callAgentTool(t, d, tool, map[string]any{"provider": "studio", "parameters": json.RawMessage(`{"gpu-reserve-mib":16384,"flag":false,"decimal":0.5,"exponent":1e3,"str":"auto"}`)})
+			require.NotEqual(t, true, result["isError"], result)
+			require.Equal(t, 1, calls)
+			for _, invalid := range []string{"null", "{}", "[]"} {
+				result = callAgentTool(t, d, tool, map[string]any{"provider": "studio", "parameters": json.RawMessage(`{"bad":` + invalid + `}`)})
+				require.Equal(t, true, result["isError"], result)
+				require.Equal(t, 1, calls, "invalid input reached REST")
+			}
+		})
+	}
+}
+
+func TestAgentToolIntegerInputsKeepSDKSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{"decimal limit", "zz_nodes", map[string]any{"limit": json.RawMessage("2.0")}},
+		{"exponent limit", "zz_nodes", map[string]any{"limit": json.RawMessage("2e0")}},
+		{"decimal wait", "zz_job", map[string]any{"job_id": "j", "wait_seconds": json.RawMessage("0.0")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if tc.tool == "zz_nodes" {
+					require.Equal(t, "2", r.URL.Query().Get("limit"))
+					writeFixture(t, w, []byte(`{"data":[],"total":0}`))
+				} else {
+					writeFixture(t, w, []byte(`{"data":{"job_id":"j","phase":"completed","percent":100}}`))
+				}
+			})
+			result := callAgentTool(t, d, tc.tool, tc.args)
+			require.NotEqual(t, true, result["isError"], result)
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
 // Synthetic fixtures mirror controller DTOs, including unwrapped resolved/cancel replies.
 func TestAgentToolsRESTContracts(t *testing.T) {
 	for _, tc := range []struct{ name, method, path, args, query, body, response, want string }{
