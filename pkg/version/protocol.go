@@ -29,7 +29,7 @@ package version
 // Protocol 6 requires tier-resolved idle and memory eviction run settings.
 // Protocol 7 requires observable placement jobs and terminal transfer evidence.
 // Protocol 8 requires node-scoped runs, activity probes and memory commitments.
-// Protocol 9 requires provider data and model-store declarations.
+// Protocol 9 requires provider data/model stores and owned download targets.
 const (
 	ClusterProtocolVersion    = 9
 	MinClusterProtocolVersion = 9

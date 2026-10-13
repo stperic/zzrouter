@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	srv "github.com/stperic/zzrouter/internal/server"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +48,7 @@ func seedLiveDownload(t *testing.T, server *srv.Server, modelName string, downlo
 
 	// Use the same key shape the executor uses: host/registry/model.
 	key := "test-host/huggingface/" + modelName
-	gen := dt.StartDownload(key, modelName, nil)
+	gen := dt.StartDownload(key, modelName, nil, modelregistry.DownloadOptions{})
 	dt.UpdateDownloadFullGen(
 		key, gen,
 		string(constants.StatusDownloading),

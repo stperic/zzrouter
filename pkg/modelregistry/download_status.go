@@ -1,12 +1,19 @@
 package modelregistry
 
-import "time"
+import (
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+)
 
 // DownloadStatus tracks a single in-flight download. Emitted through
 // the download-tracker callback and surfaced to the TUI / public status
 // API. Source-agnostic — the HF and Ollama async-pull paths both feed
 // DownloadTracker entries of this shape.
 type DownloadStatus struct {
+	Target          metadata.DownloadTarget `json:"target,omitzero"`
+	SourceKey       string                  `json:"source_key,omitempty"`
+	onComplete      func() error
 	ModelName       string    `json:"model_name"`
 	RequestedFile   string    `json:"requested_file,omitempty"`   // Specific file/variant requested (e.g., Q4_K_M.gguf)
 	Status          string    `json:"status"`                     // Clean state: starting, downloading, completed, failed, cancelled

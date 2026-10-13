@@ -61,7 +61,7 @@ func TestRegistryStop_RefusesSubsequentDownloadHF(t *testing.T) {
 			case statusCh <- [2]string{s, currentFile}:
 			default:
 			}
-		})
+		}, r.CatalogDestination("irrelevant/model"))
 
 	select {
 	case got := <-statusCh:
@@ -114,7 +114,7 @@ func TestRegistryStop_RaceFreeUnderConcurrentSpawns(t *testing.T) {
 			defer wg.Done()
 			<-start
 			r.DownloadHuggingFaceModelAsync(context.Background(), metadata.DownloadRequest{Repo: "x/y"},
-				func(_, _ string, _, _ int, _ float64, _, _, _ int64) {})
+				func(_, _ string, _, _ int, _ float64, _, _, _ int64) {}, r.CatalogDestination("x/y"))
 		}()
 	}
 	close(start)

@@ -426,9 +426,6 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.GetAllModels)
 		s.model.Cache.SetAutoRoute(s.model.AutoRoute)
 
-		// Set callback to invalidate/refresh cache when downloads complete
-		s.model.Downloads.SetOnCompleteCallback(s.publishCatalog)
-
 		// Workers notify the coord that its per-endpoint snapshot is stale.
 		s.SetOnFinalizeCallback(func(_ string) {
 			if s.IsWorker() {

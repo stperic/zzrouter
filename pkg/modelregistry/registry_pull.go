@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -96,7 +98,7 @@ func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, s
 // the background. Cancelling ctx aborts it. Status updates go to
 // statusUpdater; currentFile carries req.Weights, the name the caller asked
 // for.
-func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64)) {
+func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64), destination huggingface.Destination) {
 	if !r.beginAsyncDownload() {
 		statusUpdater("failed", ErrRegistryStopped.Error(), 0, 0, 0, 0, 0, 0)
 		return
@@ -117,7 +119,7 @@ func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metada
 				speed = int64(float64(bytesDownloaded) / elapsed)
 			}
 			statusUpdater(status, req.Weights, 0, 1, progress, bytesDownloaded, totalBytes, speed)
-		})
+		}, destination)
 
 		if err != nil {
 			if ctx.Err() != nil {
@@ -129,9 +131,12 @@ func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metada
 			}
 			return
 		}
-		// Scan-cache invalidation is the consumer's job, driven by the
-		// completed status flowing through the server's DownloadTracker
-		// OnComplete -> cache.Invalidate path.
+		// The admitted owner publishes before its tracker accepts completion.
 		statusUpdater("completed", req.Weights, 1, 1, 100, 0, 0, 0)
 	}()
+}
+
+// CatalogDestination resolves a repository in this registry's bound model root.
+func (r *Registry) CatalogDestination(repo string) huggingface.Destination {
+	return huggingface.CatalogDestination(filepath.Join(r.modelsRoot, filepath.FromSlash(repo)))
 }

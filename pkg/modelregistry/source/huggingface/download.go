@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -20,6 +21,23 @@ import (
 // progressInterval throttles progress callbacks on fast links.
 const progressInterval = 100 * time.Millisecond
 
+// Destination owns local materialization paths; source selection stays here.
+type Destination interface {
+	Directory() string
+	Path(string) (string, error)
+}
+
+// CatalogDestination is the explicitly selected LLM repository directory.
+type CatalogDestination string
+
+// Directory is the repository's materialization and integrity root.
+func (d CatalogDestination) Directory() string { return string(d) }
+
+// Path preserves catalog filenames under the repository directory.
+func (d CatalogDestination) Path(name string) (string, error) {
+	return filepath.Join(string(d), filepath.FromSlash(name)), nil
+}
+
 // planned is one file a download fetches, and the feature it belongs to.
 type planned struct {
 	file    metadata.TreeFileEntry
@@ -32,27 +50,19 @@ type planned struct {
 // recorded in the integrity manifest with the feature it belongs to. A file
 // the manifest already holds at the listed size and hash is not fetched
 // again, and nothing already in the directory is removed.
-func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest, progress func(status string, done, total int64)) error {
-	var files []planned
-	if req.Files != nil {
-		for _, f := range req.Files {
-			if err := validateRepoFileName(f.Name); err != nil {
-				return err
-			}
-			files = append(files, planned{file: f.TreeFileEntry, feature: f.Feature})
-		}
-	} else {
-		listing, err := hfc.getRepoFiles(ctx, req.Repo)
-		if err != nil {
-			return fmt.Errorf("failed to get repo files: %w", err)
-		}
-		files, err = plan(listing, req)
-		if err != nil {
-			return err
-		}
+func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest, progress func(status string, done, total int64), destination Destination) error {
+	if err := req.ValidateTarget(); err != nil {
+		return err
 	}
-
-	dir := filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo))
+	providerStore := req.Target.EffectiveOwner() == metadata.OwnerProviderStore
+	if destination == nil {
+		return fmt.Errorf("download requires a resolved destination")
+	}
+	files, err := hfc.downloadFiles(ctx, req)
+	if err != nil {
+		return err
+	}
+	dir := destination.Directory()
 	release, err := integrity.AcquireMaterialization(ctx, dir)
 	if err != nil {
 		return err
@@ -63,7 +73,7 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		return err
 	}
 	var held []integrity.FileChecksum
-	if !req.Force {
+	if !req.Force && !providerStore {
 		files, held = missing(files, manifest, dir)
 	}
 	if len(held) > 0 {
@@ -86,8 +96,16 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	sourceURL := hfc.downloadBase + req.Repo
 	for _, f := range files {
 		report("downloading")
-		dest := filepath.Join(dir, filepath.FromSlash(f.file.Name))
-		sum, err := hfc.fetch(ctx, req.Repo, f.file, dest, func(n int64) {
+		dest, err := destination.Path(f.file.Name)
+		if err != nil {
+			return err
+		}
+		if providerStore {
+			if err := utils.RequireAbsent(dest); err != nil {
+				return err
+			}
+		}
+		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.file, dest, func(n int64) {
 			done += n
 			if now := utils.Now(); n < 0 || now.Sub(last) >= progressInterval {
 				last = now
@@ -101,8 +119,15 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		if err != nil {
 			return err
 		}
+		relative := filepath.FromSlash(f.file.Name)
+		if providerStore {
+			relative, err = filepath.Rel(dir, dest)
+			if err != nil {
+				return err
+			}
+		}
 		if err := integrity.RecordFiles(dir, req.Repo, sourceURL, integrity.FileChecksum{
-			RelativePath: filepath.FromSlash(f.file.Name), SHA256: sum,
+			RelativePath: relative, SHA256: sum,
 			Size: info.Size(), ModTime: info.ModTime(), Feature: f.feature,
 		}); err != nil {
 			return fmt.Errorf("record %s: %w", f.file.Name, err)
@@ -111,10 +136,47 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	return nil
 }
 
+func (hfc *Connector) downloadFiles(ctx context.Context, req metadata.DownloadRequest) ([]planned, error) {
+	var files []planned
+	if req.Files != nil {
+		for _, f := range req.Files {
+			if err := validateRepoFileName(f.Name); err != nil {
+				return nil, err
+			}
+			files = append(files, planned{file: f.TreeFileEntry, feature: f.Feature})
+		}
+	} else {
+		listing, err := hfc.getRepoFilesRevision(ctx, req.Repo, req.EffectiveRevision())
+		if err != nil {
+			return nil, fmt.Errorf("failed to get repo files: %w", err)
+		}
+		files, err = plan(listing, req)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if req.Target.EffectiveOwner() == metadata.OwnerProviderStore && (len(files) != 1 || files[0].file.Name != req.Weights || files[0].feature != "") {
+		return nil, fmt.Errorf("provider download requires exactly the requested source file")
+	}
+	return files, nil
+}
+
 // plan returns the files req names in a repository listing: the weights it
 // asks for (every shard of a split set) or the whole repository, and one
 // file for each wanted feature. A feature's files are never weights.
 func plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]planned, error) {
+	if req.Target.EffectiveOwner() == metadata.OwnerProviderStore {
+		for _, f := range listing {
+			if f.Name == req.Weights {
+				if err := validateRepoFileName(f.Name); err != nil {
+					return nil, err
+				}
+				return []planned{{file: f}}, nil
+			}
+		}
+		return nil, fmt.Errorf("no file %q in registry %q", req.Weights, req.Repo)
+	}
 	var featureGlobs []string
 	for _, globs := range req.Features {
 		featureGlobs = append(featureGlobs, globs...)
@@ -208,8 +270,8 @@ func missing(files []planned, manifest *integrity.ModelManifest, dir string) (fe
 	return fetch, held
 }
 
-func (hfc *Connector) fetch(ctx context.Context, repo string, file metadata.TreeFileEntry, dest string, progress func(int64)) (string, error) {
-	req, err := hfc.newGet(ctx, fmt.Sprintf("%s%s/resolve/main/%s", hfc.downloadBase, repo, encodeRepoFilePath(file.Name)))
+func (hfc *Connector) fetch(ctx context.Context, repo, revision string, file metadata.TreeFileEntry, dest string, progress func(int64)) (string, error) {
+	req, err := hfc.newGet(ctx, fmt.Sprintf("%s%s/resolve/%s/%s", hfc.downloadBase, repo, url.PathEscape(revision), encodeRepoFilePath(file.Name)))
 	if err != nil {
 		return "", err
 	}

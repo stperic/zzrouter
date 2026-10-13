@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"path/filepath"
@@ -19,6 +22,9 @@ import (
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
+	provapps "github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ============================================================================
@@ -141,9 +147,74 @@ type downloadAttempt struct {
 	cancel     context.CancelFunc
 }
 
+type downloadAdmission struct {
+	options              modelregistry.DownloadOptions
+	destination          huggingface.Destination
+	request              metadata.DownloadRequest
+	key, model, registry string
+	provider             string
+	features             []string
+	path                 string
+	catalogProvisioning  bool
+}
+
+// resolveDownloadAdmission selects owner policy once for a validated request.
+func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadRequest, model, registry string) (downloadAdmission, error) {
+	a := downloadAdmission{model: model, registry: constants.NormalizeRegistry(registry), provider: req.Provider, features: req.Features,
+		request: metadata.DownloadRequest{Repo: model, Weights: req.File, Force: req.Force}}
+	if req.Download != nil {
+		a.request = *req.Download
+	}
+	hf := a.registry == constants.RepoHuggingFace
+	if hf && (!strings.Contains(model, "/") || a.request.Repo != model || a.request.Force != req.Force) {
+		return a, invalidInputf("Hugging Face download plan must match the deployment and include the organization prefix")
+	}
+	if hf && e.registry == nil {
+		return a, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model registry not initialized")
+	}
+	a.options.Target = a.request.Target
+	switch a.request.Target.EffectiveOwner() {
+	case metadata.OwnerCatalog:
+		a.catalogProvisioning = true
+		a.options.OnComplete = e.publishCatalog
+		a.key = fmt.Sprintf("%s/%s/%s", e.getNodename(), registry, model)
+		if req.Download != nil || req.Provider != "" || len(req.Features) > 0 {
+			a.key += "/" + deployPlanKey(req.Provider, req.Features, req.Download)
+		}
+		if hf {
+			a.destination = e.registry.CatalogDestination(model)
+		}
+	case metadata.OwnerProviderStore:
+		if !hf || req.Force || req.Provider != "" || len(req.Features) > 0 {
+			return a, invalidInputf("provider downloads require Hugging Face without catalog provisioning options")
+		}
+		svc, ok := e.appsConfig().LookupApp(a.request.Target.Provider)
+		if !ok {
+			return a, newProblemError(http.StatusNotFound, "Not Found", "provider not found")
+		}
+		store, err := provapps.NewModelStoreDestination(svc, a.request.Target.Category, a.request.Target.Name)
+		if err == nil {
+			a.path, err = provapps.ModelStoreFilePath(store.Directory(), a.request.Target.Name, false)
+		}
+		if err != nil {
+			return a, invalidInputf("%s", err)
+		}
+		a.destination = store
+		a.key = fmt.Sprintf("%s/%s/%x", e.getNodename(), metadata.OwnerProviderStore, sha256.Sum256([]byte(a.path)))
+		source, _ := json.Marshal([]string{a.request.Repo, a.request.EffectiveRevision(), a.request.Weights})
+		a.options.SourceKey = string(source)
+		a.options.RequestedFile = a.request.Target.Name
+		a.model = ""
+	default:
+		return a, invalidInputf("invalid download owner")
+	}
+	return a, nil
+}
+
 // beginDownload atomically deduplicates, admits the observable job, and binds
 // cancellation before returning acceptance. Refusal starts no physical work.
-func (e *DeploymentsExecutor) beginDownload(c *gin.Context, key, model, repo string) *downloadAttempt {
+func (e *DeploymentsExecutor) beginDownload(c *gin.Context, admission downloadAdmission) *downloadAttempt {
+	key, model, repo := admission.key, admission.model, admission.registry
 	e.jobKeysMu.Lock()
 	defer e.jobKeysMu.Unlock()
 	if e.jobs == nil || e.downloads == nil {
@@ -151,6 +222,10 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, key, model, repo str
 		return nil
 	}
 	if existing := e.downloads.GetDownloadStatus(key); existing != nil && !modelregistry.IsTerminalStatus(existing.Status) {
+		if existing.SourceKey != admission.options.SourceKey {
+			Conflict(c, "another source is downloading to this destination")
+			return nil
+		}
 		id := e.jobKeys[key]
 		ev, err := e.jobs.Get(id)
 		if err != nil || ev.Phase.IsTerminal() {
@@ -159,16 +234,33 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, key, model, repo str
 		}
 		result := e.newDeploymentResult(key, model, repo, existing.Status, "Download already in progress")
 		result.JobID = id
+		result.Target = existing.Target
 		c.JSON(http.StatusOK, result)
 		return nil
 	}
-	h, err := e.jobs.StartDetached(jobs.KindDownload, PrincipalFromContext(c), jobs.Meta{"model": model, "registry": repo, "key": key})
+	meta := jobs.Meta{"model": model, "registry": repo, "key": key}
+	if admission.options.Target != (metadata.DownloadTarget{}) {
+		meta["target"] = admission.options.Target
+	}
+	if admission.path != "" {
+		if err := utils.RequireAbsent(admission.path); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				Conflict(c, "provider model file already exists")
+			} else {
+				BadRequest(c, err.Error())
+			}
+			return nil
+		}
+		delete(meta, "model")
+		meta["source_key"] = admission.options.SourceKey
+	}
+	h, err := e.jobs.StartDetached(jobs.KindDownload, PrincipalFromContext(c), meta)
 	if err != nil {
 		ServiceUnavailable(c, "start download job: "+err.Error())
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(h.Context(), 48*time.Hour)
-	gen := e.downloads.StartDownload(key, model, cancel)
+	gen := e.downloads.StartDownload(key, model, cancel, admission.options)
 	e.jobKeys[key] = h.ID()
 	return &downloadAttempt{job: h, generation: gen, ctx: ctx, cancel: cancel}
 }
@@ -255,18 +347,14 @@ func (e *DeploymentsExecutor) publishJobEvent(h jobs.Handle, downloadKey, status
 
 // HandleInternalDeploy handles POST /zzrouter/v1/internal/deployments.
 func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
-	var req struct {
-		Provider string                    `json:"provider,omitempty"`
-		Features []string                  `json:"features,omitempty"`
-		Download *metadata.DownloadRequest `json:"download"`
-		Model    string                    `json:"model" binding:"required"`
-		Node     string                    `json:"node,omitempty"`
-		Registry string                    `json:"registry,omitempty"`
-		File     string                    `json:"file,omitempty"`
-		Force    bool                      `json:"force,omitempty"`
-	}
+	var req internalDownloadRequest
 
 	if !BindJSON(c, &req) {
+		return
+	}
+	err := req.validateTarget()
+	if err != nil {
+		BadRequest(c, err.Error())
 		return
 	}
 
@@ -289,40 +377,19 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 		return
 	}
 
-	repoName := req.Registry
-	if repoName == "" && id.Repository != "" {
-		repoName = id.Repository
-	}
-	if repoName == "" {
-		// Auto-detect: HuggingFace models have slashes, Ollama doesn't
-		if strings.Contains(modelName, "/") {
-			repoName = constants.RepoHuggingFace
-		} else {
-			repoName = constants.RepoOllama
-		}
-	}
+	repoName := req.registryFor(id.Repository, modelName)
 
-	// Compatibility gate: reject downloads to nodes with no compatible provider.
-	// Skip check for: forced pulls, cloud variants, cloud providers.
-	skipCompatCheck := req.Force ||
-		isOllamaCloudVariant(modelName, req.File) ||
-		e.isCloudProvider(repoName) ||
-		e.hasProviderCredentials(repoName)
-
-	hostname := e.getNodename()
-
-	if !skipCompatCheck && !e.isLocalNodeCompatible(modelName, repoName, "") {
-		errMsg := e.buildIncompatibleError(hostname, modelName, repoName)
-		slog.Warn("[DeploymentsExecutor] Blocked deploy: no compatible provider on node",
-			"model", modelName, "registry", repoName, "node", hostname)
-		BadRequest(c, errMsg)
+	admission, err := e.resolveDownloadAdmission(req, modelName, repoName)
+	if err != nil {
+		RespondToError(c, err)
 		return
 	}
-
-	// Create download key for tracking
-	downloadKey := fmt.Sprintf("%s/%s/%s", hostname, repoName, modelName)
-	if req.Download != nil || req.Provider != "" || len(req.Features) > 0 {
-		downloadKey += "/" + deployPlanKey(req.Provider, req.Features, req.Download)
+	// Catalog compatibility retains its existing force/cloud exemptions.
+	skipCompatCheck := !admission.catalogProvisioning || req.Force ||
+		isOllamaCloudVariant(modelName, req.File) || e.isCloudProvider(repoName) || e.hasProviderCredentials(repoName)
+	if !skipCompatCheck && !e.isLocalNodeCompatible(modelName, repoName, "") {
+		BadRequest(c, e.buildIncompatibleError(e.getNodename(), modelName, repoName))
+		return
 	}
 
 	// Route to appropriate handler based on repository
@@ -334,25 +401,17 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 			if req.File != "" && !strings.Contains(modelName, ":") {
 				cloudModelName = modelName + ":" + req.File
 			}
-			cloudKey := fmt.Sprintf("%s/%s/%s", hostname, repoName, cloudModelName)
+			cloudKey := fmt.Sprintf("%s/%s/%s", e.getNodename(), repoName, cloudModelName)
 			e.registerCloudModel(c, repoName, cloudModelName, cloudKey)
 		} else {
-			e.downloadOllama(c, modelName, downloadKey)
+			e.downloadOllama(c, admission)
 		}
 	case constants.RepoHuggingFace, constants.RepoHFAlias:
-		d := metadata.DownloadRequest{Repo: modelName, Weights: req.File, Force: req.Force}
-		if req.Download != nil {
-			d = *req.Download
-			if d.Repo != modelName || d.Force != req.Force {
-				BadRequest(c, "download plan does not match deployment")
-				return
-			}
-		}
-		e.downloadHuggingFace(c, d, downloadKey, req.Provider, req.Features)
+		e.downloadHuggingFace(c, admission)
 	default:
 		// Cloud provider (openrouter, groq, etc.) → check credentials and register
 		if e.isCloudProvider(repoName) || e.hasProviderCredentials(repoName) {
-			e.registerCloudModel(c, repoName, modelName, downloadKey)
+			e.registerCloudModel(c, repoName, modelName, admission.key)
 		} else {
 			BadRequest(c, fmt.Sprintf("unsupported repository: %s (supported: ollama, huggingface, or cloud providers)", repoName))
 		}
@@ -360,7 +419,8 @@ func (e *DeploymentsExecutor) HandleInternalDeploy(c *gin.Context) {
 }
 
 // downloadOllama handles Ollama model downloads.
-func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, downloadKey string) {
+func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, admission downloadAdmission) {
+	modelName, downloadKey := admission.model, admission.key
 	_, err := e.ollamaDaemon()
 	if err != nil {
 		NotFound(c, "Ollama not configured")
@@ -368,7 +428,7 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 	}
 
 	// Deduplicate in-flight downloads against the tracker.
-	attempt := e.beginDownload(c, downloadKey, modelName, constants.RepoOllama)
+	attempt := e.beginDownload(c, admission)
 	if attempt == nil {
 		return
 	}
@@ -404,19 +464,9 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 }
 
 // downloadHuggingFace handles HuggingFace model downloads.
-func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metadata.DownloadRequest, downloadKey, provider string, features []string) {
-	modelName := request.Repo
-	if e.registry == nil {
-		ServiceUnavailable(c, "model registry not initialized")
-		return
-	}
-
-	if !strings.Contains(modelName, "/") {
-		BadRequest(c, fmt.Sprintf("HuggingFace model name must include the organization prefix (e.g., 'org/%s')", modelName))
-		return
-	}
-
-	attempt := e.beginDownload(c, downloadKey, modelName, constants.RepoHuggingFace)
+func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission downloadAdmission) {
+	request, downloadKey, modelName := admission.request, admission.key, admission.model
+	attempt := e.beginDownload(c, admission)
 	if attempt == nil {
 		return
 	}
@@ -431,10 +481,10 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 		}()
 
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
-			if status == string(constants.StatusCompleted) && provider != "" && e.ensureFeatures != nil {
+			if status == string(constants.StatusCompleted) && admission.catalogProvisioning && admission.provider != "" && e.ensureFeatures != nil {
 				root, err := modelregistry.GetModelsRootDir()
 				if err == nil {
-					err = e.ensureFeatures(ctx, provider, filepath.Join(root, request.Repo), features, request.Optional, func(message string) {
+					err = e.ensureFeatures(ctx, admission.provider, filepath.Join(root, request.Repo), admission.features, request.Optional, func(message string) {
 						job.Progress(99, message, jobs.Bytes{Done: downloaded, Total: totalSize})
 					})
 				}
@@ -445,15 +495,16 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
-		e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater)
+		e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater, admission.destination)
 	}()
 
 	result := e.newDeploymentResult(
 		downloadKey, modelName, constants.RepoHuggingFace,
 		string(constants.StatusDownloading),
-		fmt.Sprintf("Download initiated for huggingface/%s", modelName),
+		fmt.Sprintf("Download initiated for huggingface/%s", request.Repo),
 	)
 	result.JobID = job.ID()
+	result.Target = request.Target
 	c.JSON(http.StatusAccepted, result)
 }
 
@@ -471,6 +522,9 @@ func (e *DeploymentsExecutor) HandleInternalListDeployments(c *gin.Context) {
 
 	for _, entry := range downloadEntries {
 		s := entry.Status
+		if s.Target.EffectiveOwner() != metadata.OwnerCatalog {
+			continue
+		}
 		etaSeconds := 0
 		if remaining := time.Until(s.ETA); remaining > 0 {
 			etaSeconds = int(remaining.Seconds())

@@ -111,7 +111,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 				rec := httptest.NewRecorder()
 				c, _ := gin.CreateTestContext(rec)
 				c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/deployments", nil)
-				executor.downloadHuggingFace(c, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "catalog-download", provider, []string{})
+				executor.downloadHuggingFace(c, testHuggingFaceAdmission(t, executor, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "catalog-download", provider, []string{}))
 				require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 				var result internalDeploymentResult
 				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
@@ -136,12 +136,12 @@ func TestDeploymentCatalogPublicationFailureFailsJob(t *testing.T) {
 	modelregistry.SetModelsRootDirOverride(t.TempDir())
 	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
 	target := createTestNodeWithDefaults(t)
-	target.model.Downloads.SetOnCompleteCallback(func() error { return errors.New("catalog unavailable") })
 	executor := target.newDeploymentsExecutor()
+	executor.publishCatalog = func() error { return errors.New("catalog unavailable") }
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/deployments", nil)
-	executor.downloadHuggingFace(c, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "catalog-download", "", nil)
+	executor.downloadHuggingFace(c, testHuggingFaceAdmission(t, executor, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "catalog-download", "", nil))
 	var result internalDeploymentResult
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
 	event := waitJob(t, target.jobs, result.JobID)
