@@ -124,6 +124,10 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	if err != nil {
 		return nil, nil, err
 	}
+	_, daemon, ok := e.m.daemonOf(req.Provider)
+	if !ok || (len(observed) > 0 && !backend.SameEndpoint(daemon.Endpoint, observed[0])) {
+		return nil, nil, ErrProviderUnavailable
+	}
 	run, err := e.m.newRun(ctx, req, svc, 0)
 	if err != nil {
 		return nil, nil, err
@@ -139,10 +143,6 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 		run.KeepAlive = neverExpires
 	}
 	run.WireModel = load.launch.WireModel
-	_, daemon, ok := e.m.daemonOf(req.Provider)
-	if !ok || (len(observed) > 0 && !backend.SameEndpoint(daemon.Endpoint, observed[0])) {
-		return nil, nil, ErrProviderUnavailable
-	}
 	weights := e.m.reserveWeights(ctx, req, launchSelection{key: configKey, config: svc})
 	weights.Backend = daemon.Endpoint
 	weights.Model = run.WireModel
@@ -150,12 +150,7 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	run.SourceRepo = weights.Source
 	run.SetResolved(load.resolved)
 	run.Admit() // the daemon admits its own memory
-	logFile, logPath, err := e.m.runLogFile(run)
-	if err != nil {
-		return nil, nil, err
-	}
-	run.SetLogFilePath(logPath)
-	return run, daemonKeepAlive, logFile.Close()
+	return run, daemonKeepAlive, nil
 }
 
 func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {

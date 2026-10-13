@@ -30,6 +30,9 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
 
 ## Readiness publication
 
+The manager creates, stamps and closes each run's log before registry publication, including queued runs.
+Admission reopens the same append log; the published log path stays immutable.
+
 Instance.mu excludes end claims and failed/stopping transitions from a successful readiness commit.
 MarkRunning stamps first readiness and, for process/health readiness, activity; it commits lifecycle log/audit
 before setting Running and releasing LeftStarting waiters. The manager opens/rotates log files before that
