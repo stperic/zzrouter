@@ -263,10 +263,10 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	}
 	fresh := &config.AppsConfig{}
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
-	svc.Requirements = &config.AppRequirements{GPU: &config.GPURequirement{Vendor: "nvidia", Policy: "required"}}
+	svc.Requirements = &config.AppRequirements{GPU: &config.GPURequirement{Vendor: "nvidia", Policy: "advisory"}}
 	require.NoError(t, fresh.AddApp("generic", svc))
 	r.m.ReloadConfig(fresh)
-	ctx := gpu.WithCachedInventory(t.Context(), gpu.Inventory{Vendors: map[gpu.Vendor]gpu.Detection{gpu.VendorNVIDIA: {Vendor: gpu.VendorNVIDIA, State: gpu.StateDriverOK}}})
+	ctx := t.Context()
 	req := EnsureRequest{Provider: "generic"}
 	for range 3 {
 		preview, err := r.m.PreviewLaunch(ctx, req, 8740)

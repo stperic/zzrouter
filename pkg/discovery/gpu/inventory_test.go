@@ -241,7 +241,8 @@ func TestWithCachedInventory(t *testing.T) {
 			{Vendor: VendorNVIDIA, Name: "RTX 4090", CUDAVersion: "12.4"},
 		},
 	}
-	ctx := context.WithValue(context.Background(), inventoryCacheKey{}, pre)
+	ctx := WithInventory(context.Background(), *pre)
+	pre, _ = cachedInventory(ctx)
 
 	t.Run("InventoryContext returns cached inventory", func(t *testing.T) {
 		got := InventoryContext(ctx)
@@ -651,4 +652,26 @@ func TestInventoryContext(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestWithInventoryCarriesContextAndReplacesSnapshot(t *testing.T) {
+	type operationKey struct{}
+	parent, cancel := context.WithCancel(context.WithValue(t.Context(), operationKey{}, "operation"))
+	defer cancel()
+	ctx := WithInventory(parent, Inventory{Cards: []Card{{Name: "first"}}})
+	inv, ok := cachedInventory(ctx)
+	if !ok || len(inv.Cards) != 1 || inv.Cards[0].Name != "first" {
+		t.Fatal("explicit inventory was not attached")
+	}
+	ctx = WithInventory(ctx, Inventory{Cards: []Card{{Name: "replacement"}}})
+	if got := InventoryContext(ctx); len(got.Cards) != 1 || got.Cards[0].Name != "replacement" {
+		t.Fatal("explicit inventory did not replace the snapshot")
+	}
+	if ctx.Value(operationKey{}) != "operation" {
+		t.Fatal("caller context value was lost")
+	}
+	cancel()
+	if ctx.Err() != context.Canceled {
+		t.Fatal("caller cancellation was lost")
+	}
 }

@@ -220,7 +220,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		return LaunchParameters{}, fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
 	}
 	if svc.RunScope == config.RunScopeNode && svc.Requirements != nil {
-		if result, checked := preflight.GPU(gpu.WithCachedInventory(ctx, gpu.List(false)), svc.Requirements.GPU); checked && !result.Passed {
+		if result, checked := preflight.GPU(gpu.WithInventory(ctx, gpu.List(false)), svc.Requirements.GPU); checked && !result.Passed {
 			return LaunchParameters{}, fmt.Errorf("%w: provider %s: %s; %s", ErrUnsupportedPlatform, svc.Name, result.Message, result.Hint)
 		}
 	}

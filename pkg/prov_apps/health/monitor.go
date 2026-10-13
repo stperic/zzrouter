@@ -154,7 +154,18 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 				return
 			}
 
-			m.checkActivity(ctx, current, hcConfig, &activityFailures)
+			if hcConfig.ActivityProbe != nil {
+				busy, ok := m.checkActivity(ctx, current, hcConfig)
+				if ok {
+					activityFailures = 0
+					current.ObserveActivity(busy)
+				} else {
+					activityFailures++
+					if activityFailures >= maxFailures {
+						current.ObserveActivity(false)
+					}
+				}
+			}
 
 			// HTTP health check
 			healthy := m.checkHTTP(ctx, current, hcConfig)
@@ -302,55 +313,40 @@ func (m *Monitor) checkContext(ctx context.Context, cfg CheckConfig) (context.Co
 	return context.WithTimeout(ctx, timeout)
 }
 
-// activityProbeFailureLimit bounds stale busy evidence when the queue API stops answering.
-const activityProbeFailureLimit = 3
-
 func engineRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
 	return (&backend.Resolved{Endpoint: endpoint, Upstream: backend.Engine()}).NewRequest(ctx, method, "", body)
 }
 
-func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig, failures *int) {
-	if cfg.ActivityProbe == nil {
-		return
-	}
-	if *failures < activityProbeFailureLimit {
-		*failures++
-	}
-	defer func() {
-		if *failures >= activityProbeFailureLimit {
-			inst.ObserveActivity(false)
-		}
-	}()
+func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig) (bool, bool) {
 	ctx, cancel := m.checkContext(ctx, cfg)
 	defer cancel()
 	req, err := engineRequest(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, cfg.ActivityProbe.Path), nil)
 	if err != nil {
-		return
+		return false, false
 	}
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return
+		return false, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return
+		return false, false
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, activityProbeMaxBytes+1))
 	if err != nil || len(data) > activityProbeMaxBytes {
-		return
+		return false, false
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(data, &fields) != nil {
-		return
+		return false, false
 	}
 	busy := false
 	for _, field := range cfg.ActivityProbe.BusyWhenNonempty {
 		var queue []json.RawMessage
 		if json.Unmarshal(fields[field], &queue) != nil || queue == nil {
-			return
+			return false, false
 		}
 		busy = busy || len(queue) > 0
 	}
-	*failures = 0
-	inst.ObserveActivity(busy)
+	return busy, true
 }
