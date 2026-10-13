@@ -358,10 +358,7 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 		if inst.Model != "" && covered[coveredKey(inst.Model, inst.Node)] {
 			continue
 		}
-		name := utils.FormatModelName(inst.Model)
-		if name == "" {
-			name = inst.App
-		}
+		name := shared.FormatRunName(inst.Model, inst.App)
 		reg := registryByModel[inst.Model]
 		diskSize := int64(0)
 		if reg != nil {

@@ -122,7 +122,7 @@ type InstanceInfo struct {
 type EvictedRun struct {
 	Provider string `json:"provider,omitempty"`
 	RunID    string `json:"run_id"`
-	Model    string `json:"model"`
+	Model    string `json:"model,omitempty"`
 	// FreedMiB is the GPU memory the driver attributed to the run when it was stopped.
 	FreedMiB int64 `json:"freed_mib"`
 }

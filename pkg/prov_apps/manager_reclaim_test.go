@@ -94,7 +94,7 @@ func TestMemoryReclaimOldestMinimum(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	evicted, err := f.admit(t)
 	require.NoError(t, err)
-	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, FreedMiB: 4500}}, evicted)
+	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 	assert.False(t, f.mgr.instances.Has(f.older.ID))
@@ -202,7 +202,7 @@ func TestMemoryReclaimAggregatesHolders(t *testing.T) {
 		{Run: f.older.ID, Ownership: "zzrouter", MemoryProcess: gpu.MemoryProcess{MemoryMiB: new(int64(2000))}},
 		{Run: f.older.ID, Ownership: "zzrouter", MemoryProcess: gpu.MemoryProcess{MemoryMiB: new(int64(2500))}},
 	}}
-	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, FreedMiB: 4500}}, f.mgr.reclaimFor(t.Context(), fit))
+	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, f.mgr.reclaimFor(t.Context(), fit))
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -313,7 +313,7 @@ func TestMemoryReclaimSettingOverridesLegacyDefault(t *testing.T) {
 			evicted, err := f.admit(t)
 			if enabled {
 				require.NoError(t, err)
-				assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, FreedMiB: 4500}}, evicted)
+				assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted)
 				assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 			} else {
 				f.assertOriginalFit(t, err)

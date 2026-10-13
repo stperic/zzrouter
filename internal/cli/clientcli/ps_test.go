@@ -1,6 +1,8 @@
 package clientcli
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,33 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPsTableNamesProviderAndModelRuns(t *testing.T) {
+	instances := []pkgClient.Instance{
+		{ID: "comfy", Node: "worker", App: "comfyui", Status: "running"},
+		{ID: "other", Node: "worker", App: "comfyui-operator-provider-with-a-long-name", Status: "running"},
+		{ID: "model", Node: "worker", App: "vllm", Model: "Qwen/Qwen2.5-0.5B-Instruct", SourceRepo: "huggingface", Status: "running"},
+		{ID: "unknown", Node: "worker", Status: "running"},
+	}
+	output, err := os.CreateTemp(t.TempDir(), "ps")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = output.Close() })
+	stdout := os.Stdout
+	t.Cleanup(func() { os.Stdout = stdout })
+	os.Stdout = output
+	displayPsTable(instances)
+	os.Stdout = stdout
+	data, err := os.ReadFile(output.Name())
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, len(instances)+2)
+	for i, name := range []string{"comfyui", "comfyui-operator-provider-with-a-long-name", "huggingface:Qwen2.5-0.5B-Instruct", "(unknown)"} {
+		columns := strings.Fields(lines[i+2])
+		require.GreaterOrEqual(t, len(columns), 3)
+		require.Equal(t, name, columns[1])
+		require.Equal(t, instances[i].ID, columns[2])
+	}
+}
 
 func TestNewPsCmd(t *testing.T) {
 	cmd := NewPsCmd()

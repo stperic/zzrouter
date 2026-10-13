@@ -1278,7 +1278,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		r.daemon.set(func(d *fakeDaemon) { d.holdsOne = true })
 		first := r.running(t, served)
 		second := r.running(t, EnsureRequest{Provider: "ollama", Model: "b"})
-		assert.Equal(t, []instance.EvictedRun{{RunID: first.ID, Model: first.Model, FreedMiB: 512}}, second.EvictedRuns())
+		assert.Equal(t, []instance.EvictedRun{{RunID: first.ID, Model: first.Model, Provider: "ollama", FreedMiB: 512}}, second.EvictedRuns())
 		require.ErrorIs(t, first.FailureCause(), ErrModelDropped)
 		assert.Contains(t, runLog(t, first), "displaced by run "+second.ID)
 		assert.Equal(t, []*instance.Instance{second}, r.m.instances.List())
