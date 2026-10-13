@@ -27,7 +27,8 @@ func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	require.Equal(t, int64(15576), fit.FreeMiB)
 	require.Len(t, fit.Holders, 2)
 	require.Equal(t, int64(6952), fit.Holders[1].UnusedCommitmentMiB)
-	require.Contains(t, fit.Error(), "provider studio")
+	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (pid 7, 2048 MiB)")
+	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (6952 MiB unused commitment)")
 	var refused *MemoryFitError
 	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "fraction"}, Need{}, map[string]string{"fraction": "0.75"}, nil, []gpu.MemoryDevice{device}, owners, nil), &refused)
 	require.Equal(t, fit.FreeMiB, refused.FreeMiB)

@@ -120,7 +120,6 @@ runtime:
       - "${MODEL_PATH}"
       - "--port"
       - "${PORT}"
-    working_dir: ./models
     # mlx_lm has no --served-model-name: it loads whatever token the request
     # carries and echoes it back, mapping only the literal "default_model"
     # to --model. So it must be addressed by path on the wire; zzRouter

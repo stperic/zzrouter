@@ -129,7 +129,6 @@ runtime:
       - "${PORT}"
       - "--served-model-name"
       - "${MODEL}"
-    working_dir: ./models
     # --served-model-name makes vLLM answer to the client-facing name.
     wire_model: name
 

@@ -62,10 +62,11 @@ func (e *MemoryFitError) Error() string {
 			if h.Provider != "" {
 				identity = "provider " + h.Provider
 			}
+			detail := fmt.Sprintf("pid %d, %s", h.PID, size)
 			if h.UnusedCommitmentMiB > 0 {
-				size += " unused commitment"
+				detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
 			}
-			held = append(held, fmt.Sprintf("zzRouter run %s %s (pid %d, %s)", h.Run, identity, h.PID, size))
+			held = append(held, fmt.Sprintf("zzRouter run %s %s (%s)", h.Run, identity, detail))
 		} else {
 			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
 		}
