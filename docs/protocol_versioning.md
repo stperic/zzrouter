@@ -19,7 +19,15 @@ when old peers would reject, misread or mis-handle the new bytes. Optional field
 that old peers safely ignore may keep the previous minimum for one release.
 A bug fix without a wire change does not require a bump.
 
-Protocol 6 raises the minimum from 5 to 6. Every worker resolves reserved
+Protocol 7 raises the minimum from 6 to 7. Every asynchronous download or peer
+sync is admitted with an immutable observable job before physical work starts.
+Jobs retain transfer bytes through feature publication and terminal events, with
+fractional progress, speed and cancellation metadata applied before emission.
+Coordinators retain these outcomes independently of worker download cleanup and
+job expiry. Old workers can accept unobservable work, so all peers must upgrade
+together using the maintenance procedure below.
+
+Protocol 6 raised the minimum from 5 to 6. Every worker resolves reserved
 run parameters `keep-alive` and `evict-idle-on-memory-pressure` through the
 provider tier tree and keeps them out of engine argv. Older workers ignore
 tree idle settings or pass eviction flags to engines. Upgrade all peers

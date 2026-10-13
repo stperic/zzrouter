@@ -26,6 +26,17 @@
 
 ### Behaviour changes
 
+- Deployments retain worker-job progress and terminal outcomes before any client
+  read. Peer sync follows its own immutable job, and cancelling a deployment
+  cannot stop a newer download using the same key. Per-node cancellation reports
+  `cancelled`; tracking loss reports an unconfirmed worker outcome. Restart
+  chains use retained placement outcomes after worker-job expiry.
+- Cluster protocol and minimum advance from 6/6 to 7/7: asynchronous placement
+  requires an observable job before work starts, with transfer evidence retained
+  through terminal publication. Upgrade all peers together using the maintenance
+  procedure in [protocol versioning](docs/protocol_versioning.md). This source
+  change has no rolling compatibility window.
+
 - Queued runs have readable logs before admission. Their log paths are fixed
   before publication, so concurrent log reads cannot race the launch.
 - Launcher shutdown signals are captured before child creation. Signals and stdin

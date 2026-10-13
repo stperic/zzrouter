@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/jobs"
 )
 
 // JobEvent is the wire envelope decoded from each SSE data frame on
@@ -127,78 +127,27 @@ func (c *Client) SubscribeJob(ctx context.Context, jobID, node string, onEvent f
 		return nil, fmt.Errorf("SubscribeJob: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	var (
-		evName       string
-		dataBuf      strings.Builder
-		lastTerminal *JobEvent
-	)
-
-	dispatch := func() {
-		defer func() {
-			evName = ""
-			dataBuf.Reset()
-		}()
-		raw := dataBuf.String()
-		if raw == "" {
-			return
-		}
+	var terminal *JobEvent
+	err = jobs.ReadSSE(resp.Body, func(name string, raw []byte) (bool, error) {
 		var ev JobEvent
-		if err := json.Unmarshal([]byte(raw), &ev); err != nil {
-			return // skip malformed frames
-		}
-		if evName == "" {
-			evName = JobEventProgress
-		}
-		ev.Event = evName
-		if onEvent != nil {
-			onEvent(ev)
-		}
-		if evName == JobEventDone || ev.IsTerminal() {
-			t := ev
-			lastTerminal = &t
-		}
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			dispatch()
-			if lastTerminal != nil {
-				return lastTerminal, nil
+		if json.Unmarshal(raw, &ev) == nil {
+			ev.Event = name
+			if onEvent != nil {
+				onEvent(ev)
 			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue // keep-alive comment
-		}
-		if name, ok := strings.CutPrefix(line, "event:"); ok {
-			evName = strings.TrimSpace(name)
-			continue
-		}
-		if data, ok := strings.CutPrefix(line, "data:"); ok {
-			if dataBuf.Len() > 0 {
-				dataBuf.WriteByte('\n')
+			if ev.IsTerminal() && ev.Dropped == nil {
+				terminal = &ev
 			}
-			dataBuf.WriteString(strings.TrimPrefix(data, " "))
-			continue
 		}
-		// id:/retry:/unknown -> ignore
+		return terminal != nil, nil
+	})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
-	// Flush trailing event if the server closed without a terminator.
-	dispatch()
-	if lastTerminal != nil {
-		return lastTerminal, nil
-	}
-	if err := scanner.Err(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
+	if err != nil {
 		return nil, fmt.Errorf("SubscribeJob: read: %w", err)
 	}
-	return nil, nil
+	return terminal, nil
 }
 
 // CancelJob fires DELETE /zzrouter/v1/jobs/:id. Per server contract,

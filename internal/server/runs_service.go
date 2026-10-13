@@ -649,30 +649,8 @@ func (s *RunsService) waitDeployThenForward(runHandle jobs.Handle, deploymentID 
 	const chainTimeout = 60 * time.Minute
 	ctx, cancel := context.WithTimeout(runHandle.Context(), chainTimeout)
 	defer cancel()
-	dep := s.deployments.tracker.GetDeployment(deploymentID)
-	if dep == nil {
-		runHandle.Fail(fmt.Errorf("deployment %s not found", deploymentID))
-		return
-	}
-	found := false
-	for _, target := range dep.Nodes {
-		if target.Node != node && !(node == "" && len(dep.Nodes) == 1) {
-			continue
-		}
-		found = true
-		if target.JobID != "" {
-			if err := waitRoutedJob(ctx, s.router, target.JobID, target.Node); err != nil {
-				runHandle.Fail(err)
-				return
-			}
-		} else if target.Status != constants.StatusCompleted {
-			runHandle.Fail(fmt.Errorf("deployment on %s has no successful job", target.Node))
-			return
-		}
-		break
-	}
-	if !found {
-		runHandle.Fail(fmt.Errorf("deployment has no target %q", node))
+	if err := s.deployments.tracker.WaitNode(ctx, deploymentID, node); err != nil {
+		runHandle.Fail(err)
 		return
 	}
 	runHandle.Meta(jobs.Meta{"phase": "launching"})
@@ -683,7 +661,7 @@ func (s *RunsService) waitDeployThenForward(runHandle jobs.Handle, deploymentID 
 	}
 	resp, err := routeAndParse[LaunchRunResponse](ctx, s.router, "POST", "/zzrouter/v1/internal/runs", node, body)
 	if err == nil && resp.JobID != "" {
-		err = waitRoutedJob(ctx, s.router, resp.JobID, node)
+		err = s.deployments.jobs.Wait(ctx, resp.JobID, node)
 	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy on %s: %w", node, err))

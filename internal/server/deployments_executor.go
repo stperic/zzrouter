@@ -121,8 +121,8 @@ func NewDeploymentsExecutor(
 }
 
 // newDeploymentResult constructs the typed response the service layer
-// unmarshals from internal deploy calls. jobID is optional — empty
-// when the call is a dedupe early-return without a new producer.
+// unmarshals from internal deploy calls. Only synchronous terminal results
+// omit JobID; asynchronous dedupe returns the existing attempt.
 func (e *DeploymentsExecutor) newDeploymentResult(key, model, registry, status, message string) internalDeploymentResult {
 	return internalDeploymentResult{
 		Key:      key,
@@ -134,42 +134,78 @@ func (e *DeploymentsExecutor) newDeploymentResult(key, model, registry, status, 
 	}
 }
 
-// openDownloadJob opens a jobs.Handle tracking this download and
-// indexes it by downloadKey so a dedupe retry returns the same JobID.
-// Returns nil if the jobs registry is unavailable or Start fails.
-func (e *DeploymentsExecutor) openDownloadJob(c *gin.Context, downloadKey, modelName, repoName string) jobs.Handle {
-	if e.jobs == nil {
-		return nil
-	}
-	h, err := e.jobs.Start(context.Background(), jobs.KindDownload,
-		PrincipalFromContext(c),
-		jobs.Meta{"model": modelName, "registry": repoName, "key": downloadKey})
-	if err != nil {
-		slog.Warn("[DeploymentsExecutor] jobs.Start failed", "error", err, "model", modelName)
-		return nil
-	}
-	e.jobKeysMu.Lock()
-	e.jobKeys[downloadKey] = h.ID()
-	e.jobKeysMu.Unlock()
-	return h
+type downloadAttempt struct {
+	job        jobs.Handle
+	generation uint64
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
-// activeJobIDForKey returns the live jobs.Handle ID associated with a
-// downloadKey, or "" if none. Used by dedupe early-return paths so a
-// retry POST can hand the client a subscribe target.
-func (e *DeploymentsExecutor) activeJobIDForKey(downloadKey string) string {
+// beginDownload atomically deduplicates, admits the observable job, and binds
+// cancellation before returning acceptance. Refusal starts no physical work.
+func (e *DeploymentsExecutor) beginDownload(c *gin.Context, key, model, repo string) *downloadAttempt {
 	e.jobKeysMu.Lock()
 	defer e.jobKeysMu.Unlock()
-	return e.jobKeys[downloadKey]
+	if e.jobs == nil || e.downloads == nil {
+		ServiceUnavailable(c, "download job registry unavailable")
+		return nil
+	}
+	if existing := e.downloads.GetDownloadStatus(key); existing != nil && !modelregistry.IsTerminalStatus(existing.Status) {
+		id := e.jobKeys[key]
+		ev, err := e.jobs.Get(id)
+		if err != nil || ev.Phase.IsTerminal() {
+			ServiceUnavailable(c, "existing download has no observable live job; stop it before retrying")
+			return nil
+		}
+		result := e.newDeploymentResult(key, model, repo, existing.Status, "Download already in progress")
+		result.JobID = id
+		c.JSON(http.StatusOK, result)
+		return nil
+	}
+	h, err := e.jobs.StartDetached(jobs.KindDownload, PrincipalFromContext(c), jobs.Meta{"model": model, "registry": repo, "key": key})
+	if err != nil {
+		ServiceUnavailable(c, "start download job: "+err.Error())
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(h.Context(), 48*time.Hour)
+	gen := e.downloads.StartDownload(key, model, cancel)
+	e.jobKeys[key] = h.ID()
+	return &downloadAttempt{job: h, generation: gen, ctx: ctx, cancel: cancel}
 }
 
-// forgetJobKey releases the downloadKey → jobID association once the
-// producer has signalled terminal state. Called from publishJobEvent on
-// completed/failed/cancelled.
-func (e *DeploymentsExecutor) forgetJobKey(downloadKey string) {
+func (e *DeploymentsExecutor) forgetJobKey(key, jobID string) {
 	e.jobKeysMu.Lock()
-	delete(e.jobKeys, downloadKey)
+	if e.jobKeys[key] == jobID {
+		delete(e.jobKeys, key)
+	}
 	e.jobKeysMu.Unlock()
+}
+
+// updateDownloadJob commits catalog-aware tracker state before job emission.
+// Rejected generation/terminal writes cannot announce a physical success.
+func (e *DeploymentsExecutor) updateDownloadJob(a *downloadAttempt, key, status, file string, done, total int, progress float64, downloaded, size, speed int64) {
+	if a.ctx.Err() != nil {
+		status, speed = string(constants.StatusCancelled), 0
+	}
+	if modelregistry.IsTerminalStatus(status) {
+		defer a.cancel()
+	}
+	err := e.downloads.UpdateDownloadFullGen(key, a.generation, status, file, done, total, progress, downloaded, size, speed)
+	if err != nil && !errors.Is(err, modelregistry.ErrDownloadInactive) {
+		status, file = string(constants.StatusFailed), err.Error()
+		err = e.downloads.UpdateDownloadFullGen(key, a.generation, status, file, done, total, progress, downloaded, size, speed)
+	}
+	if err != nil {
+		if a.ctx.Err() != nil {
+			a.job.Meta(jobs.Meta{"transfer_status": string(constants.StatusCancelled), "transfer_speed": int64(0)})
+		}
+		a.cancel()
+		a.job.Fail(fmt.Errorf("download update rejected before publication: %w", err))
+		e.forgetJobKey(key, a.job.ID())
+		return
+	}
+	a.job.Meta(jobs.Meta{"transfer_status": status, "transfer_progress": progress, "transfer_speed": speed})
+	e.publishJobEvent(a.job, key, status, file, progress, downloaded, size)
 }
 
 // publishJobEvent translates a DownloadTracker status update into the
@@ -195,26 +231,25 @@ func (e *DeploymentsExecutor) publishJobEvent(h jobs.Handle, downloadKey, status
 		pct = 100
 	}
 	bytes := jobs.Bytes{Done: downloaded, Total: totalSize}
+	h.Progress(pct, currentFile, bytes)
 	switch status {
 	case string(constants.StatusCompleted):
 		h.Done()
-		e.forgetJobKey(downloadKey)
+		e.forgetJobKey(downloadKey, h.ID())
 	case string(constants.StatusFailed):
 		reason := "download failed"
 		if currentFile != "" {
 			reason = "download failed: " + currentFile
 		}
 		h.Fail(errors.New(reason))
-		e.forgetJobKey(downloadKey)
+		e.forgetJobKey(downloadKey, h.ID())
 	case string(constants.StatusCancelled):
 		reason := "download cancelled"
 		if currentFile != "" {
 			reason = "download cancelled: " + currentFile
 		}
 		h.Fail(errors.New(reason))
-		e.forgetJobKey(downloadKey)
-	default:
-		h.Progress(pct, currentFile, bytes)
+		e.forgetJobKey(downloadKey, h.ID())
 	}
 }
 
@@ -333,58 +368,25 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 	}
 
 	// Deduplicate in-flight downloads against the tracker.
-	if existing := e.downloads.GetDownloadStatus(downloadKey); existing != nil {
-		if !modelregistry.IsTerminalStatus(existing.Status) {
-			result := e.newDeploymentResult(
-				downloadKey, modelName, constants.RepoOllama,
-				existing.Status,
-				fmt.Sprintf("Download already in progress for ollama/%s", modelName),
-			)
-			result.JobID = e.activeJobIDForKey(downloadKey)
-			c.JSON(http.StatusOK, result)
-			return
-		}
+	attempt := e.beginDownload(c, downloadKey, modelName, constants.RepoOllama)
+	if attempt == nil {
+		return
 	}
-
-	// StartDownload cancels any previous download for the same key and returns
-	// a generation number passed to UpdateDownloadFullGen so that a stop+redeploy
-	// cycle silently rejects late writes from the old goroutine.
-	gen := e.downloads.StartDownload(downloadKey, modelName)
-	job := e.openDownloadJob(c, downloadKey, modelName, constants.RepoOllama)
+	job, ctx := attempt.job, attempt.ctx
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, string(constants.StatusFailed), "", 0, 0, 0, 0, 0, 0)
-				if job != nil {
-					job.Fail(fmt.Errorf("panic: %v", r))
-				}
+				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
 			}
 		}()
 
 		// 48-hour safety timeout prevents orphaned contexts if StopDownload is
 		// never called. Normal downloads complete much faster or are cancelled.
-		ctx, cancel := e.downloadContext(job, downloadKey)
 
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
-			if modelregistry.IsTerminalStatus(status) {
-				defer cancel()
-			}
-			select {
-			case <-ctx.Done():
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, string(constants.StatusCancelled), currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, 0)
-				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
-				return
-			default:
-				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
-					status, currentFile = string(constants.StatusFailed), err.Error()
-					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
-						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
-					}
-				}
-				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
+			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
 		if e.registry != nil {
@@ -397,9 +399,7 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, modelName, download
 		string(constants.StatusDownloading),
 		fmt.Sprintf("Download initiated for ollama/%s", modelName),
 	)
-	if job != nil {
-		result.JobID = job.ID()
-	}
+	result.JobID = job.ID()
 	c.JSON(http.StatusAccepted, result)
 }
 
@@ -416,66 +416,33 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 		return
 	}
 
-	if existing := e.downloads.GetDownloadStatus(downloadKey); existing != nil {
-		if !modelregistry.IsTerminalStatus(existing.Status) {
-			result := e.newDeploymentResult(
-				downloadKey, modelName, constants.RepoHuggingFace,
-				existing.Status,
-				fmt.Sprintf("Download already in progress for huggingface/%s", modelName),
-			)
-			result.JobID = e.activeJobIDForKey(downloadKey)
-			c.JSON(http.StatusOK, result)
-			return
-		}
+	attempt := e.beginDownload(c, downloadKey, modelName, constants.RepoHuggingFace)
+	if attempt == nil {
+		return
 	}
-
-	gen := e.downloads.StartDownload(downloadKey, modelName)
-	job := e.openDownloadJob(c, downloadKey, modelName, constants.RepoHuggingFace)
+	job, ctx := attempt.job, attempt.ctx
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, string(constants.StatusFailed), "", 0, 0, 0, 0, 0, 0)
-				if job != nil {
-					job.Fail(fmt.Errorf("panic: %v", r))
-				}
+				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
 			}
 		}()
 
-		ctx, cancel := e.downloadContext(job, downloadKey)
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
-			if modelregistry.IsTerminalStatus(status) {
-				defer cancel()
-			}
 			if status == string(constants.StatusCompleted) && provider != "" && e.ensureFeatures != nil {
 				root, err := modelregistry.GetModelsRootDir()
 				if err == nil {
 					err = e.ensureFeatures(ctx, provider, filepath.Join(root, request.Repo), features, request.Optional, func(message string) {
-						if job != nil {
-							job.Progress(99, message, jobs.Bytes{Done: downloaded, Total: totalSize})
-						}
+						job.Progress(99, message, jobs.Bytes{Done: downloaded, Total: totalSize})
 					})
 				}
 				if err != nil {
 					status, currentFile = string(constants.StatusFailed), err.Error()
 				}
 			}
-			select {
-			case <-ctx.Done():
-				e.downloads.UpdateDownloadFullGen(downloadKey, gen, string(constants.StatusCancelled), currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, 0)
-				e.publishJobEvent(job, downloadKey, string(constants.StatusCancelled), currentFile, progress, downloaded, totalSize)
-				return
-			default:
-				if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
-					status, currentFile = string(constants.StatusFailed), err.Error()
-					if err := e.downloads.UpdateDownloadFullGen(downloadKey, gen, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed); err != nil {
-						slog.Warn("Failed to record download failure", "download", downloadKey, "error", err)
-					}
-				}
-				e.publishJobEvent(job, downloadKey, status, currentFile, progress, downloaded, totalSize)
-			}
+			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
 		e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater)
@@ -486,9 +453,7 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, request metada
 		string(constants.StatusDownloading),
 		fmt.Sprintf("Download initiated for huggingface/%s", modelName),
 	)
-	if job != nil {
-		result.JobID = job.ID()
-	}
+	result.JobID = job.ID()
 	c.JSON(http.StatusAccepted, result)
 }
 
@@ -658,16 +623,4 @@ func (e *DeploymentsExecutor) HandleInternalStopAllDownloads(c *gin.Context) {
 		Stopped: len(cancelledKeys),
 		Message: fmt.Sprintf("Stopped %d download(s)", len(cancelledKeys)),
 	})
-}
-
-// downloadContext ties installer and transfer cancellation to the same job and
-// tracker. Without a jobs registry, the tracker still owns cancellation.
-func (e *DeploymentsExecutor) downloadContext(job jobs.Handle, key string) (context.Context, context.CancelFunc) {
-	parent := context.Background()
-	if job != nil {
-		parent = job.Context()
-	}
-	ctx, cancel := context.WithTimeout(parent, 48*time.Hour)
-	e.downloads.RegisterCancelFunc(key, cancel)
-	return ctx, cancel
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	modelsync "github.com/stperic/zzrouter/pkg/model/sync"
@@ -514,34 +515,29 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	// handle ID returned to the caller is the subscribable one — any
 	// upstream parent (req.JobID) is carried in Meta for tracing but
 	// isn't the live producer here.
-	var handle jobs.Handle
-	if e.jobs != nil {
-		meta := jobs.Meta{
-			"model":  req.Model,
-			"format": req.Format,
-			"source": req.SourceNode,
-		}
-		if req.JobID != "" {
-			meta["parent_job_id"] = req.JobID
-		}
-		// StartDetached so the job outlives the HTTP accept path; the
-		// background goroutine below runs on the server's shutdown ctx
-		// and the handle's lifetime matches.
-		h, err := e.jobs.StartDetached(jobs.KindSync, "", meta)
-		if err == nil {
-			handle = h
-		}
+	if e.jobs == nil {
+		ServiceUnavailable(c, "sync job registry unavailable")
+		return
 	}
-	localJobID := ""
-	if handle != nil {
-		localJobID = handle.ID()
+	meta := jobs.Meta{"model": req.Model, "format": req.Format, "source": req.SourceNode}
+	if req.JobID != "" {
+		meta["parent_job_id"] = req.JobID
 	}
+	handle, err := e.jobs.StartDetached(jobs.KindSync, "", meta)
+	if err != nil {
+		ServiceUnavailable(c, "start sync job: "+err.Error())
+		return
+	}
+	localJobID := handle.ID()
 	inflightKey := req.Model + "|" + req.Format + "|" + deployPlanKey(req.Provider, req.Features, req.Download)
 	if existing, claimed := e.claimInflightDeploy(inflightKey, localJobID); !claimed {
-		if handle != nil {
-			handle.Fail(fmt.Errorf("sync already in progress: %s", existing))
+		handle.Fail(fmt.Errorf("sync already in progress: %s", existing))
+		existingEvent, err := e.jobs.Get(existing)
+		if err != nil {
+			ServiceUnavailable(c, "existing sync outcome unavailable")
+			return
 		}
-		c.JSON(http.StatusConflict, gin.H{"status": "conflict", "model": req.Model, "format": req.Format, "existing_job_id": existing})
+		c.JSON(http.StatusConflict, gin.H{"source": existingEvent.Meta["source"], "status": "conflict", "model": req.Model, "format": req.Format, "existing_job_id": existing})
 		return
 	}
 
@@ -564,33 +560,30 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 
 func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, inflightKey string, syncClient *modelsync.Client, clusterSourceURL string) {
 	defer e.releaseInflightDeploy(inflightKey)
+	// The worker lifecycle and immutable job cancellation both own the transfer.
+	syncCtx, cancel := context.WithCancel(e.shutdownCtx())
+	stop := context.AfterFunc(handle.Context(), cancel)
+	defer stop()
+	defer cancel()
+	if handle.Context().Err() != nil {
+		cancel()
+	}
+
+	fail := func(err error) {
+		meta := jobs.Meta{"transfer_speed": int64(0)}
+		if syncCtx.Err() != nil || handle.Context().Err() != nil {
+			meta["transfer_status"] = string(constants.StatusCancelled)
+		}
+		handle.Meta(meta)
+		handle.Fail(err)
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("PANIC recovered in sync executor", "panic", r, "stack", string(debug.Stack()))
-			if handle != nil {
-				handle.Fail(fmt.Errorf("sync panic: %v", r))
-			}
+			fail(fmt.Errorf("sync panic: %v", r))
 		}
 	}()
-
-	// Use shutdown context so sync stops on server shutdown. When a
-	// jobs.Handle is present, its context carries the DELETE /jobs
-	// cancel signal — intersect with shutdown so either can tear
-	// down the sync cleanly.
-	syncCtx := e.shutdownCtx()
-	if handle != nil {
-		hctx := handle.Context()
-		merged, cancel := context.WithCancel(syncCtx)
-		go func() {
-			select {
-			case <-hctx.Done():
-				cancel()
-			case <-merged.Done():
-			}
-		}()
-		defer cancel()
-		syncCtx = merged
-	}
 
 	progressCallback := func(progress modelsync.Progress) {
 		slog.Info("[SyncExecutor] Progress",
@@ -598,24 +591,13 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 			"progress", progress.Progress,
 			"files_completed", progress.FilesCompleted,
 			"files_total", progress.FilesTotal)
-		if handle == nil {
-			return
-		}
-		pct := int(progress.Progress)
-		if pct < 0 {
-			pct = 0
-		}
-		if pct > 100 {
-			pct = 100
-		}
-		handle.Progress(pct, progress.File, jobs.Bytes{
-			Done:  progress.BytesDownloaded,
-			Total: progress.BytesTotal,
-		})
 		handle.Meta(jobs.Meta{
-			"files_completed": progress.FilesCompleted,
-			"files_total":     progress.FilesTotal,
+			"files_completed":   progress.FilesCompleted,
+			"files_total":       progress.FilesTotal,
+			"transfer_progress": progress.Progress,
+			"transfer_speed":    progress.Speed,
 		})
+		handle.Progress(int(progress.Progress), progress.File, jobs.Bytes{Done: progress.BytesDownloaded, Total: progress.BytesTotal})
 	}
 
 	request := metadata.DownloadRequest{Repo: req.Model}
@@ -625,24 +607,18 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 	result, err := syncClient.SyncModel(syncCtx, clusterSourceURL, request, req.Format, progressCallback)
 	if err != nil {
 		slog.Error("Sync failed", "model", req.Model, "job", req.JobID, "source", req.SourceNode, "error", err)
-		if handle != nil {
-			handle.Fail(err)
-		}
+		fail(err)
 		return
 	}
 	if result.Success && req.Provider != "" && e.ensureFeatures != nil {
 		root, ferr := modelregistry.GetModelsRootDir()
 		if ferr == nil {
 			ferr = e.ensureFeatures(syncCtx, req.Provider, filepath.Join(root, request.Repo), req.Features, request.Optional, func(message string) {
-				if handle != nil {
-					handle.Progress(99, message, jobs.Bytes{})
-				}
+				handle.Progress(99, message, jobs.Bytes{})
 			})
 		}
 		if ferr != nil {
-			if handle != nil {
-				handle.Fail(ferr)
-			}
+			fail(ferr)
 			return
 		}
 	}
@@ -655,24 +631,29 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 
 	if result.Success && e.refreshIndex != nil {
 		if err := e.refreshIndex(); err != nil {
-			if handle != nil {
-				handle.Fail(err)
-			}
+			fail(err)
 			return
 		}
 	}
 
-	if handle != nil {
-		handle.Meta(jobs.Meta{
-			"files_downloaded": result.FilesDownloaded,
-			"files_skipped":    result.FilesSkipped,
-			"files_failed":     result.FilesFailed,
-		})
-		if result.Success {
-			handle.Done()
-		} else {
-			handle.Fail(fmt.Errorf("sync incomplete: %d files failed", result.FilesFailed))
-		}
+	if err := handle.Context().Err(); err != nil {
+		fail(err)
+		return
+	}
+	if err := syncCtx.Err(); err != nil {
+		fail(err)
+		return
+	}
+	handle.Meta(jobs.Meta{
+		"transfer_speed":   int64(0),
+		"files_downloaded": result.FilesDownloaded,
+		"files_skipped":    result.FilesSkipped,
+		"files_failed":     result.FilesFailed,
+	})
+	if result.Success {
+		handle.Done()
+	} else {
+		fail(fmt.Errorf("sync incomplete: %d files failed", result.FilesFailed))
 	}
 }
 

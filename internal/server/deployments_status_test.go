@@ -7,8 +7,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/jobs"
 )
 
 // deployServiceWithResult builds a service whose internal deploy endpoint
@@ -22,11 +22,10 @@ func deployServiceWithResult(t *testing.T, body []byte) *DeploymentsService {
 	}{
 		"/zzrouter/v1/internal/deployments": {status: 200, body: body},
 	}}
-	return &DeploymentsService{
-		router:     r,
-		tracker:    NewDeploymentTracker(),
-		appsConfig: func() *pkgConfig.AppsConfig { return nil },
-	}
+	s := NewDeploymentsService(r, nil, nilAppsConfig)
+	s.jobs = &jobAccess{registry: newTestJobsRegistry(t)}
+	t.Cleanup(func() { s.Stop(context.Background()) })
+	return s
 }
 
 func TestDeploy_TerminalNodeResultCompletesDeployment(t *testing.T) {
@@ -76,12 +75,11 @@ func TestDeploy_FailedNodeResultCarriesMessage(t *testing.T) {
 }
 
 func TestDeploy_RunningDownloadStaysInFlight(t *testing.T) {
-	s := deployServiceWithResult(t, mustJSON(t, map[string]any{
-		"key":    "macbook-pro/huggingface/org/model",
-		"model":  "org/model",
-		"status": string(constants.StatusDownloading),
-		"job_id": "job-1",
-	}))
+	reg := newTestJobsRegistry(t)
+	h, err := reg.StartDetached(jobs.KindDownload, "", nil)
+	require.NoError(t, err)
+	s := deployServiceWithResult(t, mustJSON(t, internalDeploymentResult{Key: "macbook-pro/huggingface/org/model", Model: "org/model", Status: "downloading", JobID: h.ID()}))
+	s.jobs = &jobAccess{registry: reg}
 
 	d, err := s.Deploy(context.Background(), &DeployRequest{
 		Model:    "org/model",
@@ -94,7 +92,7 @@ func TestDeploy_RunningDownloadStaysInFlight(t *testing.T) {
 	assert.Equal(t, constants.StatusDownloading, d.Status,
 		"a live producer keeps the deployment in flight")
 	assert.Equal(t, constants.StatusDownloading, d.Nodes[0].Status)
-	assert.Equal(t, "job-1", d.Nodes[0].JobID)
+	assert.Equal(t, h.ID(), d.Nodes[0].JobID)
 }
 
 func TestAggregateStatus_NodeRollUp(t *testing.T) {
@@ -104,10 +102,11 @@ func TestAggregateStatus_NodeRollUp(t *testing.T) {
 	t.Run("a non-terminal node keeps the deployment in flight", func(t *testing.T) {
 		tracker := NewDeploymentTracker()
 		d := tracker.CreateDeployment("m", "gguf", "hf", "", []string{"a", "b"})
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "a", constants.StatusCompleted, ""))
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "b", constants.Status(syncStatusLabel), "syncing from a"))
+		require.NoError(t, tracker.UpdateNode(d.ID, "a", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusCompleted, "" }))
+		require.NoError(t, tracker.UpdateNode(d.ID, "b", "", func(n *DeploymentNode) { n.Status, n.Error = constants.Status(syncStatusLabel), "syncing from a" }))
 
-		status, message := aggregateStatus(tracker.GetDeployment(d.ID))
+		got := tracker.GetDeployment(d.ID)
+		status, message := got.Status, got.Message
 		assert.Equal(t, constants.StatusDownloading, status)
 		assert.Contains(t, message, "1/2")
 	})
@@ -115,10 +114,11 @@ func TestAggregateStatus_NodeRollUp(t *testing.T) {
 	t.Run("partial failure is a failure", func(t *testing.T) {
 		tracker := NewDeploymentTracker()
 		d := tracker.CreateDeployment("m", "gguf", "hf", "", []string{"a", "b"})
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "a", constants.StatusCompleted, ""))
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "b", constants.StatusFailed, "boom"))
+		require.NoError(t, tracker.UpdateNode(d.ID, "a", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusCompleted, "" }))
+		require.NoError(t, tracker.UpdateNode(d.ID, "b", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusFailed, "boom" }))
 
-		status, message := aggregateStatus(tracker.GetDeployment(d.ID))
+		got := tracker.GetDeployment(d.ID)
+		status, message := got.Status, got.Message
 		assert.Equal(t, constants.StatusFailed, status,
 			"POST and the next GET must not disagree on a partial failure")
 		assert.Contains(t, message, "1/2 nodes failed")
@@ -127,20 +127,20 @@ func TestAggregateStatus_NodeRollUp(t *testing.T) {
 	t.Run("all skipped says so rather than claiming a deployment", func(t *testing.T) {
 		tracker := NewDeploymentTracker()
 		d := tracker.CreateDeployment("m", "gguf", "hf", "", []string{"a", "b"})
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "a", constants.StatusSkipped, ""))
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "b", constants.StatusSkipped, ""))
+		require.NoError(t, tracker.UpdateNode(d.ID, "a", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusSkipped, "" }))
+		require.NoError(t, tracker.UpdateNode(d.ID, "b", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusSkipped, "" }))
 
-		_, message := aggregateStatus(tracker.GetDeployment(d.ID))
+		message := tracker.GetDeployment(d.ID).Message
 		assert.Contains(t, message, "skipped")
 	})
 
 	t.Run("a user cancel survives a late merge", func(t *testing.T) {
 		tracker := NewDeploymentTracker()
 		d := tracker.CreateDeployment("m", "gguf", "hf", "", []string{"a"})
-		require.NoError(t, tracker.UpdateDeploymentStatus(d.ID, constants.StatusCancelled, "cancelled by user"))
-		require.NoError(t, tracker.UpdateNodeStatus(d.ID, "a", constants.StatusCompleted, ""))
+		require.NoError(t, tracker.CancelDeployment(d.ID))
+		require.NoError(t, tracker.UpdateNode(d.ID, "a", "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusCompleted, "" }))
 
-		status, _ := aggregateStatus(tracker.GetDeployment(d.ID))
+		status := tracker.GetDeployment(d.ID).Status
 		assert.Equal(t, constants.StatusCancelled, status)
 	})
 }
@@ -161,5 +161,6 @@ func TestDeploy_NodeMayNotClaimCancelled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, d.Nodes, 1)
-	assert.Equal(t, constants.StatusDownloading, d.Nodes[0].Status)
+	assert.Equal(t, constants.StatusFailed, d.Nodes[0].Status)
+	assert.Contains(t, d.Nodes[0].Error, "acceptance invalid")
 }

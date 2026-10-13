@@ -173,3 +173,32 @@ func mustJSON(t *testing.T, v any) []byte {
 	require.NoError(t, err)
 	return b
 }
+
+func TestDispatchSyncDeployUncertainAcceptanceNeverStartsAnotherTransfer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		job    string
+	}{
+		{"missing accepted job", 202, `{"status":"accepted"}`, ""},
+		{"server failure", 500, `{}`, ""},
+		{"malformed conflict", 409, `{}`, ""},
+		{"existing immutable job", 409, `{"existing_job_id":"existing-job","source":"original-source"}`, "existing-job"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &fakeRouter{perPath: map[string]struct {
+				status int
+				body   []byte
+			}{"/zzrouter/v1/internal/sync/deploy": {tc.status, []byte(tc.body)}}}
+			s := NewDeploymentsService(r, nil, nilAppsConfig).WithNodeURLResolver(func(string) string { return "https://source:8080" })
+			d := s.tracker.CreateDeployment("m", "gguf", "hf", "", []string{"target"})
+			require.NoError(t, s.dispatchDeployTarget(t.Context(), d.ID, "target", "source", &DeployRequest{Model: "m"}, deployPlan{}, []string{"target"}))
+			require.Zero(t, r.RequestsToPath("/zzrouter/v1/internal/deployments"), "uncertain or deduped sync must not trigger a registry pull")
+			require.Equal(t, tc.job, s.tracker.GetDeployment(d.ID).Nodes[0].JobID)
+			if tc.job != "" {
+				require.Equal(t, "original-source", s.tracker.GetDeployment(d.ID).Nodes[0].Source)
+			}
+		})
+	}
+}

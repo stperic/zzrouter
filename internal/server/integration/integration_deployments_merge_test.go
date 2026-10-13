@@ -38,8 +38,7 @@ func createDeployment(t *testing.T, server *srv.Server, model string, nodes []st
 }
 
 // seedLiveDownload injects a known download entry into the node's
-// DownloadTracker so mergeProgress has something authoritative to merge back
-// into the tracker snapshot. Returns the download key used.
+// DownloadTracker for snapshot-isolation fixtures. Returns the download key used.
 func seedLiveDownload(t *testing.T, server *srv.Server, modelName string, downloaded, total int64) string {
 	t.Helper()
 
@@ -48,7 +47,7 @@ func seedLiveDownload(t *testing.T, server *srv.Server, modelName string, downlo
 
 	// Use the same key shape the executor uses: host/registry/model.
 	key := "test-host/huggingface/" + modelName
-	gen := dt.StartDownload(key, modelName)
+	gen := dt.StartDownload(key, modelName, nil)
 	dt.UpdateDownloadFullGen(
 		key, gen,
 		string(constants.StatusDownloading),
@@ -61,15 +60,17 @@ func seedLiveDownload(t *testing.T, server *srv.Server, modelName string, downlo
 	return key
 }
 
-// setNodeDownloadID rewrites the tracker's DeploymentNode.DownloadID so
-// mergeProgress can find the live entry. Deployments are created with the
-// model name at the end of the key, but the test server's deploy path runs
-// through its compatibility gate which rejects most models — instead of
-// fighting that, we seed the tracker state directly.
+// setNodeDownloadID seeds canonical progress for HTTP snapshot assertions.
+// Actual worker-event capture and unread cleanup are covered by the server
+// lifecycle regressions. These retain the public bytes/speed/filter outcomes.
 func setNodeDownloadID(t *testing.T, server *srv.Server, id, node, downloadID string) {
 	t.Helper()
-	require.NoError(t, srv.TestDeploymentsService(server).GetTracker().UpdateNodeDownloadID(id, node, downloadID))
-	require.NoError(t, srv.TestDeploymentsService(server).GetTracker().UpdateNodeStatus(id, node, constants.StatusDownloading, ""))
+	live := srv.TestDownloadTracker(server).GetDownloadStatus(downloadID)
+	require.NotNil(t, live)
+	require.NoError(t, srv.TestDeploymentsService(server).GetTracker().UpdateNode(id, node, "", func(n *srv.DeploymentNode) {
+		n.DownloadID, n.Status = downloadID, constants.StatusDownloading
+		n.BytesDownloaded, n.BytesTotal, n.Speed, n.Progress = live.Downloaded, live.TotalSize, live.Speed, live.Progress
+	}))
 }
 
 // TestDeployments_ModelSuffixExtraction verifies that a POST body with the
@@ -120,13 +121,13 @@ func TestDeployments_ModelSuffixExtraction(t *testing.T) {
 	assert.Equal(t, "Q4_K_M", tracked.File)
 }
 
-// TestDeployments_MergeProgress_Get verifies GET /:id overlays live bytes/
-// progress/speed from the node's DownloadTracker onto the tracker snapshot.
+// TestDeployments_MergeProgress_Get verifies GET /:id returns canonical bytes/
+// progress/speed without reading the reusable worker key.
 func TestDeployments_MergeProgress_Get(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	server := srv.NewTestNode(t, srv.TestNodeConfig{AdminKey: srv.TestAdminKey})
 
-	id := createDeployment(t, server, "merge-test", []string{"test-host"})
+	id := srv.TestDeploymentsService(server).GetTracker().CreateDeployment("merge-test", "", "hf", "", []string{"test-host"}).ID
 
 	// Seed a live download entry and wire it to the tracker's node slice.
 	key := seedLiveDownload(t, server, "merge-test", 512, 1024)
@@ -159,7 +160,7 @@ func TestDeployments_MergeProgress_Get(t *testing.T) {
 	require.Len(t, resp.Data.Nodes, 1)
 	n := resp.Data.Nodes[0]
 	assert.Equal(t, "test-host", n.Node)
-	assert.Equal(t, int64(512), n.BytesDownloaded, "bytes_downloaded should be merged from live tracker")
+	assert.Equal(t, int64(512), n.BytesDownloaded, "bytes_downloaded must survive in the canonical snapshot")
 	assert.Equal(t, int64(1024), n.BytesTotal)
 	assert.InDelta(t, 50.0, n.Progress, 0.01)
 	assert.Greater(t, n.Speed, int64(0))
@@ -167,12 +168,12 @@ func TestDeployments_MergeProgress_Get(t *testing.T) {
 	assert.Equal(t, "downloading", resp.Data.Status)
 }
 
-// TestDeployments_MergeProgress_List verifies the list endpoint also merges.
+// TestDeployments_MergeProgress_List verifies the list endpoint preserves progress.
 func TestDeployments_MergeProgress_List(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	server := srv.NewTestNode(t, srv.TestNodeConfig{AdminKey: srv.TestAdminKey})
 
-	id := createDeployment(t, server, "list-merge", []string{"test-host"})
+	id := srv.TestDeploymentsService(server).GetTracker().CreateDeployment("list-merge", "", "hf", "", []string{"test-host"}).ID
 	key := seedLiveDownload(t, server, "list-merge", 750, 1000)
 	setNodeDownloadID(t, server, id, "test-host", key)
 
@@ -253,9 +254,8 @@ func TestDeployments_CancelPerNode(t *testing.T) {
 	// gating on cluster-member nodes from the public deploy path.
 	d := svc.GetTracker().CreateDeployment("cancel-node-test", "gguf", "huggingface", "",
 		[]string{"test-host", "worker-1"})
-	require.NoError(t, svc.GetTracker().UpdateNodeStatus(d.ID, "test-host", constants.StatusDownloading, ""))
-	require.NoError(t, svc.GetTracker().UpdateNodeStatus(d.ID, "worker-1", constants.StatusDownloading, ""))
-	require.NoError(t, svc.GetTracker().UpdateDeploymentStatus(d.ID, constants.StatusDownloading, "downloading"))
+	require.NoError(t, svc.GetTracker().UpdateNode(d.ID, "test-host", "", func(n *srv.DeploymentNode) { n.Status, n.Error = constants.StatusDownloading, "" }))
+	require.NoError(t, svc.GetTracker().UpdateNode(d.ID, "worker-1", "", func(n *srv.DeploymentNode) { n.Status, n.Error = constants.StatusDownloading, "" }))
 
 	req := httptest.NewRequest("DELETE", "/zzrouter/v1/deployments/"+d.ID+"/nodes/test-host", nil)
 	req.Header.Set("X-API-Key", srv.TestAdminKey)
@@ -276,7 +276,7 @@ func TestDeployments_CancelPerNode(t *testing.T) {
 			worker = n
 		}
 	}
-	assert.Equal(t, constants.StatusFailed, testHost.Status)
+	assert.Equal(t, constants.StatusCancelled, testHost.Status)
 	assert.Equal(t, "cancelled by user", testHost.Error)
 	assert.Equal(t, constants.StatusDownloading, worker.Status,
 		"other node must not be affected by per-node cancel")
@@ -318,10 +318,8 @@ func TestDeployments_StopAll_HostScoped(t *testing.T) {
 	for _, pair := range []struct{ id, node string }{
 		{dA.ID, "test-host"}, {dA.ID, "worker-1"}, {dB.ID, "worker-1"},
 	} {
-		require.NoError(t, svc.GetTracker().UpdateNodeStatus(pair.id, pair.node, constants.StatusDownloading, ""))
+		require.NoError(t, svc.GetTracker().UpdateNode(pair.id, pair.node, "", func(n *srv.DeploymentNode) { n.Status, n.Error = constants.StatusDownloading, "" }))
 	}
-	require.NoError(t, svc.GetTracker().UpdateDeploymentStatus(dA.ID, constants.StatusDownloading, ""))
-	require.NoError(t, svc.GetTracker().UpdateDeploymentStatus(dB.ID, constants.StatusDownloading, ""))
 
 	req := httptest.NewRequest("DELETE", "/zzrouter/v1/deployments?node=worker-1", nil)
 	req.Header.Set("X-API-Key", srv.TestAdminKey)
@@ -348,7 +346,7 @@ func TestDeployments_StopAll_HostScoped(t *testing.T) {
 				"test-host slice must not be touched by host-scoped cancel of worker-1")
 		}
 		if n.Node == "worker-1" {
-			assert.Equal(t, constants.StatusFailed, n.Status)
+			assert.Equal(t, constants.StatusCancelled, n.Status)
 		}
 	}
 }

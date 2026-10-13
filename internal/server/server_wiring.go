@@ -61,7 +61,7 @@ func (s *Server) catalogWeights(ctx context.Context, name string) (string, bool,
 func (s *Server) runsRefresher() *runsRefresher {
 	return &runsRefresher{runs: s.services.Runs, jobs: s.jobs, local: s.node.Nodename,
 		waitJob: func(ctx context.Context, id, node string) error {
-			return waitRoutedJob(ctx, s.cluster.router, id, node)
+			return s.jobAccess().Wait(ctx, id, node)
 		},
 	}
 }

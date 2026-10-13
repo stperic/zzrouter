@@ -27,9 +27,10 @@ package version
 // Protocol 4 preserves selected provider/source identity and compact metadata on internal model show.
 // Protocol 5 requires guarded exact model deletion and physical run reservations.
 // Protocol 6 requires tier-resolved idle and memory eviction run settings.
+// Protocol 7 requires observable placement jobs and terminal transfer evidence.
 const (
-	ClusterProtocolVersion    = 6
-	MinClusterProtocolVersion = 6
+	ClusterProtocolVersion    = 7
+	MinClusterProtocolVersion = 7
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.
