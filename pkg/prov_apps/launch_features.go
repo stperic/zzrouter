@@ -188,7 +188,8 @@ func executionDigest(svc config.ServiceConfig, runtimeKey, command string) strin
 		Command       string
 		Execution     config.ExecutionConfig
 		WireEndpoints []string
-	}{runtimeKey, command, svc.Runtime.Execution, wireEndpoints(svc)})
+		DataDir       string `json:",omitempty"`
+	}{runtimeKey, command, svc.Runtime.Execution, wireEndpoints(svc), svc.Runtime.DataDir})
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
 }

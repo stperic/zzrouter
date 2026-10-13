@@ -14,7 +14,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
-	"github.com/stperic/zzrouter/pkg/security"
 )
 
 // ErrModelNotLocal is returned when a provider must be pointed at local
@@ -129,13 +128,19 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 		modelPath = model.Path
 	}
 
+	values := map[string]string{
+		config.PlaceholderPort: strconv.Itoa(port), config.PlaceholderModelPath: modelPath, config.PlaceholderModel: modelClean,
+	}
+	if cb.serviceConfig.Runtime.DataDir != "" {
+		dataDir, err := cb.serviceConfig.Runtime.DataPath(fsroot.ProviderDir(cb.serviceConfig.Name))
+		if err != nil {
+			return Launch{}, err
+		}
+		values[config.PlaceholderDataDir] = dataDir
+	}
 	args := make([]string, 0, len(exec.Args))
 	for _, arg := range exec.Args {
-		arg = strings.ReplaceAll(arg, config.PlaceholderPort, strconv.Itoa(port))
-		arg = strings.ReplaceAll(arg, config.PlaceholderModelPath, modelPath)
-		arg = strings.ReplaceAll(arg, config.PlaceholderModel, modelClean)
-		arg = security.ExpandEnvWhitelisted(arg)
-		args = append(args, arg)
+		args = append(args, config.ExpandExecutionArg(arg, values))
 	}
 
 	if len(params) > 0 {

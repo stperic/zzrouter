@@ -79,6 +79,9 @@ const (
 	// pkg/update, which imports it. See pkg/update/layout.go.
 	SubdirVersions = "versions"
 	SubdirBin      = "bin"
+
+	// SubdirVenv names the Python environment inside a provider install.
+	SubdirVenv = "venv"
 )
 
 // Linux FHS-compliant paths (used by service and root modes)

@@ -22,6 +22,9 @@ const (
 	// PlaceholderModel expands to the canonical model name. Naming only
 	// (--served-model-name, --alias); never weights.
 	PlaceholderModel = "${MODEL}"
+
+	// PlaceholderDataDir expands to the provider's declared data directory.
+	PlaceholderDataDir = "${DATA_DIR}"
 )
 
 // launchPlaceholders is the closed vocabulary CommandBuilder expands.
@@ -29,6 +32,17 @@ var launchPlaceholders = map[string]bool{
 	PlaceholderPort:      true,
 	PlaceholderModelPath: true,
 	PlaceholderModel:     true,
+	PlaceholderDataDir:   true,
+}
+
+// ExpandExecutionArg substitutes original tokens once, keeping resolved values literal.
+func ExpandExecutionArg(arg string, values map[string]string) string {
+	return execArgTemplateRegex.ReplaceAllStringFunc(arg, func(token string) string {
+		if value, ok := values[token]; ok {
+			return value
+		}
+		return security.ExpandEnvWhitelisted(token)
+	})
 }
 
 // WireModel names what an inference engine keys on — and echoes back — in

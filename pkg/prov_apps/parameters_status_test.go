@@ -51,6 +51,39 @@ func TestParametersStatus_ConfigChangeIsStale(t *testing.T) {
 	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.added", "parameters.ctx-size"}, got.Changed)
 }
 
+func TestParametersStatusDataDirChangeAndRestartPreparation(t *testing.T) {
+	r := newContractRig(t, false)
+	svc, ok := r.m.AppsConfig().LookupApp("generic")
+	require.True(t, ok)
+	svc.RunScope, svc.Protocol, svc.Capabilities = config.RunScopeNode, "", nil
+	svc.Runtime.DataDir = "data"
+	svc.Runtime.Execution.Args = []string{config.PlaceholderDataDir}
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("generic", svc))
+	r.m.ReloadConfig(cfg)
+	req := EnsureRequest{Provider: "generic"}
+	prepared, err := processEngine{r.m}.prepare(t.Context(), svc, "generic", req, 8740)
+	require.NoError(t, err)
+	run, err := r.m.newRun(t.Context(), req, svc, 8740)
+	require.NoError(t, err)
+	defer run.Cancel()
+	run.SetResolved(prepared.resolved)
+	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), run).State)
+
+	next := &config.AppsConfig{}
+	svc.Runtime.DataDir = "storage"
+	require.NoError(t, next.AddApp("generic", svc))
+	r.m.ReloadConfig(next)
+	status := r.m.ParametersStatus(t.Context(), run)
+	require.Equal(t, instance.ParametersStale, status.State)
+	require.Contains(t, status.Changed, "runtime.execution")
+	restarted, err := processEngine{r.m}.prepare(t.Context(), svc, "generic", restartRequest(run), 8740)
+	require.NoError(t, err)
+	require.NotEqual(t, prepared.resolved.Execution, restarted.resolved.Execution)
+	run.SetResolved(restarted.resolved)
+	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), run).State)
+}
+
 // A key the run was launched with explicitly is replayed by a restart, so
 // changing it in config does not make the run stale; it is reported as
 // overridden instead, which is why the change does not reach the run.

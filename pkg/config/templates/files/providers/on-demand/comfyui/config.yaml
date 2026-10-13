@@ -12,12 +12,16 @@ defaults:
     listen: "0.0.0.0"
     keep-alive: "5m"
 runtime:
+  data_dir: data
+  model_store:
+    directory: models
+    categories: [diffusion_models, text_encoders, vae, loras, checkpoints, controlnet, clip_vision, upscale_models, embeddings, audio_encoders, model_patches, latent_upscale_models]
   base_port: 8188
   port_range: [8188, 8188]
   execution:
     type: python
     command: python
-    args: ["main.py", "--port", "${PORT}", "--base-directory", "../data"]
+    args: ["main.py", "--port", "${PORT}", "--base-directory", "${DATA_DIR}"]
     working_dir: source
   health_check:
     path: /system_stats

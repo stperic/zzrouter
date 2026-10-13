@@ -229,3 +229,15 @@ func TestNodeScopedRunsProtocolCutoverContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProviderModelStoreProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 9 || MinClusterProtocolVersion < 9 {
+		t.Fatalf("provider model stores require protocol 9/9, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(8); err == nil {
+		t.Fatal("old worker admitted despite rejecting provider data and model-store declarations")
+	}
+	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}

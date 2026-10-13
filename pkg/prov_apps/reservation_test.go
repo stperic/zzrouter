@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/port"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -390,7 +391,9 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	preview, err := manager.PreviewLaunch(t.Context(), EnsureRequest{Provider: "comfyui"}, 8188)
 	require.NoError(t, err)
 	require.Len(t, preview.Args, 9)
-	require.Equal(t, []string{"main.py", "--port", "8188", "--base-directory", "../data"}, preview.Args[:5])
+	dataDir, err := svc.Runtime.DataPath(fsroot.ProviderDir("comfyui"))
+	require.NoError(t, err)
+	require.Equal(t, []string{"main.py", "--port", "8188", "--base-directory", dataDir}, preview.Args[:5])
 	require.ElementsMatch(t, [][]string{{"--listen", "0.0.0.0"}, {"--reserve-vram", "16"}}, [][]string{preview.Args[5:7], preview.Args[7:9]})
 	require.NotContains(t, preview.Args, "--gpu-reserve-mib")
 	require.NotContains(t, preview.Args, "--keep-alive")
