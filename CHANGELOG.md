@@ -40,8 +40,9 @@
   handoff. Completed runs keep their actual outcome after the startup deadline.
 - Warm local runs retain their provider and launched wire endpoints after catalog
   invalidation, so translated Messages and Responses stay on the correct API.
-- MCP startup guidance names job collections and capability probes, and source
-  metadata fields are distinguished from serving details. Vision probes allow
+- MCP startup guidance names job collections and capability probes, limits
+  idempotency keys to declared tool inputs, and distinguishes source metadata
+  from serving details. Vision probes allow
   up to 256 tokens per image so reasoning models can reach a visible answer.
 - Run and provider refusals use one wire table for status, retry delay and
   diagnostics. Cold-load responses retain memory-budget details and explicit

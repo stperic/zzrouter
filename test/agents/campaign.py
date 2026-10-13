@@ -1218,7 +1218,7 @@ def run_scenario(R, node, label, sc, agents, only, out):
         namespace = uuid.uuid4().hex
         with open(os.path.join(wd, "scenario.json"), "w") as context:
             json.dump({"expect_error": sc.get("expect_error"), "idempotency_namespace": namespace}, context)
-        prompt = sc["prompt"] + f"\nPrefix every new idempotency_key with {namespace}: and a distinct suffix per operation. Reuse a key only to retry that same operation."
+        prompt = sc["prompt"] + f"\nFor tools whose input schema declares idempotency_key, prefix each new key with {namespace}: and a distinct suffix per operation. Reuse a key only to retry that same operation."
         before = {r["id"] for r in runs(node)}
         drive = run_claude_mcp if agent == "claude" else run_codex_mcp
         try:
