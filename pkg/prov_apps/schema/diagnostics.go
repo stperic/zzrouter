@@ -28,6 +28,7 @@ type RuntimeChecks struct {
 
 // MemoryBudget declares how an engine's knob requests device memory.
 type MemoryBudget struct {
+	ComplementParameter  string `yaml:"complement_parameter,omitempty" json:"complement_parameter,omitempty"`
 	Kind                 string `yaml:"kind" json:"kind"`
 	Parameter            string `yaml:"parameter,omitempty" json:"parameter,omitempty"`
 	DeviceCountParameter string `yaml:"device_count_parameter,omitempty" json:"device_count_parameter,omitempty"`
@@ -145,12 +146,19 @@ func (m *MemoryBudget) validate() error {
 	if m.AutoSafetyMarginMiB < 0 {
 		return fmt.Errorf("auto safety margin must not be negative")
 	}
-	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter} {
+	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter, m.ComplementParameter} {
 		if parameter != "" && !validDiagnosticName(parameter) {
 			return fmt.Errorf("invalid memory parameter %q", parameter)
 		}
 	}
+	if m.ComplementParameter != "" && (m.Kind != "reserve_mib" || m.ComplementParameter == m.Parameter) {
+		return fmt.Errorf("complement parameter requires a distinct reserve_mib parameter")
+	}
 	switch m.Kind {
+	case "reserve_mib":
+		if m.Parameter == "" || m.DeviceCountParameter != "" {
+			return fmt.Errorf("reserve_mib requires a parameter and one device")
+		}
 	case "fraction_total":
 		if m.Parameter == "" {
 			return fmt.Errorf("fraction budget requires parameter")

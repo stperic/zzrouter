@@ -117,3 +117,18 @@ func TestAutoMarginSchemaRoundTripAndDefaultCompatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestReservationSchema(t *testing.T) {
+	declared, err := LoadYAMLSchema([]byte(strings.Replace(diagnosticSchema, "kind: fraction_total, parameter: device-budget", "kind: reserve_mib, parameter: device-budget, complement_parameter: reserve-vram", 1)))
+	require.NoError(t, err)
+	_, errs := Merge("studio", declared)
+	require.Empty(t, errs)
+	for _, budget := range []*MemoryBudget{
+		{Kind: "reserve_mib"},
+		{Kind: "reserve_mib", Parameter: "budget", DeviceCountParameter: "devices"},
+		{Kind: "reserve_mib", Parameter: "budget", ComplementParameter: "budget"},
+		{Kind: "fraction_total", Parameter: "budget", ComplementParameter: "reserve-vram"},
+	} {
+		require.Error(t, budget.validate())
+	}
+}

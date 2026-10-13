@@ -13,11 +13,12 @@ import (
 // install variants, readiness probes, a port-pool, and optional node/model
 // parameter overrides. Everything a local inference engine needs.
 type OnDemandProvider struct {
+	RunScope        string               `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
 	Install         *InstallConfig       `yaml:"install,omitempty" json:"install,omitempty"`
 	Features        map[string]Feature   `yaml:"features,omitempty" json:"features,omitempty"`
 	Name            string               `yaml:"-" json:"name"`
 	Description     string               `yaml:"description,omitempty" json:"description,omitempty"`
-	Protocol        AppProtocol          `yaml:"protocol" json:"protocol"`
+	Protocol        AppProtocol          `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	Enabled         *bool                `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	PinnedVersion   string               `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
 	VersionSource   *VersionSource       `yaml:"version_source,omitempty" json:"version_source,omitempty"`
@@ -41,6 +42,7 @@ type OnDemandProvider struct {
 // a Docker-based on-demand variant doesn't silently lose its config
 // during the bridge.
 type OnDemandRuntime struct {
+	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	PortRange             []int              `yaml:"port_range" json:"port_range"`
 	BasePort              int                `yaml:"base_port" json:"base_port"`
@@ -87,7 +89,13 @@ func (p *OnDemandProvider) Validate() error {
 	if err := validateFeatures(p.Features); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
-	if p.Protocol != ProtocolOpenAI && p.Protocol != ProtocolOllama {
+	if err := p.validateRunScope(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if err := p.Runtime.ActivityProbe.Validate(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if p.RunScope != RunScopeNode && p.Protocol != ProtocolOpenAI && p.Protocol != ProtocolOllama {
 		return fmt.Errorf("provider '%s': invalid protocol '%s', must be 'openai' or 'ollama'", p.Name, p.Protocol)
 	}
 	if p.Runtime.BasePort == 0 && len(p.Runtime.PortRange) == 0 {
@@ -111,7 +119,7 @@ func (p *OnDemandProvider) Validate() error {
 			}
 		}
 	}
-	if !p.IsExplicitlyDisabled() {
+	if p.RunScope != RunScopeNode && !p.IsExplicitlyDisabled() {
 		if err := p.Capabilities.ValidateWireEndpoints(); err != nil {
 			return fmt.Errorf("provider '%s': %w", p.Name, err)
 		}
@@ -126,4 +134,32 @@ func (p *OnDemandProvider) Validate() error {
 func (p OnDemandProvider) MarshalYAML() (any, error) {
 	type plain OnDemandProvider
 	return marshalFeatureProvider(plain(p), p.Features)
+}
+
+// RunScopeNode identifies a provider whose run serves the node without a model.
+const RunScopeNode = "node"
+
+func (p *OnDemandProvider) validateRunScope() error {
+	switch p.RunScope {
+	case "", "model":
+		return nil
+	case RunScopeNode:
+		if p.Protocol != "" || len(p.Models) != 0 || len(p.Features) != 0 || p.Search != nil {
+			return fmt.Errorf("node run_scope cannot declare protocol, models, features or search")
+		}
+		if p.Capabilities != nil && (len(p.Capabilities.Formats) != 0 || len(p.Capabilities.WireEndpoints) != 0 || len(p.Capabilities.Models) != 0) {
+			return fmt.Errorf("node run_scope cannot declare model capabilities")
+		}
+		if p.Defaults != nil && len(p.Defaults.Endpoints) != 0 {
+			return fmt.Errorf("node run_scope cannot declare endpoint overlays")
+		}
+		for _, node := range p.Nodes {
+			if len(node.Models) != 0 || len(node.Endpoints) != 0 {
+				return fmt.Errorf("node run_scope allows only defaults and node parameters")
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown run_scope %q", p.RunScope)
+	}
 }

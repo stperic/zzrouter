@@ -18,6 +18,7 @@ import (
 
 // AppRuntimeConfig represents runtime configuration in v2.0 format
 type AppRuntimeConfig struct {
+	ActivityProbe   *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	Endpoint        string             `yaml:"endpoint"`
 	PortRange       []int              `yaml:"port_range,omitempty"` // Port range for on-demand apps [start, end]
@@ -367,4 +368,28 @@ func (prc *AppRuntimeConfig) QueueDepth() int {
 		return 0
 	}
 	return constants.DefaultQueueDepthFactor * prc.MaxConcurrentRequests
+}
+
+// ActivityProbe declares queue fields whose observed work protects a run.
+type ActivityProbe struct {
+	Path             string   `yaml:"path" json:"path"`
+	BusyWhenNonempty []string `yaml:"busy_when_nonempty" json:"busy_when_nonempty"`
+}
+
+// Validate restricts the probe to a local path with explicit queue fields.
+func (p *ActivityProbe) Validate() error {
+	if p == nil {
+		return nil
+	}
+	if !strings.HasPrefix(p.Path, "/") || strings.HasPrefix(p.Path, "//") || strings.ContainsAny(p.Path, "?#\\") || len(p.BusyWhenNonempty) == 0 {
+		return fmt.Errorf("activity_probe requires a local path and busy_when_nonempty fields")
+	}
+	seen := make(map[string]bool)
+	for _, field := range p.BusyWhenNonempty {
+		if field == "" || seen[field] {
+			return fmt.Errorf("activity_probe has an empty or duplicate queue field")
+		}
+		seen[field] = true
+	}
+	return nil
 }
