@@ -26,6 +26,9 @@
 
 ### Behaviour changes
 
+- Launcher shutdown signals are captured before child creation. Signals and stdin
+  closure share one bounded stop path, and exit removes only successfully
+  published PID metadata while preserving prior metadata after a write failure.
 - Readiness, lifecycle logs and audit events commit together, so a retired start
   cannot later announce itself as running. Stopping an adopted model also unloads
   it when Stop wins before readiness publication.
