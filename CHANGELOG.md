@@ -4,6 +4,15 @@
 
 ### Highlights
 
+- ComfyUI as a GPU tenant ([docs/comfyui.md](docs/comfyui.md)). zzRouter
+  launches ComfyUI on a Linux NVIDIA node (`POST /zzrouter/v1/runs` with
+  `provider: comfyui` and a `node`, no model) so its GPU memory joins the
+  same admission, idle stop and eviction as LLM runs. `gpu-reserve-mib` is a
+  reservation: an LLM launch that would need its unused part is refused, or
+  evicts an idle ComfyUI run when eviction is on, and the reverse. While
+  ComfyUI's queue is busy its run is neither idle nor evictable. Clients call
+  ComfyUI directly at the run's `base_url`; zzRouter does not proxy it. The
+  provider ships disabled; installing ComfyUI is manual for now.
 - Ollama preloading supports embedding-only models through a capability-neutral empty-input request.
 
 - MCP server for coding agents: `POST /zzrouter/v1/mcp` (coordinator, admin
@@ -25,6 +34,19 @@
   that evicted it.
 
 ### Behaviour changes
+
+- Providers can declare `run_scope: node`: one model-less run per node,
+  started with `provider` and `node` and no `model_name`. Run reports carry
+  `provider` and `base_url` (the node's reachable address); an `evicted_runs`
+  entry always names its provider and omits `model` for model-less runs.
+- The launcher applies a provider's `execution.working_dir`. The vLLM,
+  llama.cpp and MLX templates carried an unused `working_dir: ./models` that
+  would now break launches; it is removed, and reconcile removes it from
+  installed configs.
+- Cluster protocol and minimum advance from 7/7 to 8/8: older workers reject
+  `run_scope`, `runtime.activity_probe` and the `reserve_mib` memory budget
+  during strict provider loading. Upgrade all peers together using
+  [protocol versioning](docs/protocol_versioning.md).
 
 - Missing-job GET, cancellation and pre-stream failures return scoped
   `job_not_found` Problems at their owner. Proxied errors preserve retry metadata
