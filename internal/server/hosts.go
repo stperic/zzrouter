@@ -679,9 +679,7 @@ func (s *Server) workerPublicURL() string {
 	if s.config.Node.IsTLSEnabled() {
 		scheme = "https"
 	}
-	ips := clusternode.ParseAdvertiseIPs(s.config.Cluster.AdvertiseIPs)
-	host := clusternode.ResolveSelfHost(s.config.Node.Bind, s.config.Node.Name, ips)
-	return fmt.Sprintf("%s://%s:%d", scheme, host, s.config.Node.Port)
+	return scheme + "://" + net.JoinHostPort(s.selfHost(), strconv.Itoa(s.config.Node.Port))
 }
 
 // RefreshClusterEndpointsAsync re-probes all endpoints in a drain-tracked
@@ -860,4 +858,9 @@ func countsForCompatibility(info prov_apps.LocalProviderInfo) bool {
 	default:
 		return info.State.IsInstalled()
 	}
+}
+
+func (s *Server) selfHost() string {
+	ips := clusternode.ParseAdvertiseIPs(s.config.Cluster.AdvertiseIPs)
+	return clusternode.ResolveSelfHost(s.config.Node.Bind, s.config.Node.Name, ips)
 }

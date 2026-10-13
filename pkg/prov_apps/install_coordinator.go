@@ -184,7 +184,20 @@ func (c *InstallCoordinator) Dispatcher() *install.Dispatcher {
 // Installer is shorthand for c.Dispatcher().Get(name) — the dominant call
 // pattern in handlers that need to invoke Preflight, InstallPlan, etc.
 func (c *InstallCoordinator) Installer(name string) (install.ProviderInstaller, error) {
-	return c.dispatcher.Get(name)
+	inst, err := c.dispatcher.Get(name)
+	if err != nil && c.appsConfig != nil {
+		if cfg := c.appsConfig(); cfg != nil {
+			if svc, ok := cfg.LookupApp(name); ok && svc.RunScope == config.RunScopeNode {
+				return nil, fmt.Errorf("%w: provider %s requires an operator-provided install in %s; the install API cannot install it", ErrParameterValidation, name, fsroot.ProviderDir(name))
+			}
+		}
+	}
+	return inst, err
+}
+
+func (c *InstallCoordinator) managedInstaller(name string) (install.ProviderInstaller, bool) {
+	inst, err := c.dispatcher.Get(name)
+	return inst, err == nil && inst.IsInstalled()
 }
 
 // Progress returns the current install progress for a provider, or nil.
@@ -251,12 +264,10 @@ func (c *InstallCoordinator) checkPlatform(name string) error {
 		return nil
 	}
 	cur := fsroot.CurrentPlatform()
-	for _, p := range svc.Platforms {
-		if p.OS == cur.OS && (p.Arch == "" || p.Arch == cur.Arch) {
-			return nil
-		}
+	if err := svc.ValidatePlatform(cur.OS, cur.Arch); err != nil {
+		return fmt.Errorf("%w: %w", install.ErrUnsupportedPlatform, err)
 	}
-	return fmt.Errorf("%w: %s is not supported on %s", install.ErrUnsupportedPlatform, name, cur.String())
+	return nil
 }
 
 // resolvePinned returns the configured pinned version for a provider, or the
@@ -439,8 +450,11 @@ func (c *InstallCoordinator) InstallAsync(ctx context.Context, req InstallReques
 	if c.jobs == nil {
 		return "", ErrAsyncDisabled
 	}
-	inst, err := c.dispatcher.Get(req.Provider)
+	inst, err := c.Installer(req.Provider)
 	if err != nil {
+		if errors.Is(err, ErrParameterValidation) {
+			return "", err
+		}
 		return "", ErrProviderNotFound
 	}
 	if err := c.checkPlatform(req.Provider); err != nil {
@@ -598,7 +612,7 @@ func (c *InstallCoordinator) UpgradeAsync(_ context.Context, name, toVersion str
 	if c.instances.CountActiveByProvider(name) > 0 {
 		return "", ErrInstancesRunning
 	}
-	inst, err := c.dispatcher.Get(name)
+	inst, err := c.Installer(name)
 	if err != nil {
 		return "", ErrProviderNotFound
 	}
@@ -731,7 +745,7 @@ func (c *InstallCoordinator) UninstallAsync(ctx context.Context, name string, fi
 	if c.instances.CountActiveByProvider(name) > 0 {
 		return "", ErrInstancesRunning
 	}
-	inst, err := c.dispatcher.Get(name)
+	inst, err := c.Installer(name)
 	if err != nil {
 		return "", ErrProviderNotFound
 	}

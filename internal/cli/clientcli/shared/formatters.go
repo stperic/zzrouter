@@ -184,6 +184,14 @@ func FormatTokenCount(n int64) string {
 	return result.String()
 }
 
+// FormatRunName keeps provider-only runs identifiable in model lists.
+func FormatRunName(model, provider string) string {
+	if name := pkgUtils.FormatModelName(model); name != "" {
+		return name
+	}
+	return provider
+}
+
 // FormatModelWithRegistry prefixes a model name with its registry if present.
 func FormatModelWithRegistry(registry, model string) string {
 	if registry == "" {

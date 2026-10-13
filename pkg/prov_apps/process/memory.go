@@ -3,6 +3,7 @@ package process
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -22,14 +23,18 @@ var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 // MemoryHolder describes driver attribution without exposing process command lines.
 type MemoryHolder struct {
 	gpu.MemoryProcess
-	Run       string `json:"run,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Ownership string `json:"ownership"`
+	Run                 string `json:"run,omitempty"`
+	Model               string `json:"model,omitempty"`
+	Ownership           string `json:"ownership"`
+	Provider            string `json:"provider,omitempty"`
+	UnusedCommitmentMiB int64  `json:"unused_commitment_mib,omitempty"`
 }
 
 // RunRef identifies the zzRouter run behind a process, by id and the model it serves.
 type RunRef struct {
-	ID, Model string
+	ID, Model, Provider string
+	PID                 int
+	Commitments         map[string]int64
 }
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
@@ -53,7 +58,15 @@ func (e *MemoryFitError) Error() string {
 			size = fmt.Sprintf("%d MiB", *h.MemoryMiB)
 		}
 		if h.Run != "" {
-			held = append(held, fmt.Sprintf("zzRouter run %s serving %s (pid %d, %s)", h.Run, h.Model, h.PID, size))
+			identity := "serving " + h.Model
+			if h.Provider != "" {
+				identity = "provider " + h.Provider
+			}
+			detail := fmt.Sprintf("pid %d, %s", h.PID, size)
+			if h.UnusedCommitmentMiB > 0 {
+				detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
+			}
+			held = append(held, fmt.Sprintf("zzRouter run %s %s (%s)", h.Run, identity, detail))
 		} else {
 			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
 		}
@@ -78,13 +91,28 @@ const maxMemoryDevices = 64
 // AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses. auto becomes the
 // model's need when it is known, which must fit beside the safety margin, else the free fraction left
 // after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
-func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners map[int]RunRef) error {
-	if budget.Kind != "fraction_total" {
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
+	if budget.Kind == schema.MemoryReserveMiB {
+		reserved, err := PrepareMemoryBudget(budget, parameters, environment, devices)
+		if err != nil {
+			return err
+		}
+		for _, device := range devices {
+			if required, selected := reserved[device.UUID]; selected {
+				fit := memoryFitError(budget.Parameter, device, required, owners)
+				if required > fit.FreeMiB {
+					return fit
+				}
+			}
+		}
+		if commitments != nil {
+			maps.Copy(commitments, reserved)
+		}
 		return nil
 	}
-	auto := parameters[budget.Parameter] == "auto"
+	auto := budget.Kind == schema.MemoryFractionTotal && parameters[budget.Parameter] == "auto"
 	var fraction float64
-	if !auto {
+	if budget.Kind == schema.MemoryFractionTotal && !auto {
 		var err error
 		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
 		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
@@ -103,6 +131,15 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if err != nil {
 		return err
 	}
+	if budget.Kind != schema.MemoryFractionTotal {
+		for _, device := range selected {
+			fit := memoryFitError(budget.Parameter, device, device.FreeMiB, owners)
+			if fit.FreeMiB < device.FreeMiB {
+				return fit
+			}
+		}
+		return nil
+	}
 	sized := auto && need.Total() > 0
 	switch {
 	case sized:
@@ -120,8 +157,9 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		if sized {
 			required += safetyMargin(budget, device)
 		}
-		if required > device.FreeMiB {
-			return memoryFitError(budget.Parameter, device, required, owners)
+		fit := memoryFitError(budget.Parameter, device, required, owners)
+		if required > fit.FreeMiB {
+			return fit
 		}
 	}
 	if auto {
@@ -131,24 +169,43 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 }
 
 // memoryFitError names every process holding the device, marking zzRouter's own runs.
-func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners map[int]RunRef) *MemoryFitError {
+func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners []RunRef) *MemoryFitError {
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
+	used := make(map[string]int64)
 	for _, process := range device.Processes {
 		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
 		if run, ok := runOwning(process.PID, owners); ok {
-			holder.Run, holder.Model, holder.Ownership = run.ID, run.Model, "zzrouter"
+			holder.Run, holder.Model, holder.Ownership, holder.Provider = run.ID, run.Model, "zzrouter", run.Provider
+			if process.MemoryMiB != nil {
+				used[run.ID] += max(0, *process.MemoryMiB)
+			}
 		}
 		failure.Holders = append(failure.Holders, holder)
 	}
+	for _, run := range owners {
+		usage := used[run.ID]
+		if device.ProcessReason != "" {
+			usage = max(0, device.TotalMiB-device.FreeMiB)
+		}
+		unused := max(0, run.Commitments[device.UUID]-usage)
+		if unused == 0 {
+			continue
+		}
+		failure.FreeMiB -= unused
+		failure.Holders = append(failure.Holders, MemoryHolder{MemoryProcess: gpu.MemoryProcess{PID: run.PID, MemoryMiB: &unused}, Run: run.ID, Model: run.Model, Provider: run.Provider, Ownership: "zzrouter", UnusedCommitmentMiB: unused})
+	}
+	failure.FreeMiB = max(0, failure.FreeMiB)
 	return failure
 }
 
 // runOwning returns the run whose process is pid or one of its ancestors: engines hold the GPU from
 // child processes. An ancestry it cannot read is nobody's.
-func runOwning(pid int, owners map[int]RunRef) (RunRef, bool) {
+func runOwning(pid int, owners []RunRef) (RunRef, bool) {
 	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
-		if run, ok := owners[pid]; ok {
-			return run, true
+		for _, run := range owners {
+			if run.PID == pid {
+				return run, true
+			}
 		}
 		seen[pid] = true
 		parent, err := parentPID(int32(pid))
@@ -196,4 +253,30 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 		selected = append(selected, matches[0])
 	}
 	return selected, nil
+}
+
+// MiBPerGiB converts the allocator complement into whole GiB without rounding it up.
+const MiBPerGiB int64 = 1024
+
+// PrepareMemoryBudget validates and pins a reservation using the same snapshot for its complement.
+func PrepareMemoryBudget(budget schema.MemoryBudget, params, env map[string]string, devices []gpu.MemoryDevice) (map[string]int64, error) {
+	if budget.Kind != schema.MemoryReserveMiB {
+		return nil, nil
+	}
+	selected, err := memoryDevicesForLaunch(devices, env, 1)
+	if err != nil {
+		return nil, err
+	}
+	amount, err := strconv.ParseInt(params[budget.Parameter], 10, 64)
+	device := selected[0]
+	if err != nil || amount <= 0 || amount > device.TotalMiB {
+		return nil, fmt.Errorf("%w: %s must be positive MiB and at most device total (%d MiB)", ErrMemoryBudgetInvalid, budget.Parameter, device.TotalMiB)
+	}
+	if env != nil {
+		env["CUDA_VISIBLE_DEVICES"] = device.UUID
+	}
+	if budget.ComplementParameter != "" {
+		params[budget.ComplementParameter] = strconv.FormatInt((device.TotalMiB-amount)/MiBPerGiB, 10)
+	}
+	return map[string]int64{device.UUID: amount}, nil
 }

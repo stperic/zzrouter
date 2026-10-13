@@ -82,12 +82,13 @@ const versionUnknown = "unknown"
 // here rather than reaching back into Protocols/Install/AppsConfig at
 // the call site.
 type LocalProviderInfo struct {
-	Key   string         `json:"key"`
-	Name  string         `json:"name"`
-	Type  string         `json:"type"`
-	Kind  string         `json:"kind"`
-	Mode  string         `json:"mode"`
-	State LifecycleState `json:"state"`
+	RunScope string         `json:"run_scope,omitempty"`
+	Key      string         `json:"key"`
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Kind     string         `json:"kind"`
+	Mode     string         `json:"mode"`
+	State    LifecycleState `json:"state"`
 	// Managed reports that zzRouter put this install here (marker file
 	// plus a binary), which is what makes uninstalling it our business.
 	// It is a real field rather than one of the derived booleans below
@@ -167,7 +168,7 @@ func (m *ProviderAppManager) LocalInfo(nodeName string) []LocalProviderInfo {
 			endpoint = svc.Runtime.Endpoint
 		}
 		info := LocalProviderInfo{
-			Key:              key,
+			Key: key, RunScope: svc.RunScope,
 			Name:             svc.Name,
 			Type:             svc.Name,
 			Kind:             string(p.Kind()),
@@ -180,8 +181,8 @@ func (m *ProviderAppManager) LocalInfo(nodeName string) []LocalProviderInfo {
 			Formats:          formatsFor(p),
 			FormatNote:       formatNoteFor(p),
 			Description:      describe(svc.Name, state),
-			SupportsRouting:  state.IsRoutable(),
-			SupportsDownload: state.IsRoutable(),
+			SupportsRouting:  state.IsRoutable() && svc.RunScope != config.RunScopeNode,
+			SupportsDownload: state.IsRoutable() && svc.RunScope != config.RunScopeNode,
 		}
 		if info.Version == "" {
 			info.Version = versionUnknown
@@ -236,22 +237,15 @@ func (m *ProviderAppManager) lifecycleFor(key string, p config.Provider) (Lifecy
 	//   1. Config says enabled (operator opted in)
 	//   2. Protocol registry has a routable handler (sync has run)
 	//   3. Installer reports a real on-disk install (binary present)
-	inst, dispErr := m.installs.Dispatcher().Get(key)
-	managed := dispErr == nil && inst.IsInstalled()
-	// A provider zzRouter did not install is still installed. IsInstalled
-	// on the installer means "we put it here" (marker file + binary), so
-	// reading it as the whole answer made an operator's own Ollama report
-	// installed:false here while /providers/{name}/status, which asks the
-	// broader question, reported installed:true for the same binary.
-	//
-	// The version cache is the detection channel, and the "unknown" guard
-	// is what keeps this honest: a provider enabled by default in the
-	// template but never installed (vllm on macOS) has no version, and
-	// must not be promoted to installed on the strength of being enabled.
-	version := m.ProviderVersion(key)
-	installed := managed || (version != "" && version != versionUnknown)
+	_, managed := m.installs.managedInstaller(key)
+	svc, _ := m.ProviderConfig(key)
+	installed := m.providerInstalled(key, svc, managed, m.ProviderVersion(key))
 	_, routable := m.protocols.Get(key)
-	if p.IsEnabled() && routable == nil && installed {
+	nodeScoped := false
+	if od, ok := p.(*config.OnDemandProvider); ok {
+		nodeScoped = od.RunScope == config.RunScopeNode
+	}
+	if p.IsEnabled() && (routable == nil || nodeScoped) && installed {
 		return StateLive, managed
 	}
 	if installed {

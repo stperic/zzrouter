@@ -22,6 +22,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 			Features:        sc.Features,
 			Name:            name,
 			Description:     sc.Description,
+			RunScope:        sc.RunScope,
 			Protocol:        sc.Protocol,
 			Enabled:         sc.Enabled,
 			PinnedVersion:   sc.PinnedVersion,
@@ -94,6 +95,7 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		return OnDemandRuntime{}
 	}
 	return OnDemandRuntime{
+		ActivityProbe:         rt.ActivityProbe,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,
 		KeepAlive:             rt.KeepAlive,

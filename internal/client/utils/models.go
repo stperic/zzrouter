@@ -162,6 +162,7 @@ func (c *Client) DeleteModelsFromRegistry(models []ModelMetadata) (*DeleteRegist
 
 // LoadModelResponse represents the response from loading a model
 type LoadModelResponse struct {
+	BaseURL    string `json:"base_url,omitempty"`
 	InstanceID string `json:"instance_id"`
 	Model      string `json:"model"`
 	App        string `json:"provider"`

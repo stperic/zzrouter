@@ -91,7 +91,7 @@ type retryInput struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"Optional idempotency key, unique per operation: keys are remembered across sessions, so a new operation needs a key never used before. Reuse it only when retrying the same operation."`
 }
 type previewInput struct {
-	Model       string            `json:"model" jsonschema:"Exact local model name from zz_models, including its variant if needed."`
+	Model       string            `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
 	Provider    string            `json:"provider" jsonschema:"Enabled provider name to preview."`
 	Node        string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint    string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -100,7 +100,7 @@ type previewInput struct {
 }
 type startInput struct {
 	retryInput
-	Model      string            `json:"model" jsonschema:"Exact local model name from zz_models."`
+	Model      string            `json:"model,omitempty" jsonschema:"Exact local model name from zz_models; omit for a node-scoped provider."`
 	Provider   string            `json:"provider" jsonschema:"Enabled provider name to launch."`
 	Node       string            `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint   string            `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
@@ -191,9 +191,9 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel with zz_job_cancel and deployment_id.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, status, started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, the idle runs its launch stopped to free GPU memory; use zz_logs to diagnose or zz_chat to smoke test a ready model. A run no longer listed answers 404 with what is still readable.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, base_url, engine_busy, status, started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, the idle runs its launch stopped to free GPU memory; use zz_logs to diagnose or zz_chat to smoke test a ready model. A run no longer listed answers 404 with what is still readable.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_preview", Description: "Check zz_models first and select its exact local name. Only if absent, use zz_model_search, zz_model_download and zz_job, then check zz_models again. Preview with an enabled provider; returns full_command, parameters and sources, then call zz_run_start.", Annotations: read}, []string{"previewRuns"}, dispatcher.preview)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. For a node-scoped provider, omit model and endpoint; use the reported base_url directly. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run is removed; a later zz_runs lookup returns 404 by design.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_chat", OutputSchema: objectSchema[chatOutput]{}, Description: "Smoke test a model through the coordinator; pass message for chat, or probe: tools, embed or vision for fixed capability checks. A bare name works when one node holds it; otherwise pass node. A model with no run is started for the chat (zz_runs lists it with started_by request). Returns a request-local verdict: verified, not_supported or inconclusive, with next_steps. Tools also reports tool_call diagnostics; embed returns dimensions, never the vector. Vision checks two different images. Inspect zz_logs if it fails.", Annotations: write}, []string{"openaiCreateChatCompletion", "openaiCreateEmbedding"}, dispatcher.chat)
@@ -419,7 +419,7 @@ func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, erro
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port status started_by waiting_on evicted_runs error_message failure parameters_status"
+	fields := "id:run_id provider model node port base_url engine_busy memory_commitments_mib status started_by waiting_on evicted_runs error_message failure parameters_status"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err
@@ -437,7 +437,7 @@ func (d dispatcher) preview(ctx context.Context, in previewInput) (agentOutput, 
 }
 
 func (d dispatcher) start(ctx context.Context, in startInput) (agentOutput, error) {
-	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: in, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port", "Run launch accepted; follow with zz_job.")
+	return d.object(ctx, request{method: http.MethodPost, path: runsRoute.path(), jsonBody: in, omit: []string{"idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, "id:run_id job_id deploy_job_id node provider status port base_url", "Run launch accepted; follow with zz_job.")
 }
 
 func (d dispatcher) childObject(ctx context.Context, req request, prefix routePrefix, id, suffix, node, fields, summary string) (agentOutput, error) {
@@ -453,7 +453,7 @@ func (d dispatcher) childObject(ctx context.Context, req request, prefix routePr
 }
 
 func (d dispatcher) restart(ctx context.Context, in restartInput) (agentOutput, error) {
-	return d.childObject(ctx, request{method: http.MethodPost, idempotencyKey: in.IdempotencyKey}, routePrefix(string(runsRoute)+"/"), in.RunID, "/restart", in.Node, "id:run_id old_id:old_run_id job_id node provider model status port", "Run restart accepted; follow with zz_job and use the new run_id.")
+	return d.childObject(ctx, request{method: http.MethodPost, idempotencyKey: in.IdempotencyKey}, routePrefix(string(runsRoute)+"/"), in.RunID, "/restart", in.Node, "id:run_id old_id:old_run_id job_id node provider model status port base_url", "Run restart accepted; follow with zz_job and use the new run_id.")
 }
 
 func (d dispatcher) stop(ctx context.Context, in runInput) (agentOutput, error) {

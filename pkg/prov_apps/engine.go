@@ -25,7 +25,7 @@ type engine interface {
 	// down ends a run's model; the run drains after it.
 	down(ctx context.Context, run *instance.Instance) error
 	// prepare works out what up would give the engine for req, without starting anything.
-	prepare(svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error)
+	prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error)
 	// upstream is where a run's requests go and what of the caller's request travels there.
 	upstream(run *instance.Instance) (string, backend.Upstream, error)
 	// outlivesNode reports whether a run's model stays loaded when this node stops.
@@ -57,6 +57,9 @@ func (m *ProviderAppManager) runModel(configKey string, svc config.ServiceConfig
 
 // daemonName is model as a served provider's daemon lists it; any other provider keys on model itself.
 func (m *ProviderAppManager) daemonName(configKey string, svc config.ServiceConfig, model string) string {
+	if model == "" {
+		return ""
+	}
 	p, _ := m.Protocol(configKey)
 	if loader, ok := p.(protocol.ModelLoader); ok && Lifecycle(svc) == LifecycleServed {
 		return loader.Identity(model)
@@ -75,6 +78,9 @@ func (m *ProviderAppManager) RequestModel(run *instance.Instance, model string) 
 
 // runEndpoint is a run's key endpoint: its own only on an endpoint-aware launched provider.
 func runEndpoint(svc config.ServiceConfig, endpoint Endpoint) Endpoint {
+	if svc.RunScope == config.RunScopeNode {
+		return ""
+	}
 	if !svc.IsEndpointAware() || Lifecycle(svc) == LifecycleServed {
 		return EndpointChat
 	}
@@ -97,9 +103,9 @@ func (e processEngine) down(ctx context.Context, run *instance.Instance) error {
 }
 
 // prepare is what launching req on port would give the engine; a launch and a parameters-status check share it.
-func (e processEngine) prepare(svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error) {
+func (e processEngine) prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error) {
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	features, err := e.m.modelLaunchParameters(svc, process.ResolveModel(svc, req.Model), req, endpoint)
+	features, err := e.m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, endpoint)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
@@ -120,7 +126,7 @@ const neverExpires time.Duration = -1
 
 // servedRun builds a starting served run for req, and the keep-alive its daemon is given (nil: its own default).
 func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc config.ServiceConfig, configKey string, observed ...string) (*instance.Instance, *time.Duration, error) {
-	load, err := e.prepare(svc, configKey, req, 0)
+	load, err := e.prepare(ctx, svc, configKey, req, 0)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -238,7 +244,7 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 }
 
 // prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent.
-func (e servedEngine) prepare(svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
+func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
 	settings, err := e.m.runSettings(svc, req)
 	if err != nil {
 		return preparedLaunch{}, err

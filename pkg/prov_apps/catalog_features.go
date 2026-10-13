@@ -31,7 +31,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 	}
 
 	// Apply the same tier opt-outs as launch.
-	if launch, err := m.ResolveLaunchParameters(EnsureRequest{Provider: provider, Model: model}); err == nil {
+	if launch, err := m.ResolveLaunchParameters(m.shutdownCtx, EnsureRequest{Provider: provider, Model: model}); err == nil {
 		for name, f := range svc.Features {
 			if len(f.Files) > 0 && states[name] == "present" && (launch.Params[f.Flag] == "" || launch.Params[f.Flag] == "false") {
 				states[name] = "available"

@@ -238,6 +238,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			s.notifyCoordinatorAsync()
 		}),
 		prov_apps.WithNodename(s.node.Nodename),
+		prov_apps.WithSelfHost(s.selfHost),
 		prov_apps.WithInstallPolicy(cfg.Providers.InstallPolicyFile),
 		// The launch path and the inference path both key instances by
 		// model name, and only inference resolved aliases -- so a model

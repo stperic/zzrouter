@@ -31,7 +31,7 @@ func NewRegistry(cfg *config.AppsConfig, httpClient *http.Client) *Registry {
 		return reg
 	}
 	for key, p := range cfg.AllProviders() {
-		if p.IsExplicitlyDisabled() || p.Kind() == config.KindRegistry {
+		if p.IsExplicitlyDisabled() || !modelProvider(p) {
 			continue
 		}
 		reg.providers[key] = reg.createProvider(key, p)
@@ -77,6 +77,9 @@ func (r *Registry) Of(key string, p config.Provider) FullProvider {
 	if held, err := r.Get(key); err == nil || p == nil {
 		return held
 	}
+	if !modelProvider(p) {
+		return nil
+	}
 	return r.createProvider(key, p)
 }
 
@@ -86,6 +89,10 @@ func (r *Registry) Of(key string, p config.Provider) FullProvider {
 func (r *Registry) Register(key string, p config.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !modelProvider(p) {
+		delete(r.providers, key)
+		return
+	}
 	r.providers[key] = r.createProvider(key, p)
 }
 
@@ -126,7 +133,7 @@ func (r *Registry) Sync(cfg *config.AppsConfig) {
 	all := cfg.AllProviders()
 	wanted := make(map[string]bool, len(all))
 	for name, p := range all {
-		if p.IsExplicitlyDisabled() || p.Kind() == config.KindRegistry {
+		if p.IsExplicitlyDisabled() || !modelProvider(p) {
 			continue
 		}
 		wanted[name] = true
@@ -177,4 +184,14 @@ func (r *Registry) createProvider(key string, p config.Provider) FullProvider {
 		// PopulateProviders rejection aimed to stop.
 		panic(fmt.Sprintf("protocol.Registry: unhandled provider kind %q for %q", p.Kind(), key))
 	}
+}
+
+func modelProvider(p config.Provider) bool {
+	if p == nil || p.Kind() == config.KindRegistry {
+		return false
+	}
+	if od, ok := p.(*config.OnDemandProvider); ok {
+		return od.RunScope != config.RunScopeNode
+	}
+	return true
 }

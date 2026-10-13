@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -229,29 +230,41 @@ func TestStopQueuedRunWhileAdmissionBusy(t *testing.T) {
 // A launch that evicts an idle run names it on its own run record and in
 // its job result, so the caller learns of the eviction where it looks.
 func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
-	f := newQueueFixture(t)
-	reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
-	require.NoError(t, err)
-	t.Cleanup(reg.Stop)
-	f.mgr.jobsRegistry = reg
-	f.mgr.idleEvictionDefault = true
-	idle := instance.NewInstance("idle", "generic", "idle-model", 0, -1, 10)
-	idle.SetStatus(instance.StatusRunning)
-	idle.SetProcessInfo(9000001, 0, nil)
-	require.NoError(t, f.mgr.instances.Register(idle))
-	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		free := int64(1000)
-		if idle.GetStatus() == instance.StatusStopped {
-			free = 6000
-		}
-		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
-	}
+	for _, tc := range []struct{ name, model, json string }{
+		{"model", "idle-model", `[{"run_id":"idle","provider":"generic","model":"idle-model","freed_mib":5000}]`},
+		{"provider", "", `[{"run_id":"idle","provider":"generic","freed_mib":5000}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newQueueFixture(t)
+			reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
+			require.NoError(t, err)
+			t.Cleanup(reg.Stop)
+			f.mgr.jobsRegistry = reg
+			f.mgr.idleEvictionDefault = true
+			idle := instance.NewInstance("idle", "generic", tc.model, 0, -1, 10)
+			idle.SetStatus(instance.StatusRunning)
+			idle.SetProcessInfo(9000001, 0, nil)
+			require.NoError(t, f.mgr.instances.Register(idle))
+			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				free := int64(1000)
+				if idle.GetStatus() == instance.StatusStopped {
+					free = 6000
+				}
+				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: free, Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(5000))}}}}, nil
+			}
 
-	inst := f.launch(t, "big")
-	want := []instance.EvictedRun{{RunID: idle.ID, Model: idle.Model, FreedMiB: 5000}}
-	assert.Equal(t, want, inst.ToInfo("").EvictedRuns)
-	f.release(t, inst)
-	ev := subscribeTerminal(t, reg, inst.StreamJobID, 5*time.Second)
-	assert.Equal(t, jobs.PhaseDone, ev.Phase)
-	assert.Equal(t, want, ev.Meta["evicted_runs"])
+			inst := f.launch(t, "big")
+			want := []instance.EvictedRun{{RunID: idle.ID, Provider: "generic", Model: tc.model, FreedMiB: 5000}}
+			assert.Equal(t, want, inst.ToInfo("").EvictedRuns)
+			f.release(t, inst)
+			ev := subscribeTerminal(t, reg, inst.StreamJobID, 5*time.Second)
+			assert.Equal(t, jobs.PhaseDone, ev.Phase)
+			assert.Equal(t, want, ev.Meta["evicted_runs"])
+			for _, entries := range []any{inst.ToInfo("").EvictedRuns, ev.Meta["evicted_runs"]} {
+				data, err := json.Marshal(entries)
+				require.NoError(t, err)
+				require.JSONEq(t, tc.json, string(data))
+			}
+		})
+	}
 }

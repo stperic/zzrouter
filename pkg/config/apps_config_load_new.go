@@ -304,6 +304,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 			Enabled:         tp.Enabled,
 			Name:            tp.Name,
 			Description:     tp.Description,
+			RunScope:        tp.RunScope,
 			Protocol:        tp.Protocol,
 			Mode:            constants.AppModeOnDemand,
 			PinnedVersion:   tp.PinnedVersion,
@@ -372,6 +373,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 
 func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 	return &AppRuntimeConfig{
+		ActivityProbe:         rt.ActivityProbe,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,
 		KeepAlive:             rt.KeepAlive,

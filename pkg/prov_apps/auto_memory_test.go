@@ -35,7 +35,7 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	preview, err := processEngine{mgr}.prepare(svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
+	preview, err := processEngine{mgr}.prepare(t.Context(), svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
 	assert.NotContains(t, preview.resolved.Parameters, "dtype")
@@ -66,18 +66,18 @@ func TestAutoMemoryIntentPreservesParameterStatusWithoutDiscovery(t *testing.T) 
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	mgr.ReloadConfig(cfg)
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
-	prepared, err := processEngine{mgr}.prepare(svc, "vllm", req, 8100)
+	prepared, err := processEngine{mgr}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	prepared.resolved.Parameters["memory-fraction"] = "0.5"
 	run := instance.NewInstance("test", "vllm", "vendor/model", 8100, 0, 0)
 	run.Config = instance.Config{Provider: "vllm", Model: "vendor/model", Port: 8100}
 	run.SetResolved(prepared.resolved)
 	// No driver fixture exists; status must compare intent without probing memory.
-	assert.Equal(t, instance.ParametersCurrent, mgr.ParametersStatus(run).State)
+	assert.Equal(t, instance.ParametersCurrent, mgr.ParametersStatus(t.Context(), run).State)
 	numerical := run.Resolved()
 	numerical.AutoMemory = ""
 	run.SetResolved(numerical)
-	assert.Contains(t, mgr.ParametersStatus(run).Changed, "parameters.memory-fraction", "numeric-to-auto must remain visible")
+	assert.Contains(t, mgr.ParametersStatus(t.Context(), run).Changed, "parameters.memory-fraction", "numeric-to-auto must remain visible")
 }
 
 func TestAutoMemoryRejectsAmbiguousSpellingsAndNormalizesDeviceCount(t *testing.T) {

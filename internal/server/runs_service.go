@@ -90,7 +90,7 @@ func (s *RunsService) WithModelValidator(validate func(context.Context, string) 
 }
 
 func (s *RunsService) admitModel(ctx context.Context, model string) error {
-	if s.validateModel == nil {
+	if model == "" || s.validateModel == nil {
 		return nil
 	}
 	return s.validateModel(ctx, model)
@@ -322,6 +322,7 @@ type RestartRunRequest struct {
 // OldID is the ID of the stopped instance; ID is the new instance's ID
 // (restart mints a fresh ID because the port is reallocated).
 type RestartRunResponse struct {
+	BaseURL  string `json:"base_url,omitempty"`
 	Accepted bool   `json:"accepted"`
 	OldID    string `json:"old_id"`
 	ID       string `json:"id"`
@@ -362,7 +363,7 @@ type LaunchRunRequest struct {
 	LaunchMode string `json:"launch_mode" binding:"required,oneof=native"`
 	// Accepts `model` (OpenAI-compat, preferred) or `model_name`.
 	// UnmarshalJSON below promotes either into this field.
-	Model string `json:"model_name" binding:"required"`
+	Model string `json:"model_name,omitempty"`
 	// Endpoint selects the request shape an instance serves. Empty defaults
 	// to "chat". Endpoint-aware providers (config declares an `endpoints`
 	// overlay) use this to launch a separate instance per shape — e.g.
@@ -423,6 +424,7 @@ func decodeStrict(data []byte, v any) error {
 
 // LaunchRunResponse represents the response from launching a run
 type LaunchRunResponse struct {
+	BaseURL           string `json:"base_url,omitempty"`
 	Accepted          bool   `json:"accepted"`
 	ID                string `json:"id"`
 	JobID             string `json:"job_id,omitempty"`        // pkg/jobs handle ID for the launch; subscribe via /jobs/:id/stream
@@ -443,6 +445,9 @@ type LaunchRunResponse struct {
 // Note: Currently local-only (launches on current host)
 // For cluster support, this would route to internal executor
 func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*LaunchRunResponse, error) {
+	if err := validateRunTarget(s.appsConfig, req.Provider, req.Model, req.Endpoint); err != nil {
+		return nil, err
+	}
 	// Before auto_deploy can start a download for a name admission refuses.
 	if err := s.admitModel(ctx, req.Model); err != nil {
 		return nil, err
@@ -468,7 +473,7 @@ func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*La
 	// from the coord-side pool. This is the only place where auto_deploy
 	// works for non-coord targets: workers don't carry a DeploymentsService
 	// so the internal handler's auto_deploy gate short-circuits.
-	if req.AutoDeploy && s.deployments != nil && s.modelInPool != nil && s.jobs != nil {
+	if req.Model != "" && req.AutoDeploy && s.deployments != nil && s.modelInPool != nil && s.jobs != nil {
 		if !s.modelInPool(req.Model) {
 			return s.runAutoDeployChain(ctx, req, node)
 		}

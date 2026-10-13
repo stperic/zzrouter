@@ -212,3 +212,20 @@ func TestProtocolsExposeOnlySupportedModelLoading(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryExcludesNodeScopedProviders(t *testing.T) {
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("studio", config.ServiceConfig{
+		Name: "studio", RunScope: config.RunScopeNode, Mode: "on-demand", Enabled: new(true),
+		Runtime: &config.AppRuntimeConfig{BasePort: 8188, PortRange: []int{8188, 8188}, Execution: config.ExecutionConfig{Type: "python", Command: "python"}},
+	}))
+	reg := NewRegistry(cfg, nil)
+	require.Zero(t, reg.Count())
+	provider := cfg.Find("studio")
+	require.NotNil(t, provider)
+	require.Nil(t, reg.Of("studio", provider))
+	reg.Register("studio", provider)
+	require.Zero(t, reg.Count())
+	reg.Sync(cfg)
+	require.Zero(t, reg.Count())
+}

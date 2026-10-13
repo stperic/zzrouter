@@ -355,13 +355,10 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 	// 2. Running instances (priority 1)
 	for i := range instances {
 		inst := &instances[i]
-		if covered[coveredKey(inst.Model, inst.Node)] {
+		if inst.Model != "" && covered[coveredKey(inst.Model, inst.Node)] {
 			continue
 		}
-		name := utils.FormatModelName(inst.Model)
-		if name == "" {
-			name = "(unknown)"
-		}
+		name := shared.FormatRunName(inst.Model, inst.App)
 		reg := registryByModel[inst.Model]
 		diskSize := int64(0)
 		if reg != nil {
@@ -381,7 +378,9 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 			instance:     inst,
 			registry:     reg, // attach registry for metadata in detail view
 		})
-		covered[coveredKey(inst.Model, inst.Node)] = true
+		if inst.Model != "" {
+			covered[coveredKey(inst.Model, inst.Node)] = true
+		}
 	}
 
 	// 3. Registry models not running or downloading (priority 2)

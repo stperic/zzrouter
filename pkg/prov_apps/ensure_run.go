@@ -25,7 +25,7 @@ func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart)
 		_, _, n.Reachable = m.servedTarget(req.Provider)
 	}
 	var existing *instance.Instance
-	if run, ok := m.instances.GetByModelEndpoint(req.Model, string(req.Endpoint)); ok {
+	if run, ok := m.instances.GetByKey(req.Key()); ok {
 		existing, n.Existing = run, runView(run)
 	}
 	return Decide(req.want(), n), existing
@@ -53,6 +53,9 @@ type preparedStart struct {
 func (p preparedStart) answer() (EnsureResult, error) {
 	switch p.decision.Act {
 	case ActReuse:
+		if err := p.existing.RefreshActivity(); err != nil {
+			return EnsureResult{}, err
+		}
 		return EnsureResult{Run: p.existing}, nil
 	case ActReady:
 		return EnsureResult{}, nil
@@ -76,6 +79,9 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 	if !ok {
 		return preparedStart{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
+	if err := cfg.ValidateRunTarget(req.Model, string(req.Endpoint)); err != nil {
+		return preparedStart{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+	}
 	req.Model = m.runModel(key, cfg, req.Model)
 	if !cfg.IsEnabled() {
 		return preparedStart{}, ErrServiceDisabled
@@ -88,7 +94,7 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 func (m *ProviderAppManager) prepareColdStart(ctx context.Context, prepared preparedStart) (context.Context, preparedStart, error) {
 	req := prepared.req
 	// Decide ignores the catalog for a smoke, so a smoke does not read it.
-	if m.localCatalog != nil && req.Origin != OriginInstall && prepared.lifecycle == LifecycleProcess {
+	if req.Model != "" && m.localCatalog != nil && req.Origin != OriginInstall && prepared.lifecycle == LifecycleProcess {
 		local, err := m.localCatalog(ctx, m.CanonicalModelName(prepared.selection.config.WeightsOf(req.Model)))
 		if err != nil {
 			slog.Warn("Model catalog evidence unavailable; continuing", "model", req.Model, "error", err)
@@ -124,12 +130,10 @@ type flight struct {
 	err     error
 }
 
-func flightKey(req EnsureRequest) string { return req.Model + "\x00" + string(req.Endpoint) }
-
 // flying reports a start in flight for model on any endpoint; callers hold flightsMu.
 func (m *ProviderAppManager) flying(model string) bool {
 	for key := range m.flights {
-		if name, _, _ := strings.Cut(key, "\x00"); strings.EqualFold(name, model) {
+		if key.Model != "" && strings.EqualFold(key.Model, model) {
 			return true
 		}
 	}
@@ -182,7 +186,7 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 
 // joinFlight joins the start in flight for prepared's run key, or creates it and starts it.
 func (m *ProviderAppManager) joinFlight(ctx context.Context, prepared preparedStart) (*flight, bool, error) {
-	key := flightKey(prepared.req)
+	key := prepared.req.Key()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stopping.Load() || m.shutdown.Load() {
@@ -201,7 +205,7 @@ func (m *ProviderAppManager) joinFlight(ctx context.Context, prepared preparedSt
 }
 
 // fly runs a flight's start to handoff on its leader's context values, cancelled only by Stop.
-func (m *ProviderAppManager) fly(ctx context.Context, key string, prepared preparedStart, f *flight) {
+func (m *ProviderAppManager) fly(ctx context.Context, key instance.Key, prepared preparedStart, f *flight) {
 	defer m.onDemandStarts.Done()
 	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer context.AfterFunc(m.startsCtx, cancel)()

@@ -43,10 +43,11 @@ const (
 
 // Want is one caller's demand on a run key (model and endpoint).
 type Want struct {
-	Model, Provider, Runtime, Plan string
-	Force                          bool
-	Unload                         bool // the caller asks the model unloaded, by a zero keep-alive
-	Origin                         Origin
+	Key                     instance.Key
+	Provider, Runtime, Plan string
+	Force                   bool
+	Unload                  bool // the caller asks the model unloaded, by a zero keep-alive
+	Origin                  Origin
 }
 
 // RunView is what policy sees of a registered run.
@@ -103,15 +104,12 @@ func Decide(w Want, n Node) Decision {
 			return refuse(ErrProviderUnavailable)
 		}
 		if n.Absent {
-			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog", ErrModelNotLocal, w.Model))
+			return refuse(fmt.Errorf("%w: %s is not in this provider's catalog", ErrModelNotLocal, w.Key.Model))
 		}
 		return Decision{Act: ActReady}
 	case LifecycleServed:
 		if !n.Reachable {
 			return refuse(ErrProviderUnavailable)
-		}
-		if w.Model == "" {
-			return refuse(fmt.Errorf("%w: a served run names its model", ErrParameterValidation))
 		}
 	}
 	smoke := w.Origin == OriginInstall
@@ -132,7 +130,7 @@ func Decide(w Want, n Node) Decision {
 		case (w.Force && !n.Joined) || run.Status.IsTerminal():
 			replace = run.ID
 		case run.Provider != w.Provider:
-			return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Model, run.Provider, w.Provider))
+			return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Key.Model, run.Provider, w.Provider))
 		case run.Runtime != w.Runtime || run.Plan != w.Plan:
 			return refuse(ErrInstancesRunning)
 		default:
@@ -145,7 +143,7 @@ func Decide(w Want, n Node) Decision {
 	case smoke && n.Runtime != "" && n.Runtime != w.Runtime:
 		return refuse(errors.New("smoke model does not use the runtime being installed"))
 	case !smoke && n.Absent: // a smoke tests the runtime being installed, not the catalog
-		return refuse(fmt.Errorf("%w: %s", ErrModelNotLocal, w.Model))
+		return refuse(fmt.Errorf("%w: %s", ErrModelNotLocal, w.Key.Model))
 	case n.Blocker == nil && !n.AdmissionHeld:
 		return Decision{Act: ActStart, Replace: replace}
 	case smoke:

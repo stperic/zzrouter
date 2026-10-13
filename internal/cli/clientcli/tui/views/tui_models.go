@@ -594,7 +594,7 @@ func (m *ModelsViewModel) updateDetail(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case key.Matches(msg, tui.ModelsKeys.Chat):
 		r := m.selectedRow()
-		if r == nil || r.deploy != nil {
+		if r == nil || r.deploy != nil || r.RawModel == "" {
 			return nil
 		}
 		model, node := r.RawModel, r.Node

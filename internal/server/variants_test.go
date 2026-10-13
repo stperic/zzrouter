@@ -90,7 +90,7 @@ func TestVariants_LaunchLoadsTheBaseWeights(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
 
-	res, err := s.providers.appMgr.PreviewLaunch(prov_apps.EnsureRequest{Model: variantAgent, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat}, 8080)
+	res, err := s.providers.appMgr.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Model: variantAgent, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat}, 8080)
 	require.NoError(t, err)
 	assert.Equal(t, variantAgent, res.Model, "the run is the variant's")
 	assert.Equal(t, qwenModel+".gguf", filepath.Base(res.ModelPath))

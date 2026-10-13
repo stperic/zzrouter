@@ -7,6 +7,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[string]string) (map[string]string, string, error) {
@@ -21,10 +22,11 @@ func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[st
 	if err != nil {
 		return nil, "", err
 	}
-	if budget == nil || budget.Kind != "fraction_total" {
+	if budget == nil {
 		return filtered, "", nil
 	}
-	if parameters[budget.Parameter] != "auto" && parameters[strings.ReplaceAll(budget.Parameter, "-", "_")] != "auto" {
+	auto := budget.Kind == schema.MemoryFractionTotal && (parameters[budget.Parameter] == "auto" || parameters[strings.ReplaceAll(budget.Parameter, "-", "_")] == "auto")
+	if budget.Kind != schema.MemoryReserveMiB && !auto {
 		return filtered, "", nil
 	}
 	parameters = maps.Clone(parameters)
@@ -40,6 +42,9 @@ func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[st
 		}
 	}
 	filtered = config.FilterAutoValues(parameters)
+	if !auto {
+		return filtered, "", nil
+	}
 	filtered[budget.Parameter] = "auto"
 	return filtered, budget.Parameter, nil
 }

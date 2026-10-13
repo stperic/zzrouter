@@ -13,6 +13,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
@@ -36,8 +37,9 @@ func NewCommandBuilder(serviceConfig *config.ServiceConfig) *CommandBuilder {
 // model identity the rest of the system needs in order to talk to the
 // engine over the wire.
 type Launch struct {
-	Command string
-	Args    []string
+	WorkingDir string
+	Command    string
+	Args       []string
 
 	// ModelPath is the absolute path to the model's local weights, or
 	// empty when the provider's args never reference them.
@@ -145,11 +147,16 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 		wireModel = modelPath
 	}
 
+	workingDir := exec.WorkingDir
+	if workingDir != "" && !filepath.IsAbs(workingDir) {
+		workingDir = filepath.Join(fsroot.ProviderDir(cb.serviceConfig.Name), workingDir)
+	}
 	return Launch{
-		Command:   exec.Command,
-		Args:      args,
-		ModelPath: modelPath,
-		WireModel: wireModel,
+		WorkingDir: workingDir,
+		Command:    exec.Command,
+		Args:       args,
+		ModelPath:  modelPath,
+		WireModel:  wireModel,
 	}, nil
 }
 

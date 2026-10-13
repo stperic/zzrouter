@@ -791,7 +791,7 @@ func (m *ProviderAppManager) retireDisplaced(ctx context.Context, run *instance.
 	why := fmt.Sprintf("displaced by run %s (%s): the daemon unloaded it to fit that model; a request to it starts it again", run.ID, run.Model)
 	var evicted []instance.EvictedRun
 	for _, other := range m.settle(ready, held, obsruns.StopReasonMemoryPressure, func(*instance.Instance) string { return why }) {
-		evicted = append(evicted, instance.EvictedRun{RunID: other.ID, Model: other.Model, FreedMiB: other.Loaded().VRAM / constants.BytesPerMB})
+		evicted = append(evicted, instance.EvictedRun{RunID: other.ID, Model: other.Model, Provider: other.Provider, FreedMiB: other.Loaded().VRAM / constants.BytesPerMB})
 	}
 	return evicted
 }

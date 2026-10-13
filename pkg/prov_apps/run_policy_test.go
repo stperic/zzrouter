@@ -115,7 +115,7 @@ func TestDecide(t *testing.T) {
 		{name: "absent precedes queue", node: Node{Absent: true, Blocker: blocker}, err: ErrModelNotLocal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.want.Model = "model"
+			tc.want.Key = instance.NewKey("", "model", "")
 			if tc.want.Provider == "" {
 				tc.want.Provider = "fake"
 			}

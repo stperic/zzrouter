@@ -94,7 +94,7 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 			slog.Warn("failed to reclaim idle GPU run", "instance", victim.ID, "device", fit.Device, "error", err)
 			continue
 		}
-		stopped = append(stopped, instance.EvictedRun{RunID: victim.ID, Model: victim.Model, FreedMiB: mib})
+		stopped = append(stopped, instance.EvictedRun{RunID: victim.ID, Model: victim.Model, Provider: victim.Provider, FreedMiB: mib})
 		freed += mib
 		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.ID, "provider", victim.Provider, "model", victim.Model, "device", fit.Device, "held_mib", mib, "shortfall_mib", shortfall)
 	}

@@ -146,8 +146,8 @@ func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 	physical, err := filepath.EvalSymlinks(first)
 	require.NoError(t, err)
 	require.Contains(t, run.args, physical, "argv must use the same frozen feature identity as deletion ownership")
-	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(inst).State, "unchanged configuration must remain current")
-	preview, err := m.PreviewLaunch(req, 8100)
+	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(t.Context(), inst).State, "unchanged configuration must remain current")
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 	require.NoError(t, err)
 	require.Contains(t, preview.Args, physical, "preview and live launch must use the same feature preparation")
 	cfg := copyReservationConfig(t, m.AppsConfig())
@@ -156,7 +156,7 @@ func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 		return nil
 	}))
 	m.ReloadConfig(cfg)
-	require.NotContains(t, m.ParametersStatus(inst).Overridden, "parameters.mmproj", "an identical config/request alias is not an override")
+	require.NotContains(t, m.ParametersStatus(t.Context(), inst).Overridden, "parameters.mmproj", "an identical config/request alias is not an override")
 	inst.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(inst))
 	t.Cleanup(func() { _ = m.instances.Remove(inst.ID) })
@@ -170,7 +170,7 @@ func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	req := EnsureRequest{Provider: "vllm", Model: "variant"}
-	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	before, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"chat_completions", "embeddings", "messages_compat", "responses_compat"}, before.resolved.WireEndpoints)
 	assert.NotContains(t, before.launch.Args, "--mmproj")
@@ -179,15 +179,15 @@ func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 	inst.Endpoint = "chat"
 	inst.SetResolved(before.resolved)
 	landProjector(t, dir, "manifest-digest")
-	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	after, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Contains(t, after.launch.Args, filepath.Join(dir, "a-projector.gguf"))
 	assert.Equal(t, filepath.Join(dir, "weights.gguf"), after.launch.ModelPath)
 	assert.Equal(t, "manifest-digest", after.resolved.Files["mmproj"], "use manifest digest, never rehash")
-	assert.Equal(t, instance.ParametersStale, m.ParametersStatus(inst).State)
+	assert.Equal(t, instance.ParametersStale, m.ParametersStatus(t.Context(), inst).State)
 	inst.SetResolved(after.resolved)
 	require.NoError(t, integrity.RecordFiles(dir, "vendor/model", "", integrity.FileChecksum{RelativePath: "a-projector.gguf", Size: 9, SHA256: "replacement-digest", Feature: "vision"}))
-	assert.Equal(t, []string{"parameters.mmproj"}, m.ParametersStatus(inst).Changed)
+	assert.Equal(t, []string{"parameters.mmproj"}, m.ParametersStatus(t.Context(), inst).Changed)
 }
 
 func TestFeatureLaunchExplicitOptOut(t *testing.T) {
@@ -209,7 +209,7 @@ func TestFeatureLaunchExplicitOptOut(t *testing.T) {
 					} else {
 						req.Parameters = map[string]string{"mmproj": value}
 					}
-					p, err := processEngine{m}.prepare(copy, "vllm", req, 8100)
+					p, err := processEngine{m}.prepare(t.Context(), copy, "vllm", req, 8100)
 					require.NoError(t, err)
 					assert.NotContains(t, p.launch.Args, filepath.Join(dir, "a-projector.gguf"))
 					assert.NotContains(t, p.resolved.Files, "mmproj")
@@ -248,7 +248,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	fake := newFakeInstaller("test-runtime")
 	m.installs.dispatcher.Register("test-runtime", fake)
 	req := EnsureRequest{Provider: "vllm", Model: "variant", Parameters: map[string]string{"chat-template": "named-asset"}}
-	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	before, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, before.launch.Args, "vision.server")
 	isolateProviderRoot(t)
@@ -256,7 +256,7 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(python), 0700))
 	require.NoError(t, os.WriteFile(python, nil, 0700))
 	fake.installed.Store(true)
-	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	after, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Contains(t, after.launch.Args, "vision.server")
 	assert.Equal(t, python, after.launch.Command, "use the selected runtime venv")
@@ -267,9 +267,9 @@ func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
 	inst.Config = instance.Config{Provider: "vllm", Model: "variant", Port: 8100, Parameters: req.Parameters}
 	inst.Endpoint = "chat"
 	inst.SetResolved(before.resolved)
-	assert.Contains(t, m.ParametersStatus(inst).Changed, "runtime.execution")
+	assert.Contains(t, m.ParametersStatus(t.Context(), inst).Changed, "runtime.execution")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	text, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	text, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, text.launch.Args, "vision.server")
 	assert.Equal(t, svc.Runtime.Execution.Command, text.config.Runtime.Execution.Command)
@@ -279,7 +279,7 @@ func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 	m, svc, _ := featureLaunchFixture(t)
 	isolateProviderRoot(t)
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
-	before, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	before, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	inst := instance.NewInstance("executable-test", "vllm", req.Model, 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: req.Model, Port: 8100}
@@ -288,11 +288,11 @@ func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 	python := fsroot.ProviderVenvPython("vllm")
 	require.NoError(t, os.MkdirAll(filepath.Dir(python), 0700))
 	require.NoError(t, os.WriteFile(python, nil, 0700))
-	after, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	after, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, python, after.launch.Command)
 	assert.NotEqual(t, before.resolved.Execution, after.resolved.Execution)
-	assert.Contains(t, m.ParametersStatus(inst).Changed, "runtime.execution")
+	assert.Contains(t, m.ParametersStatus(t.Context(), inst).Changed, "runtime.execution")
 }
 
 func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
@@ -313,7 +313,7 @@ func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
 				cfg := &config.AppsConfig{}
 				require.NoError(t, cfg.AddApp("vllm", svc))
 				m.ReloadConfig(cfg)
-				got, err := m.ResolveLaunchParameters(EnsureRequest{Provider: "vllm", Model: "vendor/model"})
+				got, err := m.ResolveLaunchParameters(t.Context(), EnsureRequest{Provider: "vllm", Model: "vendor/model"})
 				require.NoError(t, err)
 				assert.Empty(t, got.RuntimeKey)
 				assert.Equal(t, svc.Runtime.Execution, got.Config.Runtime.Execution)
@@ -329,9 +329,9 @@ func TestPreviewLaunchUsesActualExpansionAndFlags(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	landProjector(t, dir, "digest")
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"max-model-len": "4096"}}
-	prepared, err := processEngine{m}.prepare(svc, "vllm", req, 8100)
+	prepared, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
-	preview, err := m.PreviewLaunch(req, 8100)
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 	require.NoError(t, err)
 	require.Equal(t, prepared.parameters.Params, preview.Params)
 	require.Equal(t, prepared.parameters.Environment, preview.Environment)
@@ -366,7 +366,7 @@ func TestKeepAliveNeverReachesTheLaunch(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	landProjector(t, dir, "digest")
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"keep-alive": "10m", "max-model-len": "4096"}}
-	preview, err := m.PreviewLaunch(req, 8100)
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, preview.Args, "--keep-alive")
 	assert.Equal(t, "10m", preview.Params["keep-alive"], "run policy remains visible in resolved parameters")
@@ -381,7 +381,7 @@ func TestRunSettingsPreviewAndStartRejectSameValues(t *testing.T) {
 	m, _, _ := featureLaunchFixture(t)
 	for _, key := range []string{"keep-alive", "evict-idle-on-memory-pressure", "keep_alive", "evict_idle_on_memory_pressure"} {
 		req := EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{key: "auto"}}
-		_, err := m.PreviewLaunch(req, 8100)
+		_, err := m.PreviewLaunch(t.Context(), req, 8100)
 		assert.ErrorIs(t, err, ErrParameterValidation, "preview %s", key)
 		_, err = m.EnsureRun(t.Context(), req)
 		assert.ErrorIs(t, err, ErrParameterValidation, "start %s", key)

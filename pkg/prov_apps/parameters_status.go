@@ -20,27 +20,27 @@ const (
 // that out re-resolves the run's launch, reading its asset files, so it is
 // for a caller that asked; a stopped or failed run has nothing left to
 // bring up to date.
-func (m *ProviderAppManager) InstanceInfo(inst *instance.Instance, hostname string) instance.InstanceInfo {
+func (m *ProviderAppManager) InstanceInfo(ctx context.Context, inst *instance.Instance, hostname string) instance.InstanceInfo {
 	info := inst.ToInfo(hostname)
 	if !info.Status.IsTerminal() {
-		info.ParametersStatus = m.ParametersStatus(inst)
+		info.ParametersStatus = m.ParametersStatus(ctx, inst)
 	}
 	return info
 }
 
 // ParametersStatus compares what inst was launched with to the launch a
 // restart would make now, from the config as it stands on this node.
-func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance.ParametersStatus {
+func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instance.Instance) *instance.ParametersStatus {
 	req := restartRequest(inst)
 	configKey, svcCfg, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return &instance.ParametersStatus{State: instance.ParametersUnknown, Error: ErrProviderNotFound.Error()}
 	}
-	if _, err := m.AdmitLocalModel(context.Background(), req.Model); err != nil {
+	if _, err := m.AdmitLocalModel(ctx, req.Model); err != nil {
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}
 	}
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	next, err := m.engine(Lifecycle(svcCfg)).prepare(svcCfg, configKey, req, inst.SnapshotConfig().Port)
+	next, err := m.engine(Lifecycle(svcCfg)).prepare(ctx, svcCfg, configKey, req, inst.SnapshotConfig().Port)
 	if err != nil {
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}
 	}
@@ -56,7 +56,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 			changed = append(changed, key)
 		}
 	}
-	if launched.Execution != next.resolved.Execution {
+	if launched.Execution != next.resolved.Execution || launched.WorkingDir != next.resolved.WorkingDir {
 		changed = append(changed, "runtime.execution")
 	}
 	slices.Sort(changed)
@@ -64,7 +64,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 	// What config alone resolves to, to name the keys the run's own
 	// request holds against it.
 	fromConfig, fromConfigEnv := m.resolveLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
-	if configured, err := m.modelLaunchParameters(svcCfg, process.ResolveModel(svcCfg, req.Model), EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
+	if configured, err := m.modelLaunchParameters(ctx, svcCfg, process.ResolveModel(svcCfg, req.Model), EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
 		fromConfig, fromConfigEnv = configured.Params, configured.Environment
 	}
 	freezeFeaturePaths(svcCfg, req.Parameters)

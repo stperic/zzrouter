@@ -7,6 +7,11 @@ import "context"
 // as the key prevents any cross-package collisions.
 type inventoryCacheKey struct{}
 
+// WithInventory keeps probes on the caller's chosen hardware snapshot.
+func WithInventory(ctx context.Context, inv Inventory) context.Context {
+	return context.WithValue(ctx, inventoryCacheKey{}, &inv)
+}
+
 // WithCachedInventory runs InventoryContext once and attaches the
 // result to a derived context. Subsequent calls to InventoryContext
 // or ProbeContext that receive this context return cached data
@@ -23,8 +28,7 @@ func WithCachedInventory(ctx context.Context) context.Context {
 	if _, ok := cachedInventory(ctx); ok {
 		return ctx
 	}
-	inv := InventoryContext(ctx)
-	return context.WithValue(ctx, inventoryCacheKey{}, &inv)
+	return WithInventory(ctx, InventoryContext(ctx))
 }
 
 // cachedInventory returns the Inventory attached to ctx by

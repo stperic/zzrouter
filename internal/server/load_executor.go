@@ -89,6 +89,9 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	if e.appMgr == nil {
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
+	if err := validateRunTarget(e.appMgr.AppsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
 	provider := req.Provider
 	if provider == "" {
 		var err error
@@ -111,7 +114,7 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	if reused {
 		message = fmt.Sprintf("Model '%s' is already %s", run.Model, status)
 	}
-	return &LoadModelResponse{Reused: reused, InstanceID: run.ID, JobID: run.StreamJobID, Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Message: message}, nil
+	return &LoadModelResponse{BaseURL: run.BaseURL, Reused: reused, InstanceID: run.ID, JobID: run.StreamJobID, Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Message: message}, nil
 }
 
 // PreviewLocalRun generates a preview of what would be run
@@ -119,6 +122,9 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	utils.LogDebugf("[LoadExecutor] PreviewLocalRun: model=%s, provider=%s",
 		req.ModelName, req.Provider)
 
+	if err := validateRunTarget(e.appMgr.AppsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
 	if err := e.appMgr.ValidateModel(ctx, req.ModelName); err != nil {
 		return nil, err
 	}
@@ -142,13 +148,14 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	if p, err := e.appMgr.Ports().ProjectForProvider(normalizedApp); err == nil {
 		projectedPort = p
 	}
-	launch, err := e.appMgr.PreviewLaunch(prov_apps.EnsureRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
+	launch, err := e.appMgr.PreviewLaunch(ctx, prov_apps.EnsureRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
 	if err != nil {
 		return nil, err
 	}
-	workingDir := "."
-	if launch.Config.Runtime != nil && launch.Config.Runtime.Execution.WorkingDir != "" {
-		workingDir = launch.Config.Runtime.Execution.WorkingDir
+
+	workingDir := launch.WorkingDir
+	if workingDir == "" {
+		workingDir = "."
 	}
 	fullCommand := strings.Join(append([]string{launch.Command}, launch.Args...), " ")
 

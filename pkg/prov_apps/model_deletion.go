@@ -109,6 +109,9 @@ func (m *ProviderAppManager) CheckModelDeletion(ctx context.Context, target inst
 }
 
 func (m *ProviderAppManager) reserveWeights(ctx context.Context, req EnsureRequest, selection launchSelection) instance.Weights {
+	if req.Model == "" {
+		return instance.Weights{}
+	}
 	name, _, _ := strings.Cut(selection.config.WeightsOf(req.Model), "#")
 	weights := instance.Weights{Model: m.CanonicalModelName(name), Paths: selection.model.WeightPaths()}
 	if m.modelSource != nil {

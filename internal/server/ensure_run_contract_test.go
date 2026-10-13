@@ -424,7 +424,7 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 		c.Request = inference("/v1/chat/completions", body)
 		httperr.AttachResponder(openaiproto.New())(c)
 		r.daemon.run = func() *instance.Instance {
-			run, _ := r.mgr.Instances().GetByModel(servedDaemonModel)
+			run, _ := r.mgr.Instances().GetByKey(instance.NewKey("", servedDaemonModel, ""))
 			return run
 		}
 		resolved := &resolver.Resolved{OriginalName: "g", GroupName: "g", Strategy: "priority", Candidates: []fallback.Candidate{{Name: "r1", App: "ollama", Model: servedClientModel}}}
@@ -434,7 +434,7 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 		assert.Equal(t, servedDaemonHost, seen.host)
 		assert.Equal(t, "Bearer "+servedCredential, seen.auth)
 		assert.Equal(t, int64(1), seen.active, "the replica's request holds a lease")
-		run, ok := r.mgr.Instances().GetByModel(servedDaemonModel)
+		run, ok := r.mgr.Instances().GetByKey(instance.NewKey("", servedDaemonModel, ""))
 		require.True(t, ok, "the replica's model became a run")
 		assert.Equal(t, instance.StartedByRequest, run.StartedBy)
 		assert.False(t, run.GetLastActivity().IsZero(), "the lease stamped activity")

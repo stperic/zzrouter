@@ -3,7 +3,6 @@ package schema
 import (
 	"bytes"
 	"fmt"
-
 	"regexp"
 
 	"gopkg.in/yaml.v3"
@@ -26,8 +25,22 @@ type RuntimeChecks struct {
 	Workaround     map[string]string `yaml:"workaround,omitempty" json:"workaround,omitempty"`
 }
 
+const (
+	// MemoryReserveMiB keeps reserved capacity distinct from measured usage.
+	MemoryReserveMiB = "reserve_mib"
+	// MemoryFractionTotal gives fraction knobs a common admission rule.
+	MemoryFractionTotal = "fraction_total"
+	// MemoryLayers identifies knobs whose layer counts do not measure capacity.
+	MemoryLayers = "layers"
+	// MemoryUnified identifies memory shared by the system and accelerator.
+	MemoryUnified = "unified"
+	// MemoryExternal leaves admission with the provider's own engine.
+	MemoryExternal = "external"
+)
+
 // MemoryBudget declares how an engine's knob requests device memory.
 type MemoryBudget struct {
+	ComplementParameter  string `yaml:"complement_parameter,omitempty" json:"complement_parameter,omitempty"`
 	Kind                 string `yaml:"kind" json:"kind"`
 	Parameter            string `yaml:"parameter,omitempty" json:"parameter,omitempty"`
 	DeviceCountParameter string `yaml:"device_count_parameter,omitempty" json:"device_count_parameter,omitempty"`
@@ -145,17 +158,24 @@ func (m *MemoryBudget) validate() error {
 	if m.AutoSafetyMarginMiB < 0 {
 		return fmt.Errorf("auto safety margin must not be negative")
 	}
-	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter} {
+	for _, parameter := range []string{m.Parameter, m.DeviceCountParameter, m.ComplementParameter} {
 		if parameter != "" && !validDiagnosticName(parameter) {
 			return fmt.Errorf("invalid memory parameter %q", parameter)
 		}
 	}
+	if m.ComplementParameter != "" && (m.Kind != MemoryReserveMiB || m.ComplementParameter == m.Parameter) {
+		return fmt.Errorf("complement parameter requires a distinct %s parameter", MemoryReserveMiB)
+	}
 	switch m.Kind {
-	case "fraction_total":
+	case MemoryReserveMiB:
+		if m.Parameter == "" || m.DeviceCountParameter != "" {
+			return fmt.Errorf("%s requires a parameter and one device", MemoryReserveMiB)
+		}
+	case MemoryFractionTotal:
 		if m.Parameter == "" {
 			return fmt.Errorf("fraction budget requires parameter")
 		}
-	case "layers", "unified", "external":
+	case MemoryLayers, MemoryUnified, MemoryExternal:
 	default:
 		return fmt.Errorf("unknown memory budget %q", m.Kind)
 	}

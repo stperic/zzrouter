@@ -33,6 +33,7 @@ const (
 // ServiceConfig represents a single app's configuration (synthesized
 // view of a typed Provider in the providers/ directory tree)
 type ServiceConfig struct {
+	RunScope string             `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
 	Install  *InstallConfig     `yaml:"install,omitempty" json:"install,omitempty"`
 	Features map[string]Feature `yaml:"features,omitempty" json:"features,omitempty"`
 	// Core app settings
@@ -43,7 +44,7 @@ type ServiceConfig struct {
 	Enabled       *bool       `yaml:"enabled,omitempty"`
 	Name          string      `yaml:"name"`
 	Description   string      `yaml:"description,omitempty"`
-	Protocol      AppProtocol `yaml:"protocol"`
+	Protocol      AppProtocol `yaml:"protocol,omitempty"`
 	Mode          string      `yaml:"mode"`
 	PinnedVersion string      `yaml:"pinned_version,omitempty"` // Pin to specific version (e.g., "0.8.5", "b5604")
 	// Platforms lists the (os, arch) tuples where this provider can install.
@@ -580,4 +581,24 @@ func (c *AppCapabilities) ValidateWireEndpoints() error {
 		}
 	}
 	return nil
+}
+
+// ValidateRunTarget keeps model requirements consistent across launch and preview.
+func (s ServiceConfig) ValidateRunTarget(model, endpoint string) error {
+	if s.RunScope == RunScopeNode {
+		if model != "" || endpoint != "" {
+			return fmt.Errorf("node-scoped provider %q accepts no model_name or endpoint", s.Name)
+		}
+	} else if model == "" {
+		return fmt.Errorf("model_name is required: a model-scoped run names its model")
+	}
+	return nil
+}
+
+// ValidatePlatform keeps install and launch restrictions on the same declared platforms.
+func (s ServiceConfig) ValidatePlatform(os, arch string) error {
+	if len(s.Platforms) == 0 || slices.ContainsFunc(s.Platforms, func(p InstallPlatform) bool { return p.OS == os && (p.Arch == "" || p.Arch == arch) }) {
+		return nil
+	}
+	return fmt.Errorf("provider %q is not supported on %s/%s", s.Name, os, arch)
 }

@@ -32,7 +32,7 @@ func TestPreparedToolkitReachesNativeLifecycleChild(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(compiler), 0700))
 	require.NoError(t, os.WriteFile(compiler, []byte("synthetic compiler"), 0700))
 	require.NoError(t, fsroot.WriteInstallManifest(svc.Name, &fsroot.InstallManifest{Recipe: &recipe, Interpreter: &fsroot.ManifestInterpreter{Version: "3.13.7"}}))
-	prepared, err := processEngine{m}.prepare(svc, "vllm", EnsureRequest{Provider: "vllm", Model: "vendor/model", EnvVars: map[string]string{"CUDA_LIB_PATH": "/host/cuda/lib"}}, 8100)
+	prepared, err := processEngine{m}.prepare(t.Context(), svc, "vllm", EnsureRequest{Provider: "vllm", Model: "vendor/model", EnvVars: map[string]string{"CUDA_LIB_PATH": "/host/cuda/lib"}}, 8100)
 	require.NoError(t, err)
 	require.NotNil(t, prepared.executionEnvironment)
 	assert.Equal(t, filepath.Join(root, "lib"), prepared.resolved.Environment["CUDA_LIB_PATH"])

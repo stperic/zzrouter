@@ -74,6 +74,8 @@ type RunPreview struct {
 
 // Instance represents a running app instance
 type Instance struct {
+	BaseURL         string         `json:"base_url,omitempty"`
+	EngineBusy      bool           `json:"engine_busy,omitempty"`
 	ID              string         `json:"id"`
 	Node            string         `json:"node"`
 	App             string         `json:"provider"`

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -19,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -135,7 +135,7 @@ type ProviderAppManager struct {
 
 	// flights holds the start in flight per run key; flightsMu guards only the map.
 	flightsMu      sync.Mutex
-	flights        map[string]*flight
+	flights        map[instance.Key]*flight
 	localCatalog   func(context.Context, string) (bool, error)
 	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
 	resolveBackend func(string) (*backend.Resolved, bool)
@@ -143,6 +143,7 @@ type ProviderAppManager struct {
 	// nodename is this node's cluster name, used to resolve the node
 	// tiers of the parameter tree. Optional; nil means Tier 0 only.
 	nodename func() string
+	selfHost func() string
 
 	// localizeParams turns configured parameter values into what this
 	// node's engine is given. Optional; nil passes them through.
@@ -151,6 +152,7 @@ type ProviderAppManager struct {
 	installPolicyFile   string
 	memoryBudget        func(provider string) (*schema.MemoryBudget, error)
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
+	memoryInventory     func(context.Context) []gpu.CardMetrics
 	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
@@ -163,7 +165,7 @@ type ProviderAppManager struct {
 	sightingsMu sync.Mutex
 	sightings   map[string]map[string]bool
 	// seams pause the start path where tests must interleave; nil in production.
-	seams struct{ beforeLaunch, processStarted, flightRemoved func() }
+	seams struct{ beforeLaunch, processStarted, flightRemoved, admitted func() }
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -234,7 +236,7 @@ func WithModelValidator(fn func(context.Context, string) error) Option {
 
 // ValidateModel checks a name before any canonicalization or warm reuse.
 func (m *ProviderAppManager) ValidateModel(ctx context.Context, model string) error {
-	if m.validateModel == nil {
+	if model == "" || m.validateModel == nil {
 		return nil
 	}
 	return AdmissionRefusal(model, m.validateModel(ctx, model))
@@ -263,6 +265,9 @@ type localModelAdmission struct {
 func (m *ProviderAppManager) AdmitLocalModel(ctx context.Context, model string) (context.Context, error) {
 	if err := ctx.Err(); err != nil {
 		return ctx, err
+	}
+	if model == "" {
+		return ctx, nil
 	}
 	m.mu.RLock()
 	cfg, fp := m.appsConfig, m.lastReloadFP
@@ -343,8 +348,9 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
+		memoryInventory: inventory.Default().GetGPUCardMetrics,
 		services:        make(map[string]*managedService),
-		flights:         make(map[string]*flight),
+		flights:         make(map[instance.Key]*flight),
 		sightings:       make(map[string]map[string]bool),
 	}
 
@@ -942,14 +948,14 @@ func (m *ProviderAppManager) GetInstanceByModel(provider, model string, endpoint
 // GetInstanceByCanonicalModel reads a resolved run key without alias or catalog resolution.
 func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
 	if key, svc, ok := m.resolveConfigKey(provider); ok {
-		run, found := m.instances.GetByModelEndpoint(m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint)))
+		run, found := m.instances.GetByKey(instance.NewKey(key, m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint))))
 		if found {
 			runKey, _, known := m.resolveConfigKey(run.Provider)
 			found = known && runKey == key
 		}
 		return run, found
 	}
-	if run, ok := m.instances.GetByModelEndpoint(model, string(EndpointOrDefault(endpoint))); ok {
+	if run, ok := m.instances.GetByKey(instance.NewKey("", model, string(EndpointOrDefault(endpoint)))); ok {
 		return run, provider == "" || utils.NormalizeAppType(run.Provider) == utils.NormalizeAppType(provider)
 	}
 	if provider != "" {
@@ -960,7 +966,7 @@ func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string,
 	found := false
 	m.AppsConfig().RangeApps(func(key string, svc config.ServiceConfig) bool {
 		if Lifecycle(svc) == LifecycleServed {
-			run, found = m.instances.GetByModel(m.daemonName(key, svc, model))
+			run, found = m.instances.GetByKey(instance.NewKey("", m.daemonName(key, svc, model), ""))
 		}
 		return !found
 	})
@@ -973,7 +979,7 @@ func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string,
 // has to land on the same instance, so anything keyed by model name
 // (registry lookups, launch keys) resolves through here first.
 func (m *ProviderAppManager) CanonicalModelName(model string) string {
-	if m.canonicalModel == nil {
+	if model == "" || m.canonicalModel == nil {
 		return model
 	}
 	if canonical := m.canonicalModel(model); canonical != "" {
@@ -1032,12 +1038,11 @@ func (m *ProviderAppManager) ProviderStatus(name string) (*ProviderStatus, error
 		return nil, ErrProviderNotFound
 	}
 
-	managed := false
+	inst, managed := m.installs.managedInstaller(name)
 	var managedProcess process.Presence
 	// Version cache is keyed by config key (e.g., "llamacpp"), installer by display name (e.g., "llama.cpp").
 	version := m.ProviderVersion(configKey)
-	if inst, err := m.installs.Dispatcher().Get(name); err == nil {
-		managed = inst.IsInstalled()
+	if inst != nil {
 		if v, err := inst.InstalledVersion(); err == nil && v != "" {
 			version = v
 		}
@@ -1052,7 +1057,7 @@ func (m *ProviderAppManager) ProviderStatus(name string) (*ProviderStatus, error
 
 	// Provider is "installed" if either managed by zzRouter or detected externally.
 	// "unknown" means detection ran but couldn't determine the version — not a real install.
-	installed := managed || (version != "" && version != versionUnknown)
+	installed := m.providerInstalled(configKey, svcCfg, managed, version)
 
 	instances := m.instances.ListByProvider(configKey)
 	infos := make([]instance.InstanceInfo, 0, len(instances))
@@ -1185,4 +1190,19 @@ func (m *ProviderAppManager) InstallPolicyCapabilities(sc config.ServiceConfig, 
 	}
 	result.OverrideApproved = true
 	return result
+}
+
+// WithSelfHost supplies the node address used to advertise directly reachable run URLs.
+func WithSelfHost(resolve func() string) Option {
+	return func(m *ProviderAppManager) { m.selfHost = resolve }
+}
+
+func (m *ProviderAppManager) providerInstalled(key string, svc config.ServiceConfig, managed bool, version string) bool {
+	if managed {
+		return true
+	}
+	if svc.RunScope == config.RunScopeNode {
+		return detect.Runnable(key, &svc)
+	}
+	return version != "" && version != versionUnknown
 }

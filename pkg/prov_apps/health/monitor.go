@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
-
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -132,6 +132,7 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
+	activityFailures := 0
 
 	for {
 		select {
@@ -145,12 +146,25 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 			}
 
 			// Check process liveness first — fail immediately if dead
-			if current.ProcessID != 0 && !process.ProcessExists(int32(current.ProcessID)) {
+			if pid := current.GetProcessID(); pid != 0 && !process.ProcessExists(int32(pid)) {
 				if err := m.registry.UpdateStatus(instanceID, instance.StatusFailed,
-					fmt.Sprintf("Process %d is not running", current.ProcessID)); err != nil {
+					fmt.Sprintf("Process %d is not running", pid)); err != nil {
 					slog.Warn("failed to update instance status", "instance", instanceID, "error", err)
 				}
 				return
+			}
+
+			if hcConfig.ActivityProbe != nil {
+				busy, ok := m.checkActivity(ctx, current, hcConfig)
+				if ok {
+					activityFailures = 0
+					current.ObserveActivity(busy)
+				} else {
+					activityFailures++
+					if activityFailures >= maxFailures {
+						current.ObserveActivity(false)
+					}
+				}
 			}
 
 			// HTTP health check
@@ -205,12 +219,7 @@ func (m *Monitor) checkHTTP(ctx context.Context, inst *instance.Instance, config
 		return true
 	}
 
-	timeout := m.config.Timeout
-	if config.Timeout > 0 {
-		timeout = config.Timeout
-	}
-
-	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	checkCtx, cancel := m.checkContext(ctx, config)
 	defer cancel()
 
 	method := config.HTTPHealthMethod
@@ -218,7 +227,7 @@ func (m *Monitor) checkHTTP(ctx context.Context, inst *instance.Instance, config
 		method = "GET"
 	}
 
-	req, err := http.NewRequestWithContext(checkCtx, method, inst.HealthURL, nil)
+	req, err := engineRequest(checkCtx, method, inst.HealthURL, nil)
 	if err != nil {
 		return false
 	}
@@ -256,7 +265,7 @@ func (m *Monitor) Serves(ctx context.Context, inst *instance.Instance, check *Se
 	defer cancel()
 
 	url := fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, check.Path)
-	req, err := http.NewRequestWithContext(reqCtx, check.method(), url, strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
+	req, err := engineRequest(reqCtx, check.method(), url, strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
 	if err != nil {
 		return false
 	}
@@ -288,4 +297,56 @@ func expandWireModel(body, wireModel string) string {
 		return body
 	}
 	return strings.ReplaceAll(body, wireModelPlaceholder, string(escaped[1:len(escaped)-1]))
+}
+
+// activityProbeMaxBytes bounds queue reports even when an engine returns an unexpected payload.
+const activityProbeMaxBytes = 1 << 20
+
+func (m *Monitor) checkContext(ctx context.Context, cfg CheckConfig) (context.Context, context.CancelFunc) {
+	timeout := m.config.Timeout
+	if cfg.Timeout > 0 {
+		timeout = cfg.Timeout
+	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func engineRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
+	return (&backend.Resolved{Endpoint: endpoint, Upstream: backend.Engine()}).NewRequest(ctx, method, "", body)
+}
+
+func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig) (bool, bool) {
+	ctx, cancel := m.checkContext(ctx, cfg)
+	defer cancel()
+	req, err := engineRequest(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, cfg.ActivityProbe.Path), nil)
+	if err != nil {
+		return false, false
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, activityProbeMaxBytes+1))
+	if err != nil || len(data) > activityProbeMaxBytes {
+		return false, false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(data, &fields) != nil {
+		return false, false
+	}
+	busy := false
+	for _, field := range cfg.ActivityProbe.BusyWhenNonempty {
+		var queue []json.RawMessage
+		if json.Unmarshal(fields[field], &queue) != nil || queue == nil {
+			return false, false
+		}
+		busy = busy || len(queue) > 0
+	}
+	return busy, true
 }

@@ -42,10 +42,10 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 	assert.Equal(t, "tier1", got["ctx-size"], "the base's model cell")
 	assert.Equal(t, "v", got["only-variant"], "the variant's own")
 
-	found, ok := m.Instances().GetByModelEndpoint(tierVariant, string(EndpointChat))
+	found, ok := m.Instances().GetByKey(instance.NewKey("", tierVariant, string(EndpointChat)))
 	require.True(t, ok)
 	assert.Equal(t, inst.ID, found.ID)
-	_, ok = m.Instances().GetByModelEndpoint("llama3", string(EndpointChat))
+	_, ok = m.Instances().GetByKey(instance.NewKey("", "llama3", string(EndpointChat)))
 	assert.False(t, ok, "the base has no run of its own")
 
 	// Its base's cell is part of what it launched with.
@@ -53,7 +53,7 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 		withVariant(svc)
 		svc.Models["llama3"] = config.ModelSpec{Parameters: map[string]string{"ctx-size": "changed"}}
 	})
-	st := m.ParametersStatus(inst)
+	st := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, st.State)
 	assert.Contains(t, st.Changed, "parameters.ctx-size")
 
@@ -164,7 +164,7 @@ func TestLocalModelAdmission_ReusesOnlyTheCheckedOperation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	inst := instance.NewInstance("admission-status", "vllm", tierVariant, 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: tierVariant, Port: 8100}
-	status := m.ParametersStatus(inst)
+	status := m.ParametersStatus(t.Context(), inst)
 	require.Equal(t, instance.ParametersUnknown, status.State)
 	assert.Contains(t, status.Error, "model name conflict")
 	require.NoError(t, cfg.UpdateApp("vllm", func(sc *config.ServiceConfig) error {

@@ -353,6 +353,6 @@ func TestEnsureRun_LocalizerRefusalRefusesLaunch(t *testing.T) {
 	assert.Equal(t, "vllm", gotProvider)
 	assert.Equal(t, string(EndpointChat), gotEndpoint)
 	assert.Equal(t, "t.jinja", gotParams["template"])
-	_, exists := m.instances.GetByModelEndpoint("llama3", string(EndpointChat))
+	_, exists := m.instances.GetByKey(instance.NewKey("", "llama3", string(EndpointChat)))
 	assert.False(t, exists)
 }

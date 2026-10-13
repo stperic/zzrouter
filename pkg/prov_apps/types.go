@@ -36,8 +36,13 @@ type EnsureRequest struct {
 	NativeConfig     *instance.NativeConfig
 }
 
+// Key returns the identity shared by registry lookups and concurrent ensures.
+func (r EnsureRequest) Key() instance.Key {
+	return instance.NewKey(r.Provider, r.Model, string(r.Endpoint))
+}
+
 func (r EnsureRequest) want() Want {
-	return Want{Model: r.Model, Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin}
+	return Want{Key: r.Key(), Provider: r.Provider, Runtime: r.Runtime, Plan: r.DisposablePlanID, Force: r.Force, Unload: r.Unload, Origin: r.Origin}
 }
 
 // EnsureResult reports a reused or newly started run; no run means the provider serves the model without one.

@@ -210,13 +210,22 @@ func TestRunSettingsProtocolCutoverContract(t *testing.T) {
 }
 
 func TestDeploymentLifecycleProtocolCutoverContract(t *testing.T) {
-	if ClusterProtocolVersion != 7 || MinClusterProtocolVersion != 7 {
-		t.Fatal("observable placement requires protocol 7/7")
+	if ClusterProtocolVersion < 7 || MinClusterProtocolVersion < 7 {
+		t.Fatalf("observable placement requires protocol 7/7, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
 	}
 	if err := LocalProtocolWindow().Check(6); err == nil {
 		t.Fatal("old worker admitted without observable placement acceptance")
 	}
-	if err := LocalProtocolWindow().Check(7); err != nil {
+}
+
+func TestNodeScopedRunsProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 8 || MinClusterProtocolVersion < 8 {
+		t.Fatalf("node-scoped runs require protocol 8/8, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(7); err == nil {
+		t.Fatal("old worker admitted that refuses run_scope, activity probes and reserve_mib")
+	}
+	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
 		t.Fatal(err)
 	}
 }
