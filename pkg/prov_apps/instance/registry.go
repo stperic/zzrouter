@@ -21,27 +21,37 @@ const maxSanitizedModelNameLen = 32
 // NEVER acquire Instance.mu and then try to acquire Registry.mu.
 type Registry struct {
 	instances map[string]*Instance // instanceID → Instance
-	modelMap  map[string]string    // modelEndpointKey(model, endpoint) → instanceID
+	keyMap    map[Key]string       // run key → instanceID
 	portMap   map[int]string       // port → instanceID
 	changed   chan struct{}
 	mu        sync.RWMutex
 }
 
-// modelEndpointKey composes the lookup key. NUL separator is invalid in
-// any model/endpoint identifier so collision is impossible.
-func modelEndpointKey(model, endpoint string) string {
+// Key preserves model exclusivity while giving model-less providers their own identity.
+type Key struct {
+	Provider, Model, Endpoint string
+}
+
+// NewKey includes the provider only when the run serves no model.
+func NewKey(provider, model, endpoint string) Key {
+	if model == "" {
+		return Key{Provider: provider}
+	}
 	if endpoint == "" {
 		endpoint = "chat"
 	}
-	return model + "\x00" + endpoint
+	return Key{Model: model, Endpoint: endpoint}
 }
+
+// Key returns the immutable identity under which this run is registered.
+func (i *Instance) Key() Key { return NewKey(i.Provider, i.Model, i.Endpoint) }
 
 // NewRegistry creates a new instance registry.
 func NewRegistry() *Registry {
 	return &Registry{
 		instances: make(map[string]*Instance),
 		changed:   make(chan struct{}, 1),
-		modelMap:  make(map[string]string),
+		keyMap:    make(map[Key]string),
 		portMap:   make(map[int]string),
 	}
 }
@@ -68,16 +78,15 @@ func (r *Registry) Register(inst *Instance) error {
 		return fmt.Errorf("%w: %s", ErrInstanceAlreadyExists, inst.ID)
 	}
 
-	if inst.Model != "" {
-		key := modelEndpointKey(inst.Model, inst.Endpoint)
-		if existingID, exists := r.modelMap[key]; exists {
+	if key := inst.Key(); key != (Key{}) {
+		if existingID, exists := r.keyMap[key]; exists {
 			existing := r.instances[existingID]
 			status := existing.GetStatus()
 			if existing.StopUnconfirmed.Load() || (status != StatusFailed && status != StatusStopped) {
 				return fmt.Errorf("%w: %s (instance %s)", ErrModelAlreadyLoaded, inst.Model, existingID)
 			}
 			// Clean up stale mappings for the replaced instance.
-			delete(r.modelMap, key)
+			delete(r.keyMap, key)
 			if existing.Port > 0 {
 				delete(r.portMap, existing.Port)
 			}
@@ -90,8 +99,8 @@ func (r *Registry) Register(inst *Instance) error {
 	inst.notifyIdleLocked()
 	inst.mu.Unlock()
 	r.instances[inst.ID] = inst
-	if inst.Model != "" {
-		r.modelMap[modelEndpointKey(inst.Model, inst.Endpoint)] = inst.ID
+	if key := inst.Key(); key != (Key{}) {
+		r.keyMap[key] = inst.ID
 	}
 	if inst.Port > 0 {
 		r.portMap[inst.Port] = inst.ID
@@ -108,28 +117,11 @@ func (r *Registry) Get(id string) (*Instance, bool) {
 	return inst, ok
 }
 
-// GetByModel returns the run of model on any endpoint, chat first.
-func (r *Registry) GetByModel(model string) (*Instance, bool) {
-	if inst, ok := r.GetByModelEndpoint(model, "chat"); ok {
-		return inst, true
-	}
+// GetByKey returns the run holding key.
+func (r *Registry) GetByKey(key Key) (*Instance, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for key, id := range r.modelMap {
-		if name, _, _ := strings.Cut(key, "\x00"); name == model {
-			inst, ok := r.instances[id]
-			return inst, ok
-		}
-	}
-	return nil, false
-}
-
-// GetByModelEndpoint returns the instance serving (model, endpoint).
-func (r *Registry) GetByModelEndpoint(model, endpoint string) (*Instance, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	id, ok := r.modelMap[modelEndpointKey(model, endpoint)]
+	id, ok := r.keyMap[key]
 	if !ok {
 		return nil, false
 	}
@@ -170,9 +162,7 @@ func (r *Registry) Remove(id string) error {
 
 	delete(r.instances, id)
 	r.NotifyChanged()
-	if inst.Model != "" {
-		delete(r.modelMap, modelEndpointKey(inst.Model, inst.Endpoint))
-	}
+	delete(r.keyMap, inst.Key())
 	if inst.Port > 0 {
 		delete(r.portMap, inst.Port)
 	}
@@ -310,9 +300,7 @@ func (r *Registry) CleanupExpiredFailures() int {
 		if status == StatusFailed && !inst.StopUnconfirmed.Load() && !failedAt.IsZero() && now.Sub(failedAt) > FailedInstanceTTL {
 			delete(r.instances, id)
 			r.NotifyChanged()
-			if inst.Model != "" {
-				delete(r.modelMap, modelEndpointKey(inst.Model, inst.Endpoint))
-			}
+			delete(r.keyMap, inst.Key())
 			if inst.Port > 0 {
 				delete(r.portMap, inst.Port)
 			}

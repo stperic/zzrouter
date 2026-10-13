@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 
@@ -144,6 +145,9 @@ func (p *OnDemandProvider) validateRunScope() error {
 	case "", "model":
 		return nil
 	case RunScopeNode:
+		if dir := p.Runtime.Execution.WorkingDir; dir != "" && (!fs.ValidPath(dir) || strings.ContainsAny(dir, "\\\\:")) {
+			return fmt.Errorf("node run_scope working_dir must stay inside the provider directory")
+		}
 		if p.Protocol != "" || len(p.Models) != 0 || len(p.Features) != 0 || p.Search != nil {
 			return fmt.Errorf("node run_scope cannot declare protocol, models, features or search")
 		}

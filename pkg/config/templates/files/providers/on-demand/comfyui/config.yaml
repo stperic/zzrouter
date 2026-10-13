@@ -1,0 +1,31 @@
+# MANAGED FILE : overwritten on every cluster sync.
+description: ComfyUI image and video GPU tenant
+enabled: false
+run_scope: node
+platforms:
+  - {os: linux}
+requirements:
+  gpu: {vendor: nvidia, policy: required}
+defaults:
+  parameters:
+    gpu-reserve-mib: "8192"
+    listen: "0.0.0.0"
+    keep-alive: "5m"
+runtime:
+  base_port: 8188
+  port_range: [8188, 8188]
+  execution:
+    type: python
+    command: python
+    args: ["main.py", "--port", "${PORT}"]
+    working_dir: source
+  health_check:
+    path: /system_stats
+    interval: 2s
+    timeout: 3s
+    readiness_probe:
+      timeout: 2m
+      serve: {path: /system_stats}
+  activity_probe:
+    path: /queue
+    busy_when_nonempty: [queue_running, queue_pending]

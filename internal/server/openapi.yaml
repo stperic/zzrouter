@@ -11197,6 +11197,13 @@ components:
             with, so match rows on it rather than on what you sent.
         status:   { type: string }
         port:     { type: integer }
+        base_url: { type: string, format: uri, description: Direct engine URL using the node advertised address; no zzRouter authentication or proxy. }
+        engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
+        memory_commitments_mib:
+          type: object
+          additionalProperties: { type: integer }
+          description: Per-device reservations retained for the run.
+
         started:  { type: string, format: date-time }
         endpoint: { type: string }
         parameters:
@@ -11548,7 +11555,8 @@ components:
       type: object
       required: [provider]
       description: |
-        Either `model` or `model_name` must be set. `model_name` wins
+        For a model-scoped provider, `model` or `model_name` must be set.
+        For `run_scope: node`, omit both and `endpoint`. `model_name` wins
         when both are present; `model` is preferred for parity with
         `/v1/*`.
       properties:
@@ -11581,7 +11589,7 @@ components:
     PreviewRunRequest:
       type: object
       description: |
-        Either `model` or `model_name` must be set, as for POST /runs.
+        Model fields follow the provider run_scope rule, as for POST /runs.
         Unknown fields are refused.
       properties:
         provider:   { type: string }
@@ -11599,8 +11607,8 @@ components:
 
     LoadModelRequest:
       type: object
-      required: [model_name]
       description: |
+        Model fields are required for model-scoped providers and omitted for node-scoped providers.
         `model_name` is resolved to the name this node knows the model
         by before the request is keyed on it, so the canonical name and
         any SourceID alias the catalog carries for it (a HuggingFace

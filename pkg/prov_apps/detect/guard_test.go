@@ -18,6 +18,7 @@ var allowedDetectExports = map[string]bool{
 	// The load-bearing spawn-path resolvers + ollama probes.
 	"ProviderPython":        true,
 	"ProviderCLI":           true,
+	"Runnable":              true,
 	"ProbeOllama":           true,
 	"OllamaVersionEndpoint": true,
 }

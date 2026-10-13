@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"maps"
 	"slices"
 
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -70,12 +71,15 @@ type Config struct {
 // InstanceInfo is a read-only snapshot of an instance for API responses.
 // Public APIs return this instead of a mutable *Instance pointer.
 type InstanceInfo struct {
-	Runtime          string `json:"runtime,omitempty"`
-	DisposablePlanID string `json:"disposable_plan_id,omitempty"`
-	ID               string `json:"id"`
-	Provider         string `json:"provider"`
-	LaunchMode       string `json:"launch_mode,omitempty"`
-	Model            string `json:"model,omitempty"`
+	BaseURL           string           `json:"base_url,omitempty"`
+	EngineBusy        bool             `json:"engine_busy,omitempty"`
+	MemoryCommitments map[string]int64 `json:"memory_commitments_mib,omitempty"`
+	Runtime           string           `json:"runtime,omitempty"`
+	DisposablePlanID  string           `json:"disposable_plan_id,omitempty"`
+	ID                string           `json:"id"`
+	Provider          string           `json:"provider"`
+	LaunchMode        string           `json:"launch_mode,omitempty"`
+	Model             string           `json:"model,omitempty"`
 	// Endpoint is the per-request endpoint label this instance serves
 	// ("chat", "embeddings", "reranking"). Empty defaults to chat.
 	// Surfaced so run listings can distinguish multi-endpoint launches for one model.
@@ -116,8 +120,9 @@ type InstanceInfo struct {
 
 // EvictedRun is an idle run a launch stopped to fit its GPU memory budget.
 type EvictedRun struct {
-	RunID string `json:"run_id"`
-	Model string `json:"model"`
+	Provider string `json:"provider,omitempty"`
+	RunID    string `json:"run_id"`
+	Model    string `json:"model"`
 	// FreedMiB is the GPU memory the driver attributed to the run when it was stopped.
 	FreedMiB int64 `json:"freed_mib"`
 }
@@ -125,6 +130,8 @@ type EvictedRun struct {
 // Resolved is what one launch computed from config: the values its
 // process was given, before node-local paths replace asset names.
 type Resolved struct {
+	WorkingDir  string
+	Commitments map[string]int64
 	// AutoMemory records which parameter was resolved from auto at launch.
 	AutoMemory string
 	Runtime    string
@@ -140,7 +147,7 @@ type Resolved struct {
 
 func (r Resolved) clone() Resolved {
 	return Resolved{
-		Runtime: r.Runtime, AutoMemory: r.AutoMemory,
+		Runtime: r.Runtime, AutoMemory: r.AutoMemory, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),
 		Execution: r.Execution, WireEndpoints: slices.Clone(r.WireEndpoints),
 		Parameters:  copyStringMap(r.Parameters),
 		Environment: copyStringMap(r.Environment),

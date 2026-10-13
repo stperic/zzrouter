@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -196,6 +198,7 @@ func wireEndpoints(svc config.ServiceConfig) []string {
 // LaunchParameters is the node's effective launch configuration before argv
 // construction. Preview and live preparation share this resolution.
 type LaunchParameters struct {
+	Commitments          map[string]int64
 	autoMemory           string
 	model                process.ResolvedModel
 	ExecutionEnvironment process.EnvironmentTransform
@@ -209,6 +212,14 @@ type LaunchParameters struct {
 }
 
 func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
+	if err := svc.ValidatePlatform(runtime.GOOS, runtime.GOARCH); err != nil {
+		return LaunchParameters{}, fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
+	}
+	if svc.RunScope == config.RunScopeNode && svc.Requirements != nil {
+		if result, checked := preflight.GPU(context.Background(), svc.Requirements.GPU); checked && !result.Passed {
+			return LaunchParameters{}, fmt.Errorf("%w: provider %s: %s; %s", ErrUnsupportedPlatform, svc.Name, result.Message, result.Hint)
+		}
+	}
 	if req.Runtime != "" && req.DisposablePlanID == "" && req.Origin != OriginInstall {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
@@ -296,8 +307,32 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 	if err != nil {
 		return LaunchParameters{}, err
 	}
+	commitments := make(map[string]int64)
+	budget, err := m.launchBudget(req.Provider)
+	if err != nil {
+		return LaunchParameters{}, err
+	}
+	if budget != nil && budget.Kind == "reserve_mib" {
+		devices, err := m.memorySnapshot(context.Background())
+		if err != nil {
+			return LaunchParameters{}, fmt.Errorf("%w: NVIDIA GPU memory: %w", process.ErrMemoryObservation, err)
+		}
+		childEnv, err := process.ChildEnvironment(env)
+		if err != nil {
+			return LaunchParameters{}, err
+		}
+		for _, entry := range childEnv {
+			if key, value, _ := strings.Cut(entry, "="); key == "CUDA_VISIBLE_DEVICES" {
+				env[key] = value
+			}
+		}
+		commitments, err = process.PrepareMemoryBudget(*budget, params, env, devices)
+		if err != nil {
+			return LaunchParameters{}, err
+		}
+	}
 	freezeFeaturePaths(svc, params)
-	return LaunchParameters{model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+	return LaunchParameters{Commitments: commitments, model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
 }
 
 func freezeFeaturePaths(svc config.ServiceConfig, params map[string]string) {

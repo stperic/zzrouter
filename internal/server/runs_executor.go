@@ -249,12 +249,12 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		OldID:    runID,
 		ID:       newInst.ID,
 		JobID:    newInst.StreamJobID,
-		Provider: newInst.Provider,
-		Model:    newInst.Model,
-		Port:     newInst.Port,
-		Status:   string(newInst.GetStatus()),
-		Message:  fmt.Sprintf("Instance %s restart accepted as %s; subscribe to job_id", runID, newInst.ID),
-		Node:     e.getNodename(),
+		Provider: newInst.Provider, BaseURL: newInst.BaseURL,
+		Model:   newInst.Model,
+		Port:    newInst.Port,
+		Status:  string(newInst.GetStatus()),
+		Message: fmt.Sprintf("Instance %s restart accepted as %s; subscribe to job_id", runID, newInst.ID),
+		Node:    e.getNodename(),
 	})
 }
 
@@ -269,7 +269,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		Runtime          string                 `json:"runtime,omitempty"`
 		DisposablePlanID string                 `json:"disposable_plan_id,omitempty"`
 		LaunchMode       string                 `json:"launch_mode" binding:"required,oneof=native"`
-		Model            string                 `json:"model_name" binding:"required"` // matches public LaunchRunRequest
+		Model            string                 `json:"model_name,omitempty"`
 		Endpoint         string                 `json:"endpoint,omitempty" binding:"omitempty,oneof=chat embeddings reranking"`
 		AutoDeploy       bool                   `json:"auto_deploy,omitempty"`
 		Port             int                    `json:"port,omitempty"`
@@ -298,6 +298,10 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
+	if err := validateRunTarget(e.appsConfig, req.Provider, req.Model, req.Endpoint); err != nil {
+		RespondToError(c, err)
+		return
+	}
 	// Before auto_deploy can start a download for a name admission refuses.
 	if err := e.appMgr.ValidateModel(c.Request.Context(), req.Model); err != nil {
 		RespondToError(c, err)
@@ -320,7 +324,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	// The handler returns 202 immediately with both job IDs; the run
 	// job's first phase waits on the deploy job. A provider without runs has nothing to download.
 	svc, _ := e.appsConfig().LookupApp(req.Provider)
-	if req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
+	if req.Model != "" && req.AutoDeploy && e.modelInPool != nil && !e.modelInPool(req.Model) && prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone {
 		e.handleAutoDeployLaunch(c, req.Provider, req.Endpoint, launchReq)
 		return
 	}
@@ -346,7 +350,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 	hostname := e.getNodename()
 	message := "Instance launch accepted; subscribe to job_id for readiness"
 	if !result.Started {
-		message = "Run already exists for this model; reused"
+		message = "Run already exists; reused"
 	}
 
 	// Return 202 Accepted with instance details + job_id so agents can
@@ -362,6 +366,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"status":             string(inst.GetStatus()),
 		"port":               inst.Port,
 		"health_url":         inst.HealthURL,
+		"base_url":           inst.BaseURL,
 		"started_at":         inst.GetStartedAt().Format(time.RFC3339),
 		"message":            message,
 		"files_mounted":      len(req.Files),

@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"io"
 	"log/slog"
 	"maps"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,7 +121,7 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 	if err != nil {
 		return nil, err
 	}
-	endpoint := string(EndpointOrDefault(req.Endpoint))
+	endpoint := req.Key().Endpoint
 	id := instance.GenerateID(req.Provider, req.Model, endpoint)
 	inst := instance.NewInstance(id, req.Provider, req.Model, port, settings.KeepAlive, 0)
 	inst.Endpoint = endpoint
@@ -141,6 +145,11 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 
 	// Set HealthURL from provider config (not hardcoded /health)
 	if port > 0 {
+		host := constants.Localhost
+		if m.selfHost != nil {
+			host = m.selfHost()
+		}
+		inst.BaseURL = "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 		healthPath := "/health"
 		if svcCfg.Runtime != nil && svcCfg.Runtime.HealthCheck.Path != "" {
 			healthPath = svcCfg.Runtime.HealthCheck.Path
@@ -441,7 +450,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	if err != nil || budget == nil {
 		return nil, err
 	}
-	if budget.Kind != "fraction_total" {
+	if budget.Kind != "fraction_total" && budget.Kind != "reserve_mib" && !slices.ContainsFunc(m.memoryRuns(), func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
 		return nil, nil
 	}
 	env, err := process.ChildEnvironment(features.Environment)
@@ -459,7 +468,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	if features.Params[budget.Parameter] == "auto" {
 		need, _ = process.ModelMemoryNeed(features.model, features.Config, features.Params)
 	}
-	err = m.checkMemory(ctx, *budget, need, features.Params, visible)
+	err = m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
 	var fit *process.MemoryFitError
 	settings, settingsErr := config.ParseRunSettings(features.Params, m.idleEvictionDefault)
 	if settingsErr != nil {
@@ -472,10 +481,10 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	if len(evicted) == 0 {
 		return nil, err
 	}
-	return evicted, m.checkMemory(ctx, *budget, need, features.Params, visible)
+	return evicted, m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
 }
 
-func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string) error {
+func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string, commitments map[string]int64) error {
 	devices, err := m.memorySnapshot(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
@@ -483,13 +492,18 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.Memo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	owners := make(map[int]process.RunRef)
+	return process.AdmitMemoryBudget(budget, need, params, visible, devices, m.memoryRuns(), commitments)
+}
+
+func (m *ProviderAppManager) memoryRuns() []process.RunRef {
+	var runs []process.RunRef
 	for _, run := range m.instances.List() {
-		if pid := run.GetProcessID(); pid > 0 {
-			owners[pid] = process.RunRef{ID: run.ID, Model: run.Model}
+		if run.GetStatus().IsTerminal() && !run.StopUnconfirmed.Load() && len(run.Resolved().Commitments) == 0 {
+			continue
 		}
+		runs = append(runs, process.RunRef{ID: run.ID, Model: run.Model, Provider: run.Key().Provider, PID: run.GetProcessID(), Commitments: run.Resolved().Commitments})
 	}
-	return process.AdmitMemoryBudget(budget, need, params, visible, devices, owners)
+	return runs
 }
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.
@@ -502,6 +516,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	hcConfig health.CheckConfig,
 	executionEnvironment process.EnvironmentTransform,
 ) {
+	defer inst.ReleaseMemory()
 	// Wrap log file with readiness writer if probe is configured.
 	// This scans process output for patterns like "INFO - Starting httpd"
 	// to detect readiness faster than HTTP polling.
@@ -830,7 +845,7 @@ func (m *ProviderAppManager) RestartInstance(ctx context.Context, id string) (*i
 	// SnapshotConfig clones the maps, so the relaunch is unaffected if the
 	// stop path mutates or clears the source instance's Config.
 	req := restartRequest(inst)
-	if req.Provider == "" || req.Model == "" {
+	if req.Provider == "" {
 		return nil, fmt.Errorf("instance %q has incomplete launch config (provider=%q model=%q); cannot restart", id, req.Provider, req.Model)
 	}
 
@@ -997,6 +1012,7 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 		return hc
 	}
 
+	hc.ActivityProbe = svcCfg.Runtime.ActivityProbe
 	rc := svcCfg.Runtime.HealthCheck
 	if rc.Path != "" {
 		hc.HTTPHealthPath = rc.Path
@@ -1125,7 +1141,7 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 //
 // Split out from EnsureRun so the parameters-to-argv contract can be
 // tested without starting a process.
-func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
+func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string, excluded ...string) (process.Launch, map[string]string, error) {
 	if _, err := config.ParseRunSettings(params, m.idleEvictionDefault); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
@@ -1140,7 +1156,7 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 		}
 		params, files = local.Params, local.Files
 	}
-	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params)
+	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params, excluded...)
 	if err != nil {
 		return process.Launch{}, nil, fmt.Errorf("failed to build command: %w", err)
 	}
@@ -1169,6 +1185,9 @@ func (m *ProviderAppManager) PreviewLaunch(req EnsureRequest, port int) (LaunchP
 	if !ok {
 		return LaunchPreview{}, ErrProviderNotFound
 	}
+	if err := svc.ValidateRunTarget(req.Model, string(req.Endpoint)); err != nil {
+		return LaunchPreview{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+	}
 	req.Model = m.runModel(key, svc, req.Model)
 	prepared, err := m.engine(Lifecycle(svc)).prepare(svc, key, req, port)
 	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
@@ -1176,7 +1195,15 @@ func (m *ProviderAppManager) PreviewLaunch(req EnsureRequest, port int) (LaunchP
 
 func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, port int) (preparedLaunch, error) {
 	params, env, svcCfg := features.Params, features.Environment, features.Config
-	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, params)
+	budget, err := m.launchBudget(configKey)
+	if err != nil {
+		return preparedLaunch{}, err
+	}
+	var excluded []string
+	if budget != nil && budget.Kind == "reserve_mib" {
+		excluded = append(excluded, budget.Parameter)
+	}
+	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, params, excluded...)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
@@ -1187,7 +1214,7 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, co
 	}
 	return preparedLaunch{
 		launch: launch, config: svcCfg, parameters: features, executionEnvironment: features.ExecutionEnvironment,
-		resolved: instance.Resolved{AutoMemory: features.autoMemory, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
+		resolved: instance.Resolved{WorkingDir: launch.WorkingDir, Commitments: features.Commitments, AutoMemory: features.autoMemory, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
 	}, nil
 }
 

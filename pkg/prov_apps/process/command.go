@@ -13,6 +13,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 
@@ -36,8 +37,9 @@ func NewCommandBuilder(serviceConfig *config.ServiceConfig) *CommandBuilder {
 // model identity the rest of the system needs in order to talk to the
 // engine over the wire.
 type Launch struct {
-	Command string
-	Args    []string
+	WorkingDir string
+	Command    string
+	Args       []string
 
 	// ModelPath is the absolute path to the model's local weights, or
 	// empty when the provider's args never reference them.
@@ -106,7 +108,7 @@ func (m ResolvedModel) Directory() string {
 //
 // An engine that references ${MODEL_PATH} must be pointed at weights that exist: a missing path is a
 // launch failure here rather than an opaque "no such file" from the engine several seconds later.
-func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string) (Launch, error) {
+func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string, excluded ...string) (Launch, error) {
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
 	}
@@ -137,7 +139,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
+		args = append(args, buildParameterArgs(params, append([]string{config.KeepAliveParameter, config.EvictIdleParameter}, excluded...))...)
 	}
 
 	wireModel := modelClean
@@ -145,11 +147,16 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 		wireModel = modelPath
 	}
 
+	workingDir := exec.WorkingDir
+	if workingDir != "" && !filepath.IsAbs(workingDir) {
+		workingDir = filepath.Join(fsroot.ProviderDir(cb.serviceConfig.Name), workingDir)
+	}
 	return Launch{
-		Command:   exec.Command,
-		Args:      args,
-		ModelPath: modelPath,
-		WireModel: wireModel,
+		WorkingDir: workingDir,
+		Command:    exec.Command,
+		Args:       args,
+		ModelPath:  modelPath,
+		WireModel:  wireModel,
 	}, nil
 }
 

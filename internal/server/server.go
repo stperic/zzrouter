@@ -177,7 +177,7 @@ func (s *Server) openAIModelRuntimeLookup(model, endpoint string) *OpenAIModelRu
 	if s.providers.appMgr == nil {
 		return nil
 	}
-	inst, ok := s.providers.appMgr.Instances().GetByModelEndpoint(model, endpoint)
+	inst, ok := s.providers.appMgr.Instances().GetByKey(instance.NewKey("", model, endpoint))
 	if !ok {
 		return nil
 	}

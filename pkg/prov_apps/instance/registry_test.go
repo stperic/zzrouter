@@ -56,7 +56,7 @@ func TestRegistry_RegisterReplacesFailedModel(t *testing.T) {
 	inst2 := newTestInstance("inst-2", "vllm", "llama3", 8001)
 	require.NoError(t, r.Register(inst2))
 
-	got, ok := r.GetByModel("llama3")
+	got, ok := r.GetByKey(NewKey("", "llama3", ""))
 	require.True(t, ok)
 	assert.Equal(t, "inst-2", got.ID)
 }
@@ -66,11 +66,11 @@ func TestRegistry_GetByModel(t *testing.T) {
 	inst := newTestInstance("inst-1", "vllm", "llama3", 8000)
 	require.NoError(t, r.Register(inst))
 
-	got, ok := r.GetByModel("llama3")
+	got, ok := r.GetByKey(NewKey("", "llama3", ""))
 	require.True(t, ok)
 	assert.Equal(t, "inst-1", got.ID)
 
-	_, ok = r.GetByModel("nonexistent")
+	_, ok = r.GetByKey(NewKey("", "nonexistent", ""))
 	assert.False(t, ok)
 }
 
@@ -104,7 +104,7 @@ func TestRegistry_Remove(t *testing.T) {
 	require.NoError(t, r.Remove("inst-1"))
 
 	assert.False(t, r.Has("inst-1"))
-	_, ok := r.GetByModel("llama3")
+	_, ok := r.GetByKey(NewKey("", "llama3", ""))
 	assert.False(t, ok)
 	_, ok = r.GetByPort(8000)
 	assert.False(t, ok)
@@ -255,7 +255,7 @@ func TestRegistry_Concurrent(t *testing.T) {
 			}
 
 			r.Get(id)
-			r.GetByModel(model)
+			r.GetByKey(NewKey("", model, ""))
 			r.GetByPort(8000 + n)
 			r.Has(id)
 			_ = r.UpdateStatus(id, StatusRunning, "")
@@ -296,16 +296,16 @@ func TestRegistry_PerEndpointInstancesCoexist(t *testing.T) {
 	embed.MarkRunning(false, nil)
 	require.NoError(t, r.Register(embed))
 
-	gotChat, ok := r.GetByModelEndpoint("qwen-0.5b", "chat")
+	gotChat, ok := r.GetByKey(NewKey("", "qwen-0.5b", "chat"))
 	require.True(t, ok)
 	assert.Equal(t, "inst-chat", gotChat.ID)
 
-	gotEmbed, ok := r.GetByModelEndpoint("qwen-0.5b", "embeddings")
+	gotEmbed, ok := r.GetByKey(NewKey("", "qwen-0.5b", "embeddings"))
 	require.True(t, ok)
 	assert.Equal(t, "inst-embed", gotEmbed.ID)
 
 	// GetByModel shim defaults to chat.
-	gotShim, ok := r.GetByModel("qwen-0.5b")
+	gotShim, ok := r.GetByKey(NewKey("", "qwen-0.5b", ""))
 	require.True(t, ok)
 	assert.Equal(t, "inst-chat", gotShim.ID)
 }
@@ -349,9 +349,9 @@ func TestRegistry_RemoveOnlyClearsItsEndpointMapping(t *testing.T) {
 
 	require.NoError(t, r.Remove("inst-chat"))
 
-	_, ok := r.GetByModelEndpoint("m", "chat")
+	_, ok := r.GetByKey(NewKey("", "m", "chat"))
 	assert.False(t, ok)
-	got, ok := r.GetByModelEndpoint("m", "embeddings")
+	got, ok := r.GetByKey(NewKey("", "m", "embeddings"))
 	require.True(t, ok)
 	assert.Equal(t, "inst-embed", got.ID)
 }

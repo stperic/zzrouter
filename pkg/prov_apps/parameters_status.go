@@ -56,7 +56,7 @@ func (m *ProviderAppManager) ParametersStatus(inst *instance.Instance) *instance
 			changed = append(changed, key)
 		}
 	}
-	if launched.Execution != next.resolved.Execution {
+	if launched.Execution != next.resolved.Execution || launched.WorkingDir != next.resolved.WorkingDir {
 		changed = append(changed, "runtime.execution")
 	}
 	slices.Sort(changed)

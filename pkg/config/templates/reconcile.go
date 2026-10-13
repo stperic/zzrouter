@@ -32,7 +32,7 @@ import (
 // Owning them means a fix to a launch argument or a readiness probe reaches
 // existing installs on the next start. Without that, every engine-level fix
 // would need a bespoke migration, and installs would drift apart silently.
-var managedSpineKeys = []string{"execution", "failure_patterns", "health_check", "max_concurrent_requests", "queue_timeout"}
+var managedSpineKeys = []string{"execution", "failure_patterns", "health_check", "activity_probe", "max_concurrent_requests", "queue_timeout"}
 
 // managedTopLevelKeys are managed sections that sit outside any section.
 //
@@ -44,7 +44,7 @@ var managedSpineKeys = []string{"execution", "failure_patterns", "health_check",
 //
 // model_defaults is a retired key: no release ships it, so listing it here
 // strips it from an older install before the strict load would refuse it.
-var managedTopLevelKeys = []string{"version_source", "model_defaults", "install"}
+var managedTopLevelKeys = []string{"version_source", "model_defaults", "install", "run_scope"}
 
 // managedCapabilityKeys are the managed keys under capabilities.
 //

@@ -582,3 +582,23 @@ func (c *AppCapabilities) ValidateWireEndpoints() error {
 	}
 	return nil
 }
+
+// ValidateRunTarget keeps model requirements consistent across launch and preview.
+func (s ServiceConfig) ValidateRunTarget(model, endpoint string) error {
+	if s.RunScope == RunScopeNode {
+		if model != "" || endpoint != "" {
+			return fmt.Errorf("node-scoped provider %q accepts no model_name or endpoint", s.Name)
+		}
+	} else if model == "" {
+		return fmt.Errorf("model_name is required: a model-scoped run names its model")
+	}
+	return nil
+}
+
+// ValidatePlatform keeps install and launch restrictions on the same declared platforms.
+func (s ServiceConfig) ValidatePlatform(os, arch string) error {
+	if len(s.Platforms) == 0 || slices.ContainsFunc(s.Platforms, func(p InstallPlatform) bool { return p.OS == os && (p.Arch == "" || p.Arch == arch) }) {
+		return nil
+	}
+	return fmt.Errorf("provider %q is not supported on %s/%s", s.Name, os, arch)
+}

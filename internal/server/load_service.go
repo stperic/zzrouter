@@ -58,7 +58,7 @@ func (s *LoadService) launchTarget(ctx context.Context, node, model string) (str
 	if s.appsConfig == nil {
 		return "", nil
 	}
-	if node == "" {
+	if node == "" && model != "" {
 		resolved, err := s.cache.ResolveModel(ctx, resolver.Reference{Model: model})
 		if err != nil {
 			return "", err
@@ -98,7 +98,7 @@ func (s *LoadService) preMerge(ctx context.Context, req *LoadModelRequest) (map[
 type LoadModelRequest struct {
 	Node      string `json:"node,omitempty"`
 	Provider  string `json:"provider,omitempty"`
-	ModelName string `json:"model_name" binding:"required"`
+	ModelName string `json:"model_name,omitempty"`
 	// Closed set, empty means "chat": the launch keys an instance by
 	// whatever string it is handed, so an unvalidated value starts a
 	// process nothing can route to.
@@ -110,14 +110,12 @@ type LoadModelRequest struct {
 
 // Validate validates the load model request
 func (req *LoadModelRequest) Validate() error {
-	if req.ModelName == "" {
-		return fmt.Errorf("model_name is required")
-	}
-	return nil
+	return (pkgConfig.ServiceConfig{}).ValidateRunTarget(req.ModelName, req.Endpoint)
 }
 
 // LoadModelResponse represents the response from loading a model
 type LoadModelResponse struct {
+	BaseURL    string `json:"base_url,omitempty"`
 	Reused     bool   `json:"-"`
 	InstanceID string `json:"instance_id"`
 	Model      string `json:"model"`
@@ -132,6 +130,12 @@ type LoadModelResponse struct {
 
 // routeForModel routes a request based on host or model-aware discovery
 func (s *LoadService) routeForModel(ctx context.Context, host, model, path string, body []byte) (*routing.Response, error) {
+	if model == "" {
+		if host == "" {
+			host = "@master"
+		}
+		return s.router.Unicast(ctx, host, path, "POST", body)
+	}
 	if host != "" && host != "*" {
 		return s.router.Unicast(ctx, host, path, "POST", body)
 	}
@@ -140,6 +144,9 @@ func (s *LoadService) routeForModel(ctx context.Context, host, model, path strin
 
 // LoadModel loads a model and returns the instance information
 func (s *LoadService) LoadModel(ctx context.Context, req *LoadModelRequest) (*LoadModelResponse, error) {
+	if err := validateRunTarget(s.appsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
 	slog.Info("[LoadService] LoadModel", "model", req.ModelName, "provider", req.Provider, "node", req.Node, "force", req.Force)
 
 	requestBody, err := json.Marshal(req)
@@ -214,6 +221,9 @@ type PreviewRunResponse struct {
 
 // PreviewRun returns a preview of what would be run without actually running it
 func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*PreviewRunResponse, error) {
+	if err := validateRunTarget(s.appsConfig, req.Provider, req.ModelName, req.Endpoint); err != nil {
+		return nil, err
+	}
 	slog.Info("[LoadService] PreviewRun", "model", req.ModelName, "provider", req.Provider, "node", req.Node)
 
 	sources, err := s.preMerge(ctx, req)
@@ -254,4 +264,17 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 
 	slog.Info("[LoadService] Preview generated for model", "model", preview.Model)
 	return &preview, nil
+}
+
+func validateRunTarget(configured func() *pkgConfig.AppsConfig, provider, model, endpoint string) error {
+	var svc pkgConfig.ServiceConfig
+	if configured != nil {
+		if cfg := configured(); cfg != nil {
+			svc, _ = cfg.LookupApp(provider)
+		}
+	}
+	if err := svc.ValidateRunTarget(model, endpoint); err != nil {
+		return newProblemError(http.StatusBadRequest, "Bad Request", err.Error())
+	}
+	return nil
 }

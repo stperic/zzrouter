@@ -19,7 +19,7 @@ const (
 
 // autoFraction is the least free fraction of the selected GPUs after the safety margin, rounded down.
 // A GPU with no room beyond the margin is refused like any budget that cannot fit.
-func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owners map[int]RunRef) (float64, error) {
+func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owners []RunRef) (float64, error) {
 	if budget.AutoSafetyMarginMiB < 0 {
 		return 0, fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
 	}
@@ -29,9 +29,10 @@ func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owner
 			return 0, fmt.Errorf("%w: auto requires valid GPU totals on %s", ErrMemoryObservation, device.UUID)
 		}
 		margin := safetyMargin(budget, device)
-		room := math.Floor(float64(device.FreeMiB-margin)/float64(device.TotalMiB)*autoFractionScale) / autoFractionScale
+		fit := memoryFitError(budget.Parameter, device, margin+1, owners)
+		room := math.Floor(float64(fit.FreeMiB-margin)/float64(device.TotalMiB)*autoFractionScale) / autoFractionScale
 		if room <= 0 {
-			return 0, memoryFitError(budget.Parameter, device, margin+1, owners)
+			return 0, fit
 		}
 		fraction = math.Min(fraction, room)
 	}

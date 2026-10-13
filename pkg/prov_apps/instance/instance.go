@@ -50,6 +50,7 @@ const defaultLogBufferSize = 100
 // call site and keeps the write surface auditable if locking is ever
 // added.
 type Instance struct {
+	BaseURL           string              `json:"base_url,omitempty"`
 	FailureClassifier *httperr.Classifier `json:"-"`
 	ID                string              `json:"id"`
 	Provider          string              `json:"provider"`
@@ -133,7 +134,8 @@ type Instance struct {
 	// Use RLock for reads, Lock for writes.
 	mu           sync.RWMutex    `json:"-"`
 	idleChanged  chan<- struct{} `json:"-"`
-	idleReleased bool            `json:"-"`
+	activityHold bool
+	idleReleased bool `json:"-"`
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -263,7 +265,7 @@ func (i *Instance) Evictable() bool {
 }
 
 func (i *Instance) evictableLocked() bool {
-	return (i.Status == StatusRunning || i.Status == StatusUnhealthy) && i.GetActiveRequests() == 0 && !i.idleStopClaimed
+	return (i.Status == StatusRunning || i.Status == StatusUnhealthy) && i.GetActiveRequests() == 0 && !i.activityHold && !i.idleStopClaimed
 }
 
 // IsRunning returns true if the instance is running or unhealthy.
@@ -285,6 +287,9 @@ func (i *Instance) setStatusLocked(status Status) {
 		}
 	}
 	i.Status = status
+	if status.IsTerminal() || status == StatusStopping {
+		i.activityHold = false
+	}
 	i.notifyIdleLocked()
 }
 
@@ -498,7 +503,7 @@ func (i *Instance) IdleSnapshot() IdleState {
 }
 
 func (i *Instance) idleSnapshotLocked() IdleState {
-	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Leased: i.GetActiveRequests() != 0, Claimed: i.idleStopClaimed, Released: i.idleReleased}
+	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Leased: i.GetActiveRequests() != 0 || i.activityHold, Claimed: i.idleStopClaimed, Released: i.idleReleased}
 }
 
 // GetLastActivity returns the last activity time.
@@ -750,7 +755,10 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 	defer i.mu.RUnlock()
 
 	info := InstanceInfo{
-		Runtime: i.Config.Runtime, DisposablePlanID: i.Config.DisposablePlanID,
+		BaseURL:           i.BaseURL,
+		EngineBusy:        i.activityHold,
+		MemoryCommitments: maps.Clone(i.resolved.Commitments),
+		Runtime:           i.Config.Runtime, DisposablePlanID: i.Config.DisposablePlanID,
 		ID:                    i.ID,
 		Provider:              i.Provider,
 		LaunchMode:            string(i.LaunchMode),
@@ -877,4 +885,39 @@ func (i *Instance) Weights() Weights {
 	weights := i.weights
 	weights.Paths = slices.Clone(weights.Paths)
 	return weights
+}
+
+// RefreshActivity prevents an ensure from returning a run already claimed for idle stop.
+func (i *Instance) RefreshActivity() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
+		return admissionError(ErrStopping)
+	}
+	i.LastActivity = utils.Now()
+	i.idleReleased = false
+	i.notifyIdleLocked()
+	return nil
+}
+
+// ReleaseMemory ends commitments only after the process lifecycle has drained.
+func (i *Instance) ReleaseMemory() {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.resolved.Commitments = nil
+}
+
+// ObserveActivity shares idle exclusion with leases without taking a request slot.
+func (i *Instance) ObserveActivity(busy bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
+		return
+	}
+	if i.activityHold && !busy {
+		i.LastActivity = utils.Now()
+		i.idleReleased = true
+	}
+	i.activityHold = busy
+	i.notifyIdleLocked()
 }

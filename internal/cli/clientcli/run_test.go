@@ -13,8 +13,8 @@ func TestNewRunCmd(t *testing.T) {
 		t.Fatal("NewRunCmd() returned nil")
 	}
 
-	if cmd.Use != "run <model_spec>" {
-		t.Errorf("cmd.Use = %q, want %q", cmd.Use, "run <model_spec>")
+	if cmd.Use != "run [model_spec]" {
+		t.Errorf("cmd.Use = %q, want %q", cmd.Use, "run [model_spec]")
 	}
 
 	if cmd.Short == "" {

@@ -1,11 +1,14 @@
 package port
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/net"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -65,19 +68,22 @@ func NewPool(r Range) (*Pool, error) {
 }
 
 // Allocate allocates the next available port.
-func (p *Pool) Allocate() (int, error) {
+func (p *Pool) Allocate(requestedPort ...int) (int, error) {
+	if len(requestedPort) > 0 && requestedPort[0] > 0 {
+		if err := p.AllocateSpecific(requestedPort[0]); err != nil {
+			return 0, err
+		}
+		return requestedPort[0], nil
+	}
 	return p.AllocateForInstance("")
 }
 
 // AllocateForInstance allocates a port and records the instance ID.
 func (p *Pool) AllocateForInstance(instanceID string) (int, error) {
-	// Scan listening ports once before acquiring the lock.
-	listeningPorts := listeningPortSet()
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	port, ok := p.findFreePortLocked(listeningPorts, true)
+	port, ok := p.findFreePortLocked(true)
 	if !ok {
 		return 0, p.exhaustedError()
 	}
@@ -96,12 +102,12 @@ func (p *Pool) AllocateForInstance(instanceID string) (int, error) {
 // portInfo, read lock for read-only callers). When recordExternal is true,
 // listening ports get marked StateExternal in portInfo as a side effect — this
 // requires the write lock and is used by AllocateForInstance.
-func (p *Pool) findFreePortLocked(listeningPorts map[uint32]bool, recordExternal bool) (int, bool) {
+func (p *Pool) findFreePortLocked(recordExternal bool) (int, bool) {
 	for port := p.portRange.Start; port <= p.portRange.End; port++ {
 		if p.usedPorts[port] {
 			continue
 		}
-		if listeningPorts[uint32(port)] {
+		if IsPortInUse(port) {
 			if recordExternal {
 				p.portInfo[port] = &Info{Port: port, State: StateExternal}
 			}
@@ -147,27 +153,15 @@ func (p *Pool) AllocateSpecific(port int) error {
 	return nil
 }
 
-// AllocateWithFallback tries the requested port, falls back to auto-allocation.
-func (p *Pool) AllocateWithFallback(requestedPort int) (int, error) {
-	if requestedPort > 0 {
-		if err := p.AllocateSpecific(requestedPort); err == nil {
-			return requestedPort, nil
-		}
-	}
-	return p.Allocate()
-}
-
 // Project returns the port that the next Allocate() call would hand out,
 // without actually reserving it. Used by preview/dry-run paths that want to
 // show the user what port will be assigned without affecting pool state.
 // Returns an error if the pool is exhausted.
 func (p *Pool) Project() (int, error) {
-	listeningPorts := listeningPortSet()
-
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	port, ok := p.findFreePortLocked(listeningPorts, false)
+	port, ok := p.findFreePortLocked(false)
 	if !ok {
 		return 0, p.exhaustedError()
 	}
@@ -367,7 +361,7 @@ func (m *AppPoolManager) AllocateForProvider(provider string, requestedPort int)
 	if !ok {
 		return 0, fmt.Errorf("no port pool for provider %q", provider)
 	}
-	return pool.AllocateWithFallback(requestedPort)
+	return pool.Allocate(requestedPort)
 }
 
 // ProjectForProvider returns the port that AllocateForProvider would hand out
@@ -481,25 +475,21 @@ func (m *AppPoolManager) validateNoOverlaps() error {
 	return nil
 }
 
-// listeningPortSet returns the set of all TCP ports currently in LISTEN or
-// ESTABLISHED state. It makes a single syscall, so callers that need to check
-// multiple ports should call this once and probe the returned map.
-func listeningPortSet() map[uint32]bool {
-	connections, err := net.Connections("tcp")
-	if err != nil {
-		return nil
-	}
-	ports := make(map[uint32]bool, len(connections))
-	for _, conn := range connections {
-		if conn.Status == "LISTEN" || conn.Status == "ESTABLISHED" {
-			ports[conn.Laddr.Port] = true
-		}
-	}
-	return ports
-}
-
-// IsPortInUse checks if a single port is currently in use on the system.
-// For checking multiple ports, prefer listeningPortSet to avoid repeated syscalls.
+// IsPortInUse asks the kernel about binding instead of trusting process inventory visibility.
 func IsPortInUse(port int) bool {
-	return listeningPortSet()[uint32(port)]
+	// BSD permits wildcard and loopback listeners to coexist, so both must be probed.
+	for _, target := range []struct{ family, host string }{{"tcp4", "0.0.0.0"}, {"tcp4", "127.0.0.1"}, {"tcp6", "::"}, {"tcp6", "::1"}} {
+		listener, err := net.Listen(target.family, net.JoinHostPort(target.host, strconv.Itoa(port)))
+		if target.family == "tcp6" && errors.Is(err, syscall.EADDRNOTAVAIL) {
+			continue
+		}
+		if errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EPROTONOSUPPORT) {
+			continue
+		}
+		if err != nil {
+			return true
+		}
+		_ = listener.Close()
+	}
+	return false
 }

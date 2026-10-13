@@ -1,0 +1,21 @@
+provider: comfyui
+parameters:
+  gpu-reserve-mib:
+    type: int
+    min: 1
+    description: GPU memory reserved for this run in MiB
+  reserve-vram:
+    type: int
+    min: 0
+    description: Allocator complement derived from device total and reservation in whole GiB
+  listen:
+    type: string
+    description: ComfyUI bind address, use 127.0.0.1 for single-host access
+diagnostics:
+  runtime: comfyui
+  runtimes:
+    comfyui: {kernels: external}
+  memory:
+    kind: reserve_mib
+    parameter: gpu-reserve-mib
+    complement_parameter: reserve-vram

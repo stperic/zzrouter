@@ -57,6 +57,9 @@ func (m *ProviderAppManager) runModel(configKey string, svc config.ServiceConfig
 
 // daemonName is model as a served provider's daemon lists it; any other provider keys on model itself.
 func (m *ProviderAppManager) daemonName(configKey string, svc config.ServiceConfig, model string) string {
+	if model == "" {
+		return ""
+	}
 	p, _ := m.Protocol(configKey)
 	if loader, ok := p.(protocol.ModelLoader); ok && Lifecycle(svc) == LifecycleServed {
 		return loader.Identity(model)
@@ -75,6 +78,9 @@ func (m *ProviderAppManager) RequestModel(run *instance.Instance, model string) 
 
 // runEndpoint is a run's key endpoint: its own only on an endpoint-aware launched provider.
 func runEndpoint(svc config.ServiceConfig, endpoint Endpoint) Endpoint {
+	if svc.RunScope == config.RunScopeNode {
+		return ""
+	}
 	if !svc.IsEndpointAware() || Lifecycle(svc) == LifecycleServed {
 		return EndpointChat
 	}

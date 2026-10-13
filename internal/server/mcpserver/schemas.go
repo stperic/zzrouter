@@ -61,6 +61,7 @@ func schemaObjects(value any) any {
 }
 
 type runOutput struct {
+	BaseURL     string `json:"base_url,omitempty"`
 	RunID       string `json:"run_id"`
 	OldRunID    string `json:"old_run_id,omitempty"`
 	JobID       string `json:"job_id,omitempty"`

@@ -1250,7 +1250,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			r.tick(t)
 			assert.Empty(t, r.m.instances.List(), "one sighting adopts nothing")
 			r.tick(t)
-			adopted, ok := r.m.instances.GetByModel("x:latest")
+			adopted, ok := r.m.instances.GetByKey(instance.NewKey("", "x:latest", ""))
 			require.True(t, ok)
 			assert.Equal(t, instance.StartedBy("external"), adopted.StartedBy)
 			assert.Equal(t, instance.StatusRunning, adopted.GetStatus())
@@ -1346,7 +1346,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			assert.Zero(t, stats.AllocatedPorts, "no pool port for a served run")
 		}
 		require.NoError(t, r.m.StopInstance(t.Context(), a.ID))
-		kept, ok := r.m.instances.GetByModel("b:latest")
+		kept, ok := r.m.instances.GetByKey(instance.NewKey("", "b:latest", ""))
 		require.True(t, ok)
 		assert.Same(t, other, kept)
 		assert.Equal(t, instance.StatusRunning, kept.GetStatus())
@@ -1494,7 +1494,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			r.daemon.loadExternally(servedLoaded, time.Now().Add(time.Hour))
 			r.tick(t)
 			r.tick(t)
-			adopted, ok := r.m.instances.GetByModel(servedLoaded)
+			adopted, ok := r.m.instances.GetByKey(instance.NewKey("", servedLoaded, ""))
 			require.True(t, ok)
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
 			require.NoError(t, o.err)
@@ -1513,7 +1513,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 			r.tick(t)
 		}
 		assert.Equal(t, instance.StatusRunning, run.GetStatus())
-		listed, ok := r.m.instances.GetByModel(servedLoaded)
+		listed, ok := r.m.instances.GetByKey(instance.NewKey("", servedLoaded, ""))
 		require.True(t, ok)
 		assert.Same(t, run, listed)
 		again := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "ollama", Model: servedLoaded})})[0]
@@ -1526,7 +1526,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		r.daemon.loadExternally("p:latest", time.Time{})
 		r.tick(t)
 		r.tick(t)
-		adopted, ok := r.m.instances.GetByModel("p:latest")
+		adopted, ok := r.m.instances.GetByKey(instance.NewKey("", "p:latest", ""))
 		require.True(t, ok)
 		assert.Negative(t, adopted.GetKeepAlive())
 		assert.Greater(t, time.Until(adopted.Loaded().ExpiresAt), daemonForever/2, "the daemon's own expiry is recorded")
@@ -1613,7 +1613,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		r.daemon.loadExternally("x:latest", time.Now().Add(time.Hour))
 		r.tick(t)
 		r.tick(t)
-		adopted, ok := r.m.instances.GetByModel("x:latest")
+		adopted, ok := r.m.instances.GetByKey(instance.NewKey("", "x:latest", ""))
 		require.True(t, ok)
 		next, err := r.m.RestartInstance(t.Context(), adopted.ID)
 		require.NoError(t, err)
@@ -2007,4 +2007,65 @@ func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
 	awaitRunning(t, second.result.Run)
 	assert.Negative(t, second.result.Run.GetKeepAlive(), "admitted idle policy must match the re-resolved launch")
 	assert.Equal(t, "-1", second.result.Run.Resolved().Parameters[config.KeepAliveParameter])
+}
+
+func TestNodeScopedEnsureConcurrentProcess(t *testing.T) {
+	r := newContractRig(t, true)
+	fresh := &config.AppsConfig{}
+	for _, name := range []string{"generic", "other"} {
+		svc, ok := r.m.appsConfig.LookupApp(name)
+		require.True(t, ok)
+		svc.RunScope, svc.Protocol, svc.Capabilities = config.RunScopeNode, "", nil
+		require.NoError(t, fresh.AddApp(name, svc))
+	}
+	r.m.ReloadConfig(fresh)
+	r.m.localCatalog = func(context.Context, string) (bool, error) {
+		t.Error("node run queried the model catalog")
+		return false, nil
+	}
+	start := make(chan struct{})
+	outs := make([]<-chan outcome, contractCallers)
+	for i := range outs {
+		out := make(chan outcome, 1)
+		outs[i] = out
+		go func() {
+			<-start
+			result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
+			out <- outcome{result, err}
+		}()
+	}
+	close(start)
+	results := collect(t, outs)
+	var starts int
+	for _, out := range results {
+		require.NoError(t, out.err)
+		require.Same(t, results[0].result.Run, out.result.Run)
+		if out.result.Started {
+			starts++
+		}
+	}
+	require.Equal(t, 1, starts)
+	require.Equal(t, int32(1), r.attempts.Load())
+	r.ready(t)
+	run := results[0].result.Run
+	awaitRunning(t, run)
+	require.Positive(t, run.GetProcessID())
+	require.Empty(t, run.Model)
+	before := run.GetLastActivity()
+	reused, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
+	require.NoError(t, err)
+	require.Same(t, run, reused.Run)
+	require.True(t, run.GetLastActivity().After(before))
+	other, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "other"})
+	require.NoError(t, err)
+	require.NotEqual(t, run.ID, other.Run.ID)
+	_, err = r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "unwanted"})
+	require.ErrorIs(t, err, ErrParameterValidation)
+	_, err = r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Endpoint: EndpointEmbeddings})
+	require.ErrorIs(t, err, ErrParameterValidation)
+	restarted, err := r.m.RestartInstance(t.Context(), run.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, run.ID, restarted.ID)
+	awaitRunning(t, restarted)
+	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(restarted).State)
 }

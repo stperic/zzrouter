@@ -42,10 +42,10 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 	assert.Equal(t, "tier1", got["ctx-size"], "the base's model cell")
 	assert.Equal(t, "v", got["only-variant"], "the variant's own")
 
-	found, ok := m.Instances().GetByModelEndpoint(tierVariant, string(EndpointChat))
+	found, ok := m.Instances().GetByKey(instance.NewKey("", tierVariant, string(EndpointChat)))
 	require.True(t, ok)
 	assert.Equal(t, inst.ID, found.ID)
-	_, ok = m.Instances().GetByModelEndpoint("llama3", string(EndpointChat))
+	_, ok = m.Instances().GetByKey(instance.NewKey("", "llama3", string(EndpointChat)))
 	assert.False(t, ok, "the base has no run of its own")
 
 	// Its base's cell is part of what it launched with.

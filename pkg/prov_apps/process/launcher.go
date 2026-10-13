@@ -172,6 +172,7 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 	// Descendants must not keep the output drain open indefinitely.
 	process.WaitDelay = outputDrainTimeout
 	process.Env = env
+	process.Dir = inst.Resolved().WorkingDir
 
 	// Pipe stdout/stderr to log writer if provided
 	if logWriter != nil {
@@ -220,7 +221,7 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 		PID:            pid,
 		ProcessGroupID: pgid,
 		Process:        process.Process,
-		Command:        &instance.LaunchCommand{Command: originalCmd, Args: originalArgs, Environment: envVars},
+		Command:        &instance.LaunchCommand{Command: originalCmd, Args: originalArgs, Environment: envVars, WorkingDir: process.Dir},
 		StdinPipe:      stdinPipe,
 		JobHandle:      jobHandle,
 		command:        process,

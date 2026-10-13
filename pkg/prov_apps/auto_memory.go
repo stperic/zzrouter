@@ -21,10 +21,11 @@ func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[st
 	if err != nil {
 		return nil, "", err
 	}
-	if budget == nil || budget.Kind != "fraction_total" {
+	if budget == nil {
 		return filtered, "", nil
 	}
-	if parameters[budget.Parameter] != "auto" && parameters[strings.ReplaceAll(budget.Parameter, "-", "_")] != "auto" {
+	auto := budget.Kind == "fraction_total" && (parameters[budget.Parameter] == "auto" || parameters[strings.ReplaceAll(budget.Parameter, "-", "_")] == "auto")
+	if budget.Kind != "reserve_mib" && !auto {
 		return filtered, "", nil
 	}
 	parameters = maps.Clone(parameters)
@@ -40,6 +41,9 @@ func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[st
 		}
 	}
 	filtered = config.FilterAutoValues(parameters)
+	if !auto {
+		return filtered, "", nil
+	}
 	filtered[budget.Parameter] = "auto"
 	return filtered, budget.Parameter, nil
 }
