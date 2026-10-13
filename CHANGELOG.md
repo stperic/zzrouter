@@ -26,6 +26,8 @@
 
 ### Behaviour changes
 
+- Reservation allocator complements preserve exact fractional GiB, so rounding no longer gives an engine more memory than its accounted budget.
+
 - Missing-job GET, cancellation and pre-stream failures return scoped
   `job_not_found` Problems at their owner. Proxied errors preserve retry metadata
   and use the public request identity. Job lists, snapshots and cancellation
