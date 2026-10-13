@@ -26,6 +26,8 @@
 
 ### Behaviour changes
 
+- Queued runs have readable logs before admission. Their log paths are fixed
+  before publication, so concurrent log reads cannot race the launch.
 - Launcher shutdown signals are captured before child creation. Signals and stdin
   closure share one bounded stop path, and exit removes only successfully
   published PID metadata while preserving prior metadata after a write failure.

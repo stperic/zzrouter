@@ -111,7 +111,7 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	return inst, nil
 }
 
-// newRun builds a starting, not yet admitted run for req on port, 0 for none.
+// newRun configures a starting run and its immutable log before publication; port is 0 for none.
 func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig, port int) (*instance.Instance, error) {
 	settings, err := m.runSettings(svcCfg, req)
 	if err != nil {
@@ -157,7 +157,12 @@ func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcC
 		})
 	}
 
-	return inst, nil
+	logFile, logPath, err := m.runLogFile(inst)
+	if err != nil {
+		return nil, err
+	}
+	inst.SetLogFilePath(logPath)
+	return inst, logFile.Close()
 }
 
 const keepAliveParameter = config.KeepAliveParameter
@@ -207,11 +212,10 @@ func (m *ProviderAppManager) runLogFile(run *instance.Instance) (*os.File, strin
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
 func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
-	logFile, logPath, err := m.runLogFile(inst)
+	logFile, _, err := m.runLogFile(inst)
 	if err != nil {
 		return admittedRun{}, err
 	}
-	inst.SetLogFilePath(logPath)
 	run, err := m.prepareRun(ctx, inst, req, selection)
 	if err == nil && !inst.Admit() {
 		err = fmt.Errorf("run %s stopped before it was admitted", inst.ID)

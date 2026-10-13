@@ -64,7 +64,7 @@ type readinessRig struct {
 	engine string
 }
 
-func newReadinessRig(t *testing.T) *readinessRig {
+func newReadinessRig(t *testing.T, opts ...prov_apps.Option) *readinessRig {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process fixture")
@@ -83,7 +83,7 @@ func newReadinessRig(t *testing.T) *readinessRig {
 		},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
-	mgr, err := prov_apps.NewProviderAppManager(cfg)
+	mgr, err := prov_apps.NewProviderAppManager(cfg, opts...)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
