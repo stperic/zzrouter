@@ -37,7 +37,7 @@ func TestParametersStatus_ConfigChangeIsStale(t *testing.T) {
 	m := tierManager(t, "")
 	inst := launchLlama(t, m, nil)
 
-	assert.Equal(t, &instance.ParametersStatus{Provider: "vllm", State: instance.ParametersCurrent}, m.ParametersStatus(inst),
+	assert.Equal(t, &instance.ParametersStatus{Provider: "vllm", State: instance.ParametersCurrent}, m.ParametersStatus(t.Context(), inst),
 		"judged against the config key")
 
 	reloadWith(t, m, func(svc *config.ServiceConfig) {
@@ -46,7 +46,7 @@ func TestParametersStatus_ConfigChangeIsStale(t *testing.T) {
 			Environment: map[string]string{"ZZ_ENV": "changed"},
 		}
 	})
-	got := m.ParametersStatus(inst)
+	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, got.State)
 	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.added", "parameters.ctx-size"}, got.Changed)
 }
@@ -64,7 +64,7 @@ func TestParametersStatus_RequestTierHoldsItsKeys(t *testing.T) {
 			Environment: map[string]string{"ZZ_ENV": "tier1"},
 		}
 	})
-	got := m.ParametersStatus(inst)
+	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersCurrent, got.State)
 	assert.Empty(t, got.Changed)
 	assert.Equal(t, []string{"parameters.ctx-size"}, got.Overridden)
@@ -80,10 +80,10 @@ func TestParametersStatus_FileContentChangeIsStale(t *testing.T) {
 		return Localized{Params: out, Files: map[string]string{"template": digest}}, nil
 	})
 	inst := launchLlama(t, m, map[string]string{"template": "t.jinja"})
-	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(inst).State)
+	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(t.Context(), inst).State)
 
 	digest = "two"
-	got := m.ParametersStatus(inst)
+	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, got.State)
 	assert.Equal(t, []string{"parameters.template"}, got.Changed)
 }
@@ -101,7 +101,7 @@ func TestParametersStatus_UnlaunchableConfigIsUnknown(t *testing.T) {
 	inst := launchLlama(t, m, nil)
 
 	refuse = true
-	got := m.ParametersStatus(inst)
+	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersUnknown, got.State)
 	assert.Contains(t, got.Error, "asset gone")
 }
@@ -113,10 +113,10 @@ func TestInstanceInfo_StatusOnlyForLiveRuns(t *testing.T) {
 	inst := launchLlama(t, m, nil)
 
 	inst.SetStatus(instance.StatusRunning)
-	require.NotNil(t, m.InstanceInfo(inst, "").ParametersStatus)
+	require.NotNil(t, m.InstanceInfo(t.Context(), inst, "").ParametersStatus)
 
 	inst.SetStatus(instance.StatusStopped)
-	assert.Nil(t, m.InstanceInfo(inst, "").ParametersStatus)
+	assert.Nil(t, m.InstanceInfo(t.Context(), inst, "").ParametersStatus)
 
 	inst.SetStatus(instance.StatusRunning)
 	assert.Nil(t, m.ListInstances("")[0].ParametersStatus, "a plain listing does not re-resolve every run")
@@ -134,7 +134,7 @@ func TestParametersStatus_RunSettings(t *testing.T) {
 			reloadWith(t, m, func(svc *config.ServiceConfig) {
 				svc.Models["llama3"].Parameters[config.KeepAliveParameter] = "3m"
 			})
-			got := m.ParametersStatus(inst)
+			got := m.ParametersStatus(t.Context(), inst)
 			if explicit {
 				assert.Equal(t, instance.ParametersCurrent, got.State)
 				assert.Contains(t, got.Overridden, "parameters.keep-alive")
@@ -154,5 +154,5 @@ func TestParametersStatus_ServedEvictionSetting(t *testing.T) {
 	})
 	run := r.running(t, EnsureRequest{Provider: "ollama", Model: servedModel})
 	r.edit(t, func(svc *config.ServiceConfig) { svc.Defaults.Parameters[config.EvictIdleParameter] = "false" })
-	assert.Contains(t, r.m.ParametersStatus(run).Changed, "parameters.evict-idle-on-memory-pressure")
+	assert.Contains(t, r.m.ParametersStatus(t.Context(), run).Changed, "parameters.evict-idle-on-memory-pressure")
 }

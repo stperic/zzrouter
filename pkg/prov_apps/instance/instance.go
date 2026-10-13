@@ -134,8 +134,8 @@ type Instance struct {
 	// Use RLock for reads, Lock for writes.
 	mu           sync.RWMutex    `json:"-"`
 	idleChanged  chan<- struct{} `json:"-"`
-	activityHold bool
-	idleReleased bool `json:"-"`
+	activityHold bool            `json:"-"`
+	idleReleased bool            `json:"-"`
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -914,8 +914,10 @@ func (i *Instance) ObserveActivity(busy bool) {
 	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
 		return
 	}
-	if i.activityHold && !busy {
+	if busy || i.activityHold {
 		i.LastActivity = utils.Now()
+	}
+	if i.activityHold && !busy {
 		i.idleReleased = true
 	}
 	i.activityHold = busy

@@ -13,7 +13,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
-
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -133,6 +132,7 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 	defer ticker.Stop()
 
 	consecutiveFailures := 0
+	activityFailures := 0
 
 	for {
 		select {
@@ -154,7 +154,7 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 				return
 			}
 
-			m.checkActivity(ctx, current, hcConfig)
+			m.checkActivity(ctx, current, hcConfig, &activityFailures)
 
 			// HTTP health check
 			healthy := m.checkHTTP(ctx, current, hcConfig)
@@ -216,7 +216,7 @@ func (m *Monitor) checkHTTP(ctx context.Context, inst *instance.Instance, config
 		method = "GET"
 	}
 
-	req, err := (&backend.Resolved{Endpoint: inst.HealthURL, Upstream: backend.Engine()}).NewRequest(checkCtx, method, "", nil)
+	req, err := engineRequest(checkCtx, method, inst.HealthURL, nil)
 	if err != nil {
 		return false
 	}
@@ -254,7 +254,7 @@ func (m *Monitor) Serves(ctx context.Context, inst *instance.Instance, check *Se
 	defer cancel()
 
 	url := fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, check.Path)
-	req, err := (&backend.Resolved{Endpoint: url, Upstream: backend.Engine()}).NewRequest(reqCtx, check.method(), "", strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
+	req, err := engineRequest(reqCtx, check.method(), url, strings.NewReader(expandWireModel(check.Body, inst.WireModel)))
 	if err != nil {
 		return false
 	}
@@ -302,14 +302,28 @@ func (m *Monitor) checkContext(ctx context.Context, cfg CheckConfig) (context.Co
 	return context.WithTimeout(ctx, timeout)
 }
 
-func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig) {
+// activityProbeFailureLimit bounds stale busy evidence when the queue API stops answering.
+const activityProbeFailureLimit = 3
+
+func engineRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Request, error) {
+	return (&backend.Resolved{Endpoint: endpoint, Upstream: backend.Engine()}).NewRequest(ctx, method, "", body)
+}
+
+func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cfg CheckConfig, failures *int) {
 	if cfg.ActivityProbe == nil {
 		return
 	}
+	if *failures < activityProbeFailureLimit {
+		*failures++
+	}
+	defer func() {
+		if *failures >= activityProbeFailureLimit {
+			inst.ObserveActivity(false)
+		}
+	}()
 	ctx, cancel := m.checkContext(ctx, cfg)
 	defer cancel()
-	target := backend.Resolved{Endpoint: fmt.Sprintf("http://%s:%d", constants.Localhost, inst.Port), Upstream: backend.Engine()}
-	req, err := target.NewRequest(ctx, http.MethodGet, cfg.ActivityProbe.Path, nil)
+	req, err := engineRequest(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", constants.Localhost, inst.Port, cfg.ActivityProbe.Path), nil)
 	if err != nil {
 		return
 	}
@@ -337,5 +351,6 @@ func (m *Monitor) checkActivity(ctx context.Context, inst *instance.Instance, cf
 		}
 		busy = busy || len(queue) > 0
 	}
+	*failures = 0
 	inst.ObserveActivity(busy)
 }

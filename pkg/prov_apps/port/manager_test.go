@@ -81,23 +81,23 @@ func TestPool_AllocateSpecific(t *testing.T) {
 	assert.Error(t, err) // out of range
 }
 
-func TestPool_AllocateRequestedPort(t *testing.T) {
+func TestPool_AllocateWithFallback(t *testing.T) {
 	p := mustNewPool(t, Range{9000, 9010})
 
 	// Specific port available
-	port, err := p.Allocate(9005)
+	port, err := p.AllocateWithFallback(9005)
 	require.NoError(t, err)
 	assert.Equal(t, 9005, port)
 
-	// A requested occupied port must fail.
-	port, err = p.Allocate(9005)
-	require.Error(t, err)
-	assert.Zero(t, port)
+	// Specific port already taken, falls back
+	port, err = p.AllocateWithFallback(9005)
+	require.NoError(t, err)
+	assert.Equal(t, 9000, port) // first available
 
 	// No specific port requested
-	port, err = p.Allocate(0)
+	port, err = p.AllocateWithFallback(0)
 	require.NoError(t, err)
-	assert.Equal(t, 9000, port)
+	assert.Equal(t, 9001, port)
 }
 
 func TestPool_Release(t *testing.T) {

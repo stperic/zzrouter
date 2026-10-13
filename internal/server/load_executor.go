@@ -148,7 +148,7 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 	if p, err := e.appMgr.Ports().ProjectForProvider(normalizedApp); err == nil {
 		projectedPort = p
 	}
-	launch, err := e.appMgr.PreviewLaunch(prov_apps.EnsureRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
+	launch, err := e.appMgr.PreviewLaunch(ctx, prov_apps.EnsureRequest{Provider: normalizedApp, Model: req.ModelName, Endpoint: prov_apps.Endpoint(req.Endpoint), Parameters: req.Parameters, EnvVars: req.Environment}, projectedPort)
 	if err != nil {
 		return nil, err
 	}

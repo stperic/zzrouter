@@ -53,7 +53,7 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 		withVariant(svc)
 		svc.Models["llama3"] = config.ModelSpec{Parameters: map[string]string{"ctx-size": "changed"}}
 	})
-	st := m.ParametersStatus(inst)
+	st := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, st.State)
 	assert.Contains(t, st.Changed, "parameters.ctx-size")
 
@@ -164,7 +164,7 @@ func TestLocalModelAdmission_ReusesOnlyTheCheckedOperation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	inst := instance.NewInstance("admission-status", "vllm", tierVariant, 8100, 0, 0)
 	inst.Config = instance.Config{Provider: "vllm", Model: tierVariant, Port: 8100}
-	status := m.ParametersStatus(inst)
+	status := m.ParametersStatus(t.Context(), inst)
 	require.Equal(t, instance.ParametersUnknown, status.State)
 	assert.Contains(t, status.Error, "model name conflict")
 	require.NoError(t, cfg.UpdateApp("vllm", func(sc *config.ServiceConfig) error {

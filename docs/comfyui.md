@@ -18,7 +18,7 @@ Send `POST /zzrouter/v1/runs` with `{"provider":"comfyui","node":"localai"}`. Om
 
 The CLI equivalent is `zzrouter run --provider comfyui --node localai --watch`. MCP `zz_run_start` and `zz_run_preview` accept the same provider without a model, and run tools return `base_url`.
 
-Port 8188 is a firm singleton pool pin. An occupied port fails; a requested port never silently moves. Choose another singleton range in provider configuration when needed. URLs use the node address selected from bind and advertised IP settings, with IPv6 brackets when required. Keep the ComfyUI `listen` parameter consistent with the address family and reachability clients need.
+Port 8188 is a firm singleton pool pin. An occupied port fails because the pool has no alternative port. Choose another singleton range in provider configuration when needed. URLs use the node address selected from bind and advertised IP settings, with IPv6 brackets when required. Keep the ComfyUI `listen` parameter consistent with the address family and reachability clients need.
 
 ## Memory and activity
 
@@ -26,7 +26,7 @@ Port 8188 is a firm singleton pool pin. An occupied port fails; a requested port
 
 The reservation parameter stays out of argv. Shared launch, preview and staleness preparation derives `--reserve-vram` as (device total minus reservation) in GiB, rounded down. This allocator hint is not a verified hard cap; test the operator's ComfyUI version and workloads in the lab. Accounting retains the reservation independently of that hint. Engines whose memory footprint cannot be measured refuse to consume unused reservations until those idle tenants are reclaimed.
 
-The existing health scheduler samples `queue_running` and `queue_pending`. Observed-busy runs hold idle exclusion without consuming request slots. Busy-to-idle resets the idle clock; failed or malformed queue samples retain the previous state. Stop cancels and drains sampling.
+The existing health scheduler samples `queue_running` and `queue_pending`. Observed-busy runs hold idle exclusion without consuming request slots. Every busy sample refreshes the idle clock, and busy-to-idle resets it. Failed, timed-out or malformed queue samples retain the previous state for two consecutive failures; the third releases the busy hold and resets the idle clock. A successful sample resets that failure count. This bounds stale busy evidence even while `/system_stats` remains healthy. Stop cancels and drains sampling.
 
 Observed-busy runs are protected. A direct submission between an idle sample and the next sample can race eviction. Ensure refreshes activity and rejects an already claimed idle stop, but it is not a lease over a future direct job. Run reports expose `engine_busy` and `memory_commitments_mib`.
 

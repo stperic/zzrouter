@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"io/fs"
 	"maps"
 	"os"
@@ -16,11 +15,13 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
 
@@ -211,12 +212,15 @@ type LaunchParameters struct {
 	RuntimeKey           string
 }
 
-func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
+func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
+	if err := ctx.Err(); err != nil {
+		return LaunchParameters{}, err
+	}
 	if err := svc.ValidatePlatform(runtime.GOOS, runtime.GOARCH); err != nil {
 		return LaunchParameters{}, fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
 	}
 	if svc.RunScope == config.RunScopeNode && svc.Requirements != nil {
-		if result, checked := preflight.GPU(context.Background(), svc.Requirements.GPU); checked && !result.Passed {
+		if result, checked := preflight.GPU(gpu.WithCachedInventory(ctx, gpu.List(false)), svc.Requirements.GPU); checked && !result.Passed {
 			return LaunchParameters{}, fmt.Errorf("%w: provider %s: %s; %s", ErrUnsupportedPlatform, svc.Name, result.Message, result.Hint)
 		}
 	}
@@ -266,7 +270,7 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 		if snapshot.Fingerprint != manifest.Recipe.Fingerprint || snapshot.PolicyFingerprint != manifest.Recipe.PolicyFingerprint || install.Fingerprint(m.providerServiceEnv(req.Provider)) != manifest.RuntimeEnvironmentFingerprint {
 			return LaunchParameters{}, install.ErrStalePlan
 		}
-		if err := install.CheckRecipeAuthority(context.Background(), snapshot, m.resolveRecipe); err != nil {
+		if err := install.CheckRecipeAuthority(ctx, snapshot, m.resolveRecipe); err != nil {
 			return LaunchParameters{}, err
 		}
 		venv := filepath.Join(install.DisposableDir(runtime, req.DisposablePlanID), "venv")
@@ -297,7 +301,7 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 		}
 	} else {
 		var err error
-		toolkit, err = install.ApplyToolkitEnvironment(context.Background(), env, runtime)
+		toolkit, err = install.ApplyToolkitEnvironment(ctx, env, runtime)
 		if err != nil {
 			return LaunchParameters{}, err
 		}
@@ -313,9 +317,18 @@ func (m *ProviderAppManager) modelLaunchParameters(svc config.ServiceConfig, mod
 		return LaunchParameters{}, err
 	}
 	if budget != nil && budget.Kind == "reserve_mib" {
-		devices, err := m.memorySnapshot(context.Background())
-		if err != nil {
-			return LaunchParameters{}, fmt.Errorf("%w: NVIDIA GPU memory: %w", process.ErrMemoryObservation, err)
+		cards := m.memoryInventory(ctx)
+		if err := ctx.Err(); err != nil {
+			return LaunchParameters{}, err
+		}
+		devices := make([]gpu.MemoryDevice, 0, len(cards))
+		for _, card := range cards {
+			if card.UUID != "" && card.TotalMemoryMiB > 0 {
+				devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB})
+			}
+		}
+		if len(devices) == 0 {
+			return LaunchParameters{}, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
 		}
 		childEnv, err := process.ChildEnvironment(env)
 		if err != nil {
@@ -345,12 +358,12 @@ func freezeFeaturePaths(svc config.ServiceConfig, params map[string]string) {
 
 // ResolveLaunchParameters resolves this node's tiers and selected feature
 // runtime for previews without starting a process or installing anything.
-func (m *ProviderAppManager) ResolveLaunchParameters(req EnsureRequest) (LaunchParameters, error) {
+func (m *ProviderAppManager) ResolveLaunchParameters(ctx context.Context, req EnsureRequest) (LaunchParameters, error) {
 	_, svc, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return LaunchParameters{}, ErrProviderNotFound
 	}
-	return m.modelLaunchParameters(svc, process.ResolveModel(svc, req.Model), req, string(EndpointOrDefault(req.Endpoint)))
+	return m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, string(EndpointOrDefault(req.Endpoint)))
 }
 
 // ExecutionCommand locates the effective managed executable for this launch.

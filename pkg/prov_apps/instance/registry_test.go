@@ -417,3 +417,15 @@ func TestRegistryRunningPublicationContract(t *testing.T) {
 		})
 	}
 }
+
+func TestNodeKeyConflictNamesProvider(t *testing.T) {
+	registry := NewRegistry()
+	first := NewInstance("first", "comfyui", "", 0, 0, 0)
+	second := NewInstance("second", "comfyui", "", 0, 0, 0)
+	defer first.Cancel()
+	defer second.Cancel()
+	require.NoError(t, registry.Register(first))
+	err := registry.Register(second)
+	require.ErrorIs(t, err, ErrModelAlreadyLoaded)
+	require.Contains(t, err.Error(), "comfyui")
+}

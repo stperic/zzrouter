@@ -7,23 +7,17 @@ import "context"
 // as the key prevents any cross-package collisions.
 type inventoryCacheKey struct{}
 
-// WithCachedInventory runs InventoryContext once and attaches the
-// result to a derived context. Subsequent calls to InventoryContext
-// or ProbeContext that receive this context return cached data
-// instead of re-running nvidia-smi / rocm-smi / ghw.
-//
-// Intended use: wrap the ctx at the entry of any multi-step flow
-// that would otherwise probe the same hardware twice — typically
-// "run preflight, then build install plan" in the provider
-// installer path. A single process-wide TTL cache would violate
-// the "safe to call repeatedly so a driver install between calls
-// is reflected" contract that runtime callers depend on; ctx-
-// scoped caching only applies where the caller explicitly opts in.
-func WithCachedInventory(ctx context.Context) context.Context {
+// WithCachedInventory shares one hardware view across probes without repeating subprocesses.
+func WithCachedInventory(ctx context.Context, snapshot ...Inventory) context.Context {
 	if _, ok := cachedInventory(ctx); ok {
 		return ctx
 	}
-	inv := InventoryContext(ctx)
+	var inv Inventory
+	if len(snapshot) > 0 {
+		inv = snapshot[0]
+	} else {
+		inv = InventoryContext(ctx)
+	}
 	return context.WithValue(ctx, inventoryCacheKey{}, &inv)
 }
 

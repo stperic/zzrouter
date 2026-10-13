@@ -3,7 +3,6 @@ package prov_apps
 import (
 	"context"
 	"encoding/json"
-	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
@@ -149,4 +149,21 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	defer release()
 	observer.ObserveActivity(true)
 	require.False(t, run.IdleSnapshot().Leased, "a later busy sample cannot revoke a stop already claimed")
+}
+
+func TestEveryBusySampleRefreshesActivity(t *testing.T) {
+	run := instance.NewInstance("clock", "studio", "", 0, time.Minute, 0)
+	run.MarkRunning(false, nil)
+	defer run.Cancel()
+	now := utils.Now().Add(time.Hour)
+	restore := utils.SetClock(utils.FixedClock(now))
+	defer restore()
+	run.ObserveActivity(true)
+	require.Equal(t, now, run.GetLastActivity())
+	restore()
+	now = now.Add(time.Minute)
+	restore = utils.SetClock(utils.FixedClock(now))
+	defer restore()
+	run.ObserveActivity(true)
+	require.Equal(t, now, run.GetLastActivity())
 }

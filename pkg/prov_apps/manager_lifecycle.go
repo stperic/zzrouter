@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/stperic/zzrouter/pkg/constants"
 	"io"
 	"log/slog"
 	"maps"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
@@ -97,7 +97,7 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest, selection launchSelection) (*instance.Instance, error) {
 	allocatedPort, err := m.ports.AllocateForProvider(req.Provider, req.Port)
 	if err != nil {
-		return nil, fmt.Errorf("port allocation failed: %w", err)
+		return nil, fmt.Errorf("provider %s port allocation failed: %w", req.Provider, err)
 	}
 	inst, err := m.newRun(ctx, req, selection.config, allocatedPort)
 	if err == nil {
@@ -234,6 +234,9 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, err
 	}
 	run.logFile = logFile
+	if m.seams.admitted != nil {
+		m.seams.admitted()
+	}
 	m.emitEvent(runEvent(EventInstanceStarting, inst, fmt.Sprintf("Starting %s on port %d", req.Model, inst.Port)))
 	return run, nil
 }
@@ -241,7 +244,7 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 // prepareRun resolves a run's parameters, checks its memory fit and builds argv.
 func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
 	endpoint := inst.Endpoint
-	features, err := m.modelLaunchParameters(selection.config, selection.model, req, endpoint)
+	features, err := m.modelLaunchParameters(ctx, selection.config, selection.model, req, endpoint)
 	if err != nil {
 		return admittedRun{}, err
 	}
@@ -265,7 +268,6 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 		return admittedRun{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	inst.SetKeepAlive(settings.KeepAlive)
-	inst.SetResolved(prepared.resolved)
 	// An incomplete download reaches the engine as a corrupt-tensor crash
 	// tens of seconds in; catching it here names the actual problem.
 	if err := process.VerifyLocalWeights(ctx, prepared.launch.ModelPath, featurePaths, selection.model.SourcePath()); err != nil {
@@ -279,6 +281,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 		weights.Paths = append(weights.Paths, featurePaths...)
 		inst.SetWeights(weights)
 	}
+	inst.SetResolved(prepared.resolved)
 	inst.WireModel = prepared.launch.WireModel
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
@@ -313,6 +316,12 @@ func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest
 // starting, then starts it. Stopping the run ends the wait; StopInstance
 // owns its cleanup.
 func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req EnsureRequest) {
+	started := false
+	defer func() {
+		if !started {
+			inst.ReleaseMemory()
+		}
+	}()
 	ctx := inst.Context()
 	for {
 		run, blocker, err := m.tryAdmit(ctx, inst, req)
@@ -327,6 +336,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req EnsureR
 			m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 			return
 		case blocker == nil:
+			started = true
 			m.startRun(inst, run)
 			return
 		}
@@ -1180,7 +1190,7 @@ type LaunchPreview struct {
 }
 
 // PreviewLaunch renders the preparation a start would make, without starting anything.
-func (m *ProviderAppManager) PreviewLaunch(req EnsureRequest, port int) (LaunchPreview, error) {
+func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureRequest, port int) (LaunchPreview, error) {
 	key, svc, ok := m.resolveConfigKey(req.Provider)
 	if !ok {
 		return LaunchPreview{}, ErrProviderNotFound
@@ -1189,7 +1199,7 @@ func (m *ProviderAppManager) PreviewLaunch(req EnsureRequest, port int) (LaunchP
 		return LaunchPreview{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	req.Model = m.runModel(key, svc, req.Model)
-	prepared, err := m.engine(Lifecycle(svc)).prepare(svc, key, req, port)
+	prepared, err := m.engine(Lifecycle(svc)).prepare(ctx, svc, key, req, port)
 	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
 }
 

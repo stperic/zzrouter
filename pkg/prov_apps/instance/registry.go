@@ -83,7 +83,11 @@ func (r *Registry) Register(inst *Instance) error {
 			existing := r.instances[existingID]
 			status := existing.GetStatus()
 			if existing.StopUnconfirmed.Load() || (status != StatusFailed && status != StatusStopped) {
-				return fmt.Errorf("%w: %s (instance %s)", ErrModelAlreadyLoaded, inst.Model, existingID)
+				name := key.Model
+				if name == "" {
+					name = key.Provider
+				}
+				return fmt.Errorf("%w: %s (instance %s)", ErrModelAlreadyLoaded, name, existingID)
 			}
 			// Clean up stale mappings for the replaced instance.
 			delete(r.keyMap, key)

@@ -109,18 +109,9 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		}
 		return nil
 	}
-	if budget.Kind != "fraction_total" {
-		for _, device := range devices {
-			fit := memoryFitError(budget.Kind, device, device.FreeMiB, owners)
-			if fit.FreeMiB < device.FreeMiB {
-				return fit
-			}
-		}
-		return nil
-	}
-	auto := parameters[budget.Parameter] == "auto"
+	auto := budget.Kind == "fraction_total" && parameters[budget.Parameter] == "auto"
 	var fraction float64
-	if !auto {
+	if budget.Kind == "fraction_total" && !auto {
 		var err error
 		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
 		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
@@ -138,6 +129,15 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	selected, err := memoryDevicesForLaunch(devices, environment, count)
 	if err != nil {
 		return err
+	}
+	if budget.Kind != "fraction_total" {
+		for _, device := range selected {
+			fit := memoryFitError(budget.Parameter, device, device.FreeMiB, owners)
+			if fit.FreeMiB < device.FreeMiB {
+				return fit
+			}
+		}
+		return nil
 	}
 	sized := auto && need.Total() > 0
 	switch {
@@ -182,7 +182,11 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 		failure.Holders = append(failure.Holders, holder)
 	}
 	for _, run := range owners {
-		unused := max(0, run.Commitments[device.UUID]-used[run.ID])
+		usage := used[run.ID]
+		if device.ProcessReason != "" {
+			usage = max(0, device.TotalMiB-device.FreeMiB)
+		}
+		unused := max(0, run.Commitments[device.UUID]-usage)
 		if unused == 0 {
 			continue
 		}

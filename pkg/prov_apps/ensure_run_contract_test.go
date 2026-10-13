@@ -1594,18 +1594,18 @@ func TestEnsureRunContractServed(t *testing.T) {
 		r := newServedRig(t)
 		run := r.running(t, served)
 		pinned := r.running(t, EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}})
-		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State)
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), run).State)
 		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"num-ctx": "4096"}}
 		})
-		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(run).State, "a key the load does not send changes nothing")
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), run).State, "a key the load does not send changes nothing")
 		r.edit(t, func(svc *config.ServiceConfig) {
 			svc.Runtime.KeepAlive = "10m"
 		})
-		stale := r.m.ParametersStatus(run)
+		stale := r.m.ParametersStatus(t.Context(), run)
 		assert.Equal(t, instance.ParametersStale, stale.State)
 		assert.Contains(t, stale.Changed, "parameters.keep-alive")
-		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(pinned).State, "a run's own keep-alive holds against config")
+		assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), pinned).State, "a run's own keep-alive holds against config")
 	})
 
 	t.Run("S25 restarting an adopted run unloads and loads once", func(t *testing.T) {
@@ -2067,5 +2067,5 @@ func TestNodeScopedEnsureConcurrentProcess(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, run.ID, restarted.ID)
 	awaitRunning(t, restarted)
-	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(restarted).State)
+	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), restarted).State)
 }

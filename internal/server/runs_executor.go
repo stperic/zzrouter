@@ -120,7 +120,7 @@ func (e *RunsExecutor) requireProviderAppMgr(c *gin.Context) bool {
 }
 
 // GetLocalRuns lists this node's runs, served models included; withStatus adds their ParametersStatus.
-func (e *RunsExecutor) GetLocalRuns(withStatus bool) ([]instance.InstanceInfo, error) {
+func (e *RunsExecutor) GetLocalRuns(ctx context.Context, withStatus bool) ([]instance.InstanceInfo, error) {
 	if e.appMgr == nil {
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
@@ -130,13 +130,13 @@ func (e *RunsExecutor) GetLocalRuns(withStatus bool) ([]instance.InstanceInfo, e
 	}
 	var result []instance.InstanceInfo
 	for _, inst := range e.appMgr.Instances().List() {
-		result = append(result, e.appMgr.InstanceInfo(inst, hostname))
+		result = append(result, e.appMgr.InstanceInfo(ctx, inst, hostname))
 	}
 	return result, nil
 }
 
 // GetLocalRun retrieves a specific run from the local provider app manager
-func (e *RunsExecutor) GetLocalRun(runID string) (*instance.InstanceInfo, error) {
+func (e *RunsExecutor) GetLocalRun(ctx context.Context, runID string) (*instance.InstanceInfo, error) {
 	if e.appMgr == nil {
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
@@ -146,13 +146,13 @@ func (e *RunsExecutor) GetLocalRun(runID string) (*instance.InstanceInfo, error)
 		return nil, fmt.Errorf("instance not found: %s", runID)
 	}
 
-	info := e.appMgr.InstanceInfo(inst, e.getNodename())
+	info := e.appMgr.InstanceInfo(ctx, inst, e.getNodename())
 	return &info, nil
 }
 
 // HandleInternalListRuns handles GET /zzrouter/internal/runs (internal API)
 func (e *RunsExecutor) HandleInternalListRuns(c *gin.Context) {
-	runs, err := e.GetLocalRuns(c.Query("include") == includeParametersStatus)
+	runs, err := e.GetLocalRuns(c.Request.Context(), c.Query("include") == includeParametersStatus)
 	if err != nil {
 		slog.Error("Failed to get local runs", "runs", err)
 		InternalNodeError(c, utils.SanitizeErrorMessage(err.Error()))
@@ -172,7 +172,7 @@ func (e *RunsExecutor) HandleInternalGetRun(c *gin.Context) {
 		return
 	}
 
-	run, err := e.GetLocalRun(runID)
+	run, err := e.GetLocalRun(c.Request.Context(), runID)
 	if err != nil {
 		slog.Error("Failed to get local run", "run_id", runID, "error", err)
 		NotFound(c, utils.SanitizeErrorMessage(err.Error()))

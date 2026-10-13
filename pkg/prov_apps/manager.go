@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -19,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -140,10 +140,10 @@ type ProviderAppManager struct {
 	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
 	resolveBackend func(string) (*backend.Resolved, bool)
 
-	selfHost func() string
 	// nodename is this node's cluster name, used to resolve the node
 	// tiers of the parameter tree. Optional; nil means Tier 0 only.
 	nodename func() string
+	selfHost func() string
 
 	// localizeParams turns configured parameter values into what this
 	// node's engine is given. Optional; nil passes them through.
@@ -152,6 +152,7 @@ type ProviderAppManager struct {
 	installPolicyFile   string
 	memoryBudget        func(provider string) (*schema.MemoryBudget, error)
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
+	memoryInventory     func(context.Context) []gpu.CardMetrics
 	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
@@ -164,7 +165,7 @@ type ProviderAppManager struct {
 	sightingsMu sync.Mutex
 	sightings   map[string]map[string]bool
 	// seams pause the start path where tests must interleave; nil in production.
-	seams struct{ beforeLaunch, processStarted, flightRemoved func() }
+	seams struct{ beforeLaunch, processStarted, flightRemoved, admitted func() }
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -347,6 +348,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
+		memoryInventory: inventory.Default().GetGPUCardMetrics,
 		services:        make(map[string]*managedService),
 		flights:         make(map[instance.Key]*flight),
 		sightings:       make(map[string]map[string]bool),

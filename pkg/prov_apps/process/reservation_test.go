@@ -36,3 +36,34 @@ func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	device.Processes = nil
 	require.Equal(t, int64(13528), memoryFitError("fraction", device, 18000, owners).FreeMiB)
 }
+
+func TestReservationUnavailableAttributionUsesDeviceLowerBound(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reason     string
+		free, want int64
+	}{
+		{"attributed", "", 22000, 18000},
+		{"unavailable below commitment", "unavailable", 22000, 20000},
+		{"unavailable above commitment", "unavailable", 17000, 17000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owners := []RunRef{{ID: "tenant", PID: 7, Commitments: map[string]int64{"GPU-A": 4000}}}
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 24000, FreeMiB: tc.free, ProcessReason: tc.reason}
+			fit := memoryFitError("budget", device, 20000, owners)
+			require.Equal(t, tc.want, fit.FreeMiB)
+		})
+	}
+}
+
+func TestUnknownBudgetOnlyChecksSelectedDevices(t *testing.T) {
+	devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24000, FreeMiB: 24000}, {UUID: "GPU-B", TotalMiB: 24000, FreeMiB: 24000}}
+	owners := []RunRef{{ID: "tenant", Commitments: map[string]int64{"GPU-A": 4000}}}
+	budget := schema.MemoryBudget{Kind: "layers", Parameter: "gpu-layers", DeviceCountParameter: "devices"}
+	require.NoError(t, AdmitMemoryBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B"}, devices, owners, nil))
+	var fit *MemoryFitError
+	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}, devices, owners, nil), &fit)
+	require.Equal(t, "gpu-layers", fit.Parameter)
+	require.Equal(t, "GPU-A", fit.Device)
+	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, map[string]string{"devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B,GPU-A"}, devices, owners, nil), &fit)
+}
