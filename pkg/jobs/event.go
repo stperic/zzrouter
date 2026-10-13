@@ -1,6 +1,9 @@
 package jobs
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // Phase is the lifecycle state of a job.
 type Phase string
@@ -52,6 +55,15 @@ type Event struct {
 	// on Bounded overflow. Carries {since, current} so subscribers can
 	// know the gap size. Normal events leave it nil.
 	Dropped *DroppedMarker `json:"dropped,omitempty"`
+}
+
+// Validate checks the required wire identity and lifecycle phase; kind is extensible.
+func (e Event) Validate() error {
+	if e.JobID == "" || e.Node == "" || e.Kind == "" ||
+		(e.Phase != PhasePending && e.Phase != PhaseRunning && !e.Phase.IsTerminal()) {
+		return errors.New("invalid job event identity or phase")
+	}
+	return nil
 }
 
 // DroppedMarker is the events_dropped payload. Subscribers that see a

@@ -121,6 +121,7 @@ func (e *RoutedError) Respond(c *gin.Context) {
 	if e.ProblemDetails != nil {
 		pd := *e.ProblemDetails // copy by value so we don't mutate the shared error
 		pd.Instance = c.Request.URL.Path
+		pd.RequestID = ""
 		if reqID, ok := c.Get("request_id"); ok {
 			if id, ok := reqID.(string); ok {
 				pd.RequestID = id
@@ -161,6 +162,14 @@ func parseRoutedError(statusCode int, body []byte, headers http.Header) *RoutedE
 	}
 	var pd utils.ProblemDetails
 	if err := json.Unmarshal(body, &pd); err == nil && pd.Title != "" {
+		defaults := utils.NewProblemDetails(statusCode, http.StatusText(statusCode), "", "")
+		pd.Status = statusCode
+		if pd.Type == "" {
+			pd.Type = defaults.Type
+		}
+		if pd.Code == "" {
+			pd.Code = defaults.Code
+		}
 		re.ProblemDetails = &pd
 	}
 	return re

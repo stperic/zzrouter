@@ -127,7 +127,7 @@ func (p *JobsProxy) endpointURL(ep *mesh.Endpoint) (string, error) {
 	return mesh.DeriveClusterURL(ep.URL, p.ClusterPort)
 }
 
-func (p *JobsProxy) openStream(ctx context.Context, upstream string) (*http.Response, error) {
+func (p *JobsProxy) open(ctx context.Context, method, upstream, accept string) (*http.Response, error) {
 	if p.StreamClient == nil {
 		return nil, errors.New("job stream client unavailable")
 	}
@@ -135,11 +135,11 @@ func (p *JobsProxy) openStream(ctx context.Context, upstream string) (*http.Resp
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream, nil)
+	req, err := http.NewRequestWithContext(ctx, method, upstream, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", accept)
 	return client.Do(req)
 }
 

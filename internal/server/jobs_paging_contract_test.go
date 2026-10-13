@@ -16,7 +16,10 @@ func TestRemoteJobsPagingContract(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		// Synthetic worker fixture with equal timestamps exercises the id tie-breaker.
-		_, err := io.WriteString(w, `{"node":"w1","jobs":[{"job_id":"c"},{"job_id":"a"},{"job_id":"b"}]}`)
+		_, err := io.WriteString(w, `{"node":"w1","jobs":[
+			{"job_id":"c","node":"w1","kind":"download","phase":"running"},
+			{"job_id":"a","node":"w1","kind":"download","phase":"running"},
+			{"job_id":"b","node":"w1","kind":"download","phase":"running"}]}`)
 		require.NoError(t, err)
 	}))
 	defer up.Close()
@@ -56,7 +59,10 @@ func TestRemoteJobsPagingContract(t *testing.T) {
 func TestRemoteJobsRecentFirstContract(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Synthetic timestamps separate recency ordering from the id tie-breaker.
-		_, err := io.WriteString(w, `{"node":"w1","jobs":[{"job_id":"a","at":"2026-10-11T09:00:00Z"},{"job_id":"c","at":"2026-10-11T10:00:00Z"},{"job_id":"b","at":"2026-10-11T10:00:00Z"}]}`)
+		_, err := io.WriteString(w, `{"node":"w1","jobs":[
+			{"job_id":"a","node":"w1","kind":"download","phase":"running","at":"2026-10-11T09:00:00Z"},
+			{"job_id":"c","node":"w1","kind":"download","phase":"running","at":"2026-10-11T10:00:00Z"},
+			{"job_id":"b","node":"w1","kind":"download","phase":"running","at":"2026-10-11T10:00:00Z"}]}`)
 		require.NoError(t, err)
 	}))
 	defer up.Close()

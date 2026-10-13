@@ -18,7 +18,7 @@ const (
 	CodeQueueWaitExpired        RouteErrorCode = "queue_wait_expired"
 	CodeReleaseManifestMissing  RouteErrorCode = "release_manifest_missing"
 	CodeProtocolCutoverRequired RouteErrorCode = "protocol_cutover_required"
-	// CodeJobNotFound means no local job exists and every peer confirmed absence.
+	// CodeJobNotFound means confirmed absence within the requested lookup scope.
 	CodeJobNotFound RouteErrorCode = "job_not_found"
 
 	// CodeModelNodeAmbiguous requires an explicit node for replicated remote models.

@@ -26,6 +26,11 @@
 
 ### Behaviour changes
 
+- Missing-job GET, cancellation and pre-stream failures return scoped
+  `job_not_found` Problems at their owner. Proxied errors preserve retry metadata
+  and use the public request identity. Job lists, snapshots and cancellation
+  replies validate their expected success shape; transport failures use the
+  shared sanitized routing error codes.
 - Deployments retain worker-job progress and terminal outcomes before any client
   read. Peer sync follows its own immutable job, and cancelling a deployment
   cannot stop a newer download using the same key. Per-node cancellation reports
