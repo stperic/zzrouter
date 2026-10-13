@@ -110,7 +110,7 @@ func TestDetectLayout(t *testing.T) {
 func TestManagedInstall_MovesSymlinkAndLeavesOldVersionIntact(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 2)
 
-	result, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "2.0.0"))
+	result, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	assert.Equal(t, "2.0.0", result.Version)
@@ -120,19 +120,25 @@ func TestManagedInstall_MovesSymlinkAndLeavesOldVersionIntact(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2.0.0", active)
 	assert.Contains(t, activeNodeContent(t, l), "version 2.0.0")
+	assertManagedBinaries(t, l, "2.0.0")
 
 	// The whole point of the layout: the directory the running process
 	// was executing out of was not touched.
 	old, err := os.ReadFile(filepath.Join(l.versionBinDir("1.0.0"), nodeBinaryName))
 	require.NoError(t, err)
 	assert.Contains(t, string(old), "version 1.0.0")
+	for _, name := range []string{clientBinaryName, launcherBinaryName} {
+		data, err := os.ReadFile(filepath.Join(l.versionBinDir("1.0.0"), name))
+		require.NoError(t, err)
+		assert.Equal(t, fakeBinary(name, "1.0.0"), data)
+	}
 
 	assert.Equal(t, []string{"1.0.0"}, l.loadState().Previous)
 }
 
 func TestManagedInstall_LinkIsRelative(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 2)
-	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "2.0.0"))
+	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 
 	// Relative targets are what let the tree be moved or mounted
@@ -171,7 +177,7 @@ func TestManagedInstall_FailedSmokeTestLeavesEverythingAlone(t *testing.T) {
 func TestManagedInstall_CarriesTheLauncherForwardWhenTheReleaseHasNone(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 2)
 
-	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName), mustVersion(t, "2.0.0"))
+	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 
 	// The node looks for its launcher beside itself, so a version
@@ -188,7 +194,7 @@ func TestManagedInstall_CarriesTheLauncherForwardWhenTheReleaseHasNone(t *testin
 
 func TestManagedRollback_ReturnsToThePreviousVersion(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 2)
-	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "2.0.0"))
+	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 
 	i.SetCurrentExecutable(filepath.Join(l.versionBinDir("2.0.0"), nodeBinaryName))
@@ -201,6 +207,7 @@ func TestManagedRollback_ReturnsToThePreviousVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "1.0.0", active)
 	assert.Contains(t, activeNodeContent(t, l), "version 1.0.0")
+	assertManagedBinaries(t, l, "1.0.0")
 
 	// The version rolled away from stays on disk: nothing was consumed,
 	// so the operator can still inspect it.
@@ -212,7 +219,7 @@ func TestManagedRollback_TwiceWalksTwoVersionsBack(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 3)
 
 	for _, ver := range []string{"2.0.0", "3.0.0"} {
-		_, err := i.Install(context.Background(), releaseArchive(t, ver, nodeBinaryName, launcherBinaryName), mustVersion(t, ver))
+		_, err := i.Install(context.Background(), releaseArchive(t, ver, nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, ver))
 		require.NoError(t, err)
 		i.SetCurrentExecutable(filepath.Join(l.versionBinDir(ver), nodeBinaryName))
 	}
@@ -247,7 +254,7 @@ func TestManagedPrune_KeepsTheReachableVersionsAndDropsTheRest(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 1)
 
 	for _, ver := range []string{"2.0.0", "3.0.0"} {
-		_, err := i.Install(context.Background(), releaseArchive(t, ver, nodeBinaryName, launcherBinaryName), mustVersion(t, ver))
+		_, err := i.Install(context.Background(), releaseArchive(t, ver, nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, ver))
 		require.NoError(t, err)
 		i.SetCurrentExecutable(filepath.Join(l.versionBinDir(ver), nodeBinaryName))
 	}
@@ -260,6 +267,10 @@ func TestManagedPrune_KeepsTheReachableVersionsAndDropsTheRest(t *testing.T) {
 	// And what prune removed is no longer offered as a rollback target,
 	// so a rollback cannot be sent at a directory that is gone.
 	assert.Equal(t, []string{"2.0.0"}, l.loadState().Previous)
+	i.SetCurrentExecutable(filepath.Join(l.versionBinDir("3.0.0"), nodeBinaryName))
+	_, err := i.Rollback()
+	require.NoError(t, err)
+	assertManagedBinaries(t, l, "2.0.0")
 }
 
 func TestManagedPrune_NeverRemovesTheActiveVersion(t *testing.T) {
@@ -268,7 +279,7 @@ func TestManagedPrune_NeverRemovesTheActiveVersion(t *testing.T) {
 	// An older version number installed over a newer one: prune sorts by
 	// version, so "keep the newest directories" would delete the one
 	// that is running.
-	_, err := i.Install(context.Background(), releaseArchive(t, "4.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "4.0.0"))
+	_, err := i.Install(context.Background(), releaseArchive(t, "4.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "4.0.0"))
 	require.NoError(t, err)
 
 	assert.DirExists(t, filepath.Join(l.versionsDir(), "4.0.0"))
@@ -284,7 +295,7 @@ func TestManagedInstall_DiscardsAnInterruptedInstallOfTheSameVersion(t *testing.
 	require.NoError(t, os.MkdirAll(orphan, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(orphan, nodeBinaryName), []byte("truncated"), 0755))
 
-	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "2.0.0"))
+	_, err := i.Install(context.Background(), releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 	assert.Contains(t, activeNodeContent(t, l), "version 2.0.0")
 }

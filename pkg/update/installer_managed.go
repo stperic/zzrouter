@@ -18,6 +18,9 @@ import (
 // avoid.
 var ErrVersionAlreadyActive = errors.New("that version is already the active one")
 
+// ErrVersionInUse reports an install that would overwrite a live companion.
+var ErrVersionInUse = errors.New("that version is still referenced by a managed binary")
+
 // errManagedNeedsVersion reports an install into a managed layout with
 // no version to name the directory after.
 var errManagedNeedsVersion = errors.New("a managed install needs the version the release carries")
@@ -53,6 +56,9 @@ func (i *Installer) installManaged(ctx context.Context, l *layout, archivePath s
 	if active != "" && active == newVer {
 		return nil, fmt.Errorf("%w: %s", ErrVersionAlreadyActive, newVer)
 	}
+	if l.linkedVersions()[newVer] {
+		return nil, fmt.Errorf("%w: %s", ErrVersionInUse, newVer)
+	}
 
 	if err := i.checkManagedWritable(l); err != nil {
 		return nil, err
@@ -66,6 +72,13 @@ func (i *Installer) installManaged(ctx context.Context, l *layout, archivePath s
 	}
 	if err := smokeTest(ctx, extractedNode, expected); err != nil {
 		return nil, err
+	}
+	extractedClient, err := i.extractBinary(archivePath, clientBinaryName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract client: %w", err)
+	}
+	if err := smokeTest(ctx, extractedClient, expected); err != nil {
+		return nil, fmt.Errorf("client: %w", err)
 	}
 	extractedLauncher, err := i.extractLauncher(archivePath, launcherBinaryName)
 	if err != nil {
@@ -83,7 +96,7 @@ func (i *Installer) installManaged(ctx context.Context, l *layout, archivePath s
 		return nil, err
 	}
 
-	staged := map[string]string{nodeBinaryName: extractedNode}
+	staged := map[string]string{nodeBinaryName: extractedNode, clientBinaryName: extractedClient}
 	if extractedLauncher != "" {
 		staged[launcherBinaryName] = extractedLauncher
 	}

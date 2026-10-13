@@ -35,6 +35,11 @@
 
 ### Behaviour changes
 
+- Managed Linux updates include the operator client with the node and launcher.
+  Rollback restores the matching client; legacy versions without one retain the
+  working client and prune keeps its directory. New managed releases without a
+  runnable matching client are refused. See [installation](docs/install.md) for
+  adopting this behavior on an older service install.
 - Providers can declare `run_scope: node`: one model-less run per node,
   started with `provider` and `node` and no `model_name`. Run reports carry
   `provider` and `base_url` (the node's reachable address); an `evicted_runs`
