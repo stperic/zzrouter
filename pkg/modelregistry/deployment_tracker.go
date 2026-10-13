@@ -1,6 +1,7 @@
 package modelregistry
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -78,17 +79,31 @@ func (d *Deployment) UpdateSummary() {
 		switch n.Status {
 		case constants.StatusCompleted:
 			d.NodesComplete++
-		case constants.StatusFailed:
+		case constants.StatusFailed, constants.StatusCancelled:
 			d.NodesFailed++
 		case constants.StatusSkipped:
 			d.NodesSkipped++
 		case constants.StatusPending:
 			d.NodesPending++
-		case constants.StatusDownloading:
+		default:
 			d.NodesInProgress++
 		}
 	}
 
+	if d.Status != constants.StatusCancelled && len(d.Nodes) > 0 {
+		switch {
+		case d.NodesPending+d.NodesInProgress > 0:
+			d.Status, d.Message = constants.StatusDownloading, fmt.Sprintf("Downloading on %d/%d nodes", d.NodesPending+d.NodesInProgress, d.NodesTotal)
+		case d.NodesFailed == d.NodesTotal:
+			d.Status, d.Message = constants.StatusFailed, "All nodes failed"
+		case d.NodesFailed > 0:
+			d.Status, d.Message = constants.StatusFailed, fmt.Sprintf("%d/%d nodes failed", d.NodesFailed, d.NodesTotal)
+		case d.NodesSkipped == d.NodesTotal:
+			d.Status, d.Message = constants.StatusCompleted, fmt.Sprintf("All %d nodes skipped", d.NodesTotal)
+		default:
+			d.Status, d.Message = constants.StatusCompleted, fmt.Sprintf("All %d nodes complete", d.NodesTotal)
+		}
+	}
 	d.UpdatedAt = utils.Now()
 }
 
@@ -111,6 +126,7 @@ const terminalRetention = 30 * time.Minute
 type DeploymentTracker struct {
 	mu          sync.RWMutex
 	deployments map[string]*Deployment
+	changed     chan struct{}
 }
 
 // evictExpiredLocked drops finished deployments past their retention. It
@@ -130,6 +146,7 @@ func (t *DeploymentTracker) evictExpiredLocked() {
 func NewDeploymentTracker() *DeploymentTracker {
 	return &DeploymentTracker{
 		deployments: make(map[string]*Deployment),
+		changed:     make(chan struct{}),
 	}
 }
 
@@ -176,9 +193,10 @@ func (t *DeploymentTracker) CreateDeployment(model, format, repo, file string, t
 	}
 
 	d.UpdateSummary()
+	d.Status, d.Message = constants.StatusPending, "Deployment created, waiting to start"
 	t.deployments[id] = d
 
-	return d
+	return cloneDeployment(d)
 }
 
 // GetDeployment returns a deep-copy snapshot of the deployment, or nil.
@@ -191,10 +209,7 @@ func (t *DeploymentTracker) GetDeployment(id string) *Deployment {
 		return nil
 	}
 	// Return a copy to prevent races with later mutations.
-	dc := *d
-	dc.Nodes = make([]DeploymentNode, len(d.Nodes))
-	copy(dc.Nodes, d.Nodes)
-	return &dc
+	return cloneDeployment(d)
 }
 
 // ListDeployments returns deep-copy snapshots of every tracked deployment.
@@ -208,201 +223,123 @@ func (t *DeploymentTracker) ListDeployments(activeOnly bool) []*Deployment {
 		if activeOnly && d.IsComplete() {
 			continue
 		}
-		dc := *d
-		dc.Nodes = make([]DeploymentNode, len(d.Nodes))
-		copy(dc.Nodes, d.Nodes)
-		result = append(result, &dc)
+		result = append(result, cloneDeployment(d))
 	}
 
 	return result
 }
 
-// UpdateDeploymentStatus sets the overall deployment status.
-func (t *DeploymentTracker) UpdateDeploymentStatus(id string, status constants.Status, message string) error {
+// UpdateNode commits a node outcome and aggregation together. A nonempty
+// jobID guards an observer update against another attempt. Terminal outcomes
+// are sealed; late acceptance may only bind identity for cancellation.
+func (t *DeploymentTracker) UpdateNode(id, node, jobID string, update func(*DeploymentNode)) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
+	d := t.deployments[id]
+	if d == nil {
 		return fmt.Errorf("deployment not found: %s", id)
 	}
+	for i := range d.Nodes {
+		n := &d.Nodes[i]
+		if n.Node != node {
+			continue
+		}
+		if jobID != "" && n.JobID != jobID {
+			return fmt.Errorf("deployment job identity mismatch on %s", node)
+		}
+		next := *n
+		update(&next)
+		if next.Node != n.Node || (n.JobID != "" && (next.JobID != n.JobID || next.Source != n.Source || next.DownloadID != n.DownloadID)) {
+			return fmt.Errorf("deployment ownership cannot change on %s", node)
+		}
+		if n.Status.IsTerminal() {
+			if n.JobID != "" || next.JobID == "" {
+				return nil
+			}
+			n.JobID, n.DownloadID, n.Source = next.JobID, next.DownloadID, next.Source
+		} else {
+			if next.StartedAt.IsZero() && next.Status != constants.StatusPending {
+				next.StartedAt = utils.Now()
+			}
+			if next.Status.IsTerminal() && next.CompletedAt.IsZero() {
+				next.CompletedAt = utils.Now()
+			}
+			*n = next
+		}
+		d.UpdateSummary()
+		t.notifyLocked()
+		return nil
+	}
+	return fmt.Errorf("node not found in deployment: %s", node)
+}
 
-	d.Status = status
-	d.Message = message
-	d.UpdatedAt = utils.Now()
-
+// CancelDeployment records intent before any network cancellation. Pending
+// acceptances can subsequently bind their immutable job for cancellation.
+func (t *DeploymentTracker) CancelDeployment(id string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	d := t.deployments[id]
+	if d == nil {
+		return fmt.Errorf("deployment not found: %s", id)
+	}
+	d.Status, d.Message = constants.StatusCancelled, "Deployment cancelled by user"
+	for i := range d.Nodes {
+		if !d.Nodes[i].Status.IsTerminal() {
+			d.Nodes[i].Status, d.Nodes[i].Error = constants.StatusCancelled, "cancelled by user"
+			d.Nodes[i].CompletedAt = utils.Now()
+		}
+	}
+	d.UpdateSummary()
+	t.notifyLocked()
 	return nil
 }
 
-// UpdateNodeStatus sets the status of a specific node within a deployment.
-// StartedAt and CompletedAt are derived from status transitions so callers
-// don't need to pass timestamps.
-func (t *DeploymentTracker) UpdateNodeStatus(id, node string, status constants.Status, errMsg string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
-		return fmt.Errorf("deployment not found: %s", id)
-	}
-
-	for i, n := range d.Nodes {
-		if n.Node == node {
-			d.Nodes[i].Status = status
-			d.Nodes[i].Error = errMsg
-
-			if status == constants.StatusDownloading {
-				if d.Nodes[i].StartedAt.IsZero() {
-					d.Nodes[i].StartedAt = utils.Now()
+// WaitNode uses the retained placement outcome, independent of worker-job TTL.
+// Reading state and capturing notification under the same lock avoids a lost
+// completion between the read and wait.
+func (t *DeploymentTracker) WaitNode(ctx context.Context, id, node string) error {
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		t.mu.RLock()
+		d := t.deployments[id]
+		changed := t.changed
+		var target *DeploymentNode
+		if d != nil {
+			for _, n := range d.Nodes {
+				if n.Node == node || (node == "" && len(d.Nodes) == 1) {
+					target = &n
+					break
 				}
 			}
-
-			if status == constants.StatusCompleted || status == constants.StatusFailed {
-				d.Nodes[i].CompletedAt = utils.Now()
+		}
+		cancelled := d != nil && d.Status == constants.StatusCancelled
+		t.mu.RUnlock()
+		if target == nil {
+			return fmt.Errorf("deployment %s has no retained target %q", id, node)
+		}
+		if cancelled || target.Status.IsTerminal() {
+			if !cancelled && target.Status == constants.StatusCompleted {
+				return nil
 			}
-
-			d.UpdateSummary()
-			return nil
+			return fmt.Errorf("deployment on %s ended %s: %s", target.Node, target.Status, target.Error)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
 		}
 	}
-
-	return fmt.Errorf("node not found in deployment: %s", node)
 }
 
-// UpdateNodeProgress updates byte/speed counters for a specific node.
-func (t *DeploymentTracker) UpdateNodeProgress(id, node string, bytesDownloaded, bytesTotal, speed int64) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
-		return fmt.Errorf("deployment not found: %s", id)
-	}
-
-	for i, n := range d.Nodes {
-		if n.Node == node {
-			d.Nodes[i].BytesDownloaded = bytesDownloaded
-			d.Nodes[i].BytesTotal = bytesTotal
-			d.Nodes[i].Speed = speed
-
-			if bytesTotal > 0 {
-				d.Nodes[i].Progress = float64(bytesDownloaded) / float64(bytesTotal) * 100
-			}
-
-			d.UpdatedAt = utils.Now()
-			return nil
-		}
-	}
-
-	return fmt.Errorf("node not found in deployment: %s", node)
+func (t *DeploymentTracker) notifyLocked() {
+	close(t.changed)
+	t.changed = make(chan struct{})
 }
 
-// UpdateNodeDownloadID persists the per-node download ID returned by the
-// internal deploy call so cancel flows can locate the remote download later.
-func (t *DeploymentTracker) UpdateNodeDownloadID(id, node, downloadID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
-		return fmt.Errorf("deployment not found: %s", id)
-	}
-
-	for i, n := range d.Nodes {
-		if n.Node == node {
-			d.Nodes[i].DownloadID = downloadID
-			d.UpdatedAt = utils.Now()
-			return nil
-		}
-	}
-
-	return fmt.Errorf("node not found in deployment: %s", node)
-}
-
-// UpdateNodeJobID persists the pkg/jobs handle ID reported by the worker's
-// internal deploy path. Subscribers watch progress via
-// /zzrouter/v1/jobs/:id/stream?node=<node>.
-func (t *DeploymentTracker) UpdateNodeJobID(id, node, jobID string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
-		return fmt.Errorf("deployment not found: %s", id)
-	}
-
-	for i, n := range d.Nodes {
-		if n.Node == node {
-			d.Nodes[i].JobID = jobID
-			d.UpdatedAt = utils.Now()
-			return nil
-		}
-	}
-
-	return fmt.Errorf("node not found in deployment: %s", node)
-}
-
-// UpdateNodeSource persists the per-node download source — either
-// "internet" for registry pulls or the name of a peer node when the
-// worker synced via /sync/deploy. Surfaces in the deployments snapshot
-// so the TUI can label rows with the origin of each transfer.
-func (t *DeploymentTracker) UpdateNodeSource(id, node, source string) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	d, ok := t.deployments[id]
-	if !ok {
-		return fmt.Errorf("deployment not found: %s", id)
-	}
-
-	for i, n := range d.Nodes {
-		if n.Node == node {
-			d.Nodes[i].Source = source
-			d.UpdatedAt = utils.Now()
-			return nil
-		}
-	}
-
-	return fmt.Errorf("node not found in deployment: %s", node)
-}
-
-// CancelDeployment marks a deployment as cancelled.
-func (t *DeploymentTracker) CancelDeployment(id string) error {
-	return t.UpdateDeploymentStatus(id, constants.StatusCancelled, "Deployment cancelled by user")
-}
-
-// CleanCompletedDeployments evicts terminal deployments older than maxAge
-// and returns the number removed.
-func (t *DeploymentTracker) CleanCompletedDeployments(maxAge time.Duration) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	cutoff := utils.Now().Add(-maxAge)
-	cleaned := 0
-
-	for id, d := range t.deployments {
-		if d.IsComplete() && d.UpdatedAt.Before(cutoff) {
-			delete(t.deployments, id)
-			cleaned++
-		}
-	}
-
-	return cleaned
-}
-
-// GetDeploymentByModel returns an active deployment for the given model if any.
-func (t *DeploymentTracker) GetDeploymentByModel(model string) *Deployment {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	for _, d := range t.deployments {
-		if d.Model == model && !d.IsComplete() {
-			dc := *d
-			dc.Nodes = make([]DeploymentNode, len(d.Nodes))
-			copy(dc.Nodes, d.Nodes)
-			return &dc
-		}
-	}
-
-	return nil
+func cloneDeployment(d *Deployment) *Deployment {
+	dc := *d
+	dc.Nodes = append([]DeploymentNode(nil), d.Nodes...)
+	return &dc
 }

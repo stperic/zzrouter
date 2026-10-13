@@ -34,8 +34,16 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
 	s.services.Load = NewLoadService(s, routingRouter).
 		WithTierResolution(func() *pkgConfig.AppsConfig { return s.appsConfig })
+	if s.jobsProxy == nil && s.cluster.listener != nil && s.cluster.coordinator != nil {
+		s.jobsProxy = &JobsProxy{StreamClient: s.cachedJobsStreamClient(), ResolveEndpoint: s.resolveJobsEndpoint, ListPeers: s.listJobsPeers, ClusterPort: s.config.Cluster.BindPort}
+	}
+	if s.services.Deployments != nil {
+		s.services.Deployments.Stop(context.Background())
+	}
 	s.services.Deployments = NewDeploymentsService(routingRouter, s.node, func() *pkgConfig.AppsConfig { return s.appsConfig }).
 		WithNodeURLResolver(s.resolveNodePublicURL)
+	s.services.Deployments.jobs = s.jobAccess()
+	s.services.Deployments.shutdown = func() context.Context { return s.shutdownCtx }
 	s.services.Deployments.repoFiles = s.model.Registry.GetHuggingFaceConnector().GetRepoFiles
 	s.services.Deployments.refresher = s.runsRefresher()
 	// Wire public-side auto_deploy on /zzrouter/v1/runs so non-coord
@@ -219,21 +227,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// endpoint over mTLS; the proxy is wired only when cluster deps
 	// (listener + coordinator) are live.
 	if s.jobs != nil {
-		var proxy *JobsProxy
-		if s.cluster.listener != nil && s.cluster.coordinator != nil {
-			// Cache the streaming mTLS client for the lifetime of this
-			// route mount. Routes rebuild on role transition, so the
-			// cache implicitly invalidates when the listener identity
-			// changes. Without the cache each proxy request built a
-			// fresh *http.Transport, leaking idle pools + TLS sessions.
-			proxy = &JobsProxy{
-				StreamClient:    s.cachedJobsStreamClient(),
-				ResolveEndpoint: s.resolveJobsEndpoint,
-				ListPeers:       s.listJobsPeers,
-				ClusterPort:     s.config.Cluster.BindPort,
-			}
-		}
-		jobsController := NewJobsControllerWithProxy(s.jobs, s.node.Name(), s.node.IsLocalNode, proxy)
+
+		jobsController := NewJobsControllerWithProxy(s.jobs, s.node.Name(), s.node.IsLocalNode, s.jobsProxy)
 		jobsController.cancelOwner = s.cancelUpdateRollout
 		jobsController.RegisterPublicRoutes(router)
 	}

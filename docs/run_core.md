@@ -66,3 +66,21 @@ R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existin
 The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends after release, held leases cannot expire, and negative values never expire idle. Pressure eviction may reclaim idle pins when enabled. Served nonzero runs and adopted models remain daemon-expired. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
 
 R4 routes known run/provider refusals through one ordered wire table, including Retry-After and typed extra fields. Admission and cold-load producers retain typed causes; only the HTTP edge renders them. Memory-fit diagnostics survive cold loading, and generic surface defaults remain distinct. Policy messages carry no route URLs. Typed Ollama load options remain withheld. On the Windows worker with Ollama 0.32.15 (2026-10-12), loading with num_ctx=2048 and keep_alive=-1 did not preserve those settings: a later option-free /v1 request changed the context to 4096 and expiry to five minutes. The prescribed persistence prerequisite failed.
+
+## Deployment outcome ownership
+
+The worker DownloadTracker owns physical execution, cancellation and generations.
+The worker jobs registry delivers immutable attempt events with replay and bounded
+retention. Coordinator DeploymentTracker owns retained per-node placement outcomes
+and atomically aggregates them. GET/list read snapshots; they do not repair state
+from reusable download keys. Service-owned observers subscribe locally or consume
+the existing remote jobs SSE transport and stop on demotion, replacement or shutdown.
+
+Completion follows feature/catalog publication. Stream loss allows one bounded
+terminal snapshot reconciliation; malformed identity or framing fails closed.
+Unconfirmed tracking fails placement readiness without claiming that physical work
+stopped. Deployment restart and cross-node auto-deploy waits use canonical retained
+outcomes after job expiry. Coordinator cancellation records intent before sending
+only immutable job cancellation, including late acceptance; explicit download-key
+operations remain worker execution controls. Deployment retention has one owner:
+the 30-minute terminal sweep on creation. Restart durability remains in-memory.

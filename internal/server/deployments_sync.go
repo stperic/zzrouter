@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -126,31 +126,31 @@ func (s *DeploymentsService) dispatchSyncDeploy(ctx context.Context, deploymentI
 		Node:   target,
 		Body:   body,
 	})
-	if err != nil {
-		slog.Warn("[DeploymentsService] peer-sync dispatch failed: falling back to registry pull",
-			"target", target, "error", err)
+	if err == nil && resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusConflict {
+		// A definite rejection permits the existing registry fallback.
 		return false
 	}
-	if resp == nil || resp.StatusCode >= 400 {
-		slog.Warn("[DeploymentsService] peer-sync rejected: falling back to registry pull",
-			"target", target, "status", statusOf(resp))
-		return false
-	}
-
 	var parsed syncDeployAsyncResponse
-	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
-		slog.Warn("[DeploymentsService] peer-sync: cannot decode 202 envelope",
-			"target", target, "error", err)
-		return false
+	n := DeploymentNode{Node: target, Source: source, Status: constants.Status(syncStatusLabel)}
+	if err == nil && resp != nil && resp.StatusCode == http.StatusConflict {
+		var conflict struct {
+			ExistingJobID string `json:"existing_job_id"`
+			Source        string `json:"source"`
+		}
+		if json.Unmarshal(resp.Body, &conflict) == nil {
+			parsed.LocalJobID, parsed.Status, parsed.Source = conflict.ExistingJobID, "accepted", conflict.Source
+		}
+	} else if err == nil && resp != nil && resp.StatusCode < 400 {
+		_ = json.Unmarshal(resp.Body, &parsed)
 	}
-
-	status := constants.Status(syncStatusLabel)
-	msg := fmt.Sprintf("syncing from %s", source)
-	_ = s.tracker.UpdateNodeStatus(deploymentID, target, status, msg)
-	_ = s.tracker.UpdateNodeSource(deploymentID, target, source)
-	if parsed.LocalJobID != "" {
-		_ = s.tracker.UpdateNodeJobID(deploymentID, target, parsed.LocalJobID)
+	if err != nil || resp == nil || parsed.LocalJobID == "" || parsed.Status != "accepted" || parsed.Source == "" {
+		n.Status, n.Error = constants.StatusFailed, "peer-sync acceptance unconfirmed; worker may still be running"
 	}
+	if parsed.Source != "" {
+		n.Source = parsed.Source
+	}
+	n.JobID = parsed.LocalJobID
+	s.acceptNode(ctx, deploymentID, n)
 	return true
 }
 
@@ -165,11 +165,4 @@ func formatOrDefault(f string) string {
 		return "gguf"
 	}
 	return f
-}
-
-func statusOf(resp *routing.Response) int {
-	if resp == nil {
-		return 0
-	}
-	return resp.StatusCode
 }

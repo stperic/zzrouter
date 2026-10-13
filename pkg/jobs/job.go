@@ -146,6 +146,13 @@ func (j *job) emit(phase Phase, percent int, step string, bytes *Bytes, errMsg s
 	if j.phase.IsTerminal() {
 		return
 	}
+	// Transfer evidence survives feature/publication steps and termination.
+	if bytes == nil {
+		bytes = j.lastEvent.Bytes
+	}
+	if phase == PhaseFailed {
+		percent = j.lastEvent.Percent
+	}
 	warning, _ := j.meta["warning"].(string)
 	now := j.clk.Now()
 	j.phase = phase

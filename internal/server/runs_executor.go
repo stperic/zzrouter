@@ -605,7 +605,7 @@ func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endp
 // the deploy job's terminal event and either fails the run job or
 // invokes EnsureRun on success.
 func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID string, launchReq prov_apps.EnsureRequest) {
-	if err := waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(deployJobID) }); err != nil {
+	if err := (&jobAccess{registry: e.jobs}).Wait(runHandle.Context(), deployJobID, ""); err != nil {
 		runHandle.Fail(fmt.Errorf("deploy job %s: %w", deployJobID, err))
 		return
 	}
@@ -613,7 +613,7 @@ func (e *RunsExecutor) waitDeployThenLaunch(runHandle jobs.Handle, deployJobID s
 	result, err := e.appMgr.EnsureRun(runHandle.Context(), launchReq)
 	inst := result.Run
 	if err == nil && inst != nil && inst.StreamJobID != "" {
-		err = waitJobCompletion(runHandle.Context(), func(context.Context) (jobs.Event, error) { return e.jobs.Get(inst.StreamJobID) })
+		err = (&jobAccess{registry: e.jobs}).Wait(runHandle.Context(), inst.StreamJobID, "")
 	}
 	if err != nil {
 		runHandle.Fail(fmt.Errorf("launch after deploy: %w", err))

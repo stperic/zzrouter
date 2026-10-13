@@ -31,3 +31,18 @@ acceptance alone does not. Cancellation uses `DELETE /zzrouter/v1/jobs/:id`.
 Management failures use RFC 9457 Problem Details and a machine-readable `code`.
 Inference envelopes follow the selected protocol. See the
 [error catalog](agent_error_codes.md) and [agent quickstart](agent_quickstart.md).
+
+### Retained deployment outcomes
+
+Deployment GET/list return canonical per-node snapshots, including fractional
+progress, speed, bytes, source and the worker's immutable `job_id`. Completion
+is captured without polling a download key, including peer sync. Active-only
+lists exclude retained terminal deployments. Per-node cancellation reports
+`cancelled`; unknown/lost job observation reports `failed` with an explicit
+unconfirmed-worker diagnostic, which does not claim work was rolled back.
+
+Cancellation sends only the recorded immutable job ID, so an old deployment
+cannot stop a newer operation using its `download_id`. Restart readiness waits
+on retained node outcomes after the worker job expires. Terminal deployments
+are retained for 30 minutes and swept on the next deployment creation. These
+records and worker jobs remain in-memory across coordinator/worker restart.

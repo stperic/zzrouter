@@ -47,7 +47,7 @@ func (ctrl *DeploymentsController) Deploy(c *gin.Context) {
 }
 
 // ListDeployments handles GET /deployments — lists tracked deployments with
-// live progress merged. Supports ?active=true to filter terminal entries and
+// retained canonical progress. Supports ?active=true to filter terminal entries and
 // ?node=X to limit results to deployments that target the named node.
 func (ctrl *DeploymentsController) ListDeployments(c *gin.Context) {
 	pagination, ok := ParsePagination(c)
@@ -76,7 +76,7 @@ func (ctrl *DeploymentsController) ListDeployments(c *gin.Context) {
 	respondList(c, paginated, total, hasMore)
 }
 
-// GetDeployment handles GET /deployments/:id with live progress merge.
+// GetDeployment handles GET /deployments/:id with retained canonical progress.
 func (ctrl *DeploymentsController) GetDeployment(c *gin.Context) {
 	id := c.Param("id")
 	if id == "" {
@@ -114,8 +114,8 @@ func (ctrl *DeploymentsController) CancelDeployment(c *gin.Context) {
 }
 
 // CancelDeploymentNode handles DELETE /deployments/:id/nodes/:node — cancels a
-// single node within a deployment. Returns the updated deployment (with live
-// progress merged) so callers can see the new aggregate state in one round-trip.
+// single node within a deployment. Returns the updated deployment (with retained
+// canonical progress) so callers can see the new aggregate state in one round-trip.
 func (ctrl *DeploymentsController) CancelDeploymentNode(c *gin.Context) {
 	id := c.Param("id")
 	node := c.Param("node")

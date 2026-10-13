@@ -3,6 +3,7 @@ package modelregistry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -86,12 +87,12 @@ func (dt *DownloadTracker) SetOnCompleteCallback(callback func() error) {
 // If a download with the same key already exists, it is cancelled and replaced.
 // Returns the generation number for this download — callers should pass it to UpdateDownloadFull
 // so that stale goroutines from a previous download cannot overwrite the new one.
-func (dt *DownloadTracker) StartDownload(key, modelName string, requestedFile ...string) uint64 {
+func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.CancelFunc, requestedFile ...string) uint64 {
 	dt.mu.Lock()
 
 	// Cancel any existing download for this key (stop-then-repull scenario)
-	if cancel, exists := dt.cancelFuncs[key]; exists {
-		cancel()
+	if previous, exists := dt.cancelFuncs[key]; exists {
+		previous()
 		delete(dt.cancelFuncs, key)
 	}
 
@@ -132,6 +133,9 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, requestedFile ..
 	}
 
 	dt.downloads[key] = status
+	if cancel != nil {
+		dt.cancelFuncs[key] = cancel
+	}
 	dt.mu.Unlock()
 
 	dt.schedulePersist(false)
@@ -143,6 +147,9 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, requestedFile ..
 func extractQuantizationFromFilename(filename string) string {
 	return metadata.ExtractQuantization(filename)
 }
+
+// ErrDownloadInactive means this generation cannot publish an update.
+var ErrDownloadInactive = errors.New("download generation is no longer active")
 
 // UpdateDownloadFullGen updates download status with all fields and
 // rejects the write if the generation doesn't match the current
@@ -161,13 +168,13 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 		// Reject writes from stale goroutines (generation mismatch)
 		if download.Generation != gen {
 			dt.mu.Unlock()
-			return nil
+			return ErrDownloadInactive
 		}
 
 		// Don't overwrite terminal states (cancelled, failed, completed)
 		if IsTerminalStatus(download.Status) {
 			dt.mu.Unlock()
-			return nil
+			return ErrDownloadInactive
 		}
 
 		if status == string(constants.StatusCompleted) && dt.onCompleteCallback != nil {
@@ -179,7 +186,7 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 			dt.mu.Lock()
 			if dt.downloads[key] != download || IsTerminalStatus(download.Status) {
 				dt.mu.Unlock()
-				return nil
+				return ErrDownloadInactive
 			}
 		}
 
@@ -201,6 +208,9 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 		}
 
 		isTerminal = IsTerminalStatus(status)
+	} else {
+		dt.mu.Unlock()
+		return ErrDownloadInactive
 	}
 	dt.mu.Unlock()
 
@@ -301,20 +311,12 @@ func (dt *DownloadTracker) CleanCompleted() {
 	dt.schedulePersist(true)
 }
 
-// RegisterCancelFunc stores the cancel function for a download
-func (dt *DownloadTracker) RegisterCancelFunc(key string, cancel context.CancelFunc) {
-	dt.mu.Lock()
-	defer dt.mu.Unlock()
-
-	dt.cancelFuncs[key] = cancel
-}
-
 // StopDownload cancels a specific download
 func (dt *DownloadTracker) StopDownload(key string) bool {
 	dt.mu.Lock()
 
-	if cancel, exists := dt.cancelFuncs[key]; exists {
-		cancel()
+	if previous, exists := dt.cancelFuncs[key]; exists {
+		previous()
 		delete(dt.cancelFuncs, key)
 		if download, ok := dt.downloads[key]; ok {
 			download.Status = string(constants.StatusCancelled)

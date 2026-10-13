@@ -195,6 +195,8 @@ func cleanupTestNode(server *Server) {
 	server.providers.cooldowns.Stop()
 	server.access.Stop(context.Background())
 
+	server.services.Deployments.Stop(context.Background())
+
 	// jobs.Registry runs a janitor goroutine that doesn't observe shutdownCtx
 	// — it owns its own lifecycle. Stop it explicitly so test runs don't leak.
 	if server.jobs != nil {

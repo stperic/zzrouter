@@ -11402,7 +11402,7 @@ components:
       type: object
       description: |
         Multi-node model placement job tracked by
-        `internal/server/deployment_tracker.go:Deployment`. `POST
+        `pkg/modelregistry/deployment_tracker.go:Deployment`. `POST
         /zzrouter/v1/deployments` returns 202 with this body; clients
         poll `GET /zzrouter/v1/deployments/{id}` until `status` reaches
         a terminal state (`completed`, `failed`, `cancelled`).
@@ -11434,17 +11434,18 @@ components:
 
     DeploymentNode:
       type: object
-      description: Per-node slice of a Deployment.
+      description: Retained per-node outcome and transfer progress, correlated to the immutable worker job.
       required: [node, status, source]
       properties:
         node:   { type: string }
         status:
           type: string
-          enum: [pending, downloading, completed, failed, skipped]
+          enum: [pending, downloading, syncing, completed, failed, cancelled, skipped]
         source:
           type: string
           description: '"internet" or the name of the source node when copying between workers.'
-        download_id:     { type: string }
+        download_id:     { type: string, description: Reusable worker download key; deployment cancellation uses job_id. }
+        job_id:          { type: string, description: Immutable worker attempt for progress and cancellation. }
         bytes_downloaded: { type: integer, format: int64, minimum: 0 }
         bytes_total:      { type: integer, format: int64, minimum: 0 }
         progress:         { type: number, description: '0-100 percent complete.' }

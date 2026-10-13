@@ -120,8 +120,9 @@ type Server struct {
 	startTime           time.Time                       // Track server start time for uptime
 	otelProvider        *observability.Provider         // OpenTelemetry observability provider
 	model               *model.Subsystem                // Model-domain orchestrator (pricing today; cache/fallback/resolver next steps)
-	jobs                *jobs.Registry                  // Per-node streaming job registry — downloads, installs, updates, inference-log
-	updateScheduler     *update.Scheduler               // Auto-update scheduler
+	jobsProxy           *JobsProxy
+	jobs                *jobs.Registry    // Per-node streaming job registry — downloads, installs, updates, inference-log
+	updateScheduler     *update.Scheduler // Auto-update scheduler
 	updateRollouts      *update.Rollouts
 	updateSchedulingMu  sync.Mutex
 	maintenance         *maintenanceLoop // Periodic cleanup tasks
