@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -363,4 +364,38 @@ func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestComfyUITemplatePreviewArgv(t *testing.T) {
+	directory := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(directory))
+	loaded, err := config.LoadAppsConfig(directory)
+	require.NoError(t, err)
+	svc, ok := loaded.LookupApp("comfyui")
+	require.True(t, ok)
+	svc.Platforms, svc.Requirements = nil, nil
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("comfyui", svc))
+	data, err := os.ReadFile(filepath.Join(directory, "on-demand", "comfyui", "schema.yaml"))
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(data)
+	require.NoError(t, err)
+	manager, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) { return declared.Diagnostics.Memory, nil }))
+	require.NoError(t, err)
+	cleanupProviderManager(t, manager)
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+	manager.memoryInventory = func(context.Context) []gpu.CardMetrics {
+		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}}
+	}
+	preview, err := manager.PreviewLaunch(t.Context(), EnsureRequest{Provider: "comfyui"}, 8188)
+	require.NoError(t, err)
+	require.Len(t, preview.Args, 9)
+	require.Equal(t, []string{"main.py", "--port", "8188", "--base-directory", "../data"}, preview.Args[:5])
+	require.ElementsMatch(t, [][]string{{"--listen", "0.0.0.0"}, {"--reserve-vram", "16"}}, [][]string{preview.Args[5:7], preview.Args[7:9]})
+	require.NotContains(t, preview.Args, "--gpu-reserve-mib")
+	require.NotContains(t, preview.Args, "--keep-alive")
+	require.Equal(t, "8192", preview.Params["gpu-reserve-mib"])
+	require.Equal(t, "5m", preview.Params["keep-alive"])
+	require.Equal(t, "source", filepath.Base(preview.WorkingDir))
+	t.Logf("argv: %q", preview.Args)
 }

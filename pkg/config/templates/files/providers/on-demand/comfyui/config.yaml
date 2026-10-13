@@ -17,7 +17,7 @@ runtime:
   execution:
     type: python
     command: python
-    args: ["main.py", "--port", "${PORT}"]
+    args: ["main.py", "--port", "${PORT}", "--base-directory", "../data"]
     working_dir: source
   health_check:
     path: /system_stats
