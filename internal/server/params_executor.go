@@ -923,8 +923,8 @@ func (e *ParamsExecutor) HandleInternalGetModelParameters(c *gin.Context) {
 // ============================================================================
 
 type resolveRequest struct {
-	Model      string            `json:"model"`
-	Parameters map[string]string `json:"parameters"`
+	Model      string                 `json:"model"`
+	Parameters schema.ParameterValues `json:"parameters"`
 }
 
 type resolveResponse struct {

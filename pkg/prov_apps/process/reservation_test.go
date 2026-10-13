@@ -1,12 +1,25 @@
 package process
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/require"
 )
+
+func TestReservationComplementPreservesExactBudget(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: "reserve_mib", Parameter: "gpu-reserve-mib", ComplementParameter: "reserve-vram"}
+	device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 97887, FreeMiB: 97887}
+	params := map[string]string{budget.Parameter: "16384"}
+	reserved, err := PrepareMemoryBudget(budget, params, nil, []gpu.MemoryDevice{device})
+	require.NoError(t, err)
+	require.Equal(t, "79.5927734375", params[budget.ComplementParameter])
+	complement, err := strconv.ParseFloat(params[budget.ComplementParameter], 64)
+	require.NoError(t, err)
+	require.Equal(t, float64(reserved[device.UUID]), float64(device.TotalMiB)-complement*float64(MiBPerGiB))
+}
 
 func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: "reserve_mib", Parameter: "gpu-reserve-mib", ComplementParameter: "reserve-vram"}
@@ -19,7 +32,7 @@ func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	reserved, err := PrepareMemoryBudget(budget, params, env, []gpu.MemoryDevice{device})
 	require.NoError(t, err)
 	require.Equal(t, map[string]int64{"GPU-A": 9000}, reserved)
-	require.Equal(t, "15", params[budget.ComplementParameter])
+	require.Equal(t, "15.2109375", params[budget.ComplementParameter])
 	require.Equal(t, "GPU-A", env["CUDA_VISIBLE_DEVICES"])
 	owners := []RunRef{{ID: "studio", Provider: "studio", PID: 7, Commitments: reserved}}
 	device.Processes = []gpu.MemoryProcess{{PID: 7, MemoryMiB: new(int64(2048))}}

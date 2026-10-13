@@ -70,7 +70,7 @@ func TestNodeRunWorkerLaunchAndTargetValidation(t *testing.T) {
 		coordinator.ServeHTTP(rec, req)
 		return rec
 	}
-	first := request(`{"provider":"studio","node":"worker"}`)
+	first := request(`{"provider":"studio","node":"worker","parameters":{"keep-alive":-1,"evict-idle-on-memory-pressure":false,"seed":9007199254740993}}`)
 	require.Equal(t, http.StatusAccepted, first.Code, first.Body.String())
 	var response struct {
 		Data LaunchRunResponse `json:"data"`
@@ -87,6 +87,9 @@ func TestNodeRunWorkerLaunchAndTargetValidation(t *testing.T) {
 		t.Fatal("worker run did not become ready")
 	}
 	require.Equal(t, instance.StatusRunning, run.GetStatus())
+	require.Equal(t, "-1", run.Resolved().Parameters["keep-alive"])
+	require.Equal(t, "false", run.Resolved().Parameters["evict-idle-on-memory-pressure"])
+	require.Equal(t, "9007199254740993", run.Resolved().Parameters["seed"])
 	require.Positive(t, run.GetProcessID())
 	require.Equal(t, response.Data.BaseURL, run.ToInfo("worker").BaseURL)
 	second := request(`{"provider":"studio","node":"worker"}`)
@@ -103,6 +106,34 @@ func TestNodeRunWorkerLaunchAndTargetValidation(t *testing.T) {
 	direct := httptest.NewRecorder()
 	worker.ServeHTTP(direct, httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/runs", bytes.NewBufferString(`{"provider":"studio","launch_mode":"native","model_name":"forbidden"}`)))
 	require.Equal(t, http.StatusBadRequest, direct.Code)
+}
+
+func TestNodeRunDirectWorkerScalarParameters(t *testing.T) {
+	mgr, cfg := nodeRunFixture(t)
+	executor := NewRunsExecutor(mgr, func() string { return "worker" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
+	for _, value := range []string{"null", "{}", "[]"} {
+		c, rec := postJSON(t, `{"provider":"studio","launch_mode":"native","parameters":{"bad":`+value+`}}`)
+		executor.HandleInternalLaunchRun(c)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Contains(t, rec.Body.String(), "parameters.bad")
+		require.Empty(t, mgr.Instances().List())
+	}
+	c, rec := postJSON(t, `{"provider":"studio","launch_mode":"native","parameters":{"keep-alive":-1,"seed":9007199254740993,"evict-idle-on-memory-pressure":false}}`)
+	executor.HandleInternalLaunchRun(c)
+	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
+	var response LaunchRunResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	run, ok := mgr.GetInstance(response.ID)
+	require.True(t, ok)
+	select {
+	case <-run.LeftStarting():
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker run did not become ready")
+	}
+	require.Equal(t, instance.StatusRunning, run.GetStatus())
+	require.Equal(t, "-1", run.Resolved().Parameters["keep-alive"])
+	require.Equal(t, "9007199254740993", run.Resolved().Parameters["seed"])
+	require.Equal(t, "false", run.Resolved().Parameters["evict-idle-on-memory-pressure"])
 }
 
 func (r *previewWorkerRouter) Route(ctx context.Context, req *routing.Request) (*routing.Response, error) {

@@ -18,6 +18,18 @@ func TestSchemaObjectsPreservesBooleanValues(t *testing.T) {
 	require.JSONEq(t, `{"type":"object","additionalProperties":{"not":{}},"properties":{"patch":{},"enabled":{"type":"boolean","default":false,"readOnly":true,"enum":[false,true]}}}`, string(raw))
 }
 
+func TestRunToolParameterInputSchemas(t *testing.T) {
+	for _, input := range []json.Marshaler{objectSchema[startInput]{}, objectSchema[previewInput]{}} {
+		raw, err := input.MarshalJSON()
+		require.NoError(t, err)
+		var schema jsonschema.Schema
+		require.NoError(t, json.Unmarshal(raw, &schema))
+		parameters := schema.Properties["parameters"]
+		require.Equal(t, "object", parameters.Type)
+		require.Equal(t, []string{"string", "number", "boolean"}, parameters.AdditionalProperties.Types)
+	}
+}
+
 func TestStableOutputSchemasValidateIDs(t *testing.T) {
 	for _, tc := range []struct {
 		name           string

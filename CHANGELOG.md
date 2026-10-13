@@ -47,6 +47,8 @@
   `run_scope`, `runtime.activity_probe` and the `reserve_mib` memory budget
   during strict provider loading. Upgrade all peers together using
   [protocol versioning](docs/protocol_versioning.md).
+- Reservation allocator complements preserve exact fractional GiB, so rounding no longer gives an engine more memory than its accounted budget.
+- Run launch, load and preview parameters accept JSON strings, numbers and booleans. Number literals are preserved when normalized to strings; null, objects and arrays are refused.
 
 - Missing-job GET, cancellation and pre-stream failures return scoped
   `job_not_found` Problems at their owner. Proxied errors preserve retry metadata

@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -217,7 +218,7 @@ func TestLoadService_ALaunchCarriesOnlyWhatTheCallerSent(t *testing.T) {
 
 	var sent LoadModelRequest
 	require.NoError(t, json.Unmarshal(cc.body, &sent))
-	assert.Equal(t, map[string]string{"seed": "42"}, sent.Parameters,
+	assert.Equal(t, schema.ParameterValues{"seed": "42"}, sent.Parameters,
 		"a resolved value in a launch request is stored as the caller's own and outranks the tree on every restart")
 }
 

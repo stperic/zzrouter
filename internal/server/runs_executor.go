@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/sync/singleflight"
 )
@@ -274,7 +275,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		AutoDeploy       bool                   `json:"auto_deploy,omitempty"`
 		Port             int                    `json:"port,omitempty"`
 		Files            []instance.FileMount   `json:"files,omitempty"`
-		Parameters       map[string]string      `json:"parameters,omitempty"`
+		Parameters       schema.ParameterValues `json:"parameters,omitempty"`
 		EnvVars          map[string]string      `json:"env_vars,omitempty"`
 		NativeConfig     *instance.NativeConfig `json:"native_config,omitempty"`
 	}

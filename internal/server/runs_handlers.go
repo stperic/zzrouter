@@ -13,6 +13,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // parseLaunchMode validates the launch mode string. Callers today only
@@ -49,7 +50,7 @@ type LaunchRequest struct {
 	LaunchMode   string                 `json:"launch_mode" binding:"required,oneof=native"`
 	Port         int                    `json:"port,omitempty"`
 	Files        []instance.FileMount   `json:"files,omitempty"`
-	Parameters   map[string]string      `json:"parameters,omitempty"`
+	Parameters   schema.ParameterValues `json:"parameters,omitempty"`
 	EnvVars      map[string]string      `json:"env_vars,omitempty"`
 	NativeConfig *instance.NativeConfig `json:"native_config,omitempty"`
 }

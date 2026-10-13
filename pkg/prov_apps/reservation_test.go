@@ -61,7 +61,7 @@ func TestReservationLaunchPreviewAndStaleness(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, preview.Args, "--gpu-reserve-mib")
 	require.True(t, slices.Contains(preview.Args, "--reserve-vram"))
-	require.Contains(t, preview.Args, "15")
+	require.Contains(t, preview.Args, "15.2109375")
 	require.Equal(t, "GPU-A", preview.Environment["CUDA_VISIBLE_DEVICES"])
 	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
 	require.NoError(t, err)
@@ -273,7 +273,7 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	for range 3 {
 		preview, err := r.m.PreviewLaunch(ctx, req, 8740)
 		require.NoError(t, err)
-		require.Equal(t, "15", preview.Params["reserve-vram"])
+		require.Equal(t, "15.2109375", preview.Params["reserve-vram"])
 		require.Equal(t, "GPU-A", preview.Environment["CUDA_VISIBLE_DEVICES"])
 	}
 	prepared, err := processEngine{r.m}.prepare(ctx, svc, "generic", req, 8740)
@@ -343,10 +343,10 @@ func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
 			}
 			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return devices, nil }
 			req := EnsureRequest{Provider: "generic"}
-			expected, complement := "GPU-A", "15"
+			expected, complement := "GPU-A", "15.2109375"
 			if override != "" {
 				req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": override}
-				expected, complement = override, "23"
+				expected, complement = override, "23.2109375"
 			}
 			reserved, err := r.m.ResolveLaunchParameters(t.Context(), req)
 			require.NoError(t, err)
@@ -380,6 +380,7 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	require.NoError(t, err)
 	declared, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
+	require.Equal(t, "float", declared.Parameters["reserve-vram"].Type)
 	manager, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) { return declared.Diagnostics.Memory, nil }))
 	require.NoError(t, err)
 	cleanupProviderManager(t, manager)
