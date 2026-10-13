@@ -27,7 +27,7 @@ Usage: ZZR_CAMPAIGN_KEY=<admin key> campaign.py --lab lab.json  (copy lab.exampl
 Needs claude and codex on PATH. Writes report.md and confusion.md under
 $TMPDIR/zzr-campaign/<time>/ unless --out says otherwise.
 """
-import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time
+import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time, uuid
 import http.server as httpserver, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
@@ -1113,9 +1113,25 @@ def check_capability_probe(ctx, mode):
     positive = expected == "verified"
     typed = fields.get("status") == ctx["scenario"].get("refusal_status", 400) and fields.get("code") == ctx["scenario"].get("refusal_code", "unsupported_input")
     outcome = calls and ((not calls[-1].get("is_error") and fields.get("probe") == mode and verdict == "verified") if positive else (calls[-1].get("is_error") and typed and verdict in (None, "not_supported")))
-    ready = any((not (c.get("evidence") or {}).get("job_id") and (c.get("evidence") or {}).get("status") in ("ready", "running")) or any(j["tool"] == "zz_job" and j.get("is_error") is False and (j.get("args") or {}).get("job_id") == (c.get("evidence") or {}).get("job_id") and (j.get("args") or {}).get("node") == node and (j.get("evidence") or {}).get("state") == "done" for j in ctx["calls"][ctx["calls"].index(c) + 1:ctx["calls"].index(calls[-1])]) for c in starts)
-    stopped = any(stop["tool"] == "zz_run_stop" and stop.get("is_error") is False and (stop.get("args") or {}).get("run_id") == (start.get("evidence") or {}).get("run_id") and (start.get("evidence") or {}).get("run_id") for start in starts for stop in ctx["calls"][ctx["calls"].index(calls[-1]) + 1:]) if calls else False
-    out = [("ready launch followed and owned run stopped", ready and stopped if positive else ctx["scenario"].get("capability_absent", False), starts),
+    completed = False
+    for start in starts:
+        start_evidence = start.get("evidence") or {}
+        job_id, run_id = start_evidence.get("job_id"), start_evidence.get("run_id")
+        ready = not job_id and start_evidence.get("status") in ("ready", "running")
+        if job_id:
+            ready = any(j["tool"] == "zz_job" and j.get("is_error") is False
+                        and (j.get("args") or {}).get("job_id") == job_id
+                        and (j.get("args") or {}).get("node") in (None, "", node)
+                        and (j.get("evidence") or {}).get("job_id") == job_id
+                        and (j.get("evidence") or {}).get("state") == "done"
+                        for j in ctx["calls"][ctx["calls"].index(start) + 1:ctx["calls"].index(calls[-1])])
+        stopped = run_id and any(stop["tool"] == "zz_run_stop" and stop.get("is_error") is False
+                                 and (stop.get("args") or {}).get("run_id") == run_id
+                                 for stop in ctx["calls"][ctx["calls"].index(calls[-1]) + 1:])
+        if ready and stopped:
+            completed = True
+            break
+    out = [("ready launch followed and owned run stopped", completed if positive else ctx["scenario"].get("capability_absent", False), starts),
            ("used addressed capability probe", bool(calls) and addressed, args),
            ("started with selected provider" if positive else "no incompatible launch", bool(starts) if positive else not tool_calls(ctx, "zz_run_start"), provider),
            ("no owned runs left", not ctx["left"], ctx["left"]),
@@ -1199,11 +1215,14 @@ def run_scenario(R, node, label, sc, agents, only, out):
             R.add("mcp", node, f"{label}.{agent}", "precondition", ok, detail)
             if not ok:
                 continue
-        json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
+        namespace = uuid.uuid4().hex
+        with open(os.path.join(wd, "scenario.json"), "w") as context:
+            json.dump({"expect_error": sc.get("expect_error"), "idempotency_namespace": namespace}, context)
+        prompt = sc["prompt"] + f"\nPrefix every new idempotency_key with {namespace}: and a distinct suffix per operation. Reuse a key only to retry that same operation."
         before = {r["id"] for r in runs(node)}
         drive = run_claude_mcp if agent == "claude" else run_codex_mcp
         try:
-            text, meta, secs = drive(sid, sc["prompt"], wd)
+            text, meta, secs = drive(sid, prompt, wd)
             time.sleep(2)
             left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
             calls = calls_for(sid)
