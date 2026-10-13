@@ -27,7 +27,7 @@ Usage: ZZR_CAMPAIGN_KEY=<admin key> campaign.py --lab lab.json  (copy lab.exampl
 Needs claude and codex on PATH. Writes report.md and confusion.md under
 $TMPDIR/zzr-campaign/<time>/ unless --out says otherwise.
 """
-import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time
+import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time, uuid
 import http.server as httpserver, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
@@ -1215,11 +1215,14 @@ def run_scenario(R, node, label, sc, agents, only, out):
             R.add("mcp", node, f"{label}.{agent}", "precondition", ok, detail)
             if not ok:
                 continue
-        json.dump({"expect_error": sc.get("expect_error")}, open(os.path.join(wd, "scenario.json"), "w"))
+        namespace = uuid.uuid4().hex
+        with open(os.path.join(wd, "scenario.json"), "w") as context:
+            json.dump({"expect_error": sc.get("expect_error"), "idempotency_namespace": namespace}, context)
+        prompt = sc["prompt"] + f"\nPrefix every new idempotency_key with {namespace}: and a distinct suffix per operation. Reuse a key only to retry that same operation."
         before = {r["id"] for r in runs(node)}
         drive = run_claude_mcp if agent == "claude" else run_codex_mcp
         try:
-            text, meta, secs = drive(sid, sc["prompt"], wd)
+            text, meta, secs = drive(sid, prompt, wd)
             time.sleep(2)
             left = [f"{r['model']}({r['id']})" for r in runs(node) if r["id"] not in before]
             calls = calls_for(sid)

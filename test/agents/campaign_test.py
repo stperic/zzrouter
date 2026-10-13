@@ -25,6 +25,39 @@ def probe_context(node="n"):
 
 
 class CampaignEvidenceTest(unittest.TestCase):
+    def test_agent_invocations_receive_fresh_recorded_operation_namespaces(self):
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        delivered = []
+
+        def drive(sid, prompt, wd):
+            context = json.loads((Path(wd) / "scenario.json").read_text())
+            namespace = context["idempotency_namespace"]
+            self.assertRegex(namespace, r"^[0-9a-f]{32}$")
+            self.assertIn(namespace + ":", prompt)
+            self.assertIn("distinct suffix", prompt)
+            self.assertEqual(context["expect_error"], "expected refusal")
+            self.assertEqual(sid, "n.example.claude" if wd.endswith("claude") else "n.example.codex")
+            delivered.append(namespace)
+            return "RESULT: {}", {"is_error": False}, 0
+
+        scenario = {"prompt": "Original task.", "check": lambda ctx: [], "expect_error": "expected refusal"}
+        with TemporaryDirectory() as out, patch.object(c, "stop_runs"), patch.object(c, "runs", return_value=[]), \
+                patch.object(c, "calls_for", return_value=[]), patch.object(c, "node_healthy", return_value=True), \
+                patch.object(c.time, "sleep"), patch.object(c, "run_claude_mcp", side_effect=drive) as claude, \
+                patch.object(c, "run_codex_mcp", side_effect=drive) as codex:
+            for trial in ("first", "second"):
+                c.run_scenario(SimpleNamespace(add=lambda *args: None), "n", "example", scenario,
+                               ["claude", "codex"], "", str(Path(out) / trial))
+            self.assertEqual(claude.call_count, 2)
+            self.assertEqual(codex.call_count, 2)
+        self.assertEqual(len(set(delivered)), 4)
+        self.assertEqual(scenario["prompt"], "Original task.")
+
     def test_probe_accepts_discovered_job_owner(self):
         for node in (None, "", "n"):
             with self.subTest(node=node):
