@@ -28,6 +28,15 @@ Poll `GET /zzrouter/v1/jobs/:id` or stream `GET /zzrouter/v1/jobs/:id/stream`.
 A terminal success and the resulting resource state establish completion;
 acceptance alone does not. Cancellation uses `DELETE /zzrouter/v1/jobs/:id`.
 
+Job GET, cancellation and pre-stream failures use Problem Details. A confirmed
+absence within the selected node or complete searched scope returns
+404/`job_not_found`; retention cleanup or a node restart can cause absence.
+If a possible owner did not answer, lookup returns 503/`node_unreachable` with
+`Retry-After: 5`. Proxied refusals preserve status, code, node and retry metadata,
+with the public request ID and path. Malformed successful replies return
+502/`upstream_shape`; transport failures name `node_unreachable` or
+`upstream_timeout`. Client cancellation closes the request without another reply.
+
 Management failures use RFC 9457 Problem Details and a machine-readable `code`.
 Inference envelopes follow the selected protocol. See the
 [error catalog](agent_error_codes.md) and [agent quickstart](agent_quickstart.md).
@@ -45,4 +54,5 @@ Cancellation sends only the recorded immutable job ID, so an old deployment
 cannot stop a newer operation using its `download_id`. Restart readiness waits
 on retained node outcomes after the worker job expires. Terminal deployments
 are retained for 30 minutes and swept on the next deployment creation. These
-records and worker jobs remain in-memory across coordinator/worker restart.
+records and worker jobs are in memory and do not survive their owning process
+restarting.

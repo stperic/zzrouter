@@ -10024,10 +10024,10 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     JobNotFound:
       description: >
-        Automatic lookup found no local job and every peer confirmed absence;
-        code is job_not_found. Jobs live in memory on the node that runs them
-        and are evicted after completion; detail gives the retention duration.
-        An explicit node hint can instead return node_unknown or the peer's 404.
+        Confirmed absence within the selected node or complete searched scope;
+        code is job_not_found. Jobs live in memory; retention cleanup or a node
+        restart can cause absence. A selected owner supplies the node extension.
+        An unknown explicit node instead returns node_unknown.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }

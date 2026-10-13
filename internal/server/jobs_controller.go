@@ -165,7 +165,7 @@ func respondJobList(ctx *gin.Context, events []jobs.Event, node string, paginati
 // no node hint is provided and the job isn't local, fans out across
 // known peers (first 200 wins) so agents don't have to track owners.
 func (c *JobsController) GetJob(ctx *gin.Context) {
-	if c.handleRemote(ctx, c.proxyJSON) {
+	if c.handleRemote(ctx, c.proxyOwnedJob) {
 		return
 	}
 	id := ctx.Param("id")
@@ -183,7 +183,7 @@ func (c *JobsController) GetJob(ctx *gin.Context) {
 		// Same re-wrap as the ?node= path: a caller who let the
 		// coordinator find the owner must not get a different shape
 		// than one who named it.
-		c.proxyOwnedJob(ctx, owner, id, false)
+		c.proxyOwnedJob(ctx, owner)
 	}
 }
 
@@ -252,7 +252,7 @@ func (c *JobsController) InternalGetJob(ctx *gin.Context) {
 	id := ctx.Param("id")
 	ev, err := c.registry.Get(id)
 	if errors.Is(err, jobs.ErrNotFound) {
-		ctx.AbortWithStatus(http.StatusNotFound)
+		respondJobNotFound(ctx, c.nodeName)
 		return
 	}
 	if err != nil {
@@ -273,13 +273,20 @@ func (c *JobsController) InternalStreamJob(ctx *gin.Context) {
 func (c *JobsController) InternalCancelJob(ctx *gin.Context) {
 	id := ctx.Param("id")
 	if err := c.registry.Cancel(id); errors.Is(err, jobs.ErrNotFound) {
-		ctx.AbortWithStatus(http.StatusNotFound)
+		respondJobNotFound(ctx, c.nodeName)
 		return
 	}
 	ctx.JSON(http.StatusAccepted, gin.H{"accepted": true})
 }
 
 // --- helpers ---
+
+func respondJobNotFound(ctx *gin.Context, node string) {
+	RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
+		"job not found within the requested lookup scope; jobs live in memory on the node that runs them and may be absent after retention cleanup or a node restart; check recent jobs on that node",
+		ProblemOpts{Code: string(httperr.CodeJobNotFound), Node: node})
+	ctx.Abort()
+}
 
 // handleRemote returns true (after writing a response) if the request
 // targeted a non-local node and was dispatched. fn is invoked with the
@@ -312,9 +319,7 @@ func (c *JobsController) locatePeerJob(ctx *gin.Context, id string) (owner strin
 		return owner, true
 	}
 	if complete {
-		RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
-			fmt.Sprintf("job not found on this node or any reachable peer; jobs live in memory on the node that runs them and are evicted %s after completion", jobs.DefaultCompletedTTL),
-			ProblemOpts{Code: string(httperr.CodeJobNotFound)})
+		respondJobNotFound(ctx, "")
 	} else {
 		httperr.SetRetryAfter(ctx.Writer.Header(), jobLookupRetryAfter)
 		RespondWithProblemOpts(ctx, http.StatusServiceUnavailable, "Service Unavailable",
@@ -350,24 +355,12 @@ func (c *JobsController) findJobOwner(ctx *gin.Context, id string) (owner string
 			if ep == nil {
 				return
 			}
-			clusterURL := ep.ClusterURL
-			if clusterURL == "" {
-				derived, err := mesh.DeriveClusterURL(ep.URL, c.proxy.ClusterPort)
-				if err != nil {
-					return
-				}
-				clusterURL = derived
-			}
-			client, err := c.proxy.StreamClient()
+			clusterURL, err := c.proxy.endpointURL(ep)
 			if err != nil {
 				return
 			}
-			req, err := http.NewRequestWithContext(probeCtx, http.MethodGet,
-				clusterURL+"/zzrouter/v1/internal/jobs/"+url.PathEscape(id), nil)
-			if err != nil {
-				return
-			}
-			resp, err := client.Do(req)
+			resp, err := c.proxy.open(probeCtx, http.MethodGet,
+				internalJobsURL(clusterURL, "/"+url.PathEscape(id), nil), "application/json")
 			if err != nil {
 				return
 			}
@@ -393,29 +386,6 @@ func (c *JobsController) findJobOwner(ctx *gin.Context, id string) (owner string
 	return "", complete
 }
 
-// resolveUpstream derives the cluster-port base URL for the named
-// node. Returns ("", false) after writing a 404/502 response when the
-// node is unknown or its cluster URL cannot be derived. Assumes
-// handleRemote already gated on a fully-wired proxy.
-func (c *JobsController) resolveUpstream(ctx *gin.Context, node string) (string, bool) {
-	ep := c.proxy.ResolveEndpoint(node)
-	if ep == nil {
-		RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
-			"unknown node; pass ?node=<nodename|alias|endpoint-url>",
-			ProblemOpts{Code: "node_unknown", Node: node})
-		ctx.Abort()
-		return "", false
-	}
-	base, err := c.proxy.endpointURL(ep)
-	if err != nil {
-		RespondWithProblemOpts(ctx, http.StatusBadGateway, "Bad Gateway", "derive cluster URL: "+err.Error(),
-			ProblemOpts{Code: string(httperr.CodeNodeUnreachable), Node: node})
-		ctx.Abort()
-		return "", false
-	}
-	return base, true
-}
-
 // internalJobsURL builds the upstream /internal/jobs path with
 // forwarded query (node= hint stripped — the remote is the target, a
 // node hint there would be noise).
@@ -434,33 +404,51 @@ func internalJobsURL(base, suffix string, src url.Values) string {
 	return u
 }
 
-// copyUpstreamJSON forwards a non-streaming JSON reply from the
-// upstream worker. Status + Content-Type pass through verbatim; body
-// is copied with a 1 MiB ceiling (snapshots are tens of bytes to a
-// few KiB in practice). Remainder is drained so the underlying
-// connection can be returned to the keep-alive pool.
-func copyUpstreamJSON(ctx *gin.Context, resp *http.Response) {
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		ctx.Header("Content-Type", ct)
+// readUpstreamJSON owns bounded body reading and refusal handling before any response headers.
+func readUpstreamJSON(ctx *gin.Context, node string, resp *http.Response, successStatus int) ([]byte, bool) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamBodyLimit+1))
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Request.Context().Err(), context.Canceled) {
+		return nil, false
 	}
-	ctx.Status(resp.StatusCode)
-	_, _ = io.Copy(ctx.Writer, io.LimitReader(resp.Body, upstreamBodyLimit))
-	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= http.StatusBadRequest {
+		if err != nil || len(body) > upstreamBodyLimit {
+			body = nil // Preserve the refusal status without forwarding a partial document.
+		}
+		RespondToError(ctx, parseRoutedError(resp.StatusCode, body, resp.Header))
+		return nil, false
+	}
+	if err != nil || len(body) > upstreamBodyLimit || resp.StatusCode != successStatus {
+		RespondToError(ctx, newRouteProblemError(http.StatusBadGateway, "Bad Gateway",
+			"upstream returned an incomplete or unexpected response", httperr.CodeUpstreamShape, node))
+		return nil, false
+	}
+	return body, true
 }
 
 // upstreamURL resolves node → cluster-port base URL and builds the
 // upstream /internal/jobs<suffix> path with optional query forwarding.
-// Returns ("", false) after writing a 404/502 response on failure.
-func (c *JobsController) upstreamURL(ctx *gin.Context, node, pathSuffix string, forwardQuery bool) (string, bool) {
-	base, ok := c.resolveUpstream(ctx, node)
-	if !ok {
-		return "", false
+// The canonical owner accompanies the URL so aliases never become response identity.
+func (c *JobsController) upstreamURL(ctx *gin.Context, node, pathSuffix string, forwardQuery bool) (string, string, bool) {
+	ep := c.proxy.ResolveEndpoint(node)
+	if ep == nil {
+		RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
+			"unknown node; pass ?node=<nodename|alias|endpoint-url>",
+			ProblemOpts{Code: "node_unknown", Node: node})
+		ctx.Abort()
+		return "", "", false
+	}
+	base, err := c.proxy.endpointURL(ep)
+	if err != nil {
+		RespondWithProblemOpts(ctx, http.StatusBadGateway, "Bad Gateway", "derive cluster URL: "+err.Error(),
+			ProblemOpts{Code: string(httperr.CodeNodeUnreachable), Node: node})
+		ctx.Abort()
+		return "", "", false
 	}
 	var src url.Values
 	if forwardQuery {
 		src = ctx.Request.URL.Query()
 	}
-	return internalJobsURL(base, pathSuffix, src), true
+	return internalJobsURL(base, pathSuffix, src), ep.NodeName, true
 }
 
 // proxyList forwards GET /jobs → GET /internal/jobs on the owning
@@ -473,33 +461,29 @@ func (c *JobsController) upstreamURL(ctx *gin.Context, node, pathSuffix string, 
 // envelope: a caller asking for one peer's jobs should not get a
 // different shape than a caller asking for the local node's.
 func (c *JobsController) proxyList(ctx *gin.Context, node string, pagination PaginationParams) {
-	upstream, ok := c.upstreamURL(ctx, node, "", true)
-	if !ok {
-		return
-	}
-	resp, err := c.doUpstream(ctx, http.MethodGet, upstream, nil)
-	if err != nil {
-		c.writeProxyError(ctx, node, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		copyUpstreamJSON(ctx, resp)
-		return
-	}
-	var body struct {
-		Node string       `json:"node"`
-		Jobs []jobs.Event `json:"jobs"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, upstreamBodyLimit)).Decode(&body); err != nil {
-		c.writeProxyError(ctx, node, fmt.Errorf("decode peer job list: %w", err))
-		return
-	}
-	if body.Node == "" {
-		body.Node = node
-	}
-	respondJobList(ctx, body.Jobs, body.Node, pagination)
+	c.proxyRewrapped(ctx, node, http.MethodGet, "", true, http.StatusOK,
+		func(owner string, body []byte) error {
+			var page struct {
+				Node string       `json:"node"`
+				Jobs []jobs.Event `json:"jobs"`
+			}
+			if err := json.Unmarshal(body, &page); err != nil {
+				return err
+			}
+			if page.Jobs == nil || owner == "" || (page.Node != "" && page.Node != owner) {
+				return errors.New("missing or mismatched peer job list")
+			}
+			for _, ev := range page.Jobs {
+				if ev.Node != owner || ev.Validate() != nil {
+					return errors.New("missing or mismatched peer job identity")
+				}
+			}
+			if page.Node == "" {
+				page.Node = owner
+			}
+			respondJobList(ctx, page.Jobs, page.Node, pagination)
+			return nil
+		})
 }
 
 // upstreamBodyLimit caps the peer body the coordinator will read, both
@@ -519,51 +503,45 @@ const upstreamBodyLimit = 1 << 20
 // client should not have to know. respondJobList already established
 // this pattern for GET /jobs; these are the two paths it never reached.
 //
-// Non-2xx passes through untouched: an upstream error is already
-// problem-shaped, and re-wrapping it would dress a failure up as a
-// success envelope.
+// Refusals use the canonical routed-error responder.
 func (c *JobsController) proxyRewrapped(ctx *gin.Context, node, method, pathSuffix string,
-	forwardQuery bool, rewrap func(status int, body []byte) error) {
-	upstream, ok := c.upstreamURL(ctx, node, pathSuffix, forwardQuery)
+	forwardQuery bool, successStatus int, rewrap func(owner string, body []byte) error) {
+	upstream, owner, ok := c.upstreamURL(ctx, node, pathSuffix, forwardQuery)
 	if !ok {
 		return
 	}
-	resp, err := c.doUpstream(ctx, method, upstream, nil)
+	resp, err := c.proxy.open(ctx.Request.Context(), method, upstream, "application/json")
 	if err != nil {
 		c.writeProxyError(ctx, node, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		copyUpstreamJSON(ctx, resp)
+	body, ok := readUpstreamJSON(ctx, node, resp, successStatus)
+	if !ok {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, upstreamBodyLimit))
-	if err != nil {
-		c.writeProxyError(ctx, node, fmt.Errorf("read peer response: %w", err))
+	if rewrap(owner, body) == nil {
 		return
 	}
-	if err := rewrap(resp.StatusCode, body); err != nil {
-		c.writeProxyError(ctx, node, err)
-	}
-}
-
-// proxyJSON forwards GET /jobs/:id to the owning worker's internal
-// endpoint. No streaming; the response is a snapshot.
-func (c *JobsController) proxyJSON(ctx *gin.Context, node string) {
-	c.proxyOwnedJob(ctx, node, ctx.Param("id"), true)
+	RespondToError(ctx, newRouteProblemError(http.StatusBadGateway, "Bad Gateway",
+		"upstream returned a response this endpoint could not parse, which usually means peer version skew",
+		httperr.CodeUpstreamShape, node))
 }
 
 // proxyOwnedJob fetches one job from its owner and answers in the
 // public envelope. Both GetJob routes reach it — the explicit ?node=
 // hint and the owner fan-out — so neither can drift into its own shape.
-func (c *JobsController) proxyOwnedJob(ctx *gin.Context, node, id string, forwardQuery bool) {
-	c.proxyRewrapped(ctx, node, http.MethodGet, "/"+url.PathEscape(id), forwardQuery,
-		func(_ int, body []byte) error {
+func (c *JobsController) proxyOwnedJob(ctx *gin.Context, node string) {
+	id := ctx.Param("id")
+	c.proxyRewrapped(ctx, node, http.MethodGet, "/"+url.PathEscape(id), true, http.StatusOK,
+		func(owner string, body []byte) error {
 			var ev jobs.Event
 			if err := json.Unmarshal(body, &ev); err != nil {
 				return fmt.Errorf("decode peer job: %w", err)
+			}
+			if owner == "" || ev.JobID != id || ev.Node != owner || ev.Validate() != nil {
+				return errors.New("missing or mismatched peer job identity")
 			}
 			respondSuccess(ctx, "Job retrieved", ev)
 			return nil
@@ -575,29 +553,23 @@ func (c *JobsController) proxyOwnedJob(ctx *gin.Context, node, id string, forwar
 // upstream maps to 202 downstream.
 func (c *JobsController) proxyCancel(ctx *gin.Context, node string) {
 	id := ctx.Param("id")
-	c.proxyRewrapped(ctx, node, http.MethodPost, "/"+url.PathEscape(id)+"/cancel", false,
-		func(status int, _ []byte) error {
+	c.proxyRewrapped(ctx, node, http.MethodPost, "/"+url.PathEscape(id)+"/cancel", false, http.StatusAccepted,
+		func(_ string, body []byte) error {
+			var reply struct {
+				Accepted bool `json:"accepted"`
+			}
+			if err := json.Unmarshal(body, &reply); err != nil {
+				return err
+			}
+			if !reply.Accepted {
+				return errors.New("peer did not accept cancellation")
+			}
 			// The peer answers {"accepted":true} with no job_id. Local
 			// cancel carries it, and a caller cancelling several jobs
 			// needs it to tell the replies apart, so restore it here.
-			ctx.JSON(status, gin.H{"accepted": true, "job_id": id})
+			ctx.JSON(http.StatusAccepted, gin.H{"accepted": true, "job_id": id})
 			return nil
 		})
-}
-
-// doUpstream constructs and dispatches a proxied request using the
-// coord's mTLS client. Client disconnect at ctx.Request.Context()
-// cancels the upstream request.
-func (c *JobsController) doUpstream(ctx *gin.Context, method, u string, body io.Reader) (*http.Response, error) {
-	client, err := c.proxy.StreamClient()
-	if err != nil {
-		return nil, fmt.Errorf("mtls client: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), method, u, body)
-	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	return client.Do(req)
 }
 
 // writeProxyError maps an upstream dispatch failure to an HTTP
@@ -606,9 +578,7 @@ func (c *JobsController) writeProxyError(ctx *gin.Context, node string, err erro
 	if errors.Is(err, context.Canceled) {
 		return // client gave up; nothing to write
 	}
-	RespondWithProblemOpts(ctx, http.StatusBadGateway, "Bad Gateway",
-		"proxy to owning node failed: "+err.Error(),
-		ProblemOpts{Code: "proxy_failed", Node: node})
+	RespondToError(ctx, newRoutedTransportError(err, node))
 	ctx.Abort()
 }
 
@@ -618,12 +588,12 @@ func (c *JobsController) writeProxyError(ctx *gin.Context, node string, err erro
 // buffering. The client's request context propagates to the upstream
 // request so a client disconnect cancels the upstream read.
 func (c *JobsController) proxyStream(ctx *gin.Context, node string) {
-	upstream, ok := c.upstreamURL(ctx, node, "/"+url.PathEscape(ctx.Param("id"))+"/stream", true)
+	upstream, _, ok := c.upstreamURL(ctx, node, "/"+url.PathEscape(ctx.Param("id"))+"/stream", true)
 	if !ok {
 		return
 	}
 
-	resp, err := c.proxy.openStream(ctx.Request.Context(), upstream)
+	resp, err := c.proxy.open(ctx.Request.Context(), http.MethodGet, upstream, "text/event-stream")
 	if err != nil {
 		c.writeProxyError(ctx, node, err)
 		return
@@ -635,7 +605,7 @@ func (c *JobsController) proxyStream(ctx *gin.Context, node string) {
 	// 503 registry_stopped. Forwarding those as SSE would corrupt
 	// the framing contract.
 	if resp.StatusCode != http.StatusOK {
-		copyUpstreamJSON(ctx, resp)
+		readUpstreamJSON(ctx, node, resp, http.StatusOK)
 		return
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
@@ -731,7 +701,7 @@ func (c *JobsController) serveStream(ctx *gin.Context) {
 	sub, err := c.registry.Subscribe(id, opts)
 	switch {
 	case errors.Is(err, jobs.ErrNotFound):
-		NotFound(ctx, "job not found")
+		respondJobNotFound(ctx, c.nodeName)
 		return
 	case errors.Is(err, jobs.ErrEpochMismatch):
 		// 409 (Conflict) reflects "resource state changed since your

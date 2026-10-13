@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -90,18 +91,17 @@ func TestProxyStream_ByteForByte(t *testing.T) {
 }
 
 // TestProxyStream_PreSSEError — upstream returns 409 epoch_mismatch
-// with a JSON body (not SSE). The proxy MUST forward status+body
-// without flipping Content-Type to text/event-stream.
+// with a Problem body. The public response keeps the refusal before SSE headers.
 func TestProxyStream_PreSSEError(t *testing.T) {
 	cases := []struct {
 		name   string
 		status int
 		body   string
 	}{
-		{"epoch_mismatch", http.StatusConflict, `{"error":"epoch mismatch","code":"epoch_mismatch"}`},
-		{"replay_unsupported", http.StatusBadRequest, `{"error":"historical replay not supported","code":"replay_unsupported"}`},
-		{"not_found", http.StatusNotFound, `{"error":"job not found"}`},
-		{"registry_stopped", http.StatusServiceUnavailable, `{"error":"registry stopped"}`},
+		{"epoch_mismatch", http.StatusConflict, `{"title":"Conflict","code":"epoch_mismatch"}`},
+		{"replay_unsupported", http.StatusBadRequest, `{"title":"Bad Request","code":"replay_unsupported"}`},
+		{"not_found", http.StatusNotFound, `{"title":"Not Found","code":"not_found"}`},
+		{"registry_stopped", http.StatusServiceUnavailable, `{"title":"Service Unavailable","code":"registry_stopped"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,8 +121,12 @@ func TestProxyStream_PreSSEError(t *testing.T) {
 			router.ServeHTTP(rec, req)
 
 			assert.Equal(t, tc.status, rec.Code)
-			assert.Contains(t, rec.Header().Get("Content-Type"), "application/json")
-			assert.Equal(t, tc.body, rec.Body.String())
+			assert.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+			assert.Equal(t, tc.status, problem.Status)
+			assert.Equal(t, tc.name, problem.Code)
+			assert.Equal(t, "/jobs/x/stream", problem.Instance)
 		})
 	}
 }
@@ -399,9 +403,7 @@ func TestProxyCancel_Forwards(t *testing.T) {
 	assert.Equal(t, "/zzrouter/v1/internal/jobs/dl_x/cancel", gotPath)
 }
 
-// TestProxyJSON_ForwardsErrorStatus — upstream 404 / 500 flow through
-// with status + body preserved. Pins the error-path contract of
-// copyUpstreamJSON.
+// TestProxyJSON_ForwardsErrorStatus preserves legacy refusal status in a public Problem.
 func TestProxyJSON_ForwardsErrorStatus(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError, http.StatusServiceUnavailable} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
@@ -421,7 +423,12 @@ func TestProxyJSON_ForwardsErrorStatus(t *testing.T) {
 			router.ServeHTTP(rec, req)
 
 			assert.Equal(t, status, rec.Code)
-			assert.JSONEq(t, fmt.Sprintf(`{"code":%d}`, status), rec.Body.String())
+			assert.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+			assert.Equal(t, status, problem.Status)
+			assert.NotEmpty(t, problem.Code)
+			assert.Equal(t, "/jobs/x", problem.Instance)
 		})
 	}
 }
@@ -608,7 +615,8 @@ func TestJobLookupComplete404(t *testing.T) {
 		assert.Equal(t, string(httperr.CodeJobNotFound), problem.Code)
 		assert.Equal(t, http.StatusNotFound, problem.Status)
 		assert.Contains(t, problem.Detail, "jobs live in memory on the node that runs them")
-		assert.Contains(t, problem.Detail, "evicted "+jobs.DefaultCompletedTTL.String()+" after completion")
+		assert.Contains(t, problem.Detail, "may be absent after retention cleanup or a node restart")
+		assert.Empty(t, problem.Node, "complete searched-scope absence blames no single peer")
 		assert.Empty(t, rec.Header().Get("Retry-After"))
 	})
 }
@@ -641,12 +649,14 @@ func TestJobLookupProbeIncomplete503(t *testing.T) {
 		assert.Equal(t, string(httperr.CodeNodeUnreachable), problem.Code)
 		assert.Equal(t, http.StatusServiceUnavailable, problem.Status)
 		assert.Contains(t, problem.Detail, "a peer that may own the job did not answer")
-		assert.NotEmpty(t, rec.Header().Get("Retry-After"))
+		assert.Equal(t, "5", rec.Header().Get("Retry-After"))
 	})
 }
 
 func TestJobLookupFoundOnPeer(t *testing.T) {
-	registry := newTestJobsRegistry(t)
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "w1", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
 	h, err := registry.Start(context.Background(), jobs.KindDownload, "", nil)
 	require.NoError(t, err)
 	h.Done()
