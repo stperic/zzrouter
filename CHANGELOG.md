@@ -26,6 +26,12 @@
 
 ### Behaviour changes
 
+- Managed Linux updates include the operator client with the node and launcher.
+  Rollback restores the matching client; legacy versions without one retain the
+  working client and prune keeps its directory. New managed releases without a
+  runnable matching client are refused. See [installation](docs/install.md) for
+  adopting this behavior on an older service install.
+
 - Missing-job GET, cancellation and pre-stream failures return scoped
   `job_not_found` Problems at their owner. Proxied errors preserve retry metadata
   and use the public request identity. Job lists, snapshots and cancellation

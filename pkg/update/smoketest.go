@@ -51,9 +51,14 @@ func smokeTest(ctx context.Context, binaryPath string, expected *version.Version
 	if reported == "" {
 		return fmt.Errorf("%w: it reported no version at all", ErrSmokeTestFailed)
 	}
-	if expected != nil && !strings.Contains(reported, expected.String()) {
-		return fmt.Errorf("%w: it reports %q, but the release is %s",
-			ErrSmokeTestFailed, firstLine(output), expected.String())
+	if expected != nil {
+		fields := strings.Fields(reported)
+		actual, err := version.ParseVersion(fields[len(fields)-1])
+		// Release tags omit the timestamp metadata embedded by the build.
+		if err != nil || !actual.IsEqual(expected) || (expected.BuildMeta != "" && actual.BuildMeta != expected.BuildMeta) {
+			return fmt.Errorf("%w: it reports %q, but the release is %s",
+				ErrSmokeTestFailed, firstLine(output), expected.String())
+		}
 	}
 
 	return nil
