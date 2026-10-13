@@ -41,6 +41,10 @@ type pidInfo struct {
 }
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	instanceID := flag.String("instance-id", "", "unique instance identifier (required)")
 	provider := flag.String("provider", "", "provider type, e.g. vllm, llama-cpp, mlx (required)")
 	pidDir := flag.String("pid-dir", filepath.Join(os.TempDir(), "zzrouter-pids"), "directory for PID files")
@@ -49,19 +53,19 @@ func main() {
 	if *instanceID == "" || *provider == "" {
 		fmt.Fprintln(os.Stderr, "error: --instance-id and --provider are required")
 		flag.Usage()
-		os.Exit(1)
+		return 1
 	}
 
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: child command required after flags (use -- CMD [ARGS...])")
-		os.Exit(1)
+		return 1
 	}
 
 	// Ensure PID directory exists.
 	if err := os.MkdirAll(*pidDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot create pid dir %s: %v\n", *pidDir, err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Set up the child command in its own process group.
@@ -71,9 +75,14 @@ func main() {
 	cmd.Stdin = os.Stdin
 	setupProcessGroup(cmd)
 
+	// Own shutdown before creating a child that needs signal forwarding.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, shutdownSignals()...)
+	defer signal.Stop(sigCh)
+
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to start child: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	assignChildToJob(cmd)
 
@@ -87,18 +96,15 @@ func main() {
 		StartedAt:  utils.NowUTC().Format(time.RFC3339),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write pid file: %v\n", err)
+	} else {
+		defer os.Remove(pidFile)
 	}
-	defer os.Remove(pidFile)
 
 	// Channel to receive child exit result.
 	waitCh := make(chan error, 1)
 	go func() {
 		waitCh <- cmd.Wait()
 	}()
-
-	// Forward signals to the child process group.
-	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, shutdownSignals()...)
 
 	// Monitor stdin for EOF. When zzrouter-node wants to gracefully stop
 	// this instance, it closes the stdin pipe. This is the primary Windows
@@ -120,36 +126,23 @@ func main() {
 	}
 
 	// Wait for any shutdown trigger: signal, stdin-EOF, or child exit.
+	var shutdown os.Signal
 	select {
-	case sig := <-sigCh:
-		forwardSignalToChild(cmd, sig)
-
-		select {
-		case <-waitCh:
-		case <-time.After(gracefulTimeout):
-			forceKillChild(cmd)
-			<-waitCh
-		}
-
+	case shutdown = <-sigCh:
 	case <-stdinClosed:
-		// Parent closed stdin pipe — initiate graceful shutdown.
-		// Mirror the signal path: try graceful first, escalate to force kill.
-		// This gives GPU processes (vLLM, llama.cpp) a chance to flush VRAM
-		// and clean up CUDA contexts before being killed.
-		forwardSignalToChild(cmd, os.Interrupt)
-
-		select {
-		case <-waitCh:
-		case <-time.After(gracefulTimeout):
-			forceKillChild(cmd)
-			<-waitCh
-		}
-
+		shutdown = os.Interrupt
 	case <-waitCh:
-		// Child exited on its own.
+		return exitCode(cmd)
+	}
+	forwardSignalToChild(cmd, shutdown)
+	select {
+	case <-waitCh:
+	case <-time.After(gracefulTimeout):
+		forceKillChild(cmd)
+		<-waitCh
 	}
 
-	os.Exit(exitCode(cmd))
+	return exitCode(cmd)
 }
 
 // writePIDFile writes the PID info atomically using temp file + rename.
