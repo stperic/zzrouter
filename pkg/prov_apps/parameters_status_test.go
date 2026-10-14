@@ -64,7 +64,7 @@ func TestParametersStatusDataDirChangeAndRestartPreparation(t *testing.T) {
 	req := EnsureRequest{Provider: "generic"}
 	prepared, err := processEngine{r.m}.prepare(t.Context(), svc, "generic", req, 8740)
 	require.NoError(t, err)
-	run, err := r.m.newRun(t.Context(), req, svc, 8740)
+	run, err := r.m.newRun(req, svc, 8740)
 	require.NoError(t, err)
 	defer run.Cancel()
 	run.SetResolved(prepared.resolved)

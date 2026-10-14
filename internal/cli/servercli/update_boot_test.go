@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -91,6 +92,9 @@ func TestProviderPreparationFailureCountsBootWithoutConfirmation(t *testing.T) {
 	}
 	for _, failure := range []string{"receipt", "required repair"} {
 		t.Run(failure, func(t *testing.T) {
+			if failure == "required repair" && runtime.GOOS == "windows" {
+				t.Skip("directory permissions do not gate Windows the same way")
+			}
 			cfg, confirmer := updateBootFixture(t)
 			dir := pkgConfig.Paths().GetAppsConfigDir()
 			require.NoError(t, os.Remove(filepath.Join(dir, "external", "custom", "config.yaml")))

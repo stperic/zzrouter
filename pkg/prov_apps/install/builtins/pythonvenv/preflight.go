@@ -71,7 +71,8 @@ func runPython(ctx context.Context, python, directory string, environment []stri
 	command.Stdout = tail
 	command.Stderr = tail
 	if err := process.RunOwnedCommand(ctx, command); err != nil {
-		output := security.RedactSensitive(string(tail.data))
+		// Python on Windows writes CRLF; errors read the same on every platform.
+		output := security.RedactSensitive(strings.ReplaceAll(string(tail.data), "\r\n", "\n"))
 		var diagnostics []string
 		for _, line := range strings.Split(output, "\n") {
 			if line = strings.TrimSpace(line); strings.HasPrefix(line, "ERROR:") {

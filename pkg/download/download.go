@@ -132,6 +132,21 @@ func Fetch(client *http.Client, req *http.Request, dest string, opts Options) (r
 	return result, err
 }
 
+// partialSize checks that a 206 resumes exactly at offset and runs to the end
+// of a file whose size agrees with known (negative when unknown), and returns
+// that size.
+func partialSize(resp *http.Response, offset, known int64) (int64, error) {
+	value := resp.Header.Get("Content-Range")
+	var start, end, size int64
+	n, err := fmt.Sscanf(value, "bytes %d-%d/%d", &start, &end, &size)
+	if err != nil || n != 3 || value != fmt.Sprintf("bytes %d-%d/%d", start, end, size) ||
+		offset == 0 || start != offset || end < start || size <= end || end != size-1 ||
+		(known >= 0 && size != known) || (resp.ContentLength >= 0 && resp.ContentLength != end-start+1) {
+		return 0, fmt.Errorf("invalid content range %q for offset %d", value, offset)
+	}
+	return size, nil
+}
+
 func transfer(client *http.Client, req *http.Request, out *os.File, hasher hash.Hash, result *Result, total *int64, maxSize int64, report func()) (bool, error) {
 	ctx := req.Context()
 	if err := ctx.Err(); err != nil {
@@ -168,13 +183,9 @@ func transfer(client *http.Client, req *http.Request, out *os.File, hasher hash.
 			report()
 		}
 	case http.StatusPartialContent:
-		value := resp.Header.Get("Content-Range")
-		var start, end, size int64
-		n, err := fmt.Sscanf(value, "bytes %d-%d/%d", &start, &end, &size)
-		if err != nil || n != 3 || value != fmt.Sprintf("bytes %d-%d/%d", start, end, size) ||
-			result.Size == 0 || start != result.Size || end < start || size <= end || end != size-1 ||
-			(*total >= 0 && size != *total) || (resp.ContentLength >= 0 && resp.ContentLength != end-start+1) {
-			return false, fmt.Errorf("invalid content range %q for offset %d", value, result.Size)
+		size, err := partialSize(resp, result.Size, *total)
+		if err != nil {
+			return false, err
 		}
 		*total = size
 		if result.ResumedFrom == 0 {

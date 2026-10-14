@@ -279,7 +279,7 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	}
 	prepared, err := processEngine{r.m}.prepare(ctx, svc, "generic", req, 8740)
 	require.NoError(t, err)
-	run, err := r.m.newRun(ctx, req, svc, 8740)
+	run, err := r.m.newRun(req, svc, 8740)
 	require.NoError(t, err)
 	run.SetResolved(prepared.resolved)
 	run.MarkRunning(false, nil)

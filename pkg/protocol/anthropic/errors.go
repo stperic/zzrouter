@@ -69,14 +69,15 @@ func ErrorTypeForStatus(status int) string {
 // The type always comes from the status: zzRouter's internal error types
 // are OpenAI vocabulary and mean nothing to an Anthropic client.
 func Envelope(status int, message string) map[string]any {
-	return envelope(ErrorTypeForStatus(status), message)
+	return envelope(ErrorTypeForStatus(status), message, "")
 }
 
-func envelope(errType, message string) map[string]any {
-	return map[string]any{
-		"type":  "error",
-		"error": map[string]any{"type": errType, "message": utils.SanitizeErrorMessage(message)},
+func envelope(errType, message, code string) map[string]any {
+	inner := map[string]any{"type": errType, "message": utils.SanitizeErrorMessage(message)}
+	if code != "" {
+		inner["code"] = code
 	}
+	return map[string]any{"type": "error", "error": inner}
 }
 
 // IsErrorEnvelope reports whether raw is already an Anthropic error
@@ -111,11 +112,8 @@ func NormalizeError(status int, raw []byte) []byte {
 		if _, ok := errorTypes[errType]; !ok {
 			errType = ErrorTypeForStatus(status)
 		}
-		body := envelope(errType, native.Error.Message)
-		if code, ok := native.Error.Code.(string); ok && code != "" {
-			body["error"].(map[string]any)["code"] = code
-		}
-		out, _ := json.Marshal(body)
+		code, _ := native.Error.Code.(string)
+		out, _ := json.Marshal(envelope(errType, native.Error.Message, code))
 		return out
 	}
 
@@ -128,10 +126,7 @@ func NormalizeError(status int, raw []byte) []byte {
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(openaicompat.NormalizeError(status, raw), &oai)
-	body := Envelope(status, oai.Error.Message)
-	if code, ok := oai.Error.Code.(string); ok && code != "" {
-		body["error"].(map[string]any)["code"] = code
-	}
-	out, _ := json.Marshal(body)
+	code, _ := oai.Error.Code.(string)
+	out, _ := json.Marshal(envelope(ErrorTypeForStatus(status), oai.Error.Message, code))
 	return out
 }

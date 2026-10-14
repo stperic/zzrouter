@@ -57,14 +57,14 @@ func (s ServiceConfig) validateSourceExecution(runtime string, source *InstallSo
 }
 
 // ValidateSourceDirectory checks source ownership against installation and data paths.
-func (runtime *AppRuntimeConfig) ValidateSourceDirectory(directory string) error {
+func (prc *AppRuntimeConfig) ValidateSourceDirectory(directory string) error {
 	dir := strings.ToLower(directory)
 	if !validProviderDirectory(dir) {
 		return fmt.Errorf("source: contained execution.working_dir required")
 	}
 	reserved := []string{SubdirBin, SubdirVenv, SubdirCandidate, SubdirPrevious, ProviderManagedName, ProviderVersionName, ProviderManifestName, ProviderManifestTemp, SubdirPython}
-	if runtime != nil && runtime.DataDir != "" {
-		reserved = append(reserved, strings.ToLower(runtime.DataDir))
+	if prc != nil && prc.DataDir != "" {
+		reserved = append(reserved, strings.ToLower(prc.DataDir))
 	}
 	for _, other := range reserved {
 		if dir == other || strings.HasPrefix(dir, other+"/") || strings.HasPrefix(other, dir+"/") {

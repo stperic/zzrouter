@@ -201,52 +201,11 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 
 	selectedModel := ModelInfo{Name: provider, Provider: provider, Node: node}
 	if model != "" {
-		models, err := runCandidates(client, nodeFilter, provider, model)
-		if err != nil {
-			return fmt.Errorf("failed to query models: %w", err)
+		var found bool
+		selectedModel, found, err = pickRunModel(client, nodeFilter, provider, model, force)
+		if err != nil || !found {
+			return err
 		}
-
-		if len(models) == 0 {
-			fmt.Println(shared.FormatNoModelsFoundMessage(nodeFilter, provider, model))
-			return nil
-		}
-
-		// Convert to ModelInfo for display using centralized utility
-		matchingModels := ConvertModelsForRunCommand(models)
-
-		// Model matching logic (similar to ps command)
-		if len(matchingModels) == 1 {
-			// Exactly one match - use it
-			selectedModel = matchingModels[0]
-			// Don't print success message yet - wait until API call succeeds
-		} else if len(matchingModels) > 1 {
-			if force {
-				// Force mode: use first model
-				selectedModel = matchingModels[0]
-				// Don't print message yet - wait until API call succeeds
-			} else {
-				// Multiple matches - show disambiguation
-				fmt.Printf("Multiple models match '%s':\n\n", model)
-				rows := ConvertModelInfoToTableRows(matchingModels)
-				displayUnifiedTableFromRows(rows)
-				fmt.Printf("\nTotal: %d model(s)\n", len(matchingModels))
-				return fmt.Errorf("multiple models match - please be more specific with --provider or --model flags, or use --force to select the first match")
-			}
-		} else {
-			// This shouldn't happen since we checked len(models) == 0 above
-			return fmt.Errorf("no models found")
-		}
-
-		// Use the provider from the selected model (no interactive selection)
-		if selectedModel.Provider == "" || selectedModel.Provider == "-" {
-			if provider != "" {
-				// Use the provider specified in flags
-				selectedModel.Provider = provider
-			} else {
-				return fmt.Errorf("model '%s' has no assigned provider. Please specify --provider flag", selectedModel.Name)
-			}
-		}
-
 	}
 
 	// Load the selected model
@@ -355,6 +314,58 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 // runModelLister is the catalog query run picks its model from.
 type runModelLister interface {
 	ListModels(f pkgClient.ModelFilter) ([]pkgClient.ModelMetadata, error)
+}
+
+// pickRunModel resolves --model to one catalog entry. found is false when
+// nothing matched and the user has been told so.
+func pickRunModel(client runModelLister, nodeFilter, provider, model string, force bool) (ModelInfo, bool, error) {
+	var selectedModel ModelInfo
+	models, err := runCandidates(client, nodeFilter, provider, model)
+	if err != nil {
+		return ModelInfo{}, false, fmt.Errorf("failed to query models: %w", err)
+	}
+
+	if len(models) == 0 {
+		fmt.Println(shared.FormatNoModelsFoundMessage(nodeFilter, provider, model))
+		return ModelInfo{}, false, nil
+	}
+
+	// Convert to ModelInfo for display using centralized utility
+	matchingModels := ConvertModelsForRunCommand(models)
+
+	// Model matching logic (similar to ps command)
+	if len(matchingModels) == 1 {
+		// Exactly one match - use it
+		selectedModel = matchingModels[0]
+		// Don't print success message yet - wait until API call succeeds
+	} else if len(matchingModels) > 1 {
+		if force {
+			// Force mode: use first model
+			selectedModel = matchingModels[0]
+			// Don't print message yet - wait until API call succeeds
+		} else {
+			// Multiple matches - show disambiguation
+			fmt.Printf("Multiple models match '%s':\n\n", model)
+			rows := ConvertModelInfoToTableRows(matchingModels)
+			displayUnifiedTableFromRows(rows)
+			fmt.Printf("\nTotal: %d model(s)\n", len(matchingModels))
+			return ModelInfo{}, false, fmt.Errorf("multiple models match - please be more specific with --provider or --model flags, or use --force to select the first match")
+		}
+	} else {
+		// This shouldn't happen since we checked len(models) == 0 above
+		return ModelInfo{}, false, fmt.Errorf("no models found")
+	}
+
+	// Use the provider from the selected model (no interactive selection)
+	if selectedModel.Provider == "" || selectedModel.Provider == "-" {
+		if provider != "" {
+			// Use the provider specified in flags
+			selectedModel.Provider = provider
+		} else {
+			return ModelInfo{}, false, fmt.Errorf("model '%s' has no assigned provider. Please specify --provider flag", selectedModel.Name)
+		}
+	}
+	return selectedModel, true, nil
 }
 
 // runCandidates lists the models run may pick from. --provider names the

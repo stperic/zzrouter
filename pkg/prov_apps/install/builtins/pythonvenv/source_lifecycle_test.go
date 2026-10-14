@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestSourceDataCreatesOnlyRootAndModelStore(t *testing.T) {
 				}
 				require.True(t, entry.IsDir())
 				relative, err := filepath.Rel(filepath.Join(directory, "data"), path)
-				got = append(got, relative)
+				got = append(got, filepath.ToSlash(relative))
 				return err
 			}))
 			require.Equal(t, want, got, "application-owned folders must be left to the application")
@@ -92,6 +93,9 @@ func TestSourceDataCreatesOnlyRootAndModelStore(t *testing.T) {
 
 func sourceLifecycle(t *testing.T) (*Installer, install.RecipeSnapshot, *runtimeTransaction, string) {
 	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("source recipes ship for linux only, and the fixture's venv python is a shell script")
+	}
 	python, err := exec.LookPath("python3")
 	require.NoError(t, err)
 	fsroot.SetProviderRootOverride(t.TempDir())

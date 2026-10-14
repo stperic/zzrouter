@@ -49,14 +49,14 @@ func seedLiveDownload(t *testing.T, server *srv.Server, modelName string, downlo
 	// Use the same key shape the executor uses: host/registry/model.
 	key := "test-host/huggingface/" + modelName
 	gen := dt.StartDownload(key, modelName, nil, modelregistry.DownloadOptions{})
-	dt.UpdateDownloadFullGen(
+	require.NoError(t, dt.UpdateDownloadFullGen(
 		key, gen,
 		string(constants.StatusDownloading),
 		"model.safetensors",
 		1, 2,
 		float64(downloaded)/float64(total)*100,
 		downloaded, total, 1024*1024,
-	)
+	))
 	t.Cleanup(func() { dt.RemoveDownload(key) })
 	return key
 }

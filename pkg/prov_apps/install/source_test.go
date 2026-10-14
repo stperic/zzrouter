@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -160,6 +161,9 @@ func (c *replaceSourcePathContext) Err() error {
 }
 
 func TestSourceHashesAndExtractsTheSameOpenFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows refuses to rename an open file, so the swap this guards against cannot happen")
+	}
 	verified := sourceArchive(t, sourceEntry{name: "release/requirements.txt", body: "torch>=2\n"}, sourceEntry{name: "release/main.py", body: "verified"})
 	archive, source, parent := extractFixture(t, verified)
 	source.Requirements = "requirements.txt"

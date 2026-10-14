@@ -467,6 +467,7 @@ func routingFixtureShape(meta RoutingMetadata, rec *llm.InferenceRecorder, norms
 func TestCommitWithRouting_BufferedShapePassedThrough(t *testing.T) {
 	w := httptest.NewRecorder()
 	resp := buildJSONResp(http.StatusOK, `{}`, nil)
+	defer func() { _ = resp.Body.Close() }()
 	result := CommitWithRouting(t.Context(), w, resp, RoutingMetadata{}, nil, nil, func(b []byte) []byte {
 		assert.Equal(t, `{}`, string(b))
 		return []byte(`{"shaped":true}`)

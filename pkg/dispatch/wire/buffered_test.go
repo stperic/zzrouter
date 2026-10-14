@@ -106,7 +106,7 @@ func TestRelayBuffered_ShapeAppliedAndLengthMatches(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusCreated, ContentLength: int64(len(raw)), Body: io.NopCloser(strings.NewReader(raw))}
 	w := httptest.NewRecorder()
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
-	w.Header().Set("Transfer-Encoding", "chunked")
+	w.Header().Set("Transfer-Encoding", "chunked") //nolint:gosec // G113: the conflicting framing is the input RelayBuffered must clear
 	w.Header().Set("Content-Encoding", "gzip")
 	spy := installCompletionSpy(t)
 	result := RelayBuffered(w, resp, func(body []byte) []byte {

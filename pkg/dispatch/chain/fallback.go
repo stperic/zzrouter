@@ -453,7 +453,7 @@ func (p *Proxy) tryOnce(
 			if up.IsCluster() {
 				classifier = nil
 			}
-			httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+			_ = httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
 		}
 		outcome.attempt.StatusCode = resp.StatusCode
 	}

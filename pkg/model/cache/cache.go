@@ -677,7 +677,10 @@ func (mc *Cache) refreshOnce(ctx context.Context) (bool, error) {
 	allItems = append(allItems, localItems...)
 	allItems = append(allItems, workerItems...)
 
-	if ctx.Err() != nil || !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
 		return false, nil
 	}
 
