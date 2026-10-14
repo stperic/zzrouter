@@ -11142,6 +11142,7 @@ components:
     APIDiscovery:
       type: object
       properties:
+        provider_models: { type: string, description: Coordinator provider-file operations and pointer to the CLI and agent recipe in docs/comfyui.md. }
         mcp: { type: string, description: Coordinator MCP endpoint, example: POST /zzrouter/v1/mcp }
         api_version: { type: string, example: v1 }
         authentication:

@@ -23,6 +23,10 @@ List providers with `GET /zzrouter/v1/providers` and models with
 `GET /v1/models` or the detailed management catalog `GET /zzrouter/v1/models`.
 Use only inference endpoints advertised for the selected model.
 
+Provider-owned files use `/zzrouter/v1/providers/{name}/models` with a required
+node, plus `/models/resolve` for workflow metadata. The discovery document's
+`provider_models` field points to the [ComfyUI operator and agent recipe](comfyui.md#model-files-through-the-coordinator).
+
 Installation, downloads and launches may return HTTP 202 with a job ID.
 Poll `GET /zzrouter/v1/jobs/:id` or stream `GET /zzrouter/v1/jobs/:id/stream`.
 A terminal success and the resulting resource state establish completion;

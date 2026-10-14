@@ -6,11 +6,48 @@ zzRouter launches ComfyUI as a node-scoped provider and manages its GPU reservat
 
 The shipped provider is disabled. Linux and a working NVIDIA GPU are required. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
 
-The host operator installs ComfyUI into the provider install directory selected by `providers.install_dir`. Use sibling directories: `comfyui/source/` for the ComfyUI code and working directory, `comfyui/venv/` for the Python environment, and `comfyui/data/` holding `models`, `custom_nodes`, `input`, `output`, `user` and `temp`. The interpreter is `comfyui/venv/bin/python3` and the entry point is `comfyui/source/main.py`. Launches pass `--base-directory ../data`; ComfyUI resolves that relative to the source working directory. Keep mutable data separate so a future managed install can replace source and venv without touching it. Create the data layout before enabling the provider. The service account must be able to execute the interpreter, read the source and dependencies, and read and write the data directories. Verify the installed source and dependencies with that interpreter before enabling it.
+The host operator installs ComfyUI into the provider install directory selected by `providers.install_dir`. Use sibling directories: `comfyui/source/` for the ComfyUI code and working directory, `comfyui/venv/` for the Python environment, and `comfyui/data/` holding `models`, `custom_nodes`, `input`, `output`, `user` and `temp`. The interpreter is `comfyui/venv/bin/python3` and the entry point is `comfyui/source/main.py`. The template declares `runtime.data_dir: data` once: the `--base-directory ${DATA_DIR}` argument expands to that absolute directory, and `model_store.directory: models` selects its model root. Keep mutable data separate so a future managed install can replace source and venv without touching it. Create the data layout before enabling the provider. The service account must be able to execute the interpreter, read the source and dependencies, and read and write the data directories. Verify the installed source and dependencies with that interpreter before enabling it.
 
 Provider status reports not installed until the interpreter and source entry point exist. The install API refuses this provider with the required host directory in its message. zzRouter does not download or update this source installation.
 
 On the coordinator, enable the provider with `PATCH /zzrouter/v1/providers/comfyui` and `{"enabled":true}`. Configure node parameters through `PATCH /zzrouter/v1/providers/comfyui/parameters` using the existing `nodes.<node>.parameters` tree. Defaults and the selected node are the configuration tiers; model tiers and endpoint overlays are refused.
+
+## Model files through the coordinator
+
+Use the coordinator with an admin key; every operation names one node. The filesystem inventory works while ComfyUI is stopped. Provider files do not appear in `/v1/models`, the LLM catalog, deployments or variants. The template's closed categories are `diffusion_models`, `text_encoders`, `vae`, `loras`, `checkpoints`, `controlnet`, `clip_vision`, `upscale_models`, `embeddings`, `audio_encoders`, `model_patches` and `latent_upscale_models`.
+
+```sh
+zzrouter providers models list comfyui --node localai
+zzrouter providers models download comfyui --node localai \
+  --category diffusion_models \
+  --source 'Comfy-Org/flux1-schnell#flux1-schnell-fp8.safetensors' --watch
+zzrouter providers models resolve comfyui --node localai --workflow flux-workflow.json
+zzrouter providers models resolve comfyui --node localai --workflow flux-workflow.json --download
+zzrouter providers models delete comfyui --node localai \
+  --category diffusion_models --name flux1-schnell-fp8.safetensors
+```
+
+List accepts an optional `--category`. Download accepts an optional `--name`, defaulting to the source basename. Delete requires both category and name. Names are relative paths inside the category; absolute paths, traversal, bookkeeping names and symlink escapes are refused. Downloads do not overwrite files: `file_exists` and `download_in_progress` are 409 refusals. Delete removes only a regular file and refuses a reserved destination. A cancelled transfer retains its reservation until the producer unwinds, then cleans partial data. Known download sizes reuse the disk-space preflight; an unknown size skips it and disk errors surface through the job.
+
+Sources are exact Hugging Face `org/repo#file` references or HTTPS `/resolve/<revision>/<file>` URLs. The exact query `?download=true` is discarded; other queries and other URL hosts are refused. Gated repositories use the existing HF token on the downloading node. `--watch` follows the existing job stream on the returned owning node and reports a failed job as a command error. Listing, deletion and resolution print the complete response data, including item reasons and job IDs; global `-o json` and `-o yaml` are supported.
+
+Resolution reads only UI `nodes[].properties.models[]` entries `{name,url,directory}`, including a submission envelope's `extra_data.extra_pnginfo.workflow`. It deduplicates `(category,name)`; conflicting sources are reported, never guessed. Raw API prompts without that metadata return 400. A positive-size regular file is `present`. Other items are `missing`, `downloading`, `unresolvable` (with `invalid_model_category`, `source_unsupported`, `conflicting_source` or `missing_source`), or `failed` (the typed problem code from a refused start). An accepted earlier job remains in the response if a later start fails. Resolve returns 202 if it accepted any job, otherwise 200. The request limit is 4 MiB. Downloads can run while ComfyUI is up: ComfyUI rescans folders on request, and zzRouter keeps no model-file cache to invalidate.
+
+### Agent recipe
+
+There is no additional MCP task tool. Discover `listProviderModels`, `downloadProviderModel`, `deleteProviderModel` and `resolveProviderModels` with `zz_api_search`. Read inventory with `zz_api_get`:
+
+```json
+{"path":"/zzrouter/v1/providers/comfyui/models","query":{"node":"localai"}}
+```
+
+Start one file with `zz_api`:
+
+```json
+{"method":"POST","path":"/zzrouter/v1/providers/comfyui/models","idempotency_key":"flux-schnell-localai","body":{"node":"localai","category":"diffusion_models","source":"Comfy-Org/flux1-schnell#flux1-schnell-fp8.safetensors"}}
+```
+
+To fetch a workflow's requirements, call `zz_api` on `/zzrouter/v1/providers/comfyui/models/resolve` with `{"node":"localai","workflow":<workflow JSON object>,"download":true}` in `body`. Both POST routes accept `idempotency_key`; retry with the same body and key. Preserve each returned job ID, follow it with `zz_job` using the returned node, and inspect every unresolved or failed item. Verify the resulting inventory before calling `zz_run_start` with provider and node; submit the workflow directly to its `base_url`. For deletion, use `zz_api` with method `DELETE` on the models route and put node, category and name in `query`.
 
 ## Ensure a run
 

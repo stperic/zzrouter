@@ -48,7 +48,7 @@ Examples:
 	cmd.Flags().StringP("provider", "a", "", "Filter by provider type (ollama, vllm, llamacpp, mlx)")
 	cmd.Flags().BoolP("json", "j", false, "Output in JSON format")
 	cmd.Flags().Bool("check-updates", false, "Report the newest release each provider's upstream publishes")
-	cmd.AddCommand(newProviderAssetsCmd(), newProviderResolvedCmd(), newProviderVariantCmd())
+	cmd.AddCommand(newProviderAssetsCmd(), newProviderResolvedCmd(), newProviderVariantCmd(), newProviderModelsCmd())
 
 	return cmd
 }

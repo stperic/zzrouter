@@ -4,6 +4,11 @@
 
 ### Highlights
 
+- ComfyUI model files can be listed, downloaded from Hugging Face, deleted and
+  resolved from workflow metadata through the coordinator API, MCP `zz_api`,
+  and `zzrouter providers models`. Files belong to the provider and stay outside
+  the LLM catalog. See the [operator and agent recipe](docs/comfyui.md#model-files-through-the-coordinator).
+
 - Ollama preloading supports embedding-only models through a capability-neutral empty-input request.
 
 - MCP server for coding agents: `POST /zzrouter/v1/mcp` (coordinator, admin
@@ -25,6 +30,11 @@
   that evicted it.
 
 ### Behaviour changes
+
+- Cluster protocol and minimum advance from 8/8 to 9/9 for provider model-store
+  configuration and download targets. Upgrade all peers together during the
+  maintenance window in [protocol versioning](docs/protocol_versioning.md);
+  older peers refuse the new protocol. There is no rolling compatibility window.
 
 - Missing-job GET, cancellation and pre-stream failures return scoped
   `job_not_found` Problems at their owner. Proxied errors preserve retry metadata
