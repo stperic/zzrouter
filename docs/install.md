@@ -108,14 +108,13 @@ copies for every node. See [protocol compatibility](protocol_versioning.md).
 
 ### Configuration rollback compatibility floor
 
-Call the first release containing the format-1 provider ownership receipt reader
-**R**. It is currently Unreleased; no release number has been assigned. Public
-v0.1.0 predates R. Private builds without the reader also predate this recovery
-contract. A protocol number or application version comparison does not establish
+The first release containing the format-1 provider ownership receipt reader is
+**v0.2.0**. Public v0.1.0 predates it. Private builds without the reader also
+predate this recovery contract. A protocol number or application version comparison does not establish
 that a binary contains the reader.
 
 Automatic provider-config repair, for explicit rollback and failed-update
-auto-rollback, requires a target containing R's reader and intervening template
+auto-rollback, requires a target at v0.2.0 or later and intervening template
 writers that retain the receipt contract. It cannot repair an already released
 older binary. Retain a private target-era configuration backup before upgrades.
 
@@ -161,9 +160,9 @@ teams, installation policy, models or runtime data. Settings remain strictly
 decoded and operator-owned. `node.yaml` currently accepts unknown keys, so it does
 not have this particular unknown-field startup failure.
 
-### Manual recovery for targets before R
+### Manual recovery for targets before v0.2.0
 
-Use a maintenance window when rolling back to v0.1.0 or another pre-R binary,
+Use a maintenance window when rolling back to v0.1.0 or another binary older than v0.2.0,
 or when ownership evidence is unavailable or corrupt. Repeated binary rollback
 alone does not repair an incompatible provider tree. The privileged executor
 does not automatically roll back again after an explicit rollback fails health.

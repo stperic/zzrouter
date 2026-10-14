@@ -36,9 +36,9 @@ A bug fix without a wire change does not require a bump.
 The ownership receipt and fresh provider-sync evidence gate do not change the
 wire contract or require a protocol bump. Future managed provider fields that
 older schemas reject still require the normal protocol/minimum change. The
-rollback reader floor **R** is separate from the protocol window: targets before
-R, including public v0.1.0, require the
-[manual provider-config recovery procedure](install.md#manual-recovery-for-targets-before-r).
+rollback reader floor, v0.2.0, is separate from the protocol window: targets before
+it, including public v0.1.0, require the
+[manual provider-config recovery procedure](install.md#manual-recovery-for-targets-before-v020).
 See [the configuration rollback boundary](install.md#configuration-rollback-compatibility-floor)
 for retained operator edits, unavailable providers and the receipt requirement.
 
