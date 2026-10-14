@@ -36,6 +36,7 @@ func TestReleasePolicyAuthorizesEveryShippedRecipeOnItsPlatform(t *testing.T) {
 		t.Run(tc.goos+"/"+tc.goarch, func(t *testing.T) {
 			policy, err := ReleasePolicy(tc.goos, tc.goarch)
 			require.NoError(t, err)
+			assert.NotContains(t, policy.Runtimes, "comfyui/comfyui", "release-owned sources cannot acquire operator grants")
 			assert.Len(t, policy.Runtimes, len(tc.grants))
 			for _, key := range tc.grants {
 				grant, ok := policy.Runtimes[key]

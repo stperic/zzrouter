@@ -44,7 +44,8 @@ var managedSpineKeys = []string{"execution", "failure_patterns", "health_check",
 //
 // model_defaults is a retired key: no release ships it, so listing it here
 // strips it from an older install before the strict load would refuse it.
-var managedTopLevelKeys = []string{"version_source", "model_defaults", "install", "run_scope"}
+// Engine platforms and prerequisites must follow the shipped install recipe.
+var managedTopLevelKeys = []string{"version_source", "model_defaults", "install", "run_scope", "platforms", "requirements"}
 
 // managedCapabilityKeys are the managed keys under capabilities.
 //

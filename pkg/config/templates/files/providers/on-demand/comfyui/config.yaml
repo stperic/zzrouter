@@ -3,9 +3,30 @@ description: ComfyUI image and video GPU tenant
 enabled: false
 run_scope: node
 platforms:
-  - {os: linux}
+  - {os: linux, arch: amd64}
 requirements:
+  disk_space: "20GB"
+  python: {min: "3.12", max: "3.13"}
   gpu: {vendor: nvidia, policy: required}
+install:
+  runtimes:
+    comfyui:
+      source:
+        version: "0.40.0"
+        url: https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v0.40.0.tar.gz
+        sha256: d82636cc721b8060099cf31b8d9ed40807c2147db438f88321a0396b7894e8e5
+        strip_components: 1
+        requirements: requirements.txt
+        entrypoint: main.py
+      indexes: {primary: https://pypi.org/simple, extra: []}
+      companions:
+        torch: {constraint: "", build: cuda}
+        torchvision: {constraint: "", build: cuda}
+      verify:
+        imports: [torch, torchvision, aiohttp]
+        checks: [pip_check, imports, cuda_companions, cuda_available]
+      only_binary: true
+      timeout: 90m
 defaults:
   parameters:
     gpu-reserve-mib: "8192"
