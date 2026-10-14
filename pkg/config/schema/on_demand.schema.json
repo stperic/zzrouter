@@ -890,6 +890,39 @@
               "package": {
                 "type": "string"
               },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["version", "url", "sha256", "strip_components", "requirements", "entrypoint"],
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "strip_components": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "requirements": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "entrypoint": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
+              },
               "version_constraint": {
                 "type": "string"
               },

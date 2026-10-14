@@ -19,6 +19,7 @@ type InstallConfig struct {
 
 // InstallRecipe uses pointers so an omitted field inherits and an empty value replaces.
 type InstallRecipe struct {
+	Source            *InstallSource              `yaml:"source,omitempty" json:"source,omitempty"`
 	Package           *string                     `yaml:"package,omitempty" json:"package,omitempty"`
 	VersionConstraint *string                     `yaml:"version_constraint,omitempty" json:"version_constraint,omitempty"`
 	Indexes           *InstallIndexes             `yaml:"indexes,omitempty" json:"indexes,omitempty"`
@@ -81,6 +82,9 @@ func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, er
 		if !ok {
 			continue
 		}
+		if i > 0 && (recipe.Source != nil || s.Install != nil && s.Install.Runtimes[runtime].Source != nil) {
+			return out, fmt.Errorf("source runtime %q is release-owned; install overrides are forbidden", runtime)
+		}
 		data, err := json.Marshal(recipe)
 		if err != nil {
 			return out, err
@@ -104,7 +108,13 @@ func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, er
 	if err := json.Unmarshal(data, &out.Recipe); err != nil {
 		return out, err
 	}
-	return out, out.Recipe.Validate()
+	if err := out.Recipe.Validate(); err != nil {
+		return out, err
+	}
+	if out.Recipe.Source != nil {
+		return out, s.validateSourceExecution(runtime, out.Recipe.Source)
+	}
+	return out, nil
 }
 
 func mergeInstallFields(dst, src map[string]any, path, tier string, provenance map[string]string) {
@@ -187,15 +197,24 @@ func mergeInstallPatch(dst, src map[string]any) {
 
 // Validate checks a complete resolved recipe without granting execution authority.
 func (r InstallRecipe) Validate() error {
-	if r.Package == nil || !ValidDistribution(*r.Package) {
-		return fmt.Errorf("package: normalized distribution name required")
-	}
-	if r.StartupImport == nil || !ValidInstallModule(*r.StartupImport) {
-		return fmt.Errorf("startup_import: dotted module required")
-	}
-	if r.VersionConstraint != nil {
-		if err := ValidateSpecifier(*r.VersionConstraint); err != nil {
-			return fmt.Errorf("version_constraint: %w", err)
+	if r.Source != nil {
+		if r.Package != nil || r.StartupImport != nil || r.VersionConstraint != nil || r.Toolkit != nil {
+			return fmt.Errorf("source: package, startup_import, version_constraint and toolkit are forbidden")
+		}
+		if err := r.Source.validate(); err != nil {
+			return err
+		}
+	} else {
+		if r.Package == nil || !ValidDistribution(*r.Package) {
+			return fmt.Errorf("package: normalized distribution name required")
+		}
+		if r.StartupImport == nil || !ValidInstallModule(*r.StartupImport) {
+			return fmt.Errorf("startup_import: dotted module required")
+		}
+		if r.VersionConstraint != nil {
+			if err := ValidateSpecifier(*r.VersionConstraint); err != nil {
+				return fmt.Errorf("version_constraint: %w", err)
+			}
 		}
 	}
 	for _, validate := range []func() error{r.validateIndexes, r.validateCompanions, r.validateChecks} {
@@ -205,6 +224,9 @@ func (r InstallRecipe) Validate() error {
 	}
 	if r.OnlyBinary == nil {
 		return fmt.Errorf("only_binary: explicit boolean required")
+	}
+	if r.Source != nil && !*r.OnlyBinary {
+		return fmt.Errorf("source: only_binary must be true")
 	}
 	if r.Timeout == nil {
 		return fmt.Errorf("timeout: explicit duration required")
@@ -246,7 +268,7 @@ func (r InstallRecipe) validateCompanions() error {
 		return fmt.Errorf("companions: at most 24 packages")
 	}
 	for name, c := range r.Companions {
-		if !ValidDistribution(name) || name == *r.Package {
+		if !ValidDistribution(name) || r.Package != nil && name == *r.Package {
 			return fmt.Errorf("companions.%s: distinct normalized package required", name)
 		}
 		if c.Constraint != nil {
@@ -265,7 +287,7 @@ func (r InstallRecipe) validateChecks() error {
 	if r.Verify == nil || r.Verify.Imports == nil || r.Verify.Checks == nil {
 		return fmt.Errorf("verify: imports and checks required")
 	}
-	if len(*r.Verify.Imports) > 32 || len(*r.Verify.Checks) > 8 {
+	if len(*r.Verify.Imports) == 0 || len(*r.Verify.Imports) > 32 || len(*r.Verify.Checks) > 8 {
 		return fmt.Errorf("verify: probe limits exceeded")
 	}
 	for _, module := range *r.Verify.Imports {
@@ -273,7 +295,7 @@ func (r InstallRecipe) validateChecks() error {
 			return fmt.Errorf("verify.imports: invalid module %q", module)
 		}
 	}
-	if !slices.Contains(*r.Verify.Imports, *r.StartupImport) {
+	if r.StartupImport != nil && !slices.Contains(*r.Verify.Imports, *r.StartupImport) {
 		return fmt.Errorf("verify.imports: required startup import %q missing", *r.StartupImport)
 	}
 	for _, check := range *r.Verify.Checks {

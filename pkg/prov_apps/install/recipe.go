@@ -67,10 +67,12 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 		return RecipeSnapshot{}, err
 	}
 	out := RecipeSnapshot{ResolvedInstall: resolved, Provider: sc.Name, Runtime: runtime, Node: node, Requirements: sc.Requirements}
-	if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
+	if resolved.Recipe.Source != nil {
+		out.PinnedVersion = resolved.Recipe.Source.Version
+	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
 	}
-	if runtime == sc.Name {
+	if resolved.Recipe.Source == nil && runtime == sc.Name {
 		out.PinnedVersion = sc.PinnedVersion
 		if sc.VersionSource == nil || sc.VersionSource.Type != config.VersionSourcePyPI || sc.VersionSource.Package != *resolved.Recipe.Package {
 			return out, fmt.Errorf("base recipe package must match version_source.package")
@@ -101,6 +103,9 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 	if trusted {
 		out.Authority = "release"
 	} else {
+		if resolved.Recipe.Source != nil {
+			return out, fmt.Errorf("%w: source recipes require an unchanged shipped declaration", ErrInstallPolicy)
+		}
 		policy, fp, err := ReadInstallPolicy(policyPath)
 		if err != nil {
 			return out, fmt.Errorf("%w: %v", ErrInstallPolicy, err)
@@ -259,6 +264,9 @@ func ReadInstallPolicy(path string) (InstallPolicy, string, error) {
 
 // Authorize approves only the declared direct roots and exact source URLs.
 func (p RuntimePolicy) Authorize(recipe config.InstallRecipe) error {
+	if recipe.Source != nil {
+		return fmt.Errorf("source recipes are release-owned")
+	}
 	for name := range recipe.Companions {
 		if _, ok := p.Packages[name]; !ok {
 			return fmt.Errorf("companion %q unapproved", name)
@@ -346,7 +354,10 @@ func ValidateRecipeSources(ctx context.Context, snapshot RecipeSnapshot) error {
 func (s RecipeSnapshot) RuntimeChecks(base schema.RuntimeChecks) schema.RuntimeChecks {
 	base.Imports = slices.Clone(*s.Recipe.Verify.Imports)
 	base.Checks = slices.Clone(*s.Recipe.Verify.Checks)
-	base.Packages = []string{*s.Recipe.Package}
+	base.Packages = nil
+	if s.Recipe.Package != nil {
+		base.Packages = append(base.Packages, *s.Recipe.Package)
+	}
 	for name := range s.Recipe.Companions {
 		base.Packages = append(base.Packages, name)
 	}
