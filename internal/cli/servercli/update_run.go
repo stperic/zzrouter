@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/service"
 	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -86,9 +88,30 @@ func runPrivilegedUpdate(ctx context.Context) error {
 	return executeUpdateRequest(ctx, handoff, req, fromTimer, pkgConfig.NewConfigManager("zzrouter").LoadNodeConfig)
 }
 
+func runCLIPrivilegedUpdate(ctx context.Context, h *update.Handoff, req *update.Request) error {
+	if err := checkPrivilegedUpdaterIdle(ctx, h); err != nil {
+		return err
+	}
+	return executeUpdateRequest(ctx, h, req, false, pkgConfig.NewConfigManager("zzrouter").LoadNodeConfig)
+}
+
+func checkPrivilegedUpdaterIdle(ctx context.Context, h *update.Handoff) error {
+	state, err := host.CommandContext(ctx, "systemctl", "show", "--property=ActiveState", "--value", "zzrouter-update.service").Output()
+	if err != nil {
+		return fmt.Errorf("cannot determine whether zzrouter-update.service is running: %w", err)
+	}
+	switch strings.TrimSpace(string(state)) {
+	case "inactive", "failed":
+	default:
+		return fmt.Errorf("%w: zzrouter-update.service is %q; wait for it to finish", update.ErrApplyInFlight, strings.TrimSpace(string(state)))
+	}
+	return h.CheckIdle()
+}
+
 func executeUpdateRequest(ctx context.Context, handoff *update.Handoff, req *update.Request, fromTimer bool, load func() (*pkgConfig.NodeConfig, error)) (runErr error) {
+	started := false
 	defer func() {
-		if runErr != nil {
+		if runErr != nil && !started {
 			finished := utils.NowUTC()
 			_ = handoff.Publish(&update.RunStatus{PID: os.Getpid(), JobID: req.JobID, Action: req.Action, State: update.StateFailed, ToVersion: req.TargetVersion, StartedAt: req.RequestedAt, FinishedAt: &finished, Error: runErr.Error()})
 		}
@@ -122,6 +145,8 @@ func executeUpdateRequest(ctx context.Context, handoff *update.Handoff, req *upd
 		sched: update.NewSchedulerIn(update.DefaultStatusDir(), &cfg.Update, clock.System(),
 			update.WithRestarter(restart)),
 	}
+	defer run.sched.Stop()
+	started = true
 	return run.execute(ctx)
 }
 
@@ -164,9 +189,19 @@ func (d *deferredRestart) wanted() bool { return d.requested.Load() }
 type privilegedRun struct {
 	handoff *update.Handoff
 	req     *update.Request
-	sched   *update.Scheduler
+	sched   interface {
+		ApplyNow(context.Context) error
+		CheckNow(context.Context) (*update.CheckResult, error)
+		ApplyVersion(context.Context, string) error
+		Rollback(context.Context) (*update.InstallResult, error)
+		ConfirmUpdate() error
+		GetStatus() update.UpdateStatus
+		Stop()
+	}
 	restart *deferredRestart
-	probe   nodeProbe
+	probe   interface {
+		waitUntilServing(<-chan struct{}) error
+	}
 	manager service.ServiceManager
 
 	// status is touched by two goroutines: the run itself, and the
@@ -224,8 +259,7 @@ func (r *privilegedRun) execute(ctx context.Context) error {
 	return nil
 }
 
-// perform dispatches the action. Every branch is reached only with the
-// request already claimed and validated.
+// perform dispatches a claimed request or an in-memory CLI action.
 func (r *privilegedRun) perform(ctx context.Context) error {
 	switch r.req.Action {
 	case update.ActionCheck:

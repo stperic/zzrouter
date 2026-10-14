@@ -60,6 +60,18 @@ zzrouter-node update apply
 zzrouter-node update rollback
 ```
 
+On managed Linux installs, apply and rollback run without root privileges
+submit the same privileged-updater request as the API. Success acknowledges the
+request. Filesystem permissions control submission; permission errors explain
+how to run as the service account or root. Root runs the same privileged executor
+synchronously, without writing a request, and refuses while the updater service
+or a published run is busy.
+The privileged executor installs, restarts and verifies health. Follow it with
+`zzrouter-node update status --json` or
+`journalctl -u zzrouter-update.service -f`. `check` only reads release metadata;
+`update run` remains the privileged executor. Other installs keep in-process
+apply and rollback.
+
 Updates require `checksums.txt.sigstore.json` authenticated for
 `https://github.com/stperic/zzrouter/.github/workflows/release.yaml@refs/tags/v<version>`
 and GitHub Actions' OIDC issuer. Metadata from another feed does not change

@@ -35,6 +35,10 @@
 
 ### Behaviour changes
 
+- Managed update CLI apply and rollback submit through the API's handoff when
+  run without root privileges. Root uses the same privileged executor with
+  restart/health checks and refuses a busy updater. Submission permission errors
+  explain the service-account and root options.
 - Managed Linux updates include the operator client with the node and launcher.
   Rollback restores the matching client; legacy versions without one retain the
   working client and prune keeps its directory. New managed releases without a

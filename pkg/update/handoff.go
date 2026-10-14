@@ -243,6 +243,21 @@ func (h *Handoff) submit(req *Request) error {
 	if err := req.Validate(); err != nil {
 		return err
 	}
+	if err := h.CheckIdle(); err != nil {
+		return err
+	}
+	if req.RequestedAt.IsZero() {
+		req.RequestedAt = utils.NowUTC()
+	}
+	if err := os.MkdirAll(h.requestDir, 0750); err != nil {
+		return fmt.Errorf("create %s: %w", h.requestDir, err)
+	}
+	return writeJSONAtomic(h.RequestPath(), req, 0640)
+}
+
+// CheckIdle reports pending requests or a live privileged run. It is an
+// observation, not a cross-process lock; systemd owns service serialization.
+func (h *Handoff) CheckIdle() error {
 	if pending, err := h.Pending(); err != nil {
 		return err
 	} else if pending != nil {
@@ -272,13 +287,7 @@ func (h *Handoff) submit(req *Request) error {
 			return ErrApplyInFlight
 		}
 	}
-	if req.RequestedAt.IsZero() {
-		req.RequestedAt = utils.NowUTC()
-	}
-	if err := os.MkdirAll(h.requestDir, 0750); err != nil {
-		return fmt.Errorf("create %s: %w", h.requestDir, err)
-	}
-	return writeJSONAtomic(h.RequestPath(), req, 0640)
+	return nil
 }
 
 // Pending returns the request waiting to be claimed, or nil.
