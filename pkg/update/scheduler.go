@@ -173,6 +173,10 @@ func NewSchedulerIn(workDir string, cfg *config.UpdateConfig, clk clock.Clock, o
 		backupDir:     backupDir,
 		operationPath: filepath.Join(dataDir, "update-operation.json"),
 	}
+	if workDir != "" {
+		// Like status, privileged history is published for the service user to read.
+		s.history.mode = statusFileMode
+	}
 
 	s.enabled.Store(cfg.IsEnabled())
 
@@ -917,6 +921,9 @@ func (s *Scheduler) GetStatus() UpdateStatus {
 
 // GetHistory returns the update history
 func (s *Scheduler) GetHistory() (*UpdateHistory, error) {
+	if s.delegate != nil {
+		return NewHistory(filepath.Join(s.delegate.statusDir, "update-history.json")).Load()
+	}
 	return s.history.Load()
 }
 

@@ -9,9 +9,35 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHistoryPublicationUnderTheNodesUmask(t *testing.T) {
+	withSecureUmask(t)
+	rootDir := t.TempDir()
+	// Service setup owns traversal permissions; the history writer must preserve them.
+	require.NoError(t, os.Chmod(rootDir, 0755))
+	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+	updater := NewSchedulerIn(rootDir, &config.UpdateConfig{}, clock.System())
+	t.Cleanup(updater.Stop)
+	private := NewScheduler(&config.UpdateConfig{}, clock.System())
+	t.Cleanup(private.Stop)
+	for _, s := range []*Scheduler{updater, private} {
+		s.recordUpdate(testVersion("1.0.0"), testVersion("2.0.0"), true, "", 0)
+	}
+	info, err := os.Stat(updater.history.filePath)
+	require.NoError(t, err)
+	require.EqualValues(t, 0644, info.Mode().Perm(), "published history must be readable, writable only by root")
+	info, err = os.Stat(rootDir)
+	require.NoError(t, err)
+	require.EqualValues(t, 0755, info.Mode().Perm())
+	info, err = os.Stat(private.history.filePath)
+	require.NoError(t, err)
+	require.EqualValues(t, 0640, info.Mode().Perm(), "ordinary history retains its private permissions")
+}
 
 // withSecureUmask runs the node's production umask for the duration of a
 // test.
