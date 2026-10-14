@@ -15,7 +15,7 @@ func ParseSource(source string) (metadata.DownloadRequest, error) {
 	r := metadata.DownloadRequest{Revision: "main"}
 	if strings.HasPrefix(source, "https://") {
 		u, err := url.Parse(source)
-		if err != nil || u.Host != "huggingface.co" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || u.Host != "huggingface.co" || u.User != nil || (u.RawQuery != "" && u.RawQuery != "download=true") || u.ForceQuery || u.Fragment != "" {
 			return r, fmt.Errorf("source must be repo#file or an HTTPS Hugging Face resolve URL")
 		}
 		parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
