@@ -42,7 +42,7 @@ func TestShippedSourceReconcilesAndReceivesOnlyReleaseAuthority(t *testing.T) {
 	assert.Equal(t, []config.InstallPlatform{{OS: "linux", Arch: "amd64"}}, sc.Platforms)
 	require.NotNil(t, sc.Requirements)
 	assert.Equal(t, "20GB", sc.Requirements.DiskSpace)
-	assert.Equal(t, &config.PythonRequirement{Min: "3.12", Max: "3.13"}, sc.Requirements.Python)
+	assert.Equal(t, &config.PythonRequirement{Min: "3.10", Max: "3.15"}, sc.Requirements.Python)
 	assert.Equal(t, &config.GPURequirement{Vendor: "nvidia", Policy: "required"}, sc.Requirements.GPU)
 	require.Nil(t, sc.VersionSource)
 	snapshot, err := ResolveRecipe(sc, "worker", "comfyui", "")

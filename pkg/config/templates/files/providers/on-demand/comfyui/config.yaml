@@ -6,7 +6,8 @@ platforms:
   - {os: linux, arch: amd64}
 requirements:
   disk_space: "20GB"
-  python: {min: "3.12", max: "3.13"}
+  # ComfyUI 0.40.0 declares requires-python >=3.10; its README reports 3.14 working.
+  python: {min: "3.10", max: "3.15"}
   gpu: {vendor: nvidia, policy: required}
 install:
   runtimes:

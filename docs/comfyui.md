@@ -4,7 +4,7 @@ zzRouter launches ComfyUI as a node-scoped provider and manages its GPU reservat
 
 ## Install and enable
 
-The shipped provider starts disabled. Managed installation requires Linux/amd64, Python 3.12 (the declared range is `>=3.12,<3.13`), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+The shipped provider starts disabled. Managed installation requires Linux/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
 
 Send one request to the coordinator with an admin key, replacing `<name>` with the target node:
 
