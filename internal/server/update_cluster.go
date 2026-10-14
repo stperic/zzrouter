@@ -72,7 +72,7 @@ func (b clusterUpdates) Window(ctx context.Context, node string) (version.Protoc
 	if node == b.server.node.Name() {
 		return version.LocalProtocolWindow(), nil
 	}
-	peer, err := queryUpdateVersion(ctx, b.server.getClusterClient(), b.endpoint(node))
+	peer, err := queryClusterVersion(ctx, b.server.getClusterClient(), b.endpoint(node))
 	return version.ProtocolWindow{Min: peer.MinClusterProtocol, Max: peer.ClusterProtocol}, err
 }
 
@@ -80,8 +80,8 @@ func (b clusterUpdates) query(ctx context.Context, node, path, method string, bo
 	return queryUpdateNode(ctx, b.server.getClusterClient(), b.endpoint(node), path, method, body, out)
 }
 
-func queryUpdateVersion(ctx context.Context, client mesh.ClusterClient, node string) (version.VersionInfo, error) {
-	if client == nil {
+func queryClusterVersion(ctx context.Context, client mesh.ClusterClient, node string) (version.VersionInfo, error) {
+	if client == nil || node == "" {
 		return version.VersionInfo{}, update.ErrNodeUnavailable
 	}
 	info, err := client.Unicast(ctx, node, "/zzrouter/v1/internal/version", &mesh.QueryParams{Method: http.MethodGet, Timeout: 10 * time.Second})
@@ -99,7 +99,7 @@ func queryUpdateVersion(ctx context.Context, client mesh.ClusterClient, node str
 }
 
 func queryUpdateNode(ctx context.Context, client mesh.ClusterClient, node, path, method string, body []byte, out any) error {
-	peer, err := queryUpdateVersion(ctx, client, node)
+	peer, err := queryClusterVersion(ctx, client, node)
 	if err != nil {
 		return err
 	}

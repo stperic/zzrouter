@@ -17,6 +17,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/version"
 )
 
 // ProviderSyncBody is the wire shape of /internal/sync/providers/:name.
@@ -162,6 +163,7 @@ type providerSyncFanOut struct {
 	isCoord       func() bool
 	listEndpoints func() []*mesh.Endpoint
 	dialClient    func() *http.Client
+	clusterClient func() mesh.ClusterClient
 
 	// Single-flight guard: at most one fan-out in flight per invocation
 	// burst. Rapid successive PATCHes coalesce into one push round after
@@ -258,6 +260,7 @@ func newProviderSyncFanOut(
 	isCoord func() bool,
 	listEndpoints func() []*mesh.Endpoint,
 	dialClient func() *http.Client,
+	clusterClient func() mesh.ClusterClient,
 ) *providerSyncFanOut {
 	closed := make(chan struct{})
 	close(closed)
@@ -268,6 +271,7 @@ func newProviderSyncFanOut(
 		isCoord:       isCoord,
 		listEndpoints: listEndpoints,
 		dialClient:    dialClient,
+		clusterClient: clusterClient,
 		idle:          closed,
 	}
 }
@@ -480,6 +484,22 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 		p.failAll()
 		return p.result()
 	}
+	// Evidence belongs to this round, not the endpoint's cached status.
+	gates := map[string]func() bool{}
+	for _, t := range targets {
+		gates[t.url] = sync.OnceValue(func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), providerSyncPushTimeout)
+			defer cancel()
+			peer, err := queryClusterVersion(ctx, f.clusterClient(), t.identity)
+			if err == nil {
+				err = version.LocalProtocolWindow().Check(peer.ClusterProtocol)
+			}
+			if err != nil {
+				slog.Warn("[ProvSync] worker protocol unavailable or incompatible", "node", t.node, "error", err)
+			}
+			return err == nil
+		})
+	}
 
 	// M5 — push N providers × M workers in parallel, bounded to
 	// providerSyncConcurrency. Serial loop made sustained-PATCH latency
@@ -518,7 +538,7 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 			go func(t syncTarget, name string, body []byte) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				if f.pushOne(client, t.url+"/zzrouter/v1/internal/sync/providers/"+name, name, t.node, body) {
+				if gates[t.url]() && f.pushOne(client, t.url+"/zzrouter/v1/internal/sync/providers/"+name, name, t.node, body) {
 					p.took(t.url)
 				} else {
 					p.miss(t.url)
@@ -532,7 +552,8 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 
 // syncTarget is one worker a round pushes to.
 type syncTarget struct {
-	url string
+	url      string
+	identity string // Registry identity; ClusterURL is only the transport address.
 	// node is the worker's name; empty while it is not known by one.
 	node string
 }
@@ -550,7 +571,7 @@ func syncTargetOf(ep *mesh.Endpoint) (syncTarget, bool) {
 	if url == "" {
 		return syncTarget{}, false
 	}
-	return syncTarget{url: url, node: ep.NodeName}, true
+	return syncTarget{url: url, identity: ep.URL, node: ep.NodeName}, true
 }
 
 // providerAssets reads the provider's whole asset set for a push.

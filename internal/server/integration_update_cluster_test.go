@@ -364,12 +364,12 @@ func TestUpdateVersionQueryReadsProtocolWindow(t *testing.T) {
 		c.JSON(http.StatusOK, version.VersionInfo{ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion})
 	})
 	client := &updateWireClient{engine: engine}
-	peer, err := queryUpdateVersion(context.Background(), client, "worker")
+	peer, err := queryClusterVersion(context.Background(), client, "worker")
 	require.NoError(t, err)
 	require.Equal(t, version.ClusterProtocolVersion, peer.ClusterProtocol)
 	require.Equal(t, version.MinClusterProtocolVersion, peer.MinClusterProtocol)
 	require.Equal(t, []string{"/zzrouter/v1/internal/version"}, client.requests)
 	client.unavailable = true
-	_, err = queryUpdateVersion(context.Background(), client, "worker")
+	_, err = queryClusterVersion(context.Background(), client, "worker")
 	require.ErrorIs(t, err, update.ErrNodeUnavailable)
 }
