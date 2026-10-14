@@ -119,7 +119,7 @@ func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
 	defer s.notifyWG.Done()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stop := context.AfterFunc(lifeCtx, cancel)
+	stop := context.AfterFunc(lifeCtx, cancel) //nolint:contextcheck // bounds the caller's ctx by the signaler's lifetime so Stop ends in-flight notifications
 	defer stop()
 	if lifeCtx.Err() != nil {
 		cancel()

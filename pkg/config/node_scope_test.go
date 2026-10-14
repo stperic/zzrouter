@@ -1,11 +1,12 @@
 package config
 
 import (
-	"github.com/stperic/zzrouter/pkg/config/templates"
-	providerschema "github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stperic/zzrouter/pkg/config/templates"
+	providerschema "github.com/stperic/zzrouter/pkg/prov_apps/schema"
 
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"

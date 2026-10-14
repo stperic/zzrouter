@@ -184,7 +184,6 @@ func TestProxyToInstance_CutStreamEndsWithDialectError(t *testing.T) {
 			closed := false
 			s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: partialChatStream, cut: cut, closed: &closed, contentType: "text/event-stream"}}
 			c, rec := streamEndContext(t, openaiproto.New())
-			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), http.ServerContextKey, &http.Server{}))
 			s.proxyToInstance(c.Writer, c.Request, inst, true)
 			assert.True(t, closed)
 			assert.Contains(t, rec.Body.String(), `"code":"upstream_stream_interrupted"`)
@@ -231,7 +230,6 @@ func TestProxyToInstance_ClientWriteFailureAborts(t *testing.T) {
 		return resp, err
 	})}
 	c, rec := streamEndContext(t, openaiproto.New())
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), http.ServerContextKey, &http.Server{}))
 	assert.PanicsWithValue(t, http.ErrAbortHandler, func() { s.proxyToInstance(failingStreamWriter{rec}, c.Request, inst, true) })
 	assert.Empty(t, rec.Body.String())
 }
@@ -241,7 +239,7 @@ func TestProxyToInstance_CancelledStreamAborts(t *testing.T) {
 	c, rec := streamEndContext(t, openaiproto.New())
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
-	c.Request = c.Request.WithContext(context.WithValue(ctx, http.ServerContextKey, &http.Server{}))
+	c.Request = c.Request.WithContext(ctx)
 	s.httpStreamingClient = &http.Client{Transport: mcpRoundTripper(func(req *http.Request) (*http.Response, error) {
 		cancel()
 		return streamTestTransport{body: partialChatStream, cut: true, contentType: "text/event-stream"}.RoundTrip(req)
@@ -310,7 +308,6 @@ func TestProxyToInstance_SeparatesCutFrame(t *testing.T) {
 	s, inst := instanceStreamTestServer()
 	s.httpStreamingClient = &http.Client{Transport: streamTestTransport{body: `data: {"choices":`, cut: true, contentType: "text/event-stream"}}
 	c, rec := streamEndContext(t, openaiproto.New())
-	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), http.ServerContextKey, &http.Server{}))
 	s.proxyToInstance(c.Writer, c.Request, inst, true)
 	assert.Contains(t, rec.Body.String(), `data: {"choices":`+"\n\ndata: {\"error\":")
 }

@@ -138,32 +138,32 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, in
 	return out, nil
 }
 
-func (out *RecipeSnapshot) bindPolicy(policyPath string, installed *fsroot.InstallManifest) error {
+func (s *RecipeSnapshot) bindPolicy(policyPath string, installed *fsroot.InstallManifest) error {
 	var inventory []ResolvedPackage
 	if installed != nil {
 		inventory = append([]ResolvedPackage{}, installed.Inventory...)
 	}
-	if out.Authority == "operator" || out.Recipe.Source != nil && (policyPath != "" || len(out.AdditionalPackages) > 0) {
+	if s.Authority == "operator" || s.Recipe.Source != nil && (policyPath != "" || len(s.AdditionalPackages) > 0) {
 		policy, fp, err := ReadInstallPolicy(policyPath)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
 		}
-		grant := policy.Runtimes[out.Provider+"/"+out.Runtime]
-		if out.Recipe.Source != nil && installed == nil {
-			out.AdditionalPackages = maps.Clone(grant.AdditionalPackages)
+		grant := policy.Runtimes[s.Provider+"/"+s.Runtime]
+		if s.Recipe.Source != nil && installed == nil {
+			s.AdditionalPackages = maps.Clone(grant.AdditionalPackages)
 		}
-		if err := grant.Authorize(*out, inventory); err != nil {
+		if err := grant.Authorize(*s, inventory); err != nil {
 			return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
 		}
-		out.Policy = &grant
-		out.PolicyFingerprint = fp
+		s.Policy = &grant
+		s.PolicyFingerprint = fp
 	}
-	if out.PolicyFingerprint == "" {
-		out.Recheck = func(ctx context.Context) error { return ctx.Err() }
+	if s.PolicyFingerprint == "" {
+		s.Recheck = func(ctx context.Context) error { return ctx.Err() }
 	} else {
-		captured := *out
-		captured.AdditionalPackages = maps.Clone(out.AdditionalPackages)
-		out.Recheck = func(ctx context.Context) error {
+		captured := *s
+		captured.AdditionalPackages = maps.Clone(s.AdditionalPackages)
+		s.Recheck = func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}

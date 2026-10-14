@@ -1942,7 +1942,7 @@ func TestEnsureRunContractIdleBurst(t *testing.T) {
 	svc, ok := r.m.AppsConfig().LookupApp("generic")
 	require.True(t, ok)
 	for n := range 90 {
-		run, err := r.m.newRun(t.Context(), EnsureRequest{Provider: "generic", Model: fmt.Sprint(n), Parameters: map[string]string{"keep-alive": "0"}}, svc, 0)
+		run, err := r.m.newRun(EnsureRequest{Provider: "generic", Model: fmt.Sprint(n), Parameters: map[string]string{"keep-alive": "0"}}, svc, 0)
 		require.NoError(t, err)
 		require.NoError(t, r.m.instances.Register(run))
 		run.MarkRunning(false, nil)

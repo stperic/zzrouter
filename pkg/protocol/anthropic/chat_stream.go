@@ -138,7 +138,7 @@ func (s *ChatStream) frame(frame []byte) {
 		s.finished = true
 	case chunk.Error != nil:
 		s.closeBlock()
-		s.emit("error", envelope(ErrorTypeAPI, chunk.Error.Message))
+		s.emit("error", envelope(ErrorTypeAPI, chunk.Error.Message, ""))
 		s.finished = true
 	default:
 		s.chunk(chunk)

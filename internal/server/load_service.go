@@ -192,17 +192,17 @@ type PreviewRunRequest = LoadModelRequest
 
 // UnmarshalJSON accepts `model` for model_name, as POST /runs does, and
 // keeps refusing unknown fields.
-func (r *LoadModelRequest) UnmarshalJSON(data []byte) error {
+func (req *LoadModelRequest) UnmarshalJSON(data []byte) error {
 	type raw LoadModelRequest
 	aux := struct {
 		ModelAlias string `json:"model"`
 		*raw
-	}{raw: (*raw)(r)}
+	}{raw: (*raw)(req)}
 	if err := decodeStrict(data, &aux); err != nil {
 		return err
 	}
-	if r.ModelName == "" {
-		r.ModelName = aux.ModelAlias
+	if req.ModelName == "" {
+		req.ModelName = aux.ModelAlias
 	}
 	return nil
 }

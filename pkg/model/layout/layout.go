@@ -65,7 +65,7 @@ func Complete(modelPath string) (bool, error) {
 			Weights map[string]string `json:"weight_map"`
 		}
 		if err := json.Unmarshal(data, &shards); err != nil || len(shards.Weights) == 0 {
-			return false, nil
+			return false, nil //nolint:nilerr // a malformed or empty index is an unfinished download, not a read failure
 		}
 		for _, shard := range shards.Weights {
 			if !fs.ValidPath(shard) || !weights[path.Join(path.Dir(index), shard)] {

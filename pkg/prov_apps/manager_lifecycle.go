@@ -99,7 +99,7 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 	if err != nil {
 		return nil, fmt.Errorf("provider %s port allocation failed: %w", req.Provider, err)
 	}
-	inst, err := m.newRun(ctx, req, selection.config, allocatedPort)
+	inst, err := m.newRun(req, selection.config, allocatedPort)
 	if err == nil {
 		weights := m.reserveWeights(ctx, req, selection)
 		inst.SetWeights(weights)
@@ -116,7 +116,7 @@ func (m *ProviderAppManager) registerRun(ctx context.Context, req EnsureRequest,
 }
 
 // newRun configures a starting run and its immutable log before publication; port is 0 for none.
-func (m *ProviderAppManager) newRun(ctx context.Context, req EnsureRequest, svcCfg config.ServiceConfig, port int) (*instance.Instance, error) {
+func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConfig, port int) (*instance.Instance, error) {
 	settings, err := m.runSettings(svcCfg, req)
 	if err != nil {
 		return nil, err

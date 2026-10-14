@@ -53,8 +53,13 @@ func compile(c *compiledSchema, url string, raw []byte) (*jsonschema.Schema, err
 		}
 		if defs, ok := document["$defs"].(map[string]any); ok {
 			if pattern, ok := defs["failurePattern"].(map[string]any); ok {
-				properties := pattern["properties"].(map[string]any)
-				properties["class"].(map[string]any)["enum"] = httperr.FailureClasses()
+				properties, _ := pattern["properties"].(map[string]any)
+				class, ok := properties["class"].(map[string]any)
+				if !ok {
+					c.err = fmt.Errorf("schema %s: failurePattern has no properties.class object", url)
+					return
+				}
+				class["enum"] = httperr.FailureClasses()
 			}
 		}
 		raw, c.err = json.Marshal(document)

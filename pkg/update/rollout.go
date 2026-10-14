@@ -153,7 +153,7 @@ func (r *Rollouts) Submit(ctx context.Context, target string, nodes, peers []str
 	if len(r.records) > 0 && r.records[0].State == "running" {
 		return Rollout{}, ErrApplyInFlight
 	}
-	h, err := r.jobs.StartDetached(jobs.KindUpdate, "", jobs.Meta{"version": target})
+	h, err := r.jobs.StartDetached(jobs.KindUpdate, "", jobs.Meta{"version": target}) //nolint:contextcheck // the rollout outlives the request that started it; Stop cancels it
 	if err != nil {
 		return Rollout{}, err
 	}

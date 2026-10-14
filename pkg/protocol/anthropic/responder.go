@@ -32,7 +32,7 @@ func (r *Responder) write(c *gin.Context, status int, message string) {
 	if reqID := c.GetString("request_id"); reqID != "" {
 		c.Header("X-Request-Id", reqID)
 	}
-	c.AbortWithStatusJSON(status, envelopeWithRequestID(status, message, c.GetString("request_id")))
+	c.AbortWithStatusJSON(status, envelopeWithRequestID(status, message, "", c.GetString("request_id")))
 }
 
 func (r *Responder) BadRequest(c *gin.Context, detail, _ string) {
@@ -103,11 +103,8 @@ func (*Responder) WriteError(w http.ResponseWriter, _ *http.Request, e httperr.E
 	for k, v := range e.Extra {
 		body[k] = v
 	}
-	for k, v := range envelopeWithRequestID(e.Status, e.Message, w.Header().Get("X-Request-ID")) {
+	for k, v := range envelopeWithRequestID(e.Status, e.Message, e.Code, w.Header().Get("X-Request-ID")) {
 		body[k] = v
-	}
-	if e.Code != "" {
-		body["error"].(map[string]any)["code"] = e.Code
 	}
 	data, _ := json.Marshal(body)
 	w.Header().Set("Content-Type", "application/json")
@@ -121,8 +118,8 @@ func (*Responder) NormalizeUpstreamError(status int, raw []byte) []byte {
 
 // envelopeWithRequestID adds the top-level request_id the Anthropic API
 // carries, when there is one to give.
-func envelopeWithRequestID(status int, message, reqID string) map[string]any {
-	env := Envelope(status, message)
+func envelopeWithRequestID(status int, message, code, reqID string) map[string]any {
+	env := envelope(ErrorTypeForStatus(status), message, code)
 	if reqID != "" {
 		env["request_id"] = reqID
 	}

@@ -134,7 +134,7 @@ func (e servedEngine) servedRun(ctx context.Context, req EnsureRequest, svc conf
 	if !ok || (len(observed) > 0 && !backend.SameEndpoint(daemon.Endpoint, observed[0])) {
 		return nil, nil, ErrProviderUnavailable
 	}
-	run, err := e.m.newRun(ctx, req, svc, 0)
+	run, err := e.m.newRun(req, svc, 0)
 	if err != nil {
 		return nil, nil, err
 	}
