@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-10-14)
 
 - Managed Linux update history reads the privileged updater's record through both the CLI and API.
 - macOS process enumeration and PID lookup share bounded recovery for transient ENOMEM reads.
