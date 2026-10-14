@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	ps "github.com/mitchellh/go-ps"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -62,10 +62,6 @@ const handoffDirName = "update"
 const (
 	requestFileName = "request.json"
 	statusFileName  = "status.json"
-
-	// Process enumeration can briefly fail under full-suite or host load.
-	processLookupAttempts = 3
-	processLookupBackoff  = 25 * time.Millisecond
 )
 
 // RequestAction is what the node is asking the privileged updater to
@@ -227,7 +223,7 @@ func (h *Handoff) ApplyVersion(target string) (string, error) {
 	if run, err := h.LastRun(); err != nil {
 		return "", err
 	} else if run != nil && !run.Finished() && run.Action == ActionApply && run.ToVersion == target {
-		process, err := ps.FindProcess(run.PID)
+		process, err := host.FindProcess(run.PID)
 		if err != nil {
 			return "", err
 		}
@@ -269,17 +265,7 @@ func (h *Handoff) CheckIdle() error {
 		if run.PID == 0 {
 			return ErrApplyInFlight
 		}
-		var process ps.Process
-		var err error
-		for attempt := 0; attempt < processLookupAttempts; attempt++ {
-			process, err = ps.FindProcess(run.PID)
-			if err == nil {
-				break
-			}
-			if attempt+1 < processLookupAttempts {
-				time.Sleep(processLookupBackoff)
-			}
-		}
+		process, err := host.FindProcess(run.PID)
 		if err != nil {
 			return fmt.Errorf("observe updater process: %w", err)
 		}

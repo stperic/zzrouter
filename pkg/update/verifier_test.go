@@ -43,7 +43,7 @@ func releaseManifestFixture(t *testing.T, target string, manifest ReleaseManifes
 		if strings.Contains(r.URL.Path, "/releases/tags/") {
 			release := githubRelease{TagName: "v" + target}
 			for name := range assets {
-				release.Assets = append(release.Assets, githubAsset{Name: name, BrowserDownloadURL: "https://github.com/" + name})
+				release.Assets = append(release.Assets, githubAsset{Name: name, Size: int64(len(assets[name])), BrowserDownloadURL: "https://github.com/" + name})
 			}
 			body, err = json.Marshal(release)
 			require.NoError(t, err)
@@ -52,7 +52,7 @@ func releaseManifestFixture(t *testing.T, target string, manifest ReleaseManifes
 			body, ok = assets[strings.TrimPrefix(r.URL.Path, "/")]
 			require.True(t, ok, "unexpected request: %s", r.URL)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+		return &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(body)), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
 	})
 	s := NewSchedulerIn(t.TempDir(), &config.UpdateConfig{}, clock.System())
 	t.Cleanup(s.Stop)

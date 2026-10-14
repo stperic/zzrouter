@@ -19,6 +19,7 @@ const (
 // History manages update history persistence
 type History struct {
 	filePath string
+	mode     os.FileMode
 	mu       sync.RWMutex
 }
 
@@ -26,6 +27,7 @@ type History struct {
 func NewHistory(filePath string) *History {
 	return &History{
 		filePath: filePath,
+		mode:     0o640,
 	}
 }
 
@@ -82,7 +84,7 @@ func (h *History) saveLocked(history *UpdateHistory) error {
 		return fmt.Errorf("failed to marshal history: %w", err)
 	}
 
-	if err := utils.AtomicWriteFile(h.filePath, data, 0o640); err != nil {
+	if err := utils.AtomicWriteFile(h.filePath, data, h.mode); err != nil {
 		return fmt.Errorf("save update history: %w", err)
 	}
 	return nil
