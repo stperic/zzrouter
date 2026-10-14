@@ -2,6 +2,7 @@ package update
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 //
 //	<root>/versions/<version>/bin/zzrouter-node
 //	<root>/versions/<version>/bin/zzrouter-launcher
+//	<root>/versions/<version>/bin/zzrouter
 //	<root>/bin/zzrouter-node          -> ../versions/<version>/bin/zzrouter-node
 //	/usr/local/bin/zzrouter-node      -> <root>/bin/zzrouter-node
 //
@@ -283,32 +285,91 @@ func (l *layout) activate(ver string) error {
 		return err
 	}
 
+	type linkChange struct{ link, target, previous string }
+	var changes []linkChange
 	for _, name := range managedBinaryNames {
 		target := filepath.Join(l.versionBinDir(ver), name)
-		if _, err := os.Stat(target); err != nil {
-			// A release that ships no launcher leaves the previous
-			// link alone, exactly as the in-place path left the
-			// previous launcher file alone.
-			if name == launcherBinaryName {
+		info, err := os.Stat(target)
+		if err != nil {
+			if os.IsNotExist(err) && !managedBinaryRequired(name) {
+				// Legacy versions can lack a companion. Keep its live link
+				// without modifying the immutable rollback directory.
+				link := filepath.Join(l.binDir(), name)
+				if _, err := os.Lstat(link); err == nil {
+					info, err := os.Stat(link)
+					if err != nil {
+						return fmt.Errorf("retain %s: %w", link, err)
+					}
+					if !info.Mode().IsRegular() {
+						return fmt.Errorf("retained %s is not a regular binary", link)
+					}
+				} else if !os.IsNotExist(err) {
+					return fmt.Errorf("stat %s: %w", link, err)
+				}
+				slog.Warn("version has no companion; retaining its existing link", "version", ver, "binary", name)
 				continue
 			}
 			return fmt.Errorf("stat %s: %w", target, err)
 		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular binary", target)
+		}
 		// Relative, so moving the whole tree (or exporting it to
 		// another machine) does not break the link.
 		rel := filepath.Join("..", layoutVersionsDirName, ver, layoutBinDirName, name)
-		if err := replaceSymlink(rel, filepath.Join(l.binDir(), name)); err != nil {
+		link := filepath.Join(l.binDir(), name)
+		previous, err := os.Readlink(link)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("read %s: %w", link, err)
+		}
+		changes = append(changes, linkChange{link, rel, previous})
+	}
+	for n, change := range changes {
+		if err := replaceSymlink(change.target, change.link); err != nil {
+			for _, changed := range slices.Backward(changes[:n]) {
+				var restoreErr error
+				if changed.previous == "" {
+					restoreErr = os.Remove(changed.link)
+				} else {
+					restoreErr = replaceSymlink(changed.previous, changed.link)
+				}
+				if restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore %s: %w", changed.link, restoreErr))
+				}
+			}
 			return err
 		}
 	}
 	return nil
 }
 
-// managedBinaryNames are the binaries a managed install links. The
-// client CLI is deliberately absent: it is not what the service runs,
-// and versioning it here would make an operator's `zzrouter` change
-// under them on a node update.
-var managedBinaryNames = []string{nodeBinaryName, launcherBinaryName}
+// managedBinaryNames puts companions first; the node link decides the active version.
+var managedBinaryNames = []string{clientBinaryName, launcherBinaryName, nodeBinaryName}
+
+// managedBinaryRequired permits legacy directories to lack companions.
+func managedBinaryRequired(name string) bool { return name == nodeBinaryName }
+
+// linkedVersions pins companions retained when a legacy rollback lacks them.
+func (l *layout) linkedVersions() map[string]bool {
+	linked := make(map[string]bool)
+	root, err := filepath.EvalSymlinks(l.root)
+	if err != nil {
+		return linked
+	}
+	for _, name := range managedBinaryNames {
+		resolved, err := filepath.EvalSymlinks(filepath.Join(l.binDir(), name))
+		if err != nil {
+			continue
+		}
+		if target := detectLayout(resolved); target != nil && target.root == root {
+			ver, err := versionFromBinaryPath(resolved)
+			if err == nil {
+				linked[ver] = true
+			}
+		}
+	}
+	return linked
+}
 
 // replaceSymlink atomically makes link point at target.
 func replaceSymlink(target, link string) error {
@@ -338,6 +399,9 @@ func (l *layout) prune(active string, state *layoutState, keep int) {
 	reachable := map[string]bool{active: true}
 	for i := len(state.Previous) - 1; i >= 0 && len(reachable) <= keep; i-- {
 		reachable[state.Previous[i]] = true
+	}
+	for ver := range l.linkedVersions() {
+		reachable[ver] = true
 	}
 
 	for _, ver := range l.installedVersions() {

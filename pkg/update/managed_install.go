@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/version"
 )
 
@@ -63,78 +64,145 @@ func EnsureManagedLayout() (nodePath string, relocated bool, err error) {
 		return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
 	}
 
-	// Already managed: a re-install, or a node started from the tree it
-	// was relocated into last time. Still re-assert the permissions
-	// rather than returning early, so this doubles as a repair -- a
-	// directory left un-traversable by the umask is invisible until
-	// systemd answers 203/EXEC, and the operator's move is to run this
-	// again.
+	originalBinDir := filepath.Dir(resolved)
+	if detectLayout(resolved) != nil {
+		originalBinDir = "/usr/local/bin"
+	}
+	return ensureManagedLayout(&layout{root: ManagedRoot()}, resolved, originalBinDir, version.Current.String())
+}
+
+func ensureManagedLayout(l *layout, resolved, originalBinDir, ver string) (string, bool, error) {
+	// Repair the active links, even when invoked from an older executable.
 	if l := detectLayout(resolved); l != nil {
-		if err := repairPermissions(l, filepath.Dir(resolved)); err != nil {
+		active, err := l.activeVersion()
+		if err != nil {
 			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
 		}
-		return ManagedNodePath(), false, nil
+		if err := repairPermissions(l, l.versionBinDir(active)); err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+		if err := l.activate(active); err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+		if err := l.linkOriginals(originalBinDir); err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+		return filepath.Join(l.binDir(), nodeBinaryName), false, nil
 	}
 
-	ver := version.Current.String()
-	l := &layout{root: ManagedRoot()}
 	verBinDir := l.versionBinDir(ver)
-	if err := mkdirShared(l.root, verBinDir); err != nil {
+	staged := ""
+	if _, err := os.Lstat(filepath.Dir(verBinDir)); !os.IsNotExist(err) {
+		if err != nil {
+			return "", false, fmt.Errorf("%w: stat version directory: %w", ErrNotRelocatable, err)
+		}
+		if err := l.verifyRelocationSources(filepath.Dir(resolved), ver); err != nil {
+			return "", false, fmt.Errorf("%w: cannot rewrite existing version directory %s: %w", ErrNotRelocatable, ver, err)
+		}
+	} else {
+		if err := mkdirShared(l.root, l.versionsDir()); err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+		var err error
+		staged, err = os.MkdirTemp(l.versionsDir(), ".relocate-")
+		if err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+		defer func() {
+			if err := os.RemoveAll(staged); err != nil {
+				slog.Warn("could not clean up binary staging", "dir", staged, "err", err)
+			}
+		}()
+		stagedBinDir := filepath.Join(staged, layoutBinDirName)
+		if err := mkdirShared(l.root, stagedBinDir); err != nil {
+			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+		}
+
+		// Copied, not moved. The binary being copied is the one running
+		// this code, and the operator's shell is very likely sitting in the
+		// directory it came from; leaving the original in place until the
+		// symlink is ready means an interrupted relocation degrades to "no
+		// change" rather than "no binary".
+		for _, name := range managedBinaryNames {
+			src := filepath.Join(filepath.Dir(resolved), name)
+			if _, statErr := os.Stat(src); statErr != nil {
+				if os.IsNotExist(statErr) && !managedBinaryRequired(name) {
+					slog.Warn("no companion next to the node binary", "binary", name, "looked_in", filepath.Dir(resolved))
+					continue
+				}
+				return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, statErr)
+			}
+			dst := filepath.Join(stagedBinDir, name)
+			if err := copyFileWithSync(src, dst); err != nil {
+				return "", false, fmt.Errorf("%w: place %s: %w", ErrNotRelocatable, dst, err)
+			}
+			if err := os.Chmod(dst, binaryFileMode); err != nil {
+				return "", false, fmt.Errorf("%w: make %s executable: %w", ErrNotRelocatable, dst, err)
+			}
+		}
+
+		if err := os.Rename(staged, filepath.Dir(verBinDir)); err != nil {
+			return "", false, fmt.Errorf("%w: publish version directory: %w", ErrNotRelocatable, err)
+		}
+	}
+	if err := l.activate(ver); err != nil {
+		if staged != "" && !l.linkedVersions()[ver] {
+			// Put our unpublished version back under the staging cleanup.
+			if cleanupErr := os.Rename(filepath.Dir(verBinDir), staged); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("recover failed relocation: %w", cleanupErr))
+			}
+		}
+		return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
+	}
+	if err := l.linkOriginals(originalBinDir); err != nil {
 		return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
 	}
 
-	// Copied, not moved. The binary being copied is the one running
-	// this code, and the operator's shell is very likely sitting in the
-	// directory it came from; leaving the original in place until the
-	// symlink is ready means an interrupted relocation degrades to "no
-	// change" rather than "no binary".
+	slog.Info("placed the node binaries in the managed layout", "version", ver, "root", l.root)
+	return filepath.Join(l.binDir(), nodeBinaryName), true, nil
+}
+
+// verifyRelocationSources permits resuming a published directory without rewriting it.
+func (l *layout) verifyRelocationSources(sourceBinDir, ver string) error {
 	for _, name := range managedBinaryNames {
-		src := filepath.Join(filepath.Dir(resolved), name)
-		if _, statErr := os.Stat(src); statErr != nil {
-			if name == launcherBinaryName {
-				slog.Warn("no launcher next to the node binary; provider processes will not be tracked",
-					"looked_in", filepath.Dir(resolved))
+		src := filepath.Join(sourceBinDir, name)
+		dst := filepath.Join(l.versionBinDir(ver), name)
+		digest, err := security.ComputeSHA256(src)
+		if os.IsNotExist(err) && !managedBinaryRequired(name) {
+			if _, err := os.Lstat(dst); os.IsNotExist(err) {
 				continue
 			}
-			return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, statErr)
 		}
-		dst := filepath.Join(verBinDir, name)
-		if err := copyFileWithSync(src, dst); err != nil {
-			return "", false, fmt.Errorf("%w: place %s: %w", ErrNotRelocatable, dst, err)
+		if err != nil {
+			return fmt.Errorf("read relocation source %s: %w", src, err)
 		}
-		if err := os.Chmod(dst, binaryFileMode); err != nil {
-			return "", false, fmt.Errorf("%w: make %s executable: %w", ErrNotRelocatable, dst, err)
+		if err := security.VerifySHA256(dst, digest); err != nil {
+			return fmt.Errorf("compare published binary %s: %w", dst, err)
 		}
 	}
+	return nil
+}
 
-	if err := l.activate(ver); err != nil {
-		return "", false, fmt.Errorf("%w: %w", ErrNotRelocatable, err)
-	}
-
-	// Replace the originals with links to the managed copies, so there
-	// is exactly one real binary per version on the machine.
+// linkOriginals also replaces stale public files on an already-managed install.
+func (l *layout) linkOriginals(originalBinDir string) error {
 	for _, name := range managedBinaryNames {
-		original := filepath.Join(filepath.Dir(resolved), name)
-		if _, statErr := os.Stat(original); statErr != nil {
-			continue
-		}
+		original := filepath.Join(originalBinDir, name)
 		target := filepath.Join(l.binDir(), name)
+		if _, err := os.Stat(target); err != nil {
+			if os.IsNotExist(err) && !managedBinaryRequired(name) {
+				slog.Warn("no managed companion; preserving the public binary", "binary", name, "path", original)
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", target, err)
+		}
 		if original == target {
 			continue
 		}
 		if err := replaceSymlink(target, original); err != nil {
-			// Not fatal: the managed copy is in place and the unit file
-			// points at it. What is lost is the operator's PATH still
-			// reaching the same file, which is worth a loud warning and
-			// not worth failing an install over.
-			slog.Warn("could not replace the original binary with a link to the managed one; "+
-				"the CLI on your PATH and the service may now be different versions",
-				"path", original, "target", target, "err", err)
+			return err
 		}
 	}
-
-	slog.Info("placed the node binaries in the managed layout", "version", ver, "root", l.root)
-	return ManagedNodePath(), true, nil
+	return nil
 }
 
 // repairPermissions makes an install tree traversable again.

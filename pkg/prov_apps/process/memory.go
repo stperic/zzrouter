@@ -255,7 +255,7 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 	return selected, nil
 }
 
-// MiBPerGiB converts the allocator complement into whole GiB without rounding it up.
+// MiBPerGiB is the number of MiB in one GiB.
 const MiBPerGiB int64 = 1024
 
 // PrepareMemoryBudget validates and pins a reservation using the same snapshot for its complement.
@@ -276,7 +276,7 @@ func PrepareMemoryBudget(budget schema.MemoryBudget, params, env map[string]stri
 		env["CUDA_VISIBLE_DEVICES"] = device.UUID
 	}
 	if budget.ComplementParameter != "" {
-		params[budget.ComplementParameter] = strconv.FormatInt((device.TotalMiB-amount)/MiBPerGiB, 10)
+		params[budget.ComplementParameter] = strconv.FormatFloat(float64(device.TotalMiB-amount)/float64(MiBPerGiB), 'f', -1, 64)
 	}
 	return map[string]int64{device.UUID: amount}, nil
 }

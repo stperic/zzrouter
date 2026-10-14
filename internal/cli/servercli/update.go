@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/service"
 	"github.com/stperic/zzrouter/pkg/update"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 )
 
@@ -56,7 +60,7 @@ func newUpdateStatusCmd() *cobra.Command {
 		Short: "Show update status",
 		Long:  "Display the current status of the auto-update system.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduler, err := getScheduler()
+			scheduler, err := getScheduler(false)
 			if err != nil {
 				return err
 			}
@@ -129,7 +133,7 @@ func newUpdateCheckCmd() *cobra.Command {
 		Short: "Check for updates",
 		Long:  "Check if a new version is available from GitHub Releases.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduler, err := getScheduler()
+			scheduler, err := getScheduler(false)
 			if err != nil {
 				return err
 			}
@@ -197,8 +201,12 @@ This will:
 5. Replace the binary with the new version
 6. Restart the service (if auto_restart is enabled)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduler, err := getScheduler()
+			scheduler, err := getScheduler(true)
 			if err != nil {
+				return err
+			}
+
+			if handled, err := requestCLIUpdate(cmd, scheduler, update.ActionApply, os.Geteuid(), runCLIPrivilegedUpdate); handled {
 				return err
 			}
 
@@ -250,7 +258,7 @@ func newUpdateRollbackCmd() *cobra.Command {
 This will replace the current binary with the most recent backup
 created during a previous update.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduler, err := getScheduler()
+			scheduler, err := getScheduler(!listBackups)
 			if err != nil {
 				return err
 			}
@@ -281,6 +289,10 @@ created during a previous update.`,
 					}
 				}
 				return nil
+			}
+
+			if handled, err := requestCLIUpdate(cmd, scheduler, update.ActionRollback, os.Geteuid(), runCLIPrivilegedUpdate); handled {
+				return err
 			}
 
 			fmt.Println("Rolling back to previous version...")
@@ -323,7 +335,7 @@ func newUpdateHistoryCmd() *cobra.Command {
 		Short: "Show update history",
 		Long:  "Display the history of past updates.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scheduler, err := getScheduler()
+			scheduler, err := getScheduler(false)
 			if err != nil {
 				return err
 			}
@@ -391,6 +403,36 @@ func newUpdateHistoryCmd() *cobra.Command {
 	return cmd
 }
 
+type updateRequester interface {
+	Delegated() *update.Handoff
+	RequestPrivileged(update.RequestAction, string) error
+}
+
+func requestCLIUpdate(cmd *cobra.Command, scheduler updateRequester, action update.RequestAction, uid int, run func(context.Context, *update.Handoff, *update.Request) error) (bool, error) {
+	h := scheduler.Delegated()
+	if h == nil {
+		return false, nil
+	}
+	if uid == 0 {
+		req := &update.Request{Action: action, RequestedBy: "cli", RequestedAt: utils.NowUTC()}
+		if err := run(cmd.Context(), h, req); err != nil {
+			return true, err
+		}
+		cmd.Printf("Privileged %s completed.\n", action)
+	} else {
+		if err := scheduler.RequestPrivileged(action, "cli"); err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				err = fmt.Errorf("%w; run as the service account (normally %s) to submit a request, or as root to execute the privileged update", err, service.ServiceUser)
+			}
+			return true, err
+		}
+		cmd.Printf("Requested %s via the privileged updater: %s\n", action, h.RequestPath())
+	}
+	cmd.Println("Follow progress: zzrouter-node update status --json")
+	cmd.Println("Updater journal: journalctl -u zzrouter-update.service -f")
+	return true, nil
+}
+
 // getScheduler creates a scheduler instance for CLI commands.
 //
 // A config that will not load is an error, not a cue to fall back to
@@ -398,15 +440,18 @@ func newUpdateHistoryCmd() *cobra.Command {
 // against the built-in defaults when node.yaml was meant to pin a
 // version, hold a channel, or name a different release source is the
 // one outcome nobody asked for, and the old fallback did it silently.
-func getScheduler() (*update.Scheduler, error) {
+func getScheduler(mutating bool) (*update.Scheduler, error) {
 	cm := pkgConfig.NewConfigManager("zzrouter")
 	cfg, err := cm.LoadNodeConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load node config: %w", err)
 	}
-	if err := cfg.Update.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid update config: %w", err)
+	s := update.NewScheduler(&cfg.Update, clock.System())
+	if !mutating || os.Geteuid() != 0 || s.Delegated() == nil {
+		if err := cfg.Update.Validate(); err != nil {
+			s.Stop()
+			return nil, fmt.Errorf("invalid update config: %w", err)
+		}
 	}
-
-	return update.NewScheduler(&cfg.Update, clock.System()), nil
+	return s, nil
 }

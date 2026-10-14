@@ -46,7 +46,8 @@ Unprivileged installs run detached; use them for evaluation and single-user use.
 Read installer options before changing an existing installation.
 
 Linux managed services keep binaries under root-owned `/opt/zzrouter/versions`
-and activate a version through `/opt/zzrouter/bin` symlinks. A dedicated service
+and activate the node, client and launcher through `/opt/zzrouter/bin` symlinks.
+The public `/usr/local/bin` links use these same managed copies. A dedicated service
 user owns runtime state. Root update path/timer units perform privileged updates;
 keep the binary tree and service units outside the service user's write access.
 Windows services use machine configuration under `%PROGRAMDATA%\zzrouter`.
@@ -59,6 +60,18 @@ zzrouter-node update apply
 zzrouter-node update rollback
 ```
 
+On managed Linux installs, apply and rollback run without root privileges
+submit the same privileged-updater request as the API. Success acknowledges the
+request. Filesystem permissions control submission; permission errors explain
+how to run as the service account or root. Root runs the same privileged executor
+synchronously, without writing a request, and refuses while the updater service
+or a published run is busy.
+The privileged executor installs, restarts and verifies health. Follow it with
+`zzrouter-node update status --json` or
+`journalctl -u zzrouter-update.service -f`. `check` only reads release metadata;
+`update run` remains the privileged executor. Other installs keep in-process
+apply and rollback.
+
 Updates require `checksums.txt.sigstore.json` authenticated for
 `https://github.com/stperic/zzrouter/.github/workflows/release.yaml@refs/tags/v<version>`
 and GitHub Actions' OIDC issuer. Metadata from another feed does not change
@@ -69,6 +82,25 @@ A managed Linux node submits an update request to its root updater. Activation
 waits for health and rolls back on failure. Self-updating nodes confirm across
 restart; unsupervised installations may require a manual restart.
 Verify the running version as well as health after any update.
+
+Managed updates require a client that runs and reports the release version.
+Rollback restores the matching client when its version directory has one. Older
+directories can lack a client; rollback then keeps the existing working client
+link, and prune retains its source directory until a complete update replaces it.
+These legacy rollbacks can temporarily run a newer client than the node.
+
+To adopt managed client updates on an older service installation, deliver a
+trusted build with an unused version and all three binaries through
+`scripts/install.sh`, then run `sudo zzrouter-node update enable`. An existing
+service's start command skips first-run binary relocation. Alternatively,
+after a complete managed update, run `sudo zzrouter-node update enable` to repair
+stale `/usr/local/bin` files or links. Running enable before the managed tree has
+a client preserves the external client and reports a warning; run it again after
+the complete update. If public-link repair fails after relocation, correct the
+reported obstruction and retry with
+`sudo /opt/zzrouter/bin/zzrouter-node update enable`.
+User installs on Linux/macOS and Windows in-place installs
+still require reinstalling all three to refresh the operator client.
 
 Cluster rollout APIs update compatible workers serially and the coordinator
 last. Protocol cutovers need operator maintenance, matching builds and rollback

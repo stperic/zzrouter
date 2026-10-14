@@ -39,6 +39,7 @@ var errBinaryNotInArchive = errors.New("binary not found in archive")
 const (
 	nodeBinaryName     = "zzrouter-node"
 	launcherBinaryName = "zzrouter-launcher"
+	clientBinaryName   = "zzrouter"
 )
 
 // releaseOSNames are the platform names a release archive can carry in a

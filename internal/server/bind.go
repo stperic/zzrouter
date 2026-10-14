@@ -35,6 +35,7 @@ import (
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -190,6 +191,7 @@ func writeBindError(c *gin.Context, err error) {
 	var syntaxErr *json.SyntaxError
 	var unmarshalTypeErr *json.UnmarshalTypeError
 	var tooLarge *http.MaxBytesError
+	var parameterValueErr *schema.ParameterValueError
 	switch name, isUnknownField := unknownFieldName(err); {
 	case errors.As(err, &tooLarge):
 		RespondWithProblem(c, http.StatusRequestEntityTooLarge, "Request Entity Too Large", fmt.Sprintf("request body exceeds the %d-byte limit", tooLarge.Limit))
@@ -204,6 +206,8 @@ func writeBindError(c *gin.Context, err error) {
 	case errors.As(err, &unmarshalTypeErr):
 		BadRequest(c, fmt.Sprintf("invalid type for field %q: expected %s",
 			unmarshalTypeErr.Field, unmarshalTypeErr.Type.String()))
+	case errors.As(err, &parameterValueErr):
+		BadRequest(c, parameterValueErr.Error())
 	case errors.Is(err, io.EOF):
 		BadRequest(c, "request body is required")
 	default:

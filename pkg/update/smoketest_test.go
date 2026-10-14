@@ -64,6 +64,30 @@ func TestSmokeTest(t *testing.T) {
 		assert.Contains(t, err.Error(), "the release is 2.0.0")
 	})
 
+	t.Run("release identity includes prerelease but permits build timestamp", func(t *testing.T) {
+		for _, tt := range []struct {
+			reported string
+			expected string
+			accept   bool
+		}{
+			{"12.0.0", "2.0.0", false},
+			{"2.0.0-rc1", "2.0.0", false},
+			{"2.0.0", "2.0.0-rc1", false},
+			{"2.0.0+10131535", "2.0.0", true},
+			{"2.0.0-rc1+10131535", "2.0.0-rc1", true},
+			{"2.0.0+10131535", "2.0.0+10131535", true},
+			{"2.0.0+10131534", "2.0.0+10131535", false},
+		} {
+			path := writeScript(t, string(fakeBinary(clientBinaryName, tt.reported)))
+			err := smokeTest(context.Background(), path, mustVersion(t, tt.expected))
+			if tt.accept {
+				require.NoError(t, err, "%s for %s", tt.reported, tt.expected)
+			} else {
+				require.ErrorIs(t, err, ErrSmokeTestFailed, "%s for %s", tt.reported, tt.expected)
+			}
+		}
+	})
+
 	t.Run("rejects a binary that prints nothing", func(t *testing.T) {
 		path := writeScript(t, "#!/bin/sh\nexit 0\n")
 		err := smokeTest(context.Background(), path, nil)

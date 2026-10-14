@@ -37,7 +37,7 @@ func TestManagedInstall_StaysTraversableUnderTheNodesUmask(t *testing.T) {
 	l, i := newManagedInstall(t, "1.0.0", 2)
 
 	_, err := i.Install(context.Background(),
-		releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName), mustVersion(t, "2.0.0"))
+		releaseArchive(t, "2.0.0", nodeBinaryName, launcherBinaryName, clientBinaryName), mustVersion(t, "2.0.0"))
 	require.NoError(t, err)
 
 	// Every level from the root down, because the service user has to
@@ -56,9 +56,11 @@ func TestManagedInstall_StaysTraversableUnderTheNodesUmask(t *testing.T) {
 			"%s is %v: the service user cannot traverse it, and systemd answers 203/EXEC", dir, info.Mode().Perm())
 	}
 
-	info, err := os.Stat(filepath.Join(l.versionBinDir("2.0.0"), nodeBinaryName))
-	require.NoError(t, err)
-	assert.NotZero(t, info.Mode().Perm()&0005, "the node binary must be readable and executable by the service user")
+	for _, name := range []string{nodeBinaryName, launcherBinaryName, clientBinaryName} {
+		info, err := os.Stat(filepath.Join(l.versionBinDir("2.0.0"), name))
+		require.NoError(t, err)
+		assert.EqualValues(t, 0755, info.Mode().Perm(), "binaries must be executable but writable only by their owner")
+	}
 }
 
 func TestHandoff_StatusStaysReadableUnderTheNodesUmask(t *testing.T) {
