@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/host"
@@ -70,7 +71,17 @@ func runPython(ctx context.Context, python, directory string, environment []stri
 	command.Stdout = tail
 	command.Stderr = tail
 	if err := process.RunOwnedCommand(ctx, command); err != nil {
-		return fmt.Errorf("managed Python command: %w: %s", err, security.RedactSensitive(string(tail.data)))
+		output := security.RedactSensitive(string(tail.data))
+		var diagnostics []string
+		for _, line := range strings.Split(output, "\n") {
+			if line = strings.TrimSpace(line); strings.HasPrefix(line, "ERROR:") {
+				diagnostics = append(diagnostics, line)
+			}
+		}
+		if len(diagnostics) > 0 {
+			output = strings.Join(diagnostics, "\n") + "\n\n" + output
+		}
+		return fmt.Errorf("%s\nmanaged Python command: %w", output, err)
 	}
 	return nil
 }

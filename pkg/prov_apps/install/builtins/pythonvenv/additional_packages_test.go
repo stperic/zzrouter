@@ -208,6 +208,7 @@ func TestAdditionalPackageConflictAndNoWheelPreserveLiveInstall(t *testing.T) {
 			flags := []string{"--disable-pip-version-check", "install", "--no-input", "--no-index", "--find-links", wheels, "--only-binary=:all:"}
 			_, err = resolvePackages(t.Context(), tx.directory, python, []string{}, append(flags, rootRequirements(roots)...), roots)
 			require.Error(t, err)
+			require.True(t, strings.HasPrefix(err.Error(), "ERROR:"), "pip diagnosis must lead the shared resolver error: %s", err)
 			if outcome == "conflict" {
 				require.ErrorContains(t, err, "conflicting dependencies")
 			} else {
