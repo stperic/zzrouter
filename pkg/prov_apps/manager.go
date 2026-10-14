@@ -25,6 +25,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/logging"
 	"github.com/stperic/zzrouter/pkg/prov_apps/port"
@@ -1153,18 +1154,18 @@ func (m *ProviderAppManager) resolveRecipe(provider, runtime string) (install.Re
 	if !ok {
 		return install.RecipeSnapshot{}, ErrProviderNotFound
 	}
-	return install.ResolveRecipe(sc, m.localNodename(), runtime, m.installPolicyFile)
+	return install.ResolveRecipe(sc, m.localNodename(), runtime, m.installPolicyFile, nil)
 }
 
 // CheckInstallAuthority checks proposed provider data against this node's protected authority.
-func (m *ProviderAppManager) CheckInstallAuthority(sc config.ServiceConfig, runtime string) (install.RecipeSnapshot, error) {
-	return install.ResolveRecipe(sc, m.localNodename(), runtime, m.installPolicyFile)
+func (m *ProviderAppManager) CheckInstallAuthority(sc config.ServiceConfig, runtime string, installed *fsroot.InstallManifest) (install.RecipeSnapshot, error) {
+	return install.ResolveRecipe(sc, m.localNodename(), runtime, m.installPolicyFile, installed)
 }
 
 // InstallPolicyCapabilities publishes this node's non-secret authority for a declared runtime.
 func (m *ProviderAppManager) InstallPolicyCapabilities(sc config.ServiceConfig, runtime string) install.PolicyCapabilities {
 	result := install.PolicyCapabilities{}
-	if snapshot, err := install.ResolveRecipe(sc, m.localNodename(), runtime, ""); err == nil {
+	if snapshot, err := install.ResolveRecipe(sc, m.localNodename(), runtime, "", nil); err == nil {
 		result.ReleaseRecipe = snapshot.Authority == "release"
 	}
 	policy, fp, err := install.ReadInstallPolicy(m.installPolicyFile)
@@ -1184,11 +1185,15 @@ func (m *ProviderAppManager) InstallPolicyCapabilities(sc config.ServiceConfig, 
 		result.Reason = err.Error()
 		return result
 	}
-	if err := grant.Authorize(resolved.Recipe); err != nil {
+	snapshot := install.RecipeSnapshot{ResolvedInstall: resolved, AdditionalPackages: grant.AdditionalPackages}
+	if result.ReleaseRecipe {
+		snapshot.Authority = "release"
+	}
+	if err := grant.Authorize(snapshot, nil); err != nil {
 		result.Reason = err.Error()
 		return result
 	}
-	result.OverrideApproved = true
+	result.OverrideApproved = resolved.Recipe.Source == nil
 	return result
 }
 

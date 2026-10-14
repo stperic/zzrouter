@@ -65,7 +65,7 @@ func TestEveryShippedRuntimeRetainsReleaseAuthority(t *testing.T) {
 								}
 								copied.Indexes = &indexes
 								candidate.Install.Runtimes[runtime] = copied
-								snapshot, err := ResolveRecipe(candidate, node, runtime, "")
+								snapshot, err := ResolveRecipe(candidate, node, runtime, "", nil)
 								require.NoError(t, err)
 								assert.Equal(t, "release", snapshot.Authority)
 								assert.Nil(t, snapshot.Policy)
@@ -91,6 +91,6 @@ func TestRestatingShippedEmptyExtraRequiresProtectedPolicy(t *testing.T) {
 	override, err := config.MergeInstallPatch(nil, json.RawMessage(`{"runtimes":{"mlx":{"indexes":{"extra":[]}}}}`))
 	require.NoError(t, err)
 	sc.Defaults = &config.AppDefaultsConfig{Install: override}
-	_, err = ResolveRecipe(sc, "worker", "mlx", "")
+	_, err = ResolveRecipe(sc, "worker", "mlx", "", nil)
 	assert.ErrorIs(t, err, ErrInstallPolicy, "empty normalization must not authorize explicit overrides")
 }

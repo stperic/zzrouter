@@ -42,7 +42,7 @@ func TestReleasePolicyAuthorizesEveryShippedRecipeOnItsPlatform(t *testing.T) {
 				grant, ok := policy.Runtimes[key]
 				require.True(t, ok, "missing grant %s", key)
 				provider, runtime, _ := strings.Cut(key, "/")
-				assert.NoError(t, grant.Authorize(shippedRecipe(t, provider, runtime)))
+				assert.NoError(t, grant.Authorize(RecipeSnapshot{ResolvedInstall: config.ResolvedInstall{Recipe: shippedRecipe(t, provider, runtime)}}, nil))
 				assert.False(t, grant.AllowPrivateIndexes)
 			}
 		})
@@ -58,12 +58,12 @@ func TestReleasePolicyGrantsNothingBeyondTheShippedRecipe(t *testing.T) {
 	extra := "https://example.com/simple"
 	widened := recipe
 	widened.Indexes = &config.InstallIndexes{Primary: recipe.Indexes.Primary, Extra: &[]string{extra}}
-	assert.Error(t, grant.Authorize(widened), "an index the release does not use must stay unapproved")
+	assert.Error(t, grant.Authorize(RecipeSnapshot{ResolvedInstall: config.ResolvedInstall{Recipe: widened}}, nil), "an index the release does not use must stay unapproved")
 
 	imports := append(append([]string{}, *recipe.Verify.Imports...), "zzrouter_unshipped_module")
 	widened = recipe
 	widened.Verify = &config.InstallVerify{Imports: &imports, Checks: recipe.Verify.Checks}
-	assert.Error(t, grant.Authorize(widened), "an import the release does not use must stay unapproved")
+	assert.Error(t, grant.Authorize(RecipeSnapshot{ResolvedInstall: config.ResolvedInstall{Recipe: widened}}, nil), "an import the release does not use must stay unapproved")
 }
 
 func TestMarshalReleasePolicyRoundTrips(t *testing.T) {

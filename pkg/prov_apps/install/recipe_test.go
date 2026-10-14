@@ -27,7 +27,7 @@ func TestReleaseAuthorityDoesNotNeedOperatorPolicy(t *testing.T) {
 	for _, tc := range []struct{ provider, runtime string }{{"vllm", "vllm"}, {"mlx", "mlx"}, {"mlx", "mlx-vlm"}} {
 		t.Run(tc.runtime, func(t *testing.T) {
 			sc := shippedRecipeFixture(t, tc.provider)
-			snapshot, err := ResolveRecipe(sc, "worker", tc.runtime, "")
+			snapshot, err := ResolveRecipe(sc, "worker", tc.runtime, "", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "release", snapshot.Authority)
 			assert.Nil(t, snapshot.Policy)
@@ -35,9 +35,9 @@ func TestReleaseAuthorityDoesNotNeedOperatorPolicy(t *testing.T) {
 			override, err := config.MergeInstallPatch(nil, json.RawMessage(`{"runtimes":{"`+tc.runtime+`":{"timeout":"40m"}}}`))
 			require.NoError(t, err)
 			sc.Nodes["remote"] = config.NodeSpec{Install: override}
-			_, err = ResolveRecipe(sc, "worker", tc.runtime, "")
+			_, err = ResolveRecipe(sc, "worker", tc.runtime, "", nil)
 			require.NoError(t, err)
-			_, err = ResolveRecipe(sc, "remote", tc.runtime, "")
+			_, err = ResolveRecipe(sc, "remote", tc.runtime, "", nil)
 			assert.ErrorIs(t, err, ErrInstallPolicy)
 		})
 	}
@@ -48,14 +48,14 @@ func TestRestatingShippedValueRequiresProtectedPolicy(t *testing.T) {
 	override, err := config.MergeInstallPatch(nil, json.RawMessage(`{"runtimes":{"mlx":{"timeout":"30m"}}}`))
 	require.NoError(t, err)
 	sc.Defaults = &config.AppDefaultsConfig{Install: override}
-	_, err = ResolveRecipe(sc, "worker", "mlx", "")
+	_, err = ResolveRecipe(sc, "worker", "mlx", "", nil)
 	assert.ErrorIs(t, err, ErrInstallPolicy)
 	sc.Defaults.Install = nil
-	_, err = ResolveRecipe(sc, "worker", "mlx", "")
+	_, err = ResolveRecipe(sc, "worker", "mlx", "", nil)
 	require.NoError(t, err)
 	base := sc.Install.Runtimes["mlx"]
 	*base.Timeout = "40m"
-	_, err = ResolveRecipe(sc, "worker", "mlx", "")
+	_, err = ResolveRecipe(sc, "worker", "mlx", "", nil)
 	assert.ErrorIs(t, err, ErrInstallPolicy, "writable base cannot acquire release authority")
 }
 
@@ -64,7 +64,7 @@ func TestPolicyCannotApproveRemovingRequiredStartupImport(t *testing.T) {
 	override, err := config.MergeInstallPatch(nil, json.RawMessage(`{"runtimes":{"vllm":{"verify":{"imports":["vllm.entrypoints.openai.api_server"]}}}}`))
 	require.NoError(t, err)
 	sc.Defaults = &config.AppDefaultsConfig{Install: override}
-	_, err = ResolveRecipe(sc, "worker", "vllm", "")
+	_, err = ResolveRecipe(sc, "worker", "vllm", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be removed")
 }
@@ -82,7 +82,7 @@ func TestOverridePolicyRejectsServiceOwnedAndSymlinkPaths(t *testing.T) {
 
 func TestAcceptedAuthorityRechecksWithoutUsingPatchedDesiredRecipe(t *testing.T) {
 	sc := shippedRecipeFixture(t, "mlx")
-	snapshot, err := ResolveRecipe(sc, "worker", "mlx", "")
+	snapshot, err := ResolveRecipe(sc, "worker", "mlx", "", nil)
 	require.NoError(t, err)
 	require.NoError(t, CheckRecipeAuthority(t.Context(), snapshot, func(string, string) (RecipeSnapshot, error) {
 		t.Fatal("accepted job must not re-read mutable recipe")
@@ -133,7 +133,7 @@ func TestRecipeRequiresActualPythonServingModule(t *testing.T) {
 		} else {
 			sc.Features = map[string]config.Feature{"vision": {Runtime: runtime, Execution: &execution}}
 		}
-		_, err := ResolveRecipe(sc, "worker", runtime, "")
+		_, err := ResolveRecipe(sc, "worker", runtime, "", nil)
 		require.ErrorContains(t, err, "startup_import must match serving module")
 	}
 }

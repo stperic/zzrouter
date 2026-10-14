@@ -67,6 +67,9 @@ func (i *Installer) sourceCompletion() (string, bool, error) {
 	if manifest == nil || manifest.Recipe == nil || manifest.Recipe.Source == nil || manifest.WorkingDir != snapshot.WorkingDir || manifest.PlanID == "" || manifest.Interpreter == nil || manifest.Interpreter.Path == "" || manifest.Interpreter.Version == "" || len(manifest.Inventory) == 0 || manifest.Version != manifest.Recipe.Source.Version || manifest.RecipeFingerprint != install.Fingerprint(*manifest.Recipe) {
 		return "", true, errSourceRecordIncomplete
 	}
+	if err := install.ValidatePackageConstraints(manifest.AdditionalPackages, install.AdditionalPackagesLimit); err != nil {
+		return "", true, errors.Join(errSourceRecordIncomplete, err)
+	}
 	return manifest.Version, true, nil
 }
 

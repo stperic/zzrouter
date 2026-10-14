@@ -206,13 +206,13 @@ func TestInstalledImportsRequireCurrentAuthority(t *testing.T) {
 }
 
 func TestInstalledInventoryRespectsCurrentPackageGrants(t *testing.T) {
-	name := "engine"
-	snapshot := install.RecipeSnapshot{ResolvedInstall: pkgConfig.ResolvedInstall{Recipe: pkgConfig.InstallRecipe{Package: &name, Companions: map[string]pkgConfig.InstallCompanion{"companion": {}}}}, Policy: &install.RuntimePolicy{Packages: map[string]string{"engine": ">=1,<2", "companion": "==3.*"}}}
+	name, module, index, binary := "engine", "engine", "https://pypi.org/simple", true
+	snapshot := install.RecipeSnapshot{ResolvedInstall: pkgConfig.ResolvedInstall{Recipe: pkgConfig.InstallRecipe{Package: &name, StartupImport: &module, OnlyBinary: &binary, Indexes: &pkgConfig.InstallIndexes{Primary: &index}, Verify: &pkgConfig.InstallVerify{Imports: &[]string{module}}, Companions: map[string]pkgConfig.InstallCompanion{"companion": {}}}}, Policy: &install.RuntimePolicy{Imports: []string{module}, Entrypoints: []string{module}, Indexes: []string{index}, Packages: map[string]string{"engine": ">=1,<2", "companion": "==3.*"}}}
 	manifest := &fsroot.InstallManifest{Inventory: []fsroot.ManifestPackage{{Name: "engine", Version: "1.5", Requested: true}, {Name: "companion", Version: "3.2", Requested: true}}}
-	require.NoError(t, checkInstalledRootGrants(snapshot, manifest))
+	require.NoError(t, snapshot.Policy.Authorize(snapshot, manifest.Inventory))
 	manifest.Inventory[0].Version = "2.0"
-	require.ErrorIs(t, checkInstalledRootGrants(snapshot, manifest), install.ErrInstallPolicy)
+	require.ErrorIs(t, snapshot.Policy.Authorize(snapshot, manifest.Inventory), install.ErrInstallPolicy)
 	manifest.Inventory[0].Version = "1.5"
 	manifest.Inventory[1].Requested = false
-	require.ErrorIs(t, checkInstalledRootGrants(snapshot, manifest), install.ErrInstallPolicy)
+	require.ErrorIs(t, snapshot.Policy.Authorize(snapshot, manifest.Inventory), install.ErrInstallPolicy)
 }

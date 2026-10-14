@@ -45,7 +45,7 @@ func TestShippedSourceReconcilesAndReceivesOnlyReleaseAuthority(t *testing.T) {
 	assert.Equal(t, &config.PythonRequirement{Min: "3.10", Max: "3.15"}, sc.Requirements.Python)
 	assert.Equal(t, &config.GPURequirement{Vendor: "nvidia", Policy: "required"}, sc.Requirements.GPU)
 	require.Nil(t, sc.VersionSource)
-	snapshot, err := ResolveRecipe(sc, "worker", "comfyui", "")
+	snapshot, err := ResolveRecipe(sc, "worker", "comfyui", "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "release", snapshot.Authority)
 	assert.Nil(t, snapshot.Policy)
@@ -61,7 +61,7 @@ func TestShippedSourceReconcilesAndReceivesOnlyReleaseAuthority(t *testing.T) {
 	changedSource.SHA256 = strings.Repeat("a", 64)
 	recipe.Source = &changedSource
 	sc.Install.Runtimes["comfyui"] = recipe
-	_, err = ResolveRecipe(sc, "worker", "comfyui", "")
+	_, err = ResolveRecipe(sc, "worker", "comfyui", "", nil)
 	require.ErrorIs(t, err, ErrInstallPolicy, "modified source bytes must not acquire shipped authority")
 }
 
@@ -78,7 +78,7 @@ func TestUnshippedSourceCannotAcquireInstallAuthority(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			sc.Name = name
 			sc.Install = &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{name: r}}
-			snapshot, err := ResolveRecipe(sc, "worker", name, "")
+			snapshot, err := ResolveRecipe(sc, "worker", name, "", nil)
 			require.ErrorIs(t, err, ErrInstallPolicy)
 			assert.Contains(t, err.Error(), "source recipes require an unchanged shipped declaration")
 			assert.Empty(t, snapshot.Authority)
@@ -86,7 +86,7 @@ func TestUnshippedSourceCannotAcquireInstallAuthority(t *testing.T) {
 		})
 	}
 	grant := RuntimePolicy{Packages: map[string]string{"torch": "", "torchvision": ""}, Entrypoints: []string{"main.py"}, Indexes: []string{"https://pypi.org/simple"}}
-	require.ErrorContains(t, grant.Authorize(r), "release-owned", "operator grants cannot admit source recipes")
+	require.ErrorContains(t, grant.Authorize(RecipeSnapshot{ResolvedInstall: config.ResolvedInstall{Recipe: r}}, nil), "release-owned", "operator grants cannot admit source recipes")
 }
 
 func TestSourceRuntimeChecksHaveNoPipEntrypointPackage(t *testing.T) {

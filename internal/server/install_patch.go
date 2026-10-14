@@ -240,7 +240,7 @@ func (e *ProvidersExecutor) HandleInternalInstallAuthority(c *gin.Context) {
 		return
 	}
 	for runtime := range cfg.Install.Runtimes {
-		snapshot, err := e.mgr.CheckInstallAuthority(cfg, runtime)
+		snapshot, err := e.mgr.CheckInstallAuthority(cfg, runtime, nil)
 		if err != nil {
 			respondRecipeErr(c, err)
 			return
@@ -256,7 +256,7 @@ func (s *Server) checkNodeInstallAuthority(ctx context.Context, node string, sc 
 			return fmt.Errorf("install authority unavailable")
 		}
 		for runtime := range sc.Install.Runtimes {
-			if _, err := s.providers.appMgr.CheckInstallAuthority(sc, runtime); err != nil {
+			if _, err := s.providers.appMgr.CheckInstallAuthority(sc, runtime, nil); err != nil {
 				return err
 			}
 		}

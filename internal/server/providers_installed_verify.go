@@ -9,7 +9,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
-	"github.com/stperic/zzrouter/pkg/prov_apps/upstream"
 	"gopkg.in/yaml.v3"
 )
 
@@ -92,47 +91,9 @@ func (e *ProvidersExecutor) installedRecipeAuthority(provider, runtime string, m
 		installed := &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{runtime: *manifest.Recipe}}
 		actual.Install = installed
 		// An operator-approved restatement still requires operator authority.
-		if manifest.PolicyFingerprint != "" {
+		if manifest.PolicyFingerprint != "" && manifest.Recipe.Source == nil {
 			actual.Defaults.Install = installed
 		}
 	}
-	snapshot, err := e.mgr.CheckInstallAuthority(actual, runtime)
-	if err != nil {
-		return snapshot, err
-	}
-	if snapshot.Policy != nil {
-		if err := checkInstalledRootGrants(snapshot, manifest); err != nil {
-			return snapshot, err
-		}
-	}
-	return snapshot, nil
-}
-
-func checkInstalledRootGrants(snapshot install.RecipeSnapshot, manifest *fsroot.InstallManifest) error {
-	if manifest == nil || len(manifest.Inventory) == 0 {
-		return fmt.Errorf("%w: installed operator recipe lacks dependency inventory", install.ErrInstallPolicy)
-	}
-	roots := map[string]bool{*snapshot.Recipe.Package: false}
-	for name := range snapshot.Recipe.Companions {
-		roots[name] = false
-	}
-	for _, entry := range manifest.Inventory {
-		if !entry.Requested {
-			continue
-		}
-		constraint, granted := snapshot.Policy.Packages[entry.Name]
-		if _, declared := roots[entry.Name]; !declared || !granted {
-			return fmt.Errorf("%w: installed root %s is not granted", install.ErrInstallPolicy, entry.Name)
-		}
-		if err := upstream.VersionAllowed(entry.Version, constraint); err != nil {
-			return fmt.Errorf("%w: installed root %s: %v", install.ErrInstallPolicy, entry.Name, err)
-		}
-		roots[entry.Name] = true
-	}
-	for name, present := range roots {
-		if !present {
-			return fmt.Errorf("%w: installed root %s lacks requested inventory", install.ErrInstallPolicy, name)
-		}
-	}
-	return nil
+	return e.mgr.CheckInstallAuthority(actual, runtime, manifest)
 }
