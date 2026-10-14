@@ -22,6 +22,10 @@ import (
 // Returns error if ANY server instance is already running (regardless of port)
 // This is the SINGLE centralized check used by both detached and interactive modes
 func checkNodeNotRunning() error {
+	return checkNodeProcesses(host.Processes)
+}
+
+func checkNodeProcesses(list func() ([]ps.Process, error)) error {
 	// Get current process info to identify our own process
 	currentPid := os.Getpid()
 
@@ -29,7 +33,7 @@ func checkNodeNotRunning() error {
 	parentPid := os.Getppid()
 
 	// Find all processes
-	processes, err := ps.Processes()
+	processes, err := list()
 	if err != nil {
 		return fmt.Errorf("failed to list processes: %w", err)
 	}
@@ -75,7 +79,7 @@ func killExistingServeProcesses() error {
 	parentPid := os.Getppid()
 
 	// Find all processes
-	processes, err := ps.Processes()
+	processes, err := host.Processes()
 	if err != nil {
 		return fmt.Errorf("failed to list processes: %w", err)
 	}
@@ -156,7 +160,7 @@ const processAliveInterval = 50 * time.Millisecond
 // rely on shutdown handlers firing (worker goodbye notify, spend state
 // flush).
 //
-// Liveness is observed via ps.FindProcess (table scan, nil on exit)
+// Liveness is observed via host.FindProcess (nil on exit)
 // rather than process.Wait: the target is not our child, so on macOS
 // and older Linux kernels Wait returns ECHILD immediately, turning the
 // "graceful wait" into a false positive that silently skipped the full
@@ -174,7 +178,7 @@ func killPid(pid int) error {
 	}
 	deadline := utils.Now().Add(constants.ProcessWaitTimeout)
 	for utils.Now().Before(deadline) {
-		if p, _ := ps.FindProcess(pid); p == nil {
+		if p, _ := host.FindProcess(pid); p == nil {
 			return nil
 		}
 		time.Sleep(processAliveInterval)
