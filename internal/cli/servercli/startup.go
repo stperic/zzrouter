@@ -325,11 +325,11 @@ func startPreparedNode(cfg *pkgConfig.NodeConfig, cmd *cobra.Command, detach boo
 		}
 	}
 
-	// Auto-seed the embedded provider tree before loading. `InstallDefaults`
-	// is copy-if-missing per file, so on nodes that have already been
+	// Prepare the embedded provider tree before strict loading. `InstallDefaults`
+	// is copy-if-missing per file. On nodes that have already been
 	// initialized (via `zzrouter-node config init` or a systemd install)
-	// this is a no-op. Nodes launched directly — fresh deployments, the
-	// `make bw` / SCP-a-binary-and-start-it path — get their providers/
+	// preparation also repairs managed fields. Direct deployments via `make bw`
+	// or SCP-a-binary-and-start-it also get their providers/
 	// tree bootstrapped automatically here, so the config store loads and
 	// FinalizeOnboarding can persist `enabled: true` after an install.
 	//
@@ -339,14 +339,8 @@ func startPreparedNode(cfg *pkgConfig.NodeConfig, cmd *cobra.Command, detach boo
 	// they were enabled ("install succeeded but finalize failed: config
 	// store not initialized").
 	appsDir := pkgConfig.Paths().GetAppsConfigDir()
-	if seedErr := templates.InstallDefaults(appsDir); seedErr != nil {
-		slog.Warn("Failed to seed provider templates", "dir", appsDir, "err", seedErr)
-	}
-
-	// Seeding is copy-if-missing; reconcile is what brings an existing tree
-	// up to the release (managed keys, schemas).
-	if updated, reconcileErr := templates.ReconcileManagedSpine(appsDir); reconcileErr != nil {
-		slog.Warn("Failed to reconcile provider templates", "dir", appsDir, "err", reconcileErr)
+	if updated, reconcileErr := templates.PrepareProviders(appsDir); reconcileErr != nil {
+		return fmt.Errorf("prepare provider templates: %w", reconcileErr)
 	} else if len(updated) > 0 {
 		slog.Info("Reconciled shipped provider files", "files", updated)
 	}

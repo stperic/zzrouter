@@ -40,7 +40,7 @@ func TestMergeManagedSpineSectionOwnership(t *testing.T) {
 					}
 					tmpl, err := yaml.Marshal(template)
 					require.NoError(t, err)
-					got, changed, err := mergeManagedSpine(live, tmpl)
+					got, changed, err := mergeManagedSpine(live, tmpl, nil)
 					require.NoError(t, err)
 					assert.Equal(t, tc.changed, changed)
 					var doc map[string]any
@@ -54,7 +54,7 @@ func TestMergeManagedSpineSectionOwnership(t *testing.T) {
 					}
 					assert.Equal(t, 17, body[section.operator])
 					assert.Equal(t, true, doc["enabled"])
-					again, changed, err := mergeManagedSpine(got, tmpl)
+					again, changed, err := mergeManagedSpine(got, tmpl, nil)
 					require.NoError(t, err)
 					assert.False(t, changed)
 					assert.Equal(t, got, again)
@@ -75,14 +75,14 @@ func TestMergeManagedSpinePinOwnership(t *testing.T) {
 		{"explicit null", "pinned_version: null\n", nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, changed, err := mergeManagedSpine([]byte("pinned_version: operator\n"), []byte(tc.template))
+			got, changed, err := mergeManagedSpine([]byte("pinned_version: operator\n"), []byte(tc.template), nil)
 			require.NoError(t, err)
 			assert.Equal(t, tc.changed, changed)
 			var doc map[string]any
 			require.NoError(t, yaml.Unmarshal(got, &doc))
 			assert.Contains(t, doc, "pinned_version")
 			assert.Equal(t, tc.want, doc["pinned_version"])
-			again, changed, err := mergeManagedSpine(got, []byte(tc.template))
+			again, changed, err := mergeManagedSpine(got, []byte(tc.template), nil)
 			require.NoError(t, err)
 			assert.False(t, changed)
 			assert.Equal(t, got, again)
@@ -91,7 +91,7 @@ func TestMergeManagedSpinePinOwnership(t *testing.T) {
 }
 
 func TestMergeManagedSpineDeletesRetiredRootKey(t *testing.T) {
-	got, changed, err := mergeManagedSpine([]byte("enabled: true\nmodel_defaults: {}\n"), []byte("{}\n"))
+	got, changed, err := mergeManagedSpine([]byte("enabled: true\nmodel_defaults: {}\n"), []byte("{}\n"), nil)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	var doc map[string]any

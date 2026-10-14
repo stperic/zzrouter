@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -101,34 +103,28 @@ func ReconcileManagedSpine(dstDir string) ([]string, error) {
 
 func reconcile(src fs.FS, dstDir string) ([]string, error) {
 	var changed []string
-
-	err := fs.WalkDir(src, providersRoot, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel := strings.TrimPrefix(strings.TrimPrefix(p, providersRoot), "/")
-		ownership := shippedFileOwnership(rel)
-		if ownership == notManaged {
-			return nil
-		}
+	files, history, err := prepareManagedFiles(src, dstDir)
+	if err != nil {
+		return nil, err
+	}
+	var failures []error
+	for _, rel := range slices.Sorted(maps.Keys(files)) {
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 
 		live, readErr := os.ReadFile(dst)
 		if errors.Is(readErr, os.ErrNotExist) {
-			return nil // absent — InstallDefaults owns the first write
+			continue // absent — InstallDefaults owns the first write
 		}
 		if readErr != nil {
-			return fmt.Errorf("read %s: %w", rel, readErr)
+			failures = append(failures, fmt.Errorf("read %s: %w", rel, readErr))
+			continue
 		}
-		tmpl, readErr := fs.ReadFile(src, p)
-		if readErr != nil {
-			return fmt.Errorf("read embed %s: %w", p, readErr)
-		}
+		tmpl := files[rel]
 
 		next, updated := tmpl, !bytes.Equal(live, tmpl)
-		if ownership == managedKeys {
+		if shippedFileOwnership(rel) == managedKeys {
 			var mergeErr error
-			next, updated, mergeErr = mergeManagedSpine(live, tmpl)
+			next, updated, mergeErr = mergeManagedSpine(live, tmpl, history[rel])
 			if mergeErr != nil {
 				// Skip this file rather than aborting the walk. WalkDir visits
 				// lexically, so returning an error here would let one malformed
@@ -136,21 +132,19 @@ func reconcile(src fs.FS, dstDir string) ([]string, error) {
 				// are reached, silently withholding managed keys from the
 				// providers that need them most.
 				slog.Warn("skipping unreconcilable provider config", "file", rel, "err", mergeErr)
-				return nil
+				continue
 			}
 		}
 		if !updated {
-			return nil
+			continue
 		}
 		if writeErr := utils.AtomicWriteFile(dst, next, providerFileMode); writeErr != nil {
-			slog.Warn("skipping provider file that could not be written", "file", rel, "err", writeErr)
-			return nil
+			failures = append(failures, fmt.Errorf("write %s: %w", rel, writeErr))
+			continue
 		}
 		changed = append(changed, rel)
-		return nil
-	})
-
-	return changed, err
+	}
+	return changed, errors.Join(failures...)
 }
 
 // ownership is how much of a shipped provider file reconcile owns.
@@ -229,7 +223,7 @@ func reconcileFeatures(live, template map[string]any) bool {
 
 // mergeManagedSpine copies the managed keys from tmpl into live,
 // reporting whether anything actually differed.
-func mergeManagedSpine(live, tmpl []byte) (merged []byte, updated bool, err error) {
+func mergeManagedSpine(live, tmpl []byte, history [][]string) (merged []byte, updated bool, err error) {
 	var liveDoc, tmplDoc map[string]any
 	if err := yaml.Unmarshal(live, &liveDoc); err != nil {
 		return nil, false, fmt.Errorf("parse live config: %w", err)
@@ -246,7 +240,18 @@ func mergeManagedSpine(live, tmpl []byte) (merged []byte, updated bool, err erro
 		return nil, false, fmt.Errorf("parse template: %w", err)
 	}
 
-	updated = reconcileFeatures(liveDoc, tmplDoc)
+	paths := managedPaths(tmplDoc)
+	for _, path := range history {
+		if slices.ContainsFunc(paths, func(next []string) bool { return slices.Equal(next, path) }) {
+			continue
+		}
+		parent := liveDoc
+		if len(path) == 2 {
+			parent, _ = liveDoc[path[0]].(map[string]any)
+		}
+		updated = mergeKeys(parent, nil, path[len(path)-1:]) || updated
+	}
+	updated = reconcileFeatures(liveDoc, tmplDoc) || updated
 	for _, section := range managedKeySections(tmplDoc) {
 		liveSection, tmplSection := liveDoc, tmplDoc
 		if section.name != "" {

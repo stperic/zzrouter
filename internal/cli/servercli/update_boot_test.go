@@ -2,16 +2,19 @@ package servercli
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/update"
 	"github.com/stperic/zzrouter/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func updateBootFixture(t *testing.T) (*pkgConfig.NodeConfig, *update.Confirmer) {
@@ -80,4 +83,46 @@ func TestUpdateGuardCanceledConfirmationRetainsRecord(t *testing.T) {
 	close(done)
 	assert.False(t, guard.ConfirmWhenHealthy(done))
 	assert.Equal(t, before, readBootRecord(t, confirmer))
+}
+
+func TestProviderPreparationFailureCountsBootWithoutConfirmation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission failures require an unprivileged node identity")
+	}
+	for _, failure := range []string{"receipt", "required repair"} {
+		t.Run(failure, func(t *testing.T) {
+			cfg, confirmer := updateBootFixture(t)
+			dir := pkgConfig.Paths().GetAppsConfigDir()
+			require.NoError(t, os.Remove(filepath.Join(dir, "external", "custom", "config.yaml")))
+			require.NoError(t, templates.InstallDefaults(dir))
+			if failure == "receipt" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".managed-ownership.json"), []byte("{"), 0600))
+			} else {
+				path := filepath.Join(dir, "on-demand", "comfyui", "config.yaml")
+				body, err := os.ReadFile(path)
+				require.NoError(t, err)
+				var live map[string]any
+				require.NoError(t, yaml.Unmarshal(body, &live))
+				live["runtime"].(map[string]any)["max_concurrent_requests"] = 2
+				body, err = yaml.Marshal(live)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, body, 0600))
+				_, err = pkgConfig.LoadAppsConfig(dir)
+				require.NoError(t, err, "the residual bytes decode, but must not allow confirmation")
+				parent := filepath.Dir(path)
+				require.NoError(t, os.Chmod(parent, 0500))
+				t.Cleanup(func() { require.NoError(t, os.Chmod(parent, 0700)) })
+			}
+			err := startPreparedNode(cfg, NewStartCmd(), false)
+			if failure == "receipt" {
+				var syntax *json.SyntaxError
+				require.ErrorAs(t, err, &syntax)
+			} else {
+				require.ErrorIs(t, err, fs.ErrPermission)
+			}
+			pending := readBootRecord(t, confirmer)
+			assert.Equal(t, 1, pending.Attempts)
+			assert.Equal(t, "2.0.0", pending.ToVersion)
+		})
+	}
 }

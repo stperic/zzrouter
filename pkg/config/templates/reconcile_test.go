@@ -43,7 +43,7 @@ runtime:
   health_check:
     path: /health
 `
-		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 		require.NoError(t, err)
 		require.True(t, updated)
 
@@ -64,14 +64,14 @@ runtime:
 	})
 
 	t.Run("no-op when the spine already matches", func(t *testing.T) {
-		_, updated, err := mergeManagedSpine([]byte(tmpl), []byte(tmpl))
+		_, updated, err := mergeManagedSpine([]byte(tmpl), []byte(tmpl), nil)
 		require.NoError(t, err)
 		assert.False(t, updated)
 	})
 
 	t.Run("providers that launch nothing are left alone", func(t *testing.T) {
 		live := "description: \"cloud\"\nenabled: true\n"
-		merged, updated, err := mergeManagedSpine([]byte(live), []byte("description: \"cloud\"\n"))
+		merged, updated, err := mergeManagedSpine([]byte(live), []byte("description: \"cloud\"\n"), nil)
 		require.NoError(t, err)
 		assert.False(t, updated)
 		assert.Equal(t, live, string(merged))
@@ -139,7 +139,7 @@ runtime:
   execution:
     command: engine
 `
-		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 		require.NoError(t, err)
 		require.True(t, updated)
 
@@ -165,7 +165,7 @@ runtime:
   execution:
     command: engine
 `
-		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+		merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 		require.NoError(t, err)
 		require.True(t, updated)
 
@@ -187,7 +187,7 @@ runtime:
   execution:
     command: engine
 `
-		_, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+		_, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 		require.NoError(t, err)
 		assert.False(t, updated, "an in-sync config must not be rewritten")
 	})
@@ -205,7 +205,7 @@ version_source:
 	live := `description: "daemon"
 enabled: true
 `
-	merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+	merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 	require.NoError(t, err)
 	require.True(t, updated)
 
@@ -239,7 +239,7 @@ runtime:
 	} {
 		t.Run(live.name, func(t *testing.T) {
 			require.NotPanics(t, func() {
-				merged, updated, err := mergeManagedSpine([]byte(live.body), []byte(tmpl))
+				merged, updated, err := mergeManagedSpine([]byte(live.body), []byte(tmpl), nil)
 				require.NoError(t, err)
 				require.True(t, updated)
 
@@ -270,7 +270,7 @@ capabilities:
   priority: 9
   wire_endpoints: [chat_completions]
 `
-	merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl))
+	merged, updated, err := mergeManagedSpine([]byte(live), []byte(tmpl), nil)
 	require.NoError(t, err)
 	require.True(t, updated)
 
@@ -282,7 +282,7 @@ capabilities:
 	assert.Equal(t, 9, caps["priority"], "operator state survives")
 	assert.Equal(t, true, doc["enabled"])
 
-	_, updated, err = mergeManagedSpine(merged, []byte(tmpl))
+	_, updated, err = mergeManagedSpine(merged, []byte(tmpl), nil)
 	require.NoError(t, err)
 	assert.False(t, updated, "an in-sync config must not be rewritten")
 }
@@ -426,7 +426,7 @@ func TestReconcileSeedsFeatures(t *testing.T) {
 		{"empty declaration", "features: {}\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, updated, err := mergeManagedSpine([]byte(tc.live), tmpl)
+			got, updated, err := mergeManagedSpine([]byte(tc.live), tmpl, nil)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantUpdate, updated)
 			if tc.wantUpdate {
@@ -435,14 +435,14 @@ func TestReconcileSeedsFeatures(t *testing.T) {
 			} else {
 				assert.Equal(t, tc.live, string(got))
 			}
-			again, changed, err := mergeManagedSpine(got, tmpl)
+			again, changed, err := mergeManagedSpine(got, tmpl, nil)
 			require.NoError(t, err)
 			assert.False(t, changed)
 			assert.Equal(t, got, again)
 		})
 	}
 	live := []byte("features:\n  vision: {}\n")
-	got, updated, err := mergeManagedSpine(live, []byte("description: cloud\n"))
+	got, updated, err := mergeManagedSpine(live, []byte("description: cloud\n"), nil)
 	require.NoError(t, err)
 	assert.False(t, updated)
 	assert.Equal(t, live, got)
@@ -454,7 +454,7 @@ func TestReconcileRefreshesFeatureDeclarations(t *testing.T) {
 		"features:\n  vision:\n    default: true\n    files: [projector-*.gguf]\n    flag: mmproj\n",
 		"features:\n  vision:\n    default: true\n    files: [mmproj-*.gguf]\n    flag: projector\n",
 	} {
-		got, changed, err := mergeManagedSpine(live, []byte(template))
+		got, changed, err := mergeManagedSpine(live, []byte(template), nil)
 		require.NoError(t, err)
 		require.True(t, changed)
 		var doc map[string]any
@@ -467,7 +467,7 @@ func TestReconcileRefreshesFeatureDeclarations(t *testing.T) {
 		assert.NotContains(t, feature, "exclude_parameters")
 		assert.Contains(t, doc, "defaults")
 		assert.Contains(t, doc, "models")
-		again, changed, err := mergeManagedSpine(got, []byte(template))
+		again, changed, err := mergeManagedSpine(got, []byte(template), nil)
 		require.NoError(t, err)
 		assert.False(t, changed)
 		assert.Equal(t, got, again)
@@ -476,13 +476,13 @@ func TestReconcileRefreshesFeatureDeclarations(t *testing.T) {
 }
 
 func TestReconcileRemovesRetiredFeatureDeclaration(t *testing.T) {
-	got, changed, err := mergeManagedSpine([]byte("features:\n  vision: {builtin: true}\n"), []byte("features: {}\n"))
+	got, changed, err := mergeManagedSpine([]byte("features:\n  vision: {builtin: true}\n"), []byte("features: {}\n"), nil)
 	require.NoError(t, err)
 	assert.True(t, changed)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(got, &doc))
 	assert.Empty(t, doc["features"])
-	again, changed, err := mergeManagedSpine(got, []byte("features: {}\n"))
+	again, changed, err := mergeManagedSpine(got, []byte("features: {}\n"), nil)
 	require.NoError(t, err)
 	assert.False(t, changed)
 	assert.Equal(t, got, again)
