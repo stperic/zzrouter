@@ -19,6 +19,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
@@ -141,10 +142,11 @@ func (e *DeploymentsExecutor) newDeploymentResult(key, model, registry, status, 
 }
 
 type downloadAttempt struct {
-	job        jobs.Handle
-	generation uint64
-	ctx        context.Context
-	cancel     context.CancelFunc
+	job               jobs.Handle
+	generation        uint64
+	ctx               context.Context
+	cancel            context.CancelFunc
+	retainReservation bool
 }
 
 type downloadAdmission struct {
@@ -156,6 +158,7 @@ type downloadAdmission struct {
 	features             []string
 	path                 string
 	catalogProvisioning  bool
+	retainReservation    bool
 }
 
 // resolveDownloadAdmission selects owner policy once for a validated request.
@@ -167,7 +170,7 @@ func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadReque
 	}
 	hf := a.registry == constants.RepoHuggingFace
 	if hf && (!strings.Contains(model, "/") || a.request.Repo != model || a.request.Force != req.Force) {
-		return a, invalidInputf("Hugging Face download plan must match the deployment and include the organization prefix")
+		return a, newProblemError(http.StatusBadRequest, "Bad Request", "Hugging Face download plan must match the deployment and include the organization prefix")
 	}
 	if hf && e.registry == nil {
 		return a, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "model registry not initialized")
@@ -186,7 +189,7 @@ func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadReque
 		}
 	case metadata.OwnerProviderStore:
 		if !hf || req.Force || req.Provider != "" || len(req.Features) > 0 {
-			return a, invalidInputf("provider downloads require Hugging Face without catalog provisioning options")
+			return a, newProblemError(http.StatusBadRequest, "Bad Request", "provider downloads require Hugging Face without catalog provisioning options")
 		}
 		svc, ok := e.appsConfig().LookupApp(a.request.Target.Provider)
 		if !ok {
@@ -197,18 +200,30 @@ func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadReque
 			a.path, err = provapps.ModelStoreFilePath(store.Directory(), a.request.Target.Name, false)
 		}
 		if err != nil {
-			return a, invalidInputf("%s", err)
+			return a, err
 		}
 		a.destination = store
-		a.key = fmt.Sprintf("%s/%s/%x", e.getNodename(), metadata.OwnerProviderStore, sha256.Sum256([]byte(a.path)))
+		a.key = providerModelDownloadKey(e.getNodename(), a.path)
 		source, _ := json.Marshal([]string{a.request.Repo, a.request.EffectiveRevision(), a.request.Weights})
 		a.options.SourceKey = string(source)
 		a.options.RequestedFile = a.request.Target.Name
 		a.model = ""
+		a.retainReservation = true
 	default:
-		return a, invalidInputf("invalid download owner")
+		return a, newProblemError(http.StatusBadRequest, "Bad Request", "invalid download owner")
 	}
 	return a, nil
+}
+
+func providerModelDownloadKey(node, path string) string {
+	return fmt.Sprintf("%s/%s/%x", node, metadata.OwnerProviderStore, sha256.Sum256([]byte(path)))
+}
+
+// downloadReserved reads the producer-owned index under jobKeysMu; job reaping
+// can mark a job terminal before its physical transfer has unwound.
+func (e *DeploymentsExecutor) downloadReserved(key string) bool {
+	_, reserved := e.jobKeys[key]
+	return reserved
 }
 
 // beginDownload atomically deduplicates, admits the observable job, and binds
@@ -221,9 +236,14 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, admission downloadAd
 		ServiceUnavailable(c, "download job registry unavailable")
 		return nil
 	}
-	if existing := e.downloads.GetDownloadStatus(key); existing != nil && !modelregistry.IsTerminalStatus(existing.Status) {
+	existing := e.downloads.GetDownloadStatus(key)
+	if admission.retainReservation && (existing == nil || modelregistry.IsTerminalStatus(existing.Status)) && e.downloadReserved(key) {
+		RespondToError(c, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeDownloadInProgress), Message: "download cancellation is still finishing"})
+		return nil
+	}
+	if existing != nil && !modelregistry.IsTerminalStatus(existing.Status) {
 		if existing.SourceKey != admission.options.SourceKey {
-			Conflict(c, "another source is downloading to this destination")
+			RespondToError(c, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeDownloadInProgress), Message: "another source is downloading to this destination"})
 			return nil
 		}
 		id := e.jobKeys[key]
@@ -245,9 +265,9 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, admission downloadAd
 	if admission.path != "" {
 		if err := utils.RequireAbsent(admission.path); err != nil {
 			if errors.Is(err, fs.ErrExist) {
-				Conflict(c, "provider model file already exists")
+				RespondToError(c, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeFileExists), Message: "provider model file already exists"})
 			} else {
-				BadRequest(c, err.Error())
+				RespondToError(c, err)
 			}
 			return nil
 		}
@@ -262,7 +282,7 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, admission downloadAd
 	ctx, cancel := context.WithTimeout(h.Context(), 48*time.Hour)
 	gen := e.downloads.StartDownload(key, model, cancel, admission.options)
 	e.jobKeys[key] = h.ID()
-	return &downloadAttempt{job: h, generation: gen, ctx: ctx, cancel: cancel}
+	return &downloadAttempt{job: h, generation: gen, ctx: ctx, cancel: cancel, retainReservation: admission.retainReservation}
 }
 
 func (e *DeploymentsExecutor) forgetJobKey(key, jobID string) {
@@ -293,28 +313,31 @@ func (e *DeploymentsExecutor) updateDownloadJob(a *downloadAttempt, key, status,
 		}
 		a.cancel()
 		a.job.Fail(fmt.Errorf("download update rejected before publication: %w", err))
-		e.forgetJobKey(key, a.job.ID())
+		if !a.retainReservation {
+			e.forgetJobKey(key, a.job.ID())
+		}
 		return
 	}
 	a.job.Meta(jobs.Meta{"transfer_status": status, "transfer_progress": progress, "transfer_speed": speed})
-	e.publishJobEvent(a.job, key, status, file, progress, downloaded, size)
+	e.publishJobEvent(a, key, status, file, progress, downloaded, size)
 }
 
 // publishJobEvent translates a DownloadTracker status update into the
 // corresponding pkg/jobs emission. Idempotent against a nil handle and
 // against post-terminal calls (pkg/jobs drops late calls silently).
 // `progress` is the 0–100 percent used by the tracker; bytes carries
-// the {done,total} pair the SSE envelope surfaces. On terminal, the
-// downloadKey → jobID index is cleared.
+// the {done,total} pair the SSE envelope surfaces. Catalog terminal events
+// release the index; retained reservations wait for physical cleanup.
 //
 // On failed/cancelled, the modelregistry-supplied `currentFile` carries
 // the upstream error message (by convention — see registry_pull.go's
 // statusUpdater calls). Threading it into h.Fail preserves operator-
 // debug parity with the pre-jobs flow.
-func (e *DeploymentsExecutor) publishJobEvent(h jobs.Handle, downloadKey, status, currentFile string, progress float64, downloaded, totalSize int64) {
-	if h == nil {
+func (e *DeploymentsExecutor) publishJobEvent(a *downloadAttempt, downloadKey, status, currentFile string, progress float64, downloaded, totalSize int64) {
+	if a == nil || a.job == nil {
 		return
 	}
+	h := a.job
 	pct := int(progress)
 	if pct < 0 {
 		pct = 0
@@ -327,20 +350,20 @@ func (e *DeploymentsExecutor) publishJobEvent(h jobs.Handle, downloadKey, status
 	switch status {
 	case string(constants.StatusCompleted):
 		h.Done()
-		e.forgetJobKey(downloadKey, h.ID())
 	case string(constants.StatusFailed):
 		reason := "download failed"
 		if currentFile != "" {
 			reason = "download failed: " + currentFile
 		}
 		h.Fail(errors.New(reason))
-		e.forgetJobKey(downloadKey, h.ID())
 	case string(constants.StatusCancelled):
 		reason := "download cancelled"
 		if currentFile != "" {
 			reason = "download cancelled: " + currentFile
 		}
 		h.Fail(errors.New(reason))
+	}
+	if modelregistry.IsTerminalStatus(status) && !a.retainReservation {
 		e.forgetJobKey(downloadKey, h.ID())
 	}
 }
@@ -473,6 +496,8 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 	job, ctx := attempt.job, attempt.ctx
 
 	go func() {
+		defer e.forgetJobKey(downloadKey, job.ID())
+		defer attempt.cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
@@ -495,7 +520,7 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
-		e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater, admission.destination)
+		<-e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater, admission.destination)
 	}()
 
 	result := e.newDeploymentResult(

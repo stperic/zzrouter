@@ -97,14 +97,17 @@ func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, s
 // DownloadHuggingFaceModelAsync fetches what req names from HuggingFace in
 // the background. Cancelling ctx aborts it. Status updates go to
 // statusUpdater; currentFile carries req.Weights, the name the caller asked
-// for.
-func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64), destination huggingface.Destination) {
+// for. The returned signal closes after physical transfer and cleanup finish.
+func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64), destination huggingface.Destination) <-chan struct{} {
+	done := make(chan struct{})
 	if !r.beginAsyncDownload() {
 		statusUpdater("failed", ErrRegistryStopped.Error(), 0, 0, 0, 0, 0, 0)
-		return
+		close(done)
+		return done
 	}
 
 	go func() {
+		defer close(done)
 		defer r.wg.Done()
 		defer utils.RecoverAndLog("modelregistry.HuggingFaceDownload")
 		startTime := utils.Now()
@@ -134,6 +137,7 @@ func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metada
 		// The admitted owner publishes before its tracker accepts completion.
 		statusUpdater("completed", req.Weights, 1, 1, 100, 0, 0, 0)
 	}()
+	return done
 }
 
 // CatalogDestination resolves a repository in this registry's bound model root.

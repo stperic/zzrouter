@@ -208,6 +208,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc)
 		providersController.publishCatalog = s.publishCatalog
 		providersController.RegisterPublicRoutes(router, s.idempotent)
+		models := &ProviderModelsController{service: NewProvidersService(s.cluster.router), nodes: nodeValidator}
+		models.RegisterPublicRoutes(router, s.idempotent)
 	}
 
 	// Inference Logs: Query and stream inference request logs

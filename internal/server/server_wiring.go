@@ -187,8 +187,11 @@ func publishOr503(c *gin.Context, publish func() error) bool {
 	return true
 }
 
-// newDeploymentsExecutor wires a DeploymentsExecutor with narrow deps from Server.
+// newDeploymentsExecutor binds both trusted mounts to one node-owned admission index at startup.
 func (s *Server) newDeploymentsExecutor() *DeploymentsExecutor {
+	if s.deploymentsExecutor != nil {
+		return s.deploymentsExecutor
+	}
 	e := NewDeploymentsExecutor(
 		s.node.Nodename,
 		func(app string) bool { return isCloudProvider(s.appsConfig, app) },
@@ -203,6 +206,7 @@ func (s *Server) newDeploymentsExecutor() *DeploymentsExecutor {
 		s.jobs,
 	)
 	e.ensureFeatures = s.providers.appMgr.EnsureModelFeatures
+	s.deploymentsExecutor = e
 	return e
 }
 

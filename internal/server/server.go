@@ -121,8 +121,9 @@ type Server struct {
 	otelProvider        *observability.Provider         // OpenTelemetry observability provider
 	model               *model.Subsystem                // Model-domain orchestrator (pricing today; cache/fallback/resolver next steps)
 	jobsProxy           *JobsProxy
-	jobs                *jobs.Registry    // Per-node streaming job registry — downloads, installs, updates, inference-log
-	updateScheduler     *update.Scheduler // Auto-update scheduler
+	jobs                *jobs.Registry       // Per-node streaming job registry — downloads, installs, updates, inference-log
+	deploymentsExecutor *DeploymentsExecutor // Shared admission index for both trusted internal mounts.
+	updateScheduler     *update.Scheduler    // Auto-update scheduler
 	updateRollouts      *update.Rollouts
 	updateSchedulingMu  sync.Mutex
 	maintenance         *maintenanceLoop // Periodic cleanup tasks

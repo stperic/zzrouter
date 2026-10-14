@@ -2,7 +2,9 @@ package huggingface
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/download"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
@@ -25,6 +28,7 @@ const progressInterval = 100 * time.Millisecond
 type Destination interface {
 	Directory() string
 	Path(string) (string, error)
+	CheckSpace(int64) error
 }
 
 // CatalogDestination is the explicitly selected LLM repository directory.
@@ -37,6 +41,9 @@ func (d CatalogDestination) Directory() string { return string(d) }
 func (d CatalogDestination) Path(name string) (string, error) {
 	return filepath.Join(string(d), filepath.FromSlash(name)), nil
 }
+
+// CheckSpace preserves catalog provisioning's existing capacity behavior.
+func (d CatalogDestination) CheckSpace(_ int64) error { return nil }
 
 // planned is one file a download fetches, and the feature it belongs to.
 type planned struct {
@@ -102,8 +109,14 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		}
 		if providerStore {
 			if err := utils.RequireAbsent(dest); err != nil {
+				if errors.Is(err, fs.ErrExist) {
+					return errors.Join(err, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeFileExists), Message: "provider model file already exists"})
+				}
 				return err
 			}
+		}
+		if err := destination.CheckSpace(f.file.Size); err != nil {
+			return err
 		}
 		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.file, dest, func(n int64) {
 			done += n

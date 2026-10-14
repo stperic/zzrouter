@@ -24,7 +24,8 @@ func (f targetTransport) RoundTrip(r *http.Request) (*http.Response, error) { re
 
 type targetDestination struct{ dir, name string }
 
-func (d targetDestination) Directory() string { return d.dir }
+func (d targetDestination) Directory() string        { return d.dir }
+func (d targetDestination) CheckSpace(_ int64) error { return nil }
 func (d targetDestination) Path(_ string) (string, error) {
 	return filepath.Join(d.dir, d.name), nil
 }

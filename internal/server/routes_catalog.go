@@ -221,6 +221,7 @@ var asyncRoutes = []string{
 	"POST /runs/ensure",
 	"POST /runs/:id/restart",
 	"POST /deployments",
+	"POST /providers/:name/models",
 	"POST /providers/:name/install",
 	"POST /providers/:name/install/execute-step",
 	"POST /providers/:name/upgrade",

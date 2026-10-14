@@ -45,7 +45,7 @@ func TestPublishJobEvent_ProgressEmitsRunningEvent(t *testing.T) {
 	sub, err := r.Subscribe(h.ID(), jobs.SubscribeOptions{})
 	require.NoError(t, err)
 
-	e.publishJobEvent(h, "k", "downloading", "file.gguf", 42, 1000, 2400)
+	e.publishJobEvent(&downloadAttempt{job: h}, "k", "downloading", "file.gguf", 42, 1000, 2400)
 	h.Done() // close the stream
 
 	var events []jobs.Event
@@ -91,7 +91,7 @@ func TestPublishJobEvent_TerminalStatusesCarryReason(t *testing.T) {
 			sub, err := r.Subscribe(h.ID(), jobs.SubscribeOptions{})
 			require.NoError(t, err)
 
-			e.publishJobEvent(h, "k", tc.status, tc.errMessage, 100, 0, 0)
+			e.publishJobEvent(&downloadAttempt{job: h}, "k", tc.status, tc.errMessage, 100, 0, 0)
 
 			deadline := time.After(500 * time.Millisecond)
 			var last jobs.Event
@@ -159,7 +159,7 @@ func TestJobKeyIndex_ClearedOnTerminal(t *testing.T) {
 	require.NotNil(t, h)
 	require.Equal(t, h.ID(), e.jobKeys["k1"])
 
-	e.publishJobEvent(h, "k1", string(constants.StatusCompleted), "", 100, 0, 0)
+	e.publishJobEvent(&downloadAttempt{job: h}, "k1", string(constants.StatusCompleted), "", 100, 0, 0)
 	assert.Equal(t, "", e.jobKeys["k1"], "terminal status must clear the index")
 }
 
