@@ -159,8 +159,9 @@ func TestSourceCompletionNeverAdoptsVersionFilesOrBackfills(t *testing.T) {
 	require.Error(t, i.HealthCheck(t.Context(), nil))
 	_, err = os.Lstat(fsroot.ProviderManifestPath(snapshot.Runtime))
 	require.True(t, os.IsNotExist(err), "health cannot backfill a source record")
-	complete := fsroot.InstallManifest{PlanID: "complete", Version: "1.0.0", Recipe: &snapshot.Recipe, RecipeFingerprint: snapshot.Fingerprint, Interpreter: &fsroot.ManifestInterpreter{Path: "/recorded/python", Version: "3.12.1"}, Inventory: []fsroot.ManifestPackage{{Name: "dependency", Version: "1.0", SHA256: strings.Repeat("b", 64)}}}
+	complete := fsroot.InstallManifest{WorkingDir: snapshot.WorkingDir, PlanID: "complete", Version: "1.0.0", Recipe: &snapshot.Recipe, RecipeFingerprint: snapshot.Fingerprint, Interpreter: &fsroot.ManifestInterpreter{Path: "/recorded/python", Version: "3.12.1"}, Inventory: []fsroot.ManifestPackage{{Name: "dependency", Version: "1.0", SHA256: strings.Repeat("b", 64)}}}
 	for name, mutate := range map[string]func(*fsroot.InstallManifest){
+		"no owned path":  func(m *fsroot.InstallManifest) { m.WorkingDir = "" },
 		"no identity":    func(m *fsroot.InstallManifest) { m.PlanID = "" },
 		"no interpreter": func(m *fsroot.InstallManifest) { m.Interpreter = nil },
 		"no inventory":   func(m *fsroot.InstallManifest) { m.Inventory = nil },

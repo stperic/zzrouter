@@ -387,3 +387,10 @@ func TestRunSettingsPreviewAndStartRejectSameValues(t *testing.T) {
 		assert.ErrorIs(t, err, ErrParameterValidation, "start %s", key)
 	}
 }
+
+func TestSourceDisposableLaunchRefusesBeforeManifestUse(t *testing.T) {
+	manager, service, _ := featureLaunchFixture(t)
+	service.Install = &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{service.Name: {Source: &config.InstallSource{Version: "1.0.0"}}}}
+	_, err := manager.modelLaunchParameters(t.Context(), service, process.ResolveModel(service, "vendor/model"), EnsureRequest{Provider: service.Name, Model: "vendor/model", DisposablePlanID: "missing-and-invalid-manifest"}, "chat")
+	require.ErrorContains(t, err, "source recipes do not support disposable launches")
+}

@@ -675,6 +675,15 @@ func (i *Installer) UpgradePlan(ctx context.Context, toVersion string) (*install
 }
 
 func (i *Installer) UninstallPlan(_ context.Context) (*install.Plan, error) {
+	if i.cfg.Recipe != nil {
+		snapshot, err := i.cfg.Recipe(i.cfg.SchemaProvider, i.cfg.Name)
+		if err != nil {
+			return nil, err
+		}
+		if snapshot.Recipe.Source != nil {
+			return i.sourceUninstallPlan(snapshot), nil
+		}
+	}
 	installDir := fsroot.ProviderDir(i.cfg.Name)
 	qDir := fsroot.ShellQuote(installDir)
 	return &install.Plan{

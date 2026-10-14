@@ -25,7 +25,7 @@ func (p *OnDemandProvider) validateDataDirectory() error {
 		if !validProviderDirectory(rt.DataDir) {
 			return fmt.Errorf("runtime.data_dir must be a relative provider directory")
 		}
-		for _, reserved := range []string{SubdirBin, SubdirVenv, rt.Execution.WorkingDir} {
+		for _, reserved := range []string{SubdirBin, SubdirVenv, SubdirCandidate, SubdirPrevious, ProviderVersionName, ProviderManagedName, ProviderManifestName, ProviderManifestTemp, SubdirPython, rt.Execution.WorkingDir} {
 			dir, reserved := strings.ToLower(rt.DataDir), strings.ToLower(reserved)
 			if reserved != "" && (dir == reserved || strings.HasPrefix(dir, reserved+"/") || strings.HasPrefix(reserved, dir+"/")) {
 				return fmt.Errorf("runtime.data_dir overlaps provider execution or installation directories")

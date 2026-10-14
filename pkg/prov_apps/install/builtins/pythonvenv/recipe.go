@@ -34,6 +34,14 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 		return nil, err
 	}
 	recipe := snapshot.Recipe
+	if recipe.Source != nil {
+		if install.OptionsFromContext(ctx).Disposable {
+			return nil, fmt.Errorf("source recipes do not support disposable launches")
+		}
+		if err := i.checkSourceInstall(snapshot); err != nil {
+			return nil, err
+		}
+	}
 	var requirement *config.PythonRequirement
 	if snapshot.Requirements != nil {
 		requirement = snapshot.Requirements.Python
@@ -97,7 +105,7 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 	if !*recipe.OnlyBinary {
 		plan.SupplyChainNotice += " Authorized source builds also execute resolver-selected PEP 517 build dependencies; those are outside the hash-pinned runtime inventory."
 	}
-	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks, WorkingDir string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks), snapshot.WorkingDir})
+	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks, WorkingDir, Data string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks), snapshot.WorkingDir, install.Fingerprint(snapshot.DataRuntime)})
 	plan.PlanID = baseID
 	guard := func(ctx context.Context) error { return install.CheckRecipeAuthority(ctx, snapshot, i.cfg.Recipe) }
 
@@ -230,10 +238,18 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if recipe.Source != nil {
+				if err := i.checkSourceInstall(snapshot); err != nil {
+					return err
+				}
+			}
 			if err := prepareCandidate(stage); err != nil {
 				return err
 			}
 			if recipe.Source != nil {
+				if err := ensureSourceData(snapshot.DataRuntime, directory, true); err != nil {
+					return err
+				}
 				archive := filepath.Join(directory, config.SubdirCandidate, recipe.Source.SHA256, filepath.Base(recipe.Source.URL))
 				if _, err := install.ReadSource(ctx, archive, stage, snapshot.WorkingDir, *recipe.Source); err != nil {
 					return err
@@ -374,7 +390,7 @@ func prepareCandidate(stage string) error {
 	return os.MkdirAll(stage, 0700)
 }
 
-func setTreeWritable(directory string, writable bool) error {
+func setTreeWritable(directory string, writable bool, chmod func(string, os.FileMode) error) error {
 	return filepath.WalkDir(directory, func(path string, entry fs.DirEntry, err error) error {
 		if os.IsNotExist(err) {
 			return nil
@@ -393,7 +409,7 @@ func setTreeWritable(directory string, writable bool) error {
 		if writable {
 			mode = info.Mode().Perm() | 0200
 		}
-		return os.Chmod(path, mode)
+		return chmod(path, mode)
 	})
 }
 
@@ -401,7 +417,7 @@ func removeManagedTree(directory string) error {
 	if err := fsroot.VerifySymlinkSafe(directory); err != nil {
 		return err
 	}
-	if err := setTreeWritable(directory, true); err != nil {
+	if err := setTreeWritable(directory, true, os.Chmod); err != nil {
 		return err
 	}
 	return os.RemoveAll(directory)
@@ -409,8 +425,7 @@ func removeManagedTree(directory string) error {
 
 type runtimeTransaction struct {
 	directory, stage string
-	activated        bool
-	previous         bool
+	payloads         []runtimePayload
 	recordsMoved     []string
 	started          bool
 	newRecords       bool
@@ -418,12 +433,17 @@ type runtimeTransaction struct {
 	chmod            func(string, os.FileMode) error
 }
 
+type runtimePayload struct {
+	directory           string
+	activated, previous bool
+}
+
 // moveDirectory temporarily unlocks the root for macOS cross-parent renames.
 func (t *runtimeTransaction) moveDirectory(from, to string) (bool, error) {
-	if err := fsroot.VerifySymlinkSafe(from); err != nil {
+	if err := fsroot.VerifyProviderPath(t.directory, strings.TrimPrefix(from, t.directory+string(os.PathSeparator))); err != nil {
 		return false, err
 	}
-	if err := fsroot.VerifySymlinkSafe(to); err != nil {
+	if err := fsroot.VerifyProviderPath(t.directory, strings.TrimPrefix(to, t.directory+string(os.PathSeparator))); err != nil {
 		return false, err
 	}
 	info, err := os.Lstat(from)
@@ -476,14 +496,22 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 		return err
 	}
 	t.started = true
-	if _, err := os.Lstat(live); err == nil {
-		moved, err := t.moveDirectory(live, filepath.Join(previous, config.SubdirVenv))
-		t.previous = moved
-		if err != nil {
+	for _, name := range snapshot.PayloadDirectories() {
+		for _, root := range []string{previous, t.directory} {
+			if err := os.MkdirAll(filepath.Join(root, filepath.Dir(name)), 0700); err != nil {
+				return t.fail(err)
+			}
+		}
+		t.payloads = append(t.payloads, runtimePayload{directory: name})
+		payload := &t.payloads[len(t.payloads)-1]
+		if _, err := os.Lstat(filepath.Join(t.directory, name)); err == nil {
+			payload.previous, err = t.moveDirectory(filepath.Join(t.directory, name), filepath.Join(previous, name))
+			if err != nil {
+				return t.fail(err)
+			}
+		} else if !os.IsNotExist(err) {
 			return t.fail(err)
 		}
-	} else if !os.IsNotExist(err) {
-		return err
 	}
 	for _, name := range []string{config.ProviderVersionName, config.ProviderManifestName} {
 		path := filepath.Join(t.directory, name)
@@ -492,34 +520,44 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 				return t.fail(err)
 			}
 			t.recordsMoved = append(t.recordsMoved, name)
+		} else if !os.IsNotExist(err) {
+			return t.fail(err)
 		}
 	}
 	if err := relocateScripts(filepath.Join(t.stage, config.SubdirVenv), live); err != nil {
 		return t.fail(err)
 	}
-	moved, err := t.moveDirectory(filepath.Join(t.stage, config.SubdirVenv), live)
-	t.activated = moved
-	if err != nil {
-		return t.fail(err)
+	for index := range t.payloads {
+		payload := &t.payloads[index]
+		var err error
+		payload.activated, err = t.moveDirectory(filepath.Join(t.stage, payload.directory), filepath.Join(t.directory, payload.directory))
+		if err != nil {
+			return t.fail(err)
+		}
 	}
 	toolkit := install.ToolkitEnvironmentAt(live, snapshot.Recipe, pythonVersion)
 	results := install.RunRuntimeChecksSnapshot(ctx, venvPython(live), checks, environment, executionEnvironment, toolkit)
-	for _, result := range results {
-		if !result.Passed {
-			return t.fail(fmt.Errorf("activation verify %s: %s", result.Name, result.Reason))
+	if !checksPassed(results) {
+		return t.fail(fmt.Errorf("activation verification failed: %v", results))
+	}
+	if snapshot.Recipe.Source != nil {
+		if err := sourceSmoke(ctx, venvPython(live), filepath.Join(t.directory, snapshot.WorkingDir), snapshot.Recipe.Source.Entrypoint, executionEnvironment); err != nil {
+			return t.fail(err)
 		}
 	}
 	t.newRecords = true
 	if err := os.WriteFile(fsroot.ProviderVersionFile(snapshot.Runtime), []byte(version+"\n"), 0600); err != nil {
 		return t.fail(err)
 	}
-	manifest := &fsroot.InstallManifest{Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
+	manifest := &fsroot.InstallManifest{WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
 	if err := fsroot.WriteInstallManifest(snapshot.Runtime, manifest); err != nil {
 		return t.fail(err)
 	}
 	if fsroot.IsHardenVenvEnabled() {
-		if err := setTreeWritable(live, false); err != nil {
-			return t.fail(fmt.Errorf("harden managed runtime: %w", err))
+		for _, payload := range t.payloads {
+			if err := setTreeWritable(filepath.Join(t.directory, payload.directory), false, t.chmod); err != nil {
+				return t.fail(fmt.Errorf("harden managed runtime: %w", err))
+			}
 		}
 	}
 	return nil
@@ -541,25 +579,27 @@ func (t *runtimeTransaction) rollback() (resultErr error) {
 	if !t.started {
 		return nil
 	}
-	live := filepath.Join(t.directory, config.SubdirVenv)
 	previous := filepath.Join(t.directory, config.SubdirPrevious)
 	var modeErrors []error
-	if t.activated {
-		failed := filepath.Join(t.stage, "failed-venv")
-		moved, err := t.moveDirectory(live, failed)
-		if !moved {
-			return err
+	for index := len(t.payloads) - 1; index >= 0; index-- {
+		payload := &t.payloads[index]
+		live := filepath.Join(t.directory, payload.directory)
+		if payload.activated {
+			moved, err := t.moveDirectory(live, filepath.Join(t.stage, "failed-"+strings.ReplaceAll(payload.directory, "/", "-")))
+			if !moved {
+				return errors.Join(append(modeErrors, err)...)
+			}
+			payload.activated = false
+			modeErrors = append(modeErrors, err)
 		}
-		t.activated = false
-		modeErrors = append(modeErrors, err)
-	}
-	if t.previous {
-		moved, err := t.moveDirectory(filepath.Join(previous, config.SubdirVenv), live)
-		if !moved {
-			return errors.Join(append(modeErrors, err)...)
+		if payload.previous {
+			moved, err := t.moveDirectory(filepath.Join(previous, payload.directory), live)
+			if !moved {
+				return errors.Join(append(modeErrors, err)...)
+			}
+			payload.previous = false
+			modeErrors = append(modeErrors, err)
 		}
-		t.previous = false
-		modeErrors = append(modeErrors, err)
 	}
 	if t.newRecords {
 		for _, name := range []string{config.ProviderVersionName, config.ProviderManifestName, config.ProviderManifestTemp} {
@@ -579,9 +619,6 @@ func (t *runtimeTransaction) rollback() (resultErr error) {
 		}
 		t.recordsMoved = t.recordsMoved[1:]
 	}
-	t.activated = false
-	t.previous = false
-	t.recordsMoved = nil
 	t.started = false
 	return errors.Join(modeErrors...)
 }

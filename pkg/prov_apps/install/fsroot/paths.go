@@ -215,6 +215,7 @@ func ProviderManifestPath(name string) string {
 // at startup and raise a clean "reinstall needed" signal instead of
 // surfacing an incomprehensible dyld error from first-chat.
 type InstallManifest struct {
+	WorkingDir        string                `json:"working_dir,omitempty"` // Owned source path; empty for package recipes.
 	PlanID            string                `json:"plan_id,omitempty"`
 	Inventory         []ManifestPackage     `json:"dependency_inventory,omitempty"`
 	RecipeFingerprint string                `json:"recipe_fingerprint,omitempty"`

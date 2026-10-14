@@ -184,3 +184,11 @@ func TestModelStoreUpdateSaveReconcileAndSync(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, studio, freshWorker.GetOnDemand(p.Name))
 }
+
+func TestDataDirectoryReservedInstallPaths(t *testing.T) {
+	provider := modelStoreProvider()
+	for _, dataDir := range []string{SubdirCandidate, SubdirPrevious, SubdirPython, ProviderVersionName, ProviderManifestName} {
+		provider.Runtime.DataDir = dataDir
+		require.Error(t, provider.Validate())
+	}
+}

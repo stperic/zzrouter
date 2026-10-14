@@ -28,16 +28,25 @@ import (
 type RecipeSnapshot struct {
 	Recheck func(context.Context) error `json:"-"`
 	config.ResolvedInstall
-	Provider          string                  `json:"provider"`
-	Runtime           string                  `json:"runtime"`
-	Node              string                  `json:"node"`
-	Fingerprint       string                  `json:"fingerprint"`
-	PolicyFingerprint string                  `json:"policy_fingerprint"`
-	Authority         string                  `json:"authority"`
-	Policy            *RuntimePolicy          `json:"-"`
-	Requirements      *config.AppRequirements `json:"-"`
-	PinnedVersion     string                  `json:"-"`
-	WorkingDir        string                  `json:"-"`
+	Provider          string                   `json:"provider"`
+	Runtime           string                   `json:"runtime"`
+	Node              string                   `json:"node"`
+	Fingerprint       string                   `json:"fingerprint"`
+	PolicyFingerprint string                   `json:"policy_fingerprint"`
+	Authority         string                   `json:"authority"`
+	Policy            *RuntimePolicy           `json:"-"`
+	Requirements      *config.AppRequirements  `json:"-"`
+	PinnedVersion     string                   `json:"-"`
+	WorkingDir        string                   `json:"-"`
+	DataRuntime       *config.AppRuntimeConfig `json:"-"`
+}
+
+// PayloadDirectories lists the owned runtime trees in activation order.
+func (s RecipeSnapshot) PayloadDirectories() []string {
+	if s.Recipe.Source != nil {
+		return []string{s.WorkingDir, config.SubdirVenv}
+	}
+	return []string{config.SubdirVenv}
 }
 
 // RecipeResolver reads current config and authority on the executing node.
@@ -71,6 +80,7 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 	if resolved.Recipe.Source != nil {
 		out.PinnedVersion = resolved.Recipe.Source.Version
 		out.WorkingDir = sc.RuntimeExecution(runtime).WorkingDir
+		out.DataRuntime = sc.Runtime
 	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
 	}
