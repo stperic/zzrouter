@@ -17,6 +17,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -24,8 +25,10 @@ import (
 
 // ModelStoreDestination resolves files in one provider-declared category.
 type ModelStoreDestination struct {
-	root string
-	name string
+	provider string
+	root     string
+	name     string
+	path     string
 }
 
 // NewModelStoreDestination selects the root from config, never from request paths.
@@ -34,8 +37,12 @@ func NewModelStoreDestination(cfg config.ServiceConfig, category, name string) (
 	if err != nil {
 		return nil, err
 	}
-	d := &ModelStoreDestination{root: root, name: name}
-	_, err = ModelStoreFilePath(root, name, false)
+	provider, err := utils.ResolvePath(fsroot.ProviderDir(cfg.Name))
+	if err != nil {
+		return nil, err
+	}
+	d := &ModelStoreDestination{provider: provider, root: root, name: name}
+	d.path, err = ModelStoreFilePath(provider, root, name, false)
 	return d, err
 }
 
@@ -43,13 +50,30 @@ func modelStoreRoot(cfg config.ServiceConfig) (string, error) {
 	if cfg.Mode != constants.AppModeOnDemand || cfg.RunScope != config.RunScopeNode || cfg.Runtime == nil || cfg.Runtime.ModelStore == nil {
 		return "", httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeProviderModelStoreUnsupported), Message: "provider does not declare a node-scoped model store"}
 	}
-	provider := fsroot.ProviderDir(cfg.Name)
+	provider, err := utils.ResolvePath(fsroot.ProviderDir(cfg.Name))
+	if err != nil {
+		return "", err
+	}
 	store, err := cfg.Runtime.ModelStorePath(provider)
 	if err != nil {
 		return "", err
 	}
 	if err := modelStoreContained(provider, store); err != nil {
 		return "", err
+	}
+	store, err = utils.ResolvePath(store)
+	if err != nil {
+		return "", err
+	}
+	models, err := modelregistry.GetModelsRootDir()
+	if err == nil {
+		models, err = utils.ResolvePath(models)
+	}
+	if err != nil {
+		return "", err
+	}
+	if modelStoreContains(models, store) || modelStoreContains(store, models) {
+		return "", httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeProviderModelStoreUnsupported), Message: "provider model store overlaps the LLM model root"}
 	}
 	return store, nil
 }
@@ -70,12 +94,36 @@ func ModelStoreCategoryPath(cfg config.ServiceConfig, category string) (string, 
 	return utils.ResolvePath(root)
 }
 
-// Directory is the category's integrity and materialization-lock root.
-func (d *ModelStoreDestination) Directory() string { return d.root }
+// Directory revalidates the admitted integrity and materialization-lock root.
+func (d *ModelStoreDestination) Directory() (string, error) {
+	if _, err := d.FilePath(false); err != nil {
+		return "", err
+	}
+	return d.root, nil
+}
+
+// NoReplace protects files installed by an operator during a transfer.
+func (d *ModelStoreDestination) NoReplace() bool { return true }
 
 // Path maps the selected source file to its validated provider destination.
 func (d *ModelStoreDestination) Path(_ string) (string, error) {
-	return ModelStoreFilePath(d.root, d.name, true)
+	return d.FilePath(true)
+}
+
+// FilePath resolves the selected name against the captured provider boundary.
+func (d *ModelStoreDestination) FilePath(create bool) (string, error) {
+	resolve := func(create bool) (string, error) {
+		path, err := ModelStoreFilePath(d.provider, d.root, d.name, create)
+		if err == nil && path != d.path {
+			return "", invalidModelFile("provider model destination changed after admission")
+		}
+		return path, err
+	}
+	path, err := resolve(false)
+	if err == nil && create {
+		return resolve(true)
+	}
+	return path, err
 }
 
 // CheckSpace checks the destination filesystem when the source size is known.
@@ -83,7 +131,7 @@ func (d *ModelStoreDestination) CheckSpace(size int64) error {
 	if size <= 0 {
 		return nil
 	}
-	path, err := ModelStoreFilePath(d.root, d.name, false)
+	path, err := d.FilePath(false)
 	if err != nil {
 		return err
 	}
@@ -108,13 +156,24 @@ func ValidateModelFileName(name string) error {
 }
 
 // ModelStoreFilePath checks existing ancestors before creation and the resolved
-// parent afterward. Reads/deletes pass create=false and inspect the final Lstat.
-func ModelStoreFilePath(root, name string, create bool) (string, error) {
+// parent afterward against fixed resolved category and provider boundaries.
+// Reads/deletes pass create=false and inspect the final Lstat.
+func ModelStoreFilePath(provider, root, name string, create bool) (string, error) {
 	if err := ValidateModelFileName(name); err != nil {
 		return "", err
 	}
 	dest := filepath.Join(root, filepath.FromSlash(name))
 	parent := filepath.Dir(dest)
+	if err := modelStoreContained(provider, parent); err != nil {
+		return "", err
+	}
+	resolved, err := utils.ResolvePath(root)
+	if err != nil {
+		return "", err
+	}
+	if resolved != root {
+		return "", invalidModelFile("provider model category changed after admission")
+	}
 	if err := modelStoreContained(root, parent); err != nil {
 		return "", err
 	}
@@ -122,28 +181,31 @@ func ModelStoreFilePath(root, name string, create bool) (string, error) {
 		if err := os.MkdirAll(parent, 0755); err != nil {
 			return "", err
 		}
+		if err := modelStoreContained(provider, parent); err != nil {
+			return "", err
+		}
 		if err := modelStoreContained(root, parent); err != nil {
 			return "", err
 		}
 	}
-	parent, err := utils.ResolvePath(parent)
+	parent, err = utils.ResolvePath(parent)
 	return filepath.Join(parent, filepath.Base(dest)), err
 }
 
 func modelStoreContained(root, path string) error {
-	root, err := utils.ResolvePath(root)
+	path, err := utils.ResolvePath(path)
 	if err != nil {
 		return err
 	}
-	path, err = utils.ResolvePath(path)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+	if !modelStoreContains(root, path) {
 		return invalidModelFile("provider model path escapes its root")
 	}
 	return nil
+}
+
+func modelStoreContains(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // ModelStoreFile describes one regular file in a provider category.
@@ -165,6 +227,10 @@ func ListModelStore(ctx context.Context, cfg config.ServiceConfig, category stri
 		return nil, err
 	}
 	if _, err := modelStoreRoot(cfg); err != nil {
+		return nil, err
+	}
+	provider, err := utils.ResolvePath(fsroot.ProviderDir(cfg.Name))
+	if err != nil {
 		return nil, err
 	}
 	categories := slices.Clone(cfg.Runtime.ModelStore.Categories)
@@ -209,7 +275,7 @@ func ListModelStore(ctx context.Context, cfg config.ServiceConfig, category stri
 			if !d.Type().IsRegular() {
 				return nil
 			}
-			if _, err := ModelStoreFilePath(root, name, false); err != nil {
+			if _, err := ModelStoreFilePath(provider, root, name, false); err != nil {
 				return err
 			}
 			info, err := d.Info()
@@ -231,8 +297,8 @@ func ListModelStore(ctx context.Context, cfg config.ServiceConfig, category stri
 }
 
 // DeleteModelStoreFile unlinks only an Lstat-confirmed regular file.
-func DeleteModelStoreFile(root, name string) error {
-	path, err := ModelStoreFilePath(root, name, false)
+func DeleteModelStoreFile(provider, root, name string) error {
+	path, err := ModelStoreFilePath(provider, root, name, false)
 	if err != nil {
 		return err
 	}

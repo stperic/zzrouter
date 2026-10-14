@@ -81,7 +81,7 @@ func TestFetchResumesWithRegistryAuth(t *testing.T) {
 
 	hfc := &Connector{downloadBase: "https://hub.test/", token: "secret"}
 	hfc.SetHTTPTransport(transport)
-	got, err := hfc.fetch(t.Context(), "org/model", "main", metadata.TreeFileEntry{Name: "model.gguf", Size: int64(len(content)), SHA256: sum}, dest, nil)
+	got, err := hfc.fetch(t.Context(), "org/model", "main", metadata.TreeFileEntry{Name: "model.gguf", Size: int64(len(content)), SHA256: sum}, dest, false, nil)
 	assert.Equal(t, sum, got)
 
 	require.NoError(t, err)

@@ -28,7 +28,7 @@ import (
 // File layout (under pkg/modelregistry/):
 //   - registry.go            — this file: struct + lifecycle (Stop, Reload).
 //   - registry_scan.go       — ListAllModels, buildModelList, scan cache.
-//   - registry_pull.go       — PullOllamaModelAsync, DownloadHuggingFaceModelAsync.
+//   - registry_pull.go       — PullOllamaModelAsync, DownloadHuggingFaceModel.
 //   - registry_delete.go     — GetModel, DeleteModelByNameAndSource, validators.
 //   - operations.go          — DeleteModel, VerifyModel, GetTotalDiskUsage, GetLargestModels.
 //   - filter.go              — ModelFilter + GetStats + RegistryStats.
@@ -47,11 +47,9 @@ type Registry struct {
 	scanValid    bool
 	scanFailures map[string]string
 
-	// Async-download lifecycle. stopMu serializes the entry check +
-	// wg.Add window in the *Async methods against Stop's wg.Wait. Once
-	// stopped is true, no new goroutine is spawned and pending wg.Wait
-	// is not racing wg.Add (which would panic with "WaitGroup is reused
-	// before previous Wait has returned").
+	// Download lifecycle. stopMu serializes admission + wg.Add
+	// against Stop's wg.Wait. Once stopped is true, no new work starts
+	// and wg.Wait cannot race wg.Add at a zero counter.
 	stopMu  sync.Mutex
 	stopped bool
 	wg      sync.WaitGroup
@@ -128,22 +126,12 @@ func (r *Registry) GetHuggingFaceConnector() *huggingface.Connector {
 	return r.huggingfaceConnector
 }
 
-// ErrRegistryStopped is the statusUpdater payload when an *Async
-// download is refused because Stop has run. errors.Is friendly.
+// ErrRegistryStopped refuses a download after Stop has run.
 var ErrRegistryStopped = errors.New("modelregistry: registry stopped")
 
-// beginAsyncDownload gates and reserves a wg slot under stopMu — the
-// check + wg.Add MUST be atomic with Stop's set-flag, otherwise wg.Add
-// can race wg.Wait at counter==0 ("WaitGroup is reused before previous
-// Wait has returned"). Returns true → caller spawns and defers
-// r.wg.Done(). Returns false → caller refuses via statusUpdater.
-//
-// Only the two *Async methods in registry_pull.go (PullOllamaModelAsync,
-// DownloadHuggingFaceModelAsync) are expected to call this. Any future
-// async path must gate on beginAsyncDownload + defer r.wg.Done() in the
-// spawned goroutine — otherwise Stop's wg.Wait will deadlock or the
-// goroutine will outlive Stop.
-func (r *Registry) beginAsyncDownload() bool {
+// beginDownload atomically checks shutdown and reserves work for Stop to await.
+// Both registry download methods defer wg.Done after successful admission.
+func (r *Registry) beginDownload() bool {
 	r.stopMu.Lock()
 	defer r.stopMu.Unlock()
 	if r.stopped {
@@ -153,7 +141,7 @@ func (r *Registry) beginAsyncDownload() bool {
 	return true
 }
 
-// Stop refuses new async-download spawns and waits for in-flight ones
+// Stop refuses new downloads and waits for in-flight work
 // to exit. Callers SHOULD cancel the per-download ctxs first — Stop
 // owns the lifecycle flag and wait, not the download ctx. Idempotent.
 func (r *Registry) Stop() {

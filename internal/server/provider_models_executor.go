@@ -8,6 +8,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	provapps "github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 func (e *DeploymentsExecutor) modelStoreConfig(provider string) (config.ServiceConfig, error) {
@@ -47,7 +49,12 @@ func (e *DeploymentsExecutor) HandleInternalDeleteProviderModel(c *gin.Context) 
 		RespondToError(c, err)
 		return
 	}
-	path, err := provapps.ModelStoreFilePath(root, name, false)
+	boundary, err := utils.ResolvePath(fsroot.ProviderDir(cfg.Name))
+	if err != nil {
+		RespondToError(c, err)
+		return
+	}
+	path, err := provapps.ModelStoreFilePath(boundary, root, name, false)
 	if err != nil {
 		RespondToError(c, err)
 		return
@@ -64,7 +71,7 @@ func (e *DeploymentsExecutor) HandleInternalDeleteProviderModel(c *gin.Context) 
 		RespondToError(c, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeDownloadInProgress), Message: "provider model download is in progress"})
 		return
 	}
-	if err := provapps.DeleteModelStoreFile(root, name); err != nil {
+	if err := provapps.DeleteModelStoreFile(boundary, root, name); err != nil {
 		RespondToError(c, err)
 		return
 	}

@@ -32,10 +32,11 @@ func TestDownloadTrackerCompletionBelongsToAttempt(t *testing.T) {
 		fires.Add(1)
 		return nil
 	}})
-	provider := dt.StartDownload("provider", "org/model", nil, DownloadOptions{Target: target, RequestedFile: "model.gguf", SourceKey: "source"})
+	provider := dt.StartDownload("provider", "", nil, DownloadOptions{Target: target, SourceKey: "source"})
 	require.NoError(t, dt.UpdateDownloadFullGen("provider", provider, "completed", "model.gguf", 1, 1, 100, 1, 1, 0))
 	require.Zero(t, fires.Load())
 	require.Empty(t, dt.GetDownloadStatus("provider").ModelName)
+	require.Empty(t, dt.GetDownloadStatus("provider").RequestedFile)
 	require.NoError(t, dt.UpdateDownloadFullGen("catalog", catalog, "completed", "", 1, 1, 100, 1, 1, 0))
 	require.EqualValues(t, 1, fires.Load())
 	dt.Stop()

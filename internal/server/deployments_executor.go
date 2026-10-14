@@ -197,7 +197,7 @@ func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadReque
 		}
 		store, err := provapps.NewModelStoreDestination(svc, a.request.Target.Category, a.request.Target.Name)
 		if err == nil {
-			a.path, err = provapps.ModelStoreFilePath(store.Directory(), a.request.Target.Name, false)
+			a.path, err = store.FilePath(false)
 		}
 		if err != nil {
 			return a, err
@@ -206,7 +206,6 @@ func (e *DeploymentsExecutor) resolveDownloadAdmission(req internalDownloadReque
 		a.key = providerModelDownloadKey(e.getNodename(), a.path)
 		source, _ := json.Marshal([]string{a.request.Repo, a.request.EffectiveRevision(), a.request.Weights})
 		a.options.SourceKey = string(source)
-		a.options.RequestedFile = a.request.Target.Name
 		a.model = ""
 		a.retainReservation = true
 	default:
@@ -520,7 +519,13 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
-		<-e.registry.DownloadHuggingFaceModelAsync(ctx, request, statusUpdater, admission.destination)
+		if err := e.registry.DownloadHuggingFaceModel(ctx, request, statusUpdater, admission.destination); err != nil {
+			var problem httperr.Error
+			if errors.As(err, &problem) {
+				job.Meta(jobs.Meta{"error_code": problem.Code})
+			}
+			e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), err.Error(), 0, 0, 0, 0, 0, 0)
+		}
 	}()
 
 	result := e.newDeploymentResult(

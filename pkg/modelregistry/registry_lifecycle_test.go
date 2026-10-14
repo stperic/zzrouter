@@ -2,9 +2,9 @@ package modelregistry
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -46,31 +46,17 @@ func TestRegistryStop_IdempotentOnFreshRegistry(t *testing.T) {
 	}
 }
 
-// Post-Stop async spawns must be refused via the statusUpdater rather
-// than silently spawning a zombie goroutine. This is the central
-// invariant — without it Stop is a lie.
+// Post-Stop synchronous work returns its failure without invoking progress.
 func TestRegistryStop_RefusesSubsequentDownloadHF(t *testing.T) {
 	t.Parallel()
 	r := newTestRegistry(t)
 	r.Stop()
 
-	statusCh := make(chan [2]string, 4)
-	r.DownloadHuggingFaceModelAsync(context.Background(), metadata.DownloadRequest{Repo: "irrelevant/model"},
-		func(s, currentFile string, _, _ int, _ float64, _, _, _ int64) {
-			select {
-			case statusCh <- [2]string{s, currentFile}:
-			default:
-			}
+	err := r.DownloadHuggingFaceModel(context.Background(), metadata.DownloadRequest{Repo: "irrelevant/model"},
+		func(string, string, int, int, float64, int64, int64, int64) {
+			t.Error("refused synchronous work must return its failure to the caller")
 		}, r.CatalogDestination("irrelevant/model"))
-
-	select {
-	case got := <-statusCh:
-		assert.Equal(t, "failed", got[0])
-		assert.True(t, strings.Contains(got[1], "registry stopped"),
-			"expected 'registry stopped' substring in payload, got status=%q msg=%q", got[0], got[1])
-	case <-time.After(2 * time.Second):
-		t.Fatal("statusUpdater did not fire after Stop within 2s")
-	}
+	require.ErrorIs(t, err, ErrRegistryStopped)
 }
 
 // Same invariant for the Ollama path. Note: the pre-Stop guard
@@ -113,7 +99,9 @@ func TestRegistryStop_RaceFreeUnderConcurrentSpawns(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			r.DownloadHuggingFaceModelAsync(context.Background(), metadata.DownloadRequest{Repo: "x/y"},
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			_ = r.DownloadHuggingFaceModel(ctx, metadata.DownloadRequest{Repo: "x/y"},
 				func(_, _ string, _, _ int, _ float64, _, _, _ int64) {}, r.CatalogDestination("x/y"))
 		}()
 	}
@@ -124,6 +112,54 @@ func TestRegistryStop_RaceFreeUnderConcurrentSpawns(t *testing.T) {
 	// stopMu guard would surface here as wg.Add concurrent with
 	// wg.Wait → "WaitGroup is reused before previous Wait has
 	// returned" panic.
+}
+
+type lifecycleTransport func(*http.Request) (*http.Response, error)
+
+func (f lifecycleTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRegistryStopWaitsForSynchronousHuggingFaceCleanup(t *testing.T) {
+	r := newTestRegistry(t)
+	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	r.GetHuggingFaceConnector().SetHTTPTransport(lifecycleTransport(func(req *http.Request) (*http.Response, error) {
+		close(entered)
+		<-req.Context().Done()
+		close(cancelled)
+		<-release
+		return nil, req.Context().Err()
+	}))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- r.DownloadHuggingFaceModel(ctx, metadata.DownloadRequest{Repo: "org/repo"},
+			func(string, string, int, int, float64, int64, int64, int64) {
+				t.Error("failed work must return its error")
+			}, r.CatalogDestination("org/repo"))
+	}()
+	<-entered
+	stopped := make(chan struct{})
+	go func() { r.Stop(); close(stopped) }()
+	require.Eventually(t, func() bool {
+		r.stopMu.Lock()
+		defer r.stopMu.Unlock()
+		return r.stopped
+	}, time.Second, time.Millisecond)
+	cancel()
+	<-cancelled
+	select {
+	case <-result:
+		t.Fatal("synchronous call returned before cleanup")
+	case <-stopped:
+		t.Fatal("Stop returned before cleanup")
+	default:
+	}
+	unblock()
+	require.ErrorIs(t, <-result, context.Canceled)
+	<-stopped
 }
 
 // Deleting a split GGUF removes every shard and nothing else.

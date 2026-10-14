@@ -102,9 +102,7 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.C
 	// For GGUF models, use the filename (without extension) as the display name for consistency with list command
 	// This matches the format shown in "zzrouter list" which uses the actual filename
 	displayModelName := modelName
-	if opts.Target.EffectiveOwner() == metadata.OwnerProviderStore {
-		displayModelName = ""
-	} else if opts.RequestedFile != "" {
+	if opts.RequestedFile != "" {
 		fileName := opts.RequestedFile
 		// Check if this is a GGUF file
 		if strings.HasSuffix(strings.ToLower(fileName), ".gguf") {

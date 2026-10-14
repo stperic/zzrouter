@@ -1,5 +1,5 @@
 // Package download transfers one URL to a file through a partial file,
-// resuming after transient transport errors and renaming into place only when
+// resuming after transient transport errors and publishing into place only when
 // complete. Every large-file download zzRouter makes goes through Fetch.
 package download
 
@@ -33,11 +33,12 @@ const (
 
 // Options tunes one Fetch. The zero value downloads with no hash or limit.
 type Options struct {
-	Hash     bool                    // keep a running SHA256 over the whole file
-	MaxSize  int64                   // refuse a larger file; 0 means unlimited
-	Progress func(done, total int64) // total is -1 when unknown; done rewinds on a restart
-	Verify   func(Result) error      // the caller's check, before the rename
-	Mode     fs.FileMode             // the final file's mode; 0 keeps the partial's 0600
+	NoReplace bool                    // atomically refuse an existing final entry
+	Hash      bool                    // keep a running SHA256 over the whole file
+	MaxSize   int64                   // refuse a larger file; 0 means unlimited
+	Progress  func(done, total int64) // total is -1 when unknown; done rewinds on a restart
+	Verify    func(Result) error      // the caller's check, before finalization
+	Mode      fs.FileMode             // the final file's mode; 0 keeps the partial's 0600
 }
 
 // Result describes a completed transfer.
@@ -121,7 +122,13 @@ func Fetch(client *http.Client, req *http.Request, dest string, opts Options) (r
 	if err = out.Close(); err != nil {
 		return result, err
 	}
-	err = os.Rename(out.Name(), dest)
+	if opts.NoReplace {
+		if err = os.Link(out.Name(), dest); err == nil {
+			err = os.Remove(out.Name())
+		}
+	} else {
+		err = os.Rename(out.Name(), dest)
+	}
 	return result, err
 }
 

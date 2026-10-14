@@ -26,16 +26,20 @@ const progressInterval = 100 * time.Millisecond
 
 // Destination owns local materialization paths; source selection stays here.
 type Destination interface {
-	Directory() string
+	Directory() (string, error)
 	Path(string) (string, error)
 	CheckSpace(int64) error
+	NoReplace() bool
 }
 
 // CatalogDestination is the explicitly selected LLM repository directory.
 type CatalogDestination string
 
 // Directory is the repository's materialization and integrity root.
-func (d CatalogDestination) Directory() string { return string(d) }
+func (d CatalogDestination) Directory() (string, error) { return string(d), nil }
+
+// NoReplace preserves catalog replacement and repair behavior.
+func (d CatalogDestination) NoReplace() bool { return false }
 
 // Path preserves catalog filenames under the repository directory.
 func (d CatalogDestination) Path(name string) (string, error) {
@@ -53,7 +57,7 @@ type planned struct {
 
 // Download fetches what req names from a repository into the model's
 // directory, adding to what is there. Each file is written beside its
-// destination and renamed into place once complete and verified, then
+// destination and published into place once complete and verified, then
 // recorded in the integrity manifest with the feature it belongs to. A file
 // the manifest already holds at the listed size and hash is not fetched
 // again, and nothing already in the directory is removed.
@@ -69,12 +73,18 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	if err != nil {
 		return err
 	}
-	dir := destination.Directory()
+	dir, err := destination.Directory()
+	if err != nil {
+		return err
+	}
 	release, err := integrity.AcquireMaterialization(ctx, dir)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if _, err := destination.Directory(); err != nil {
+		return err
+	}
 	manifest, err := integrity.ReadManifest(dir)
 	if err != nil {
 		return err
@@ -84,6 +94,9 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		files, held = missing(files, manifest, dir)
 	}
 	if len(held) > 0 {
+		if _, err := destination.Directory(); err != nil {
+			return err
+		}
 		if err := integrity.RecordFiles(dir, req.Repo, hfc.downloadBase+req.Repo, held...); err != nil {
 			return err
 		}
@@ -107,18 +120,15 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		if err != nil {
 			return err
 		}
-		if providerStore {
+		if destination.NoReplace() {
 			if err := utils.RequireAbsent(dest); err != nil {
-				if errors.Is(err, fs.ErrExist) {
-					return errors.Join(err, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeFileExists), Message: "provider model file already exists"})
-				}
-				return err
+				return fileExistsError(err)
 			}
 		}
 		if err := destination.CheckSpace(f.file.Size); err != nil {
 			return err
 		}
-		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.file, dest, func(n int64) {
+		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.file, dest, destination.NoReplace(), func(n int64) {
 			done += n
 			if now := utils.Now(); n < 0 || now.Sub(last) >= progressInterval {
 				last = now
@@ -127,6 +137,10 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		})
 		if err != nil {
 			return fmt.Errorf("failed to download %s: %w", f.file.Name, err)
+		}
+		dest, err = destination.Path(f.file.Name)
+		if err != nil {
+			return err
 		}
 		info, err := os.Stat(dest)
 		if err != nil {
@@ -139,6 +153,9 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 				return err
 			}
 		}
+		if _, err := destination.Directory(); err != nil {
+			return err
+		}
 		if err := integrity.RecordFiles(dir, req.Repo, sourceURL, integrity.FileChecksum{
 			RelativePath: relative, SHA256: sum,
 			Size: info.Size(), ModTime: info.ModTime(), Feature: f.feature,
@@ -147,6 +164,13 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		}
 	}
 	return nil
+}
+
+func fileExistsError(err error) error {
+	if errors.Is(err, fs.ErrExist) {
+		return errors.Join(err, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeFileExists), Message: "provider model file already exists"})
+	}
+	return err
 }
 
 func (hfc *Connector) downloadFiles(ctx context.Context, req metadata.DownloadRequest) ([]planned, error) {
@@ -283,14 +307,14 @@ func missing(files []planned, manifest *integrity.ModelManifest, dir string) (fe
 	return fetch, held
 }
 
-func (hfc *Connector) fetch(ctx context.Context, repo, revision string, file metadata.TreeFileEntry, dest string, progress func(int64)) (string, error) {
+func (hfc *Connector) fetch(ctx context.Context, repo, revision string, file metadata.TreeFileEntry, dest string, noReplace bool, progress func(int64)) (string, error) {
 	req, err := hfc.newGet(ctx, fmt.Sprintf("%s%s/resolve/%s/%s", hfc.downloadBase, repo, url.PathEscape(revision), encodeRepoFilePath(file.Name)))
 	if err != nil {
 		return "", err
 	}
 	var done int64
 	result, err := download.Fetch(hfc.httpClient(httpTimeout), req, dest, download.Options{
-		Hash: true,
+		Hash: true, NoReplace: noReplace,
 		Progress: func(n, _ int64) {
 			if progress != nil {
 				progress(n - done)
@@ -304,5 +328,8 @@ func (hfc *Connector) fetch(ctx context.Context, repo, revision string, file met
 			return nil
 		},
 	})
+	if noReplace {
+		err = fileExistsError(err)
+	}
 	return result.SHA256, err
 }

@@ -24,12 +24,14 @@ func TestProviderModelStoreInventoryDeleteAndCapacity(t *testing.T) {
 	require.Equal(t, []ModelStoreCategory{{Name: "loras", Files: []ModelStoreFile{}}, {Name: "vae", Files: []ModelStoreFile{}}}, list)
 	dest, err := NewModelStoreDestination(cfg, "vae", "a/file")
 	require.NoError(t, err)
+	dir, err := dest.Directory()
+	require.NoError(t, err)
 	require.NoError(t, dest.CheckSpace(0))
 	require.NoError(t, dest.CheckSpace(-1))
 	require.NoError(t, dest.CheckSpace(1))
 	require.Error(t, dest.CheckSpace(math.MaxInt64))
 	for _, name := range []string{"a/file", "a.gguf", "empty", ".zzrouter-manifest.json", "a/hidden.zzpart"} {
-		path := filepath.Join(dest.Directory(), name)
+		path := filepath.Join(dir, name)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
 		data := []byte("manual")
 		if name == "empty" {
@@ -37,8 +39,8 @@ func TestProviderModelStoreInventoryDeleteAndCapacity(t *testing.T) {
 		}
 		require.NoError(t, os.WriteFile(path, data, 0600))
 	}
-	require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(dest.Directory(), "escape")))
-	require.NoError(t, os.Symlink(filepath.Join(dest.Directory(), "a.gguf"), filepath.Join(dest.Directory(), "link")))
+	require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(dir, "escape")))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "a.gguf"), filepath.Join(dir, "link")))
 	list, err = ListModelStore(t.Context(), cfg, "vae")
 	require.NoError(t, err)
 	require.Len(t, list, 1)
@@ -48,13 +50,13 @@ func TestProviderModelStoreInventoryDeleteAndCapacity(t *testing.T) {
 	require.EqualValues(t, 0, list[0].Files[2].SizeBytes)
 	require.Equal(t, "UTC", list[0].Files[0].ModifiedAt.Location().String())
 	for _, name := range []string{"a", "link", "escape", "../file"} {
-		err := DeleteModelStoreFile(dest.Directory(), name)
+		err := DeleteModelStoreFile(dest.provider, dir, name)
 		var wire httperr.Error
 		require.True(t, errors.As(err, &wire))
 		require.Equal(t, string(httperr.CodeInvalidFileName), wire.Code)
 	}
-	require.NoError(t, DeleteModelStoreFile(dest.Directory(), "a/file"))
-	err = DeleteModelStoreFile(dest.Directory(), "a/file")
+	require.NoError(t, DeleteModelStoreFile(dest.provider, dir, "a/file"))
+	err = DeleteModelStoreFile(dest.provider, dir, "a/file")
 	var wire httperr.Error
 	require.ErrorAs(t, err, &wire)
 	require.Equal(t, string(httperr.CodeFileNotFound), wire.Code)

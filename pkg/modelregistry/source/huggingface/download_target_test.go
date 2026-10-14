@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
@@ -24,8 +26,9 @@ func (f targetTransport) RoundTrip(r *http.Request) (*http.Response, error) { re
 
 type targetDestination struct{ dir, name string }
 
-func (d targetDestination) Directory() string        { return d.dir }
-func (d targetDestination) CheckSpace(_ int64) error { return nil }
+func (d targetDestination) Directory() (string, error) { return d.dir, nil }
+func (d targetDestination) CheckSpace(_ int64) error   { return nil }
+func (d targetDestination) NoReplace() bool            { return true }
 func (d targetDestination) Path(_ string) (string, error) {
 	return filepath.Join(d.dir, d.name), nil
 }
@@ -87,17 +90,40 @@ func TestProviderDownloadRechecksExistingFileUnderMaterializationGate(t *testing
 	req := providerFileRequest()
 	req.Files = []metadata.DownloadFile{{TreeFileEntry: metadata.TreeFileEntry{Name: req.Weights}}}
 	hfc := &Connector{modelsDir: t.TempDir()}
+	var fetched atomic.Int32
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
+		fetched.Add(1)
+		return targetResponse(r, "weights"), nil
+	}))
 	release, err := integrity.AcquireMaterialization(t.Context(), dest.dir)
 	require.NoError(t, err)
+	var once sync.Once
+	unlock := func() { once.Do(release) }
+	defer unlock()
+	ctx := &materializationContext{Context: t.Context(), waiting: make(chan struct{})}
 	result := make(chan error, 1)
-	go func() { result <- hfc.Download(t.Context(), req, nil, dest) }()
+	go func() { result <- hfc.Download(ctx, req, nil, dest) }()
+	// Done is evaluated by the gate's select after all pre-gate work.
+	<-ctx.waiting
 	err = os.WriteFile(filepath.Join(dest.dir, dest.name), []byte("manual"), 0600)
-	release()
+	unlock()
 	require.NoError(t, err)
 	require.ErrorIs(t, <-result, os.ErrExist)
 	bytes, err := os.ReadFile(filepath.Join(dest.dir, dest.name))
 	require.NoError(t, err)
 	require.Equal(t, "manual", string(bytes))
+	require.Zero(t, fetched.Load(), "the under-gate absence check must refuse before any fetch")
+}
+
+type materializationContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func (c *materializationContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
 }
 
 func TestProviderDownloadFailureAndCancellationRemovePartials(t *testing.T) {
