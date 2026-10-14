@@ -25,12 +25,11 @@ func IsTerminalStatus(status string) bool {
 
 // DownloadTracker tracks ongoing downloads
 type DownloadTracker struct {
-	downloads          map[string]*DownloadStatus
-	cancelFuncs        map[string]context.CancelFunc // Cancel functions for stopping downloads
-	generations        map[string]uint64             // Generation counter per key; prevents stale goroutines from overwriting newer downloads
-	mu                 sync.RWMutex
-	completionMu       sync.Mutex // Serialize publication without blocking status readers.
-	onCompleteCallback func() error
+	downloads    map[string]*DownloadStatus
+	cancelFuncs  map[string]context.CancelFunc // Cancel functions for stopping downloads
+	generations  map[string]uint64             // Generation counter per key; prevents stale goroutines from overwriting newer downloads
+	mu           sync.RWMutex
+	completionMu sync.Mutex // Serialize publication without blocking status readers.
 
 	// Persistence fields
 	stateFilePath string      // Path to downloads.json
@@ -47,16 +46,18 @@ type PersistedState struct {
 
 // PersistedDownload contains the non-volatile fields of a download for persistence
 type PersistedDownload struct {
-	ModelName       string    `json:"model_name"`
-	RequestedFile   string    `json:"requested_file,omitempty"`
-	Status          string    `json:"status"`
-	Progress        float64   `json:"progress"`
-	TotalSize       int64     `json:"total_size"`
-	FilesDownloaded int       `json:"files_downloaded,omitempty"`
-	FilesTotal      int       `json:"files_total,omitempty"`
-	StartedAt       time.Time `json:"started_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	Error           string    `json:"error,omitempty"`
+	Target          metadata.DownloadTarget `json:"target,omitzero"`
+	SourceKey       string                  `json:"source_key,omitempty"`
+	ModelName       string                  `json:"model_name"`
+	RequestedFile   string                  `json:"requested_file,omitempty"`
+	Status          string                  `json:"status"`
+	Progress        float64                 `json:"progress"`
+	TotalSize       int64                   `json:"total_size"`
+	FilesDownloaded int                     `json:"files_downloaded,omitempty"`
+	FilesTotal      int                     `json:"files_total,omitempty"`
+	StartedAt       time.Time               `json:"started_at"`
+	UpdatedAt       time.Time               `json:"updated_at"`
+	Error           string                  `json:"error,omitempty"`
 }
 
 // NewDownloadTrackerWithPersistence creates a tracker and loads existing state from file.
@@ -72,22 +73,20 @@ func NewDownloadTrackerWithPersistence(stateFilePath string) *DownloadTracker {
 	return dt
 }
 
-// SetOnCompleteCallback sets the callback fired when a download transitions
-// to completed. The callback runs synchronously without the tracker lock
-// and is invoked once per completion event, before completed is visible.
-// No debounce. Consumers that need coalescing should do it on their side.
-func (dt *DownloadTracker) SetOnCompleteCallback(callback func() error) {
-	dt.mu.Lock()
-	defer dt.mu.Unlock()
-	dt.onCompleteCallback = callback
+// DownloadOptions binds destination identity and completion to one generation.
+type DownloadOptions struct {
+	Target        metadata.DownloadTarget
+	SourceKey     string
+	RequestedFile string
+	OnComplete    func() error
 }
 
 // StartDownload registers a new download
-// requestedFile is optional - if provided, indicates a specific file/variant to download (e.g., Q4_K_M.gguf)
+// opts.RequestedFile selects a specific file/variant when nonempty (e.g., Q4_K_M.gguf).
 // If a download with the same key already exists, it is cancelled and replaced.
 // Returns the generation number for this download — callers should pass it to UpdateDownloadFull
 // so that stale goroutines from a previous download cannot overwrite the new one.
-func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.CancelFunc, requestedFile ...string) uint64 {
+func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.CancelFunc, opts DownloadOptions) uint64 {
 	dt.mu.Lock()
 
 	// Cancel any existing download for this key (stop-then-repull scenario)
@@ -103,8 +102,8 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.C
 	// For GGUF models, use the filename (without extension) as the display name for consistency with list command
 	// This matches the format shown in "zzrouter list" which uses the actual filename
 	displayModelName := modelName
-	if len(requestedFile) > 0 && requestedFile[0] != "" {
-		fileName := requestedFile[0]
+	if opts.RequestedFile != "" {
+		fileName := opts.RequestedFile
 		// Check if this is a GGUF file
 		if strings.HasSuffix(strings.ToLower(fileName), ".gguf") {
 			// Use filename without extension as display name (e.g., "Llama-3.2-3B-Instruct-Q4_K_M.gguf" -> "Llama-3.2-3B-Instruct-Q4_K_M")
@@ -119,6 +118,7 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.C
 	}
 
 	status := &DownloadStatus{
+		Target: opts.Target, SourceKey: opts.SourceKey, onComplete: opts.OnComplete,
 		ModelName:  displayModelName, // Store model name (filename without extension for GGUF, or org/model#quant for others)
 		Status:     string(constants.StatusPending),
 		Progress:   0,
@@ -128,9 +128,7 @@ func (dt *DownloadTracker) StartDownload(key, modelName string, cancel context.C
 	}
 
 	// Store requested file/variant if provided
-	if len(requestedFile) > 0 && requestedFile[0] != "" {
-		status.RequestedFile = requestedFile[0]
-	}
+	status.RequestedFile = opts.RequestedFile
 
 	dt.downloads[key] = status
 	if cancel != nil {
@@ -177,8 +175,8 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 			return ErrDownloadInactive
 		}
 
-		if status == string(constants.StatusCompleted) && dt.onCompleteCallback != nil {
-			cb := dt.onCompleteCallback
+		if status == string(constants.StatusCompleted) && download.onComplete != nil {
+			cb := download.onComplete
 			dt.mu.Unlock()
 			if err := cb(); err != nil {
 				return err
@@ -208,6 +206,9 @@ func (dt *DownloadTracker) UpdateDownloadFullGen(key string, gen uint64, status,
 		}
 
 		isTerminal = IsTerminalStatus(status)
+		if isTerminal {
+			download.onComplete = nil
+		}
 	} else {
 		dt.mu.Unlock()
 		return ErrDownloadInactive
@@ -412,6 +413,7 @@ func (dt *DownloadTracker) snapshotDownloads() map[string]*PersistedDownload {
 	snapshot := make(map[string]*PersistedDownload, len(dt.downloads))
 	for key, dl := range dt.downloads {
 		snapshot[key] = &PersistedDownload{
+			Target: dl.Target, SourceKey: dl.SourceKey,
 			ModelName:       dl.ModelName,
 			RequestedFile:   dl.RequestedFile,
 			Status:          dl.Status,
@@ -476,6 +478,7 @@ func (dt *DownloadTracker) loadState() {
 	interrupted := 0
 	for key, pd := range state.Downloads {
 		status := &DownloadStatus{
+			Target: pd.Target, SourceKey: pd.SourceKey,
 			ModelName:       pd.ModelName,
 			RequestedFile:   pd.RequestedFile,
 			Status:          pd.Status,

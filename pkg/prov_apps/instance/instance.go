@@ -259,13 +259,27 @@ func (i *Instance) IsHealthy() bool {
 
 // Evictable reports whether a running or unhealthy run has no active leases and no stop claimed.
 func (i *Instance) Evictable() bool {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.evictableLocked()
+	return i.EvictionBlockedReason() == ""
 }
 
-func (i *Instance) evictableLocked() bool {
-	return (i.Status == StatusRunning || i.Status == StatusUnhealthy) && i.GetActiveRequests() == 0 && !i.activityHold && !i.idleStopClaimed
+// EvictionBlockedReason records why the run cannot be reclaimed, or is empty when idle.
+func (i *Instance) EvictionBlockedReason() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.evictionBlockedReasonLocked()
+}
+
+func (i *Instance) evictionBlockedReasonLocked() string {
+	switch {
+	case (i.Status != StatusRunning && i.Status != StatusUnhealthy) || i.idleStopClaimed:
+		return "not idle"
+	case i.activityHold:
+		return "busy"
+	case i.GetActiveRequests() != 0:
+		return "in use"
+	default:
+		return ""
+	}
 }
 
 // IsRunning returns true if the instance is running or unhealthy.

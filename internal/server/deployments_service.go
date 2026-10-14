@@ -119,17 +119,58 @@ func (req *DeployRequest) Validate() error {
 // internalDeploymentResult matches the wire shape returned by the internal
 // /zzrouter/v1/internal/deployments endpoint (see deployments_executor.go).
 type internalDeploymentResult struct {
-	Key      string `json:"key"`
-	Model    string `json:"model"`
-	Registry string `json:"registry"`
-	Node     string `json:"node"`
-	Status   string `json:"status"`
-	Message  string `json:"message"`
+	Target   metadata.DownloadTarget `json:"target,omitzero"`
+	Key      string                  `json:"key"`
+	Model    string                  `json:"model"`
+	Registry string                  `json:"registry"`
+	Node     string                  `json:"node"`
+	Status   string                  `json:"status"`
+	Message  string                  `json:"message"`
 	// JobID, when non-empty, is the pkg/jobs handle tracking this
 	// download. Clients hit /zzrouter/v1/jobs/:id/stream to watch
 	// progress. Empty when jobs integration was skipped (e.g. a
 	// cached-dedupe early return that doesn't spawn a new producer).
 	JobID string `json:"job_id,omitempty"`
+}
+
+// internalDownloadRequest is the existing worker download primitive's wire shape.
+type internalDownloadRequest struct {
+	Provider string                    `json:"provider,omitempty"`
+	Features []string                  `json:"features,omitempty"`
+	Download *metadata.DownloadRequest `json:"download"`
+	Model    string                    `json:"model" binding:"required"`
+	Node     string                    `json:"node,omitempty"`
+	Registry string                    `json:"registry,omitempty"`
+	File     string                    `json:"file,omitempty"`
+	Force    bool                      `json:"force,omitempty"`
+}
+
+func (req internalDownloadRequest) validateTarget() error {
+	if req.Download == nil {
+		return nil
+	}
+	return req.Download.ValidateTarget()
+}
+
+func (req internalDownloadRequest) registryFor(parsed, model string) string {
+	if req.Registry != "" {
+		return req.Registry
+	}
+	if parsed != "" {
+		return parsed
+	}
+	if strings.Contains(model, "/") {
+		return constants.RepoHuggingFace
+	}
+	return constants.RepoOllama
+}
+
+func dispatchDownload(ctx context.Context, router routing.Router, node string, req internalDownloadRequest) (*internalDeploymentResult, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	return routeAndParse[internalDeploymentResult](ctx, router, "POST", "/zzrouter/v1/internal/deployments", node, body)
 }
 
 // Deploy fans the request out to the resolved set of target nodes, creating a
@@ -246,21 +287,10 @@ func (s *DeploymentsService) dispatchDeployTarget(ctx context.Context, deploymen
 		}
 	}
 
-	body, err := json.Marshal(map[string]any{
-		"model":    model,
-		"node":     node,
-		"registry": req.Registry,
-		"file":     req.File,
-		"force":    req.Force,
-		"provider": plan.Provider,
-		"features": plan.Features,
-		"download": plan.Download,
+	result, err := dispatchDownload(ctx, s.router, node, internalDownloadRequest{
+		Model: model, Node: node, Registry: req.Registry, File: req.File,
+		Force: req.Force, Provider: plan.Provider, Features: plan.Features, Download: plan.Download,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	result, err := routeAndParse[internalDeploymentResult](ctx, s.router, "POST", "/zzrouter/v1/internal/deployments", node, body)
 	if err != nil {
 		slog.Error("[DeploymentsService] Failed to start deployment", "node", node, "error", err)
 		return s.tracker.UpdateNode(deploymentID, node, "", func(n *DeploymentNode) { n.Status, n.Error = constants.StatusFailed, err.Error() })

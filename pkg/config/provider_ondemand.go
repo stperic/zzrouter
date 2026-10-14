@@ -43,6 +43,8 @@ type OnDemandProvider struct {
 // a Docker-based on-demand variant doesn't silently lose its config
 // during the bridge.
 type OnDemandRuntime struct {
+	DataDir               string             `yaml:"data_dir,omitempty" json:"data_dir,omitempty"`
+	ModelStore            *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	PortRange             []int              `yaml:"port_range" json:"port_range"`
@@ -91,6 +93,9 @@ func (p *OnDemandProvider) Validate() error {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := p.validateRunScope(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if err := p.validateDataDirectory(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := p.Runtime.ActivityProbe.Validate(); err != nil {

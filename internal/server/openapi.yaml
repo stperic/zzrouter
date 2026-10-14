@@ -805,6 +805,8 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
+        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (busy,
+        in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
         Unknown measurements or ambiguous device selection return 503. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and
@@ -1845,6 +1847,174 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+
+  /zzrouter/v1/providers/{name}/models:
+    parameters: [{ in: path, name: name, required: true, schema: { type: string } }]
+    get:
+      tags: [Providers]
+      operationId: listProviderModels
+      summary: List a node's provider model files
+      description: |
+        Reads the selected node's filesystem, even when the provider is stopped or disabled.
+        Lists declared categories (including empty ones) and sorted relative regular-file names;
+        skips symlinks and download bookkeeping. No LLM catalog or deployment is involved.
+        Requires one named node; empty and wildcard targets are refused.
+      parameters:
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 }, example: gpu-worker }
+        - { in: query, name: category, schema: { type: string }, example: vae }
+      responses:
+        '200':
+          description: Files present on this node.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelList' }
+              example:
+                data:
+                  provider: comfyui
+                  node: gpu-worker
+                  categories: [{name: vae, files: [{name: ae.safetensors, size_bytes: 335304388, modified_at: '2026-10-13T12:00:00Z'}]}]
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        '502': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+    post:
+      tags: [Providers]
+      operationId: downloadProviderModel
+      summary: Download one file into a node's provider model store
+      description: |
+        Accepts exact Hugging Face repo#file or HTTPS huggingface.co resolve/revision/file sources.
+        Other URLs are refused. Gated repositories use the node's existing HF token.
+        Name defaults to the source basename. Names are validated relative paths within a declared
+        category; absolute paths, traversal, backslashes, colons, control characters and bookkeeping
+        names are refused. Existing files are never overwritten or repaired.
+        Identical live requests share a job; a competing source or unfinished cancellation returns
+        409 download_in_progress. Known sizes are checked against free space on the destination
+        filesystem before transfer; unknown sizes are allowed. Transfer and disk failures fail the job.
+        Follow or cancel the job through /zzrouter/v1/jobs/{id}?node=<returned node>.
+        A running provider needs no restart; writes never publish to the LLM catalog.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [node, category, source]
+              properties:
+                node: { type: string, minLength: 1 }
+                category: { type: string }
+                source: { type: string }
+                name: { type: string }
+            examples:
+              hub: { value: {node: gpu-worker, category: vae, source: 'org/repo#ae.safetensors'} }
+              revision: { value: {node: gpu-worker, category: vae, source: 'https://huggingface.co/org/repo/resolve/v2/ae.safetensors', name: 'nested/ae.safetensors'} }
+      responses:
+        '202':
+          description: Accepted; job_id identifies the node-owned download.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelDownload' }
+              example:
+                data: {provider: comfyui, node: gpu-worker, category: vae, name: ae.safetensors, source: 'org/repo#ae.safetensors', revision: main, status: downloading, job_id: 'job-123'}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        '409': { $ref: '#/components/responses/ProviderModelProblem' }
+        '422': { $ref: '#/components/responses/ProviderModelProblem' }
+        '502': { $ref: '#/components/responses/ProviderModelProblem' }
+        '503': { $ref: '#/components/responses/ProviderModelProblem' }
+        '504': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+    delete:
+      tags: [Providers]
+      operationId: deleteProviderModel
+      summary: Delete one node's provider model file
+      description: |
+        Deletes one Lstat-confirmed regular file, including manually copied files.
+        Refuses directories and symlinks. The same name and containment rules as downloads apply.
+        Active downloads (including cancellation still finishing) return 409 download_in_progress.
+        No job, catalog invalidation or provider restart is needed.
+      parameters:
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 }, example: gpu-worker }
+        - { in: query, name: category, required: true, schema: { type: string }, example: vae }
+        - { in: query, name: name, required: true, schema: { type: string }, example: ae.safetensors }
+      responses:
+        '200':
+          description: Deleted one regular file.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelDelete' }
+              example:
+                data: {provider: comfyui, node: gpu-worker, category: vae, name: ae.safetensors, deleted: true}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        '409': { $ref: '#/components/responses/ProviderModelProblem' }
+        '502': { $ref: '#/components/responses/ProviderModelProblem' }
+        '503': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
+  /zzrouter/v1/providers/{name}/models/resolve:
+    post:
+      tags: [Providers]
+      operationId: resolveProviderModels
+      summary: Resolve workflow model metadata on one node
+      description: |
+        Reads only UI nodes[].properties.models entries (name, url, directory), or the UI workflow
+        at extra_data.extra_pnginfo.workflow in a submission envelope. Raw API workflows without
+        metadata return 400. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
+        Deduplicates category/name and merges equivalent HF sources; conflicting nonempty sources
+        are unresolvable. Invalid categories are unresolvable. Otherwise regular files with positive
+        size are present, including manual copies. Missing/unsupported sources never trigger guesses.
+        Reads inventory once from the named node. With download=true, missing resolvable items use
+        the ordinary provider download service and existing jobs. Absent files are missing during
+        inspection; downloading means this request admitted/shared a job. Start failures are failed
+        items with the existing typed problem code as reason; later items are still processed and
+        earlier job IDs are retained. Returns 202 if any job was accepted, otherwise 200. No parent
+        job or rollback. Zero-byte files are missing but admission reports failed/file_exists.
+        Follow jobs on the returned node; no provider restart or catalog update.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [node, workflow]
+              properties:
+                node: { type: string, minLength: 1 }
+                workflow: { type: object }
+                download: { type: boolean, default: false }
+            examples:
+              ui: { value: {node: gpu-worker, workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'org/repo#ae.safetensors', directory: vae}]}}]}} }
+              envelope: { value: {node: gpu-worker, download: true, workflow: {prompt: {}, extra_data: {extra_pnginfo: {workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'https://huggingface.co/org/repo/resolve/main/ae.safetensors', directory: vae}]}}]}}}}} }
+      responses:
+        '200':
+          description: Resolved; no downloads admitted, including when all starts failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelResolution' }
+              example: {data: {provider: comfyui, node: gpu-worker, requirements: [{category: vae, name: ae.safetensors, status: missing, source: 'org/repo#ae.safetensors'}]}}
+        '202':
+          description: At least one missing file's download was admitted or shared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelResolution' }
+              example: {data: {provider: comfyui, node: gpu-worker, requirements: [{category: vae, name: ae.safetensors, status: downloading, source: 'org/repo#ae.safetensors', job_id: job-123}, {category: loras, name: adapter.safetensors, status: failed, reason: file_exists, source: 'org/repo#adapter.safetensors'}]}}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '413': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
 
   /zzrouter/v1/providers/{name}/assets:
     parameters: [{ in: path, name: name, required: true, schema: { type: string } }]
@@ -10004,6 +10174,16 @@ components:
       schema: { type: integer, minimum: 0, default: 0 }
 
   responses:
+    ProviderModelProblem:
+      description: |
+        RFC 9457 failure. 400 includes invalid_model_category, invalid_file_name,
+        provider_model_store_unsupported or existing input-validation codes. 404 includes
+        file_not_found, unknown_node or provider not found. 409 is file_exists or
+        download_in_progress. 422 is an idempotency body conflict. 5xx retain existing
+        filesystem/job availability or node transport codes; absence is never inferred from failure.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     # Reusable response blocks for the /zzrouter/v1/* (management) dialect.
     # These use RFC 9457 Problem Details. See components.schemas.Problem.
     # Note: quota enforcement runs only on /v1/* and /api/* (see
@@ -10964,6 +11144,7 @@ components:
     APIDiscovery:
       type: object
       properties:
+        provider_models: { type: string, description: Coordinator provider-file operations and pointer to the CLI and agent recipe in docs/comfyui.md. }
         mcp: { type: string, description: Coordinator MCP endpoint, example: POST /zzrouter/v1/mcp }
         api_version: { type: string, example: v1 }
         authentication:
@@ -12670,6 +12851,91 @@ components:
             differs. A restart replays the run's own value for these.
         error: { type: string }
 
+    ProviderModelList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider, node, categories]
+          properties:
+            provider: { type: string }
+            node: { type: string }
+            categories:
+              type: array
+              items:
+                type: object
+                required: [name, files]
+                properties:
+                  name: { type: string }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, size_bytes, modified_at]
+                      properties:
+                        name: { type: string }
+                        size_bytes: { type: integer, format: int64, minimum: 0 }
+                        modified_at: { type: string, format: date-time }
+
+    ProviderModelDownload:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider, node, category, name, source, revision, status, job_id]
+          properties:
+            provider: { type: string }
+            node: { type: string }
+            category: { type: string }
+            name: { type: string }
+            source: { type: string }
+            revision: { type: string }
+            status: { type: string }
+            job_id: { type: string }
+
+    ProviderModelResolution:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider, node, requirements]
+          properties:
+            provider: { type: string }
+            node: { type: string }
+            requirements:
+              type: array
+              items:
+                type: object
+                required: [category, name, status]
+                properties:
+                  category: { type: string }
+                  name: { type: string }
+                  status: { type: string, enum: [present, missing, downloading, unresolvable, failed] }
+                  reason:
+                    description: Metadata reason for unresolvable; existing typed problem code for failed starts.
+                    anyOf:
+                      - { type: string, enum: [invalid_model_category, source_unsupported, conflicting_source, missing_source] }
+                      - { $ref: '#/components/schemas/Problem/properties/code' }
+                  source: { type: string }
+                  job_id: { type: string }
+
+    ProviderModelDelete:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider, node, category, name, deleted]
+          properties:
+            provider: { type: string }
+            node: { type: string }
+            category: { type: string }
+            name: { type: string }
+            deleted: { type: boolean, enum: [true] }
+
     AssetList:
       type: object
       required: [assets]
@@ -12705,7 +12971,7 @@ components:
           type: string
           # Full pkg/httperr.AllParamErrorCodes() enum; pinned by
           # TestOpenAPIParamErrorEnum_MatchesDeclaredCodes.
-          enum: [unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use]
+          enum: [unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use, invalid_model_category, invalid_file_name, file_exists, file_not_found, download_in_progress, provider_model_store_unsupported]
         got:
           description: |
             The value that was rejected. Omitted where echoing it would

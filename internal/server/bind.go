@@ -134,8 +134,12 @@ func bindStrict(c *gin.Context, req any, allowEmpty bool) bool {
 		writeBindError(c, err)
 		return false
 	}
-	if dec.More() {
-		writeBindError(c, errTrailingJSON)
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errTrailingJSON
+		}
+		writeBindError(c, err)
 		return false
 	}
 
@@ -186,8 +190,11 @@ func writeBindError(c *gin.Context, err error) {
 	// JSON syntax, type, or unknown binding error — do not leak internal types.
 	var syntaxErr *json.SyntaxError
 	var unmarshalTypeErr *json.UnmarshalTypeError
+	var tooLarge *http.MaxBytesError
 	var parameterValueErr *schema.ParameterValueError
 	switch name, isUnknownField := unknownFieldName(err); {
+	case errors.As(err, &tooLarge):
+		RespondWithProblem(c, http.StatusRequestEntityTooLarge, "Request Entity Too Large", fmt.Sprintf("request body exceeds the %d-byte limit", tooLarge.Limit))
 	case isUnknownField:
 		// encoding/json reports this as an untyped error, so the prefix is
 		// the only handle. It already quotes the field name.

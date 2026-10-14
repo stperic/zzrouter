@@ -63,11 +63,11 @@ func TestDownloadUsesResolvedFileSetWithoutRelisting(t *testing.T) {
 	hub := &fakeHub{files: map[string]string{"model.gguf": "weights", "other.gguf": "other"}}
 	hfc := hub.start(t)
 	req := metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{{TreeFileEntry: metadata.TreeFileEntry{Name: "model.gguf", Size: 7}}}}
-	require.NoError(t, hfc.Download(t.Context(), req, nil))
+	require.NoError(t, hfc.Download(t.Context(), req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	assert.Zero(t, hub.listed.Load())
 	assert.Equal(t, int32(1), hub.served.Load())
 	req.Files = []metadata.DownloadFile{}
-	require.NoError(t, hfc.Download(t.Context(), req, nil))
+	require.NoError(t, hfc.Download(t.Context(), req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	assert.Zero(t, hub.listed.Load())
 	assert.Equal(t, int32(1), hub.served.Load())
 }
@@ -138,11 +138,11 @@ func TestDownload_AddsWithoutReplacing(t *testing.T) {
 	hfc := hub.start(t)
 	ctx := context.Background()
 
-	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision}, nil))
+	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m")))))
 	dir := filepath.Join(hfc.modelsDir, "org", "m")
 	assert.Equal(t, []string{".zzrouter-manifest.json", "M-Q4_K_M.gguf"}, onDisk(t, dir))
 
-	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil))
+	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m")))))
 	assert.Equal(t, int32(2), hub.served.Load(), "the weights were not fetched again")
 	assert.Equal(t, []string{".zzrouter-manifest.json", "M-Q4_K_M.gguf", "mmproj-F16.gguf"}, onDisk(t, dir))
 
@@ -162,17 +162,17 @@ func TestDownload_RepairsAndCleansUp(t *testing.T) {
 	hfc := hub.start(t)
 	ctx := context.Background()
 	req := metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M"}
-	require.NoError(t, hfc.Download(ctx, req, nil))
+	require.NoError(t, hfc.Download(ctx, req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	dir := filepath.Join(hfc.modelsDir, "org", "m")
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "M-Q4_K_M.gguf"), []byte("wei"), 0o600))
-	require.NoError(t, hfc.Download(ctx, req, nil))
+	require.NoError(t, hfc.Download(ctx, req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	got, err := os.ReadFile(filepath.Join(dir, "M-Q4_K_M.gguf"))
 	require.NoError(t, err)
 	assert.Equal(t, "weights", string(got))
 
 	hub.corrupt = "mmproj-F16.gguf"
-	err = hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil)
+	err = hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m"))))
 	require.Error(t, err)
 	assert.Equal(t, []string{".zzrouter-manifest.json", "M-Q4_K_M.gguf"}, onDisk(t, dir))
 }
@@ -184,10 +184,10 @@ func TestDownload_TagsAFeatureFileAlreadyHeld(t *testing.T) {
 	hub := &fakeHub{files: map[string]string{"M-Q4_K_M.gguf": "weights", "mmproj-F16.gguf": "projector"}}
 	hfc := hub.start(t)
 	ctx := context.Background()
-	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m"}, nil))
+	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m"}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m")))))
 	require.Equal(t, int32(2), hub.served.Load())
 
-	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil))
+	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m")))))
 	assert.Equal(t, int32(2), hub.served.Load(), "nothing was fetched again")
 	m, err := integrity.ReadManifest(filepath.Join(hfc.modelsDir, "org", "m"))
 	require.NoError(t, err)
@@ -202,13 +202,13 @@ func TestDownload_ForceRefetchesSelectedSet(t *testing.T) {
 	hub := &fakeHub{files: map[string]string{"M-Q4_K_M.gguf": "weights", "mmproj-F16.gguf": "projector"}}
 	hfc := hub.start(t)
 	ctx := context.Background()
-	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m"}, nil))
+	require.NoError(t, hfc.Download(ctx, metadata.DownloadRequest{Repo: "org/m"}, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash("org/m")))))
 	require.Equal(t, int32(2), hub.served.Load())
 	req := metadata.DownloadRequest{Repo: "org/m", Weights: "Q4_K_M", Features: vision, Force: true}
-	require.NoError(t, hfc.Download(ctx, req, nil))
+	require.NoError(t, hfc.Download(ctx, req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	assert.Equal(t, int32(3), hub.served.Load(), "force fetches weights, leaving the unselected projector alone")
 	req.Want = []string{"vision"}
-	require.NoError(t, hfc.Download(ctx, req, nil))
+	require.NoError(t, hfc.Download(ctx, req, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(req.Repo)))))
 	assert.Equal(t, int32(5), hub.served.Load(), "force fetches weights and the selected projector")
 	m, err := integrity.ReadManifest(filepath.Join(hfc.modelsDir, "org", "m"))
 	require.NoError(t, err)
@@ -259,11 +259,14 @@ func TestConcurrentFeatureDeploysShareWeights(t *testing.T) {
 				close(started)
 				<-finish
 			}
-		})
+		}, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(first.Repo))))
 	}()
 	<-started
 	waiting := make(chan struct{})
-	go func() { close(waiting); done <- hfc.Download(t.Context(), second, nil) }()
+	go func() {
+		close(waiting)
+		done <- hfc.Download(t.Context(), second, nil, CatalogDestination(filepath.Join(hfc.modelsDir, filepath.FromSlash(second.Repo))))
+	}()
 	<-waiting
 	select {
 	case err := <-done:

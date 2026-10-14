@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,6 +19,34 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
 )
+
+func TestFetchFinalizationPolicy(t *testing.T) {
+	for _, noReplace := range []bool{false, true} {
+		t.Run(fmt.Sprint(noReplace), func(t *testing.T) {
+			dir := t.TempDir()
+			dest := filepath.Join(dir, "model")
+			client := &http.Client{Transport: fetchTestTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, ContentLength: 7, Body: io.NopCloser(strings.NewReader("weights"))}, nil
+			})}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://fixture.test/file", nil)
+			require.NoError(t, err)
+			_, err = Fetch(client, req, dest, Options{NoReplace: noReplace, Verify: func(Result) error {
+				return os.WriteFile(dest, []byte("operator"), 0600)
+			}})
+			want := "weights"
+			if noReplace {
+				require.ErrorIs(t, err, fs.ErrExist)
+				want = "operator"
+			} else {
+				require.NoError(t, err, "zero-value policy retains replacing finalization")
+			}
+			data, err := os.ReadFile(dest)
+			require.NoError(t, err)
+			require.Equal(t, want, string(data))
+			require.Len(t, entries(t, dir), 1, "completed or refused transfers leave no partial")
+		})
+	}
+}
 
 func TestFetchResumesInterruptedBody(t *testing.T) {
 	const body = "abcdefghijklmnopqrstuvwxyz"

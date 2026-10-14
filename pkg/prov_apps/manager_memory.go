@@ -21,15 +21,19 @@ const (
 )
 
 func (m *ProviderAppManager) evictable(inst *instance.Instance) bool {
-	if !inst.Evictable() {
-		return false
+	return m.evictionBlockedReason(inst) == ""
+}
+
+func (m *ProviderAppManager) evictionBlockedReason(inst *instance.Instance) string {
+	if reason := inst.EvictionBlockedReason(); reason != "" {
+		return reason
 	}
 	for _, waiting := range m.instances.List() {
 		if waiting.GetStatus() == instance.StatusStarting && waiting.WaitingOn() == inst.ID {
-			return false
+			return "in use"
 		}
 	}
-	return true
+	return ""
 }
 
 func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason) error {
@@ -47,8 +51,9 @@ func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance
 }
 
 // reclaimFor stops the least recently active idle runs covering fit's
-// shortfall and returns the runs it stopped.
-func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) []instance.EvictedRun {
+// shortfall and returns the runs it stopped and the reasons it skipped others.
+func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) ([]instance.EvictedRun, map[string]string) {
+	skipped := make(map[string]string)
 	sizes := make(map[string]int64)
 	for _, holder := range fit.Holders {
 		if holder.Ownership != "zzrouter" || holder.Run == "" {
@@ -63,7 +68,11 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 	var candidates []evictionCandidate
 	inputs := make(map[string]instance.IdleStopCandidate)
 	for id, mib := range sizes {
-		if inst, ok := m.instances.Get(id); ok && m.evictable(inst) {
+		if inst, ok := m.instances.Get(id); ok {
+			if reason := m.evictionBlockedReason(inst); reason != "" {
+				skipped[id] = reason
+				continue
+			}
 			activity := inst.GetLastActivity()
 			candidates = append(candidates, evictionCandidate{id, mib, activity})
 			inputs[id] = instance.IdleStopCandidate{Instance: inst, Activity: activity}
@@ -75,11 +84,14 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 		claims = append(claims, inputs[id])
 	}
 	if ctx.Err() != nil {
-		return nil
+		return nil, skipped
 	}
-	release, claimed := instance.ClaimIdleStops(claims)
-	if !claimed {
-		return nil
+	release, refusal := instance.ClaimIdleStops(claims)
+	if release == nil {
+		if refusal != nil {
+			skipped[refusal.RunID] = refusal.Reason
+		}
+		return nil, skipped
 	}
 	defer release()
 	var freed int64
@@ -101,7 +113,7 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 	if len(stopped) > 0 {
 		m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
 	}
-	return stopped
+	return stopped, skipped
 }
 
 func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device string, target int64) {

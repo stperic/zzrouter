@@ -50,6 +50,12 @@ type paramCodeCase struct {
 
 func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 	return map[httperr.ParamErrorCode]paramCodeCase{
+		httperr.CodeInvalidModelCategory:          providerModelParamCodeCase(httperr.CodeInvalidModelCategory),
+		httperr.CodeInvalidFileName:               providerModelParamCodeCase(httperr.CodeInvalidFileName),
+		httperr.CodeFileExists:                    providerModelParamCodeCase(httperr.CodeFileExists),
+		httperr.CodeFileNotFound:                  providerModelParamCodeCase(httperr.CodeFileNotFound),
+		httperr.CodeDownloadInProgress:            providerModelParamCodeCase(httperr.CodeDownloadInProgress),
+		httperr.CodeProviderModelStoreUnsupported: providerModelParamCodeCase(httperr.CodeProviderModelStoreUnsupported),
 		httperr.CodeUnknownFlag: {
 			how: "a parameter name the provider schema does not define",
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {

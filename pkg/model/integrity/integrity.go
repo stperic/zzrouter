@@ -26,10 +26,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -337,30 +335,9 @@ type directoryLocks struct {
 }
 
 func locksForDirectory(dir string) (*directoryLocks, error) {
-	key, err := filepath.Abs(dir)
+	key, err := utils.ResolvePath(dir)
 	if err != nil {
 		return nil, err
-	}
-	parent := key
-	var suffix []string
-	for {
-		resolved, err := filepath.EvalSymlinks(parent)
-		if err == nil {
-			key = resolved
-			for i := len(suffix) - 1; i >= 0; i-- {
-				key = filepath.Join(key, suffix[i])
-			}
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, err
-		}
-		next := filepath.Dir(parent)
-		if next == parent {
-			return nil, err
-		}
-		suffix = append(suffix, filepath.Base(parent))
-		parent = next
 	}
 	v, _ := manifestLocks.LoadOrStore(key, &directoryLocks{materialize: make(chan struct{}, 1)})
 	locks, ok := v.(*directoryLocks)

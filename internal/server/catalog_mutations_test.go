@@ -230,6 +230,7 @@ func TestCatalogMutationProviderWritesPublish(t *testing.T) {
 			target, _, dir := mutationNodes(t, "coordinator")
 			method, path, body := http.MethodPatch, "/zzrouter/v1/providers/llamacpp/parameters", any(map[string]any{"models": map[string]any{"alias": map[string]any{"from": "weights"}}})
 			expected, present := "alias", true
+			var verifyController *ProvidersController
 			switch operation {
 			case "variant-remove":
 				resp := makeAuthRequest(t, target, method, path, TestAdminKey, body)
@@ -263,9 +264,13 @@ func TestCatalogMutationProviderWritesPublish(t *testing.T) {
 			case "provider-verify":
 				require.NoError(t, target.configStore.AddProviderInstance("cloud-test", &config.CloudProvider{Enabled: new(false), Runtime: config.CloudRuntime{Endpoint: "https://cloud.test", API: config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-new"}, WireEndpoints: []string{"chat_completions"}}}))
 				require.NoError(t, target.publishCatalog())
-				transport := http.DefaultTransport
-				http.DefaultTransport = mcpRoundTripper(func(*http.Request) (*http.Response, error) { return httptest.NewRecorder().Result(), nil })
-				t.Cleanup(func() { http.DefaultTransport = transport })
+				client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+					require.Equal(t, "/v1/models", r.URL.Path)
+					require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+					return httptest.NewRecorder().Result(), nil
+				})}
+				verifyController = NewProvidersController(nil, nil, func() *config.AppsConfig { return target.appsConfig }, target.configStore, target, nil, nil, client)
+				verifyController.publishCatalog = target.publishCatalog
 				method, path, body = http.MethodPost, "/zzrouter/v1/providers/cloud-test/verify", nil
 				expected = "cloud-new"
 
@@ -297,8 +302,15 @@ func TestCatalogMutationProviderWritesPublish(t *testing.T) {
 					return
 				}
 			}
-			resp := makeAuthRequest(t, target, method, path, TestAdminKey, body)
-			require.Less(t, resp.Code, http.StatusBadRequest, string(resp.Body))
+			if verifyController != nil {
+				c, rec := mutationContext(t, method, path, body)
+				c.Params = gin.Params{{Key: "name", Value: "cloud-test"}}
+				verifyController.VerifyProvider(c)
+				require.Less(t, rec.Code, http.StatusBadRequest, rec.Body.String())
+			} else {
+				resp := makeAuthRequest(t, target, method, path, TestAdminKey, body)
+				require.Less(t, resp.Code, http.StatusBadRequest, string(resp.Body))
+			}
 			require.NotNil(t, target.model.Cache.GetAllModels())
 			require.Equal(t, present, target.model.Cache.HasModel(expected))
 			if operation == "provider-disable" {

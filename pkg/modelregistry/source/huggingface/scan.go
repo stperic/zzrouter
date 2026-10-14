@@ -22,7 +22,7 @@ func (hfc *Connector) ModelExists(ctx context.Context, modelID string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	client := &http.Client{Timeout: httpTimeout}
+	client := hfc.httpClient(httpTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err

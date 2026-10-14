@@ -39,7 +39,7 @@ func TestDeploymentJobIncludesRuntimeProvisioningFailure(t *testing.T) {
 	}}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	e.downloadHuggingFace(c, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "download-key", "mlx", []string{"vision"})
+	e.downloadHuggingFace(c, testHuggingFaceAdmission(t, e, metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{}}, "download-key", "mlx", []string{"vision"}))
 	assert.Equal(t, 202, rec.Code)
 	var result internalDeploymentResult
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))

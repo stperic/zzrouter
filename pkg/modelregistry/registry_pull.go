@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -34,7 +36,7 @@ func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, s
 		return
 	}
 
-	if !r.beginAsyncDownload() {
+	if !r.beginDownload() {
 		statusUpdater("failed", ErrRegistryStopped.Error(), 0, 0, 0, 0, 0, 0)
 		return
 	}
@@ -92,46 +94,43 @@ func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, s
 	}()
 }
 
-// DownloadHuggingFaceModelAsync fetches what req names from HuggingFace in
-// the background. Cancelling ctx aborts it. Status updates go to
-// statusUpdater; currentFile carries req.Weights, the name the caller asked
-// for.
-func (r *Registry) DownloadHuggingFaceModelAsync(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64)) {
-	if !r.beginAsyncDownload() {
-		statusUpdater("failed", ErrRegistryStopped.Error(), 0, 0, 0, 0, 0, 0)
-		return
+// DownloadHuggingFaceModel fetches what req names from HuggingFace in
+// the caller's goroutine. Cancelling ctx aborts it. Progress and completion go
+// to statusUpdater; failures return after physical transfer and cleanup finish.
+func (r *Registry) DownloadHuggingFaceModel(ctx context.Context, req metadata.DownloadRequest, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64), destination huggingface.Destination) error {
+	if !r.beginDownload() {
+		return ErrRegistryStopped
 	}
 
-	go func() {
-		defer r.wg.Done()
-		defer utils.RecoverAndLog("modelregistry.HuggingFaceDownload")
-		startTime := utils.Now()
+	defer r.wg.Done()
+	startTime := utils.Now()
 
-		err := r.huggingfaceConnector.Download(ctx, req, func(status string, bytesDownloaded, totalBytes int64) {
-			progress := float64(0)
-			if totalBytes > 0 {
-				progress = float64(bytesDownloaded) / float64(totalBytes) * 100
-			}
-			speed := int64(0)
-			if elapsed := utils.Now().Sub(startTime).Seconds(); elapsed > 0 {
-				speed = int64(float64(bytesDownloaded) / elapsed)
-			}
-			statusUpdater(status, req.Weights, 0, 1, progress, bytesDownloaded, totalBytes, speed)
-		})
-
-		if err != nil {
-			if ctx.Err() != nil {
-				slog.Info("HuggingFace download cancelled", "model", req.Repo)
-				statusUpdater(string(constants.StatusCancelled), "", 0, 0, 0, 0, 0, 0)
-			} else {
-				slog.Error("HuggingFace download failed", "model", req.Repo, "error", err)
-				statusUpdater("failed", err.Error(), 0, 0, 0, 0, 0, 0)
-			}
-			return
+	err := r.huggingfaceConnector.Download(ctx, req, func(status string, bytesDownloaded, totalBytes int64) {
+		progress := float64(0)
+		if totalBytes > 0 {
+			progress = float64(bytesDownloaded) / float64(totalBytes) * 100
 		}
-		// Scan-cache invalidation is the consumer's job, driven by the
-		// completed status flowing through the server's DownloadTracker
-		// OnComplete -> cache.Invalidate path.
-		statusUpdater("completed", req.Weights, 1, 1, 100, 0, 0, 0)
-	}()
+		speed := int64(0)
+		if elapsed := utils.Now().Sub(startTime).Seconds(); elapsed > 0 {
+			speed = int64(float64(bytesDownloaded) / elapsed)
+		}
+		statusUpdater(status, req.Weights, 0, 1, progress, bytesDownloaded, totalBytes, speed)
+	}, destination)
+
+	if err != nil {
+		if ctx.Err() != nil {
+			slog.Info("HuggingFace download cancelled", "model", req.Repo)
+		} else {
+			slog.Error("HuggingFace download failed", "model", req.Repo, "error", err)
+		}
+		return err
+	}
+	// The admitted owner publishes before its tracker accepts completion.
+	statusUpdater("completed", req.Weights, 1, 1, 100, 0, 0, 0)
+	return nil
+}
+
+// CatalogDestination resolves a repository in this registry's bound model root.
+func (r *Registry) CatalogDestination(repo string) huggingface.Destination {
+	return huggingface.CatalogDestination(filepath.Join(r.modelsRoot, filepath.FromSlash(repo)))
 }

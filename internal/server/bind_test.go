@@ -46,6 +46,23 @@ func TestBindJSONStrict(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "trailing whitespace binds",
+			body:   "{\"id\":\"k1\"}\n\t ",
+			wantOK: true,
+		},
+		{
+			name:     "second document is rejected",
+			body:     `{"id":"k1"} {"id":"k2"}`,
+			wantCode: http.StatusBadRequest,
+			wantIn:   "body must contain a single JSON object",
+		},
+		{
+			name:     "malformed trailing data is rejected",
+			body:     `{"id":"k1"} junk`,
+			wantCode: http.StatusBadRequest,
+			wantIn:   "invalid JSON syntax",
+		},
+		{
 			// The reported defect: a key "scoped" with a field keys do not
 			// carry used to come back 201 with the field dropped.
 			name:     "unknown field is a 400 that names it",

@@ -55,6 +55,14 @@ const (
 	// CodeAssetInUse refuses removing an asset a parameter still names;
 	// Key is that parameter's merge-patch path.
 	CodeAssetInUse ParamErrorCode = "asset_in_use"
+
+	// Provider model-store operations.
+	CodeInvalidModelCategory          ParamErrorCode = "invalid_model_category"
+	CodeInvalidFileName               ParamErrorCode = "invalid_file_name"
+	CodeFileExists                    ParamErrorCode = "file_exists"
+	CodeFileNotFound                  ParamErrorCode = "file_not_found"
+	CodeDownloadInProgress            ParamErrorCode = "download_in_progress"
+	CodeProviderModelStoreUnsupported ParamErrorCode = "provider_model_store_unsupported"
 )
 
 // The item and envelope that used to live here are gone. A per-key
@@ -95,5 +103,11 @@ func AllParamErrorCodes() []ParamErrorCode {
 		CodePreflightFailed,
 		CodeUnknownAsset,
 		CodeAssetInUse,
+		CodeInvalidModelCategory,
+		CodeInvalidFileName,
+		CodeFileExists,
+		CodeFileNotFound,
+		CodeDownloadInProgress,
+		CodeProviderModelStoreUnsupported,
 	}
 }

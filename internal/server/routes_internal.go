@@ -114,6 +114,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// DEPLOYMENTS - Direct download/registration operations
 	// ========================================================================
 	router.POST("/deployments", deploymentsExecutor.HandleInternalDeploy)
+	router.GET("/providers/:name/models", deploymentsExecutor.HandleInternalListProviderModels)
+	router.DELETE("/providers/:name/models", deploymentsExecutor.HandleInternalDeleteProviderModel)
 	router.GET("/deployments", deploymentsExecutor.HandleInternalListDeployments)
 	router.DELETE("/deployments/all", deploymentsExecutor.HandleInternalStopAllDownloads) // Stop all downloads
 	router.DELETE("/deployments/stop", deploymentsExecutor.HandleInternalStopDownload)    // Stop single download (key via query param)

@@ -4,6 +4,11 @@
 
 ### Highlights
 
+- ComfyUI model files can be listed, downloaded from Hugging Face, deleted and
+  resolved from workflow metadata through the coordinator API, MCP `zz_api`,
+  and `zzrouter providers models`. Files belong to the provider and stay outside
+  the LLM catalog. See the [operator and agent recipe](docs/comfyui.md#model-files-through-the-coordinator).
+
 - ComfyUI as a GPU tenant ([docs/comfyui.md](docs/comfyui.md)). zzRouter
   launches ComfyUI on a Linux NVIDIA node (`POST /zzrouter/v1/runs` with
   `provider: comfyui` and a `node`, no model) so its GPU memory joins the
@@ -35,6 +40,10 @@
 
 ### Behaviour changes
 
+- Cluster protocol and minimum advance from 8/8 to 9/9 for provider model-store
+  configuration and download targets. Upgrade all peers together during the
+  maintenance window in [protocol versioning](docs/protocol_versioning.md);
+  older peers refuse the new protocol. There is no rolling compatibility window.
 - Managed update CLI apply and rollback submit through the API's handoff when
   run without root privileges. Root uses the same privileged executor with
   restart/health checks and refuses a busy updater. Submission permission errors
@@ -157,6 +166,9 @@
 
 ### Fixes
 
+- GPU memory refusals explain why reclaim skipped a run (busy, in use or not idle),
+  and unused commitments omit process IDs. Evicted-run lookups name a model-less
+  evictor by its provider, using the same display name as the CLI.
 - A request-tier `keep-alive` parameter no longer reaches a launched engine's
   command line; `keep_alive: 0` now ends a run when its last request finishes.
 - A managed daemon whose start was refused at boot (the previous node's

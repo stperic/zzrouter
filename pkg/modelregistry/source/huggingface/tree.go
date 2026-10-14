@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
@@ -32,13 +33,20 @@ func (hfc *Connector) GetRepoFiles(ctx context.Context, modelID string) ([]metad
 // so we do not need to import or depend on the search subpackage's
 // DTO surface.
 func (hfc *Connector) getRepoFiles(ctx context.Context, modelID string) ([]metadata.TreeFileEntry, error) {
+	return hfc.getRepoFilesRevision(ctx, modelID, "main")
+}
+
+func (hfc *Connector) getRepoFilesRevision(ctx context.Context, modelID, revision string) ([]metadata.TreeFileEntry, error) {
 	apiURL := fmt.Sprintf("%s%s?blobs=true", hfc.apiBase, modelID)
+	if revision != "main" {
+		apiURL = fmt.Sprintf("%s%s/revision/%s?blobs=true", hfc.apiBase, modelID, url.PathEscape(revision))
+	}
 
 	req, err := hfc.newGet(ctx, apiURL)
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: httpTimeout}
+	client := hfc.httpClient(httpTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

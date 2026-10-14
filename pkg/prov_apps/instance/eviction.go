@@ -14,16 +14,21 @@ type IdleStopCandidate struct {
 	Idle     *IdleState // expiry claims also revalidate duration and release eligibility
 }
 
-// ClaimIdleStops reserves a complete idle set against new leases until release.
-func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), claimed bool) {
+// IdleStopRefusal records the decision that prevented claiming a complete idle set.
+type IdleStopRefusal struct {
+	RunID, Reason string
+}
+
+// ClaimIdleStops returns a non-nil release after reserving a complete idle set against new leases.
+func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), refusal *IdleStopRefusal) {
 	if len(candidates) == 0 {
-		return nil, false
+		return nil, nil
 	}
 	ordered := slices.Clone(candidates)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Instance.ID < ordered[j].Instance.ID })
 	for n, candidate := range ordered {
 		if n > 0 && candidate.Instance.ID == ordered[n-1].Instance.ID {
-			return nil, false
+			return nil, nil
 		}
 	}
 	// Lock in ID order because competing reclaims may reserve overlapping sets.
@@ -33,8 +38,11 @@ func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), claimed boo
 	}
 	for _, candidate := range ordered {
 		inst := candidate.Instance
-		if !inst.evictableLocked() || !inst.LastActivity.Equal(candidate.Activity) || (candidate.Idle != nil && inst.idleSnapshotLocked() != *candidate.Idle) {
-			return nil, false
+		if reason := inst.evictionBlockedReasonLocked(); reason != "" {
+			return nil, &IdleStopRefusal{RunID: inst.ID, Reason: reason}
+		}
+		if !inst.LastActivity.Equal(candidate.Activity) || (candidate.Idle != nil && inst.idleSnapshotLocked() != *candidate.Idle) {
+			return nil, &IdleStopRefusal{RunID: inst.ID, Reason: "not idle"}
 		}
 	}
 	for _, candidate := range ordered {
@@ -48,5 +56,5 @@ func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), claimed boo
 			inst.notifyIdleLocked()
 			inst.mu.Unlock()
 		}
-	}), true
+	}), nil
 }

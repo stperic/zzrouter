@@ -64,28 +64,28 @@ func (f *reclaimFixture) admit(t *testing.T) ([]instance.EvictedRun, error) {
 	return f.mgr.admitMemory(t.Context(), "vllm", f.features)
 }
 
-func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error) {
+func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string) {
 	t.Helper()
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
 	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB,
 		Holders: []process.MemoryHolder{
-			{MemoryProcess: f.device.Processes[0], Run: f.older.ID, Model: f.older.Model, Ownership: "zzrouter"},
-			{MemoryProcess: f.device.Processes[1], Run: f.newer.ID, Model: f.newer.Model, Ownership: "zzrouter"},
+			{PID: f.device.Processes[0].PID, MemoryMiB: f.device.Processes[0].MemoryMiB, Run: f.older.ID, Model: f.older.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.older.ID]},
+			{PID: f.device.Processes[1].PID, MemoryMiB: f.device.Processes[1].MemoryMiB, Run: f.newer.ID, Model: f.newer.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.newer.ID]},
 		}}, fit)
 }
 
 // assertNothingEvicted admits and expects the original fit error with no run evicted.
-func (f *reclaimFixture) assertNothingEvicted(t *testing.T) {
+func (f *reclaimFixture) assertNothingEvicted(t *testing.T, skipped map[string]string) {
 	t.Helper()
 	evicted, err := f.admit(t)
-	f.assertOriginalFit(t, err)
+	f.assertOriginalFit(t, err, skipped)
 	assert.Empty(t, evicted)
 }
 
 func TestMemoryReclaimDisabled(t *testing.T) {
 	f := newReclaimFixture(t, false)
-	f.assertNothingEvicted(t)
+	f.assertNothingEvicted(t, nil)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -117,7 +117,7 @@ func TestMemoryReclaimProtectsLease(t *testing.T) {
 	require.NoError(t, err)
 	defer lease.Release()
 	*f.device.Processes[1].MemoryMiB = 100
-	f.assertNothingEvicted(t)
+	f.assertNothingEvicted(t, map[string]string{f.older.ID: "in use"})
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -126,7 +126,7 @@ func TestMemoryReclaimInsufficientStopsNothing(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	*f.device.Processes[0].MemoryMiB = 1500
 	*f.device.Processes[1].MemoryMiB = 1500
-	f.assertNothingEvicted(t)
+	f.assertNothingEvicted(t, nil)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -189,6 +189,11 @@ func TestMemoryReclaimEligibility(t *testing.T) {
 			evicted, err := f.admit(t)
 			require.ErrorAs(t, err, &fit)
 			assert.Empty(t, evicted)
+			reason := map[string]string{"starting": "not idle", "waiter": "in use"}[state]
+			assert.Equal(t, reason, fit.Holders[0].ReclaimSkippedReason)
+			if reason != "" {
+				assert.Contains(t, fit.Error(), "reclaim skipped: "+reason)
+			}
 			assert.NotEqual(t, instance.StatusStopped, f.older.GetStatus())
 			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 		})
@@ -199,10 +204,12 @@ func TestMemoryReclaimAggregatesHolders(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	*f.device.Processes[0].MemoryMiB = 2000
 	fit := &process.MemoryFitError{Device: "GPU-A", FreeMiB: 1000, RequiredMiB: 5000, Holders: []process.MemoryHolder{
-		{Run: f.older.ID, Ownership: "zzrouter", MemoryProcess: gpu.MemoryProcess{MemoryMiB: new(int64(2000))}},
-		{Run: f.older.ID, Ownership: "zzrouter", MemoryProcess: gpu.MemoryProcess{MemoryMiB: new(int64(2500))}},
+		{Run: f.older.ID, Ownership: "zzrouter", MemoryMiB: new(int64(2000))},
+		{Run: f.older.ID, Ownership: "zzrouter", MemoryMiB: new(int64(2500))},
 	}}
-	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, f.mgr.reclaimFor(t.Context(), fit))
+	evicted, skipped := f.mgr.reclaimFor(t.Context(), fit)
+	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted)
+	assert.Empty(t, skipped)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -242,11 +249,13 @@ func TestIdleStopAndLeaseClaim(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	lease, err := f.older.Acquire(t.Context(), nil)
 	require.NoError(t, err)
-	_, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
-	assert.False(t, claimed)
+	release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
+	assert.Nil(t, release)
+	assert.Equal(t, &instance.IdleStopRefusal{RunID: f.older.ID, Reason: "in use"}, refusal)
 	lease.Release()
-	release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
-	require.True(t, claimed)
+	release, refusal = instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
+	require.NotNil(t, release)
+	require.Nil(t, refusal)
 	defer release()
 	_, err = f.older.Acquire(t.Context(), nil)
 	assert.ErrorIs(t, err, instance.ErrStopping)
@@ -316,7 +325,7 @@ func TestMemoryReclaimSettingOverridesLegacyDefault(t *testing.T) {
 				assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted)
 				assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 			} else {
-				f.assertOriginalFit(t, err)
+				f.assertOriginalFit(t, err, nil)
 				assert.Empty(t, evicted)
 				assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 			}
@@ -339,8 +348,9 @@ func TestIdleReaperUnblockedByDependantAndClaim(t *testing.T) {
 				require.NoError(t, f.mgr.instances.Register(waiting))
 				unblock = func() { waiting.Admit() }
 			} else {
-				release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
-				require.True(t, claimed)
+				release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: f.older, Activity: f.older.GetLastActivity()}})
+				require.NotNil(t, release)
+				require.Nil(t, refusal)
 				unblock = release
 			}
 			f.mgr.Start(t.Context())
@@ -350,4 +360,42 @@ func TestIdleReaperUnblockedByDependantAndClaim(t *testing.T) {
 			eventually(t, func() bool { return !f.mgr.instances.Has(f.older.ID) }, "removing idle protection must wake expiry")
 		})
 	}
+}
+
+func TestMemoryReclaimRetryKeepsSkippedDecision(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	*f.device.Processes[0].MemoryMiB = 6000
+	*f.device.Processes[1].MemoryMiB = 1000
+	f.newer.SetResolved(instance.Resolved{Commitments: map[string]int64{"GPU-A": 2000}})
+	f.newer.ObserveActivity(true)
+	attempts := 0
+	f.mgr.memorySnapshot = func(ctx context.Context) ([]gpu.MemoryDevice, error) {
+		device := f.device
+		if ctx != t.Context() {
+			device.FreeMiB = 9000
+			f.newer.ObserveActivity(false)
+		} else {
+			attempts++
+			if attempts == 2 {
+				device.FreeMiB = 4000
+				device.Processes = device.Processes[1:]
+			}
+		}
+		return []gpu.MemoryDevice{device}, nil
+	}
+	evicted, err := f.admit(t)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	require.Len(t, evicted, 1)
+	assert.Equal(t, f.older.ID, evicted[0].RunID)
+	assert.Equal(t, 2, attempts)
+	assert.Equal(t, int64(3000), fit.FreeMiB, "keep the retry's fresh memory accounting")
+	require.Len(t, fit.Holders, 2)
+	for _, holder := range fit.Holders {
+		assert.Equal(t, f.newer.ID, holder.Run)
+		assert.Equal(t, "busy", holder.ReclaimSkippedReason, "process and commitment retain the actual reclaim decision")
+	}
+	assert.Equal(t, int64(1000), fit.Holders[1].UnusedCommitmentMiB)
+	assert.True(t, f.newer.Evictable(), "the run became idle after reclaim made its decision")
+	assert.Contains(t, fit.Error(), "reclaim skipped: busy")
 }

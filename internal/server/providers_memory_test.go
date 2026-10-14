@@ -18,7 +18,8 @@ import (
 
 func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
-	refusal := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000, Holders: []process.MemoryHolder{}}
+	refusal := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000,
+		Holders: []process.MemoryHolder{{Run: "comfy-run", Provider: "comfyui", Ownership: "zzrouter", MemoryMiB: new(int64(31966)), UnusedCommitmentMiB: 31966, ReclaimSkippedReason: "busy"}}}
 	RespondToError(c, fmt.Errorf("launch refused: %w", refusal))
 	require.Equal(t, 409, response.Code)
 	assert.Equal(t, "application/problem+json", response.Header().Get("Content-Type"))
@@ -30,6 +31,10 @@ func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	got := problem.Errors[0].Got.(map[string]any)
 	assert.Equal(t, float64(9500), got["required_mib"])
 	assert.Equal(t, float64(6000), got["free_mib"])
+	holder := got["holders"].([]any)[0].(map[string]any)
+	assert.Equal(t, "busy", holder["reclaim_skipped_reason"])
+	assert.NotContains(t, holder, "pid")
+	assert.Contains(t, problem.Detail, "zzRouter run comfy-run provider comfyui (31966 MiB unused commitment; reclaim skipped: busy)")
 	assert.Contains(t, problem.Errors[0].Hint, "PATCH")
 	assert.Equal(t, 503, answeredStatus(fmt.Errorf("observe: %w", process.ErrMemoryObservation)))
 	assert.Equal(t, 400, answeredStatus(fmt.Errorf("budget: %w", process.ErrMemoryBudgetInvalid)))
@@ -37,6 +42,7 @@ func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	assert.Equal(t, 409, classified.Status)
 	assert.Equal(t, "out_of_range", classified.Code)
 	assert.Contains(t, classified.Message, "required 9500 MiB, currently free 6000 MiB")
+	assert.Contains(t, classified.Message, "reclaim skipped: busy")
 	wire := httptest.NewRecorder()
 	writeError(wire, nil, classified)
 	assert.Equal(t, 409, wire.Code)

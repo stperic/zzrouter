@@ -31,6 +31,7 @@ type apiDiscoveryResponse struct {
 	EnabledFeatures     []string            `json:"enabled_features"`
 	Docs                map[string]string   `json:"docs"`
 	ProviderDiagnostics string              `json:"provider_diagnostics,omitempty"`
+	ProviderModels      string              `json:"provider_models"`
 	UpdateControl       string              `json:"update_control"`
 	ChatTemplates       string              `json:"chat_templates"`
 }
@@ -152,6 +153,7 @@ func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
 		MCP:                 mcpEndpoint,
 		APIVersion:          "v1",
 		ProviderDiagnostics: describeProviderDiagnostics(s),
+		ProviderModels:      "Coordinator admin: GET /providers/{name}/models?node=NAME lists provider files, with optional category. POST that route with node, category, source and optional name starts a download; follow its job_id on the returned node. DELETE with node, category and name removes one file. POST /providers/{name}/models/resolve with node, workflow and download inspects UI model metadata and optionally starts missing downloads. Provider files stay outside the LLM catalog. See docs/comfyui.md for the CLI and zz_api recipe.",
 		UpdateControl:       "Admin: POST /update/apply with version and nodes (or [all]); workers first, coordinator last, sleeping nodes pending. GET /update/status and /update/history accept ?nodes=all. GET/PATCH /update/settings?node=NAME controls scheduled updates only. Explicit updates remain available when enabled=false. Protocol-breaking changes require an operator maintenance window and rollback of all nodes if any fails.",
 		ChatTemplates:       chatTemplatesGuide,
 		Runs:                "POST /runs with provider and optional node ensures a run. Model-scoped providers require model or model_name. Providers with run_scope node accept neither model nor endpoint; call their reported base_url directly. GET /runs reports engine_busy and memory_commitments_mib. Observed-busy engines are protected from idle reaping and memory eviction; ensure refreshes activity but does not reserve a future job.",

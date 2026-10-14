@@ -45,7 +45,7 @@ func TestPublishJobEvent_ProgressEmitsRunningEvent(t *testing.T) {
 	sub, err := r.Subscribe(h.ID(), jobs.SubscribeOptions{})
 	require.NoError(t, err)
 
-	e.publishJobEvent(h, "k", "downloading", "file.gguf", 42, 1000, 2400)
+	e.publishJobEvent(&downloadAttempt{job: h}, "k", "downloading", "file.gguf", 42, 1000, 2400)
 	h.Done() // close the stream
 
 	var events []jobs.Event
@@ -91,7 +91,7 @@ func TestPublishJobEvent_TerminalStatusesCarryReason(t *testing.T) {
 			sub, err := r.Subscribe(h.ID(), jobs.SubscribeOptions{})
 			require.NoError(t, err)
 
-			e.publishJobEvent(h, "k", tc.status, tc.errMessage, 100, 0, 0)
+			e.publishJobEvent(&downloadAttempt{job: h}, "k", tc.status, tc.errMessage, 100, 0, 0)
 
 			deadline := time.After(500 * time.Millisecond)
 			var last jobs.Event
@@ -125,7 +125,7 @@ func TestOpenDownloadJob_NilRegistryReturnsNil(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/", nil)
-	a := e.beginDownload(c, "key", "m", constants.RepoOllama)
+	a := e.beginDownload(c, downloadAdmission{key: "key", model: "m", registry: constants.RepoOllama, options: modelregistry.DownloadOptions{}, catalogProvisioning: true})
 	assert.Nil(t, a)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
@@ -159,7 +159,7 @@ func TestJobKeyIndex_ClearedOnTerminal(t *testing.T) {
 	require.NotNil(t, h)
 	require.Equal(t, h.ID(), e.jobKeys["k1"])
 
-	e.publishJobEvent(h, "k1", string(constants.StatusCompleted), "", 100, 0, 0)
+	e.publishJobEvent(&downloadAttempt{job: h}, "k1", string(constants.StatusCompleted), "", 100, 0, 0)
 	assert.Equal(t, "", e.jobKeys["k1"], "terminal status must clear the index")
 }
 
@@ -169,7 +169,7 @@ func beginTestDownload(t *testing.T, e *DeploymentsExecutor, key string) *downlo
 	t.Cleanup(e.downloads.Stop)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/", nil)
-	a := e.beginDownload(c, key, "llama3", constants.RepoOllama)
+	a := e.beginDownload(c, downloadAdmission{key: key, model: "llama3", registry: constants.RepoOllama, options: modelregistry.DownloadOptions{}, catalogProvisioning: true})
 	require.NotNil(t, a)
 	t.Cleanup(a.cancel)
 	return a
@@ -187,7 +187,7 @@ func TestDownloadAdmissionDeduplicatesAndPreservesNewOwner(t *testing.T) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			c.Request = httptest.NewRequest("POST", "/", nil)
-			a := e.beginDownload(c, "shared", "org/model", constants.RepoHuggingFace)
+			a := e.beginDownload(c, downloadAdmission{key: "shared", model: "org/model", registry: constants.RepoHuggingFace, options: modelregistry.DownloadOptions{}, catalogProvisioning: true})
 			if a == nil {
 				var result internalDeploymentResult
 				if err := json.Unmarshal(w.Body.Bytes(), &result); err == nil {
@@ -216,7 +216,7 @@ func TestDownloadAdmissionDeduplicatesAndPreservesNewOwner(t *testing.T) {
 	require.ErrorIs(t, first.ctx.Err(), context.Canceled)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("POST", "/", nil)
-	next := e.beginDownload(c, "shared", "org/model", constants.RepoHuggingFace)
+	next := e.beginDownload(c, downloadAdmission{key: "shared", model: "org/model", registry: constants.RepoHuggingFace, options: modelregistry.DownloadOptions{}, catalogProvisioning: true})
 	require.NotNil(t, next)
 	defer next.cancel()
 	e.updateDownloadJob(first, "shared", "completed", "weights", 1, 1, 100, 100, 100, 0)
@@ -242,7 +242,7 @@ func TestDownloadAdmissionRefusalHasNoTrackerOrProducer(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("POST", "/", nil)
-	require.Nil(t, e.beginDownload(c, "refused", "m", "hf"))
+	require.Nil(t, e.beginDownload(c, downloadAdmission{key: "refused", model: "m", registry: "hf", options: modelregistry.DownloadOptions{}, catalogProvisioning: true}))
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Nil(t, e.downloads.GetDownloadStatus("refused"))
 	require.Empty(t, e.jobKeys)

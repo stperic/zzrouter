@@ -22,12 +22,14 @@ var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 
 // MemoryHolder describes driver attribution without exposing process command lines.
 type MemoryHolder struct {
-	gpu.MemoryProcess
-	Run                 string `json:"run,omitempty"`
-	Model               string `json:"model,omitempty"`
-	Ownership           string `json:"ownership"`
-	Provider            string `json:"provider,omitempty"`
-	UnusedCommitmentMiB int64  `json:"unused_commitment_mib,omitempty"`
+	PID                  int    `json:"pid,omitempty"`
+	MemoryMiB            *int64 `json:"memory_mib,omitempty"`
+	Run                  string `json:"run,omitempty"`
+	Model                string `json:"model,omitempty"`
+	Ownership            string `json:"ownership"`
+	Provider             string `json:"provider,omitempty"`
+	UnusedCommitmentMiB  int64  `json:"unused_commitment_mib,omitempty"`
+	ReclaimSkippedReason string `json:"reclaim_skipped_reason,omitempty"`
 }
 
 // RunRef identifies the zzRouter run behind a process, by id and the model it serves.
@@ -65,6 +67,9 @@ func (e *MemoryFitError) Error() string {
 			detail := fmt.Sprintf("pid %d, %s", h.PID, size)
 			if h.UnusedCommitmentMiB > 0 {
 				detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
+			}
+			if h.ReclaimSkippedReason != "" {
+				detail += "; reclaim skipped: " + h.ReclaimSkippedReason
 			}
 			held = append(held, fmt.Sprintf("zzRouter run %s %s (%s)", h.Run, identity, detail))
 		} else {
@@ -173,7 +178,7 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
 	used := make(map[string]int64)
 	for _, process := range device.Processes {
-		holder := MemoryHolder{MemoryProcess: process, Ownership: "other_or_untracked"}
+		holder := MemoryHolder{PID: process.PID, MemoryMiB: process.MemoryMiB, Ownership: "other_or_untracked"}
 		if run, ok := runOwning(process.PID, owners); ok {
 			holder.Run, holder.Model, holder.Ownership, holder.Provider = run.ID, run.Model, "zzrouter", run.Provider
 			if process.MemoryMiB != nil {
@@ -192,7 +197,7 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 			continue
 		}
 		failure.FreeMiB -= unused
-		failure.Holders = append(failure.Holders, MemoryHolder{MemoryProcess: gpu.MemoryProcess{PID: run.PID, MemoryMiB: &unused}, Run: run.ID, Model: run.Model, Provider: run.Provider, Ownership: "zzrouter", UnusedCommitmentMiB: unused})
+		failure.Holders = append(failure.Holders, MemoryHolder{MemoryMiB: &unused, Run: run.ID, Model: run.Model, Provider: run.Provider, Ownership: "zzrouter", UnusedCommitmentMiB: unused})
 	}
 	failure.FreeMiB = max(0, failure.FreeMiB)
 	return failure

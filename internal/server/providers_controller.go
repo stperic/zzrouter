@@ -32,6 +32,7 @@ type ProviderRegistrar interface {
 }
 
 type ProvidersController struct {
+	httpClient       *http.Client
 	publishCatalog   func() error
 	appsService      *AppsService                  // runtime status: list, get, enable/disable (always available)
 	versionsService  *ProviderVersionsService      // upstream release reporting (nil on workers: checks are coordinator-side)
@@ -50,11 +51,15 @@ type ProvidersController struct {
 // it; a nil registrar would turn a wiring bug into "session succeeded,
 // provider disabled, HTTP 200" — precisely the failure mode the choke-point
 // exists to prevent. Panics at wire time rather than silently degrading.
-func NewProvidersController(appsSvc *AppsService, providersSvc *ProvidersService, appsConfig func() *pkgConfig.AppsConfig, configStore *pkgConfig.AppsConfigStore, registrar ProviderRegistrar, mgr *prov_apps.ProviderAppManager, versionsSvc *ProviderVersionsService) *ProvidersController {
+func NewProvidersController(appsSvc *AppsService, providersSvc *ProvidersService, appsConfig func() *pkgConfig.AppsConfig, configStore *pkgConfig.AppsConfigStore, registrar ProviderRegistrar, mgr *prov_apps.ProviderAppManager, versionsSvc *ProviderVersionsService, httpClient *http.Client) *ProvidersController {
 	if registrar == nil {
 		panic("ProvidersController: registrar is required")
 	}
+	if httpClient == nil {
+		panic("ProvidersController: HTTP client is required")
+	}
 	return &ProvidersController{
+		httpClient:       httpClient,
 		appsService:      appsSvc,
 		versionsService:  versionsSvc,
 		providersService: providersSvc,
@@ -438,8 +443,7 @@ func (ctrl *ProvidersController) VerifyProvider(c *gin.Context) {
 	}
 
 	// Execute request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := ctrl.httpClient.Do(req)
 	if err != nil {
 		respondSuccess(c, "Provider verification failed", gin.H{
 			"provider": name,

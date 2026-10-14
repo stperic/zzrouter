@@ -32,6 +32,10 @@ type TreeFileEntry struct {
 
 // DownloadRequest says what to fetch from a model repository.
 type DownloadRequest struct {
+	// Target owns the downloaded files; omitted means the existing catalog.
+	Target DownloadTarget `json:"target,omitzero"`
+	// Revision is the HF revision, defaulting to main.
+	Revision string `json:"revision,omitempty"`
 	// Force re-fetches the selected file set, even when already recorded locally.
 	Force bool `json:"force"`
 	// Files is the coordinator's resolved file set. Nil resolves from the registry.

@@ -15,6 +15,9 @@ import (
 // the user-facing ServiceConfig view into the typed Provider that
 // c.providers stores.
 func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
+	if sc.Mode != constants.AppModeOnDemand && sc.Runtime != nil && (sc.Runtime.DataDir != "" || sc.Runtime.ModelStore != nil) {
+		return nil, fmt.Errorf("provider %q: data_dir and model_store require on-demand ownership", name)
+	}
 	switch sc.Mode {
 	case constants.AppModeOnDemand:
 		return &OnDemandProvider{
@@ -95,6 +98,8 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		return OnDemandRuntime{}
 	}
 	return OnDemandRuntime{
+		DataDir:               rt.DataDir,
+		ModelStore:            rt.ModelStore,
 		ActivityProbe:         rt.ActivityProbe,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,

@@ -110,7 +110,7 @@ func ProviderDir(name string) string {
 
 // ProviderBinDir returns the bin directory inside a provider's install dir.
 func ProviderBinDir(name string) string {
-	return filepath.Join(ProviderDir(name), "bin")
+	return filepath.Join(ProviderDir(name), config.SubdirBin)
 }
 
 // ProviderBinStagingDir returns the directory an install unpacks into
@@ -118,7 +118,7 @@ func ProviderBinDir(name string) string {
 // that activating the new tree is a rename within one filesystem rather
 // than a copy.
 func ProviderBinStagingDir(name string) string {
-	return filepath.Join(ProviderDir(name), "bin.incoming")
+	return ProviderBinDir(name) + ".incoming"
 }
 
 // ProviderBinPreviousDir returns where the live bin/ is parked while a
@@ -126,12 +126,12 @@ func ProviderBinStagingDir(name string) string {
 // activation step: anything left behind there is the debris of a failed
 // activation, not a backup anyone should restore from.
 func ProviderBinPreviousDir(name string) string {
-	return filepath.Join(ProviderDir(name), "bin.previous")
+	return ProviderBinDir(name) + ".previous"
 }
 
 // ProviderVenvDir returns the Python venv directory for a provider.
 func ProviderVenvDir(name string) string {
-	return filepath.Join(ProviderDir(name), "venv")
+	return filepath.Join(ProviderDir(name), config.SubdirVenv)
 }
 
 // ProviderVenvPython returns the Python executable inside a provider's venv.
@@ -140,7 +140,7 @@ func ProviderVenvPython(name string) string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(venv, "Scripts", "python.exe")
 	}
-	return filepath.Join(venv, "bin", "python3")
+	return filepath.Join(venv, config.SubdirBin, "python3")
 }
 
 // ProviderVenvPip returns the pip executable inside a provider's venv.
@@ -149,7 +149,7 @@ func ProviderVenvPip(name string) string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(venv, "Scripts", "pip.exe")
 	}
-	return filepath.Join(venv, "bin", "pip")
+	return filepath.Join(venv, config.SubdirBin, "pip")
 }
 
 // ProviderVersionFile returns the path to the version file for a provider.

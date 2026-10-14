@@ -22,8 +22,8 @@ func TestIdleStopSerializesWithLease(t *testing.T) {
 		acquired := make(chan *Lease, 1)
 		go func() {
 			<-start
-			release, ok := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: activity}})
-			claimed <- ok
+			release, _ := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: activity}})
+			claimed <- release != nil
 			released <- release
 		}()
 		go func() {
@@ -49,8 +49,9 @@ func TestIdleStopReturnsRefusedLeaseSlot(t *testing.T) {
 	inst := NewInstance("test", "test", "test", 0, -1, 10)
 	inst.SetStatus(StatusRunning)
 	inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 1, QueueTimeout: time.Second})
-	release, claimed := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
-	require.True(t, claimed)
+	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
+	require.NotNil(t, release)
+	require.Nil(t, refusal)
 	defer release()
 	lease, err := inst.Acquire(t.Context(), nil)
 	// A refusal, not a cancellation: the fallback chain reads context.Canceled as the client gone.
@@ -71,8 +72,8 @@ func TestIdleStopRejectsRefreshedActivity(t *testing.T) {
 	lease, err := inst.Acquire(t.Context(), nil)
 	require.NoError(t, err)
 	lease.Release()
-	release, claimed := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: activity}})
-	assert.False(t, claimed, "a stale expiry observation cannot stop fresh activity")
+	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: activity}})
+	assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: "not idle"}, refusal, "a stale expiry observation cannot stop fresh activity")
 	assert.Nil(t, release)
 	assert.True(t, inst.Evictable())
 	inst.Cancel()
@@ -87,8 +88,8 @@ func TestIdleStopClaimsAllOrNothing(t *testing.T) {
 	lease, err := second.Acquire(t.Context(), nil)
 	require.NoError(t, err)
 	defer lease.Release()
-	release, claimed := ClaimIdleStops(claims)
-	assert.False(t, claimed)
+	release, refusal := ClaimIdleStops(claims)
+	assert.Equal(t, &IdleStopRefusal{RunID: second.ID, Reason: "in use"}, refusal)
 	assert.Nil(t, release)
 	assert.True(t, first.Evictable(), "a failed set claim must leave other candidates available")
 	assert.False(t, first.idleStopClaimed)
@@ -99,8 +100,9 @@ func TestIdleStopClaimsAllOrNothing(t *testing.T) {
 func TestIdleStopReleaseAllowsLease(t *testing.T) {
 	inst := NewInstance("test", "test", "test", 0, -1, 10)
 	inst.SetStatus(StatusRunning)
-	release, claimed := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
-	require.True(t, claimed)
+	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
+	require.NotNil(t, release)
+	require.Nil(t, refusal)
 	_, err := inst.Acquire(t.Context(), nil)
 	assert.ErrorIs(t, err, ErrStopping)
 	release()
@@ -133,6 +135,37 @@ func TestIdleClaimRevalidatesHintAtSameActivity(t *testing.T) {
 	observed := inst.IdleSnapshot()
 	pin := -time.Second
 	inst.StampActivityWithHints(&keepalive.Override{Duration: &pin})
-	_, claimed := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: observed.Activity, Idle: &observed}})
-	assert.False(t, claimed, "equal timestamps cannot validate an obsolete duration or release state")
+	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: observed.Activity, Idle: &observed}})
+	assert.Nil(t, release, "equal timestamps cannot validate an obsolete duration or release state")
+	assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: "not idle"}, refusal)
+}
+
+func TestIdleStopRecordsLateRefusal(t *testing.T) {
+	for _, reason := range []string{"busy", "in use", "not idle"} {
+		t.Run(reason, func(t *testing.T) {
+			inst := NewInstance("late", "studio", "", 0, -1, 10)
+			inst.SetStatus(StatusRunning)
+			defer inst.Cancel()
+			candidate := IdleStopCandidate{Instance: inst, Activity: inst.GetLastActivity()}
+			require.True(t, inst.Evictable())
+			var unblock func()
+			switch reason {
+			case "busy":
+				inst.ObserveActivity(true)
+				unblock = func() { inst.ObserveActivity(false) }
+			case "in use":
+				lease, err := inst.Acquire(t.Context(), nil)
+				require.NoError(t, err)
+				unblock = lease.Release
+			case "not idle":
+				inst.SetStatus(StatusStarting)
+				unblock = func() { inst.SetStatus(StatusRunning) }
+			}
+			release, refusal := ClaimIdleStops([]IdleStopCandidate{candidate})
+			require.Nil(t, release)
+			unblock()
+			assert.True(t, inst.Evictable())
+			assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: reason}, refusal, "keep the decision even after eligibility changes")
+		})
+	}
 }
