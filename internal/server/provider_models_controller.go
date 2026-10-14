@@ -19,6 +19,28 @@ func (ctrl *ProviderModelsController) RegisterPublicRoutes(router *gin.RouterGro
 	router.GET("/providers/:name/models", ctrl.List)
 	idempotent(router, http.MethodPost, "/providers/:name/models", nil, ctrl.Download)
 	router.DELETE("/providers/:name/models", ctrl.Delete)
+	idempotent(router.Group("", requestSizeLimitMiddleware(providerWorkflowMaxBytes)), http.MethodPost, "/providers/:name/models/resolve", nil, ctrl.Resolve)
+}
+
+// Resolve handles POST /providers/:name/models/resolve.
+func (ctrl *ProviderModelsController) Resolve(c *gin.Context) {
+	var req providerModelResolveRequest
+	if !BindJSONStrict(c, &req) || !ctrl.validateNode(c, req.Node) {
+		return
+	}
+	result, err := ctrl.service.ResolveProviderModels(c.Request.Context(), c.Param("name"), req)
+	if err != nil {
+		RespondToError(c, err)
+		return
+	}
+	status := http.StatusOK
+	for _, item := range result.Requirements {
+		if item.JobID != "" {
+			status = http.StatusAccepted
+			break
+		}
+	}
+	c.JSON(status, gin.H{"data": result})
 }
 
 func (ctrl *ProviderModelsController) validateNode(c *gin.Context, node string) bool {

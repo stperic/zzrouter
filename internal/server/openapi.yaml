@@ -1958,6 +1958,62 @@ paths:
         '503': { $ref: '#/components/responses/ProviderModelProblem' }
         default: { $ref: '#/components/responses/ProviderModelProblem' }
 
+  /zzrouter/v1/providers/{name}/models/resolve:
+    post:
+      tags: [Providers]
+      operationId: resolveProviderModels
+      summary: Resolve workflow model metadata on one node
+      description: |
+        Reads only UI nodes[].properties.models entries (name, url, directory), or the UI workflow
+        at extra_data.extra_pnginfo.workflow in a submission envelope. Raw API workflows without
+        metadata return 400. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
+        Deduplicates category/name and merges equivalent HF sources; conflicting nonempty sources
+        are unresolvable. Invalid categories are unresolvable. Otherwise regular files with positive
+        size are present, including manual copies. Missing/unsupported sources never trigger guesses.
+        Reads inventory once from the named node. With download=true, missing resolvable items use
+        the ordinary provider download service and existing jobs. Absent files are missing during
+        inspection; downloading means this request admitted/shared a job. Start failures are failed
+        items with the existing typed problem code as reason; later items are still processed and
+        earlier job IDs are retained. Returns 202 if any job was accepted, otherwise 200. No parent
+        job or rollback. Zero-byte files are missing but admission reports failed/file_exists.
+        Follow jobs on the returned node; no provider restart or catalog update.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [node, workflow]
+              properties:
+                node: { type: string, minLength: 1 }
+                workflow: { type: object }
+                download: { type: boolean, default: false }
+            examples:
+              ui: { value: {node: gpu-worker, workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'org/repo#ae.safetensors', directory: vae}]}}]}} }
+              envelope: { value: {node: gpu-worker, download: true, workflow: {prompt: {}, extra_data: {extra_pnginfo: {workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'https://huggingface.co/org/repo/resolve/main/ae.safetensors', directory: vae}]}}]}}}}} }
+      responses:
+        '200':
+          description: Resolved; no downloads admitted, including when all starts failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelResolution' }
+              example: {data: {provider: comfyui, node: gpu-worker, requirements: [{category: vae, name: ae.safetensors, status: missing, source: 'org/repo#ae.safetensors'}]}}
+        '202':
+          description: At least one missing file's download was admitted or shared.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderModelResolution' }
+              example: {data: {provider: comfyui, node: gpu-worker, requirements: [{category: vae, name: ae.safetensors, status: downloading, source: 'org/repo#ae.safetensors', job_id: job-123}, {category: loras, name: adapter.safetensors, status: failed, reason: file_exists, source: 'org/repo#adapter.safetensors'}]}}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '413': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
   /zzrouter/v1/providers/{name}/assets:
     parameters: [{ in: path, name: name, required: true, schema: { type: string } }]
     get:
@@ -12820,6 +12876,33 @@ components:
             revision: { type: string }
             status: { type: string }
             job_id: { type: string }
+
+    ProviderModelResolution:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [provider, node, requirements]
+          properties:
+            provider: { type: string }
+            node: { type: string }
+            requirements:
+              type: array
+              items:
+                type: object
+                required: [category, name, status]
+                properties:
+                  category: { type: string }
+                  name: { type: string }
+                  status: { type: string, enum: [present, missing, downloading, unresolvable, failed] }
+                  reason:
+                    description: Metadata reason for unresolvable; existing typed problem code for failed starts.
+                    anyOf:
+                      - { type: string, enum: [invalid_model_category, source_unsupported, conflicting_source, missing_source] }
+                      - { $ref: '#/components/schemas/Problem/properties/code' }
+                  source: { type: string }
+                  job_id: { type: string }
 
     ProviderModelDelete:
       type: object

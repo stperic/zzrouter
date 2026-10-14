@@ -156,9 +156,10 @@ func providerModelRoot(t *testing.T, e *DeploymentsExecutor) string {
 
 // The HTTP fixture uses a loopback listener when permitted. Restricted test
 // environments still drive its HTTP handler and Fetch via a RoundTripper.
-func installProviderHTTPFixture(t *testing.T, handler http.Handler) {
+func installProviderHTTPFixture(t *testing.T, h *providerModelHarness, handler http.Handler) {
 	t.Helper()
 	previous := http.DefaultTransport
+	workerRegistry, coordinatorRegistry := h.worker.registry, h.coordinator.registry
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err == nil {
 		s := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}
@@ -178,7 +179,14 @@ func installProviderHTTPFixture(t *testing.T, handler http.Handler) {
 			return w.Result(), nil
 		})
 	}
-	t.Cleanup(func() { http.DefaultTransport = previous })
+	t.Cleanup(func() {
+		// Wait for producers even when an assertion ends the test early.
+		h.worker.jobs.Stop()
+		h.coordinator.jobs.Stop()
+		workerRegistry.Stop()
+		coordinatorRegistry.Stop()
+		http.DefaultTransport = previous
+	})
 }
 
 func TestProviderModelsTwoNodeDownloadListDelete(t *testing.T) {
@@ -187,7 +195,7 @@ func TestProviderModelsTwoNodeDownloadListDelete(t *testing.T) {
 	sum := sha256.Sum256([]byte(content))
 	hash := hex.EncodeToString(sum[:])
 	var fetched atomic.Int32
-	installProviderHTTPFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	installProviderHTTPFixture(t, h, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/models/org/repo/revision/v2":
 			require.Equal(t, "true", r.URL.Query().Get("blobs"))
@@ -477,7 +485,7 @@ func TestProviderModelsDiskPreflightAndUnknownSize(t *testing.T) {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			h := newProviderModelHarness(t)
 			var fetched atomic.Int32
-			installProviderHTTPFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			installProviderHTTPFixture(t, h, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasPrefix(r.URL.Path, "/api/models/") {
 					_ = json.NewEncoder(w).Encode(map[string]any{"siblings": []map[string]any{{"rfilename": "file", "size": size}}})
 					return
@@ -515,9 +523,13 @@ func TestProviderModelsActualSurfaceAuthAndWorkerIsolation(t *testing.T) {
 	for _, mode := range []config.ClusterMode{config.ClusterModeDisabled, config.ClusterModeWorker} {
 		t.Run(string(mode), func(t *testing.T) {
 			s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, UserKey: TestUserKey, ClusterMode: mode})
-			for _, method := range []string{"GET", "POST", "DELETE"} {
+			for _, operation := range []struct{ method, suffix string }{{"GET", ""}, {"POST", ""}, {"DELETE", ""}, {"POST", "/resolve"}} {
 				for _, key := range []string{"", TestUserKey, TestAdminKey} {
-					r := httptest.NewRequest(method, "/zzrouter/v1/providers/ghost/models?node=unknown", strings.NewReader(`{"node":"unknown","category":"vae","source":"org/repo#file"}`))
+					body := `{"node":"unknown","category":"vae","source":"org/repo#file"}`
+					if operation.suffix == "/resolve" {
+						body = `{"node":"unknown","workflow":{"nodes":[]}}`
+					}
+					r := httptest.NewRequest(operation.method, "/zzrouter/v1/providers/ghost/models"+operation.suffix+"?node=unknown", strings.NewReader(body))
 					r.Header.Set("Content-Type", "application/json")
 					r.Header.Set("X-API-Key", key)
 					w := httptest.NewRecorder()

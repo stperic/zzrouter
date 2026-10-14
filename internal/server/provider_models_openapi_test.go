@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -38,6 +39,24 @@ func TestProviderModelsOpenAPIReferencesAndExamples(t *testing.T) {
 		}
 	}
 	walk(item)
+	resolve := paths["/zzrouter/v1/providers/{name}/models/resolve"].(map[string]any)["post"].(map[string]any)
+	walk(resolve)
+	require.Equal(t, "resolveProviderModels", resolve["operationId"])
+	for _, status := range []string{"200", "202"} {
+		response := resolve["responses"].(map[string]any)[status].(map[string]any)
+		content := response["content"].(map[string]any)["application/json"].(map[string]any)
+		require.Contains(t, content, "example")
+	}
+	examples := resolve["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["examples"].(map[string]any)
+	for _, example := range examples {
+		body, err := json.Marshal(example.(map[string]any)["value"])
+		require.NoError(t, err)
+		var req providerModelResolveRequest
+		require.NoError(t, json.Unmarshal(body, &req))
+		items, err := workflowRequirements(req.Workflow)
+		require.NoError(t, err)
+		require.Len(t, items, 1)
+	}
 	require.True(t, seen["#/components/responses/ProviderModelProblem"])
 	for method, status := range map[string]string{"get": "200", "post": "202", "delete": "200"} {
 		op := item[method].(map[string]any)

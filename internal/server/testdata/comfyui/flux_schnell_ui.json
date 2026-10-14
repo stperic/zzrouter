@@ -1,0 +1,99 @@
+{
+  "id": "908d0bfb-e192-4627-9b57-147496e6e2dd",
+  "revision": 0,
+  "last_node_id": 44,
+  "last_link_id": 63,
+  "nodes": [
+    {
+      "id": 39,
+      "type": "VAELoader",
+      "pos": [-320, 470],
+      "size": [270, 58],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "VAE", "type": "VAE", "links": [58]}],
+      "properties": {
+        "Node name for S&R": "VAELoader",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "models": [{
+          "name": "ae.safetensors",
+          "url": "https://huggingface.co/Comfy-Org/Lumina_Image_2.0_Repackaged/resolve/main/split_files/vae/ae.safetensors",
+          "directory": "vae"
+        }]
+      },
+      "widgets_values": ["ae.safetensors"]
+    },
+    {
+      "id": 40,
+      "type": "DualCLIPLoader",
+      "pos": [-320, 290],
+      "size": [270, 130],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "CLIP", "type": "CLIP", "links": [59]}],
+      "properties": {
+        "Node name for S&R": "DualCLIPLoader",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "models": [
+          {
+            "name": "clip_l.safetensors",
+            "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+            "directory": "text_encoders"
+          },
+          {
+            "name": "t5xxl_fp16.safetensors",
+            "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
+            "directory": "text_encoders"
+          }
+        ]
+      },
+      "widgets_values": ["clip_l.safetensors", "t5xxl_fp16.safetensors", "flux", "default"]
+    },
+    {
+      "id": 27,
+      "type": "EmptySD3LatentImage",
+      "pos": [-320, 630],
+      "size": [270, 120],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "LATENT", "type": "LATENT", "slot_index": 0, "links": [51]}],
+      "properties": {"Node name for S&R": "EmptySD3LatentImage", "cnr_id": "comfy-core", "ver": "0.3.40"},
+      "widgets_values": [1024, 1024, 1]
+    },
+    {
+      "id": 38,
+      "type": "UNETLoader",
+      "pos": [-320, 150],
+      "size": [270, 82],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [{"name": "MODEL", "type": "MODEL", "links": [61]}],
+      "properties": {
+        "Node name for S&R": "UNETLoader",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.40",
+        "models": [{
+          "name": "flux1-schnell.safetensors",
+          "url": "https://huggingface.co/Comfy-Org/flux1-schnell/resolve/main/flux1-schnell.safetensors",
+          "directory": "diffusion_models"
+        }]
+      },
+      "widgets_values": ["flux1-schnell.safetensors", "default"]
+    }
+  ],
+  "links": [[58, 39, 0, 8, 1, "VAE"], [59, 40, 0, 41, 0, "CLIP"], [61, 38, 0, 31, 0, "MODEL"]],
+  "groups": [{"id": 1, "title": "Step 1 - Load Models Here", "bounding": [-330, 80, 300, 460], "color": "#3f789e", "font_size": 24, "flags": {}}],
+  "config": {},
+  "extra": {"ds": {"scale": 0.5679798080000055, "offset": [1202.176611719162, 306.8752233580118]}, "frontendVersion": "1.28.6"},
+  "version": 0.4
+}
