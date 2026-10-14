@@ -72,6 +72,13 @@ The privileged executor installs, restarts and verifies health. Follow it with
 `update run` remains the privileged executor. Other installs keep in-process
 apply and rollback.
 
+`zzrouter-node update history` and the update-history API read the privileged
+updater's record on managed Linux installs. Root retains write ownership; the
+service account only reads it. An existing mode-0640 history file becomes
+service-readable when a privileged apply next records an outcome. To read that
+older record immediately, run the history command as root. History records apply
+outcomes; rollback continues to be reported by update status and the updater journal.
+
 Updates require `checksums.txt.sigstore.json` authenticated for
 `https://github.com/stperic/zzrouter/.github/workflows/release.yaml@refs/tags/v<version>`
 and GitHub Actions' OIDC issuer. Metadata from another feed does not change

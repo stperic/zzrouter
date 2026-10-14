@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Managed Linux update history reads the privileged updater's record through both the CLI and API.
+- macOS process enumeration and PID lookup share bounded recovery for transient ENOMEM reads.
+- Managed Python failures put pip's ERROR lines first and retain the captured command output.
+
 ## 0.2.0 (2026-10-14)
 
 ### Highlights
