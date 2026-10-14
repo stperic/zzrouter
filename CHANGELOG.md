@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 (2026-10-14)
 
+- Builds on Go 1.26.9 and golang.org/x/net v0.60.0, which fix reachable
+  vulnerabilities in the standard library's net/http, crypto/tls,
+  html/template, mime/multipart and os packages.
+- The Windows release embeds provider templates and other bundled files with
+  LF line endings, the same bytes as every other platform.
+- Managed Python install errors use LF line endings on every platform.
 - Optional OpenTelemetry tracing supports authenticated OTLP HTTP/protobuf and
   gRPC, parent-based sampling, safe HTTP metadata and connected dispatch/worker/MCP
   spans. Local metrics can remain enabled for trace-only collectors. Tracing stays
