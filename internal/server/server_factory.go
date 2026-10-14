@@ -691,24 +691,7 @@ func (s *Server) initHTTPEngine(cfg *pkgConfig.NodeConfig) {
 
 	// Initialize OpenTelemetry observability if enabled
 	if cfg.Observability.IsEnabled() {
-		otelCfg := &observability.Config{
-			Enabled:     cfg.Observability.Enabled,
-			ServiceName: cfg.Observability.ServiceName,
-			OTLP: observability.OTLPConfig{
-				Endpoint: cfg.Observability.OTLP.Endpoint,
-				Insecure: cfg.Observability.OTLP.Insecure,
-				Headers:  cfg.Observability.OTLP.Headers,
-			},
-			Tracing: observability.TracingConfig{
-				Enabled:    cfg.Observability.Tracing.Enabled,
-				SampleRate: cfg.Observability.Tracing.SampleRate,
-			},
-			Metrics: observability.MetricsConfig{
-				Enabled:        cfg.Observability.Metrics.Enabled,
-				PrometheusPort: cfg.Observability.Metrics.PrometheusPort,
-				ExportInterval: cfg.Observability.Metrics.ExportInterval,
-			},
-		}
+		otelCfg := cfg.Observability.ToObservabilityConfig()
 		if otelCfg.ServiceName == "" {
 			otelCfg.ServiceName = "zzrouter"
 		}

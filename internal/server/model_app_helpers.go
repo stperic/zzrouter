@@ -170,7 +170,7 @@ func (s *Server) sendToInstance(req *http.Request, lease *instance.Lease, body [
 		proxyReq.ContentLength = int64(len(body))
 		proxyReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	}
-	proxyReq.Header = upstreamHeaders(req.Header, up)
+	proxyReq.Header = upstreamHeaders(req.Context(), req.Header, up)
 	// Engine servers refuse a JSON body sent without its type; a multipart body always names its own.
 	if proxyReq.Header.Get("Content-Type") == "" {
 		proxyReq.Header.Set("Content-Type", "application/json")
@@ -204,12 +204,16 @@ func instanceSendFailure(recorder *llm.InferenceRecorder, err error) httperr.Err
 
 func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, quiet bool) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
+	ctx, attempt := llm.StartAttempt(req.Context(), inst.Provider, model)
+	defer attempt.End()
+	req = req.WithContext(ctx)
 	recorder := requestRecorder(req.Context(), model, inst.Provider)
-	lease, target, up, ok := s.openRun(req, inst, recorder, func(e httperr.Error) { failBeforeBackend(w, req, e) })
+	lease, target, up, ok := s.openRun(req, inst, recorder, func(e httperr.Error) { attempt.SetError(e.Code, nil); failBeforeBackend(w, req, e) })
 	if !ok {
 		return
 	}
 	defer lease.Release()
+	attempt.SetTarget(target.String())
 	recorder.SetServer(target.Hostname(), portFromURL(target))
 
 	inflightToken := obsproxy.IncInflight(req.Context(),
@@ -224,11 +228,13 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	}
 	resp, err := s.sendToInstance(req, lease, body, target, up)
 	if err != nil {
+		attempt.SetError("transport_failure", err)
 		slog.Error("Proxy error for instance", "id", inst.ID, "error", err)
 		writeError(w, req, instanceSendFailure(recorder, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	attempt.SetStatus(resp.StatusCode)
 	if !quiet {
 		utils.LogDebugf("Proxy Response: Status=%d, ContentType=%s, ContentLength=%d, TransferEncoding=%v",
 			resp.StatusCode, resp.Header.Get("Content-Type"), resp.ContentLength, resp.TransferEncoding)
@@ -249,12 +255,15 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	meta := s.localRoutingMetadata(req, inst, servingNode, restoreModel)
 	meta.SuppressUsageFrame = suppressUsageFrameFromContext(req.Context())
 	if !isStreamingResponse(resp) {
-		failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(s.inference.normalizers, inst.Provider, meta, recorder), recorder))
+		result := wire.RelayBuffered(w, resp, normalizedBody(s.inference.normalizers, inst.Provider, meta, recorder), recorder)
+		result.ObserveAttempt(attempt)
+		failBrokenBody(w, req, result)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	result := streamWithUsageInject(req, w, resp, s.inference.normalizers, inst.Provider, meta, recorder)
+	result.ObserveAttempt(attempt)
 	if result.Outcome == wire.ClientGone {
 		panic(http.ErrAbortHandler)
 	}

@@ -22,8 +22,11 @@ type Config struct {
 
 // OTLPConfig configures the OTLP exporter endpoint.
 type OTLPConfig struct {
-	// Endpoint is the OTLP collector endpoint (e.g., "localhost:4317")
+	// Endpoint is a gRPC host:port or an absolute HTTP base URL.
 	Endpoint string `yaml:"endpoint" mapstructure:"endpoint"`
+
+	// Protocol selects grpc (the default) or http/protobuf.
+	Protocol string `yaml:"protocol,omitempty" mapstructure:"protocol"`
 
 	// Insecure disables TLS for the OTLP connection
 	Insecure bool `yaml:"insecure" mapstructure:"insecure"`
@@ -46,6 +49,9 @@ type TracingConfig struct {
 type MetricsConfig struct {
 	// Enabled controls whether metrics are active
 	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+	// OTLPExport controls remote metrics push; omitted means enabled.
+	OTLPExport *bool `yaml:"otlp_export,omitempty" mapstructure:"otlp_export"`
 
 	// PrometheusPort is the port for the Prometheus /metrics endpoint
 	// 0 = disabled (metrics exported via OTLP only)
@@ -77,7 +83,7 @@ func (c *Config) Validate() error {
 		c.Metrics.ExportInterval = 15
 	}
 
-	return nil
+	return c.OTLP.validate()
 }
 
 // IsTracingEnabled returns true if tracing is enabled.
@@ -96,4 +102,9 @@ func (c *Config) IsMetricsEnabled() bool {
 // is reserved for a future dedicated sidecar listener.
 func (c *Config) IsPrometheusEnabled() bool {
 	return c.IsMetricsEnabled()
+}
+
+// IsOTLPEnabled returns whether collected metrics should be pushed remotely.
+func (c *MetricsConfig) IsOTLPEnabled() bool {
+	return c.Enabled && (c.OTLPExport == nil || *c.OTLPExport)
 }

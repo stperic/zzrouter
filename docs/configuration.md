@@ -69,3 +69,9 @@ conflict with real weights or catalog aliases. One inheritance level is supporte
 
 See [model features](model_features.md), [managed recipes](typed_provider_recipes.md)
 and the [API reference](api.md) for deployment and installation contracts.
+
+## OpenTelemetry
+
+Tracing is opt-in through `observability.tracing.enabled` in `node.yaml`.
+See [OpenTelemetry tracing](observability.md) for collector protocols, ingestion
+headers, sampling and restart-required activation.

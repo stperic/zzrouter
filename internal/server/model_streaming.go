@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -261,12 +262,16 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 // SSE preamble, which only an in-band streamer opens.
 func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, inst *instance.Instance, streamer httperr.InBandStreamer) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
+	ctx, attempt := llm.StartAttempt(req.Context(), inst.Provider, model)
+	defer attempt.End()
+	req = req.WithContext(ctx)
 	rec := requestRecorder(req.Context(), model, inst.Provider)
-	lease, target, up, ok := s.openRun(req, inst, rec, func(e httperr.Error) { streamer.StreamError(w, e) })
+	lease, target, up, ok := s.openRun(req, inst, rec, func(e httperr.Error) { attempt.SetError(e.Code, nil); streamer.StreamError(w, e) })
 	if !ok {
 		return
 	}
 	defer lease.Release()
+	attempt.SetTarget(target.String())
 
 	body, answerAs := s.instanceRequest(req, inst)
 	rec.SetUpstreamRequestData(body)
@@ -279,10 +284,12 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 
 	resp, err := s.sendToInstance(req, lease, body, target, up)
 	if err != nil {
+		attempt.SetError("transport_failure", err)
 		streamer.StreamError(w, instanceSendFailure(rec, err))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	attempt.SetStatus(resp.StatusCode)
 
 	if resp.StatusCode >= 400 {
 		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req), inst.FailureClassifier)
@@ -296,5 +303,6 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 
 	meta := s.localRoutingMetadata(req, inst, s.GetNodename(), answerAs)
 	result := wire.CopyStream(req.Context(), w, resp.Body, rec, wire.NewStreamTransform(s.inference.normalizers.Stream(inst.Provider), meta, rec).Func())
+	result.ObserveAttempt(attempt)
 	endBrokenStream(w, req, result)
 }

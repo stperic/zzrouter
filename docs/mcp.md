@@ -262,3 +262,9 @@ The suite is pinned to
 baseline; this version has no 2026-07-28 server scenarios. Add
 `--spec-version 2026-07-28` when a release supports them. Fixture-only tools and
 unsupported MCP features remain baseline failures.
+
+### OpenTelemetry
+
+When tracing is enabled, MCP carries its HTTP trace parent into the inner REST
+request through W3C headers. It retains cancellation and the existing context-value
+isolation. See [OpenTelemetry configuration](observability.md).

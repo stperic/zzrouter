@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // HeaderCarrier wraps http.Header to implement propagation.TextMapCarrier.
@@ -32,7 +32,10 @@ func (c HeaderCarrier) Keys() []string {
 // InjectTraceContext injects the trace context from ctx into the HTTP headers.
 // This should be called when making outgoing HTTP requests to propagate the trace.
 func InjectTraceContext(ctx context.Context, headers http.Header) {
-	otel.GetTextMapPropagator().Inject(ctx, HeaderCarrier(headers))
+	headers.Del(TraceParentHeader)
+	headers.Del(TraceStateHeader)
+	headers.Del("baggage")
+	propagation.TraceContext{}.Inject(ctx, HeaderCarrier(headers))
 }
 
 // W3CTraceContextHeaders are the standard W3C Trace Context header names.
@@ -40,3 +43,8 @@ const (
 	TraceParentHeader = "traceparent"
 	TraceStateHeader  = "tracestate"
 )
+
+// ExtractTraceContext admits W3C trace context without caller baggage.
+func ExtractTraceContext(ctx context.Context, headers http.Header) context.Context {
+	return propagation.TraceContext{}.Extract(ctx, HeaderCarrier(headers))
+}

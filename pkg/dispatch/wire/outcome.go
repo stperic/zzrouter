@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
 // Outcome is how a relay ended.
@@ -94,4 +95,17 @@ func terminal(frame []byte) (done, failed bool) {
 		}
 	}
 	return false, false
+}
+
+// ObserveAttempt uses the canonical relay outcome without a second stream parser.
+func (r Result) ObserveAttempt(attempt *llm.Attempt) {
+	switch r.Outcome {
+	case Completed:
+	case ClientGone:
+		attempt.SetError("client_cancelled", r.Err)
+	case UpstreamFailed:
+		attempt.SetError("upstream_stream_failed", r.Err)
+	default:
+		attempt.SetError("upstream_stream_truncated", r.Err)
+	}
 }

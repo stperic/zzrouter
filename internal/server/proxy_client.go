@@ -129,7 +129,10 @@ func (p *ProxyClient) do(req *http.Request, up backend.Upstream) (*http.Response
 // the answer. up decides what of the caller's request travels.
 func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request, providerType, targetURL string, up backend.Upstream, body []byte) {
 	model, _ := req.Context().Value(CtxKeyModel).(string)
-	recorder := requestRecorder(req.Context(), model, providerType)
+	ctx, attempt := llm.StartAttempt(req.Context(), providerType, model)
+	defer attempt.End()
+	attempt.SetTarget(targetURL)
+	recorder := requestRecorder(ctx, model, providerType)
 	recorder.SetUpstreamRequestData(body)
 	var serverHost string
 	if u, err := url.Parse(targetURL); err == nil && u.Host != "" {
@@ -141,30 +144,33 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 	// label-tuple at request entry so the +1/-1 nets to zero on the
 	// same series. Operation/provider/model labels match the GenAI
 	// duration histograms so saturation dashboards slice the same way.
-	inflightToken := obsproxy.IncInflight(req.Context(),
+	inflightToken := obsproxy.IncInflight(ctx,
 		string(obsgenai.OperationName(req.URL.Path)),
 		providerType, model, serverHost)
-	defer obsproxy.DecInflight(req.Context(), inflightToken)
+	defer obsproxy.DecInflight(ctx, inflightToken)
 
 	// Streaming context: cancelled if client disconnects, no timeout
-	streamCtx, cancel := context.WithCancel(req.Context())
+	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	proxyReq, err := http.NewRequestWithContext(streamCtx, req.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
+		attempt.SetError("request_build_failed", err)
 		recordWireError(recorder, "proxy_request_build_failed", err)
 		writeError(w, req, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "Failed to create proxy request", Code: "proxy_request_build_failed"})
 		return
 	}
-	proxyReq.Header = upstreamHeaders(req.Header, up)
+	proxyReq.Header = upstreamHeaders(streamCtx, req.Header, up)
 
 	resp, err := p.do(proxyReq, up)
 	if err != nil {
+		attempt.SetError("transport_failure", err)
 		recordWireError(recorder, "backend_unreachable", err)
 		writeError(w, req, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "failed to reach backend", Code: "backend_unreachable"})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	attempt.SetStatus(resp.StatusCode)
 
 	// Track rate limit headers from provider responses
 	if p.onRateLimit != nil {
@@ -181,6 +187,7 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 	// the rest of the surface. Streaming SSE has its own content-type
 	// (text/event-stream) and is not affected.
 	if isOpenAICompatPath(req.URL.Path) && isHTMLResponse(resp) {
+		attempt.SetError("upstream_http_failure", nil)
 		recordWireError(recorder, "upstream_route_not_implemented",
 			fmt.Errorf("upstream served HTML on /v1/* path"))
 		writeUpstreamRouteNotImplemented(w, req, providerType, resp)
@@ -241,10 +248,13 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 	}
 
 	if streaming {
-		streamWithUsageInject(req, w, resp, p.normalizers, providerType, meta, recorder)
+		result := streamWithUsageInject(req.WithContext(ctx), w, resp, p.normalizers, providerType, meta, recorder)
+		result.ObserveAttempt(attempt)
 		return
 	}
-	failBrokenBody(w, req, wire.RelayBuffered(w, resp, normalizedBody(p.normalizers, providerType, meta, recorder), recorder))
+	result := wire.RelayBuffered(w, resp, normalizedBody(p.normalizers, providerType, meta, recorder), recorder)
+	result.ObserveAttempt(attempt)
+	failBrokenBody(w, req, result)
 }
 
 // ForwardDetached sends a request to a backend but does NOT write to the client.
@@ -264,7 +274,7 @@ func (p *ProxyClient) ForwardDetached(ctx context.Context, method, targetURL str
 	if err != nil {
 		return nil, &fallback.RequestError{Err: err}
 	}
-	proxyReq.Header = upstreamHeaders(headers, up)
+	proxyReq.Header = upstreamHeaders(ctx, headers, up)
 	resp, err := p.do(proxyReq, up)
 	if err != nil {
 		return resp, &fallback.RequestError{Err: err, WroteRequest: wroteRequest.Load() || !traced.Load()}

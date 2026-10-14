@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Optional OpenTelemetry tracing supports authenticated OTLP HTTP/protobuf and
+  gRPC, parent-based sampling, safe HTTP metadata and connected dispatch/worker/MCP
+  spans. Local metrics can remain enabled for trace-only collectors. Tracing stays
+  disabled by default. See [configuration and activation](docs/observability.md).
+
 ## 0.2.1 (2026-10-14)
 
 - Managed Linux update history reads the privileged updater's record through both the CLI and API.

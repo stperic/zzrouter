@@ -187,7 +187,7 @@ func (s *OllamaServiceImpl) pullLocalProxy(c *gin.Context, modelName string, ins
 		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
 	}
 
-	proxyReq.Header = upstreamHeaders(c.Request.Header, daemon.Upstream)
+	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, daemon.Upstream)
 	proxyReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.httpStreamingClient.Do(proxyReq)
@@ -232,7 +232,7 @@ func (s *OllamaServiceImpl) pullClusterRoute(c *gin.Context, targetNode, modelNa
 		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
 	}
 
-	proxyReq.Header = upstreamHeaders(c.Request.Header, backend.Cluster())
+	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, backend.Cluster())
 	proxyReq.Header.Set("Content-Type", "application/json")
 	// Auth: mTLS at the transport layer. Worker compat surface is on the
 	// cluster port; transport-level OU=coordinator client cert IS the gate.
@@ -422,7 +422,7 @@ func (s *OllamaServiceImpl) CreateBlob(c *gin.Context, digest string) error {
 		return newProblemError(http.StatusInternalServerError, "Internal Server Error", "failed to create proxy request")
 	}
 
-	proxyReq.Header = upstreamHeaders(c.Request.Header, daemon.Upstream)
+	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, daemon.Upstream)
 	// The blob streams through as it arrives; its length goes with it, or
 	// the reader body would go out chunked.
 	proxyReq.ContentLength = c.Request.ContentLength

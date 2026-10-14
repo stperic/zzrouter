@@ -185,15 +185,19 @@ observability:
   metrics:
     enabled: true                      # Expose GET /metrics (Prometheus scrape)
     # prometheus_port: 0               # Reserved for a dedicated sidecar listener (0 = disabled)
+    # otlp_export: true               # False keeps local metrics without remote push
     # export_interval: 15              # OTLP push interval (seconds)
   tracing:
     enabled: false                     # Distributed tracing : opt-in, needs otlp.endpoint
-    sample_rate: 0.1                   # 1.0 = sample all, 0.1 = 10%, 0.0 = off
+    sample_rate: 0.1                   # 1.0 = sample all, 0.1 = 10%, 0.0 = no new roots; honors parent sampling
   # otlp:
+  #   protocol: grpc                  # grpc (default) or http/protobuf
   #   endpoint: "localhost:4317"       # OTLP gRPC collector (Jaeger/Tempo/Honeycomb/etc.)
-  #   insecure: true                   # Skip TLS for local dev collectors
+  #   insecure: true                   # Plaintext gRPC for local collectors
   #   headers:                         # Auth headers for SaaS collectors
-  #     x-honeycomb-team: "..."
+  #     Authorization: "Bearer <collector-ingestion-key>"
+  # HTTP example: protocol: http/protobuf, endpoint: "https://collector.example/otlp"
+  # Setup: docs/observability.md
 
 # =============================================================================
 # AUTO-UPDATE
