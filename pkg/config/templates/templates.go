@@ -48,9 +48,13 @@ func GetClientTemplate() string {
 // preserved (copy-if-missing semantics) so user edits survive an
 // upgrade-time reinstall. Subdirectories are created with 0755; files
 // are written 0600 via atomic temp+rename.
+// Nonroot calls first publish ownership and quarantine/restore historical providers.
 func InstallDefaults(dstDir string) error {
 	if err := os.MkdirAll(dstDir, 0755); err != nil {
 		return fmt.Errorf("create %s: %w", dstDir, err)
+	}
+	if _, _, err := prepareManagedFiles(AppsFS, dstDir); err != nil {
+		return err
 	}
 	return fs.WalkDir(AppsFS, providersRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -62,9 +66,6 @@ func InstallDefaults(dstDir string) error {
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 
 		if d.IsDir() {
-			if rel == "" {
-				return nil
-			}
 			return os.MkdirAll(dst, 0755)
 		}
 
@@ -72,15 +73,21 @@ func InstallDefaults(dstDir string) error {
 		if _, err := os.Stat(dst); err == nil {
 			return nil
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
 		data, err := fs.ReadFile(AppsFS, p)
 		if err != nil {
 			return fmt.Errorf("read embed %s: %w", p, err)
 		}
 		return utils.AtomicWriteFile(dst, data, providerFileMode)
 	})
+}
+
+// PrepareProviders seeds missing files and reconciles the current release.
+// Root reconciliation uses only current ownership, never receipt history.
+func PrepareProviders(dstDir string) ([]string, error) {
+	if err := InstallDefaults(dstDir); err != nil {
+		return nil, err
+	}
+	return ReconcileManagedSpine(dstDir)
 }
 
 // providersRoot is where AppsFS keeps the provider tree.

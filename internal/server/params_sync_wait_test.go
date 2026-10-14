@@ -88,6 +88,7 @@ func TestProviderSyncFanOut_AwaitQuiesceWaitsForTheRound(t *testing.T) {
 		func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 
 	// Nothing has fired: there is nothing to wait for.
@@ -150,6 +151,7 @@ func TestProviderSyncFanOut_AWorkerLeftBehindIsNotComplete(t *testing.T) {
 		func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	f.Listener()(store.Config())
 
@@ -180,6 +182,7 @@ func TestProviderSyncFanOut_LandedNamesOnlyWorkersThatTookIt(t *testing.T) {
 			return []*mesh.Endpoint{{URL: ok.URL, NodeName: "took"}, {URL: refused.URL, NodeName: "refused"}, {URL: unnamed.URL}}
 		},
 		func() *http.Client { return ok.Client() },
+		compatibleSyncClusterClient,
 	)
 	f.Listener()(store.Config())
 
@@ -212,6 +215,7 @@ func TestProviderSyncFanOut_AReFireOwedIsStillInFlight(t *testing.T) {
 		func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 
 	f.Listener()(store.Config())
@@ -266,6 +270,7 @@ func TestProviderSyncFanOut_PendingNamesWorkersThatAlreadyTookIt(t *testing.T) {
 			return []*mesh.Endpoint{{URL: took.URL, NodeName: "awake"}, {URL: hangs.URL, NodeName: "asleep"}}
 		},
 		func() *http.Client { return took.Client() },
+		compatibleSyncClusterClient,
 	)
 	f.Listener()(store.Config())
 

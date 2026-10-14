@@ -46,7 +46,7 @@ func ensureConfigStructure(onlyMissing bool, silent bool) (bool, error) {
 		appsDirExists = true
 	}
 	if !onlyMissing || !appsDirExists {
-		if err := templates.InstallDefaults(appsDir); err != nil {
+		if _, err := templates.PrepareProviders(appsDir); err != nil {
 			return createdAny, fmt.Errorf("install providers templates: %w", err)
 		}
 		createdAny = true
@@ -220,9 +220,9 @@ func runNodeInit(force bool) error {
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
 
-	// 2. Install per-provider directory tree (all apps disabled by default).
-	// Copy-if-missing per file — safe to re-run on existing installs.
-	if err := templates.InstallDefaults(appsDir); err != nil {
+	// 2. Prepare providers: seed missing files and reconcile release-owned fields.
+	// Operator fields survive reinitialization.
+	if _, err := templates.PrepareProviders(appsDir); err != nil {
 		return fmt.Errorf("install providers templates: %w", err)
 	}
 

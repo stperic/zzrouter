@@ -47,6 +47,7 @@ func TestProviderSyncFanOut_IgnoredWhenNotCoord(t *testing.T) {
 		func() bool { return false }, // not coord
 		func() []*mesh.Endpoint { return nil },
 		func() *http.Client { return http.DefaultClient },
+		compatibleSyncClusterClient,
 	)
 	disp := f.Listener()(store.Config())
 	if disp != pkgConfig.DispositionIgnored {
@@ -78,6 +79,7 @@ func TestProviderSyncFanOut_PushesToEveryWorker(t *testing.T) {
 			return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}}
 		},
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	disp := f.Listener()(store.Config())
 	if disp != pkgConfig.DispositionApplied {
@@ -120,6 +122,7 @@ func TestProviderSyncFanOut_CoalescesBursts(t *testing.T) {
 		func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	// First fire enters run(); subsequent fires during the block coalesce.
 	f.Listener()(store.Config())
@@ -174,6 +177,7 @@ func TestProviderSyncFanOut_SkipsCloudProviders(t *testing.T) {
 		func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	_ = f.Listener()(store.Config())
 
@@ -219,6 +223,7 @@ func TestProviderSyncFanOut_SkipsLocalEndpoint(t *testing.T) {
 			}
 		},
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	_ = f.Listener()(store.Config())
 	// Give run() a brief window; no push should fire.
@@ -379,6 +384,7 @@ func TestReconcileProviderTree_PushesWithoutAMutation(t *testing.T) {
 			return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}}
 		},
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 
 	s.reconcileProviderTree("test")
@@ -411,6 +417,7 @@ func TestReconcileProviderTree_QuietWhenItShouldBe(t *testing.T) {
 		func() bool { return false },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
 		func() *http.Client { return srv.Client() },
+		compatibleSyncClusterClient,
 	)
 	s.reconcileProviderTree("test")
 
@@ -444,7 +451,7 @@ func TestProviderSyncFanOut_CarriesAssets(t *testing.T) {
 
 	f := newProviderSyncFanOut(store, func() bool { return true },
 		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
-		func() *http.Client { return srv.Client() })
+		func() *http.Client { return srv.Client() }, compatibleSyncClusterClient)
 	f.Listener()(store.Config())
 
 	select {

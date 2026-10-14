@@ -11,6 +11,20 @@ Engine failure declarations, model features and typed provider install recipes r
 provider configuration on every node. Upgrade incompatible peers
 in one maintenance window before rejoining them.
 
+Before each provider-sync round sends bytes to a worker, the coordinator obtains
+fresh protocol evidence through the existing mTLS internal version query and
+applies its local protocol window. Cached UP status, pairing success and a probe
+from an earlier round do not authorize a push. Unreadable, missing, zero or
+out-of-window protocol evidence prevents the POST and leaves that worker missed
+in the existing partial/pending sync report. Compatible peers still receive full
+provider configs, schemas and assets.
+
+A worker can restart on another binary between probe and POST. Receiver-side
+strict validation remains the backstop: incompatible bytes are refused before
+config, schema or asset writes. This gate does not project newer configurations
+into an older schema, and an older coordinator without it can still attempt a
+push that the worker refuses.
+
 ## Contributor policy
 
 Change `ClusterProtocolVersion` in [protocol.go](../pkg/version/protocol.go)
@@ -18,6 +32,15 @@ when the wire contract changes. Raise both it and `MinClusterProtocolVersion`
 when old peers would reject, misread or mis-handle the new bytes. Optional fields
 that old peers safely ignore may keep the previous minimum for one release.
 A bug fix without a wire change does not require a bump.
+
+The ownership receipt and fresh provider-sync evidence gate do not change the
+wire contract or require a protocol bump. Future managed provider fields that
+older schemas reject still require the normal protocol/minimum change. The
+rollback reader floor **R** is separate from the protocol window: targets before
+R, including public v0.1.0, require the
+[manual provider-config recovery procedure](install.md#manual-recovery-for-targets-before-r).
+See [the configuration rollback boundary](install.md#configuration-rollback-compatibility-floor)
+for retained operator edits, unavailable providers and the receipt requirement.
 
 Protocol 7 raises the minimum from 6 to 7. Every asynchronous download or peer
 sync is admitted with an immutable observable job before physical work starts.

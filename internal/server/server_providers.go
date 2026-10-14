@@ -77,6 +77,7 @@ func (s *Server) subscribeConfigStore() {
 			}
 			return client
 		},
+		s.getClusterClient,
 	)
 	s.configStore.OnChange("server.providerSyncFanOut", syncFanOut.Listener())
 	// Kept on the server: a mutation is not the only reason a worker can

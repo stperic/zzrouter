@@ -184,6 +184,17 @@
 
 ### Fixes
 
+- Rollback to a release containing the ownership-receipt reader repairs managed
+  provider keys before strict loading and archives newer-only shipped providers.
+  Supported operator edits remain. The compatibility floor is currently
+  Unreleased; v0.1.0 and other pre-reader builds require
+  [manual configuration recovery](docs/install.md#manual-recovery-for-targets-before-r).
+- Provider preparation failures count as self-update boot attempts and refuse
+  startup, including repair I/O failures whose remaining config still decodes.
+- Provider sync checks fresh worker protocol evidence over mTLS before each
+  round. An incompatible or unreadable peer receives no provider POST and stays
+  missed in sync reports, even when cached as UP. Receiver validation still
+  refuses incompatible bytes before disk writes if a worker changes after probing.
 - GPU memory refusals explain why reclaim skipped a run (busy, in use or not idle),
   and unused commitments omit process IDs. Evicted-run lookups name a model-less
   evictor by its provider, using the same display name as the CLI.
