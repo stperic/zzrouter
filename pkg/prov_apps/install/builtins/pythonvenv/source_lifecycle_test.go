@@ -174,6 +174,12 @@ func TestSourcePairRestoresPayloadsRecordsAndDataAtEveryFailure(t *testing.T) {
 	for _, failure := range []string{"park source", "park venv", "activate source", "activate venv", "source moved mode", "venv moved mode", "park version", "park manifest", "relocate", "runtime check", "help", "write version", "write manifest", "harden source", "harden venv", "finalize"} {
 		t.Run(failure, func(t *testing.T) {
 			_, snapshot, tx, python := sourceLifecycle(t)
+			snapshot.AdditionalPackages = map[string]string{"next-addon": ">=2"}
+			previous, err := fsroot.ReadInstallManifest(snapshot.Runtime)
+			require.NoError(t, err)
+			previous.AdditionalPackages = map[string]string{"previous-addon": ">=1"}
+			require.NoError(t, fsroot.WriteInstallManifest(snapshot.Runtime, previous))
+			require.NoError(t, os.Chmod(fsroot.ProviderManifestPath(snapshot.Runtime), 0440))
 			before := map[string]map[string]savedFile{}
 			for _, name := range append(snapshot.PayloadDirectories(), "data", "python") {
 				before[name] = savedTree(t, filepath.Join(tx.directory, name))
@@ -222,7 +228,7 @@ func TestSourcePairRestoresPayloadsRecordsAndDataAtEveryFailure(t *testing.T) {
 				script := fmt.Sprintf("import os, argparse\nos.mkdir(%q)\nargparse.ArgumentParser().parse_args()\n", filepath.Join(tx.directory, name))
 				require.NoError(t, os.WriteFile(main, []byte(script), 0600))
 			}
-			err := activateSource(t, tx, snapshot, python)
+			err = activateSource(t, tx, snapshot, python)
 			if failure == "finalize" {
 				require.NoError(t, err)
 				require.NoError(t, tx.rollback())

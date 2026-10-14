@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 
@@ -32,6 +33,19 @@ type providerEnvironment struct {
 	KernelEvidence    string                      `json:"kernel_evidence"`
 	Findings          []install.HostFinding       `json:"findings"`
 	Workarounds       []environmentWorkaround     `json:"api_workarounds"`
+}
+
+func (r *providerEnvironment) recordInstall(manifest *fsroot.InstallManifest) {
+	r.InstalledManifest = manifest
+	if manifest == nil {
+		r.RecipeDrift = r.Installed
+		return
+	}
+	var additions map[string]string
+	if r.InstallAuthority != nil && r.InstallAuthority.Grant != nil {
+		additions = r.InstallAuthority.Grant.AdditionalPackages
+	}
+	r.RecipeDrift = manifest.RecipeFingerprint != install.Fingerprint(r.DesiredInstall.Recipe) || !maps.Equal(manifest.AdditionalPackages, additions)
 }
 
 type environmentWorkaround struct {
@@ -142,12 +156,7 @@ func (e *ProvidersExecutor) HandleInternalProviderEnvironment(c *gin.Context) {
 			InternalNodeError(c, err.Error())
 			return
 		}
-		result.InstalledManifest = manifest
-		if manifest != nil {
-			result.RecipeDrift = manifest.RecipeFingerprint != install.Fingerprint(desired.Recipe)
-		} else {
-			result.RecipeDrift = result.Installed
-		}
+		result.recordInstall(manifest)
 		if manifest != nil && manifest.Recipe != nil {
 			checks = (install.RecipeSnapshot{ResolvedInstall: pkgConfig.ResolvedInstall{Recipe: *manifest.Recipe}}).RuntimeChecks(checks)
 			toolkit, err = install.ApplyToolkitEnvironment(ctx, environment, runtime)

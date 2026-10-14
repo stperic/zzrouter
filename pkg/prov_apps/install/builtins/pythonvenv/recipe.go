@@ -335,12 +335,19 @@ func companionConstraint(snapshot install.RecipeSnapshot, name, constraint strin
 }
 
 func addCompanionRoots(snapshot install.RecipeSnapshot, roots map[string]string) {
+	constraints := maps.Clone(snapshot.AdditionalPackages)
+	if constraints == nil {
+		constraints = map[string]string{}
+	}
 	for name, companion := range snapshot.Recipe.Companions {
+		constraints[name] = strings.Trim(value(companion.Constraint)+","+constraints[name], ",")
+	}
+	for name, extra := range constraints {
 		constraint := roots[name]
-		if constraint != "" && value(companion.Constraint) != "" {
+		if constraint != "" && extra != "" {
 			constraint += ","
 		}
-		roots[name] = companionConstraint(snapshot, name, constraint+value(companion.Constraint))
+		roots[name] = companionConstraint(snapshot, name, constraint+extra)
 	}
 }
 
@@ -549,7 +556,7 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 	if err := os.WriteFile(fsroot.ProviderVersionFile(snapshot.Runtime), []byte(version+"\n"), 0600); err != nil {
 		return t.fail(err)
 	}
-	manifest := &fsroot.InstallManifest{WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
+	manifest := &fsroot.InstallManifest{AdditionalPackages: maps.Clone(snapshot.AdditionalPackages), WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
 	if err := fsroot.WriteInstallManifest(snapshot.Runtime, manifest); err != nil {
 		return t.fail(err)
 	}

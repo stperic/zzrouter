@@ -215,15 +215,16 @@ func ProviderManifestPath(name string) string {
 // at startup and raise a clean "reinstall needed" signal instead of
 // surfacing an incomprehensible dyld error from first-chat.
 type InstallManifest struct {
-	WorkingDir        string                `json:"working_dir,omitempty"` // Owned source path; empty for package recipes.
-	PlanID            string                `json:"plan_id,omitempty"`
-	Inventory         []ManifestPackage     `json:"dependency_inventory,omitempty"`
-	RecipeFingerprint string                `json:"recipe_fingerprint,omitempty"`
-	PolicyFingerprint string                `json:"policy_fingerprint,omitempty"`
-	Recipe            *config.InstallRecipe `json:"recipe,omitempty"`
-	Version           string                `json:"version"`                // Provider version ("0.31.2", "b5604")
-	InstalledAt       string                `json:"installed_at,omitempty"` // RFC3339 timestamp
-	Interpreter       *ManifestInterpreter  `json:"interpreter,omitempty"`  // nil for non-Python providers
+	AdditionalPackages map[string]string     `json:"additional_packages,omitempty"`
+	WorkingDir         string                `json:"working_dir,omitempty"` // Owned source path; empty for package recipes.
+	PlanID             string                `json:"plan_id,omitempty"`
+	Inventory          []ManifestPackage     `json:"dependency_inventory,omitempty"`
+	RecipeFingerprint  string                `json:"recipe_fingerprint,omitempty"`
+	PolicyFingerprint  string                `json:"policy_fingerprint,omitempty"`
+	Recipe             *config.InstallRecipe `json:"recipe,omitempty"`
+	Version            string                `json:"version"`                // Provider version ("0.31.2", "b5604")
+	InstalledAt        string                `json:"installed_at,omitempty"` // RFC3339 timestamp
+	Interpreter        *ManifestInterpreter  `json:"interpreter,omitempty"`  // nil for non-Python providers
 }
 
 // ManifestPackage records the accepted resolver provenance of an installed distribution.

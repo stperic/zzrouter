@@ -40,7 +40,7 @@ func TestVLLMInstallVerification(t *testing.T) {
 	var declared config.OnDemandProvider
 	require.NoError(t, yaml.Unmarshal(data, &declared))
 	sc := config.ServiceConfig{Name: "vllm", Install: declared.Install, Requirements: declared.Requirements, Runtime: &config.AppRuntimeConfig{Execution: declared.Runtime.Execution}, PinnedVersion: declared.PinnedVersion, VersionSource: declared.VersionSource}
-	snapshot, err := install.ResolveRecipe(sc, "", "vllm", "")
+	snapshot, err := install.ResolveRecipe(sc, "", "vllm", "", nil)
 	require.NoError(t, err)
 	data, err = templates.AppsFS.ReadFile("files/providers/on-demand/vllm/schema.yaml")
 	require.NoError(t, err)

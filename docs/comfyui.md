@@ -23,7 +23,7 @@ An incomplete managed record reports `managed installation record is incomplete;
 
 Mutable files stay under `comfyui/data/`. The existing `runtime.data_dir: data` expands `--base-directory ${DATA_DIR}` to that absolute path; `model_store.directory: models` selects the model root. The installer creates only a missing data root and declared model-store categories. ComfyUI creates its input, output, user and temp folders itself. Install, upgrade and uninstall preserve existing data, including models, custom nodes and workflow files; uninstall removes only the managed payload and records and also keeps any operator `python/` directory. No data purge is implied.
 
-Managed source and venv belong to the service account; existing data keeps its ownership and permissions and must be writable by that account. With the default `harden_venv` policy, source and venv are read-only, so ordinary extension pip installs at runtime fail; data remains writable. This preserves the existing provider permission model: the same owner can change permissions, so hardening is not a separate privilege boundary. Custom nodes remain operator-managed in `data/custom_nodes/`; managed custom-node installation is deferred to phase 4. The installer does not install custom nodes or ComfyUI-Manager.
+Managed source and venv belong to the service account; existing data keeps its ownership and permissions and must be writable by that account. With the default `harden_venv` policy, source and venv are read-only, so ordinary extension pip installs at runtime fail; data remains writable. This preserves the existing provider permission model: the same owner can change permissions, so hardening is not a separate privilege boundary. Custom nodes remain operator-managed in `data/custom_nodes/`; their Python dependencies can be approved through the protected install policy below. The installer does not install custom-node code or ComfyUI-Manager.
 
 An existing hand installation is refused even with force: `Operator installation found in <provider dir>; stop it and move source and venv aside before a managed install. Data and python are kept.` Stop its zzRouter run or operator-managed process first. On the target host, move the existing source and venv into an operator backup outside the provider directory, leaving data and python in place. For a layout containing both payload directories:
 
@@ -36,6 +36,54 @@ mv "$provider_dir/venv" "$backup_dir/venv"
 ```
 
 If only one payload exists, move that directory. Retry the install request after moving the payloads aside; existing data stays in use. Configure node parameters through `PATCH /zzrouter/v1/providers/comfyui/parameters` using the existing `nodes.<node>.parameters` tree. Defaults and the selected node are the configuration tiers; model tiers and endpoint overlays are refused.
+
+## Custom-node dependencies
+
+The human node operator selects additional distributions in the existing protected
+file named by `providers.install_policy_file`. Provisioning, file ownership and the
+service identity requirements are in [managed recipe authority](typed_provider_recipes.md#authority-and-threat-boundary).
+The API and peer sync cannot select packages, change grants or override the release
+source, URL, SHA256, indexes, checks or binary-only policy. Preserve unrelated runtime
+grants when adding this entry on the owning node:
+
+```yaml
+runtimes:
+  comfyui/comfyui:
+    additional_packages:
+      torchaudio: ""
+      transformers: ">=5.3,<6"
+```
+
+This is an illustrative selection, not a verified node compatibility recipe. Use
+normalized distribution names and plain version constraints, at most 128 roots.
+An empty constraint permits resolver selection within all other requirements.
+The operator reviews the requirements for the chosen nodes and engines; zzRouter
+never reads requirements from `data/custom_nodes` or executes their `install.py`.
+One resolver intersects additions with release requirements and installs the hashed
+inventory into a fresh candidate venv. Conflicts or missing compatible wheels fail
+closed and preserve the live payload. Source builds, special `--no-deps` setup and
+imperative node patching are unsupported. System libraries and executables such as
+espeak remain human work. Nodes execute as the service account; approval of roots
+also trusts their resolver-selected transitive dependencies. Hardening is not a sandbox.
+
+Stop ComfyUI, edit the protected map, preview `POST /zzrouter/v1/providers/comfyui/install/plan?node=<node>`
+with `{"force":true}`, then execute the install route with
+`{"force":true,"expected_plan_id":"<returned-plan-id>"}`. Follow the returned owning-node
+job to terminal success. Policy changes invalidate accepted plans and require a fresh
+preview; they do not automatically reinstall or stop a run. Keep node files and data
+in place. To remove all additions, use `additional_packages: {}` and force reinstall;
+packages still required by the release or other dependencies can remain.
+
+`GET /zzrouter/v1/providers/comfyui/environment?node=<node>` reports desired roots in
+`install_authority.grant.additional_packages`, installed roots in
+`installed_manifest.additional_packages`, exact inventory and `recipe_drift` after
+selection or constraint changes. Unrelated runtime grants do not cause recipe drift.
+The status endpoint keeps the source version and run summary; a dependency-only
+reinstall keeps that source version. Revoked installed additions block native diagnostic
+imports until the operator restores authority or reinstalls. Existing install verify
+checks packages and known torch/CUDA compatibility, including approved torchaudio;
+the operator must still exercise the chosen node's lazy engines/workflows. Adding
+`gitpython` can address Manager's `git` import, but does not enable its pip/uv installer.
 
 ## Model files through the coordinator
 
