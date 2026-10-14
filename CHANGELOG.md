@@ -166,6 +166,9 @@
 
 ### Fixes
 
+- GPU memory refusals explain why reclaim skipped a run (busy, in use or not idle),
+  and unused commitments omit process IDs. Evicted-run lookups name a model-less
+  evictor by its provider, using the same display name as the CLI.
 - A request-tier `keep-alive` parameter no longer reaches a launched engine's
   command line; `keep_alive: 0` now ends a run when its last request finishes.
 - A managed daemon whose start was refused at boot (the previous node's

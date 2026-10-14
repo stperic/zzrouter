@@ -67,6 +67,9 @@ The registry coalesces membership, status, activity and ownership changes. One r
 
 R4 routes known run/provider refusals through one ordered wire table, including Retry-After and typed extra fields. Admission and cold-load producers retain typed causes; only the HTTP edge renders them. Memory-fit diagnostics survive cold loading, and generic surface defaults remain distinct. Policy messages carry no route URLs. Typed Ollama load options remain withheld. On the Windows worker with Ollama 0.32.15 (2026-10-12), loading with num_ctx=2048 and keep_alive=-1 did not preserve those settings: a later option-free /v1 request changed the context to 4096 and expiry to five minutes. The prescribed persistence prerequisite failed.
 
+Memory-fit holders record `reclaim_skipped_reason` from the actual selection or atomic claim decision
+(busy, in use or not idle), including after the admission retry. Unused commitment holders have no PID.
+
 ## Deployment outcome ownership
 
 The worker DownloadTracker owns physical execution, cancellation and generations.

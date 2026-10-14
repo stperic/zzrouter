@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // NewPsCmd creates the ps command for showing running models across hosts
@@ -115,7 +116,7 @@ func displayPsTable(instances []pkgClient.Instance) {
 	for _, inst := range instances {
 		// The run states where its weights came from.
 		sourceRepo := inst.SourceRepo
-		formattedModel := shared.FormatRunName(inst.Model, inst.App)
+		formattedModel := utils.FormatRunName(inst.Model, inst.App)
 		if formattedModel == "" {
 			formattedModel = "(unknown)"
 		}
@@ -163,7 +164,7 @@ func displayPsTable(instances []pkgClient.Instance) {
 	for _, inst := range instances {
 		// The run states where its weights came from.
 		sourceRepo := inst.SourceRepo
-		formattedModel := shared.FormatRunName(inst.Model, inst.App)
+		formattedModel := utils.FormatRunName(inst.Model, inst.App)
 		if formattedModel == "" {
 			formattedModel = "(unknown)"
 		}

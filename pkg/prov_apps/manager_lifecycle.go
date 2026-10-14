@@ -495,11 +495,16 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 	if !settings.EvictIdle || !errors.As(err, &fit) {
 		return nil, err
 	}
-	evicted := m.reclaimFor(ctx, fit)
-	if len(evicted) == 0 {
-		return nil, err
+	evicted, skipped := m.reclaimFor(ctx, fit)
+	if len(evicted) > 0 {
+		err = m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
 	}
-	return evicted, m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
+	if errors.As(err, &fit) {
+		for n, holder := range fit.Holders {
+			fit.Holders[n].ReclaimSkippedReason = skipped[holder.Run]
+		}
+	}
+	return evicted, err
 }
 
 func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string, commitments map[string]int64) error {

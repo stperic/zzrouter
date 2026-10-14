@@ -103,3 +103,11 @@ func FormatModelName(modelName string) string {
 	// Return everything after the last slash
 	return modelName[lastSlash+1:]
 }
+
+// FormatRunName keeps provider-only runs identifiable in model lists.
+func FormatRunName(model, provider string) string {
+	if name := FormatModelName(model); name != "" {
+		return name
+	}
+	return provider
+}

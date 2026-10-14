@@ -1,6 +1,7 @@
 package process
 
 import (
+	"encoding/json"
 	"strconv"
 	"testing"
 
@@ -40,6 +41,16 @@ func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	require.Equal(t, int64(15576), fit.FreeMiB)
 	require.Len(t, fit.Holders, 2)
 	require.Equal(t, int64(6952), fit.Holders[1].UnusedCommitmentMiB)
+	encoded, err := json.Marshal(fit)
+	require.NoError(t, err)
+	var wire struct {
+		Holders []map[string]any `json:"holders"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &wire))
+	require.Equal(t, float64(7), wire.Holders[0]["pid"], "the observed process keeps its pid")
+	require.NotContains(t, wire.Holders[1], "pid", "an unused commitment has no process")
+	require.Equal(t, float64(6952), wire.Holders[1]["memory_mib"])
+	require.Equal(t, float64(6952), wire.Holders[1]["unused_commitment_mib"])
 	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (pid 7, 2048 MiB)")
 	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (6952 MiB unused commitment)")
 	var refused *MemoryFitError

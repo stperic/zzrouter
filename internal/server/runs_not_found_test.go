@@ -45,7 +45,7 @@ func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
 		Detail string `json:"detail"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-	assert.Equal(t, "run not found: qwen was stopped on node localai to free 2048 MiB of GPU memory for run gemma (google/gemma-4-E2B-it). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
+	assert.Equal(t, "run not found: qwen was stopped on node localai to free 2048 MiB of GPU memory for run gemma (gemma-4-E2B-it). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
 
 	rec = get("typo")
 	require.Equal(t, http.StatusNotFound, rec.Code)
@@ -59,4 +59,11 @@ func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &found))
 	assert.Equal(t, live, found.Data, "a live run answers unchanged, evicted_runs included")
+
+	live.ID, live.Model, live.Provider = "812d79ffcba5", "", "comfyui"
+	live.EvictedRuns[0].FreedMiB = 50994
+	rec = get("qwen")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+	assert.Equal(t, "run not found: qwen was stopped on node localai to free 50994 MiB of GPU memory for run 812d79ffcba5 (comfyui). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
 }

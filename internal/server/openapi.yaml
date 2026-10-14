@@ -805,6 +805,8 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
+        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (busy,
+        in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
         Unknown measurements or ambiguous device selection return 503. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and

@@ -19,6 +19,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // ErrRunNotFound is returned when a run is not found
@@ -227,7 +228,7 @@ func (s *RunsService) MissingRunDetail(ctx context.Context, id, node string) str
 			for _, evicted := range run.EvictedRuns {
 				if evicted.RunID == id {
 					return fmt.Sprintf("run not found: %s was stopped on node %s to free %d MiB of GPU memory for run %s (%s). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/%s/logs?node=%s",
-						id, run.Node, evicted.FreedMiB, run.ID, run.Model, id, run.Node)
+						id, run.Node, evicted.FreedMiB, run.ID, utils.FormatRunName(run.Model, run.Provider), id, run.Node)
 				}
 			}
 		}

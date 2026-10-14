@@ -68,8 +68,8 @@ func (m *ProviderAppManager) idleReaper() {
 				if !exists || current != run || !m.evictable(run) || !Expired(idle, config.RunSettings{KeepAlive: idle.KeepAlive}, utils.Now()) {
 					continue
 				}
-				release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: idle.Activity, Idle: &idle}})
-				if !claimed {
+				release, _ := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: idle.Activity, Idle: &idle}})
+				if release == nil {
 					continue
 				}
 				if err := m.stopClaimedIdle(m.startsCtx, run, obsruns.StopReasonIdle); err != nil {

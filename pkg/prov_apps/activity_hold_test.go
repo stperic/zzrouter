@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -34,8 +35,9 @@ func TestActivityHoldProtectsIdleAndLeavesSlotsFree(t *testing.T) {
 	require.Zero(t, run.GetActiveRequests())
 	require.False(t, run.Evictable())
 	require.False(t, Expired(run.IdleSnapshot(), config.RunSettings{KeepAlive: time.Minute}, utils.Now().Add(time.Hour)))
-	_, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
-	require.False(t, claimed)
+	release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
+	require.Nil(t, release)
+	require.Equal(t, &instance.IdleStopRefusal{RunID: run.ID, Reason: "busy"}, refusal)
 	lease, err := run.Acquire(t.Context(), nil)
 	require.NoError(t, err)
 	lease.Release()
@@ -66,7 +68,8 @@ func TestObservedBusyAndIdleClaimAreSerialized(t *testing.T) {
 		go func() { <-start; observer.ObserveActivity(true); close(holds) }()
 		go func() {
 			<-start
-			release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
+			release, _ := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
+			claimed := release != nil
 			claims <- claimed
 			<-done
 			if claimed {
@@ -92,8 +95,15 @@ func TestActivityHoldPreventsPressureEviction(t *testing.T) {
 	observeFixture(t, f.older).ObserveActivity(true)
 	observeFixture(t, f.newer).ObserveActivity(true)
 	evicted, err := f.admit(t)
-	require.Error(t, err)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
 	require.Empty(t, evicted)
+	require.Len(t, fit.Holders, 2)
+	for _, holder := range fit.Holders {
+		require.Equal(t, "busy", holder.ReclaimSkippedReason)
+	}
+	f.older.ObserveActivity(false)
+	require.Contains(t, fit.Error(), "zzRouter run older serving old-model (pid 9000001, 4500 MiB; reclaim skipped: busy)")
 	require.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	require.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 	require.NoError(t, f.mgr.StopInstance(context.Background(), f.older.ID))
@@ -141,11 +151,13 @@ func TestEnsureRefreshRejectsOldClaimWithoutLeasingFutureWork(t *testing.T) {
 	restore := utils.SetClock(utils.FixedClock(old.Add(time.Second)))
 	defer restore()
 	require.NoError(t, run.RefreshActivity())
-	_, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: old}})
-	require.False(t, claimed, "ensure must invalidate a claim decided against old activity")
+	release, refusal := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: old}})
+	require.Nil(t, release, "ensure must invalidate a claim decided against old activity")
+	require.Equal(t, &instance.IdleStopRefusal{RunID: run.ID, Reason: "not idle"}, refusal)
 	require.Zero(t, run.GetActiveRequests())
-	release, claimed := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
-	require.True(t, claimed, "ensure has no lease over a direct submission after it returns")
+	release, refusal = instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: run.GetLastActivity()}})
+	require.NotNil(t, release, "ensure has no lease over a direct submission after it returns")
+	require.Nil(t, refusal)
 	defer release()
 	observer.ObserveActivity(true)
 	require.False(t, run.IdleSnapshot().Leased, "a later busy sample cannot revoke a stop already claimed")
