@@ -11,6 +11,8 @@ package huggingface
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry/search"
@@ -35,6 +37,21 @@ type Connector struct {
 	token        string // HF API token for gated models (optional)
 	apiBase      string
 	downloadBase string
+	transport    atomic.Pointer[http.RoundTripper]
+}
+
+// SetHTTPTransport replaces this connector's transport. Nil uses net/http's
+// default; each request's client retains its snapshot through retries.
+func (hfc *Connector) SetHTTPTransport(transport http.RoundTripper) {
+	hfc.transport.Store(&transport)
+}
+
+func (hfc *Connector) httpClient(timeout time.Duration) *http.Client {
+	client := &http.Client{Timeout: timeout}
+	if transport := hfc.transport.Load(); transport != nil {
+		client.Transport = *transport
+	}
+	return client
 }
 
 // newGet creates a GET carrying Bearer auth when a token is configured.

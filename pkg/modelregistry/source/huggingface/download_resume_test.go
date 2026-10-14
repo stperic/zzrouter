@@ -33,12 +33,10 @@ func TestDownload_CompletesMetadataOnlyDirectory(t *testing.T) {
 	require.Len(t, models, 1)
 	require.True(t, models[0].Incomplete)
 	var fetched []string
-	original := http.DefaultTransport
-	http.DefaultTransport = resumeTransport(func(req *http.Request) (*http.Response, error) {
+	hfc.SetHTTPTransport(resumeTransport(func(req *http.Request) (*http.Response, error) {
 		fetched = append(fetched, filepath.Base(req.URL.Path))
 		return &http.Response{StatusCode: http.StatusOK, ContentLength: 2, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = original })
+	}))
 	missing := []string{"model.safetensors", "tokenizer.json", "tokenizer_config.json", "processor_config.json"}
 	req := metadata.DownloadRequest{Repo: "google/gemma-4-E2B-it"}
 	for _, name := range append(held, missing...) {
@@ -81,10 +79,8 @@ func TestFetchResumesWithRegistryAuth(t *testing.T) {
 	digest := sha256.Sum256([]byte(content))
 	sum := fmt.Sprintf("%x", digest)
 
-	original := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() { http.DefaultTransport = original })
 	hfc := &Connector{downloadBase: "https://hub.test/", token: "secret"}
+	hfc.SetHTTPTransport(transport)
 	got, err := hfc.fetch(t.Context(), "org/model", "main", metadata.TreeFileEntry{Name: "model.gguf", Size: int64(len(content)), SHA256: sum}, dest, nil)
 	assert.Equal(t, sum, got)
 

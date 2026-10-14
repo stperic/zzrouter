@@ -289,7 +289,7 @@ func (hfc *Connector) fetch(ctx context.Context, repo, revision string, file met
 		return "", err
 	}
 	var done int64
-	result, err := download.Fetch(&http.Client{Timeout: httpTimeout}, req, dest, download.Options{
+	result, err := download.Fetch(hfc.httpClient(httpTimeout), req, dest, download.Options{
 		Hash: true,
 		Progress: func(n, _ int64) {
 			if progress != nil {

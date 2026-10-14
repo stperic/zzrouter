@@ -72,7 +72,7 @@ func (hfc *Connector) ShowModel(ctx context.Context, modelID string) (map[string
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		client := &http.Client{Timeout: constants.HuggingFaceAPITimeout}
+		client := hfc.httpClient(constants.HuggingFaceAPITimeout)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch model info from HuggingFace: %w", err)

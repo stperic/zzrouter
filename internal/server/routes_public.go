@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -205,7 +206,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			versionsSvc = NewProviderVersionsService(appsConfigFn, upstream.NewCache(ttl, 0))
 		}
 
-		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc)
+		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc, &http.Client{})
 		providersController.publishCatalog = s.publishCatalog
 		providersController.RegisterPublicRoutes(router, s.idempotent)
 		models := &ProviderModelsController{service: NewProvidersService(s.cluster.router), nodes: nodeValidator}

@@ -88,18 +88,16 @@ func testHuggingFaceAdmission(t *testing.T, e *DeploymentsExecutor, request meta
 }
 
 func TestProviderDownloadUsesWorkerPipelineAndDestinationAdmission(t *testing.T) {
-	previous := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previous })
 	var fetched atomic.Int32
-	http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+	e := downloadTargetExecutor(t)
+	e.registry.GetHuggingFaceConnector().SetHTTPTransport(downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/org/model/resolve/main/weights.gguf" {
 			return nil, errors.New("unexpected source URL")
 		}
 		fetched.Add(1)
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Length": {strconv.Itoa(len("weights"))}},
 			ContentLength: int64(len("weights")), Body: io.NopCloser(strings.NewReader("weights")), Request: r}, nil
-	})
-	e := downloadTargetExecutor(t)
+	}))
 	var publications atomic.Int32
 	e.publishCatalog = func() error { publications.Add(1); return errors.New("catalog must not run") }
 	e.ensureFeatures = func(context.Context, string, string, []string, []string, func(string)) error {

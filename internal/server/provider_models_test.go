@@ -158,34 +158,35 @@ func providerModelRoot(t *testing.T, e *DeploymentsExecutor) string {
 // environments still drive its HTTP handler and Fetch via a RoundTripper.
 func installProviderHTTPFixture(t *testing.T, h *providerModelHarness, handler http.Handler) {
 	t.Helper()
-	previous := http.DefaultTransport
 	workerRegistry, coordinatorRegistry := h.worker.registry, h.coordinator.registry
+	var transport downloadTargetTransport
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err == nil {
 		s := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second}
 		done := make(chan struct{})
 		go func() { defer close(done); _ = s.Serve(listener) }()
 		t.Cleanup(func() { _ = s.Close(); <-done })
-		http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+		transport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 			copy := r.Clone(r.Context())
 			copy.URL.Scheme, copy.URL.Host = "http", listener.Addr().String()
-			return previous.RoundTrip(copy)
+			return http.DefaultTransport.RoundTrip(copy)
 		})
 	} else {
 		t.Logf("loopback HF fixture unavailable; using in-process HTTP fixture: %v", err)
-		http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+		transport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			return w.Result(), nil
 		})
 	}
+	workerRegistry.GetHuggingFaceConnector().SetHTTPTransport(transport)
+	coordinatorRegistry.GetHuggingFaceConnector().SetHTTPTransport(transport)
 	t.Cleanup(func() {
 		// Wait for producers even when an assertion ends the test early.
 		h.worker.jobs.Stop()
 		h.coordinator.jobs.Stop()
 		workerRegistry.Stop()
 		coordinatorRegistry.Stop()
-		http.DefaultTransport = previous
 	})
 }
 
@@ -327,15 +328,13 @@ func TestProviderModelsCancellationKeepsDestinationReserved(t *testing.T) {
 	var once sync.Once
 	release := func() { once.Do(func() { close(unwind) }) }
 	defer release()
-	previous := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previous })
-	http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+	h.worker.registry.GetHuggingFaceConnector().SetHTTPTransport(downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 		close(entered)
 		<-r.Context().Done()
 		close(cancelled)
 		<-unwind
 		return nil, r.Context().Err()
-	})
+	}))
 	body := `{"node":"worker","category":"vae","source":"org/repo#file"}`
 	first := h.request("POST", "studio/models", body, "")
 	require.Equal(t, 202, first.Code, first.Body.String())
@@ -374,13 +373,13 @@ func TestProviderModelsCancellationKeepsDestinationReserved(t *testing.T) {
 		return !h.worker.downloadReserved(key)
 	}, time.Second, time.Millisecond)
 	assertProviderModelProblem(t, h.request("DELETE", "studio/models?node=worker&category=vae&name=file", "", ""), 404, httperr.CodeFileNotFound)
-	http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+	h.worker.registry.GetHuggingFaceConnector().SetHTTPTransport(downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 		body := "weights"
 		if strings.HasPrefix(r.URL.Path, "/api/models/") {
 			body = `{"siblings":[{"rfilename":"file","size":7}]}`
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Length": {fmt.Sprint(len(body))}}, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
-	})
+	}))
 	retry := h.request("POST", "studio/models", body, "")
 	require.Equal(t, 202, retry.Code, retry.Body.String())
 	var next struct {
@@ -401,16 +400,14 @@ func TestProviderModelsCancellationDuringBufferedBodyClose(t *testing.T) {
 	var once sync.Once
 	release := func() { once.Do(func() { close(unwind) }) }
 	defer release()
-	previous := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previous })
-	http.DefaultTransport = downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
+	h.worker.registry.GetHuggingFaceConnector().SetHTTPTransport(downloadTargetTransport(func(r *http.Request) (*http.Response, error) {
 		if strings.HasPrefix(r.URL.Path, "/api/models/") {
 			body := `{"siblings":[{"rfilename":"file","size":7}]}`
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Length": {fmt.Sprint(len(body))}}, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Length": {"7"}}, ContentLength: 7,
 			Body: &providerCancelBody{ctx: r.Context(), reading: reading, closing: closing, unwind: unwind}, Request: r}, nil
-	})
+	}))
 	body := `{"node":"worker","category":"vae","source":"org/repo#file"}`
 	first := h.request("POST", "studio/models", body, "")
 	require.Equal(t, 202, first.Code, first.Body.String())

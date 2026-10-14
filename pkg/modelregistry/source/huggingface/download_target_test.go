@@ -35,15 +35,6 @@ func providerFileRequest() metadata.DownloadRequest {
 		Target: metadata.DownloadTarget{Owner: metadata.OwnerProviderStore, Provider: "studio", Category: "vae", Name: "chosen.gguf"}}
 }
 
-// No listeners are needed: synthetic HTTP responses still exercise Fetch,
-// request paths/auth, integrity verification, rename and manifest recording.
-func installTargetTransport(t *testing.T, f targetTransport) {
-	t.Helper()
-	previous := http.DefaultTransport
-	http.DefaultTransport = f
-	t.Cleanup(func() { http.DefaultTransport = previous })
-}
-
 func targetResponse(r *http.Request, body string) *http.Response {
 	return &http.Response{StatusCode: 200, Request: r, Header: http.Header{"Content-Length": {strconv.Itoa(len(body))}},
 		ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}
@@ -59,7 +50,8 @@ func TestProviderDownloadExactRevisionAuthAndIntegrity(t *testing.T) {
 	}})
 	require.NoError(t, err)
 	var paths []string
-	installTargetTransport(t, func(r *http.Request) (*http.Response, error) {
+	hfc := &Connector{modelsDir: t.TempDir(), token: "gated-fixture-token", apiBase: huggingFaceAPIBase, downloadBase: huggingFaceDownloadBase}
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
 		paths = append(paths, r.URL.EscapedPath())
 		require.Equal(t, "Bearer gated-fixture-token", r.Header.Get("Authorization"))
 		if len(paths) == 1 {
@@ -68,8 +60,7 @@ func TestProviderDownloadExactRevisionAuthAndIntegrity(t *testing.T) {
 		}
 		require.Equal(t, "/org/model/resolve/refs%2Fpr%2F7/model-00001-of-00002.gguf", r.URL.EscapedPath())
 		return targetResponse(r, content), nil
-	})
-	hfc := &Connector{modelsDir: t.TempDir(), token: "gated-fixture-token", apiBase: huggingFaceAPIBase, downloadBase: huggingFaceDownloadBase}
+	}))
 	dest := targetDestination{dir: t.TempDir(), name: "chosen.gguf"}
 	req := providerFileRequest()
 	require.NoError(t, hfc.Download(t.Context(), req, nil, dest))
@@ -114,17 +105,17 @@ func TestProviderDownloadFailureAndCancellationRemovePartials(t *testing.T) {
 		t.Run(strconv.FormatBool(cancelled), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			installTargetTransport(t, func(r *http.Request) (*http.Response, error) {
+			hfc := &Connector{modelsDir: t.TempDir(), downloadBase: huggingFaceDownloadBase}
+			hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
 				if cancelled {
 					cancel()
 					return nil, ctx.Err()
 				}
 				return targetResponse(r, "wrong hash"), nil
-			})
+			}))
 			req := providerFileRequest()
 			req.Files = []metadata.DownloadFile{{TreeFileEntry: metadata.TreeFileEntry{Name: req.Weights, SHA256: "wrong"}}}
 			dest := targetDestination{dir: t.TempDir(), name: "chosen.gguf"}
-			hfc := &Connector{modelsDir: t.TempDir(), downloadBase: huggingFaceDownloadBase}
 			err := hfc.Download(ctx, req, nil, dest)
 			require.Error(t, err)
 			if cancelled {

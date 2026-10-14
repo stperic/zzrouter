@@ -46,7 +46,7 @@ func (hfc *Connector) getRepoFilesRevision(ctx context.Context, modelID, revisio
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: httpTimeout}
+	client := hfc.httpClient(httpTimeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

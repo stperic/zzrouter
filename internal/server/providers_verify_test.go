@@ -43,7 +43,7 @@ func TestVerifyProvider_SendsTheDeclaredCredential(t *testing.T) {
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
 	reg := &recordingRegistrar{}
-	ctrl := &ProvidersController{appsConfig: func() *pkgConfig.AppsConfig { return cfg }, registrar: reg}
+	ctrl := &ProvidersController{appsConfig: func() *pkgConfig.AppsConfig { return cfg }, registrar: reg, httpClient: upstream.Client()}
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
