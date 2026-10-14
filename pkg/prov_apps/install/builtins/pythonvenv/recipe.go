@@ -38,7 +38,7 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 		if install.OptionsFromContext(ctx).Disposable {
 			return nil, fmt.Errorf("source recipes do not support disposable launches")
 		}
-		if err := i.checkSourceInstall(snapshot); err != nil {
+		if err := i.checkSourceInstall(&snapshot, install.PlanOptions{Force: install.OptionsFromContext(ctx).Force}); err != nil {
 			return nil, err
 		}
 	}
@@ -239,7 +239,7 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 				return err
 			}
 			if recipe.Source != nil {
-				if err := i.checkSourceInstall(snapshot); err != nil {
+				if err := i.checkSourceInstall(&snapshot, install.PlanOptions{Force: options.Force}); err != nil {
 					return err
 				}
 			}

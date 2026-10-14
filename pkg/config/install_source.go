@@ -53,13 +53,18 @@ func (s ServiceConfig) validateSourceExecution(runtime string, source *InstallSo
 	if execution == nil || execution.Type != "python" || len(execution.Args) == 0 || execution.Args[0] != source.Entrypoint {
 		return fmt.Errorf("source.entrypoint: must match the Python execution's first argument")
 	}
-	dir := strings.ToLower(execution.WorkingDir)
+	return s.Runtime.ValidateSourceDirectory(execution.WorkingDir)
+}
+
+// ValidateSourceDirectory checks source ownership against installation and data paths.
+func (runtime *AppRuntimeConfig) ValidateSourceDirectory(directory string) error {
+	dir := strings.ToLower(directory)
 	if !validProviderDirectory(dir) {
 		return fmt.Errorf("source: contained execution.working_dir required")
 	}
 	reserved := []string{SubdirBin, SubdirVenv, SubdirCandidate, SubdirPrevious, ProviderManagedName, ProviderVersionName, ProviderManifestName, ProviderManifestTemp, SubdirPython}
-	if s.Runtime != nil && s.Runtime.DataDir != "" {
-		reserved = append(reserved, strings.ToLower(s.Runtime.DataDir))
+	if runtime != nil && runtime.DataDir != "" {
+		reserved = append(reserved, strings.ToLower(runtime.DataDir))
 	}
 	for _, other := range reserved {
 		if dir == other || strings.HasPrefix(dir, other+"/") || strings.HasPrefix(other, dir+"/") {

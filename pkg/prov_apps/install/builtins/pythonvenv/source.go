@@ -2,6 +2,7 @@ package pythonvenv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/download"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/security"
 )
 
 func (i *Installer) sourceRoots(ctx context.Context, snapshot install.RecipeSnapshot, directory string) (map[string]string, error) {
@@ -22,11 +24,16 @@ func (i *Installer) sourceRoots(ctx context.Context, snapshot install.RecipeSnap
 		}
 	}
 	archive := filepath.Join(cache, filepath.Base(source.URL))
-	if _, err := os.Stat(archive); os.IsNotExist(err) {
-		if _, err := download.FetchForProvider(ctx, snapshot.Provider, source.URL, cache, nil, download.Options{MaxSize: install.SourceArchiveLimit}); err != nil {
+	roots, err := install.ReadSource(ctx, archive, "", "", source)
+	if !errors.Is(err, security.ErrChecksumMismatch) && !os.IsNotExist(err) {
+		return roots, err
+	}
+	if errors.Is(err, security.ErrChecksumMismatch) {
+		if err := os.Remove(archive); err != nil {
 			return nil, err
 		}
-	} else if err != nil {
+	}
+	if _, err := download.FetchForProvider(ctx, snapshot.Provider, source.URL, cache, nil, download.Options{MaxSize: install.SourceArchiveLimit}); err != nil {
 		return nil, err
 	}
 	return install.ReadSource(ctx, archive, "", "", source)
@@ -55,17 +62,33 @@ func (i *Installer) sourceCompletion() (string, bool, error) {
 		return "", false, nil
 	}
 	if readErr != nil {
-		return "", true, readErr
+		return "", true, fmt.Errorf("%w: %v", errSourceRecordIncomplete, readErr)
 	}
 	if manifest == nil || manifest.Recipe == nil || manifest.Recipe.Source == nil || manifest.WorkingDir != snapshot.WorkingDir || manifest.PlanID == "" || manifest.Interpreter == nil || manifest.Interpreter.Path == "" || manifest.Interpreter.Version == "" || len(manifest.Inventory) == 0 || manifest.Version != manifest.Recipe.Source.Version || manifest.RecipeFingerprint != install.Fingerprint(*manifest.Recipe) {
-		return "", true, fmt.Errorf("source installation has no complete managed record; reinstall required")
+		return "", true, errSourceRecordIncomplete
 	}
 	return manifest.Version, true, nil
 }
 
-func (i *Installer) checkSourceInstall(snapshot install.RecipeSnapshot) error {
+var errSourceRecordIncomplete = errors.New("managed installation record is incomplete; reinstall with force")
+var errSourceDirectoryChanged = errors.New("managed installation working directory changed; uninstall first")
+
+func (i *Installer) checkSourceInstall(snapshot *install.RecipeSnapshot, options install.PlanOptions) error {
 	if err := ensureSourceData(snapshot.DataRuntime, fsroot.ProviderDir(i.cfg.Name), false); err != nil {
 		return err
+	}
+	manifest, err := fsroot.ReadInstallManifest(i.cfg.Name)
+	if err != nil || manifest != nil && manifest.WorkingDir == "" {
+		return errors.Join(errSourceRecordIncomplete, err)
+	}
+	if manifest != nil && options.Action == "uninstall" {
+		if err := snapshot.DataRuntime.ValidateSourceDirectory(manifest.WorkingDir); err != nil {
+			return errors.Join(errSourceRecordIncomplete, err)
+		}
+		snapshot.WorkingDir = manifest.WorkingDir
+	}
+	if manifest != nil && manifest.WorkingDir != snapshot.WorkingDir {
+		return errSourceDirectoryChanged
 	}
 	for _, name := range snapshot.PayloadDirectories() {
 		if err := fsroot.VerifyProviderPath(fsroot.ProviderDir(i.cfg.Name), name); err != nil {
@@ -76,11 +99,14 @@ func (i *Installer) checkSourceInstall(snapshot install.RecipeSnapshot) error {
 		} else if err != nil {
 			return err
 		}
-		if _, source, err := i.sourceCompletion(); !source || err != nil {
+		if manifest == nil {
 			return fmt.Errorf("Operator installation found in %s; stop it and move source and venv aside before a managed install. Data and python are kept.", fsroot.ProviderDir(i.cfg.Name)) //nolint:staticcheck // Preserve the agreed operator-facing refusal text.
 		}
 	}
-	return nil
+	if manifest != nil && !options.Force {
+		_, _, err = i.sourceCompletion()
+	}
+	return err
 }
 
 func ensureSourceData(runtime *config.AppRuntimeConfig, directory string, create bool) error {
@@ -113,7 +139,7 @@ func ensureSourceData(runtime *config.AppRuntimeConfig, directory string, create
 func (i *Installer) sourceUninstallPlan(snapshot install.RecipeSnapshot) *install.Plan {
 	directory := fsroot.ProviderDir(i.cfg.Name)
 	return &install.Plan{Provider: i.cfg.Name, Platform: fsroot.CurrentPlatform(), Action: "uninstall", InstallDir: directory, Steps: []install.Step{{Number: 1, Description: "Remove managed payload and records; keep data and python", PostExec: func(ctx context.Context) error {
-		if err := i.checkSourceInstall(snapshot); err != nil {
+		if err := i.checkSourceInstall(&snapshot, install.PlanOptions{Action: "uninstall", Force: true}); err != nil {
 			return err
 		}
 		for _, name := range append(snapshot.PayloadDirectories(), config.ProviderVersionName, config.ProviderManifestName, config.ProviderManifestTemp, config.ProviderManagedName, config.SubdirCandidate, config.SubdirPrevious) {

@@ -104,6 +104,82 @@ func TestSourceExtractionFreshTreeAndPinBeforeEntries(t *testing.T) {
 	require.Len(t, entries, 1, "checksum failure cannot create an extraction directory")
 }
 
+func TestSourceReadsGitArchiveGlobalHeader(t *testing.T) {
+	for _, sparse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sparse=%t", sparse), func(t *testing.T) {
+			var archive bytes.Buffer
+			gz := gzip.NewWriter(&archive)
+			writer := tar.NewWriter(gz)
+			records := map[string]string{"comment": strings.Repeat("a", 40)}
+			if sparse {
+				records["GNU.sparse.major"] = "1"
+			}
+			require.NoError(t, writer.WriteHeader(&tar.Header{Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader, Format: tar.FormatPAX, PAXRecords: records}))
+			for _, entry := range []sourceEntry{{name: "ComfyUI-0.40.0/", typeflag: tar.TypeDir}, {name: "ComfyUI-0.40.0/requirements.txt", body: "torch\ntorchvision\naiohttp\n"}, {name: "ComfyUI-0.40.0/main.py", body: "print('help')\n"}} {
+				require.NoError(t, writer.WriteHeader(&tar.Header{Name: entry.name, Typeflag: entry.typeflag, Mode: 0755, Size: int64(len(entry.body))}))
+				_, err := writer.Write([]byte(entry.body))
+				require.NoError(t, err)
+			}
+			require.NoError(t, writer.Close())
+			require.NoError(t, gz.Close())
+			file, source, parent := extractFixture(t, archive.Bytes())
+			source.Requirements = "requirements.txt"
+			roots, err := ReadSource(t.Context(), file, "", "", source)
+			if sparse {
+				require.ErrorContains(t, err, "unsafe source archive entry")
+				require.Error(t, extractSource(t.Context(), file, parent, "source", source))
+				require.NoDirExists(t, filepath.Join(parent, "source"))
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, map[string]string{"torch": "", "torchvision": "", "aiohttp": ""}, roots)
+			require.NoError(t, extractSource(t.Context(), file, parent, "source", source))
+			body, err := os.ReadFile(filepath.Join(parent, "source", "main.py"))
+			require.NoError(t, err)
+			require.Equal(t, "print('help')\n", string(body))
+			_, err = os.Stat(filepath.Join(parent, "source", "pax_global_header"))
+			require.ErrorIs(t, err, os.ErrNotExist, "metadata must not create a file or establish the top directory")
+		})
+	}
+}
+
+type replaceSourcePathContext struct {
+	context.Context
+	replace func() error
+}
+
+func (c *replaceSourcePathContext) Err() error {
+	if c.replace != nil {
+		replace := c.replace
+		c.replace = nil
+		if err := replace(); err != nil {
+			return err
+		}
+	}
+	return c.Context.Err()
+}
+
+func TestSourceHashesAndExtractsTheSameOpenFile(t *testing.T) {
+	verified := sourceArchive(t, sourceEntry{name: "release/requirements.txt", body: "torch>=2\n"}, sourceEntry{name: "release/main.py", body: "verified"})
+	archive, source, parent := extractFixture(t, verified)
+	source.Requirements = "requirements.txt"
+	replacement := []byte("replacement is not even an archive")
+	ctx := &replaceSourcePathContext{Context: t.Context(), replace: func() error {
+		if err := os.Rename(archive, archive+".verified"); err != nil {
+			return err
+		}
+		return os.WriteFile(archive, replacement, 0600)
+	}}
+	roots, err := ReadSource(ctx, archive, parent, "source", source)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"torch": ">=2"}, roots)
+	body, err := os.ReadFile(filepath.Join(parent, "source", "main.py"))
+	require.NoError(t, err)
+	require.Equal(t, "verified", string(body))
+	_, err = ReadSource(t.Context(), archive, "", "", source)
+	require.ErrorContains(t, err, "checksum mismatch", "subsequent calls must verify the replacement bytes")
+}
+
 func TestSourceExtractionRefusesHostileEntriesAndCleansCandidate(t *testing.T) {
 	good := sourceEntry{name: "release/main.py", body: "old code"}
 	for name, entry := range map[string]sourceEntry{

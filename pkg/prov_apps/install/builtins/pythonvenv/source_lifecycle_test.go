@@ -344,6 +344,18 @@ func TestSourceLifecycleRefusesSymlinkAliasesAndChangedOwnership(t *testing.T) {
 			external := savedTree(t, outside)
 			_, err := installer.InstallPlan(install.WithPlanOptions(t.Context(), install.PlanOptions{Force: true}), "")
 			require.Error(t, err)
+			if variant == "changed owned path" {
+				require.ErrorIs(t, err, errSourceDirectoryChanged)
+				require.Equal(t, before, savedTree(t, tx.directory), "activation cannot replace an unowned destination")
+				operator := savedTree(t, filepath.Join(tx.directory, snapshot.WorkingDir))
+				data := savedTree(t, filepath.Join(tx.directory, "data"))
+				require.NoError(t, installer.Uninstall(t.Context()))
+				require.Equal(t, operator, savedTree(t, filepath.Join(tx.directory, snapshot.WorkingDir)))
+				require.Equal(t, data, savedTree(t, filepath.Join(tx.directory, "data")))
+				require.NoDirExists(t, filepath.Join(tx.directory, "payload/source"))
+				require.NoDirExists(t, filepath.Join(tx.directory, "venv"))
+				return
+			}
 			require.Error(t, installer.Uninstall(t.Context()))
 			require.Equal(t, before, savedTree(t, tx.directory))
 			require.Equal(t, external, savedTree(t, outside))
@@ -356,6 +368,83 @@ func TestSourceLifecycleRefusesSymlinkAliasesAndChangedOwnership(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSourceIncompleteManagedRecordAllowsOnlyOwnedForceRepair(t *testing.T) {
+	for _, defect := range []string{"no identity", "no inventory", "wrong fingerprint", "corrupt JSON", "missing ownership", "data ownership"} {
+		t.Run(defect, func(t *testing.T) {
+			installer, snapshot, tx, python := sourceLifecycle(t)
+			manifest, err := fsroot.ReadInstallManifest(snapshot.Runtime)
+			require.NoError(t, err)
+			switch defect {
+			case "no identity":
+				manifest.PlanID = ""
+			case "no inventory":
+				manifest.Inventory = nil
+			case "wrong fingerprint":
+				manifest.RecipeFingerprint = "wrong"
+			case "missing ownership":
+				manifest.WorkingDir = ""
+			case "data ownership":
+				manifest.WorkingDir = "data"
+			}
+			require.NoError(t, fsroot.WriteInstallManifest(snapshot.Runtime, manifest))
+			if defect == "corrupt JSON" {
+				require.NoError(t, os.WriteFile(fsroot.ProviderManifestPath(snapshot.Runtime), []byte("{broken"), 0600))
+			}
+			before := savedTree(t, tx.directory)
+			_, err = installer.InstallPlan(t.Context(), "")
+			if defect == "data ownership" {
+				require.ErrorIs(t, err, errSourceDirectoryChanged)
+				_, err = installer.InstallPlan(install.WithPlanOptions(t.Context(), install.PlanOptions{Force: true}), "")
+				require.ErrorIs(t, err, errSourceDirectoryChanged)
+				require.ErrorContains(t, installer.Uninstall(t.Context()), "overlaps reserved path")
+				require.Equal(t, before, savedTree(t, tx.directory))
+				return
+			}
+			require.ErrorContains(t, err, "managed installation record is incomplete; reinstall with force")
+			require.NotContains(t, err.Error(), "Operator installation found")
+			_, err = installer.InstallPlan(install.WithPlanOptions(t.Context(), install.PlanOptions{Force: true}), "")
+			if defect == "corrupt JSON" || defect == "missing ownership" || defect == "data ownership" {
+				require.ErrorContains(t, err, "managed installation record is incomplete")
+				require.Error(t, installer.Uninstall(t.Context()), "invalid ownership cannot authorize deletion")
+				require.Equal(t, before, savedTree(t, tx.directory))
+				return
+			}
+			require.NoError(t, err, "safe recorded ownership permits force even when completion is incomplete")
+			require.Equal(t, before, savedTree(t, tx.directory), "plan construction does not change payloads or records")
+			require.NoError(t, activateSource(t, tx, snapshot, python))
+			require.True(t, installer.IsInstalled())
+		})
+	}
+}
+
+func TestSourceWorkingDirectoryDriftRequiresUninstall(t *testing.T) {
+	installer, snapshot, tx, _ := sourceLifecycle(t)
+	old := snapshot.WorkingDir
+	data := savedTree(t, filepath.Join(tx.directory, "data"))
+	operatorPython := savedTree(t, filepath.Join(tx.directory, "python"))
+	snapshot.WorkingDir = "operator"
+	require.NoError(t, os.Mkdir(filepath.Join(tx.directory, snapshot.WorkingDir), 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(tx.directory, snapshot.WorkingDir, "keep"), []byte("operator data"), 0600))
+	operator := savedTree(t, filepath.Join(tx.directory, snapshot.WorkingDir))
+	installer.cfg.Recipe = func(string, string) (install.RecipeSnapshot, error) { return snapshot, nil }
+	before := savedTree(t, tx.directory)
+	for _, force := range []bool{false, true} {
+		// A request action cannot turn installation into uninstall admission.
+		ctx := install.WithPlanOptions(t.Context(), install.PlanOptions{Force: force, Action: "uninstall"})
+		_, err := installer.InstallPlan(ctx, "")
+		require.ErrorIs(t, err, errSourceDirectoryChanged)
+		_, err = installer.UpgradePlan(ctx, "")
+		require.ErrorIs(t, err, errSourceDirectoryChanged)
+	}
+	require.Equal(t, before, savedTree(t, tx.directory), "refusal must precede any install work")
+	require.NoError(t, installer.Uninstall(t.Context()))
+	require.NoDirExists(t, filepath.Join(tx.directory, old))
+	require.NoDirExists(t, filepath.Join(tx.directory, "venv"))
+	require.Equal(t, operator, savedTree(t, filepath.Join(tx.directory, snapshot.WorkingDir)))
+	require.Equal(t, data, savedTree(t, filepath.Join(tx.directory, "data")))
+	require.Equal(t, operatorPython, savedTree(t, filepath.Join(tx.directory, "python")))
 }
 
 func TestSourceGuardRechecksHandInstallBeforeCandidateWork(t *testing.T) {
@@ -380,7 +469,7 @@ func TestSourcePartialCandidateRetryPreservesLiveInstall(t *testing.T) {
 		before[name] = savedTree(t, filepath.Join(tx.directory, name))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(tx.stage, "plan_id"), []byte("plan"), 0600))
-	require.NoError(t, installer.checkSourceInstall(snapshot))
+	require.NoError(t, installer.checkSourceInstall(&snapshot, install.PlanOptions{}))
 	require.NoError(t, prepareCandidate(tx.stage))
 	entries, err := os.ReadDir(tx.stage)
 	require.NoError(t, err)

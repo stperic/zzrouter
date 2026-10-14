@@ -2,26 +2,32 @@ package pythonvenv
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/download"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/interpreter"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/prov_apps/upstream"
+	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -86,12 +92,88 @@ else:
 	require.Equal(t, "Engine_Dep>=1\n", string(body))
 	// Cached bytes are reverified before every use, with no existence-based trust.
 	require.NoError(t, os.WriteFile(artifact, []byte("corrupt archive"), 0600))
-	_, err = i.sourceRoots(t.Context(), snapshot, directory)
-	require.ErrorContains(t, err, "checksum mismatch")
 	_, err = install.ReadSource(t.Context(), artifact, stage, "new-source", *snapshot.Recipe.Source)
 	require.ErrorContains(t, err, "checksum mismatch")
 	_, err = os.Lstat(filepath.Join(stage, "new-source"))
 	require.True(t, os.IsNotExist(err))
+}
+
+func TestSourceCacheRefetchesOnlyOneChecksumFailure(t *testing.T) {
+	for _, outcome := range []string{"recovered", "second mismatch", "verified parse error", "valid cache"} {
+		t.Run(outcome, func(t *testing.T) {
+			var archive bytes.Buffer
+			gz := gzip.NewWriter(&archive)
+			writer := tar.NewWriter(gz)
+			name := "release/requirements.txt"
+			if outcome == "verified parse error" {
+				name = "release/../escape"
+			}
+			require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: 6, Typeflag: tar.TypeReg}))
+			_, err := writer.Write([]byte("torch\n"))
+			require.NoError(t, err)
+			require.NoError(t, writer.Close())
+			require.NoError(t, gz.Close())
+			snapshot := sourceSnapshot()
+			snapshot.Recipe.Source.SHA256 = fmt.Sprintf("%x", sha256.Sum256(archive.Bytes()))
+			directory := t.TempDir()
+			cache := filepath.Join(directory, config.SubdirCandidate, snapshot.Recipe.Source.SHA256)
+			require.NoError(t, os.MkdirAll(cache, 0700))
+			artifact := filepath.Join(cache, filepath.Base(snapshot.Recipe.Source.URL))
+			cached, response := archive.Bytes(), archive.Bytes()
+			if outcome == "recovered" || outcome == "second mismatch" {
+				cached = []byte("corrupt cached archive")
+			}
+			if outcome == "second mismatch" {
+				response = []byte("corrupt downloaded archive")
+			}
+			require.NoError(t, os.WriteFile(artifact, cached, 0600))
+			// Configure the existing shared download transport, without another installer seam or a listener.
+			transport := download.NewClient(time.Second).Transport.(*http.Transport)
+			proxy, dial, keepAlive, http2 := transport.Proxy, transport.DialTLSContext, transport.DisableKeepAlives, transport.ForceAttemptHTTP2
+			transport.CloseIdleConnections()
+			transport.Proxy, transport.DisableKeepAlives, transport.ForceAttemptHTTP2 = nil, true, false
+			var calls atomic.Int32
+			transport.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
+				calls.Add(1)
+				client, server := net.Pipe()
+				go func() {
+					defer server.Close()
+					if _, err := http.ReadRequest(bufio.NewReader(server)); err != nil {
+						return
+					}
+					if _, err := fmt.Fprintf(server, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", len(response)); err == nil {
+						_, _ = server.Write(response)
+					}
+				}()
+				return client, nil
+			}
+			t.Cleanup(func() {
+				transport.CloseIdleConnections()
+				transport.Proxy, transport.DialTLSContext, transport.DisableKeepAlives, transport.ForceAttemptHTTP2 = proxy, dial, keepAlive, http2
+			})
+			installer := New(Config{Name: snapshot.Runtime})
+			roots, err := installer.sourceRoots(t.Context(), snapshot, directory)
+			switch outcome {
+			case "second mismatch":
+				require.ErrorIs(t, err, security.ErrChecksumMismatch)
+				require.EqualValues(t, 1, calls.Load(), "a second mismatch must fail without another fetch")
+			case "verified parse error":
+				require.ErrorContains(t, err, "unsafe source archive")
+				require.Zero(t, calls.Load(), "verified parsing failures must not trigger a refetch")
+			default:
+				require.NoError(t, err)
+				require.Equal(t, map[string]string{"torch": ""}, roots)
+				if outcome == "recovered" {
+					assert.EqualValues(t, 1, calls.Load())
+				} else {
+					require.Zero(t, calls.Load())
+				}
+				body, err := os.ReadFile(artifact)
+				require.NoError(t, err)
+				require.Equal(t, archive.Bytes(), body)
+			}
+		})
+	}
 }
 
 func sourceSnapshot() install.RecipeSnapshot {

@@ -31,17 +31,20 @@ func ReadSource(ctx context.Context, archive, candidate, directory string, sourc
 	if !info.Mode().IsRegular() || info.Size() > SourceArchiveLimit {
 		return nil, fmt.Errorf("invalid source archive")
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := security.VerifySHA256(archive, source.SHA256); err != nil {
-		return nil, err
-	}
 	file, err := os.Open(archive)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := security.VerifySHA256Reader(io.LimitReader(sourceReader{ctx, file}, SourceArchiveLimit+1), source.SHA256); err != nil {
+		return nil, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 	zipped, err := gzip.NewReader(file)
 	if err != nil {
 		return nil, err
@@ -127,6 +130,9 @@ func sourceEntryPath(h *tar.Header, top string, count int, remaining int64) (str
 		if strings.HasPrefix(key, "GNU.sparse.") {
 			return "", "", false
 		}
+	}
+	if h.Typeflag == tar.TypeXGlobalHeader {
+		return top, "", count < sourceEntryLimit && remaining > 0 // Metadata keeps the root and skips extraction.
 	}
 	safe := count < sourceEntryLimit && remaining > 0 && len(name) <= 1024 && fs.ValidPath(name) && !strings.ContainsAny(name, "\\:") && h.Mode & ^int64(0777) == 0 && h.Size >= 0 && h.Size <= sourceFileLimit && (h.Typeflag == tar.TypeDir || h.Typeflag == tar.TypeReg) && (top == "" || first == top) && (nested || h.Typeflag == tar.TypeDir)
 	return first, relative, safe
