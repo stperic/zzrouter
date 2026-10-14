@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -19,7 +20,9 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/prov_apps/upstream"
 	"github.com/stperic/zzrouter/pkg/security"
 	"gopkg.in/yaml.v3"
 )
@@ -28,17 +31,18 @@ import (
 type RecipeSnapshot struct {
 	Recheck func(context.Context) error `json:"-"`
 	config.ResolvedInstall
-	Provider          string                   `json:"provider"`
-	Runtime           string                   `json:"runtime"`
-	Node              string                   `json:"node"`
-	Fingerprint       string                   `json:"fingerprint"`
-	PolicyFingerprint string                   `json:"policy_fingerprint"`
-	Authority         string                   `json:"authority"`
-	Policy            *RuntimePolicy           `json:"-"`
-	Requirements      *config.AppRequirements  `json:"-"`
-	PinnedVersion     string                   `json:"-"`
-	WorkingDir        string                   `json:"-"`
-	DataRuntime       *config.AppRuntimeConfig `json:"-"`
+	Provider           string                   `json:"provider"`
+	Runtime            string                   `json:"runtime"`
+	Node               string                   `json:"node"`
+	Fingerprint        string                   `json:"fingerprint"`
+	PolicyFingerprint  string                   `json:"policy_fingerprint"`
+	Authority          string                   `json:"authority"`
+	Policy             *RuntimePolicy           `json:"-"`
+	AdditionalPackages map[string]string        `json:"additional_packages,omitempty"`
+	Requirements       *config.AppRequirements  `json:"-"`
+	PinnedVersion      string                   `json:"-"`
+	WorkingDir         string                   `json:"-"`
+	DataRuntime        *config.AppRuntimeConfig `json:"-"`
 }
 
 // PayloadDirectories lists the owned runtime trees in activation order.
@@ -57,8 +61,9 @@ type InstallPolicy struct {
 	Runtimes map[string]RuntimePolicy `yaml:"runtimes" json:"runtimes"`
 }
 
-// RuntimePolicy grants bounded package, import, entrypoint and source authority.
+// RuntimePolicy grants bounded pip overrides or additive roots for released source.
 type RuntimePolicy struct {
+	AdditionalPackages  map[string]string `yaml:"additional_packages,omitempty" json:"additional_packages,omitempty"`
 	Packages            map[string]string `yaml:"packages" json:"packages"`
 	Imports             []string          `yaml:"imports" json:"imports"`
 	Entrypoints         []string          `yaml:"entrypoints" json:"entrypoints"`
@@ -67,11 +72,14 @@ type RuntimePolicy struct {
 	AllowPrivateIndexes bool              `yaml:"allow_private_indexes" json:"allow_private_indexes"`
 }
 
+// AdditionalPackagesLimit bounds the operator-selected roots of a source runtime.
+const AdditionalPackagesLimit = 128
+
 // ErrInstallPolicy distinguishes authority refusal from recipe syntax errors.
 var ErrInstallPolicy = fmt.Errorf("protected install policy required")
 
 // ResolveRecipe validates syntax and checks release templates or protected node policy.
-func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (RecipeSnapshot, error) {
+func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, installed *fsroot.InstallManifest) (RecipeSnapshot, error) {
 	resolved, err := sc.ResolveInstall(node, runtime)
 	if err != nil {
 		return RecipeSnapshot{}, err
@@ -81,6 +89,9 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 		out.PinnedVersion = resolved.Recipe.Source.Version
 		out.WorkingDir = sc.RuntimeExecution(runtime).WorkingDir
 		out.DataRuntime = sc.Runtime
+		if installed != nil {
+			out.AdditionalPackages = maps.Clone(installed.AdditionalPackages)
+		}
 	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
 	}
@@ -118,26 +129,40 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 		if resolved.Recipe.Source != nil {
 			return out, fmt.Errorf("%w: source recipes require an unchanged shipped declaration", ErrInstallPolicy)
 		}
-		policy, fp, err := ReadInstallPolicy(policyPath)
-		if err != nil {
-			return out, fmt.Errorf("%w: %v", ErrInstallPolicy, err)
-		}
-		grant, ok := policy.Runtimes[sc.Name+"/"+runtime]
-		if !ok {
-			return out, fmt.Errorf("%w: no grant for %s/%s", ErrInstallPolicy, sc.Name, runtime)
-		}
-		if err := grant.Authorize(resolved.Recipe); err != nil {
-			return out, fmt.Errorf("%w: %v", ErrInstallPolicy, err)
-		}
-		out.Policy = &grant
-		out.PolicyFingerprint = fp
 		out.Authority = "operator"
 	}
 	out.Fingerprint = Fingerprint(resolved.Recipe)
-	if out.Authority == "release" {
+	if err := out.bindPolicy(policyPath, installed); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func (out *RecipeSnapshot) bindPolicy(policyPath string, installed *fsroot.InstallManifest) error {
+	var inventory []ResolvedPackage
+	if installed != nil {
+		inventory = append([]ResolvedPackage{}, installed.Inventory...)
+	}
+	if out.Authority == "operator" || out.Recipe.Source != nil && (policyPath != "" || len(out.AdditionalPackages) > 0) {
+		policy, fp, err := ReadInstallPolicy(policyPath)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
+		}
+		grant := policy.Runtimes[out.Provider+"/"+out.Runtime]
+		if out.Recipe.Source != nil && installed == nil {
+			out.AdditionalPackages = maps.Clone(grant.AdditionalPackages)
+		}
+		if err := grant.Authorize(*out, inventory); err != nil {
+			return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
+		}
+		out.Policy = &grant
+		out.PolicyFingerprint = fp
+	}
+	if out.PolicyFingerprint == "" {
 		out.Recheck = func(ctx context.Context) error { return ctx.Err() }
 	} else {
-		captured := out
+		captured := *out
+		captured.AdditionalPackages = maps.Clone(out.AdditionalPackages)
 		out.Recheck = func(ctx context.Context) error {
 			if err := ctx.Err(); err != nil {
 				return err
@@ -146,17 +171,17 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 			if err != nil {
 				return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
 			}
-			if fp != captured.PolicyFingerprint {
-				return fmt.Errorf("%w: policy changed; preview again", ErrInstallPolicy)
-			}
-			grant, ok := policy.Runtimes[captured.Provider+"/"+captured.Runtime]
-			if !ok {
-				return ErrInstallPolicy
-			}
-			return grant.Authorize(captured.Recipe)
+			return captured.recheckPolicy(policy, fp, inventory)
 		}
 	}
-	return out, nil
+	return nil
+}
+
+func (s RecipeSnapshot) recheckPolicy(policy InstallPolicy, fingerprint string, inventory []ResolvedPackage) error {
+	if fingerprint != s.PolicyFingerprint {
+		return fmt.Errorf("%w: policy changed; preview again", ErrInstallPolicy)
+	}
+	return policy.Runtimes[s.Provider+"/"+s.Runtime].Authorize(s, inventory)
 }
 
 func releaseRecipeValue(recipe config.InstallRecipe) config.InstallRecipe {
@@ -231,6 +256,10 @@ func ReadInstallPolicy(path string) (InstallPolicy, string, error) {
 	if err != nil || !os.SameFile(opened, after) {
 		return InstallPolicy{}, "", fmt.Errorf("policy replaced during read")
 	}
+	return parseInstallPolicy(data)
+}
+
+func parseInstallPolicy(data []byte) (InstallPolicy, string, error) {
 	var policy InstallPolicy
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -241,16 +270,20 @@ func ReadInstallPolicy(path string) (InstallPolicy, string, error) {
 		return policy, "", fmt.Errorf("policy requires 1 to 32 grants")
 	}
 	for _, grant := range policy.Runtimes {
-		if len(grant.Packages) == 0 || len(grant.Packages) > 32 || len(grant.Imports) > 64 || len(grant.Indexes) > 5 {
+		packages, limit := grant.Packages, 32
+		if grant.AdditionalPackages != nil {
+			if grant.Packages != nil || grant.Imports != nil || grant.Entrypoints != nil || grant.Indexes != nil || grant.AllowSourceBuilds || grant.AllowPrivateIndexes {
+				return policy, "", fmt.Errorf("additional_packages cannot be mixed with pip override grants")
+			}
+			packages, limit = grant.AdditionalPackages, AdditionalPackagesLimit
+		} else if len(packages) == 0 {
+			return policy, "", fmt.Errorf("policy requires package grants or additional_packages")
+		}
+		if len(grant.Imports) > 64 || len(grant.Indexes) > 5 {
 			return policy, "", fmt.Errorf("policy grant exceeds bounds")
 		}
-		for name, constraint := range grant.Packages {
-			if !config.ValidDistribution(name) {
-				return policy, "", fmt.Errorf("invalid policy package")
-			}
-			if err := config.ValidateSpecifier(constraint); err != nil {
-				return policy, "", err
-			}
+		if err := ValidatePackageConstraints(packages, limit); err != nil {
+			return policy, "", err
 		}
 		for _, module := range append(slices.Clone(grant.Imports), grant.Entrypoints...) {
 			if !config.ValidInstallModule(module) {
@@ -266,18 +299,72 @@ func ReadInstallPolicy(path string) (InstallPolicy, string, error) {
 	return policy, Fingerprint(policy), nil
 }
 
-// Authorize approves only the declared direct roots and exact source URLs.
-func (p RuntimePolicy) Authorize(recipe config.InstallRecipe) error {
-	if recipe.Source != nil {
-		return fmt.Errorf("source recipes are release-owned")
+// ValidatePackageConstraints checks policy and recorded root constraints identically.
+func ValidatePackageConstraints(packages map[string]string, limit int) error {
+	if len(packages) > limit {
+		return fmt.Errorf("package set exceeds %d roots", limit)
 	}
-	for name := range recipe.Companions {
-		if _, ok := p.Packages[name]; !ok {
-			return fmt.Errorf("companion %q unapproved", name)
+	for name, constraint := range packages {
+		if !config.ValidDistribution(name) {
+			return fmt.Errorf("invalid policy package %q", name)
+		}
+		if err := config.ValidateSpecifier(constraint); err != nil {
+			return err
 		}
 	}
-	if _, ok := p.Packages[*recipe.Package]; !ok {
-		return fmt.Errorf("package %q unapproved", *recipe.Package)
+	return nil
+}
+
+// Authorize checks additive or pip roots, and actual versions when inventory is supplied.
+func (p RuntimePolicy) Authorize(snapshot RecipeSnapshot, inventory []ResolvedPackage) error {
+	recipe := snapshot.Recipe
+	grants, roots := p.Packages, map[string]string{}
+	if recipe.Source != nil {
+		if snapshot.Authority != "release" || p.Packages != nil {
+			return fmt.Errorf("source recipes are release-owned")
+		}
+		grants, roots = p.AdditionalPackages, snapshot.AdditionalPackages
+		if err := ValidatePackageConstraints(roots, AdditionalPackagesLimit); err != nil {
+			return fmt.Errorf("%w: %v", ErrInstallPolicy, err)
+		}
+	} else {
+		if p.AdditionalPackages != nil {
+			return fmt.Errorf("additional_packages requires a release-owned source runtime")
+		}
+		roots[*recipe.Package] = ""
+		for name := range recipe.Companions {
+			roots[name] = ""
+		}
+	}
+	for name, constraint := range roots {
+		approved, ok := grants[name]
+		if !ok {
+			return fmt.Errorf("%w: package %q unapproved", ErrInstallPolicy, name)
+		}
+		if inventory == nil {
+			continue
+		}
+		present := false
+		for _, entry := range inventory {
+			if entry.Name != name || !entry.Requested {
+				continue
+			}
+			if err := upstream.VersionAllowed(entry.Version, strings.Trim(constraint+","+approved, ",")); err != nil {
+				return fmt.Errorf("%w: installed root %s: %v", ErrInstallPolicy, name, err)
+			}
+			present = true
+		}
+		if !present {
+			return fmt.Errorf("%w: installed root %s lacks requested inventory", ErrInstallPolicy, name)
+		}
+	}
+	if recipe.Source != nil {
+		return nil
+	}
+	for _, entry := range inventory {
+		if _, declared := roots[entry.Name]; entry.Requested && !declared {
+			return fmt.Errorf("%w: installed root %s is not granted", ErrInstallPolicy, entry.Name)
+		}
 	}
 	if !slices.Contains(p.Entrypoints, *recipe.StartupImport) {
 		return fmt.Errorf("startup entrypoint unapproved")
@@ -364,6 +451,9 @@ func (s RecipeSnapshot) RuntimeChecks(base schema.RuntimeChecks) schema.RuntimeC
 	}
 	for name := range s.Recipe.Companions {
 		base.Packages = append(base.Packages, name)
+	}
+	if _, added := s.AdditionalPackages["torchaudio"]; added && !slices.Contains(base.Packages, "torchaudio") {
+		base.Packages = append(base.Packages, "torchaudio")
 	}
 	slices.Sort(base.Packages)
 	return base

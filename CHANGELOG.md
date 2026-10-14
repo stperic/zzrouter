@@ -4,6 +4,12 @@
 
 ### Highlights
 
+- ComfyUI custom-node Python dependencies can be selected by the human operator
+  through `additional_packages` in the existing protected install policy. Force
+  reinstall uses one hashed, wheel-only resolution; environment status reports
+  drift. Node code and system dependencies remain operator-owned, and node
+  `install.py` scripts are never executed by zzRouter.
+
 - ComfyUI has a managed install on Linux/amd64 NVIDIA nodes through the existing
   provider install API, MCP and TUI. The shipped 0.40.0 source archive is SHA256
   pinned; dependencies use the hashed Python inventory. Upgrade replaces source

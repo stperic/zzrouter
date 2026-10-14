@@ -63,7 +63,7 @@ func RenderJobProgress(parent context.Context, client *pkgClient.Client, jobID, 
 		lastLineLen = len(s)
 	}
 
-	fmt.Printf("%s %s (job %s)\n", ui.GetSearchEmoji(), label, jobID)
+	fmt.Printf("%s %s (job %s)\n", ui.GetInfoEmoji(), label, jobID)
 
 	terminal, err := client.SubscribeJob(ctx, jobID, node, func(ev pkgClient.JobEvent) {
 		switch ev.Event {

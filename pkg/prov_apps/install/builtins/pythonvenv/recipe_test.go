@@ -268,7 +268,7 @@ func TestRecipePlanDoesNotReuseCachedInterpreter(t *testing.T) {
 	sc, ok := apps.LookupApp("mlx")
 	require.True(t, ok)
 	sc.Requirements = nil
-	snapshot, err := install.ResolveRecipe(sc, "worker", "mlx", "")
+	snapshot, err := install.ResolveRecipe(sc, "worker", "mlx", "", nil)
 	require.NoError(t, err)
 	i := New(Config{Name: "mlx", SchemaProvider: "mlx", Recipe: func(string, string) (install.RecipeSnapshot, error) { return snapshot, nil }})
 	i.chosen = &interpreter.Choice{Path: "/cached/old/python", Realpath: "/cached/old/python", Version: "9.9.9"}
@@ -286,7 +286,7 @@ func TestTypedUpgradeRetainsCandidateTransaction(t *testing.T) {
 	sc, ok := apps.LookupApp("mlx")
 	require.True(t, ok)
 	sc.Requirements = nil
-	snapshot, err := install.ResolveRecipe(sc, "worker", "mlx", "")
+	snapshot, err := install.ResolveRecipe(sc, "worker", "mlx", "", nil)
 	require.NoError(t, err)
 	i := New(Config{Name: "mlx", SchemaProvider: "mlx", Platforms: []fsroot.Platform{fsroot.CurrentPlatform()}, Recipe: func(string, string) (install.RecipeSnapshot, error) { return snapshot, nil }})
 	ctx := install.WithPlanOptions(t.Context(), install.PlanOptions{Action: "upgrade"})

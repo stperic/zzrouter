@@ -59,6 +59,18 @@ Review the complete package/import/entrypoint/index grants before provisioning
 it. A grant approves root package families and resolver-selected transitive
 dependencies, rather than every transitive distribution individually.
 
+Unchanged release-owned source recipes also accept human-selected `additional_packages`
+in this same protected runtime grant. This is a selected map of at most 128 normalized
+distribution names to constraints, rather than the pip `packages` allowlist. It cannot
+be combined with pip override grants or authorize source, index or build changes.
+The release recipe retains release authority; the additions and policy fingerprint
+are separate plan/manifest evidence. Source defaults/node overrides remain forbidden.
+An empty additions map selects none. A configured unreadable, unsafe or malformed
+policy fails closed; with no configured path, the unchanged source needs no policy
+and installs only its release roots. Existing pip release behavior remains unchanged.
+See [ComfyUI dependencies](comfyui.md#custom-node-dependencies) for force reinstall,
+drift, conflict/system-dependency behavior and the operator trust model.
+
 Index inputs require clean HTTPS URLs without credentials, fragments or queries.
 Private destinations need explicit operator approval. Index approval does not
 constrain pip's redirected artifact/CDN egress. Extra indexes have no priority and

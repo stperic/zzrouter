@@ -10532,6 +10532,7 @@ components:
               properties:
                 fingerprint: { type: string }
                 policy_fingerprint: { type: string }
+                additional_packages: { type: object, maxProperties: 128, additionalProperties: { type: string }, description: Human-selected additive roots from the protected node policy; source recipe authority remains release-owned. }
                 authority: { type: string, enum: [release, operator] }
                 node: { type: string }
         dependency_inventory:
@@ -13363,9 +13364,9 @@ components:
       required: [contract, provider, runtime, node, installed, drivers, kernels, findings, api_workarounds]
       properties:
         desired_install: { $ref: '#/components/schemas/ResolvedInstall' }
-        installed_manifest: { type: object, description: Actual installed recipe, dependency hashes and interpreter metadata. }
-        recipe_drift: { type: boolean }
-        install_authority: { type: object, description: Non-secret release capability, protected policy grant and fingerprint or refusal reason. }
+        installed_manifest: { type: object, description: Actual installed recipe, additional_packages selection, dependency hashes and interpreter metadata. }
+        recipe_drift: { type: boolean, description: Desired recipe or additional_packages differs from the installed selection; unrelated runtime policy edits do not imply drift. }
+        install_authority: { type: object, description: Non-secret release capability, protected policy grant (including source additional_packages) and fingerprint or refusal reason. }
         contract: { type: string, const: runtime_environment_v1 }
         provider: { type: string }
         runtime: { type: string }
