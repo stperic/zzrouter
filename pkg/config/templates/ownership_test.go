@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -77,7 +78,9 @@ func TestOwnershipGeneratedFromSelectorBeforeValues(t *testing.T) {
 	assert.NotContains(t, string(ownershipBytes(t, filepath.Join(dir, ownershipFile))), "do-not-record")
 	before, err := os.Stat(filepath.Join(dir, ownershipFile))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0600), before.Mode().Perm())
+	if runtime.GOOS != "windows" { // Windows reports ACL-governed files as 0666
+		assert.Equal(t, os.FileMode(0600), before.Mode().Perm())
+	}
 	_, _, err = prepareManagedFiles(src, dir)
 	require.NoError(t, err)
 	after, err := os.Stat(filepath.Join(dir, ownershipFile))
@@ -251,8 +254,8 @@ func TestOwnershipInvalidReceiptStopsEveryWriter(t *testing.T) {
 }
 
 func TestOwnershipPublicationAndRepairIOFailures(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("permission failures require an unprivileged node identity")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions do not gate root or Windows the same way")
 	}
 	const rel = "cloud/a/config.yaml"
 	const healthyRel = "cloud/z/config.yaml"

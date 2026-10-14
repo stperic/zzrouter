@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -177,16 +178,30 @@ func TestRunMutationWaitsForPublication(t *testing.T) {
 	}
 }
 
+// crashingEngineArg makes the re-executed test binary a crashing engine. As a
+// positional argument it ends flag parsing, so launch arguments are ignored.
+const crashingEngineArg = "crashing-engine"
+
+// TestCrashingEngineHelper is the engine launched by publish-failure tests:
+// it exits 23 a second after starting.
+func TestCrashingEngineHelper(t *testing.T) {
+	if flag.Arg(0) != crashingEngineArg {
+		return
+	}
+	time.Sleep(time.Second)
+	os.Exit(23)
+}
+
 func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 	for _, operation := range []string{"launch", "restart"} {
 		for _, routed := range []bool{false, true} {
 			t.Run(operation+"/routed="+fmt.Sprint(routed), func(t *testing.T) {
 				target, reader, dir := mutationNodes(t, "worker")
-				engineScript := filepath.Join(t.TempDir(), "engine.sh")
-				require.NoError(t, os.WriteFile(engineScript, []byte("sleep 1\nexit 23\n"), 0600))
+				binary, err := os.Executable()
+				require.NoError(t, err)
 				require.NoError(t, target.appsConfig.UpdateApp("llamacpp", func(s *config.ServiceConfig) error {
 					// Keep acceptance and the terminal mutation separate.
-					s.Runtime.Execution = config.ExecutionConfig{Type: "cli", Command: "/bin/sh", Args: []string{engineScript}}
+					s.Runtime.Execution = config.ExecutionConfig{Type: "cli", Command: binary, Args: []string{"-test.run=TestCrashingEngineHelper", crashingEngineArg}}
 					return nil
 				}))
 				target.providers.appMgr.ReloadConfig(target.appsConfig)
