@@ -261,58 +261,15 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 			}
 		}
 	}
-	executable := ""
+	var executable string
 	var toolkit install.ToolkitSelection
 	if req.DisposablePlanID != "" {
-		if req.Runtime != "" && req.Runtime != runtime {
-			return LaunchParameters{}, fmt.Errorf("selected runtime does not apply to this model")
-		}
-		manifest, err := install.ReadDisposableManifest(runtime, req.DisposablePlanID)
-		if err != nil {
-			return LaunchParameters{}, err
-		}
-		snapshot, err := m.resolveRecipe(req.Provider, runtime)
-		if err != nil {
-			return LaunchParameters{}, err
-		}
-		if snapshot.Fingerprint != manifest.Recipe.Fingerprint || snapshot.PolicyFingerprint != manifest.Recipe.PolicyFingerprint || install.Fingerprint(m.providerServiceEnv(req.Provider)) != manifest.RuntimeEnvironmentFingerprint {
-			return LaunchParameters{}, install.ErrStalePlan
-		}
-		if err := install.CheckRecipeAuthority(ctx, snapshot, m.resolveRecipe); err != nil {
-			return LaunchParameters{}, err
-		}
-		venv := filepath.Join(install.DisposableDir(runtime, req.DisposablePlanID), "venv")
-		toolkit = install.ToolkitEnvironmentAt(venv, manifest.Recipe.Recipe, manifest.PythonVersion)
-		for key, value := range toolkit.Variables() {
-			env[key] = value
-		}
-		if svc.Runtime == nil {
-			return LaunchParameters{}, fmt.Errorf("runtime execution not declared")
-		}
-		subdir := "bin"
-		if fsroot.CurrentPlatform().OS == "windows" {
-			subdir = "Scripts"
-		}
-		command := svc.Runtime.Execution.Command
-		if svc.Runtime.Execution.Type == "python" {
-			command = "python"
-			if subdir == "Scripts" {
-				command = "python.exe"
-			}
-		}
-		if filepath.Base(command) != command {
-			return LaunchParameters{}, fmt.Errorf("runtime entrypoint is not a managed executable")
-		}
-		executable = filepath.Join(venv, subdir, command)
-		if _, err := os.Stat(executable); err != nil {
-			return LaunchParameters{}, fmt.Errorf("disposable entrypoint missing: %w", err)
-		}
+		toolkit, executable, err = m.disposableLaunch(ctx, svc, req, runtime, env)
 	} else {
-		var err error
 		toolkit, err = install.ApplyToolkitEnvironment(ctx, env, runtime)
-		if err != nil {
-			return LaunchParameters{}, err
-		}
+	}
+	if err != nil {
+		return LaunchParameters{}, err
 	}
 	maps.Copy(sources, features.Sources)
 	params, autoMemory, err := m.filterLaunchAuto(req.Provider, features.Params)
@@ -325,31 +282,89 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		return LaunchParameters{}, err
 	}
 	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
-		cards := m.memoryInventory(ctx)
-		if err := ctx.Err(); err != nil {
+		if commitments, err = m.reservedCommitments(ctx, *budget, params, env); err != nil {
 			return LaunchParameters{}, err
 		}
-		devices := make([]gpu.MemoryDevice, 0, len(cards))
-		for _, card := range cards {
-			if card.UUID != "" && card.TotalMemoryMiB > 0 {
-				devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB})
-			}
-		}
-		if len(devices) == 0 {
-			return LaunchParameters{}, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
-		}
-		visible, err := visibleDeviceEnvironment(env)
-		if err != nil {
-			return LaunchParameters{}, err
-		}
-		commitments, err = process.PrepareMemoryBudget(*budget, params, visible, devices)
-		if err != nil {
-			return LaunchParameters{}, err
-		}
-		maps.Copy(env, visible)
 	}
 	freezeFeaturePaths(svc, params)
 	return LaunchParameters{Commitments: commitments, model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+}
+
+// disposableLaunch binds a launch to a disposable plan's venv once the plan
+// still matches the recipe, policy and environment it was built from.
+func (m *ProviderAppManager) disposableLaunch(ctx context.Context, svc config.ServiceConfig, req EnsureRequest, runtime string, env map[string]string) (install.ToolkitSelection, string, error) {
+	if req.Runtime != "" && req.Runtime != runtime {
+		return install.ToolkitSelection{}, "", fmt.Errorf("selected runtime does not apply to this model")
+	}
+	manifest, err := install.ReadDisposableManifest(runtime, req.DisposablePlanID)
+	if err != nil {
+		return install.ToolkitSelection{}, "", err
+	}
+	snapshot, err := m.resolveRecipe(req.Provider, runtime)
+	if err != nil {
+		return install.ToolkitSelection{}, "", err
+	}
+	if snapshot.Fingerprint != manifest.Recipe.Fingerprint || snapshot.PolicyFingerprint != manifest.Recipe.PolicyFingerprint || install.Fingerprint(m.providerServiceEnv(req.Provider)) != manifest.RuntimeEnvironmentFingerprint {
+		return install.ToolkitSelection{}, "", install.ErrStalePlan
+	}
+	if err := install.CheckRecipeAuthority(ctx, snapshot, m.resolveRecipe); err != nil {
+		return install.ToolkitSelection{}, "", err
+	}
+	venv := filepath.Join(install.DisposableDir(runtime, req.DisposablePlanID), "venv")
+	toolkit := install.ToolkitEnvironmentAt(venv, manifest.Recipe.Recipe, manifest.PythonVersion)
+	for key, value := range toolkit.Variables() {
+		env[key] = value
+	}
+	if svc.Runtime == nil {
+		return install.ToolkitSelection{}, "", fmt.Errorf("runtime execution not declared")
+	}
+	subdir := "bin"
+	if fsroot.CurrentPlatform().OS == "windows" {
+		subdir = "Scripts"
+	}
+	command := svc.Runtime.Execution.Command
+	if svc.Runtime.Execution.Type == "python" {
+		command = "python"
+		if subdir == "Scripts" {
+			command = "python.exe"
+		}
+	}
+	if filepath.Base(command) != command {
+		return install.ToolkitSelection{}, "", fmt.Errorf("runtime entrypoint is not a managed executable")
+	}
+	executable := filepath.Join(venv, subdir, command)
+	if _, err := os.Stat(executable); err != nil {
+		return install.ToolkitSelection{}, "", fmt.Errorf("disposable entrypoint missing: %w", err)
+	}
+	return toolkit, executable, nil
+}
+
+// reservedCommitments sizes a reserve_mib budget against the visible NVIDIA
+// devices and pins that visibility into env.
+func (m *ProviderAppManager) reservedCommitments(ctx context.Context, budget schema.MemoryBudget, params, env map[string]string) (map[string]int64, error) {
+	cards := m.memoryInventory(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	devices := make([]gpu.MemoryDevice, 0, len(cards))
+	for _, card := range cards {
+		if card.UUID != "" && card.TotalMemoryMiB > 0 {
+			devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB})
+		}
+	}
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
+	}
+	visible, err := visibleDeviceEnvironment(env)
+	if err != nil {
+		return nil, err
+	}
+	commitments, err := process.PrepareMemoryBudget(budget, params, visible, devices)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(env, visible)
+	return commitments, nil
 }
 
 func freezeFeaturePaths(svc config.ServiceConfig, params map[string]string) {

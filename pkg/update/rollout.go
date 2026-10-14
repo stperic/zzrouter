@@ -340,15 +340,7 @@ func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h job
 		return
 	}
 	if errors.Is(err, ErrNodeUnavailable) {
-		since := node.WaitingSince
-		if node.StartedAt != nil {
-			since = node.StartedAt
-		}
-		if r.clock.Since(*since) > rolloutApplyTimeout {
-			msg := "node did not return healthy after update"
-			if node.StartedAt == nil {
-				msg = "node was unreachable and never started the update"
-			}
+		if msg := r.unreachableFailure(node); msg != "" {
 			r.fail(record.JobID, i, msg, h)
 		}
 		return
@@ -394,6 +386,22 @@ func (r *Rollouts) observeNode(ctx context.Context, record Rollout, i int, h job
 		return
 	}
 	r.dispatch(observation, record.JobID, i, node.Node, record.Version, h)
+}
+
+// unreachableFailure says why an unreachable node has failed its update, or
+// "" while it is still within rolloutApplyTimeout.
+func (r *Rollouts) unreachableFailure(node NodeUpdate) string {
+	since := node.WaitingSince
+	if node.StartedAt != nil {
+		since = node.StartedAt
+	}
+	switch {
+	case r.clock.Since(*since) <= rolloutApplyTimeout:
+		return ""
+	case node.StartedAt == nil:
+		return "node was unreachable and never started the update"
+	}
+	return "node did not return healthy after update"
 }
 
 func (r *Rollouts) prepareNode(id string, i int, status UpdateStatus) (Rollout, error) {

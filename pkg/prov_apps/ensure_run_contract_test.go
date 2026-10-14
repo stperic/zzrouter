@@ -129,6 +129,22 @@ func (r *contractRig) ensure(ctx context.Context, req EnsureRequest) <-chan outc
 	return out
 }
 
+// requireSharedRun asserts every caller got the same run and returns how many
+// report starting it.
+func requireSharedRun(t *testing.T, results []outcome) int {
+	t.Helper()
+	started := 0
+	for _, o := range results {
+		require.NoError(t, o.err)
+		require.NotNil(t, o.result.Run)
+		assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
+		if o.result.Started {
+			started++
+		}
+	}
+	return started
+}
+
 func collect(t *testing.T, outs []<-chan outcome) []outcome {
 	t.Helper()
 	results := make([]outcome, 0, len(outs))
@@ -310,16 +326,7 @@ func TestEnsureRunContract(t *testing.T) {
 		b.open()
 		results := collect(t, outs)
 		assert.Equal(t, int32(1), r.attempts.Load())
-		started := 0
-		for _, o := range results {
-			require.NoError(t, o.err)
-			require.NotNil(t, o.result.Run)
-			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
-			if o.result.Started {
-				started++
-			}
-		}
-		assert.Equal(t, 1, started)
+		assert.Equal(t, 1, requireSharedRun(t, results))
 		assert.Len(t, r.m.instances.List(), 1, "the registry holds exactly one run")
 		awaitRunning(t, results[0].result.Run)
 	})
@@ -422,11 +429,8 @@ func TestEnsureRunContract(t *testing.T) {
 		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 		b.open()
 		results := collect(t, outs)
-		for _, o := range results {
-			require.NoError(t, o.err, "no caller is refused while the old run stops")
-			require.NotNil(t, o.result.Run)
-			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
-		}
+		// No caller is refused while the old run stops.
+		requireSharedRun(t, results)
 		assert.NotEqual(t, old.result.Run.ID, results[0].result.Run.ID)
 		assert.Equal(t, instance.StatusStopped, old.result.Run.GetStatus())
 		assert.Equal(t, 1, r.terms(t), "the old run is stopped once")
@@ -447,11 +451,7 @@ func TestEnsureRunContract(t *testing.T) {
 				outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 				b.open()
 				results := collect(t, outs)
-				for _, o := range results {
-					require.NoError(t, o.err)
-					require.NotNil(t, o.result.Run)
-					assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
-				}
+				requireSharedRun(t, results)
 				assert.True(t, results[0].result.Started)
 				assert.Equal(t, int32(1), r.attempts.Load())
 				assert.Len(t, r.m.instances.List(), 1)
@@ -1061,16 +1061,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 		b.open()
 		results := collect(t, outs)
-		started := 0
-		for _, o := range results {
-			require.NoError(t, o.err)
-			require.NotNil(t, o.result.Run)
-			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
-			if o.result.Started {
-				started++
-			}
-		}
-		assert.Equal(t, 1, started)
+		assert.Equal(t, 1, requireSharedRun(t, results))
 		assert.Equal(t, int32(1), r.attempts.Load())
 		awaitRunning(t, results[0].result.Run)
 		assert.Equal(t, 1, r.daemon.count(false), "one load reaches the daemon")
@@ -1196,11 +1187,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 		b.open()
 		results := collect(t, outs)
-		for _, o := range results {
-			require.NoError(t, o.err)
-			require.NotNil(t, o.result.Run)
-			assert.Equal(t, results[0].result.Run.ID, o.result.Run.ID)
-		}
+		requireSharedRun(t, results)
 		replacement := results[0].result.Run
 		assert.NotEqual(t, old.ID, replacement.ID)
 		awaitRunning(t, replacement)

@@ -114,28 +114,12 @@ func Decide(w Want, n Node) Decision {
 	}
 	smoke := w.Origin == OriginInstall
 	replace := ""
-	if run := n.Existing; run != nil {
-		switch {
-		case n.Joined && run.Status.IsTerminal():
-			return refuse(run.Failure)
-		case w.Unload && (run.Status == instance.StatusStopping || run.Provider != w.Provider):
-			return Decision{Act: ActReady} // no run of this want to end: the provider answers for itself
-		case run.Status == instance.StatusStopping:
-			// Drain may finish between retries; use the request-slot backoff.
-			return refuse(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
-		case smoke && (!run.Status.IsTerminal() || run.Unconfirmed):
-			return refuse(ErrInstancesRunning)
-		case n.Joined && w.Force && run.Provider == w.Provider && run.Runtime == w.Runtime && run.Plan == w.Plan:
-			return Decision{Act: ActReuse, Run: run.ID} // the flight did what Force asks; a second replacement would undo it
-		case (w.Force && !n.Joined) || run.Status.IsTerminal():
-			replace = run.ID
-		case run.Provider != w.Provider:
-			return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Key.Model, run.Provider, w.Provider))
-		case run.Runtime != w.Runtime || run.Plan != w.Plan:
-			return refuse(ErrInstancesRunning)
-		default:
-			return Decision{Act: ActReuse, Run: run.ID}
+	if n.Existing != nil {
+		d := decideExisting(w, n, smoke)
+		if d.Act != actUnset {
+			return d
 		}
+		replace = d.Replace
 	}
 	switch {
 	case w.Unload: // nothing to end: the provider answers for itself
@@ -152,6 +136,33 @@ func Decide(w Want, n Node) Decision {
 		return Decision{Act: ActQueue, Run: n.Blocker.ID, Replace: replace}
 	}
 	return Decision{Act: ActQueue, Replace: replace}
+}
+
+// decideExisting holds the rules for a run already on the key. An unset Act
+// leaves the decision to Decide, starting after stopping Replace if set.
+func decideExisting(w Want, n Node, smoke bool) Decision {
+	run := n.Existing
+	switch {
+	case n.Joined && run.Status.IsTerminal():
+		return refuse(run.Failure)
+	case w.Unload && (run.Status == instance.StatusStopping || run.Provider != w.Provider):
+		return Decision{Act: ActReady} // no run of this want to end: the provider answers for itself
+	case run.Status == instance.StatusStopping:
+		// Drain may finish between retries; use the request-slot backoff.
+		return refuse(&instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter})
+	case smoke && (!run.Status.IsTerminal() || run.Unconfirmed):
+		return refuse(ErrInstancesRunning)
+	case n.Joined && w.Force && run.Provider == w.Provider && run.Runtime == w.Runtime && run.Plan == w.Plan:
+		return Decision{Act: ActReuse, Run: run.ID} // the flight did what Force asks; a second replacement would undo it
+	case (w.Force && !n.Joined) || run.Status.IsTerminal():
+		return Decision{Replace: run.ID}
+	case run.Provider != w.Provider:
+		return refuse(fmt.Errorf("%w: %s is held by provider %s; requested %s", ErrRunHeldByOtherProvider, w.Key.Model, run.Provider, w.Provider))
+	case run.Runtime != w.Runtime || run.Plan != w.Plan:
+		return refuse(ErrInstancesRunning)
+	default:
+		return Decision{Act: ActReuse, Run: run.ID}
+	}
 }
 
 type evictionCandidate struct {

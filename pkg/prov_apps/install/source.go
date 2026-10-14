@@ -100,27 +100,28 @@ func ReadSource(ctx context.Context, archive, candidate, directory string, sourc
 		if root == nil || relative == "" {
 			continue
 		}
-		target := path.Join(directory, relative)
-		dir := path.Dir(target)
-		if h.Typeflag == tar.TypeDir {
-			dir = target
-		}
-		if err := root.MkdirAll(dir, 0700); err != nil {
-			return nil, err
-		}
-		if h.Typeflag == tar.TypeDir {
-			continue
-		}
-		out, err := root.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600|os.FileMode(h.Mode&0100))
-		if err != nil {
-			return nil, err
-		}
-		_, copyErr := io.CopyN(out, body, h.Size)
-		if err := errors.Join(copyErr, out.Close()); err != nil {
+		if err := writeSourceEntry(root, path.Join(directory, relative), h, body); err != nil {
 			return nil, err
 		}
 	}
 	return parseSourceRequirements(data)
+}
+
+// writeSourceEntry creates one archive member under root; files are owner-only
+// and keep only the owner execute bit.
+func writeSourceEntry(root *os.Root, target string, h *tar.Header, body io.Reader) error {
+	if h.Typeflag == tar.TypeDir {
+		return root.MkdirAll(target, 0700)
+	}
+	if err := root.MkdirAll(path.Dir(target), 0700); err != nil {
+		return err
+	}
+	out, err := root.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600|os.FileMode(h.Mode&0100))
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.CopyN(out, body, h.Size)
+	return errors.Join(copyErr, out.Close())
 }
 
 func sourceEntryPath(h *tar.Header, top string, count int, remaining int64) (string, string, bool) {

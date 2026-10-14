@@ -98,22 +98,7 @@ const maxMemoryDevices = 64
 // after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
 func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
 	if budget.Kind == schema.MemoryReserveMiB {
-		reserved, err := PrepareMemoryBudget(budget, parameters, environment, devices)
-		if err != nil {
-			return err
-		}
-		for _, device := range devices {
-			if required, selected := reserved[device.UUID]; selected {
-				fit := memoryFitError(budget.Parameter, device, required, owners)
-				if required > fit.FreeMiB {
-					return fit
-				}
-			}
-		}
-		if commitments != nil {
-			maps.Copy(commitments, reserved)
-		}
-		return nil
+		return admitReserved(budget, parameters, environment, devices, owners, commitments)
 	}
 	auto := budget.Kind == schema.MemoryFractionTotal && parameters[budget.Parameter] == "auto"
 	var fraction float64
@@ -169,6 +154,27 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	}
 	if auto {
 		parameters[budget.Parameter] = strconv.FormatFloat(fraction, 'f', 4, 64)
+	}
+	return nil
+}
+
+// admitReserved admits a reserve_mib budget when every selected device has
+// its reservation free, and records the reservation in commitments.
+func admitReserved(budget schema.MemoryBudget, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
+	reserved, err := PrepareMemoryBudget(budget, parameters, environment, devices)
+	if err != nil {
+		return err
+	}
+	for _, device := range devices {
+		if required, selected := reserved[device.UUID]; selected {
+			fit := memoryFitError(budget.Parameter, device, required, owners)
+			if required > fit.FreeMiB {
+				return fit
+			}
+		}
+	}
+	if commitments != nil {
+		maps.Copy(commitments, reserved)
 	}
 	return nil
 }
