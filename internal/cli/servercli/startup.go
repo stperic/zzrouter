@@ -160,20 +160,8 @@ func parseNodePort(endpoint string, defaultPort int) (string, int) {
 // ctx), then stops subsystems. We always call it, even on the self-exit
 // path, so a server that exits on its own (e.g. listener error) still
 // flushes spend and tears down subsystems instead of leaking goroutines.
-func runServe(hostCfg *pkgConfig.NodeConfig) error {
+func runServe(hostCfg *pkgConfig.NodeConfig, guard *updateGuard) error {
 	utils.LogInfof("Starting zzRouter server v%s...", version.Current.String())
-
-	// Count this boot against any update awaiting proof, before building
-	// anything that could fail. When the new binary has used up its
-	// attempts the previous one is restored here, and exiting hands the
-	// process back to the supervisor to start it.
-	// ExhaustedAttempts rolls back and reports whether the process has to
-	// exit for the restored binary to run; it declines to exit when
-	// nothing would start the node again.
-	guard := newUpdateGuard(hostCfg)
-	if guard.ExhaustedAttempts() {
-		return errRestartForUpdate
-	}
 
 	srv, err := server.NewServerWithOptions(hostCfg)
 	if err != nil {
@@ -322,6 +310,20 @@ func runServeStartCmd(hostCfg *pkgConfig.NodeConfig, cmd *cobra.Command, _ []str
 	if err != nil {
 		return fmt.Errorf("failed to prepare server config: %w", err)
 	}
+	return startPreparedNode(cfg, cmd, detach)
+}
+
+func startPreparedNode(cfg *pkgConfig.NodeConfig, cmd *cobra.Command, detach bool) error {
+	var guard *updateGuard
+	if !detach {
+		// Count this boot before provider preparation can refuse it. When
+		// attempts are exhausted, restore before any template writes and
+		// exit only if the supervisor will start the restored binary.
+		guard = newUpdateGuard(cfg)
+		if guard.ExhaustedAttempts() {
+			return errRestartForUpdate
+		}
+	}
 
 	// Auto-seed the embedded provider tree before loading. `InstallDefaults`
 	// is copy-if-missing per file, so on nodes that have already been
@@ -426,5 +428,5 @@ func runServeStartCmd(hostCfg *pkgConfig.NodeConfig, cmd *cobra.Command, _ []str
 	// (mlx, openrouter, huggingface, ollama-cloud) from the runtime.
 	// The flag still exists as inert for backward compat; the
 	// providers/ tree is always consulted now.
-	return runServe(cfg)
+	return runServe(cfg, guard)
 }
