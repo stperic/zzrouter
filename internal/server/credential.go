@@ -15,6 +15,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
+	"github.com/stperic/zzrouter/pkg/observability"
 )
 
 const (
@@ -54,10 +56,11 @@ var callerKeyHeaders = []string{"X-API-Key", authorizationHeader}
 // upstreamHeaders returns the headers a request forwarded to up carries:
 // the caller's, less what describes the caller's connection, less what up
 // must not see, plus up's own credential.
-func upstreamHeaders(src http.Header, up backend.Upstream) http.Header {
+func upstreamHeaders(ctx context.Context, src http.Header, up backend.Upstream) http.Header {
 	h := src.Clone()
 	wire.StripConnectionHeaders(h)
 	scrubForUpstream(h, up)
+	observability.InjectTraceContext(ctx, h)
 	return h
 }
 

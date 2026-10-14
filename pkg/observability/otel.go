@@ -11,8 +11,6 @@ import (
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
@@ -21,8 +19,6 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Provider holds the OpenTelemetry providers and shutdown functions.
@@ -58,83 +54,58 @@ func NewProvider(ctx context.Context, cfg *Config, version string) (*Provider, e
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewSchemaless(
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceVersion(version),
-			semconv.ServiceInstanceID(hostname),
+			semconv.ServiceName(BoundMetadata(cfg.ServiceName)),
+			semconv.ServiceVersion(BoundMetadata(version)),
+			semconv.ServiceInstanceID(BoundMetadata(hostname)),
 		),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
 
-	// Initialize tracing
+	// Construct metrics first so SDK instruments use the owned meter provider.
+	previousMeter := otel.GetMeterProvider()
+	if cfg.IsMetricsEnabled() {
+		if err := p.initMetrics(ctx, cfg, res); err != nil {
+			return nil, fmt.Errorf("failed to initialize metrics: %w", err)
+		}
+	}
 	if cfg.IsTracingEnabled() {
 		if err := p.initTracing(ctx, cfg, res); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exportTimeout)
+			defer cancel()
+			_ = p.Stop(cleanupCtx)
+			otel.SetMeterProvider(previousMeter)
 			return nil, fmt.Errorf("failed to initialize tracing: %w", err)
 		}
 	}
 
-	// Initialize metrics
-	if cfg.IsMetricsEnabled() {
-		if err := p.initMetrics(ctx, cfg, res); err != nil {
-			// Clean up tracing if metrics init fails
-			if p.tracerProvider != nil {
-				_ = p.tracerProvider.Shutdown(ctx)
-			}
-			return nil, fmt.Errorf("failed to initialize metrics: %w", err)
-		}
-	}
-
 	// Set up W3C Trace Context propagation
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	return p, nil
 }
 
 // initTracing sets up the tracing provider with OTLP exporter.
 func (p *Provider) initTracing(ctx context.Context, cfg *Config, res *resource.Resource) error {
-	// Configure sampler based on sample rate
-	var sampler sdktrace.Sampler
-	switch cfg.Tracing.SampleRate {
-	case 1.0:
-		sampler = sdktrace.AlwaysSample()
-	case 0.0:
-		sampler = sdktrace.NeverSample()
-	default:
-		sampler = sdktrace.TraceIDRatioBased(cfg.Tracing.SampleRate)
-	}
-
-	// Build tracer provider options
 	tpOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.Tracing.SampleRate))),
+		sdktrace.WithRawSpanLimits(sdktrace.SpanLimits{
+			AttributeValueLengthLimit: metadataLimit, AttributeCountLimit: 64,
+			EventCountLimit: 16, LinkCountLimit: 16,
+			AttributePerEventCountLimit: 8, AttributePerLinkCountLimit: 8,
+		}),
 	}
-
-	// Only create OTLP exporter if endpoint is configured
-	// Without an endpoint, we still have a functional TracerProvider for local tracing
 	if cfg.OTLP.Endpoint != "" {
-		var opts []otlptracegrpc.Option
-		opts = append(opts, otlptracegrpc.WithEndpoint(cfg.OTLP.Endpoint))
-
-		if cfg.OTLP.Insecure {
-			opts = append(opts, otlptracegrpc.WithDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())))
-			opts = append(opts, otlptracegrpc.WithInsecure())
-		}
-
-		// Add custom headers if configured
-		if len(cfg.OTLP.Headers) > 0 {
-			opts = append(opts, otlptracegrpc.WithHeaders(cfg.OTLP.Headers))
-		}
-
-		exporter, err := otlptracegrpc.New(ctx, opts...)
+		exporter, err := cfg.OTLP.traceExporter(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to create OTLP trace exporter: %w", err)
 		}
-
-		tpOpts = append(tpOpts, sdktrace.WithBatcher(exporter))
+		tpOpts = append(tpOpts, sdktrace.WithBatcher(exporter,
+			sdktrace.WithMaxQueueSize(spanQueueSize), sdktrace.WithMaxExportBatchSize(spanBatchSize),
+			sdktrace.WithBatchTimeout(spanBatchInterval), sdktrace.WithExportTimeout(exportTimeout),
+		))
 	}
 
 	// Create tracer provider
@@ -150,28 +121,25 @@ func (p *Provider) initTracing(ctx context.Context, cfg *Config, res *resource.R
 func (p *Provider) initMetrics(ctx context.Context, cfg *Config, res *resource.Resource) error {
 	var readers []metric.Reader
 
-	// OTLP metric exporter (if endpoint configured)
-	if cfg.OTLP.Endpoint != "" {
-		var opts []otlpmetricgrpc.Option
-		opts = append(opts, otlpmetricgrpc.WithEndpoint(cfg.OTLP.Endpoint))
-
-		if cfg.OTLP.Insecure {
-			opts = append(opts, otlpmetricgrpc.WithDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())))
-			opts = append(opts, otlpmetricgrpc.WithInsecure())
-		}
-
-		if len(cfg.OTLP.Headers) > 0 {
-			opts = append(opts, otlpmetricgrpc.WithHeaders(cfg.OTLP.Headers))
-		}
-
-		exporter, err := otlpmetricgrpc.New(ctx, opts...)
+	if cfg.OTLP.Endpoint != "" && cfg.Metrics.IsOTLPEnabled() {
+		exporter, err := cfg.OTLP.metricExporter(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to create OTLP metric exporter: %w", err)
 		}
-
 		interval := time.Duration(cfg.Metrics.ExportInterval) * time.Second
-		readers = append(readers, metric.NewPeriodicReader(exporter, metric.WithInterval(interval)))
+		readers = append(readers, metric.NewPeriodicReader(exporter, metric.WithInterval(interval), metric.WithTimeout(exportTimeout)))
 	}
+	// A later constructor failure must not strand an already-owned reader.
+	initialized := false
+	defer func() {
+		if !initialized {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), exportTimeout)
+			defer cancel()
+			for _, reader := range readers {
+				_ = reader.Shutdown(cleanupCtx)
+			}
+		}
+	}()
 
 	// Prometheus exporter — always build it when metrics are enabled so the
 	// main gin server can serve /metrics. The PrometheusPort config field is
@@ -202,6 +170,7 @@ func (p *Provider) initMetrics(ctx context.Context, cfg *Config, res *resource.R
 	}
 
 	p.meterProvider = metric.NewMeterProvider(opts...)
+	initialized = true
 
 	// Set global meter provider
 	otel.SetMeterProvider(p.meterProvider)

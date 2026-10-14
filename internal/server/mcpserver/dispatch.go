@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/observability"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -91,6 +92,7 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	}
 	req = req.WithContext(context.WithValue(inner, dispatchKey, true)) //nolint:contextcheck // Decision 2 permits only the accounting marker in the value-free context.
 	req.RemoteAddr = d.outer.remoteAddr
+	observability.InjectTraceContext(d.outer.ctx, req.Header) //nolint:contextcheck // Serialize only the HTTP trace parent into the value-free request.
 	for _, name := range append(append([]string(nil), d.cfg.KeyHeaders...), "X-Forwarded-For", "X-Real-IP") {
 		for _, value := range d.outer.header.Values(name) {
 			req.Header.Add(name, value)

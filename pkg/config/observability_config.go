@@ -1,5 +1,7 @@
 package config
 
+import "github.com/stperic/zzrouter/pkg/observability"
+
 // ObservabilityConfig holds OpenTelemetry observability configuration.
 type ObservabilityConfig struct {
 	// Enabled controls whether observability is active
@@ -20,8 +22,11 @@ type ObservabilityConfig struct {
 
 // OTLPConfig configures the OTLP exporter endpoint.
 type OTLPConfig struct {
-	// Endpoint is the OTLP collector endpoint (e.g., "localhost:4317")
+	// Endpoint is a gRPC host:port or an absolute HTTP base URL.
 	Endpoint string `mapstructure:"endpoint" yaml:"endpoint,omitempty"`
+
+	// Protocol selects grpc (the default) or http/protobuf.
+	Protocol string `yaml:"protocol,omitempty" mapstructure:"protocol"`
 
 	// Insecure disables TLS for the OTLP connection
 	Insecure bool `mapstructure:"insecure" yaml:"insecure,omitempty"`
@@ -45,6 +50,9 @@ type MetricsConfig struct {
 	// Enabled controls whether metrics are active
 	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
+	// OTLPExport controls remote metrics push; omitted means enabled.
+	OTLPExport *bool `yaml:"otlp_export,omitempty" mapstructure:"otlp_export"`
+
 	// PrometheusPort is the port for the Prometheus /metrics endpoint
 	// 0 = disabled (metrics exported via OTLP only)
 	PrometheusPort int `mapstructure:"prometheus_port" yaml:"prometheus_port,omitempty"`
@@ -54,54 +62,13 @@ type MetricsConfig struct {
 	ExportInterval int `mapstructure:"export_interval" yaml:"export_interval,omitempty"`
 }
 
-// ToObservabilityConfig converts ObservabilityConfig to the observability package's Config type.
-// This avoids import cycles between config and observability packages.
-func (c *ObservabilityConfig) ToObservabilityConfig() any {
-	return struct {
-		Enabled     bool
-		ServiceName string
-		OTLP        struct {
-			Endpoint string
-			Insecure bool
-			Headers  map[string]string
-		}
-		Tracing struct {
-			Enabled    bool
-			SampleRate float64
-		}
-		Metrics struct {
-			Enabled        bool
-			PrometheusPort int
-			ExportInterval int
-		}
-	}{
-		Enabled:     c.Enabled,
-		ServiceName: c.ServiceName,
-		OTLP: struct {
-			Endpoint string
-			Insecure bool
-			Headers  map[string]string
-		}{
-			Endpoint: c.OTLP.Endpoint,
-			Insecure: c.OTLP.Insecure,
-			Headers:  c.OTLP.Headers,
-		},
-		Tracing: struct {
-			Enabled    bool
-			SampleRate float64
-		}{
-			Enabled:    c.Tracing.Enabled,
-			SampleRate: c.Tracing.SampleRate,
-		},
-		Metrics: struct {
-			Enabled        bool
-			PrometheusPort int
-			ExportInterval int
-		}{
-			Enabled:        c.Metrics.Enabled,
-			PrometheusPort: c.Metrics.PrometheusPort,
-			ExportInterval: c.Metrics.ExportInterval,
-		},
+// ToObservabilityConfig converts node settings into the provider configuration.
+func (c *ObservabilityConfig) ToObservabilityConfig() *observability.Config {
+	return &observability.Config{
+		Enabled: c.Enabled, ServiceName: c.ServiceName,
+		OTLP:    observability.OTLPConfig{Endpoint: c.OTLP.Endpoint, Protocol: c.OTLP.Protocol, Insecure: c.OTLP.Insecure, Headers: c.OTLP.Headers},
+		Tracing: observability.TracingConfig{Enabled: c.Tracing.Enabled, SampleRate: c.Tracing.SampleRate},
+		Metrics: observability.MetricsConfig{Enabled: c.Metrics.Enabled, OTLPExport: c.Metrics.OTLPExport, PrometheusPort: c.Metrics.PrometheusPort, ExportInterval: c.Metrics.ExportInterval},
 	}
 }
 

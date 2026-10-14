@@ -379,19 +379,27 @@ func (p *Proxy) tryOnce(
 	rctx routeMetaCtx,
 	retry, maxRetries int,
 ) attemptOutcome {
+	original := c.Request
+	ctx, attempt := llm.StartAttempt(original.Context(), dep.App, dep.Model)
+	defer attempt.End()
+	defer func() { c.Request = original }()
+	c.Request = original.WithContext(ctx)
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
 	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
 	if err != nil {
+		attempt.SetError("unavailable", err)
 		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
 		outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
 		return outcome
 	}
 
+	attempt.SetTarget(targetURL)
 	var lease *instance.Lease
 	if inst != nil {
 		lease, err = p.deps.LeaseInstance(c.Request, inst)
 		if err != nil {
+			attempt.SetError("unavailable", err)
 			outcome.attempt.Err, outcome.attempt.Duration = err, time.Since(start)
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				outcome.attempt.Outcome, outcome.disposition = pfallback.OutcomeNonRetriable, attemptClientGone
@@ -428,8 +436,11 @@ func (p *Proxy) tryOnce(
 			err = &pfallback.RequestError{Err: err, WroteRequest: true}
 			outcome.attempt.StatusCode = http.StatusGatewayTimeout
 		}
+		attempt.SetError("transport_failure", err)
 		outcome.attempt.Err = err
 	} else {
+		defer func() { _ = resp.Body.Close() }()
+		attempt.SetStatus(resp.StatusCode)
 		if wrap != nil {
 			resp.Body = wrap(resp.Body)
 		}
@@ -451,7 +462,6 @@ func (p *Proxy) tryOnce(
 	if decision != pfallback.StopRetry {
 		if resp != nil {
 			p.trackRateLimitHeaders(resp, dep)
-			_ = resp.Body.Close()
 		}
 		outcome.disposition, outcome.retry, outcome.backoff = attemptRetry, decision, backoff
 		return outcome
@@ -484,8 +494,8 @@ func (p *Proxy) tryOnce(
 		p.trackRateLimitHeaders(resp, dep)
 		result = p.commitSuccess(c, dep, resp, recorder, resolved, rctx, outcome.attempt)
 	}
-	_ = resp.Body.Close()
 	cancel()
+	result.ObserveAttempt(attempt)
 	p.deps.FinishRelay(c.Writer, c.Request, resp, result)
 	return outcome
 }

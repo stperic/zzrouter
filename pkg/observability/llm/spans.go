@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -53,24 +54,31 @@ func StartModelLoadSpan(ctx context.Context, model, provider string) (context.Co
 	)
 }
 
-// SetSpanError sets the span status to error with the given error.
+// SetSpanError records a safe category without exporting raw error payloads.
 func SetSpanError(span trace.Span, err error) {
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+	if err == nil {
+		return
 	}
+	kind := "operation_failed"
+	if errors.Is(err, context.DeadlineExceeded) {
+		kind = "timeout"
+	} else if errors.Is(err, context.Canceled) {
+		kind = "client_cancellation"
+	}
+	setSpanFailure(span, kind)
 }
 
-// SetSpanErrorWithType is SetSpanError plus an OTel `error.type` closed-enum
-// attribute. Use this on pre-recorder error paths (request-bind failures,
-// schema validation failures) where no InferenceRecorder ever runs to stamp
-// the same attribute. errType comes from a closed vocabulary — see
-// pkg/protocol/openai's ErrorCode for the canonical names.
+// SetSpanErrorWithType adds a caller-owned closed error code to a safe failure.
 func SetSpanErrorWithType(span trace.Span, errType string, err error) {
+	SetSpanError(span, err)
 	if errType != "" {
 		span.SetAttributes(ErrorType(errType))
 	}
-	SetSpanError(span, err)
+}
+
+func setSpanFailure(span trace.Span, kind string) {
+	span.SetAttributes(ErrorType(kind))
+	span.SetStatus(codes.Error, "operation failed")
 }
 
 // SetSpanOK sets the span status to OK.

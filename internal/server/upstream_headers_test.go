@@ -80,7 +80,7 @@ func TestUpstreamHeaders(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			src := callerRequestHeaders()
-			got := upstreamHeaders(src, tc.up)
+			got := upstreamHeaders(t.Context(), src, tc.up)
 
 			for _, name := range nodeAPIKeyHeaders {
 				assert.Equal(t, tc.keys[name], got.Get(name), "key header %s", name)

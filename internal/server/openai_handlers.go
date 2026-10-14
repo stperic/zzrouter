@@ -861,6 +861,12 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 	utils.LogDebugf("🔀 Proxying to remote (mTLS): %s (provider=%s)", targetURL, provider)
 
 	model, _ := c.Request.Context().Value(CtxKeyModel).(string)
+	ctx, attempt := llm.StartAttempt(c.Request.Context(), provider, model)
+	defer attempt.End()
+	original := c.Request
+	defer func() { c.Request = original }()
+	c.Request = original.WithContext(ctx)
+	attempt.SetTarget(targetURL)
 	recorder := requestRecorder(c.Request.Context(), model, provider)
 	recorder.SetUpstreamRequestData(body)
 	var serverHost string
@@ -882,11 +888,12 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 
 	proxyReq, err := http.NewRequestWithContext(streamCtx, c.Request.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
+		attempt.SetError("request_build_failed", err)
 		writeError(c.Writer, c.Request, httperr.Error{Status: http.StatusInternalServerError, Type: "server_error", Message: "Failed to create proxy request", Code: "proxy_request_build_failed"})
 		return
 	}
 
-	proxyReq.Header = upstreamHeaders(c.Request.Header, backend.Cluster())
+	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, backend.Cluster())
 	if proxyReq.Header.Get("Content-Type") == "" {
 		proxyReq.Header.Set("Content-Type", "application/json")
 	}
@@ -896,11 +903,13 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 
 	resp, err := client.Do(proxyReq)
 	if err != nil {
+		attempt.SetError("transport_failure", err)
 		slog.Error("Proxy error", "node", host, "error", err)
 		writeError(c.Writer, c.Request, httperr.Error{Status: http.StatusBadGateway, Type: "api_error", Message: "Failed to reach remote server", Code: "backend_unreachable"})
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	attempt.SetStatus(resp.StatusCode)
 
 	// A coordinator that resolved the model to a node but not to a provider
 	// (an explicit @node whose catalog entry is not current) learns it from
@@ -944,8 +953,11 @@ func (s *Server) proxyToWorkerURL(c *gin.Context, baseURL, host, provider string
 
 	mergeUpstreamHeaders(c.Writer.Header(), resp.Header)
 	if isStreaming {
-		streamWithUsageInject(c.Request, c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+		result := streamWithUsageInject(c.Request, c.Writer, resp, s.inference.normalizers, provider, meta, recorder)
+		result.ObserveAttempt(attempt)
 		return
 	}
-	failBrokenBody(c.Writer, c.Request, wire.RelayBuffered(c.Writer, resp, normalizedBody(s.inference.normalizers, provider, meta, recorder), recorder))
+	result := wire.RelayBuffered(c.Writer, resp, normalizedBody(s.inference.normalizers, provider, meta, recorder), recorder)
+	result.ObserveAttempt(attempt)
+	failBrokenBody(c.Writer, c.Request, result)
 }

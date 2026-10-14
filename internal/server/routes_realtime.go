@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/protocol/realtime"
 )
 
@@ -77,7 +78,10 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 		return
 	}
 
-	upstreamHeader := upstreamHeaders(c.Request.Header, resolved.Upstream)
+	ctx, attempt := llm.StartAttempt(c.Request.Context(), backendKey, "")
+	defer attempt.End()
+	attempt.SetTarget(upstreamURL)
+	upstreamHeader := upstreamHeaders(ctx, c.Request.Header, resolved.Upstream)
 	realtime.StripHandshakeHeaders(upstreamHeader)
 
 	dialer := &websocket.Dialer{
@@ -85,12 +89,17 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 		Subprotocols:     websocket.Subprotocols(c.Request),
 	}
 
-	upstream, upstreamResp, err := dialer.DialContext(c.Request.Context(), upstreamURL, upstreamHeader) //nolint:bodyclose // error path: writeRealtimeDialError closes body; success path: upgraded conn has no body
+	upstream, upstreamResp, err := dialer.DialContext(ctx, upstreamURL, upstreamHeader) //nolint:bodyclose // writeRealtimeDialError closes failed handshake bodies; upgraded connections own success cleanup.
 	if err != nil {
+		attempt.SetError("transport_failure", err)
+		if upstreamResp != nil {
+			attempt.SetStatus(upstreamResp.StatusCode)
+		}
 		s.writeRealtimeDialError(c, err, upstreamResp)
 		return
 	}
 	defer func() { _ = upstream.Close() }()
+	attempt.SetStatus(http.StatusSwitchingProtocols)
 
 	// Echo the subprotocol the upstream accepted so the client sees
 	// the same handshake it would have gotten talking to the backend
@@ -106,6 +115,7 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 
 	clientConn, err := realtimeUpgrader.Upgrade(c.Writer, c.Request, upgradeResponseHeader)
 	if err != nil {
+		attempt.SetError("client_upgrade_failed", err)
 		// Upgrade already wrote an error response on its own. Nothing
 		// more to do here.
 		return

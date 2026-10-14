@@ -13,7 +13,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/observability"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 const testKey = "mx-zzr-mcp-caller-Kp9vB4xRmT2LqJfNdY"
@@ -344,4 +348,36 @@ func TestJobResultDropsLocalURLAndKeepsRunID(t *testing.T) {
 			require.Equal(t, map[string]any{"run_id": "instance", "port": float64(8080), "phase": "running"}, result["result"])
 		})
 	}
+}
+
+func TestDispatchTraceContextWithoutOuterValues(t *testing.T) {
+	previous := otel.GetTracerProvider()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(previous); require.NoError(t, tp.Shutdown(context.Background())) })
+	type marker struct{}
+	headers := http.Header{"Baggage": {"gen_ai.agent.id=agent,secret=private-secret"}}
+	outer := observability.ExtractTraceContext(context.WithValue(t.Context(), marker{}, true), headers)
+	outer, span := tp.Tracer("test").Start(outer, "outer MCP")
+	defer span.End()
+	engine := gin.New()
+	engine.Use(observability.TracingMiddleware("inner"))
+	engine.GET("/test", func(c *gin.Context) {
+		require.Nil(t, c.Request.Context().Value(marker{}))
+		require.Equal(t, "198.51.100.8:47821", c.Request.RemoteAddr)
+		require.NotContains(t, c.GetHeader("baggage"), "private-secret")
+		c.JSON(200, gin.H{})
+	})
+	d := testDispatcher(nil)
+	d.cfg.Engine = engine
+	d.outer.ctx = outer
+	d.outer.header.Set("Traceparent", "stale")
+	d.outer.header.Set("Baggage", "secret=private-secret")
+	_, toolSpan := tp.Tracer("test").Start(t.Context(), "tool unrelated")
+	defer toolSpan.End()
+	var out any
+	require.NoError(t, d.call(t.Context(), request{method: "GET", path: routePrefix("/test").path()}, &out))
+	require.Len(t, sr.Ended(), 1)
+	require.Equal(t, span.SpanContext().SpanID(), sr.Ended()[0].Parent().SpanID())
 }

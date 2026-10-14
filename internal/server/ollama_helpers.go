@@ -131,7 +131,7 @@ func (s *Server) proxyToOllamaProvider(c *gin.Context, daemon *backend.Resolved,
 	}
 
 	// Copy headers
-	proxyReq.Header = upstreamHeaders(c.Request.Header, daemon.Upstream)
+	proxyReq.Header = upstreamHeaders(c.Request.Context(), c.Request.Header, daemon.Upstream)
 
 	// Use streaming client (no timeout) for streaming operations
 	resp, err := s.httpStreamingClient.Do(proxyReq)
