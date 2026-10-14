@@ -55,9 +55,8 @@ type Scheduler struct {
 	// are torn down).
 	wg sync.WaitGroup
 
-	// delegate is set when this node cannot install its own updates and
-	// must ask the privileged updater instead. Nil on every install
-	// where the node owns its own binaries.
+	// Managed node/API/CLI schedulers delegate regardless of UID; the
+	// privileged updater with an explicit workspace installs directly.
 	delegate      *Handoff
 	operationPath string
 	operationMu   sync.Mutex
@@ -124,6 +123,8 @@ func NewScheduler(cfg *config.UpdateConfig, clk clock.Clock, opts ...SchedulerOp
 
 // NewSchedulerIn builds a scheduler whose downloads, backups, history
 // and pending-confirm record live under workDir.
+// An explicit workDir selects direct installation for the privileged updater;
+// ordinary node/API/CLI callers use NewScheduler and delegate managed installs.
 //
 // The privileged updater must pass one, and it must be root-owned. Left
 // empty the working directory is the node's config directory, which on
@@ -205,15 +206,13 @@ func NewSchedulerIn(workDir string, cfg *config.UpdateConfig, clk clock.Clock, o
 	// reporting it as Blocked would have an operator "fix" the one
 	// property holding the privilege split up. Anything else really is
 	// stuck and says so.
-	if err := s.installer.CheckWritable(); err != nil {
-		if s.installer.IsManaged() {
-			s.delegate = DefaultHandoff()
-			slog.Info("updates on this node are performed by the privileged updater",
-				"request_via", s.delegate.RequestPath())
-		} else {
-			s.status.Blocked = err.Error()
-			slog.Warn("this node cannot install updates", "err", err)
-		}
+	if workDir == "" && s.installer.IsManaged() {
+		s.delegate = DefaultHandoff()
+		slog.Info("updates on this node are performed by the privileged updater",
+			"request_via", s.delegate.RequestPath())
+	} else if err := s.installer.CheckWritable(); err != nil {
+		s.status.Blocked = err.Error()
+		slog.Warn("this node cannot install updates", "err", err)
 	}
 
 	return s
