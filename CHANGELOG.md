@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-14)
 
 ### Highlights
 
@@ -186,9 +186,9 @@
 
 - Rollback to a release containing the ownership-receipt reader repairs managed
   provider keys before strict loading and archives newer-only shipped providers.
-  Supported operator edits remain. The compatibility floor is currently
-  Unreleased; v0.1.0 and other pre-reader builds require
-  [manual configuration recovery](docs/install.md#manual-recovery-for-targets-before-r).
+  Supported operator edits remain. The compatibility floor is v0.2.0;
+  v0.1.0 and other pre-reader builds require
+  [manual configuration recovery](docs/install.md#manual-recovery-for-targets-before-v020).
 - Provider preparation failures count as self-update boot attempts and refuse
   startup, including repair I/O failures whose remaining config still decodes.
 - Provider sync checks fresh worker protocol evidence over mTLS before each
