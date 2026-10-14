@@ -37,6 +37,7 @@ type RecipeSnapshot struct {
 	Policy            *RuntimePolicy          `json:"-"`
 	Requirements      *config.AppRequirements `json:"-"`
 	PinnedVersion     string                  `json:"-"`
+	WorkingDir        string                  `json:"-"`
 }
 
 // RecipeResolver reads current config and authority on the executing node.
@@ -69,6 +70,7 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 	out := RecipeSnapshot{ResolvedInstall: resolved, Provider: sc.Name, Runtime: runtime, Node: node, Requirements: sc.Requirements}
 	if resolved.Recipe.Source != nil {
 		out.PinnedVersion = resolved.Recipe.Source.Version
+		out.WorkingDir = sc.RuntimeExecution(runtime).WorkingDir
 	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
 	}
@@ -162,15 +164,7 @@ func releaseRecipeValue(recipe config.InstallRecipe) config.InstallRecipe {
 }
 
 func validateServingImport(sc config.ServiceConfig, runtime, module string) error {
-	var execution *config.ExecutionConfig
-	if runtime == sc.Name && sc.Runtime != nil {
-		execution = &sc.Runtime.Execution
-	}
-	for _, feature := range sc.Features {
-		if feature.Runtime == runtime {
-			execution = feature.Execution
-		}
-	}
+	execution := sc.RuntimeExecution(runtime)
 	if execution == nil || execution.Type != "python" {
 		return nil
 	}

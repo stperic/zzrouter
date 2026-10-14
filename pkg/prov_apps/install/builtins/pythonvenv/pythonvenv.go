@@ -185,6 +185,9 @@ func (i *Installer) PythonPath() string { return fsroot.ProviderVenvPython(i.cfg
 // completed AND currently healthy", which breaks callers (dispatcher,
 // uninstall gating) that rely on the completion semantics.
 func (i *Installer) IsInstalled() bool {
+	if version, source, err := i.sourceCompletion(); source {
+		return err == nil && version != ""
+	}
 	return fsroot.ReadInstalledVersion(i.cfg.Name) != ""
 }
 
@@ -342,6 +345,15 @@ func (i *Installer) InstalledVersion() (string, error) {
 // selection per install flow. Re-probing is wasteful and (if PATH mutates
 // mid-flow) non-deterministic.
 func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements) *preflight.Report {
+	var requirement *config.PythonRequirement
+	if reqs != nil {
+		requirement = reqs.Python
+	}
+	choice, err := i.ensureInterpreter(ctx, requirement)
+	return i.preflight(ctx, reqs, choice, err)
+}
+
+func (i *Installer) preflight(ctx context.Context, reqs *config.AppRequirements, choice *interpreter.Choice, selectErr error) *preflight.Report {
 	report := &preflight.Report{Provider: i.cfg.Name, AllOK: true}
 	if reqs == nil {
 		reqs = &config.AppRequirements{}
@@ -351,7 +363,6 @@ func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements)
 	report.Results = append(report.Results, preflight.DiskAndPermissions(i.cfg.Name, reqs.DiskSpace)...)
 
 	// Python interpreter selection — stashed on the installer for InstallPlan.
-	choice, selectErr := i.ensureInterpreter(ctx, reqs.Python)
 	report.Results = append(report.Results, interpreterResult(choice, selectErr, reqs.Python))
 	if selectErr == nil {
 		report.Results = append(report.Results, preflight.VenvModule(ctx, choice.Path))

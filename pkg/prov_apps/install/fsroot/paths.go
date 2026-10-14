@@ -126,7 +126,7 @@ func ProviderBinStagingDir(name string) string {
 // activation step: anything left behind there is the debris of a failed
 // activation, not a backup anyone should restore from.
 func ProviderBinPreviousDir(name string) string {
-	return ProviderBinDir(name) + ".previous"
+	return ProviderBinDir(name) + config.SubdirPrevious
 }
 
 // ProviderVenvDir returns the Python venv directory for a provider.
@@ -155,7 +155,7 @@ func ProviderVenvPip(name string) string {
 // ProviderVersionFile returns the path to the version file for a provider.
 // Written at install time, read at startup — avoids shelling out to detect versions.
 func ProviderVersionFile(name string) string {
-	return filepath.Join(ProviderDir(name), "version")
+	return filepath.Join(ProviderDir(name), config.ProviderVersionName)
 }
 
 // ReadInstalledVersion reads the installed version from the version file.
@@ -188,7 +188,7 @@ func ProviderBackupDir(name string) string {
 // This file is written at install time by zzRouter to distinguish "we installed it"
 // from "user installed it independently". Used by IsInstalled() to gate uninstall.
 func ManagedMarkerPath(providerName string) string {
-	return filepath.Join(ProviderDir(providerName), ".managed")
+	return filepath.Join(ProviderDir(providerName), config.ProviderManagedName)
 }
 
 // ProviderManifestPath returns the path to the JSON install manifest for a
@@ -197,7 +197,7 @@ func ManagedMarkerPath(providerName string) string {
 // interpreter, resolved realpath fingerprint, etc.) so a later process
 // can verify drift without re-running the whole selection.
 func ProviderManifestPath(name string) string {
-	return filepath.Join(ProviderDir(name), "install.json")
+	return filepath.Join(ProviderDir(name), config.ProviderManifestName)
 }
 
 // InstallManifest records the decisions made at install time that we need
@@ -278,7 +278,7 @@ func WriteInstallManifest(name string, m *InstallManifest) error {
 	if err != nil {
 		return fmt.Errorf("manifest encode: %w", err)
 	}
-	tmp := path + ".tmp"
+	tmp := filepath.Join(ProviderDir(name), config.ProviderManifestTemp)
 	if err := os.WriteFile(tmp, data, 0640); err != nil {
 		return fmt.Errorf("manifest write: %w", err)
 	}

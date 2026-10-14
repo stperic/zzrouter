@@ -52,27 +52,30 @@ def cuda_tuple(version):
     return (version // 1000, version % 1000 // 10)
 
 
-def cuda_companions():
+def cuda_companions(packages):
     torch = importlib.import_module("torch")
-    importlib.import_module("torchaudio")
-    importlib.import_module("torchvision")
     expected = tuple(map(int, torch.version.cuda.split(".")[:2])) if torch.version.cuda else None
-    audio = cuda_tuple(torch.ops._torchaudio.cuda_version())
-    vision = cuda_tuple(torch.ops.torchvision._cuda_version())
-    actual = f"torch={torch.version.cuda}, torchaudio={audio}, torchvision={vision}"
-    if expected is None or audio != expected or vision != expected:
+    versions = {}
+    for name, binding in (("torchaudio", "_torchaudio"), ("torchvision", "torchvision")):
+        if name in packages:
+            importlib.import_module(name)
+            operator = getattr(torch.ops, binding)
+            query = operator.cuda_version if name == "torchaudio" else operator._cuda_version
+            versions[name] = cuda_tuple(query())
+    actual = f"torch={torch.version.cuda}, companions={versions}"
+    if expected is None or not versions or any(version != expected for version in versions.values()):
         raise CheckFailure("CUDA build mismatch: companion builds must match torch", actual)
     return actual
 
 
-def check(name):
+def check(name, packages=("torch", "torchaudio", "torchvision")):
     if name == "pip_check":
         code, output = command_output([sys.executable, "-I", "-B", "-m", "pip", "check"])
         if code != 0:
             raise CheckFailure(f"pip check exited {code}", output)
         return output
     if name == "cuda_companions":
-        return cuda_companions()
+        return cuda_companions(packages)
     if name == "cuda_available":
         torch = importlib.import_module("torch")
         if not torch.cuda.is_available():
@@ -131,7 +134,7 @@ def run(profile, scratch):
             for target in targets:
                 name = "import:" + target if target else kind
                 try:
-                    actual = importlib.import_module(target).__name__ if target else check(kind)
+                    actual = importlib.import_module(target).__name__ if target else check(kind, profile.get("packages", []))
                     results.append(dict(name=name, passed=True, actual=str(actual)[:LIMIT], reason=""))
                 except BaseException as error:
                     results.append(dict(name=name, passed=False, actual=str(getattr(error, "actual", ""))[:LIMIT], reason=(type(error).__name__ + ": " + str(error))[:LIMIT]))

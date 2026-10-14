@@ -82,6 +82,14 @@ const (
 
 	// SubdirVenv names the Python environment inside a provider install.
 	SubdirVenv = "venv"
+	// Provider install paths are shared by validation, activation and inventory.
+	SubdirCandidate      = ".candidate"
+	SubdirPrevious       = ".previous"
+	SubdirPython         = "python"
+	ProviderVersionName  = "version"
+	ProviderManagedName  = ".managed"
+	ProviderManifestName = "install.json"
+	ProviderManifestTemp = ProviderManifestName + ".tmp"
 )
 
 // Linux FHS-compliant paths (used by service and root modes)

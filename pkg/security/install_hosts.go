@@ -24,6 +24,7 @@ var installHostAllowlist = map[string][]string{
 	// surface, so we don't reach for it.
 	"ollama":   {"github.com"},
 	"llamacpp": {"github.com"},
+	"comfyui":  {"github.com"},
 }
 
 // ValidateInstallHost returns nil when rawURL's scheme is https and its
