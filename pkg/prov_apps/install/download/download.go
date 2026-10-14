@@ -48,6 +48,12 @@ func NewClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: fetchTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("install download exceeded redirect limit")
+			}
+			return security.ValidateDownloadURL(req.URL.String(), AllowedHosts)
+		},
 	}
 }
 
@@ -67,6 +73,7 @@ var fetchTransport http.RoundTripper = &http.Transport{
 // AllowedHosts is the list of hosts from which downloads are permitted.
 var AllowedHosts = []string{
 	"github.com",
+	"codeload.github.com",
 	"objects.githubusercontent.com",
 	"github-releases.githubusercontent.com",
 	"pypi.org",
@@ -80,6 +87,11 @@ type Result struct {
 	Size     int64
 }
 
+// Options bounds a fetch; the zero value preserves unbounded binary downloads.
+type Options struct {
+	MaxSize int64
+}
+
 // FetchForProvider is Fetch plus a per-provider host pin check (defense
 // in depth alongside config-load validation). Installer code that knows
 // which provider it serves should prefer this entrypoint so a poisoned
@@ -87,16 +99,17 @@ type Result struct {
 // network.
 func FetchForProvider(ctx context.Context, provider, rawURL, destDir string,
 	progress func(downloaded, total int64, percent int),
+	options Options,
 ) (*Result, error) {
 	if err := security.ValidateInstallHost(provider, rawURL); err != nil {
 		return nil, err
 	}
-	return Fetch(ctx, rawURL, destDir, progress)
+	return Fetch(ctx, rawURL, destDir, progress, options)
 }
 
 // Fetch fetches a file from rawURL to destDir, validating the host.
 // progress is called with (downloaded, total, percent).
-func Fetch(ctx context.Context, rawURL, destDir string, progress func(downloaded, total int64, percent int)) (*Result, error) {
+func Fetch(ctx context.Context, rawURL, destDir string, progress func(downloaded, total int64, percent int), options Options) (*Result, error) {
 	if err := security.ValidateDownloadURL(rawURL, AllowedHosts); err != nil {
 		return nil, err
 	}
@@ -120,7 +133,8 @@ func Fetch(ctx context.Context, rawURL, destDir string, progress func(downloaded
 	}
 
 	result, err := filedownload.Fetch(client, req, destPath, filedownload.Options{
-		Mode: 0o640,
+		MaxSize: options.MaxSize,
+		Mode:    0o640,
 		Progress: func(done, total int64) {
 			if progress != nil && total > 0 {
 				progress(done, total, int(done*100/total))

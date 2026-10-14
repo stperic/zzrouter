@@ -34,6 +34,14 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 		return nil, err
 	}
 	recipe := snapshot.Recipe
+	if recipe.Source != nil {
+		if install.OptionsFromContext(ctx).Disposable {
+			return nil, fmt.Errorf("source recipes do not support disposable launches")
+		}
+		if err := i.checkSourceInstall(&snapshot, install.PlanOptions{Force: install.OptionsFromContext(ctx).Force}); err != nil {
+			return nil, err
+		}
+	}
 	var requirement *config.PythonRequirement
 	if snapshot.Requirements != nil {
 		requirement = snapshot.Requirements.Python
@@ -63,11 +71,12 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 		return nil, err
 	}
 	directory := fsroot.ProviderDir(i.cfg.Name)
-	requirements := []string{*recipe.Package + "==" + version}
-	for _, name := range slices.Sorted(maps.Keys(recipe.Companions)) {
-		constraint := companionConstraint(snapshot, name, value(recipe.Companions[name].Constraint))
-		requirements = append(requirements, name+constraint)
+	roots := map[string]string{}
+	if recipe.Package != nil {
+		roots[*recipe.Package] = "==" + version
 	}
+	addCompanionRoots(snapshot, roots)
+	requirements := rootRequirements(roots)
 	flags := []string{"--disable-pip-version-check", "install", "--no-input", "--index-url", *recipe.Indexes.Primary}
 	if *recipe.OnlyBinary {
 		flags = append(flags, "--only-binary=:all:")
@@ -77,6 +86,7 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 			flags = append(flags, "--extra-index-url", index)
 		}
 	}
+	baseFlags := slices.Clone(flags)
 	flags = append(flags, requirements...)
 	timeout, _ := time.ParseDuration(*recipe.Timeout)
 	runtimeEnv := map[string]string{}
@@ -95,7 +105,7 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 	if !*recipe.OnlyBinary {
 		plan.SupplyChainNotice += " Authorized source builds also execute resolver-selected PEP 517 build dependencies; those are outside the hash-pinned runtime inventory."
 	}
-	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks)})
+	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks, WorkingDir, Data string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks), snapshot.WorkingDir, install.Fingerprint(snapshot.DataRuntime)})
 	plan.PlanID = baseID
 	guard := func(ctx context.Context) error { return install.CheckRecipeAuthority(ctx, snapshot, i.cfg.Recipe) }
 
@@ -112,10 +122,19 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 		if err := install.ValidateRecipeSources(ctx, snapshot); err != nil {
 			return err
 		}
-		roots := map[string]string{*recipe.Package: "==" + version}
-		for name, companion := range recipe.Companions {
-			roots[name] = companionConstraint(snapshot, name, value(companion.Constraint))
+		if recipe.Source != nil {
+			if report := i.preflight(ctx, snapshot.Requirements, chosen, nil); !report.AllOK {
+				return fmt.Errorf("source prerequisites failed: %v", report.Results)
+			}
+			var err error
+			roots, err = i.sourceRoots(ctx, snapshot, directory)
+			if err != nil {
+				return err
+			}
+			addCompanionRoots(snapshot, roots)
 		}
+		requirements = rootRequirements(roots)
+		flags = append(slices.Clone(baseFlags), requirements...)
 		inventory, err := resolvePackages(ctx, directory, chosen.Path, environment, flags, roots)
 		if err != nil {
 			return err
@@ -132,6 +151,12 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 
 func resolveRecipeVersion(ctx context.Context, snapshot install.RecipeSnapshot, version, action string, latest func(context.Context, string, string) (upstream.Release, error)) (string, error) {
 	recipe := snapshot.Recipe
+	if recipe.Source != nil {
+		if version != "" && version != recipe.Source.Version {
+			return "", fmt.Errorf("source version must match release pin %q", recipe.Source.Version)
+		}
+		return recipe.Source.Version, nil
+	}
 	if version == "" {
 		if action != "upgrade" {
 			version = snapshot.PinnedVersion
@@ -161,11 +186,11 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 	directory, version, action, environment := plan.InstallDir, plan.Version, plan.Action, plan.Environment
 	guard := func(ctx context.Context) error { return install.CheckRecipeAuthority(ctx, snapshot, i.cfg.Recipe) }
 	identity := install.BoundPlanID(plan.PlanID, action, options)
-	stage := filepath.Join(directory, ".candidate", identity)
+	stage := filepath.Join(directory, config.SubdirCandidate, identity)
 	if options.Disposable {
 		stage = install.DisposableDir(i.cfg.Name, identity)
 	}
-	venv := filepath.Join(stage, "venv")
+	venv := filepath.Join(stage, config.SubdirVenv)
 	python := venvPython(venv)
 	livePython := fsroot.ProviderVenvPython(i.cfg.Name)
 	stageEnv := maps.Clone(runtimeEnv)
@@ -183,7 +208,7 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 	}
 	verify := install.StepVerify{Type: "runtime_checks", Python: python, RuntimeChecks: &checks, Environment: stageEnv, ExecutionEnvironment: environment, Toolkit: stageToolkit, Transient: true}
 	pinnedFlags := slices.Clone(flags)
-	if len(plan.Inventory) > 0 {
+	if len(plan.Inventory) > 0 || recipe.Source != nil {
 		pinnedFlags = append(slices.Clone(flags[:len(flags)-len(requirements)]), "--require-hashes", "--no-deps", "-r", filepath.Join(stage, "requirements.txt"))
 	}
 	command := quoteCommand(python, append([]string{"-I", "-m", "pip"}, pinnedFlags...)...)
@@ -213,8 +238,22 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
+			if recipe.Source != nil {
+				if err := i.checkSourceInstall(&snapshot, install.PlanOptions{Force: options.Force}); err != nil {
+					return err
+				}
+			}
 			if err := prepareCandidate(stage); err != nil {
 				return err
+			}
+			if recipe.Source != nil {
+				if err := ensureSourceData(snapshot.DataRuntime, directory, true); err != nil {
+					return err
+				}
+				archive := filepath.Join(directory, config.SubdirCandidate, recipe.Source.SHA256, filepath.Base(recipe.Source.URL))
+				if _, err := install.ReadSource(ctx, archive, stage, snapshot.WorkingDir, *recipe.Source); err != nil {
+					return err
+				}
 			}
 			if err := os.WriteFile(filepath.Join(stage, "plan_id"), []byte(identity), 0600); err != nil {
 				return err
@@ -233,6 +272,11 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 			}
 			return state.activate(ctx, checks, liveEnv, environment, version, snapshot, chosen.Path, chosen.Realpath, chosen.Version, plan.Inventory, identity)
 		}, Verify: install.StepVerify{Type: "runtime_checks", Python: livePython, RuntimeChecks: &checks, Environment: liveEnv, ExecutionEnvironment: environment, Toolkit: liveToolkit}},
+	}
+	if recipe.Source != nil {
+		plan.Steps[3].PostExec = func(ctx context.Context) error {
+			return sourceSmoke(ctx, python, filepath.Join(stage, snapshot.WorkingDir), recipe.Source.Entrypoint, environment)
+		}
 	}
 	if options.Disposable {
 		plan.Rollback = func() error { return nil }
@@ -290,6 +334,24 @@ func companionConstraint(snapshot install.RecipeSnapshot, name, constraint strin
 	return constraint
 }
 
+func addCompanionRoots(snapshot install.RecipeSnapshot, roots map[string]string) {
+	for name, companion := range snapshot.Recipe.Companions {
+		constraint := roots[name]
+		if constraint != "" && value(companion.Constraint) != "" {
+			constraint += ","
+		}
+		roots[name] = companionConstraint(snapshot, name, constraint+value(companion.Constraint))
+	}
+}
+
+func rootRequirements(roots map[string]string) []string {
+	requirements := []string{}
+	for _, name := range slices.Sorted(maps.Keys(roots)) {
+		requirements = append(requirements, name+roots[name])
+	}
+	return requirements
+}
+
 func recipeConstraint(snapshot install.RecipeSnapshot) string {
 	constraint := value(snapshot.Recipe.VersionConstraint)
 	if snapshot.Policy != nil && snapshot.Policy.Packages[*snapshot.Recipe.Package] != "" {
@@ -328,7 +390,7 @@ func prepareCandidate(stage string) error {
 	return os.MkdirAll(stage, 0700)
 }
 
-func setTreeWritable(directory string, writable bool) error {
+func setTreeWritable(directory string, writable bool, chmod func(string, os.FileMode) error) error {
 	return filepath.WalkDir(directory, func(path string, entry fs.DirEntry, err error) error {
 		if os.IsNotExist(err) {
 			return nil
@@ -347,7 +409,7 @@ func setTreeWritable(directory string, writable bool) error {
 		if writable {
 			mode = info.Mode().Perm() | 0200
 		}
-		return os.Chmod(path, mode)
+		return chmod(path, mode)
 	})
 }
 
@@ -355,7 +417,7 @@ func removeManagedTree(directory string) error {
 	if err := fsroot.VerifySymlinkSafe(directory); err != nil {
 		return err
 	}
-	if err := setTreeWritable(directory, true); err != nil {
+	if err := setTreeWritable(directory, true, os.Chmod); err != nil {
 		return err
 	}
 	return os.RemoveAll(directory)
@@ -363,8 +425,7 @@ func removeManagedTree(directory string) error {
 
 type runtimeTransaction struct {
 	directory, stage string
-	activated        bool
-	previous         bool
+	payloads         []runtimePayload
 	recordsMoved     []string
 	started          bool
 	newRecords       bool
@@ -372,12 +433,17 @@ type runtimeTransaction struct {
 	chmod            func(string, os.FileMode) error
 }
 
+type runtimePayload struct {
+	directory           string
+	activated, previous bool
+}
+
 // moveDirectory temporarily unlocks the root for macOS cross-parent renames.
 func (t *runtimeTransaction) moveDirectory(from, to string) (bool, error) {
-	if err := fsroot.VerifySymlinkSafe(from); err != nil {
+	if err := fsroot.VerifyProviderPath(t.directory, strings.TrimPrefix(from, t.directory+string(os.PathSeparator))); err != nil {
 		return false, err
 	}
-	if err := fsroot.VerifySymlinkSafe(to); err != nil {
+	if err := fsroot.VerifyProviderPath(t.directory, strings.TrimPrefix(to, t.directory+string(os.PathSeparator))); err != nil {
 		return false, err
 	}
 	info, err := os.Lstat(from)
@@ -421,8 +487,8 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 	if err := fsroot.VerifySymlinkSafe(t.directory); err != nil {
 		return err
 	}
-	live := filepath.Join(t.directory, "venv")
-	previous := filepath.Join(t.directory, ".previous")
+	live := filepath.Join(t.directory, config.SubdirVenv)
+	previous := filepath.Join(t.directory, config.SubdirPrevious)
 	if err := removeManagedTree(previous); err != nil {
 		return err
 	}
@@ -430,50 +496,68 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 		return err
 	}
 	t.started = true
-	if _, err := os.Lstat(live); err == nil {
-		moved, err := t.moveDirectory(live, filepath.Join(previous, "venv"))
-		t.previous = moved
-		if err != nil {
+	for _, name := range snapshot.PayloadDirectories() {
+		for _, root := range []string{previous, t.directory} {
+			if err := os.MkdirAll(filepath.Join(root, filepath.Dir(name)), 0700); err != nil {
+				return t.fail(err)
+			}
+		}
+		t.payloads = append(t.payloads, runtimePayload{directory: name})
+		payload := &t.payloads[len(t.payloads)-1]
+		if _, err := os.Lstat(filepath.Join(t.directory, name)); err == nil {
+			payload.previous, err = t.moveDirectory(filepath.Join(t.directory, name), filepath.Join(previous, name))
+			if err != nil {
+				return t.fail(err)
+			}
+		} else if !os.IsNotExist(err) {
 			return t.fail(err)
 		}
-	} else if !os.IsNotExist(err) {
-		return err
 	}
-	for _, name := range []string{"version", "install.json"} {
+	for _, name := range []string{config.ProviderVersionName, config.ProviderManifestName} {
 		path := filepath.Join(t.directory, name)
 		if _, err := os.Stat(path); err == nil {
 			if err := os.Rename(path, filepath.Join(previous, name)); err != nil {
 				return t.fail(err)
 			}
 			t.recordsMoved = append(t.recordsMoved, name)
+		} else if !os.IsNotExist(err) {
+			return t.fail(err)
 		}
 	}
-	if err := relocateScripts(filepath.Join(t.stage, "venv"), live); err != nil {
+	if err := relocateScripts(filepath.Join(t.stage, config.SubdirVenv), live); err != nil {
 		return t.fail(err)
 	}
-	moved, err := t.moveDirectory(filepath.Join(t.stage, "venv"), live)
-	t.activated = moved
-	if err != nil {
-		return t.fail(err)
+	for index := range t.payloads {
+		payload := &t.payloads[index]
+		var err error
+		payload.activated, err = t.moveDirectory(filepath.Join(t.stage, payload.directory), filepath.Join(t.directory, payload.directory))
+		if err != nil {
+			return t.fail(err)
+		}
 	}
 	toolkit := install.ToolkitEnvironmentAt(live, snapshot.Recipe, pythonVersion)
 	results := install.RunRuntimeChecksSnapshot(ctx, venvPython(live), checks, environment, executionEnvironment, toolkit)
-	for _, result := range results {
-		if !result.Passed {
-			return t.fail(fmt.Errorf("activation verify %s: %s", result.Name, result.Reason))
+	if !checksPassed(results) {
+		return t.fail(fmt.Errorf("activation verification failed: %v", results))
+	}
+	if snapshot.Recipe.Source != nil {
+		if err := sourceSmoke(ctx, venvPython(live), filepath.Join(t.directory, snapshot.WorkingDir), snapshot.Recipe.Source.Entrypoint, executionEnvironment); err != nil {
+			return t.fail(err)
 		}
 	}
 	t.newRecords = true
 	if err := os.WriteFile(fsroot.ProviderVersionFile(snapshot.Runtime), []byte(version+"\n"), 0600); err != nil {
 		return t.fail(err)
 	}
-	manifest := &fsroot.InstallManifest{Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
+	manifest := &fsroot.InstallManifest{WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
 	if err := fsroot.WriteInstallManifest(snapshot.Runtime, manifest); err != nil {
 		return t.fail(err)
 	}
 	if fsroot.IsHardenVenvEnabled() {
-		if err := setTreeWritable(live, false); err != nil {
-			return t.fail(fmt.Errorf("harden managed runtime: %w", err))
+		for _, payload := range t.payloads {
+			if err := setTreeWritable(filepath.Join(t.directory, payload.directory), false, t.chmod); err != nil {
+				return t.fail(fmt.Errorf("harden managed runtime: %w", err))
+			}
 		}
 	}
 	return nil
@@ -495,28 +579,30 @@ func (t *runtimeTransaction) rollback() (resultErr error) {
 	if !t.started {
 		return nil
 	}
-	live := filepath.Join(t.directory, "venv")
-	previous := filepath.Join(t.directory, ".previous")
+	previous := filepath.Join(t.directory, config.SubdirPrevious)
 	var modeErrors []error
-	if t.activated {
-		failed := filepath.Join(t.stage, "failed-venv")
-		moved, err := t.moveDirectory(live, failed)
-		if !moved {
-			return err
+	for index := len(t.payloads) - 1; index >= 0; index-- {
+		payload := &t.payloads[index]
+		live := filepath.Join(t.directory, payload.directory)
+		if payload.activated {
+			moved, err := t.moveDirectory(live, filepath.Join(t.stage, "failed-"+strings.ReplaceAll(payload.directory, "/", "-")))
+			if !moved {
+				return errors.Join(append(modeErrors, err)...)
+			}
+			payload.activated = false
+			modeErrors = append(modeErrors, err)
 		}
-		t.activated = false
-		modeErrors = append(modeErrors, err)
-	}
-	if t.previous {
-		moved, err := t.moveDirectory(filepath.Join(previous, "venv"), live)
-		if !moved {
-			return errors.Join(append(modeErrors, err)...)
+		if payload.previous {
+			moved, err := t.moveDirectory(filepath.Join(previous, payload.directory), live)
+			if !moved {
+				return errors.Join(append(modeErrors, err)...)
+			}
+			payload.previous = false
+			modeErrors = append(modeErrors, err)
 		}
-		t.previous = false
-		modeErrors = append(modeErrors, err)
 	}
 	if t.newRecords {
-		for _, name := range []string{"version", "install.json", "install.json.tmp"} {
+		for _, name := range []string{config.ProviderVersionName, config.ProviderManifestName, config.ProviderManifestTemp} {
 			if err := os.Remove(filepath.Join(t.directory, name)); err != nil && !os.IsNotExist(err) {
 				return err
 			}
@@ -533,9 +619,6 @@ func (t *runtimeTransaction) rollback() (resultErr error) {
 		}
 		t.recordsMoved = t.recordsMoved[1:]
 	}
-	t.activated = false
-	t.previous = false
-	t.recordsMoved = nil
 	t.started = false
 	return errors.Join(modeErrors...)
 }
@@ -580,6 +663,9 @@ func relocateScripts(candidate, live string) error {
 
 // ResolveInstalledPackage reads the configured package without importing it.
 func (i *Installer) ResolveInstalledPackage() (string, error) {
+	if version, source, err := i.sourceCompletion(); source {
+		return version, err
+	}
 	packageName := ""
 	manifest, err := fsroot.ReadInstallManifest(i.cfg.Name)
 	if err != nil {

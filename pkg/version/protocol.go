@@ -30,9 +30,10 @@ package version
 // Protocol 7 requires observable placement jobs and terminal transfer evidence.
 // Protocol 8 requires node-scoped runs, activity probes and memory commitments.
 // Protocol 9 requires provider data/model stores and owned download targets.
+// Protocol 10 adds release-owned source install recipes, which older provider schemas reject.
 const (
-	ClusterProtocolVersion    = 9
-	MinClusterProtocolVersion = 9
+	ClusterProtocolVersion    = 10
+	MinClusterProtocolVersion = 10
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

@@ -30,13 +30,13 @@ func resolvePackages(ctx context.Context, directory, interpreter string, environ
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
-	if err := runResolver(ctx, interpreter, environment, "-m", "venv", filepath.Join(scratch, "venv")); err != nil {
+	if err := runPython(ctx, interpreter, "", environment, "-m", "venv", filepath.Join(scratch, "venv")); err != nil {
 		return nil, err
 	}
 	reportPath := filepath.Join(scratch, "report.json")
 	args := append([]string{"-I", "-m", "pip"}, flags...)
 	args = append(args, "--dry-run", "--ignore-installed", "--report", reportPath)
-	if err := runResolver(ctx, venvPython(filepath.Join(scratch, "venv")), environment, args...); err != nil {
+	if err := runPython(ctx, venvPython(filepath.Join(scratch, "venv")), "", environment, args...); err != nil {
 		return nil, err
 	}
 	file, err := os.Open(reportPath)
@@ -61,15 +61,16 @@ func resolvePackages(ctx context.Context, directory, interpreter string, environ
 	return install.ParsePipReport(data, roots)
 }
 
-func runResolver(ctx context.Context, python string, environment []string, args ...string) error {
+func runPython(ctx context.Context, python, directory string, environment []string, args ...string) error {
 	command := host.CommandContext(ctx, python, args...)
+	command.Dir = directory
 	command.Env = environment
 	command.WaitDelay = 2 * time.Second
 	tail := &boundedResolverOutput{}
 	command.Stdout = tail
 	command.Stderr = tail
 	if err := process.RunOwnedCommand(ctx, command); err != nil {
-		return fmt.Errorf("dependency preflight: %w: %s", err, security.RedactSensitive(string(tail.data)))
+		return fmt.Errorf("managed Python command: %w: %s", err, security.RedactSensitive(string(tail.data)))
 	}
 	return nil
 }

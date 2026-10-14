@@ -241,3 +241,15 @@ func TestProviderModelStoreProtocolCutoverContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSourceInstallProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 10 || MinClusterProtocolVersion < 10 {
+		t.Fatalf("source recipes require protocol 10/10, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(9); err == nil {
+		t.Fatal("old worker admitted despite rejecting source recipe declarations")
+	}
+	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}

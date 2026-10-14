@@ -85,7 +85,7 @@ func TestComfyUITemplateAndSchemaLoad(t *testing.T) {
 	require.True(t, provider.IsExplicitlyDisabled())
 	require.Empty(t, provider.Protocol)
 	require.Equal(t, RunScopeNode, provider.RunScope)
-	require.Equal(t, []InstallPlatform{{OS: "linux"}}, provider.Platforms)
+	require.Equal(t, []InstallPlatform{{OS: "linux", Arch: "amd64"}}, provider.Platforms)
 	require.Equal(t, "nvidia", provider.Requirements.GPU.Vendor)
 	require.Equal(t, []int{8188, 8188}, provider.Runtime.PortRange)
 	data, err := os.ReadFile(filepath.Join(dir, "on-demand", "comfyui", "schema.yaml"))

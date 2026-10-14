@@ -28,15 +28,25 @@ import (
 type RecipeSnapshot struct {
 	Recheck func(context.Context) error `json:"-"`
 	config.ResolvedInstall
-	Provider          string                  `json:"provider"`
-	Runtime           string                  `json:"runtime"`
-	Node              string                  `json:"node"`
-	Fingerprint       string                  `json:"fingerprint"`
-	PolicyFingerprint string                  `json:"policy_fingerprint"`
-	Authority         string                  `json:"authority"`
-	Policy            *RuntimePolicy          `json:"-"`
-	Requirements      *config.AppRequirements `json:"-"`
-	PinnedVersion     string                  `json:"-"`
+	Provider          string                   `json:"provider"`
+	Runtime           string                   `json:"runtime"`
+	Node              string                   `json:"node"`
+	Fingerprint       string                   `json:"fingerprint"`
+	PolicyFingerprint string                   `json:"policy_fingerprint"`
+	Authority         string                   `json:"authority"`
+	Policy            *RuntimePolicy           `json:"-"`
+	Requirements      *config.AppRequirements  `json:"-"`
+	PinnedVersion     string                   `json:"-"`
+	WorkingDir        string                   `json:"-"`
+	DataRuntime       *config.AppRuntimeConfig `json:"-"`
+}
+
+// PayloadDirectories lists the owned runtime trees in activation order.
+func (s RecipeSnapshot) PayloadDirectories() []string {
+	if s.Recipe.Source != nil {
+		return []string{s.WorkingDir, config.SubdirVenv}
+	}
+	return []string{config.SubdirVenv}
 }
 
 // RecipeResolver reads current config and authority on the executing node.
@@ -67,10 +77,14 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 		return RecipeSnapshot{}, err
 	}
 	out := RecipeSnapshot{ResolvedInstall: resolved, Provider: sc.Name, Runtime: runtime, Node: node, Requirements: sc.Requirements}
-	if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
+	if resolved.Recipe.Source != nil {
+		out.PinnedVersion = resolved.Recipe.Source.Version
+		out.WorkingDir = sc.RuntimeExecution(runtime).WorkingDir
+		out.DataRuntime = sc.Runtime
+	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
 	}
-	if runtime == sc.Name {
+	if resolved.Recipe.Source == nil && runtime == sc.Name {
 		out.PinnedVersion = sc.PinnedVersion
 		if sc.VersionSource == nil || sc.VersionSource.Type != config.VersionSourcePyPI || sc.VersionSource.Package != *resolved.Recipe.Package {
 			return out, fmt.Errorf("base recipe package must match version_source.package")
@@ -101,6 +115,9 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string) (R
 	if trusted {
 		out.Authority = "release"
 	} else {
+		if resolved.Recipe.Source != nil {
+			return out, fmt.Errorf("%w: source recipes require an unchanged shipped declaration", ErrInstallPolicy)
+		}
 		policy, fp, err := ReadInstallPolicy(policyPath)
 		if err != nil {
 			return out, fmt.Errorf("%w: %v", ErrInstallPolicy, err)
@@ -157,15 +174,7 @@ func releaseRecipeValue(recipe config.InstallRecipe) config.InstallRecipe {
 }
 
 func validateServingImport(sc config.ServiceConfig, runtime, module string) error {
-	var execution *config.ExecutionConfig
-	if runtime == sc.Name && sc.Runtime != nil {
-		execution = &sc.Runtime.Execution
-	}
-	for _, feature := range sc.Features {
-		if feature.Runtime == runtime {
-			execution = feature.Execution
-		}
-	}
+	execution := sc.RuntimeExecution(runtime)
 	if execution == nil || execution.Type != "python" {
 		return nil
 	}
@@ -259,6 +268,9 @@ func ReadInstallPolicy(path string) (InstallPolicy, string, error) {
 
 // Authorize approves only the declared direct roots and exact source URLs.
 func (p RuntimePolicy) Authorize(recipe config.InstallRecipe) error {
+	if recipe.Source != nil {
+		return fmt.Errorf("source recipes are release-owned")
+	}
 	for name := range recipe.Companions {
 		if _, ok := p.Packages[name]; !ok {
 			return fmt.Errorf("companion %q unapproved", name)
@@ -346,7 +358,10 @@ func ValidateRecipeSources(ctx context.Context, snapshot RecipeSnapshot) error {
 func (s RecipeSnapshot) RuntimeChecks(base schema.RuntimeChecks) schema.RuntimeChecks {
 	base.Imports = slices.Clone(*s.Recipe.Verify.Imports)
 	base.Checks = slices.Clone(*s.Recipe.Verify.Checks)
-	base.Packages = []string{*s.Recipe.Package}
+	base.Packages = nil
+	if s.Recipe.Package != nil {
+		base.Packages = append(base.Packages, *s.Recipe.Package)
+	}
 	for name := range s.Recipe.Companions {
 		base.Packages = append(base.Packages, name)
 	}

@@ -39,7 +39,7 @@ func TestFetchResumesInstallArtifact(t *testing.T) {
 	original := fetchTransport
 	fetchTransport = transport
 	t.Cleanup(func() { fetchTransport = original })
-	result, err := Fetch(t.Context(), "https://github.com/org/repo/model.gguf", dir, nil)
+	result, err := Fetch(t.Context(), "https://github.com/org/repo/model.gguf", dir, nil, Options{})
 	require.NoError(t, err)
 	assert.Equal(t, dest, result.FilePath)
 	assert.EqualValues(t, len(content), result.Size)

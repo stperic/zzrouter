@@ -53,8 +53,8 @@ func TestActivationFailureRestoresExactPreviousRuntime(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(directory, name), []byte("old metadata"), 0600))
 	}
 	if runtime.GOOS != "windows" {
-		require.NoError(t, setTreeWritable(live, false))
-		t.Cleanup(func() { _ = setTreeWritable(directory, true) })
+		require.NoError(t, setTreeWritable(live, false, os.Chmod))
+		t.Cleanup(func() { _ = setTreeWritable(directory, true, os.Chmod) })
 	}
 	tx := runtimeTransaction{directory: directory, stage: stage}
 	checks := schema.RuntimeChecks{Checks: []string{"imports"}, Imports: []string{"json"}, Kernels: "unknown"}
@@ -82,13 +82,13 @@ func TestHardenedRuntimeMovePreservesPermissions(t *testing.T) {
 		t.Skip("POSIX directory permission semantics")
 	}
 	directory := t.TempDir()
-	t.Cleanup(func() { _ = setTreeWritable(directory, true) })
+	t.Cleanup(func() { _ = setTreeWritable(directory, true, os.Chmod) })
 	from, to := filepath.Join(directory, "venv"), filepath.Join(directory, "previous", "venv")
 	require.NoError(t, os.MkdirAll(filepath.Dir(to), 0700))
 	require.NoError(t, os.Mkdir(from, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(from, "marker"), []byte("preserve"), 0444))
 	require.NoError(t, os.Chmod(from, 0555))
-	tx := runtimeTransaction{}
+	tx := runtimeTransaction{directory: directory}
 	moved, err := tx.moveDirectory(from, to)
 	require.NoError(t, err)
 	require.True(t, moved)
@@ -114,7 +114,7 @@ func TestRollbackContinuesAfterMovedDirectoryModeFailure(t *testing.T) {
 		t.Skip("POSIX directory permission semantics")
 	}
 	directory := t.TempDir()
-	t.Cleanup(func() { _ = setTreeWritable(directory, true) })
+	t.Cleanup(func() { _ = setTreeWritable(directory, true, os.Chmod) })
 	stage, previous := filepath.Join(directory, "candidate"), filepath.Join(directory, ".previous")
 	live := filepath.Join(directory, "venv")
 	for _, path := range []string{stage, live, filepath.Join(previous, "venv")} {
@@ -130,7 +130,7 @@ func TestRollbackContinuesAfterMovedDirectoryModeFailure(t *testing.T) {
 	denied := errors.New("restore mode denied")
 	failed := filepath.Join(stage, "failed-venv")
 	refused := false
-	tx := runtimeTransaction{directory: directory, stage: stage, started: true, activated: true, previous: true, newRecords: true, recordsMoved: []string{"version", "install.json"}, chmod: func(path string, mode os.FileMode) error {
+	tx := runtimeTransaction{directory: directory, stage: stage, started: true, payloads: []runtimePayload{{directory: "venv", activated: true, previous: true}}, newRecords: true, recordsMoved: []string{"version", "install.json"}, chmod: func(path string, mode os.FileMode) error {
 		if path == failed && mode == 0555 && !refused {
 			refused = true
 			return denied
@@ -151,8 +151,8 @@ func TestRollbackContinuesAfterMovedDirectoryModeFailure(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, os.FileMode(0555), info.Mode().Perm())
 	}
-	assert.False(t, tx.activated)
-	assert.False(t, tx.previous)
+	assert.False(t, tx.payloads[0].activated)
+	assert.False(t, tx.payloads[0].previous)
 	assert.Empty(t, tx.directoryModes)
 	require.NoError(t, tx.rollback())
 }
@@ -162,7 +162,7 @@ func TestRollbackRetriesPendingHardeningAfterDataRestoration(t *testing.T) {
 		t.Skip("POSIX directory permission semantics")
 	}
 	dir := t.TempDir()
-	t.Cleanup(func() { _ = setTreeWritable(dir, true) })
+	t.Cleanup(func() { _ = setTreeWritable(dir, true, os.Chmod) })
 	live := filepath.Join(dir, "venv")
 	require.NoError(t, os.Mkdir(live, 0755))
 	denied := errors.New("hardening denied")
@@ -216,7 +216,7 @@ func TestFreshRollbackRemovesNewVersionAndManifest(t *testing.T) {
 	for _, name := range []string{"version", "install.json", "install.json.tmp"} {
 		require.NoError(t, os.WriteFile(filepath.Join(directory, name), []byte("new metadata"), 0600))
 	}
-	tx := runtimeTransaction{directory: directory, stage: stage, started: true, activated: true, newRecords: true}
+	tx := runtimeTransaction{directory: directory, stage: stage, started: true, payloads: []runtimePayload{{directory: "venv", activated: true}}, newRecords: true}
 	require.NoError(t, tx.rollback())
 	for _, name := range []string{"version", "install.json", "install.json.tmp", "venv"} {
 		_, err := os.Stat(filepath.Join(directory, name))

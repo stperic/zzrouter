@@ -99,6 +99,6 @@ func shippedRecipe(provider, runtime string) (install.RecipeSnapshot, error) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return install.RecipeSnapshot{}, err
 	}
-	sc := config.ServiceConfig{Name: provider, Install: p.Install, Requirements: p.Requirements, Runtime: &config.AppRuntimeConfig{Execution: p.Runtime.Execution}, Features: p.Features, PinnedVersion: p.PinnedVersion, VersionSource: p.VersionSource}
+	sc := config.ServiceConfig{Name: provider, Install: p.Install, Requirements: p.Requirements, Runtime: &config.AppRuntimeConfig{Execution: p.Runtime.Execution, DataDir: p.Runtime.DataDir, ModelStore: p.Runtime.ModelStore}, Features: p.Features, PinnedVersion: p.PinnedVersion, VersionSource: p.VersionSource}
 	return install.ResolveRecipe(sc, "", runtime, "")
 }

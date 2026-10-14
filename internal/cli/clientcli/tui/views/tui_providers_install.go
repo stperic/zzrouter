@@ -385,7 +385,11 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 		}
 
 	case key.Matches(msg, installWizardKeys.CopyScript):
-		script := buildInstallScript(m.installPlan)
+		script, err := buildInstallScript(m.installPlan)
+		if err != nil {
+			m.actionStatus = err.Error()
+			return nil
+		}
 		if err := clipboard.WriteAll(script); err != nil {
 			m.actionStatus = fmt.Sprintf("✗ Copy failed: %v", err)
 		} else {
@@ -456,20 +460,20 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
 }
 
-// buildInstallScript generates a runnable shell script from the install plan.
-func buildInstallScript(plan *pkgClient.InstallPlanResponse) string {
+// buildInstallScript exports only plans whose every step has a shell command.
+func buildInstallScript(plan *pkgClient.InstallPlanResponse) (string, error) {
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	b.WriteString("set -e\n")
 	b.WriteString(fmt.Sprintf("# zzRouter install script for %s\n\n", plan.Provider))
 	for _, step := range plan.Steps {
 		if step.Command == "" {
-			continue
+			return "", fmt.Errorf("This plan requires server execution; use Run All or run each step.") //nolint:staticcheck // Preserve the agreed operator-facing message.
 		}
 		b.WriteString(fmt.Sprintf("# Step %d: %s\n", step.Number, step.Description))
 		b.WriteString(step.Command + "\n\n")
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 // ============================================================================

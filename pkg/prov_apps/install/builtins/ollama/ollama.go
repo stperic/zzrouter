@@ -1121,7 +1121,7 @@ func (i *Installer) makeDownloadPreExec(url, destDir string) func(ctx context.Co
 	}
 	provider := i.Name
 	return func(ctx context.Context) error {
-		_, err := download.FetchForProvider(ctx, provider, url, destDir, progressFn)
+		_, err := download.FetchForProvider(ctx, provider, url, destDir, progressFn, download.Options{})
 		return err
 	}
 }

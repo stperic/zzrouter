@@ -4,6 +4,12 @@
 
 ### Highlights
 
+- ComfyUI has a managed install on Linux/amd64 NVIDIA nodes through the existing
+  provider install API, MCP and TUI. The shipped 0.40.0 source archive is SHA256
+  pinned; dependencies use the hashed Python inventory. Upgrade replaces source
+  and venv together, and uninstall keeps data and operator Python directories.
+  See [installation and hand-install move-aside instructions](docs/comfyui.md#install-and-enable).
+
 - ComfyUI model files can be listed, downloaded from Hugging Face, deleted and
   resolved from workflow metadata through the coordinator API, MCP `zz_api`,
   and `zzrouter providers models`. Files belong to the provider and stay outside
@@ -17,7 +23,7 @@
   evicts an idle ComfyUI run when eviction is on, and the reverse. While
   ComfyUI's queue is busy its run is neither idle nor evictable. Clients call
   ComfyUI directly at the run's `base_url`; zzRouter does not proxy it. The
-  provider ships disabled; installing ComfyUI is manual for now.
+  provider ships disabled and is enabled after a successful managed install.
 - Ollama preloading supports embedding-only models through a capability-neutral empty-input request.
 
 - MCP server for coding agents: `POST /zzrouter/v1/mcp` (coordinator, admin
@@ -40,6 +46,12 @@
 
 ### Behaviour changes
 
+- Cluster protocol and minimum advance from 9/9 to 10/10 for source install
+  recipes, which older strict provider schemas reject. Upgrade all nodes together
+  using the maintenance procedure in [protocol versioning](docs/protocol_versioning.md).
+  There is no rolling compatibility window.
+- Shipped provider platforms and installation prerequisites now refresh with
+  their recipes during reconciliation; enabled state and node tuning remain.
 - Cluster protocol and minimum advance from 8/8 to 9/9 for provider model-store
   configuration and download targets. Upgrade all peers together during the
   maintenance window in [protocol versioning](docs/protocol_versioning.md);

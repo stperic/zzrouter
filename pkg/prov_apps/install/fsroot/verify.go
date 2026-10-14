@@ -3,6 +3,7 @@ package fsroot
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 )
 
@@ -39,4 +40,17 @@ func VerifySymlinkSafe(path string) error {
 		return fmt.Errorf("path %s is a symlink: refusing to overwrite (possible attack)", path)
 	}
 	return nil
+}
+
+// VerifyProviderPath refuses symlinks in a contained provider-relative path.
+func VerifyProviderPath(directory, relative string) error {
+	if !filepath.IsLocal(relative) {
+		return fmt.Errorf("provider-relative path required")
+	}
+	for path := filepath.Join(directory, relative); path != directory; path = filepath.Dir(path) {
+		if err := VerifySymlinkSafe(path); err != nil {
+			return err
+		}
+	}
+	return VerifySymlinkSafe(directory)
 }

@@ -19,6 +19,7 @@ func TestDispatcher_RegisteredInstallers(t *testing.T) {
 	// ollama and llama.cpp should always be registered
 	assert.Contains(t, names, "ollama")
 	assert.Contains(t, names, "llamacpp")
+	assert.Contains(t, names, "comfyui")
 	assert.Contains(t, names, "mlx-vlm")
 
 	// Platform-specific
@@ -38,6 +39,7 @@ func TestManagedRuntimeOwnPlatformGuards(t *testing.T) {
 		platforms []fsroot.Platform
 	}{
 		{"vllm", []fsroot.Platform{{OS: "linux", Arch: "amd64"}}},
+		{"comfyui", []fsroot.Platform{{OS: "linux", Arch: "amd64"}}},
 		{"mlx", []fsroot.Platform{{OS: "darwin", Arch: "arm64"}}},
 		{"mlx-vlm", []fsroot.Platform{{OS: "darwin", Arch: "arm64"}}},
 	} {

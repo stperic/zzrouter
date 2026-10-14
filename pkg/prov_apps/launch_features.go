@@ -233,6 +233,13 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if err != nil {
 		return LaunchParameters{}, err
 	}
+	runtime := svc.Name
+	if key != "" {
+		runtime = key
+	}
+	if req.DisposablePlanID != "" && svc.Install != nil && svc.Install.Runtimes[runtime].Source != nil {
+		return LaunchParameters{}, fmt.Errorf("source recipes do not support disposable launches")
+	}
 	for _, name := range excluded {
 		delete(params, name)
 	}
@@ -242,10 +249,6 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	}
 	if env == nil {
 		env = map[string]string{}
-	}
-	runtime := svc.Name
-	if key != "" {
-		runtime = key
 	}
 	if req.selectedRuntime != "" && runtime != req.selectedRuntime {
 		return LaunchParameters{}, fmt.Errorf("selected runtime changed while waiting; retry launch")

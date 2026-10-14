@@ -34,6 +34,9 @@ func ReleasePolicy(goos, goarch string) (InstallPolicy, error) {
 			continue
 		}
 		for runtime, recipe := range shipped.Install.Runtimes {
+			if recipe.Source != nil {
+				continue // Source recipes permit only unchanged shipped authority.
+			}
 			grant, err := releaseGrant(recipe)
 			if err != nil {
 				return policy, fmt.Errorf("shipped %s/%s recipe: %w", entry.Name(), runtime, err)
