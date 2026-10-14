@@ -61,12 +61,30 @@ var managedCapabilityKeys = []string{"wire_endpoints"}
 
 // managedSections lists the sections whose managed keys sit one level
 // down, under the section's own name.
-var managedSections = []struct {
-	name string
-	keys []string
-}{
+var managedSections = []managedKeySection{
 	{"runtime", managedSpineKeys},
 	{"capabilities", managedCapabilityKeys},
+}
+
+type managedKeySection struct {
+	name string
+	keys []string
+}
+
+// managedKeySections enumerates whole-key ownership; an empty name denotes the root.
+func managedKeySections(template map[string]any) []managedKeySection {
+	sections := []managedKeySection{{keys: managedTopLevelKeys}}
+	// A shipped seed advances with the release; unseeded providers keep operator pins.
+	if _, seeded := template["pinned_version"]; seeded {
+		sections = append(sections, managedKeySection{keys: []string{"pinned_version"}})
+	}
+	for _, section := range managedSections {
+		// A template without a map section manages nothing under it.
+		if _, ok := template[section.name].(map[string]any); ok {
+			sections = append(sections, section)
+		}
+	}
+	return sections
 }
 
 // ReconcileManagedSpine brings every shipped provider file in dstDir back
@@ -228,26 +246,20 @@ func mergeManagedSpine(live, tmpl []byte) (merged []byte, updated bool, err erro
 		return nil, false, fmt.Errorf("parse template: %w", err)
 	}
 
-	updated = mergeKeys(liveDoc, tmplDoc, managedTopLevelKeys)
-	// A shipped seed must advance with the release; unseeded providers keep operator pins.
-	if _, seeded := tmplDoc["pinned_version"]; seeded && mergeKeys(liveDoc, tmplDoc, []string{"pinned_version"}) {
-		updated = true
-	}
-	if reconcileFeatures(liveDoc, tmplDoc) {
-		updated = true
-	}
-	for _, section := range managedSections {
-		// A template without the section manages nothing under it.
-		tmplSection, ok := tmplDoc[section.name].(map[string]any)
-		if !ok {
-			continue
-		}
-		liveSection, ok := liveDoc[section.name].(map[string]any)
-		if !ok {
-			liveSection = map[string]any{}
+	updated = reconcileFeatures(liveDoc, tmplDoc)
+	for _, section := range managedKeySections(tmplDoc) {
+		liveSection, tmplSection := liveDoc, tmplDoc
+		if section.name != "" {
+			tmplSection, _ = tmplDoc[section.name].(map[string]any)
+			liveSection, _ = liveDoc[section.name].(map[string]any)
+			if liveSection == nil {
+				liveSection = map[string]any{}
+			}
 		}
 		if mergeKeys(liveSection, tmplSection, section.keys) {
-			liveDoc[section.name] = liveSection
+			if section.name != "" {
+				liveDoc[section.name] = liveSection
+			}
 			updated = true
 		}
 	}
