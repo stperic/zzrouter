@@ -20,13 +20,15 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   the model. Process and served runs are the same runs, started, reused, leased, stopped and listed by the
   same paths; the engine interface (`engine.go`) holds what differs.
 - **Served runs** are keyed by the daemon's name for the model, take no port, and log their lifecycle where
-  a process run logs its engine. A load sends the run's keep-alive only when it is explicit (number -1
-  pins); the daemon applies it, while zzRouter's reaper handles explicit zero and client hints. Loads use
+  a process run logs its engine. A load sends the run's keep-alive only when it is explicit; the daemon applies it.
+  zzRouter's reaper handles explicit zero and client hints on unpinned runs. Loads use
   empty-input `/api/embed` so completion and embedding-only models share one lifecycle. Each load
   lists the daemon as it lands: what it holds is recorded, and ready runs it dropped are reported in the
   load's `evicted_runs`. The services ticker reconciles the rest (retire what the daemon dropped, adopt what
   it holds on two sightings, never while a load is in flight) and retries a managed daemon whose start was
-  refused at boot. A pin survives a node restart only where the daemon runs as its own service.
+  refused at boot. There is no run autostart after a node restart. A surviving daemon
+  can be observed and its resident models re-adopted; this does not reload a lost model
+  or prove a pin. An adopted run derives its pin from current resolved launch settings.
 
 ## Readiness publication
 
@@ -61,14 +63,14 @@ asserts the same outcome.
 
 ## Idle policy and error projection
 
-R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart; inference hints remain last-one-wins.
+R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart. The final admitted launch settings fix a pin for the run's lifetime when keep-alive is negative. Inference hints remain last-one-wins for the idle timer and never pin or unpin.
 
-The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends after release, held leases cannot expire, and negative values never expire idle. Pressure eviction may reclaim idle pins when enabled. Served nonzero runs and adopted models remain daemon-expired. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
+The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends an unpinned run after release, held leases cannot expire, and negative timers never expire idle. Pinned runs never expire or qualify for pressure reclaim, even after positive or zero inference hints. The shared IdleState switch checks lifecycle/claim, pin, activity hold and leases in that order. Served nonzero and adopted timer sentinels mean zzRouter has no idle deadline, independently of pinning. Daemon unloads and displacement remain outside this protection. Explicit stop, Force replacement, restart and shutdown still end pins; restart replays request-tier settings. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
 
 R4 routes known run/provider refusals through one ordered wire table, including Retry-After and typed extra fields. Admission and cold-load producers retain typed causes; only the HTTP edge renders them. Memory-fit diagnostics survive cold loading, and generic surface defaults remain distinct. Policy messages carry no route URLs. Typed Ollama load options remain withheld. On the Windows worker with Ollama 0.32.15 (2026-10-12), loading with num_ctx=2048 and keep_alive=-1 did not preserve those settings: a later option-free /v1 request changed the context to 4096 and expiry to five minutes. The prescribed persistence prerequisite failed.
 
 Memory-fit holders record `reclaim_skipped_reason` from the actual selection or atomic claim decision
-(busy, in use or not idle), including after the admission retry. Unused commitment holders have no PID.
+(pinned, busy, in use or not idle), including after the admission retry. Unused commitment holders have no PID. Memory refusals remain 409 `out_of_range`; pinned holders are not `evicted_runs`. Run reports expose `pinned: true` separately from the mutable `keep_alive` timer.
 
 ## Deployment outcome ownership
 

@@ -2,6 +2,8 @@ package instance
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +15,7 @@ import (
 
 func TestIdleStopSerializesWithLease(t *testing.T) {
 	for range 100 {
-		inst := NewInstance("test", "test", "test", 0, -1, 10)
+		inst := NewInstance("test", "test", "test", 0, 24*time.Hour, 10)
 		inst.SetStatus(StatusRunning)
 		start := make(chan struct{})
 		claimed := make(chan bool, 1)
@@ -46,7 +48,7 @@ func TestIdleStopSerializesWithLease(t *testing.T) {
 }
 
 func TestIdleStopReturnsRefusedLeaseSlot(t *testing.T) {
-	inst := NewInstance("test", "test", "test", 0, -1, 10)
+	inst := NewInstance("test", "test", "test", 0, 24*time.Hour, 10)
 	inst.SetStatus(StatusRunning)
 	inst.InitConcurrencyLimit(ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: 1, QueueTimeout: time.Second})
 	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
@@ -80,8 +82,8 @@ func TestIdleStopRejectsRefreshedActivity(t *testing.T) {
 }
 
 func TestIdleStopClaimsAllOrNothing(t *testing.T) {
-	first := NewInstance("first", "test", "first", 0, -1, 10)
-	second := NewInstance("second", "test", "second", 0, -1, 10)
+	first := NewInstance("first", "test", "first", 0, 24*time.Hour, 10)
+	second := NewInstance("second", "test", "second", 0, 24*time.Hour, 10)
 	first.SetStatus(StatusRunning)
 	second.SetStatus(StatusRunning)
 	claims := []IdleStopCandidate{{Instance: first, Activity: first.GetLastActivity()}, {Instance: second, Activity: second.GetLastActivity()}}
@@ -98,7 +100,7 @@ func TestIdleStopClaimsAllOrNothing(t *testing.T) {
 }
 
 func TestIdleStopReleaseAllowsLease(t *testing.T) {
-	inst := NewInstance("test", "test", "test", 0, -1, 10)
+	inst := NewInstance("test", "test", "test", 0, 24*time.Hour, 10)
 	inst.SetStatus(StatusRunning)
 	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: inst.GetLastActivity()}})
 	require.NotNil(t, release)
@@ -115,7 +117,7 @@ func TestIdleStopReleaseAllowsLease(t *testing.T) {
 }
 
 func TestUnhealthyIdleRunIsEvictable(t *testing.T) {
-	inst := NewInstance("test", "test", "test", 0, -1, 10)
+	inst := NewInstance("test", "test", "test", 0, 24*time.Hour, 10)
 	inst.SetStatus(StatusUnhealthy)
 	assert.True(t, inst.Evictable(), "the reaper must still stop an idle unhealthy run")
 	inst.SetStatus(StatusStarting)
@@ -133,8 +135,8 @@ func TestIdleClaimRevalidatesHintAtSameActivity(t *testing.T) {
 	require.NoError(t, err)
 	lease.Release()
 	observed := inst.IdleSnapshot()
-	pin := -time.Second
-	inst.StampActivityWithHints(&keepalive.Override{Duration: &pin})
+	negative := -time.Second
+	inst.StampActivityWithHints(&keepalive.Override{Duration: &negative})
 	release, refusal := ClaimIdleStops([]IdleStopCandidate{{Instance: inst, Activity: observed.Activity, Idle: &observed}})
 	assert.Nil(t, release, "equal timestamps cannot validate an obsolete duration or release state")
 	assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: "not idle"}, refusal)
@@ -143,7 +145,7 @@ func TestIdleClaimRevalidatesHintAtSameActivity(t *testing.T) {
 func TestIdleStopRecordsLateRefusal(t *testing.T) {
 	for _, reason := range []string{"busy", "in use", "not idle"} {
 		t.Run(reason, func(t *testing.T) {
-			inst := NewInstance("late", "studio", "", 0, -1, 10)
+			inst := NewInstance("late", "studio", "", 0, 24*time.Hour, 10)
 			inst.SetStatus(StatusRunning)
 			defer inst.Cancel()
 			candidate := IdleStopCandidate{Instance: inst, Activity: inst.GetLastActivity()}
@@ -166,6 +168,50 @@ func TestIdleStopRecordsLateRefusal(t *testing.T) {
 			unblock()
 			assert.True(t, inst.Evictable())
 			assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: reason}, refusal, "keep the decision even after eligibility changes")
+		})
+	}
+}
+
+func TestPinnedIdlePolicyAndClaim(t *testing.T) {
+	inst := NewInstance("pin", "test", "model", 0, -1, 1)
+	defer inst.Cancel()
+	assert.Equal(t, "not idle", inst.EvictionBlockedReason())
+	inst.SetStatus(StatusRunning)
+	inst.ObserveActivity(true)
+	lease, err := inst.Acquire(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "pinned", inst.EvictionBlockedReason(), "pin precedes busy and in use")
+	lease.Release()
+	inst.ObserveActivity(false)
+	candidate := IdleStopCandidate{Instance: inst, Activity: inst.GetLastActivity()}
+	release, refusal := ClaimIdleStops([]IdleStopCandidate{candidate})
+	assert.Nil(t, release)
+	assert.Equal(t, &IdleStopRefusal{RunID: inst.ID, Reason: "pinned"}, refusal)
+}
+
+func TestRunReportDistinguishesPinFromTimer(t *testing.T) {
+	for _, pinned := range []bool{true, false} {
+		t.Run(map[bool]string{true: "launch pin", false: "inference timer"}[pinned], func(t *testing.T) {
+			duration := time.Minute
+			if pinned {
+				duration = -1
+			}
+			inst := NewInstance("run", "test", "model", 0, duration, 1)
+			defer inst.Cancel()
+			hint := time.Duration(-1)
+			if pinned {
+				hint = 0
+			}
+			inst.StampActivityWithHints(&keepalive.Override{Duration: &hint})
+			info := inst.ToInfo("node")
+			assert.Equal(t, pinned, info.Pinned)
+			assert.Equal(t, FormatKeepAlive(hint), info.KeepAlive)
+			data, err := json.Marshal(info)
+			require.NoError(t, err)
+			assert.Equal(t, pinned, strings.Contains(string(data), `"pinned":true`))
+			if !pinned {
+				assert.NotContains(t, string(data), `"pinned"`, "false is omitted on the wire")
+			}
 		})
 	}
 }

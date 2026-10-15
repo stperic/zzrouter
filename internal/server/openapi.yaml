@@ -805,7 +805,7 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
-        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (busy,
+        With eviction enabled, skipped runs carry `reclaim_skipped_reason` (pinned, busy,
         in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
         Unknown measurements or ambiguous device selection return 503. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
@@ -821,7 +821,7 @@ paths:
         detail.
 
         The tier-resolved `evict-idle-on-memory-pressure` run parameter stops
-        idle runs to make room when true. The node
+        unpinned idle runs to make room when true. The node
         `gpu.evict_idle_on_memory_pressure` is the fallback when absent. The launch names them in its run's
         `evicted_runs` and in its job's `meta.evicted_runs`.
 
@@ -2194,6 +2194,12 @@ paths:
       operationId: patchProviderParameters
       summary: Write provider parameters (RFC 7396 merge-patch)
       description: |
+        A negative resolved keep-alive pins newly admitted runs against router idle
+        expiry and pressure reclaim. Tier edits apply to live runs on restart;
+        restart=affected restarts stale runs and replays their request overrides.
+        Inference hints never change pins. Upgrade every worker before relying on
+        pins: older workers may reclaim negative keep-alive runs under pressure.
+
         The single mutator for provider parameters. One request addresses
         every tier of the resolution tree:
 
@@ -11380,6 +11386,7 @@ components:
         status:   { type: string }
         port:     { type: integer }
         base_url: { type: string, format: uri, description: Direct engine URL using the node advertised address; no zzRouter authentication or proxy. }
+        pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
         memory_commitments_mib:
           type: object
@@ -11430,11 +11437,12 @@ components:
         evicted_runs:
           type: array
           description: |
-            The idle runs this launch stopped to fit its GPU memory budget,
+            The unpinned idle runs this launch stopped to fit its GPU memory budget,
             when resolved `evict-idle-on-memory-pressure` is true (the node GPU
             option supplies the fallback). Absent
             when the launch stopped nothing. The run job's result carries
-            the same list.
+            the same list. Served runs can also report daemon-driven displacements,
+            which router pins do not prevent.
           items:
             type: object
             required: [run_id, model, freed_mib]
@@ -11767,7 +11775,14 @@ components:
             Refused for cloud providers.
         parameters:
           type: object
-          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
+          description: |
+            String, number or boolean values normalized to strings before provider
+            validation; null, objects and arrays are refused. Overrides provider tiers.
+            Negative keep-alive (for example -1) pins against router idle expiry and
+            pressure reclaim for the admitted run's lifetime. Positive or zero overrides
+            a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
+            Force replacement and restart remain available; restart replays this tier.
+            Pins do not autostart runs after a node restart.
           additionalProperties:
             oneOf:
               - { type: string }
@@ -11788,7 +11803,14 @@ components:
         force:      { type: boolean }
         parameters:
           type: object
-          description: String, number or boolean values normalized to strings before provider validation; null, objects and arrays are refused.
+          description: |
+            String, number or boolean values normalized to strings before provider
+            validation; null, objects and arrays are refused. Overrides provider tiers.
+            Negative keep-alive (for example -1) pins against router idle expiry and
+            pressure reclaim for the admitted run's lifetime. Positive or zero overrides
+            a tier pin. Inference keep_alive hints never pin or unpin. Explicit stop,
+            Force replacement and restart remain available; restart replays this tier.
+            Pins do not autostart runs after a node restart.
           additionalProperties:
             oneOf:
               - { type: string }

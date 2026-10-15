@@ -77,7 +77,7 @@ cache:
 # GPU MEMORY
 # =============================================================================
 gpu:
-  evict_idle_on_memory_pressure: false # Opt in to reclaim idle runs for a launch that cannot fit
+  evict_idle_on_memory_pressure: false # Opt in to reclaim unpinned idle runs for a launch that cannot fit
 
 # =============================================================================
 # MODELS

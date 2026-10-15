@@ -90,8 +90,8 @@ func LoadYAMLSchema(data []byte) (*YAMLSchema, error) {
 // fail-fast so startup reports all of them).
 func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	out := &ProviderSchema{Parameters: map[string]ParamShape{
-		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Idle duration, 0 after release, -1 indefinitely"},
-		runsettings.EvictIdleParameter: {Kind: ParamBool, Description: "Reclaim idle runs when this launch cannot fit"},
+		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Launch idle duration, 0 after release, negative pins against idle expiry and pressure reclaim; inference hints do not change pins"},
+		runsettings.EvictIdleParameter: {Kind: ParamBool, Description: "Reclaim unpinned idle runs when this launch cannot fit"},
 	}}
 	for k, v := range Registry[provider] {
 		out.Parameters[k] = v

@@ -25,15 +25,14 @@ func (m *ProviderAppManager) evictable(inst *instance.Instance) bool {
 }
 
 func (m *ProviderAppManager) evictionBlockedReason(inst *instance.Instance) string {
-	if reason := inst.EvictionBlockedReason(); reason != "" {
-		return reason
-	}
+	idle := inst.IdleSnapshot()
 	for _, waiting := range m.instances.List() {
 		if waiting.GetStatus() == instance.StatusStarting && waiting.WaitingOn() == inst.ID {
-			return "in use"
+			idle.Leased = true
+			break
 		}
 	}
-	return ""
+	return idle.EvictionBlockedReason()
 }
 
 func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason) error {

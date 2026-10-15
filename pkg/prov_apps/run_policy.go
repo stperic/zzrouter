@@ -203,9 +203,9 @@ func chooseEvictions(shortfall int64, candidates []evictionCandidate) []string {
 }
 
 // Expired is the idle rule: held leases, claims and pins never expire, zero expires after release.
-func Expired(r instance.IdleState, settings config.RunSettings, now time.Time) bool {
-	if (r.Status != instance.StatusRunning && r.Status != instance.StatusUnhealthy) || r.Leased || r.Claimed {
+func Expired(r instance.IdleState, now time.Time) bool {
+	if r.EvictionBlockedReason() != "" {
 		return false
 	}
-	return settings.KeepAlive == 0 && r.Released || settings.KeepAlive > 0 && !r.Activity.IsZero() && !now.Before(r.Activity.Add(settings.KeepAlive))
+	return r.KeepAlive == 0 && r.Released || r.KeepAlive > 0 && !r.Activity.IsZero() && !now.Before(r.Activity.Add(r.KeepAlive))
 }

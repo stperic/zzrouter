@@ -36,9 +36,9 @@ gpu:
 
 The default is off. Enable it on each node that may stop idle zzRouter runs to
 admit a launch whose GPU budget cannot fit. Restart the node after changing it.
-Only healthy running instances with zero active request leases and no queued
-launch waiting on them qualify. Oldest activity goes first, and nothing is
-stopped unless the eligible holders cover the memory shortfall. Unknown holder
+Only unpinned running or unhealthy instances with no activity hold, active request
+lease, claimed stop or queued launch waiting on them qualify. Oldest activity goes
+first, and nothing is stopped unless the eligible holders cover the memory shortfall. Unknown holder
 sizes count as zero. Other processes are never reclaimed.
 
 After stopping, admission waits up to 5 seconds for asynchronous driver memory
@@ -61,6 +61,29 @@ Change settings through `PATCH /zzrouter/v1/providers/:name/parameters` with
 `Content-Type: application/merge-patch+json`. A null removes an override;
 arrays replace. Workers redirect coordinator-owned writes with HTTP 421 and
 `Location`.
+
+Set `keep-alive: "-1"` (or another negative duration) in the provider tier tree
+or run-start `parameters` to pin a run against zzRouter idle expiry and pressure
+reclaim. For example, PATCH `/zzrouter/v1/providers/vllm/parameters` with
+`{"models":{"embedding-model":{"parameters":{"keep-alive":"-1"}}}}`, or
+POST `/zzrouter/v1/runs` with
+`{"provider":"vllm","model":"embedding-model","parameters":{"keep-alive":"-1"}}`.
+A request `-1` overrides a positive tier value and pins; a positive request value
+overrides a negative tier value and does not pin. The final admitted launch
+settings fix the pin for the run's lifetime. A tier edit affects a live run only
+after restart; inspect `parameters_status` or use `restart=affected` on the PATCH.
+Inference `keep_alive` hints keep their last-hint-wins idle-timer behavior and
+never pin or unpin, including negative, positive and zero hints.
+
+Run reports expose `pinned: true` when pinned. A memory refusal remains 409
+`out_of_range`, with `errors[].got.holders[].reclaim_skipped_reason: "pinned"`
+and the holder's run, model and provider. If unpinned holders cannot cover the
+shortfall, nothing stops. Explicit DELETE, Force replacement and restart may stop
+pins; restart replays request overrides. Stop before uninstalling a provider.
+Pins do not autostart runs after a node restart. Surviving daemon models can be
+re-adopted, but lost models are not reloaded; daemon unloads are not prevented.
+Upgrade every worker before relying on pins: an older worker keeps `-1` as
+idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.
 
 A model variant uses `models.<variant>.from: <base>` with optional parameters
 and request defaults. Equal launch settings share the base process; distinct
