@@ -29,7 +29,7 @@ live only in `runtime.failure_patterns`.
 | `model_not_deletable` | 409 | The selected identity is cloud configuration, a logical variant or a group. | Remove its configuration entry rather than physical weights. |
 | `model_detail_unsupported` | 501 | The selected catalog identity has no detail reader. | Keep catalog evidence and use serving probes, or inspect a group's exact model. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
-| `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models`; trim prompt or lower `max_tokens`. |
+| `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models` (present while a run serves the model); trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |
 | `capacity_exceeded` | 503 | The instance queue is full or queueing is disabled. | Honor `Retry-After`; retry or use another replica. |
 | `queue_wait_expired` | 503 | The instance slot did not become available within the queue wait. | Honor `Retry-After`; retry or use another replica. |

@@ -19,11 +19,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func servedContextRig(t *testing.T, field string, transport http.RoundTripper) *contractRig {
+func servedContextRig(t *testing.T, field string, transport http.RoundTripper, opts ...Option) *contractRig {
 	t.Helper()
-	r := newContractRig(t, true, WithHTTPClient(&http.Client{Transport: transport}), WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
+	r := newContractRig(t, true, append([]Option{WithHTTPClient(&http.Client{Transport: transport}), WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
 		return &schema.ProviderSchema{Parameters: map[string]schema.ParamShape{"context": {Served: field}}}, nil
-	}))
+	})}, opts...)...)
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
 	svc.Defaults.Metadata = &config.AppMetadata{ContextParam: "context"}
 	svc.Runtime.Execution.WireModel = config.WireModelName
@@ -36,6 +36,7 @@ func servedContextRig(t *testing.T, field string, transport http.RoundTripper) *
 func contextRun(t *testing.T, r *contractRig) *instance.Instance {
 	t.Helper()
 	run := instance.NewInstance("context-read", "generic", "catalog-name", 8740, 0, 0)
+	run.Config = instance.Config{Provider: "generic", Model: "catalog-name"}
 	run.WireModel = "engine-name"
 	run.Endpoint = "chat"
 	require.NoError(t, r.m.instances.Register(run))
@@ -74,7 +75,7 @@ func TestServedContextRead(t *testing.T) {
 		{"parent not object", "meta.n_ctx", `{"data":[{"id":"engine-name","meta":12}]}`, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls atomic.Int32
+			var calls, refreshes atomic.Int32
 			r := servedContextRig(t, tc.field, serviceProbeTransport(func(req *http.Request) (*http.Response, error) {
 				calls.Add(1)
 				assert.Equal(t, "/v1/models", req.URL.Path)
@@ -91,7 +92,7 @@ func TestServedContextRead(t *testing.T) {
 					resp.StatusCode = http.StatusServiceUnavailable
 				}
 				return resp, nil
-			}))
+			}), WithCatalogChanged(func() { refreshes.Add(1) }))
 			run := contextRun(t, r)
 			run.SetLoaded(instance.Loaded{Size: 100, VRAM: 100, Digest: "keep"})
 			require.True(t, r.m.publishRunning(run, true, "ready"))
@@ -103,6 +104,15 @@ func TestServedContextRead(t *testing.T) {
 			assert.Empty(t, info.ErrorMessage)
 			assert.Equal(t, int64(100), info.SizeBytes)
 			assert.Equal(t, "keep", run.Loaded().Digest)
+			// Publication refreshed the catalog before the read; a read context refreshes it again.
+			details := r.m.ModelFeatureDetails("generic", "catalog-name", nil)
+			if tc.want > 0 {
+				assert.Equal(t, int32(2), refreshes.Load())
+				assert.Equal(t, tc.want, details["context_length"])
+			} else {
+				assert.Equal(t, int32(1), refreshes.Load())
+				assert.NotContains(t, details, "context_length")
+			}
 		})
 	}
 }

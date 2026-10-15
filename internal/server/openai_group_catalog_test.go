@@ -62,6 +62,18 @@ func TestDescribeGroup(t *testing.T) {
 		assert.Equal(t, servedByCloud, got.ServedBy, "a request may bill upstream")
 	})
 
+	t.Run("a replica with no served context makes the group's unknown", func(t *testing.T) {
+		t.Parallel()
+		cold := OpenAIModelObject{ID: "qwen2.5:0.5b@localai", Capabilities: &OpenAIModelCapabilities{Chat: true, Stream: true}, ServedBy: servedByLocal}
+		got := describeGroup("route-cold", 1, []modelgroup.Replica{
+			{Name: "r1", Model: "qwen2.5:0.5b", Node: "macbook-pro", App: "ollama"},
+			{Name: "r2", Model: "qwen2.5:0.5b", Node: "localai", App: "ollama"},
+		}, map[string]OpenAIModelObject{chatLocal.ID: chatLocal, cold.ID: cold}, "macbook-pro")
+
+		require.NotNil(t, got.Capabilities)
+		assert.Zero(t, got.Capabilities.MaxContextTokens, "the cold replica may serve with any window")
+	})
+
 	// Replica.Node documents "" as local, but the catalog id for a local
 	// model is name@<hostname>. A hand-authored model_groups.yaml that
 	// omits node: therefore looked up a key that cannot exist, and the

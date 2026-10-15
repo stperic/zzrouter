@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `/v1/models` `capabilities.max_context_tokens` reports the context a running
+  replica serves, worker runs included; it is omitted while no run reports one,
+  and for a group when any replica's is unknown (a cloud replica always is).
 - llama.cpp runs report GPU/CPU placement from weight buffers when CPU tensor
   overrides are logged, otherwise from layers. Managed logging includes placement.
   MCP `zz_runs` exposes `processor` and `context_length`

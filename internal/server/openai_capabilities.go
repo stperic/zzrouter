@@ -25,12 +25,11 @@
 //	  "vision":             bool,
 //	  "stream":             bool,
 //	  "json_mode":          bool,
-//	  "max_context_tokens": int  // 0 = unknown
+//	  "max_context_tokens": int  // omitted when unknown
 //	}
 //
-// The dict shape is deliberately exhaustive: every defined capability
-// is always emitted with an explicit value, so clients can branch on
-// `caps.tools` without null-checking. New capabilities are added by
+// Every boolean capability is always emitted with an explicit value, so
+// clients can branch on `caps.tools` without null-checking. New capabilities are added by
 // extending the struct and bumping pkg/protocol/openai/SpecVersion.
 //
 // # Derivation
@@ -55,8 +54,9 @@
 //   - Node-reported vision presence sets vision=true. Legacy providers
 //     without a feature declaration retain the model-name fallback.
 //
-// max_context_tokens is 0 (unknown) in the first cut. A future
-// revision will read it from a `context_tokens` field in apps.yaml.
+// max_context_tokens is the context a running replica serves, as its
+// node reports it in the catalog; a model with no run reporting one
+// omits it.
 //
 // The derivation function is a pure function of (cache.CachedModel, AppProtocol).
 // It has no side effects and is safe to call from the hot path of
@@ -124,7 +124,7 @@ func deriveCapabilities(m *cache.CachedModel, appsConfig *pkgConfig.AppsConfig) 
 	// models are usually built on an encoder-only architecture too, and
 	// the name is the only thing that separates the two.
 	if isRerankName(nameLower) {
-		return OpenAIModelCapabilities{Rerank: true}
+		return OpenAIModelCapabilities{Rerank: true, MaxContextTokens: m.ContextLength()}
 	}
 
 	// Embedding models are likewise a separate universe — emitting
@@ -134,7 +134,7 @@ func deriveCapabilities(m *cache.CachedModel, appsConfig *pkgConfig.AppsConfig) 
 	// be named to no convention at all (all-minilm) and still report an
 	// encoder-only family that cannot generate a chat turn.
 	if isEmbeddingName(nameLower) || isEncoderOnlyArchitecture(m) {
-		return OpenAIModelCapabilities{Embeddings: true}
+		return OpenAIModelCapabilities{Embeddings: true, MaxContextTokens: m.ContextLength()}
 	}
 
 	switch protocol {
@@ -153,6 +153,7 @@ func deriveCapabilities(m *cache.CachedModel, appsConfig *pkgConfig.AppsConfig) 
 		// Unknown protocol: fall back to chat-only.
 	}
 
+	caps.MaxContextTokens = m.ContextLength()
 	caps.Vision = m.FeatureState("vision") == "present"
 	if !caps.Vision && m.FeatureState("vision") == "unknown" && !declaresFeatures(m.Provider, appsConfig) {
 		caps.Vision = isVisionName(nameLower)

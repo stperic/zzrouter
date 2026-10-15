@@ -688,9 +688,9 @@ func replicaCatalogID(rep modelgroup.Replica, localNode string) string {
 }
 
 // intersectCapabilities narrows dst to what dst and other both support.
-// MaxContextTokens takes the smaller non-zero window for the same reason
-// the bools intersect: the caller must be able to rely on it whichever
-// replica serves.
+// MaxContextTokens takes the smaller window, and is unknown when any replica's
+// is, for the same reason the bools intersect: the caller must be able to
+// rely on it whichever replica serves.
 func intersectCapabilities(dst *OpenAIModelCapabilities, other OpenAIModelCapabilities) {
 	dst.Chat = dst.Chat && other.Chat
 	dst.Completions = dst.Completions && other.Completions
@@ -700,9 +700,7 @@ func intersectCapabilities(dst *OpenAIModelCapabilities, other OpenAIModelCapabi
 	dst.Vision = dst.Vision && other.Vision
 	dst.Stream = dst.Stream && other.Stream
 	dst.JSONMode = dst.JSONMode && other.JSONMode
-	if other.MaxContextTokens > 0 && (dst.MaxContextTokens == 0 || other.MaxContextTokens < dst.MaxContextTokens) {
-		dst.MaxContextTokens = other.MaxContextTokens
-	}
+	dst.MaxContextTokens = min(dst.MaxContextTokens, other.MaxContextTokens)
 }
 
 // qualifyID returns "name@node" for cluster-resident models, else

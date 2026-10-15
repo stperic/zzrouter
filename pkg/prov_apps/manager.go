@@ -1125,11 +1125,14 @@ func (m *ProviderAppManager) enqueueEvent(e Event) {
 }
 
 func (m *ProviderAppManager) notifyCatalog(e Event) {
-	if m.shutdown.Load() || m.catalogChanged == nil {
-		return
-	}
 	switch e.Type {
 	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
+		m.refreshCatalog()
+	}
+}
+
+func (m *ProviderAppManager) refreshCatalog() {
+	if !m.shutdown.Load() && m.catalogChanged != nil {
 		m.catalogChanged()
 	}
 }

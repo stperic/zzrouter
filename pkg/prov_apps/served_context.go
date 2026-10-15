@@ -38,7 +38,9 @@ func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
 	for _, model := range models {
 		if model.FullID == run.WireModel {
 			if tokens := servedContext(model.Extra, field); tokens > 0 {
-				run.UpdateLoaded(func(loaded *instance.Loaded) { loaded.ContextLength = tokens })
+				if run.UpdateLoaded(func(loaded *instance.Loaded) { loaded.ContextLength = tokens }) {
+					m.refreshCatalog() // read after publication notified the catalog
+				}
 			}
 			return
 		}

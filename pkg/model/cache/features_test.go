@@ -122,3 +122,34 @@ func TestWireEndpointsDeriveFromWorkerDeclaration(t *testing.T) {
 		assert.False(t, known)
 	}
 }
+
+// A worker's served context reaches the coordinator through JSON, which decodes it as float64.
+func TestContextLengthWorkerRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"served", 262144, 262144},
+		{"absent", nil, 0},
+		{"fraction", 8192.5, 0},
+		{"zero", 0, 0},
+		{"negative", -1, 0},
+		{"string", "8192", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			details := map[string]any{}
+			if tc.value != nil {
+				details["context_length"] = tc.value
+			}
+			local := &CachedModel{Name: "model", Details: details}
+			data, err := json.Marshal(local)
+			require.NoError(t, err)
+			var remote CachedModel
+			require.NoError(t, json.Unmarshal(data, &remote))
+			assert.Equal(t, tc.want, local.ContextLength(), "the local catalog keeps an int")
+			assert.Equal(t, tc.want, remote.ContextLength(), "the coordinator decodes a float64")
+		})
+	}
+	assert.Zero(t, (*CachedModel)(nil).ContextLength())
+}
