@@ -28,6 +28,8 @@ type NodeConfigStore struct {
 	cfg       *NodeConfig
 	dir       string // config directory (for SaveNodeConfigToDir)
 	listeners []listenerEntry
+	// Observability is startup-only; pending reload values cannot stop a live exporter.
+	startupObservability ObservabilityConfig
 }
 
 // listenerEntry pairs a listener callback with its registered name so
@@ -44,9 +46,10 @@ type listenerEntry struct {
 func NewNodeConfigStoreFromConfig(cfg *NodeConfig) *NodeConfigStore {
 	cm := NewConfigManager("zzrouter")
 	return &NodeConfigStore{
-		cm:  cm,
-		cfg: cfg,
-		dir: cm.GetNodeConfigDir(),
+		cm:                   cm,
+		cfg:                  cfg,
+		dir:                  cm.GetNodeConfigDir(),
+		startupObservability: cfg.Observability,
 	}
 }
 
@@ -105,6 +108,10 @@ func (s *NodeConfigStore) Reload() (*ReloadReport, error) {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("reload node config: %w", err)
 	}
+	if err := s.startupObservability.ValidateForMode(cfg.Cluster.Mode); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	s.cfg = cfg
 	listeners := s.snapshotListenersLocked()
 	s.mu.Unlock()
@@ -113,6 +120,9 @@ func (s *NodeConfigStore) Reload() (*ReloadReport, error) {
 
 // save persists the current in-memory config to disk. Must be called with mu held.
 func (s *NodeConfigStore) save() error {
+	if err := s.startupObservability.ValidateForMode(s.cfg.Cluster.Mode); err != nil {
+		return err
+	}
 	return s.cm.SaveNodeConfigToDir(s.cfg, s.dir)
 }
 

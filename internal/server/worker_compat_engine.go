@@ -4,7 +4,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/observability"
 )
 
 // buildWorkerCompatEngine returns a *gin.Engine serving the
@@ -33,9 +32,6 @@ import (
 func buildWorkerCompatEngine(s *Server) *gin.Engine {
 	engine := gin.New()
 	engine.Use(gin.Recovery())
-	if s.otelProvider != nil && s.config.Observability.IsTracingEnabled() {
-		engine.Use(observability.TracingMiddleware(s.config.Observability.ServiceName))
-	}
 	engine.Use(modelAdmissionMiddleware())
 	engine.Use(RequestIDMiddleware())
 	engine.Use(httperr.AttachByPath(s.responders.dispatcher))

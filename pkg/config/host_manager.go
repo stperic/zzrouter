@@ -110,6 +110,9 @@ func unmarshalNodeConfig(v *viper.Viper, path string) (*NodeConfig, error) {
 	}
 	config.SourcePath = path
 	config.applyLoadDefaults()
+	if err := config.Observability.ValidateForMode(config.Cluster.Mode); err != nil {
+		return nil, err
+	}
 	return &config, nil
 }
 
@@ -122,6 +125,9 @@ func (cm *ConfigManager) SaveNodeConfig(config *NodeConfig) error {
 // SaveNodeConfigToDir saves host configuration to a specific directory.
 // Uses proper YAML marshal instead of regex text replacement.
 func (cm *ConfigManager) SaveNodeConfigToDir(config *NodeConfig, dir string) error {
+	if err := config.Observability.ValidateForMode(config.Cluster.Mode); err != nil {
+		return err
+	}
 	if err := cm.EnsureDir(dir); err != nil {
 		return fmt.Errorf("failed to create config dir: %w", err)
 	}

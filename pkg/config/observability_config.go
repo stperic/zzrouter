@@ -1,6 +1,10 @@
 package config
 
-import "github.com/stperic/zzrouter/pkg/observability"
+import (
+	"fmt"
+
+	"github.com/stperic/zzrouter/pkg/observability"
+)
 
 // ObservabilityConfig holds OpenTelemetry observability configuration.
 type ObservabilityConfig struct {
@@ -60,6 +64,14 @@ type MetricsConfig struct {
 	// ExportInterval is how often to export metrics (in seconds)
 	// Default: 15 seconds
 	ExportInterval int `mapstructure:"export_interval" yaml:"export_interval,omitempty"`
+}
+
+// ValidateForMode keeps worker telemetry local while coordinators own tracing and export.
+func (c *ObservabilityConfig) ValidateForMode(mode ClusterMode) error {
+	if mode == ClusterModeWorker && (c.Tracing.Enabled || c.OTLP.Endpoint != "") {
+		return fmt.Errorf("%w: OpenTelemetry tracing and export are supported only on the coordinator; disable observability.tracing.enabled, remove observability.otlp.endpoint, and restart before using worker mode", ErrInvalidConfig)
+	}
+	return nil
 }
 
 // ToObservabilityConfig converts node settings into the provider configuration.

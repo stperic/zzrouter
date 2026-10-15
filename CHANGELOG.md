@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- OpenTelemetry tracing and OTLP export are coordinator-only. Workers reject
+  tracing or a collector endpoint during configuration load, save and startup;
+  local Prometheus metrics remain supported. Switching a tracing/exporting
+  coordinator to worker mode requires disabling tracing/export and restarting
+  before the mode change.
+
 ## 0.2.2 (2026-10-14)
 
 - Builds on Go 1.26.9 and golang.org/x/net v0.60.0, which fix reachable
