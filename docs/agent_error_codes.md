@@ -39,7 +39,7 @@ live only in `runtime.failure_patterns`.
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Check whether replay is safe before retrying a billed or side-effecting request; if persistent, inspect `runtime.status`. |
 | `fallback_exhausted` | 502 | A transport failure could have occurred after the upstream ran the request. The group stops without replaying it. | Check upstream execution before resubmitting a billed or side-effecting request. |
 | `upstream_timeout` | 504 | The model instance did not begin responding within its first-byte budget. The group stops without replaying it. | Check upstream execution before resubmitting; it may still be processing the request. |
-| `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details identify managed runs and outside holders by PID. |
+| `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details name managed runs and outside holders. Pinned holders say `reclaim skipped: pinned`; explicitly stop the run or change launch keep-alive and restart. |
 | `unsupported_input` | 400 | The `unsupported_input` class: the engine refused an input kind. | Use a model supporting that input, or remove it from the request. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `chat_completions` without native `responses` automatically derive `responses_compat` and translate supported Responses requests to Chat Completions. |
 | `tool_calling_not_enabled` | 400 | The `tool_calling_not_enabled` class: required launch switches are missing. | Set the provider's tool-calling parameters through PATCH `/zzrouter/v1/providers/{name}/parameters`, then restart the run. |
@@ -140,7 +140,14 @@ containing "is reserved".
 
 ### Runs surface (`/zzrouter/v1/runs`)
 
-Errors use Problem Details. Common `title`/`code` pairs an agent will see:
+Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
+`errors[].got.holders[]` names each holder's `run`, `model` or `provider`, with
+`reclaim_skipped_reason: "pinned"` for a protected run. List runs to inspect
+`pinned: true`. Explicitly DELETE that run, or change launch `keep-alive` and
+restart it. Inference hints cannot pin or unpin. A refused launch leaves pins
+untouched and excludes them from `evicted_runs`.
+
+Common `title`/`code` pairs an agent will see:
 
 | Status | What it means | Recovery |
 |---|---|---|

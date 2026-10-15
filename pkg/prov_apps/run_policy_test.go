@@ -192,7 +192,7 @@ func TestIdleExpired(t *testing.T) {
 			if tc.zero {
 				activity = time.Time{}
 			}
-			assert.Equal(t, tc.want, Expired(instance.IdleState{Status: instance.StatusRunning, Activity: activity, Released: true}, config.RunSettings{KeepAlive: tc.keepAlive}, now))
+			assert.Equal(t, tc.want, Expired(instance.IdleState{Status: instance.StatusRunning, Activity: activity, Released: true, KeepAlive: tc.keepAlive}, now))
 		})
 	}
 }
@@ -213,7 +213,7 @@ func TestRegisteredRunKeepAlive(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, run.GetKeepAlive())
 			idle := run.IdleSnapshot()
-			assert.Equal(t, false, Expired(idle, config.RunSettings{KeepAlive: idle.KeepAlive}, utils.Now()))
+			assert.Equal(t, false, Expired(idle, utils.Now()))
 			// Registry visibility lasts until the reaper actually ends the run.
 			assert.Contains(t, mgr.Instances().List(), run)
 		})
@@ -233,11 +233,14 @@ func TestExpiredState(t *testing.T) {
 		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Leased: true},
 		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Claimed: true},
 		{Status: instance.StatusStarting, Activity: base.Activity, Released: true},
+		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Pinned: true},
+		{Status: instance.StatusRunning, Activity: base.Activity, Released: true, Busy: true},
 		{Status: instance.StatusStopped, Activity: base.Activity, Released: true},
 	} {
-		assert.False(t, Expired(state, config.RunSettings{KeepAlive: time.Minute}, now))
+		state.KeepAlive = time.Minute
+		assert.False(t, Expired(state, now))
 	}
-	assert.True(t, Expired(base, config.RunSettings{KeepAlive: 0}, now))
+	assert.True(t, Expired(base, now))
 	base.Released = false
-	assert.False(t, Expired(base, config.RunSettings{KeepAlive: 0}, now), "zero must wait for release")
+	assert.False(t, Expired(base, now), "zero must wait for release")
 }

@@ -136,6 +136,7 @@ type Instance struct {
 	idleChanged  chan<- struct{} `json:"-"`
 	activityHold bool            `json:"-"`
 	idleReleased bool            `json:"-"`
+	pinned       bool            // fixed by resolved launch settings before admission
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -188,6 +189,7 @@ func NewInstance(id, provider, model string, port int, keepAlive time.Duration, 
 		Port:       port,
 		Status:     StatusStarting,
 		KeepAlive:  keepAlive,
+		pinned:     keepAlive < 0,
 		LaunchMode: LaunchModeNative,
 		Logs:       make(chan string, logBufferSize),
 		ctx:        ctx,
@@ -257,29 +259,14 @@ func (i *Instance) IsHealthy() bool {
 	return i.Status == StatusRunning
 }
 
-// Evictable reports whether a running or unhealthy run has no active leases and no stop claimed.
+// Evictable reports whether the shared idle policy permits stopping this run.
 func (i *Instance) Evictable() bool {
 	return i.EvictionBlockedReason() == ""
 }
 
 // EvictionBlockedReason records why the run cannot be reclaimed, or is empty when idle.
 func (i *Instance) EvictionBlockedReason() string {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	return i.evictionBlockedReasonLocked()
-}
-
-func (i *Instance) evictionBlockedReasonLocked() string {
-	switch {
-	case (i.Status != StatusRunning && i.Status != StatusUnhealthy) || i.idleStopClaimed:
-		return "not idle"
-	case i.activityHold:
-		return "busy"
-	case i.GetActiveRequests() != 0:
-		return "in use"
-	default:
-		return ""
-	}
+	return i.IdleSnapshot().EvictionBlockedReason()
 }
 
 // IsRunning returns true if the instance is running or unhealthy.
@@ -509,6 +496,7 @@ type IdleState struct {
 	Activity                  time.Time
 	Status                    Status
 	Leased, Claimed, Released bool
+	Pinned, Busy              bool
 }
 
 // IdleSnapshot reads idle policy inputs under one lock.
@@ -519,7 +507,7 @@ func (i *Instance) IdleSnapshot() IdleState {
 }
 
 func (i *Instance) idleSnapshotLocked() IdleState {
-	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Leased: i.GetActiveRequests() != 0 || i.activityHold, Claimed: i.idleStopClaimed, Released: i.idleReleased}
+	return IdleState{KeepAlive: i.KeepAlive, Activity: i.LastActivity, Status: i.Status, Pinned: i.pinned, Busy: i.activityHold, Leased: i.GetActiveRequests() != 0 || i.activityHold, Claimed: i.idleStopClaimed, Released: i.idleReleased}
 }
 
 // GetLastActivity returns the last activity time.
@@ -581,11 +569,12 @@ func (i *Instance) Loaded() Loaded {
 
 // --- Keep-alive ---
 
-// SetKeepAlive records the admitted launch's resolved idle limit before readiness.
+// SetKeepAlive finalizes the resolved launch timer and pin before admission.
 func (i *Instance) SetKeepAlive(duration time.Duration) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.KeepAlive = duration
+	i.pinned = duration < 0
 	i.notifyIdleLocked()
 }
 
@@ -797,6 +786,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		HealthURL:             rewriteHealthURLHost(i.HealthURL, hostname),
 		Node:                  hostname,
 		KeepAlive:             FormatKeepAlive(i.KeepAlive),
+		Pinned:                i.pinned,
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
 		EvictedRuns:           slices.Clone(i.evictedRuns),

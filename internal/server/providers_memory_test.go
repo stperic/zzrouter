@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
@@ -17,38 +18,44 @@ import (
 )
 
 func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
-	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
-	refusal := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000,
-		Holders: []process.MemoryHolder{{Run: "comfy-run", Provider: "comfyui", Ownership: "zzrouter", MemoryMiB: new(int64(31966)), UnusedCommitmentMiB: 31966, ReclaimSkippedReason: "busy"}}}
-	RespondToError(c, fmt.Errorf("launch refused: %w", refusal))
-	require.Equal(t, 409, response.Code)
-	assert.Equal(t, "application/problem+json", response.Header().Get("Content-Type"))
-	var problem utils.ProblemDetails
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
-	assert.Equal(t, "out_of_range", problem.Code)
-	assert.Equal(t, 409, answeredStatus(refusal))
-	require.Len(t, problem.Errors, 1)
-	got := problem.Errors[0].Got.(map[string]any)
-	assert.Equal(t, float64(9500), got["required_mib"])
-	assert.Equal(t, float64(6000), got["free_mib"])
-	holder := got["holders"].([]any)[0].(map[string]any)
-	assert.Equal(t, "busy", holder["reclaim_skipped_reason"])
-	assert.NotContains(t, holder, "pid")
-	assert.Contains(t, problem.Detail, "zzRouter run comfy-run provider comfyui (31966 MiB unused commitment; reclaim skipped: busy)")
-	assert.Contains(t, problem.Errors[0].Hint, "PATCH")
-	assert.Equal(t, 503, answeredStatus(fmt.Errorf("observe: %w", process.ErrMemoryObservation)))
-	assert.Equal(t, 400, answeredStatus(fmt.Errorf("budget: %w", process.ErrMemoryBudgetInvalid)))
-	classified := loadFailureWire(fmt.Errorf("cold load: %w", refusal))
-	assert.Equal(t, 409, classified.Status)
-	assert.Equal(t, "out_of_range", classified.Code)
-	assert.Contains(t, classified.Message, "required 9500 MiB, currently free 6000 MiB")
-	assert.Contains(t, classified.Message, "reclaim skipped: busy")
-	wire := httptest.NewRecorder()
-	writeError(wire, nil, classified)
-	assert.Equal(t, 409, wire.Code)
-	assert.Contains(t, wire.Body.String(), "required 9500 MiB, currently free 6000 MiB")
-	assert.Equal(t, 503, loadFailureWire(process.ErrMemoryObservation).Status)
-	assert.Equal(t, 400, loadFailureWire(process.ErrMemoryBudgetInvalid).Status)
+	for _, reason := range []string{"busy", "pinned"} {
+		t.Run(reason, func(t *testing.T) {
+			c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
+			refusal := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000,
+				Holders: []process.MemoryHolder{{Run: "comfy-run", Provider: "comfyui", Ownership: "zzrouter", MemoryMiB: new(int64(31966)), UnusedCommitmentMiB: 31966, ReclaimSkippedReason: reason}}}
+			RespondToError(c, fmt.Errorf("launch refused: %w", refusal))
+			require.Equal(t, 409, response.Code)
+			assert.Equal(t, "application/problem+json", response.Header().Get("Content-Type"))
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
+			assert.Equal(t, "out_of_range", problem.Code)
+			assert.Equal(t, 409, answeredStatus(refusal))
+			require.Len(t, problem.Errors, 1)
+			got := problem.Errors[0].Got.(map[string]any)
+			assert.Equal(t, float64(9500), got["required_mib"])
+			assert.Equal(t, float64(6000), got["free_mib"])
+			holder := got["holders"].([]any)[0].(map[string]any)
+			assert.Equal(t, reason, holder["reclaim_skipped_reason"])
+			assert.NotContains(t, holder, "pid")
+			assert.Equal(t, "comfy-run", holder["run"])
+			assert.Equal(t, "comfyui", holder["provider"])
+			assert.Contains(t, problem.Detail, "zzRouter run comfy-run provider comfyui (31966 MiB unused commitment; reclaim skipped: "+reason+")")
+			assert.Contains(t, problem.Errors[0].Hint, "PATCH")
+			assert.Equal(t, 503, answeredStatus(fmt.Errorf("observe: %w", process.ErrMemoryObservation)))
+			assert.Equal(t, 400, answeredStatus(fmt.Errorf("budget: %w", process.ErrMemoryBudgetInvalid)))
+			classified := loadFailureWire(fmt.Errorf("cold load: %w", refusal))
+			assert.Equal(t, 409, classified.Status)
+			assert.Equal(t, "out_of_range", classified.Code)
+			assert.Contains(t, classified.Message, "required 9500 MiB, currently free 6000 MiB")
+			assert.Contains(t, classified.Message, "reclaim skipped: "+reason)
+			wire := httptest.NewRecorder()
+			writeError(wire, nil, classified)
+			assert.Equal(t, 409, wire.Code)
+			assert.Contains(t, wire.Body.String(), "required 9500 MiB, currently free 6000 MiB")
+			assert.Equal(t, 503, loadFailureWire(process.ErrMemoryObservation).Status)
+			assert.Equal(t, 400, loadFailureWire(process.ErrMemoryBudgetInvalid).Status)
+		})
+	}
 }
 
 // A cold load that queued and was then refused answers like an inline
@@ -80,4 +87,24 @@ func TestEngineFailureSurvivesColdLoad(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, lf.Status)
 	assert.Equal(t, string(httperr.CodeOutOfRange), lf.Code)
 	assert.Contains(t, lf.Message, inst.ID)
+}
+
+func TestPinnedRunExplicitDELETE(t *testing.T) {
+	r := newReadinessRig(t)
+	run := instance.NewInstance("pinned-run", "fake", "embedding", 0, -1, 1)
+	run.MarkRunning(false, nil)
+	require.NoError(t, r.mgr.Instances().Register(run))
+	executor := &RunsExecutor{appMgr: r.mgr}
+	internal := gin.New()
+	internal.DELETE("/zzrouter/v1/internal/runs/:id", executor.HandleInternalStopRun)
+	public := gin.New()
+	controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+	public.DELETE("/runs/:id", controller.StopRun)
+	response := httptest.NewRecorder()
+	public.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/runs/"+run.ID, nil))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Equal(t, instance.StatusStopped, run.GetStatus())
+	_, exists := r.mgr.Instances().Get(run.ID)
+	assert.False(t, exists)
+	assert.Contains(t, response.Body.String(), `"status":"stopped"`)
 }

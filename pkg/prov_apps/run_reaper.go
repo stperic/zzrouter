@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/config"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -65,7 +64,7 @@ func (m *ProviderAppManager) idleReaper() {
 				heap.Pop(&deadlines)
 				current, exists := m.instances.Get(run.ID)
 				idle := run.IdleSnapshot()
-				if !exists || current != run || !m.evictable(run) || !Expired(idle, config.RunSettings{KeepAlive: idle.KeepAlive}, utils.Now()) {
+				if !exists || current != run || !m.evictable(run) || !Expired(idle, utils.Now()) {
 					continue
 				}
 				release, _ := instance.ClaimIdleStops([]instance.IdleStopCandidate{{Instance: run, Activity: idle.Activity, Idle: &idle}})

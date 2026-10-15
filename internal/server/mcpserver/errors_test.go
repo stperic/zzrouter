@@ -387,3 +387,18 @@ func TestToolErrorProblemWithoutCodeKeepsFields(t *testing.T) {
 	require.Equal(t, "rest-req-9", problem.RequestID)
 	require.Equal(t, utils.NewProblemDetails(http.StatusConflict, http.StatusText(http.StatusConflict), "", "").Code, problem.Code)
 }
+
+func TestToolErrorKeepsPinnedMemoryProblem(t *testing.T) {
+	problem := *utils.NewProblemDetails(http.StatusConflict, "Conflict", "reclaim skipped: pinned", "/zzrouter/v1/runs")
+	problem.Code = "out_of_range"
+	problem.Errors = []utils.ParamError{{Key: "budget", Code: "out_of_range", Got: map[string]any{
+		"holders": []any{map[string]any{"run": "embedding-run", "model": "embedding", "reclaim_skipped_reason": "pinned"}},
+	}}}
+	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(problem.Status)
+		require.NoError(t, json.NewEncoder(w).Encode(problem))
+	})
+	result := callTool(t, d, "zz_run_start", map[string]any{"provider": "vllm", "model": "large"})
+	require.Equal(t, problem, resultProblem(t, result))
+}

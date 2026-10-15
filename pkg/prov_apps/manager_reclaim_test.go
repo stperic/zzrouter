@@ -24,20 +24,24 @@ type reclaimFixture struct {
 	device   gpu.MemoryDevice
 }
 
-func newReclaimFixture(t *testing.T, enabled bool) *reclaimFixture {
+func newReclaimFixture(t *testing.T, enabled bool, keepAlive ...time.Duration) *reclaimFixture {
 	t.Helper()
 	mgr, err := NewProviderAppManager(testAppsConfig(), WithIdleMemoryEviction(enabled), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
-	old := instance.NewInstance("older", "vllm", "old-model", 0, -1, 10)
+	limit := 24 * time.Hour
+	if len(keepAlive) > 0 {
+		limit = keepAlive[0]
+	}
+	old := instance.NewInstance("older", "vllm", "old-model", 0, limit, 10)
 	old.SetStatus(instance.StatusRunning)
 	old.SetProcessInfo(9000001, 0, nil)
 	restore := utils.SetClock(utils.FixedClock(utils.Now().Add(-time.Hour)))
 	old.StampActivityWithHints(nil)
 	restore()
-	newer := instance.NewInstance("newer", "vllm", "new-model", 0, -1, 10)
+	newer := instance.NewInstance("newer", "vllm", "new-model", 0, 24*time.Hour, 10)
 	newer.SetStatus(instance.StatusRunning)
 	newer.SetProcessInfo(9000002, 0, nil)
 	newer.StampActivityWithHints(nil)
@@ -177,7 +181,7 @@ func TestMemoryReclaimEligibility(t *testing.T) {
 			case "starting":
 				f.older.SetStatus(instance.StatusStarting)
 			case "waiter":
-				waiting := instance.NewInstance("waiting", "vllm", "waiting-model", 0, -1, 10)
+				waiting := instance.NewInstance("waiting", "vllm", "waiting-model", 0, 24*time.Hour, 10)
 				waiting.SetWaitingOn(f.older.ID)
 				require.NoError(t, f.mgr.instances.Register(waiting))
 			case "foreign":
@@ -343,7 +347,7 @@ func TestIdleReaperUnblockedByDependantAndClaim(t *testing.T) {
 			lease.Release()
 			var unblock func()
 			if block == "dependant" {
-				waiting := instance.NewInstance("waiting", "vllm", "pending", 0, -1, 1)
+				waiting := instance.NewInstance("waiting", "vllm", "pending", 0, 24*time.Hour, 1)
 				waiting.SetWaitingOn(f.older.ID)
 				require.NoError(t, f.mgr.instances.Register(waiting))
 				unblock = func() { waiting.Admit() }
@@ -398,4 +402,85 @@ func TestMemoryReclaimRetryKeepsSkippedDecision(t *testing.T) {
 	assert.Equal(t, int64(1000), fit.Holders[1].UnusedCommitmentMiB)
 	assert.True(t, f.newer.Evictable(), "the run became idle after reclaim made its decision")
 	assert.Contains(t, fit.Error(), "reclaim skipped: busy")
+}
+
+func TestPinnedRunRefusesMemoryLaunch(t *testing.T) {
+	for _, hint := range []time.Duration{-1, 0, time.Minute} {
+		t.Run(hint.String(), func(t *testing.T) {
+			f := newReclaimFixture(t, true, -1)
+			*f.device.Processes[1].MemoryMiB = 100
+			lease, err := f.older.Acquire(t.Context(), &keepalive.Override{Duration: &hint})
+			require.NoError(t, err)
+			lease.Release()
+			before := f.older.ToInfo("")
+			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
+			assert.Equal(t, before, f.older.ToInfo(""))
+			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+			assert.Empty(t, f.mgr.auditEvents, "refusal must issue zero stops")
+			current, exists := f.mgr.instances.Get(f.older.ID)
+			require.True(t, exists)
+			assert.Same(t, f.older, current)
+		})
+	}
+}
+
+func TestMemoryReclaimSkipsPinnedAndEvictsUnpinned(t *testing.T) {
+	for _, sufficient := range []bool{true, false} {
+		t.Run(map[bool]string{true: "sufficient", false: "insufficient"}[sufficient], func(t *testing.T) {
+			f := newReclaimFixture(t, true, -1)
+			if !sufficient {
+				*f.device.Processes[1].MemoryMiB = 100
+				f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
+				assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+				assert.Empty(t, f.mgr.auditEvents)
+			} else {
+				evicted, err := f.admit(t)
+				require.NoError(t, err)
+				assert.Equal(t, []instance.EvictedRun{{RunID: f.newer.ID, Model: f.newer.Model, Provider: f.newer.Provider, FreedMiB: 4500}}, evicted)
+				assert.Equal(t, instance.StatusStopped, f.newer.GetStatus())
+			}
+			assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+			assert.True(t, f.mgr.instances.Has(f.older.ID))
+		})
+	}
+}
+
+func TestNegativeInferenceHintDoesNotPin(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	negative := time.Duration(-1)
+	lease, err := f.older.Acquire(t.Context(), &keepalive.Override{Duration: &negative})
+	require.NoError(t, err)
+	lease.Release()
+	assert.Negative(t, f.older.GetKeepAlive())
+	assert.False(t, f.older.IdleSnapshot().Pinned)
+	assert.True(t, f.older.Evictable())
+	f.newer.StampActivityWithHints(nil) // keep the hinted run oldest
+	*f.device.Processes[1].MemoryMiB = 100
+	evicted, err := f.admit(t)
+	require.NoError(t, err)
+	require.Len(t, evicted, 1)
+	assert.Equal(t, f.older.ID, evicted[0].RunID)
+	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
+}
+
+func TestPinnedRunNeverReapedAfterInferenceHints(t *testing.T) {
+	for _, hint := range []time.Duration{0, time.Millisecond} {
+		t.Run(hint.String(), func(t *testing.T) {
+			f := newReclaimFixture(t, false, -1)
+			lease, err := f.older.Acquire(t.Context(), &keepalive.Override{Duration: &hint})
+			require.NoError(t, err)
+			lease.Release()
+			assert.Equal(t, hint, f.older.GetKeepAlive(), "hints still update the idle timer")
+			assert.False(t, Expired(f.older.IdleSnapshot(), utils.Now().Add(time.Hour)))
+			// The unpinned control proves the reaper has processed the expired timers.
+			zero := time.Duration(0)
+			control, err := f.newer.Acquire(t.Context(), &keepalive.Override{Duration: &zero})
+			require.NoError(t, err)
+			control.Release()
+			f.mgr.Start(t.Context())
+			eventually(t, func() bool { return !f.mgr.instances.Has(f.newer.ID) }, "control must expire")
+			assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+			assert.True(t, f.mgr.instances.Has(f.older.ID))
+		})
+	}
 }

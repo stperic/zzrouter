@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Negative resolved launch `keep-alive` (for example `-1`) pins a run against
+  zzRouter idle expiry and pressure reclaim. Set it through provider tiers or
+  run-start parameters. Inference `keep_alive` hints still update idle timers,
+  but never pin or unpin. Run reports expose `pinned: true`; a blocked launch
+  keeps 409 `out_of_range` and names pinned holders with
+  `reclaim_skipped_reason: pinned`. Explicit stop, Force replace and restart
+  remain available; restart replays request overrides. Pins do not autostart
+  runs after a node restart. Upgrade every worker before relying on pins:
+  an older worker keeps `-1` as idle-only and may reclaim it under pressure.
+
 - vLLM and llama.cpp size context to the GPU by default: new installs ship
   `max-model-len: auto` and `ctx-size: auto`, and the engine picks the largest
   context that fits (up to the model's own maximum). A number still sets it,

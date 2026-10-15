@@ -97,6 +97,7 @@ type InstanceInfo struct {
 	StartedAt             string            `json:"started_at,omitempty"`
 	Uptime                string            `json:"uptime,omitempty"`
 	KeepAlive             string            `json:"keep_alive,omitempty"`
+	Pinned                bool              `json:"pinned,omitempty"`
 	LastActivity          string            `json:"last_activity,omitempty"`
 	LastHealthCheck       string            `json:"last_health_check,omitempty"`
 	ErrorMessage          string            `json:"error_message,omitempty"`

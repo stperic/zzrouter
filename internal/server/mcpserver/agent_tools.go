@@ -96,7 +96,7 @@ type previewInput struct {
 	Provider    string                 `json:"provider" jsonschema:"Enabled provider name to preview."`
 	Node        string                 `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint    string                 `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters  schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
+	Parameters  schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pins against idle expiry and pressure reclaim; inference hints never change pins) and evict-idle-on-memory-pressure (true or false)."`
 	Environment map[string]string      `json:"environment,omitempty" jsonschema:"Optional launch environment overrides."`
 }
 type startInput struct {
@@ -105,7 +105,7 @@ type startInput struct {
 	Provider   string                 `json:"provider" jsonschema:"Enabled provider name to launch."`
 	Node       string                 `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Endpoint   string                 `json:"endpoint,omitempty" jsonschema:"Request shape: chat, embeddings or reranking. Default chat."`
-	Parameters schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pinned) and evict-idle-on-memory-pressure (true or false)."`
+	Parameters schema.ParameterValues `json:"parameters,omitempty" jsonschema:"Optional launch parameter overrides as strings, numbers or booleans, including keep-alive (5m, 0 after release, -1 pins against idle expiry and pressure reclaim; inference hints never change pins) and evict-idle-on-memory-pressure (true or false)."`
 	EnvVars    map[string]string      `json:"env_vars,omitempty" jsonschema:"Optional launch environment overrides, replayed on restart."`
 	Runtime    string                 `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
@@ -192,7 +192,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_search", Description: "Find registry models to download. Returns registry identifiers and popularity hints; for HuggingFace GGUF call zz_model_files to choose a file, then zz_model_download.", Annotations: read}, []string{"getSearch"}, dispatcher.search)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel with zz_job_cancel and deployment_id.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, base_url, engine_busy, status, started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, the idle runs its launch stopped to free GPU memory; use zz_logs to diagnose or zz_chat to smoke test a ready model. A run no longer listed answers 404 with what is still readable.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, base_url, engine_busy, pinned (true protects against router idle expiry and pressure reclaim), status, started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, unpinned idle runs its launch reclaimed or models its daemon displaced; use zz_logs to diagnose or zz_chat to smoke test a ready model. A run no longer listed answers 404 with what is still readable.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_preview", Description: "Check zz_models first and select its exact local name. Only if absent, use zz_model_search, zz_model_download and zz_job, then check zz_models again. Preview with an enabled provider; returns full_command, parameters and sources, then call zz_run_start.", Annotations: read}, []string{"previewRuns"}, dispatcher.preview)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. For a node-scoped provider, omit model and endpoint; use the reported base_url directly. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
@@ -420,7 +420,7 @@ func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, erro
 }
 
 func (d dispatcher) runs(ctx context.Context, in runsInput) (agentOutput, error) {
-	fields := "id:run_id provider model node port base_url engine_busy memory_commitments_mib status started_by waiting_on evicted_runs error_message failure parameters_status"
+	fields := "id:run_id provider model node port base_url engine_busy pinned memory_commitments_mib status started_by waiting_on evicted_runs error_message failure parameters_status"
 	q, err := in.values()
 	if err != nil {
 		return agentOutput{}, err

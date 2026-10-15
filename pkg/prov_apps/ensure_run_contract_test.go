@@ -419,11 +419,14 @@ func TestEnsureRunContract(t *testing.T) {
 			}
 			return true, nil
 		}))
-		old := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+		pinned := req
+		pinned.Parameters = map[string]string{"keep-alive": "-1"}
+		old := collect(t, []<-chan outcome{r.ensure(t.Context(), pinned)})[0]
 		require.NoError(t, old.err)
 		awaitRunning(t, old.result.Run)
+		require.True(t, old.result.Run.IdleSnapshot().Pinned)
 		gate.Store(true)
-		force := req
+		force := pinned
 		force.Force = true
 		ctxs, reqs := same(t.Context(), force)
 		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
@@ -1516,6 +1519,7 @@ func TestEnsureRunContractServed(t *testing.T) {
 		adopted, ok := r.m.instances.GetByKey(instance.NewKey("", "p:latest", ""))
 		require.True(t, ok)
 		assert.Negative(t, adopted.GetKeepAlive())
+		assert.False(t, adopted.IdleSnapshot().Pinned, "daemon residency alone does not pin")
 		assert.Greater(t, time.Until(adopted.Loaded().ExpiresAt), daemonForever/2, "the daemon's own expiry is recorded")
 		assert.Equal(t, instance.StartedBy("external"), adopted.StartedBy)
 	})
@@ -1952,11 +1956,12 @@ func TestEnsureRunContractIdleRefresh(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(lease.Release)
 	awaitRunning(t, o.result.Run)
-	pin := -time.Second
-	o.result.Run.StampActivityWithHints(&keepalive.Override{Duration: &pin})
+	hint := -time.Second
+	o.result.Run.StampActivityWithHints(&keepalive.Override{Duration: &hint})
+	assert.False(t, o.result.Run.IdleSnapshot().Pinned)
 	lease.Release()
 	time.Sleep(75 * time.Millisecond)
-	assert.Equal(t, instance.StatusRunning, o.result.Run.GetStatus(), "an obsolete deadline cannot expire a newer pin")
+	assert.Equal(t, instance.StatusRunning, o.result.Run.GetStatus(), "an obsolete deadline cannot expire a newer negative timer")
 	zero := time.Duration(0)
 	lease, err = o.result.Run.Acquire(t.Context(), &keepalive.Override{Duration: &zero})
 	require.NoError(t, err)
@@ -1967,33 +1972,41 @@ func TestEnsureRunContractIdleRefresh(t *testing.T) {
 }
 
 func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
-	r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
-		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	})))
-	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
-	}
-	edit := func(limit string) {
-		fresh := &config.AppsConfig{}
-		r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
-			svc.Models = map[string]config.ModelSpec{"two": {Parameters: map[string]string{config.KeepAliveParameter: limit}}}
-			require.NoError(t, fresh.AddApp(name, svc))
-			return true
+	for _, tc := range []struct {
+		before, after string
+		limit         time.Duration
+	}{{"0", "-1", -1}, {"-1", "5m", 5 * time.Minute}} {
+		t.Run(tc.before+" to "+tc.after, func(t *testing.T) {
+			r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+				return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
+			})))
+			r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
+			}
+			edit := func(limit string) {
+				fresh := &config.AppsConfig{}
+				r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
+					svc.Models = map[string]config.ModelSpec{"two": {Parameters: map[string]string{config.KeepAliveParameter: limit}}}
+					require.NoError(t, fresh.AddApp(name, svc))
+					return true
+				})
+				r.m.ReloadConfig(fresh)
+			}
+			edit(tc.before)
+			first := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "one"})})[0]
+			require.NoError(t, first.err)
+			second := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "two"})})[0]
+			require.NoError(t, second.err)
+			require.Equal(t, first.result.Run.ID, second.result.Run.WaitingOn())
+			edit(tc.after)
+			r.ready(t)
+			awaitRunning(t, first.result.Run)
+			awaitRunning(t, second.result.Run)
+			assert.Equal(t, tc.limit, second.result.Run.GetKeepAlive(), "admitted idle policy must match the re-resolved launch")
+			assert.Equal(t, tc.after == "-1", second.result.Run.IdleSnapshot().Pinned, "admission finalizes the pin after the config reload")
+			assert.Equal(t, tc.after, second.result.Run.Resolved().Parameters[config.KeepAliveParameter])
 		})
-		r.m.ReloadConfig(fresh)
 	}
-	edit("0")
-	first := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "one"})})[0]
-	require.NoError(t, first.err)
-	second := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "two"})})[0]
-	require.NoError(t, second.err)
-	require.Equal(t, first.result.Run.ID, second.result.Run.WaitingOn())
-	edit("-1")
-	r.ready(t)
-	awaitRunning(t, first.result.Run)
-	awaitRunning(t, second.result.Run)
-	assert.Negative(t, second.result.Run.GetKeepAlive(), "admitted idle policy must match the re-resolved launch")
-	assert.Equal(t, "-1", second.result.Run.Resolved().Parameters[config.KeepAliveParameter])
 }
 
 func TestNodeScopedEnsureConcurrentProcess(t *testing.T) {
@@ -2055,4 +2068,97 @@ func TestNodeScopedEnsureConcurrentProcess(t *testing.T) {
 	require.NotEqual(t, run.ID, restarted.ID)
 	awaitRunning(t, restarted)
 	require.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), restarted).State)
+}
+
+func TestKeepAliveRequestTierOverridesPinBothWays(t *testing.T) {
+	for _, tc := range []struct {
+		name, tier, request string
+		pinned              bool
+	}{
+		{"request pins", "5m", "-1", true},
+		{"request finite", "-1", "5m", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newContractRig(t, false)
+			fresh := &config.AppsConfig{}
+			r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
+				svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"keep-alive": tc.tier}}
+				require.NoError(t, fresh.AddApp(name, svc))
+				return true
+			})
+			r.m.ReloadConfig(fresh)
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "override", Parameters: map[string]string{"keep-alive": tc.request}})})[0]
+			require.NoError(t, o.err)
+			run := o.result.Run
+			awaitRunning(t, run)
+			check := func(run *instance.Instance) {
+				t.Helper()
+				idle := run.IdleSnapshot()
+				assert.Equal(t, tc.pinned, idle.Pinned)
+				assert.Equal(t, !tc.pinned, run.Evictable())
+				assert.Equal(t, !tc.pinned, Expired(idle, idle.Activity.Add(time.Hour)))
+				assert.Equal(t, tc.request, run.Resolved().Parameters[config.KeepAliveParameter])
+				assert.Equal(t, tc.request, run.SnapshotConfig().Parameters[config.KeepAliveParameter])
+				status := r.m.ParametersStatus(t.Context(), run)
+				assert.Equal(t, instance.ParametersCurrent, status.State)
+				assert.Contains(t, status.Overridden, "parameters.keep-alive")
+			}
+			check(run)
+			restarted, err := r.m.RestartInstance(t.Context(), run.ID)
+			require.NoError(t, err)
+			awaitRunning(t, restarted)
+			assert.NotEqual(t, run.ID, restarted.ID)
+			assert.Equal(t, instance.StatusStopped, run.GetStatus())
+			assert.Equal(t, 1, r.terms(t))
+			check(restarted)
+		})
+	}
+}
+
+func TestPinnedRunExplicitLifecycle(t *testing.T) {
+	r := newContractRig(t, false)
+	req := EnsureRequest{Provider: "generic", Model: "pinned", Parameters: map[string]string{"keep-alive": "-1"}}
+	o := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+	require.NoError(t, o.err)
+	awaitRunning(t, o.result.Run)
+	require.True(t, o.result.Run.IdleSnapshot().Pinned)
+	req.Force = true
+	replaced := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+	require.NoError(t, replaced.err)
+	awaitRunning(t, replaced.result.Run)
+	assert.Equal(t, instance.StatusStopped, o.result.Run.GetStatus())
+	assert.Equal(t, 1, r.terms(t))
+	require.True(t, replaced.result.Run.IdleSnapshot().Pinned)
+	require.NoError(t, r.m.StopInstance(t.Context(), replaced.result.Run.ID))
+	assert.Equal(t, 2, r.terms(t))
+	assert.Empty(t, r.m.instances.List())
+}
+
+func TestServedTimerSentinelIsNotPinned(t *testing.T) {
+	for _, limit := range []string{"", "5m", "-1"} {
+		t.Run("served "+limit, func(t *testing.T) {
+			r := newServedRig(t)
+			r.edit(t, func(svc *config.ServiceConfig) { svc.Runtime.KeepAlive = limit })
+			run := r.running(t, EnsureRequest{Provider: "ollama", Model: servedModel})
+			idle := run.IdleSnapshot()
+			assert.Equal(t, neverExpires, idle.KeepAlive)
+			assert.Equal(t, limit == "-1", idle.Pinned)
+			assert.Equal(t, limit != "-1", run.Evictable())
+			assert.False(t, Expired(idle, idle.Activity.Add(time.Hour)))
+		})
+	}
+	t.Run("adopted", func(t *testing.T) {
+		r := newServedRig(t)
+		r.edit(t, func(svc *config.ServiceConfig) { svc.Runtime.KeepAlive = "0" })
+		r.daemon.loadExternally("adopted:latest", time.Time{})
+		r.tick(t)
+		r.tick(t)
+		run, ok := r.m.instances.GetByKey(instance.NewKey("", "adopted:latest", ""))
+		require.True(t, ok)
+		idle := run.IdleSnapshot()
+		assert.Equal(t, neverExpires, idle.KeepAlive)
+		assert.False(t, idle.Pinned)
+		assert.True(t, run.Evictable())
+		assert.False(t, Expired(idle, idle.Activity.Add(time.Hour)))
+	})
 }

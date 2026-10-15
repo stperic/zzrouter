@@ -7,6 +7,22 @@ import (
 	"time"
 )
 
+// EvictionBlockedReason records why a snapshot cannot be reclaimed, or is empty when idle.
+func (s IdleState) EvictionBlockedReason() string {
+	switch {
+	case (s.Status != StatusRunning && s.Status != StatusUnhealthy) || s.Claimed:
+		return "not idle"
+	case s.Pinned:
+		return "pinned"
+	case s.Busy:
+		return "busy"
+	case s.Leased:
+		return "in use"
+	default:
+		return ""
+	}
+}
+
 // IdleStopCandidate carries the activity observed when deciding to stop a run.
 type IdleStopCandidate struct {
 	Instance *Instance
@@ -38,7 +54,7 @@ func ClaimIdleStops(candidates []IdleStopCandidate) (release func(), refusal *Id
 	}
 	for _, candidate := range ordered {
 		inst := candidate.Instance
-		if reason := inst.evictionBlockedReasonLocked(); reason != "" {
+		if reason := inst.idleSnapshotLocked().EvictionBlockedReason(); reason != "" {
 			return nil, &IdleStopRefusal{RunID: inst.ID, Reason: reason}
 		}
 		if !inst.LastActivity.Equal(candidate.Activity) || (candidate.Idle != nil && inst.idleSnapshotLocked() != *candidate.Idle) {
