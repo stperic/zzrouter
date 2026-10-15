@@ -105,11 +105,15 @@ func (e processEngine) down(ctx context.Context, run *instance.Instance) error {
 // prepare is what launching req on port would give the engine; a launch and a parameters-status check share it.
 func (e processEngine) prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error) {
 	endpoint := string(EndpointOrDefault(req.Endpoint))
-	features, err := e.m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, endpoint)
+	declared, err := e.m.launchSchema(configKey)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	return e.m.prepareLaunchFeatures(features, configKey, endpoint, port)
+	features, err := e.m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, endpoint, declared)
+	if err != nil {
+		return preparedLaunch{}, err
+	}
+	return e.m.prepareLaunchFeatures(features, features.Params, configKey, endpoint, port)
 }
 
 func (processEngine) upstream(run *instance.Instance) (string, backend.Upstream, error) {

@@ -81,10 +81,7 @@ func (p *OpenAIProvider) ListModels(ctx context.Context, t Target) ([]ModelInfo,
 	}
 
 	var response struct {
-		Data []struct {
-			ID      string `json:"id"`
-			Created int64  `json:"created"`
-		} `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := utils.DecodeJSONResponse(httpResp.Body, &response); err != nil {
 		return nil, err
@@ -92,10 +89,13 @@ func (p *OpenAIProvider) ListModels(ctx context.Context, t Target) ([]ModelInfo,
 
 	models := make([]ModelInfo, 0, len(response.Data))
 	for _, m := range response.Data {
-		t := time.Unix(m.Created, 0)
+		id, _ := m["id"].(string)
+		created, _ := m["created"].(float64)
+		t := time.Unix(int64(created), 0)
 		models = append(models, ModelInfo{
-			Name:       m.ID,
-			FullID:     m.ID,
+			Name:       id,
+			Extra:      m,
+			FullID:     id,
 			Modified:   t.Format("2006-01-02 15:04"),
 			ModifiedAt: t,
 		})

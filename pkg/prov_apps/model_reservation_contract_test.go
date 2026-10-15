@@ -49,9 +49,9 @@ func (r endpointTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func TestQueuedDeletionReservationContract(t *testing.T) {
 	barrier := newBarrier()
-	r := newContractRig(t, true, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+	r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}), func(m *ProviderAppManager) {
+	})), func(m *ProviderAppManager) {
 		m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 			return []gpu.MemoryDevice{{UUID: "GPU-test", TotalMiB: 10000, FreeMiB: 6000}}, nil
 		}

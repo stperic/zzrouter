@@ -11,8 +11,6 @@ package config
 import (
 	"fmt"
 	"strings"
-
-	"github.com/stperic/zzrouter/pkg/config/runsettings"
 )
 
 // defaultEndpoint mirrors prov_apps.EndpointChat; can't import the typed
@@ -202,42 +200,5 @@ func matchSpec[T any](specs map[string]T, model string) (string, T, bool) {
 	return bestKey, best, found
 }
 
-// autoValue is the sentinel a parameter carries to mean "the provider
-// decides"; the flag is dropped rather than passed through.
-const autoValue = "auto"
-
-// IsAuto reports whether a resolved value is the "provider decides"
-// sentinel, which names nothing and is never passed to the engine.
-func IsAuto(v string) bool { return v == autoValue }
-
-// FilterAutoValues strips keys whose value is exactly "auto", which is
-// the tree's way of saying "let the provider compute this" rather than
-// "pass the literal string auto on the command line".
-//
-// It lives beside the resolver because it is the last step of parameter
-// resolution, not a presentation concern: every launch path has to apply
-// it or the provider receives a flag it cannot parse. Applying it after
-// the request tier is deliberate, so a caller can neutralise a
-// configured value by sending "auto" for it.
-//
-// The input map is returned unchanged when no "auto" is present, so the
-// common case allocates nothing.
-func FilterAutoValues(parameters map[string]string) map[string]string {
-	hasAuto := false
-	for k, v := range parameters {
-		if v == autoValue && !runsettings.IsParameter(k) {
-			hasAuto = true
-			break
-		}
-	}
-	if !hasAuto {
-		return parameters
-	}
-	filtered := make(map[string]string, len(parameters))
-	for k, v := range parameters {
-		if v != autoValue || runsettings.IsParameter(k) {
-			filtered[k] = v
-		}
-	}
-	return filtered
-}
+// IsAuto identifies the user-facing request for provider-selected behavior.
+func IsAuto(v string) bool { return v == "auto" }

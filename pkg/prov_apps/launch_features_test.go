@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
@@ -77,14 +79,14 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 				require.NoError(t, os.Remove(filepath.Join(dir, "sibling.gguf")))
 			}
 			if scenario == "enabled projector removed during preparation" {
-				m.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+				m.localizeParams = func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 					require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
 					return Localized{Params: params}, nil
 				}
 			}
 			inst := instance.NewInstance("selected-files", "vllm", req.Model, 8100, 0, 0)
 			inst.Endpoint = "chat"
-			run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
+			run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)}, requireLaunchSchema(t, m, "vllm"))
 			if scenario == "symlink weights outside" {
 				require.Error(t, err, "launch verification must retain the selected source's manifest")
 				return
@@ -111,7 +113,7 @@ func TestPrepareRunRefusesMetadataOnlyWeights(t *testing.T) {
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	inst := instance.NewInstance("incomplete", "vllm", req.Model, 8100, 0, 0)
 	inst.Endpoint = "chat"
-	_, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)})
+	_, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: process.ResolveModel(svc, req.Model)}, requireLaunchSchema(t, m, "vllm"))
 	require.ErrorIs(t, err, process.ErrModelIncomplete)
 }
 
@@ -141,7 +143,7 @@ func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 	inst.Endpoint = "chat"
 	inst.Config = instance.Config{Provider: req.Provider, Model: req.Model, Port: 8100, Parameters: req.Parameters}
 	inst.SetWeights(instance.Weights{Model: "vendor/model", Paths: selected.WeightPaths()})
-	run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: selected})
+	run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: selected}, requireLaunchSchema(t, m, "vllm"))
 	require.NoError(t, err)
 	physical, err := filepath.EvalSymlinks(first)
 	require.NoError(t, err)
@@ -391,6 +393,6 @@ func TestRunSettingsPreviewAndStartRejectSameValues(t *testing.T) {
 func TestSourceDisposableLaunchRefusesBeforeManifestUse(t *testing.T) {
 	manager, service, _ := featureLaunchFixture(t)
 	service.Install = &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{service.Name: {Source: &config.InstallSource{Version: "1.0.0"}}}}
-	_, err := manager.modelLaunchParameters(t.Context(), service, process.ResolveModel(service, "vendor/model"), EnsureRequest{Provider: service.Name, Model: "vendor/model", DisposablePlanID: "missing-and-invalid-manifest"}, "chat")
+	_, err := manager.modelLaunchParameters(t.Context(), service, process.ResolveModel(service, "vendor/model"), EnsureRequest{Provider: service.Name, Model: "vendor/model", DisposablePlanID: "missing-and-invalid-manifest"}, "chat", requireLaunchSchema(t, manager, service.Name))
 	require.ErrorContains(t, err, "source recipes do not support disposable launches")
 }

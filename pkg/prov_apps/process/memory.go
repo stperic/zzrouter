@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	processinfo "github.com/shirou/gopsutil/v4/process"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -100,7 +101,7 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if budget.Kind == schema.MemoryReserveMiB {
 		return admitReserved(budget, parameters, environment, devices, owners, commitments)
 	}
-	auto := budget.Kind == schema.MemoryFractionTotal && parameters[budget.Parameter] == "auto"
+	auto := budget.Kind == schema.MemoryFractionTotal && config.IsAuto(parameters[budget.Parameter])
 	var fraction float64
 	if budget.Kind == schema.MemoryFractionTotal && !auto {
 		var err error

@@ -300,7 +300,7 @@ func TestSmokeAdmissionBusyRetryAndExpiry(t *testing.T) {
 			calls := 0
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			mgr, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+			mgr, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 				calls++
 				if mode == "expire-between" && calls > 1 {
 					cancel()
@@ -313,7 +313,7 @@ func TestSmokeAdmissionBusyRetryAndExpiry(t *testing.T) {
 					return nil, ErrAtCapacity
 				}
 				return nil, nil
-			}), WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
+			})), WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"OK"}}]}`)), Header: http.Header{}}, nil
 			})}))
 			require.NoError(t, err)
@@ -419,7 +419,7 @@ func TestSmokeFrozenFeatureSelectionRefusesPredicateDrift(t *testing.T) {
 	require.Equal(t, "test-runtime", selected)
 	// Simulate the predicate disappearing while the launch waits on the selected gate.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	_, err = mgr.modelLaunchParameters(t.Context(), svc, process.ResolveModel(svc, "vendor/model"), EnsureRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat")
+	_, err = mgr.modelLaunchParameters(t.Context(), svc, process.ResolveModel(svc, "vendor/model"), EnsureRequest{Provider: "vllm", Model: "vendor/model", selectedRuntime: selected}, "chat", requireLaunchSchema(t, mgr, "vllm"))
 	require.ErrorContains(t, err, "selected runtime changed")
 }
 
@@ -449,7 +449,7 @@ func TestSmokeAllowsSiblingLaunchWhileSameRuntimeWaits(t *testing.T) {
 		}
 		require.NoError(t, cfg.AddApp(name, config.ServiceConfig{Name: name, Enabled: new(true), Protocol: config.ProtocolOpenAI, Mode: "on-demand", Runtime: &config.AppRuntimeConfig{BasePort: base, PortRange: []int{base, base + 2}, Execution: config.ExecutionConfig{Type: "cli", Command: engine}, HealthCheck: config.HealthcheckConfig{ReadinessProbe: &config.ProbeConfig{Timeout: "2s", LogPatterns: config.LogPatternsConfig{Success: []config.PatternConfig{{Pattern: "READY"}}}}}}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
 	}
-	mgr, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) { return nil, nil }), WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
+	mgr, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) { return nil, nil })), WithHTTPClient(&http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"OK"}}]}`)), Header: http.Header{}}, nil
 	})}))
 	require.NoError(t, err)

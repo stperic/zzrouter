@@ -23,8 +23,8 @@ func TestQueuedRunLogsContract(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "nvidia-smi"), []byte("#!/bin/sh\necho 'GPU-A, 0, 10000, 6000'\n"), 0o700))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
-	r := newReadinessRig(t, prov_apps.WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
-		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
+	r := newReadinessRig(t, prov_apps.WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
+		return &schema.ProviderSchema{Diagnostics: &schema.Diagnostics{Memory: &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}}}, nil
 	}))
 	svc, ok := r.mgr.AppsConfig().LookupApp("fake")
 	require.True(t, ok)

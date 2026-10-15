@@ -30,7 +30,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	budget, err := m.launchBudget(selection.key)
+	declared, err := m.launchSchema(selection.key)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +38,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	if err != nil {
 		return nil, err
 	}
-	if budget != nil {
+	if launchBudget(declared) != nil {
 		// Admission measures free memory, so admissions run one at a time.
 		node := Node{ShuttingDown: m.shuttingDown(), Lifecycle: LifecycleProcess, Runtime: req.selectedRuntime}
 		select {
@@ -48,7 +48,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 			return m.queueRun(inst, req, node)
 		}
 		defer func() { <-m.memoryAdmission }()
-		blocker, err := m.startingBlocker(inst.ID)
+		blocker, err := m.startingBlocker(inst.ID, selection.key, declared)
 		if err != nil {
 			m.releaseRun(inst, err)
 			return nil, err
@@ -58,7 +58,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 			return m.queueRun(inst, req, node)
 		}
 	}
-	run, err := m.admitRun(ctx, inst, req, selection)
+	run, err := m.admitRun(ctx, inst, req, selection, declared)
 	if err != nil {
 		m.releaseRun(inst, err)
 		return nil, err
@@ -220,12 +220,12 @@ func (m *ProviderAppManager) runLogFile(run *instance.Instance) (*os.File, strin
 
 // admitRun measures and prepares a registered run, then marks it admitted.
 // Callers hold memoryAdmission when the provider has a memory budget.
-func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
+func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection, declared *schema.ProviderSchema) (admittedRun, error) {
 	logFile, _, err := m.runLogFile(inst)
 	if err != nil {
 		return admittedRun{}, err
 	}
-	run, err := m.prepareRun(ctx, inst, req, selection)
+	run, err := m.prepareRun(ctx, inst, req, selection, declared)
 	if err == nil && !inst.Admit() {
 		err = fmt.Errorf("run %s stopped before it was admitted", inst.ID)
 	}
@@ -242,9 +242,9 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 }
 
 // prepareRun resolves a run's parameters, checks its memory fit and builds argv.
-func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection) (admittedRun, error) {
+func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection, declared *schema.ProviderSchema) (admittedRun, error) {
 	endpoint := inst.Endpoint
-	features, err := m.modelLaunchParameters(ctx, selection.config, selection.model, req, endpoint)
+	features, err := m.modelLaunchParameters(ctx, selection.config, selection.model, req, endpoint, declared)
 	if err != nil {
 		return admittedRun{}, err
 	}
@@ -254,11 +254,13 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 			featurePaths = append(featurePaths, path)
 		}
 	}
-	evicted, err := m.admitMemory(ctx, selection.key, features)
+	argvFeatures := features
+	argvFeatures.Params = maps.Clone(features.Params)
+	evicted, err := m.admitMemory(ctx, argvFeatures)
 	inst.SetEvictedRuns(evicted)
 	var prepared preparedLaunch
 	if err == nil {
-		prepared, err = m.prepareLaunchFeatures(features, selection.key, endpoint, inst.Port)
+		prepared, err = m.prepareLaunchFeatures(features, argvFeatures.Params, selection.key, endpoint, inst.Port)
 	}
 	if err != nil {
 		return admittedRun{}, err
@@ -356,6 +358,10 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 	if err != nil {
 		return admittedRun{}, nil, err
 	}
+	declared, err := m.launchSchema(selection.key)
+	if err != nil {
+		return admittedRun{}, nil, err
+	}
 	unlock, err := m.installs.acquireProvider(ctx, req.selectedRuntime)
 	if err != nil {
 		return admittedRun{}, nil, err
@@ -373,10 +379,10 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 		return admittedRun{}, nil, ctx.Err()
 	}
 	defer func() { <-m.memoryAdmission }()
-	if blocker, err := m.startingBlocker(inst.ID); err != nil || blocker != nil {
+	if blocker, err := m.startingBlocker(inst.ID, selection.key, declared); err != nil || blocker != nil {
 		return admittedRun{}, blocker, err
 	}
-	run, err := m.admitRun(ctx, inst, req, selection)
+	run, err := m.admitRun(ctx, inst, req, selection, declared)
 	return run, nil, err
 }
 
@@ -416,24 +422,21 @@ func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) 
 
 // launchBudget returns the memory budget a launch is measured against: nil
 // when the provider declares none, or an external one nothing here measures.
-func (m *ProviderAppManager) launchBudget(provider string) (*schema.MemoryBudget, error) {
-	if m.memoryBudget == nil {
-		return nil, nil //nolint:nilnil // no budget is not an error
+func launchBudget(declared *schema.ProviderSchema) *schema.MemoryBudget {
+	if declared.Diagnostics == nil {
+		return nil
 	}
-	budget, err := m.memoryBudget(provider)
-	if err != nil {
-		return nil, fmt.Errorf("memory budget declaration: %w", err)
-	}
+	budget := declared.Diagnostics.Memory
 	if budget == nil || budget.Kind == schema.MemoryExternal {
-		return nil, nil //nolint:nilnil // no budget is not an error
+		return nil
 	}
-	return budget, nil
+	return budget
 }
 
 // startingBlocker returns an admitted run still starting under a measured
 // budget: its memory claim is not visible yet, so nothing else is measured
 // until it leaves starting.
-func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, error) {
+func (m *ProviderAppManager) startingBlocker(id, provider string, declared *schema.ProviderSchema) (*instance.Instance, error) {
 	for _, run := range m.instances.List() {
 		if run.ID == id || run.GetStatus() != instance.StatusStarting || !run.Admitted() {
 			continue
@@ -442,11 +445,15 @@ func (m *ProviderAppManager) startingBlocker(id string) (*instance.Instance, err
 		if !ok {
 			continue
 		}
-		pending, err := m.launchBudget(key)
-		if err != nil {
-			return nil, err
+		pending := declared
+		if key != provider {
+			var err error
+			pending, err = m.launchSchema(key)
+			if err != nil {
+				return nil, err
+			}
 		}
-		if pending != nil {
+		if launchBudget(pending) != nil {
 			return run, nil
 		}
 	}
@@ -470,10 +477,10 @@ func visibleDeviceEnvironment(environment map[string]string) (map[string]string,
 
 // admitMemory checks a launch's GPU memory budget, evicting idle runs when
 // the node allows it, and returns the runs it evicted.
-func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, features LaunchParameters) ([]instance.EvictedRun, error) {
-	budget, err := m.launchBudget(provider)
-	if err != nil || budget == nil {
-		return nil, err
+func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchParameters) ([]instance.EvictedRun, error) {
+	budget := launchBudget(features.declared)
+	if budget == nil {
+		return nil, nil
 	}
 	if budget.Kind != schema.MemoryFractionTotal && budget.Kind != schema.MemoryReserveMiB && !slices.ContainsFunc(m.memoryRuns(), func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
 		return nil, nil
@@ -483,7 +490,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, provider string, f
 		return nil, err
 	}
 	need := process.Need{}
-	if features.Params[budget.Parameter] == "auto" {
+	if config.IsAuto(features.Params[budget.Parameter]) {
 		need, _ = process.ModelMemoryNeed(features.model, features.Config, features.Params)
 	}
 	err = m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
@@ -607,7 +614,9 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.healthMonitor")
-		m.healthMon.Run(inst.Context(), inst, hcConfig)
+		m.healthMon.Run(inst.Context(), inst, hcConfig, func(run *instance.Instance) {
+			m.publishRunning(run, true, "healthy")
+		})
 	}()
 
 	// Reaper — blocks until process exits. This is the ONLY place that waits on the process.
@@ -1125,29 +1134,6 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 	return req
 }
 
-// resolveLaunchParams produces the parameters and environment a launched
-// process actually receives.
-//
-// This is the ONLY place that answer is computed for a local launch, so
-// it has to do the whole walk: defaults -> model -> node -> node x model
-// -> endpoint overlay, with the request tier as the last word. Reading
-// only Defaults here was how a models[X] or nodes[N] value could
-// persist, peer-sync, and read back correctly from /resolved while
-// having no effect on the process that was launched.
-//
-// A caller that resolves the tree itself and passes the result as
-// req.Parameters does not get a second opinion, it gets the last word —
-// and the whole resolved set is then stored as the request tier, which
-// a restart replays over the config it came from. Only a coordinator
-// resolving for a remote node has any business doing that.
-//
-// Split out from EnsureRun so the precedence contract can be
-// tested without starting a process.
-func (m *ProviderAppManager) resolveLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env map[string]string) {
-	params, env, _ = m.resolveRawLaunchParams(svcCfg, req, endpoint)
-	return config.FilterAutoValues(params), env
-}
-
 func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env, sources map[string]string) {
 	resolved := svcCfg.ResolveEndpoint(m.localNodename(), req.Model, endpoint)
 	env = mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
@@ -1164,14 +1150,14 @@ func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig,
 
 // buildLaunch turns resolved parameters into the engine's command: it
 // validates what the operator configured, has the node's ParamLocalizer
-// rewrite it into node-local values (such as asset paths), then builds
-// the argv. Validation comes first because it checks the configured
+// rewrite it into node-local values (such as asset paths), spells auto
+// from the endpoint schema, then builds argv. Validation checks the configured
 // values, not what they become here. It also returns the digests of the
 // files the localizer resolved.
 //
 // Split out from EnsureRun so the parameters-to-argv contract can be
 // tested without starting a process.
-func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string) (process.Launch, map[string]string, error) {
+func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, endpoint string, model process.ResolvedModel, port int, params map[string]string, declared *schema.ProviderSchema) (process.Launch, map[string]string, error) {
 	if _, err := config.ParseRunSettings(params, m.idleEvictionDefault); err != nil {
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
@@ -1179,12 +1165,19 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 		return process.Launch{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	var files map[string]string
+	shapes := declared.ForEndpoint(endpoint)
 	if m.localizeParams != nil {
-		local, err := m.localizeParams(provider, endpoint, model.Name, params)
+		local, err := m.localizeParams(provider, endpoint, model.Name, params, shapes)
 		if err != nil {
 			return process.Launch{}, nil, fmt.Errorf("%w: on node %q: %w", ErrParameterValidation, m.localNodename(), err)
 		}
 		params, files = local.Params, local.Files
+	}
+	params = maps.Clone(params)
+	for key, shape := range shapes {
+		if config.IsAuto(params[key]) && shape.Auto != "" {
+			params[key] = shape.Auto
+		}
 	}
 	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params)
 	if err != nil {
@@ -1223,18 +1216,14 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
 }
 
-func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, configKey, endpoint string, port int) (preparedLaunch, error) {
+func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, argvParams map[string]string, configKey, endpoint string, port int) (preparedLaunch, error) {
 	params, env, svcCfg := features.Params, features.Environment, features.Config
-	budget, err := m.launchBudget(configKey)
-	if err != nil {
-		return preparedLaunch{}, err
-	}
-	argvParams := params
+	budget := launchBudget(features.declared)
 	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
-		argvParams = maps.Clone(params)
+		argvParams = maps.Clone(argvParams)
 		delete(argvParams, budget.Parameter)
 	}
-	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, argvParams)
+	launch, files, err := m.buildLaunch(svcCfg, configKey, endpoint, features.model, port, argvParams, features.declared)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
@@ -1245,7 +1234,7 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, co
 	}
 	return preparedLaunch{
 		launch: launch, config: svcCfg, parameters: features, executionEnvironment: features.ExecutionEnvironment,
-		resolved: instance.Resolved{WorkingDir: launch.WorkingDir, Commitments: features.Commitments, AutoMemory: features.autoMemory, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
+		resolved: instance.Resolved{WorkingDir: launch.WorkingDir, Commitments: features.Commitments, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
 	}, nil
 }
 

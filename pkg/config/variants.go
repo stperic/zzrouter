@@ -222,14 +222,15 @@ func (s *ServiceConfig) WeightsOf(model string) string {
 }
 
 // SameLaunch reports whether a and b resolve to the same process on node:
-// the same parameters (after "auto" is dropped) and environment, on the
+// the same parameters and environment, on the
 // default endpoint and on every endpoint any tier overlays. A variant
 // that only adds request defaults, or repeats its base's launch values,
 // is the same launch as its base and can be served by its process.
+// Raw values are compared: even an auto dropped by the provider differs from an omitted key.
 func (s *ServiceConfig) SameLaunch(node, a, b string) bool {
 	for _, endpoint := range s.overlaidEndpoints() {
 		ra, rb := s.ResolveEndpoint(node, a, endpoint), s.ResolveEndpoint(node, b, endpoint)
-		if !maps.Equal(FilterAutoValues(FlattenParameters(ra.Parameters)), FilterAutoValues(FlattenParameters(rb.Parameters))) ||
+		if !maps.Equal(FlattenParameters(ra.Parameters), FlattenParameters(rb.Parameters)) ||
 			!maps.Equal(FlattenEnvironment(ra.Environment), FlattenEnvironment(rb.Environment)) {
 			return false
 		}

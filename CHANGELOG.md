@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- vLLM and llama.cpp size context to the GPU by default: new installs ship
+  `max-model-len: auto` and `ctx-size: auto`, and the engine picks the largest
+  context that fits (up to the model's own maximum). A number still sets it,
+  per tier or per launch. Existing installs keep their configured value; set
+  `auto` to opt in. Runs report the context the engine serves in
+  `context_length`. With `gpu-memory-utilization: auto` as well, vLLM takes the
+  free GPU memory; set a numeric context to share a GPU. Upgrade workers before
+  using `auto`: an older worker drops it, and vLLM then starts at the model's
+  maximum context.
 - OpenTelemetry tracing and OTLP export are coordinator-only. Workers reject
   tracing or a collector endpoint during configuration load, save and startup;
   local Prometheus metrics remain supported. Switching a tracing/exporting

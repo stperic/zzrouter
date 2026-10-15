@@ -26,9 +26,9 @@ type reclaimFixture struct {
 
 func newReclaimFixture(t *testing.T, enabled bool) *reclaimFixture {
 	t.Helper()
-	mgr, err := NewProviderAppManager(testAppsConfig(), WithIdleMemoryEviction(enabled), WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+	mgr, err := NewProviderAppManager(testAppsConfig(), WithIdleMemoryEviction(enabled), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}))
+	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
 	old := instance.NewInstance("older", "vllm", "old-model", 0, -1, 10)
@@ -43,7 +43,7 @@ func newReclaimFixture(t *testing.T, enabled bool) *reclaimFixture {
 	newer.StampActivityWithHints(nil)
 	require.NoError(t, mgr.instances.Register(old))
 	require.NoError(t, mgr.instances.Register(newer))
-	f := &reclaimFixture{mgr: mgr, older: old, newer: newer, features: LaunchParameters{Params: map[string]string{"budget": "0.5"}}, device: gpu.MemoryDevice{
+	f := &reclaimFixture{mgr: mgr, older: old, newer: newer, features: LaunchParameters{declared: requireLaunchSchema(t, mgr, "vllm"), Params: map[string]string{"budget": "0.5"}}, device: gpu.MemoryDevice{
 		UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000,
 		Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(4500))}, {PID: 9000002, MemoryMiB: new(int64(4500))}},
 	}}
@@ -61,7 +61,7 @@ func (f *reclaimFixture) admit(t *testing.T) ([]instance.EvictedRun, error) {
 	t.Helper()
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
-	return f.mgr.admitMemory(t.Context(), "vllm", f.features)
+	return f.mgr.admitMemory(t.Context(), f.features)
 }
 
 func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string) {
@@ -286,7 +286,7 @@ func TestMemoryReclaimCancellationBoundsRecovery(t *testing.T) {
 	}
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
-	_, err := f.mgr.admitMemory(ctx, "vllm", f.features)
+	_, err := f.mgr.admitMemory(ctx, f.features)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 2, attempts)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())

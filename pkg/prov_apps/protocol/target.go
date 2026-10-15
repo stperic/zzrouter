@@ -42,6 +42,12 @@ func TargetOf(r *backend.Resolved) Target {
 	return t
 }
 
+// Ready skips connection probing for a run whose readiness was already published.
+func (t Target) Ready() Target {
+	t.probe = false
+	return t
+}
+
 // Host returns the endpoint's host[:port].
 func (t Target) Host() string {
 	u, err := url.Parse(t.base)

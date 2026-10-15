@@ -287,7 +287,7 @@ func catalogBarrier(b *barrier) Option {
 // failFirstLocalize fails the first launch's parameters after its run registered.
 func failFirstLocalize(cause error) Option {
 	var calls atomic.Int32
-	return WithParamLocalizer(func(_, _, _ string, params map[string]string) (Localized, error) {
+	return WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		if calls.Add(1) == 1 {
 			return Localized{}, cause
 		}
@@ -334,10 +334,10 @@ func TestEnsureRunContract(t *testing.T) {
 	t.Run("2 failure before registration reaches every caller", func(t *testing.T) {
 		b := newBarrier()
 		refusal := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9500, FreeMiB: 6000}
-		r := newContractRig(t, false, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+		r := newContractRig(t, false, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 			b.hold()
 			return nil, refusal
-		}))
+		})))
 		ctxs, reqs := same(t.Context(), req)
 		outs := r.leaderAndJoiners(t, b, ctxs, reqs)
 		b.open()
@@ -368,7 +368,7 @@ func TestEnsureRunContract(t *testing.T) {
 	t.Run("3b a caller reusing a run released before launch gets its cause", func(t *testing.T) {
 		b := newBarrier()
 		var calls atomic.Int32
-		r := newContractRig(t, false, WithParamLocalizer(func(_, _, _ string, params map[string]string) (Localized, error) {
+		r := newContractRig(t, false, WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 			if calls.Add(1) == 1 {
 				b.hold() // registered, not launched
 				return Localized{}, errTestStart
@@ -604,9 +604,9 @@ func TestEnsureRunContract(t *testing.T) {
 		reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
 		require.NoError(t, err)
 		t.Cleanup(reg.Stop)
-		r := newContractRig(t, true, WithJobsRegistry(reg), WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+		r := newContractRig(t, true, WithJobsRegistry(reg), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 			return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-		}))
+		})))
 		budgeted := func(model string) *instance.Instance {
 			t.Helper()
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: model})})[0]
@@ -1967,9 +1967,9 @@ func TestEnsureRunContractIdleRefresh(t *testing.T) {
 }
 
 func TestEnsureRunContractQueuedSettingsRefresh(t *testing.T) {
-	r := newContractRig(t, true, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+	r := newContractRig(t, true, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}))
+	})))
 	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}, nil
 	}

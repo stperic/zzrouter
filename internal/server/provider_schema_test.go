@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -66,20 +67,20 @@ func TestAssetParamLocalizer_UsesNodeSchemaAndOverlay(t *testing.T) {
 	require.NoError(t, err)
 	localize := assetParamLocalizer(store)
 
-	out, err := localize("llamacpp", "chat", "", map[string]string{"chat-template-file": "t.jinja", "pooling-file": "t.jinja"})
+	out, err := localize("llamacpp", "chat", "", map[string]string{"chat-template-file": "t.jinja", "pooling-file": "t.jinja"}, loadProviderSchema(store, "llamacpp").ForEndpoint("chat"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(providerDir, "assets", "t.jinja"), out.Params["chat-template-file"])
 	assert.Equal(t, "t.jinja", out.Params["pooling-file"], "an overlay key is not an asset on another endpoint")
 
-	out, err = localize("llamacpp", "embeddings", "", map[string]string{"pooling-file": "t.jinja"})
+	out, err = localize("llamacpp", "embeddings", "", map[string]string{"pooling-file": "t.jinja"}, loadProviderSchema(store, "llamacpp").ForEndpoint("embeddings"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(providerDir, "assets", "t.jinja"), out.Params["pooling-file"])
 
-	_, err = localize("llamacpp", "chat", "", map[string]string{"chat-template-file": "absent.jinja"})
+	_, err = localize("llamacpp", "chat", "", map[string]string{"chat-template-file": "absent.jinja"}, loadProviderSchema(store, "llamacpp").ForEndpoint("chat"))
 	assert.ErrorIs(t, err, assets.ErrNotFound)
 
 	untouched := map[string]string{"chat-template-file": "t.jinja"}
-	out, err = assetParamLocalizer(nil)("llamacpp", "chat", "", untouched)
+	out, err = assetParamLocalizer(nil)("llamacpp", "chat", "", untouched, loadProviderSchema(nil, "llamacpp").ForEndpoint("chat"))
 	require.NoError(t, err)
 	assert.Equal(t, untouched, out.Params, "with no store there is no schema declaring an asset")
 }
@@ -112,7 +113,7 @@ func TestTemplateParamsResolveToTheAssetFile(t *testing.T) {
 	_, err = store.WriteAsset("llamacpp", "t.jinja", []byte("{{ messages }}"))
 	require.NoError(t, err)
 
-	out, err := assetParamLocalizer(store)("llamacpp", "chat", "", map[string]string{"chat-template-file": "t.jinja"})
+	out, err := assetParamLocalizer(store)("llamacpp", "chat", "", map[string]string{"chat-template-file": "t.jinja"}, loadProviderSchema(store, "llamacpp").ForEndpoint("chat"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(root, "on-demand", "llamacpp", assets.DirName, "t.jinja"), out.Params["chat-template-file"])
 
@@ -187,4 +188,153 @@ func TestLocalizeAssetParams_PassByContent(t *testing.T) {
 		_, err = localizeAssetParams("mlx", map[string]string{"chat-template": name}, shapes, dir.Path)
 		assert.Error(t, err, name)
 	}
+}
+
+func schemaLaunchManager(t *testing.T, store *pkgConfig.AppsConfigStore, provider string) *prov_apps.ProviderAppManager {
+	t.Helper()
+	cfg := &pkgConfig.AppsConfig{}
+	require.NoError(t, cfg.AddApp(provider, pkgConfig.ServiceConfig{
+		Enabled: new(true), Name: provider, Protocol: pkgConfig.ProtocolOpenAI, Mode: "on-demand",
+		Runtime: &pkgConfig.AppRuntimeConfig{
+			PortRange: []int{8100, 8105}, BasePort: 8100,
+			Execution: pkgConfig.ExecutionConfig{Type: "cli", Command: "engine"},
+		},
+		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+	}))
+	m, err := prov_apps.NewProviderAppManager(cfg,
+		prov_apps.WithProviderSchema(providerSchema(store)),
+		prov_apps.WithParamLocalizer(assetParamLocalizer(store)),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, m.Stop(context.Background())) })
+	return m
+}
+
+func TestContextAutoSpellsOnlyArgv(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	store, err := pkgConfig.NewAppsConfigStore(root)
+	require.NoError(t, err)
+	for _, tc := range []struct{ provider, key, spelling, served string }{
+		{"vllm", "max-model-len", "auto", "max_model_len"},
+		{"llamacpp", "ctx-size", "0", "meta.n_ctx"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			merged, err := providerSchema(store)(tc.provider)
+			require.NoError(t, err)
+			assert.Equal(t, tc.spelling, merged.Parameters[tc.key].Auto)
+			assert.Equal(t, tc.served, merged.Parameters[tc.key].Served)
+			dto := paramShapeMapToDTO(merged.Parameters)[tc.key]
+			assert.Equal(t, tc.spelling, dto.Auto)
+			assert.Equal(t, tc.served, dto.Served)
+			cfg, ok := store.Config().LookupApp(tc.provider)
+			require.True(t, ok)
+			assert.Equal(t, "auto", cfg.Defaults.Parameters[tc.key])
+			input := map[string]string{tc.key: "auto", "chat-template-file": "t.jinja"}
+			if tc.provider == "llamacpp" {
+				_, err = store.WriteAsset(tc.provider, "t.jinja", []byte("template"))
+				require.NoError(t, err)
+			}
+			m := schemaLaunchManager(t, store, tc.provider)
+			out, err := m.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Provider: tc.provider, Model: "m", Parameters: input}, 8100)
+			require.NoError(t, err)
+			assert.Contains(t, out.Args, "--"+tc.key)
+			assert.Contains(t, out.Args, tc.spelling)
+			assert.Equal(t, "auto", out.Params[tc.key])
+			assert.Equal(t, "auto", input[tc.key])
+			if tc.provider == "llamacpp" {
+				assert.Contains(t, out.Args, filepath.Join(root, "on-demand", tc.provider, "assets", "t.jinja"))
+			}
+		})
+	}
+}
+
+func TestLaunchSchemaErrorsRemainHardFailures(t *testing.T) {
+	for _, tc := range []struct{ name, data string }{
+		{"unreadable", ""},
+		{"malformed", ":\n:not yaml"},
+		{"invalid diagnostics", "diagnostics: {}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, templates.InstallDefaults(root))
+			store, err := pkgConfig.NewAppsConfigStore(root)
+			require.NoError(t, err)
+			path := filepath.Join(root, "on-demand", "vllm", "schema.yaml")
+			if tc.name == "unreadable" {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.Mkdir(path, 0700))
+			} else {
+				require.NoError(t, os.WriteFile(path, []byte(tc.data), 0600))
+			}
+			_, err = providerSchema(store)("vllm")
+			require.Error(t, err)
+			assert.Equal(t, schema.ParamInt, loadProviderSchema(store, "vllm").Parameters["max-model-len"].Kind)
+			m := schemaLaunchManager(t, store, "vllm")
+			_, err = m.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Provider: "vllm", Model: "m"}, 8100)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestLaunchSchemaShapeConflictsKeepValidEntries(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	store, err := pkgConfig.NewAppsConfigStore(root)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "on-demand", "vllm", "schema.yaml"), []byte(`parameters:
+  max-model-len: {type: string, auto: broken}
+  invalid: {type: unknown}
+  context: {type: int, auto: "0"}
+`), 0600))
+	merged, err := providerSchema(store)("vllm")
+	require.NoError(t, err)
+	assert.Equal(t, schema.ParamInt, merged.Parameters["max-model-len"].Kind)
+	assert.Empty(t, merged.Parameters["max-model-len"].Auto)
+	assert.NotContains(t, merged.Parameters, "invalid")
+	assert.Equal(t, "0", merged.Parameters["context"].Auto)
+	assert.Equal(t, merged, loadProviderSchema(store, "vllm"))
+	m := schemaLaunchManager(t, store, "vllm")
+	out, err := m.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{
+		Provider: "vllm", Model: "m", Parameters: map[string]string{"context": "auto", "max-model-len": "8192"},
+	}, 8100)
+	require.NoError(t, err)
+	assert.Contains(t, out.Args, "0")
+	assert.Contains(t, out.Args, "8192")
+	assert.Equal(t, "auto", out.Params["context"])
+}
+
+func TestProviderSchemaInvalidDiagnosticsKeepLongTailShapes(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	store, err := pkgConfig.NewAppsConfigStore(root)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "on-demand", "vllm", "schema.yaml"), []byte(`parameters:
+  long-tail: {type: int, min: 1}
+  chat-template: {type: asset}
+endpoints:
+  embeddings:
+    parameters:
+      pooling: {type: bool}
+diagnostics:
+  runtime: test
+  runtimes:
+    test: {kernels: unknown}
+  memory: {kind: broken, parameter: gpu-memory-utilization}
+`), 0600))
+	merged, err := providerSchema(store)("vllm")
+	require.ErrorContains(t, err, "unknown memory budget")
+	require.NotNil(t, merged)
+	assert.Nil(t, merged.Diagnostics)
+	assert.Equal(t, schema.ParamInt, merged.Parameters["long-tail"].Kind)
+	assert.Equal(t, schema.ParamAsset, merged.Parameters["chat-template"].Kind)
+	assert.Equal(t, schema.ParamBool, merged.ForEndpoint("embeddings")["pooling"].Kind)
+	available := loadProviderSchema(store, "vllm")
+	assert.Equal(t, merged, available)
+	assert.Nil(t, validateLeaf("long-tail", raw(4), false, available.Parameters))
+	assert.Equal(t, "int", paramShapeMapToDTO(available.Parameters)["long-tail"].Type)
+	assert.Empty(t, available.Parameters["gpu-memory-utilization"].Auto)
+	m := schemaLaunchManager(t, store, "vllm")
+	_, err = m.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Provider: "vllm", Model: "m"}, 8100)
+	require.ErrorContains(t, err, "unknown memory budget")
 }

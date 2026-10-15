@@ -26,12 +26,12 @@ import (
 
 func reservationRig(t *testing.T, eviction bool) *contractRig {
 	t.Helper()
-	r := newContractRig(t, false, WithIdleMemoryEviction(eviction), WithMemoryBudget(func(provider string) (*schema.MemoryBudget, error) {
+	r := newContractRig(t, false, WithIdleMemoryEviction(eviction), WithProviderSchema(memoryBudgetSchema(func(provider string) (*schema.MemoryBudget, error) {
 		if provider == "generic" {
 			return &schema.MemoryBudget{Kind: "reserve_mib", Parameter: "gpu-reserve-mib", ComplementParameter: "reserve-vram"}, nil
 		}
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}))
+	})))
 	fresh := &config.AppsConfig{}
 	for _, name := range []string{"generic", "other"} {
 		svc, _ := r.m.AppsConfig().LookupApp(name)
@@ -102,9 +102,10 @@ func TestReservationReclaimsLLMHoldersOnlyWhenEnabled(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "refused", true: "evicted"}[enabled], func(t *testing.T) {
 			f := newReclaimFixture(t, enabled)
-			f.mgr.memoryBudget = func(string) (*schema.MemoryBudget, error) {
+			f.mgr.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 				return &schema.MemoryBudget{Kind: "reserve_mib", Parameter: "gpu-reserve-mib"}, nil
-			}
+			})
+			f.features.declared = requireLaunchSchema(t, f.mgr, "vllm")
 			f.features.Params = map[string]string{"gpu-reserve-mib": "6000"}
 			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 				device := f.device
@@ -185,7 +186,7 @@ func TestQueuedReservationEndsWithoutLaunch(t *testing.T) {
 				r.m.seams.admitted = func() { require.NotEmpty(t, run.Resolved().Commitments); run.Cancel() }
 			}
 			if scenario == "weights fail" {
-				_, err := r.m.prepareRun(t.Context(), run, req, selection)
+				_, err := r.m.prepareRun(t.Context(), run, req, selection, requireLaunchSchema(t, r.m, req.Provider))
 				require.ErrorIs(t, err, process.ErrModelIncomplete)
 				require.Empty(t, run.Resolved().Commitments)
 			}
@@ -204,9 +205,10 @@ func TestQueuedReservationEndsWithoutLaunch(t *testing.T) {
 
 func TestUnknownBudgetIgnoresOtherDeviceCommitment(t *testing.T) {
 	f := newReclaimFixture(t, true)
-	f.mgr.memoryBudget = func(string) (*schema.MemoryBudget, error) {
+	f.mgr.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "layers", Parameter: "gpu-layers"}, nil
-	}
+	})
+	f.features.declared = requireLaunchSchema(t, f.mgr, "vllm")
 	f.older.SetResolved(instance.Resolved{Commitments: map[string]int64{"GPU-A": 4000}})
 	f.features.Environment = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B"}
 	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
@@ -313,12 +315,12 @@ func TestReservationArgvFilteringKeepsResolvedParameters(t *testing.T) {
 	features, err := r.m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
 	before := maps.Clone(features.Params)
-	r.m.localizeParams = func(_, _, _ string, params map[string]string) (Localized, error) {
+	r.m.localizeParams = func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		require.NotContains(t, params, "gpu-reserve-mib")
 		params["argv-only"] = "localized"
 		return Localized{Params: params}, nil
 	}
-	prepared, err := r.m.prepareLaunchFeatures(features, "generic", "", 8740)
+	prepared, err := r.m.prepareLaunchFeatures(features, features.Params, "generic", "", 8740)
 	require.NoError(t, err)
 	require.Equal(t, before, features.Params)
 	require.Equal(t, before, prepared.resolved.Parameters)
@@ -354,14 +356,14 @@ func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
 			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
 			require.Equal(t, expected, reserved.Environment["CUDA_VISIBLE_DEVICES"])
 			require.Equal(t, complement, reserved.Params["reserve-vram"])
-			_, err = r.m.admitMemory(t.Context(), "generic", reserved)
+			_, err = r.m.admitMemory(t.Context(), reserved)
 			require.NoError(t, err)
 			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
 			require.Equal(t, complement, reserved.Params["reserve-vram"])
 			req.Provider, req.Model = "other", "llm"
 			fraction, err := r.m.ResolveLaunchParameters(t.Context(), req)
 			require.NoError(t, err)
-			_, err = r.m.admitMemory(t.Context(), "other", fraction)
+			_, err = r.m.admitMemory(t.Context(), fraction)
 			require.NoError(t, err)
 		})
 	}
@@ -382,7 +384,7 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	declared, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
 	require.Equal(t, "float", declared.Parameters["reserve-vram"].Type)
-	manager, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) { return declared.Diagnostics.Memory, nil }))
+	manager, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) { return declared.Diagnostics.Memory, nil })))
 	require.NoError(t, err)
 	cleanupProviderManager(t, manager)
 	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")

@@ -90,9 +90,9 @@ func TestVariant_SameLaunchDecidesTheProcess(t *testing.T) {
 	}}
 	assert.False(t, sc.SameLaunch("n1", chatbot, base))
 
-	// "auto" means the flag is dropped, which is what an unset key gets.
+	// An explicit auto can launch differently from an absent key.
 	sc.Models[chatbot] = ModelSpec{From: base, Parameters: map[string]string{"batch-size": "auto"}}
-	assert.True(t, sc.SameLaunch("n1", chatbot, base))
+	assert.False(t, sc.SameLaunch("n1", chatbot, base))
 }
 
 func TestVariant_LookupAndWeights(t *testing.T) {

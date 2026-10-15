@@ -1,6 +1,9 @@
 # Long-tail llama.cpp parameters. Go spine carries ctx-size + n-gpu-layers.
 provider: llamacpp
 parameters:
+  ctx-size:
+    auto: "0"
+    served: meta.n_ctx
   threads:
     type: int
     min: 1

@@ -44,10 +44,10 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 		Nodes:        map[string]config.NodeSpec{"worker-1": {Parameters: map[string]string{"budget": "0.55"}}},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
-	mgr, err := NewProviderAppManager(cfg, WithNodename(func() string { return "worker-1" }), WithMemoryBudget(func(provider string) (*schema.MemoryBudget, error) {
+	mgr, err := NewProviderAppManager(cfg, WithNodename(func() string { return "worker-1" }), WithProviderSchema(memoryBudgetSchema(func(provider string) (*schema.MemoryBudget, error) {
 		assert.Equal(t, "generic", provider)
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}))
+	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
 	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
@@ -106,9 +106,9 @@ func newQueueFixture(t *testing.T) queueFixture {
 		Defaults:     &config.AppDefaultsConfig{Parameters: map[string]string{"budget": "0.55"}},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
-	mgr, err := NewProviderAppManager(cfg, WithMemoryBudget(func(string) (*schema.MemoryBudget, error) {
+	mgr, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-	}))
+	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
 	return queueFixture{mgr: mgr, engine: engine, setFree: setFree}

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 
@@ -140,7 +142,7 @@ func TestResolveLaunchParams_TierPrecedence(t *testing.T) {
 			svc, ok := m.appsConfig.LookupApp("vllm")
 			require.True(t, ok)
 
-			params, _ := m.resolveLaunchParams(svc, EnsureRequest{
+			params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{
 				Provider:   "vllm",
 				Model:      tc.model,
 				Parameters: tc.reqParam,
@@ -159,7 +161,7 @@ func TestResolveLaunchParams_UnknownNodeFallsBackNotSideways(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _ := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", params["ctx-size"], "no nodename must not reach tier2/tier3")
 }
 
@@ -170,7 +172,7 @@ func TestResolveLaunchParams_HigherTierDoesNotDropLowerKeys(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _ := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier3", params["ctx-size"])
 	assert.Equal(t, "d", params["only-default"], "defaults-only key must survive the overlay")
 }
@@ -180,7 +182,7 @@ func TestResolveLaunchParams_EnvironmentFollowsTheSameWalk(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	_, env := m.resolveLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	_, env, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", env["ZZ_ENV"], "environment must walk the tiers too, not read Defaults only")
 }
 
@@ -189,18 +191,11 @@ func TestResolveLaunchParams_EnvironmentFollowsTheSameWalk(t *testing.T) {
 // is what lets a caller neutralise a configured value.
 func TestResolveLaunchParams_AutoIsFilteredAfterRequestTier(t *testing.T) {
 	m := tierManager(t, tierTestNode)
-	svc, ok := m.appsConfig.LookupApp("vllm")
-	require.True(t, ok)
-
-	params, _ := m.resolveLaunchParams(svc, EnsureRequest{
-		Provider:   "vllm",
-		Model:      "llama3",
-		Parameters: map[string]string{"ctx-size": "auto"},
-	}, string(EndpointChat))
-
-	_, present := params["ctx-size"]
-	assert.False(t, present, `request "auto" must drop the key, not pass the literal`)
-	assert.Equal(t, "d", params["only-default"], "unrelated keys must be untouched")
+	preview, err := m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "vllm", Model: "llama3", Parameters: map[string]string{"ctx-size": "auto"}}, 8100)
+	require.NoError(t, err)
+	assert.NotContains(t, preview.Params, "ctx-size")
+	assert.NotContains(t, preview.Args, "auto")
+	assert.Equal(t, "d", preview.Params["only-default"])
 }
 
 // Endpoint overlays are applied WITHIN each tier (defaults + its
@@ -225,13 +220,13 @@ func TestResolveLaunchParams_EndpointOverlayAppliesWithinItsTier(t *testing.T) {
 	resolved, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	embed, _ := m.resolveLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
+	embed, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
 	assert.Equal(t, "mean", embed["pooling"],
 		"a key only the overlay sets must reach the launch")
 	assert.Equal(t, "tier2", embed["ctx-size"],
 		"the node tier still outranks an overlay declared under defaults")
 
-	chat, _ := m.resolveLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
+	chat, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
 	_, leaked := chat["pooling"]
 	assert.False(t, leaked, "chat must not inherit the embeddings overlay")
 }
@@ -308,12 +303,12 @@ func localizerManager(t *testing.T, l ParamLocalizer) (*ProviderAppManager, conf
 
 // What the node's ParamLocalizer returns is what the engine is given.
 func TestBuildLaunch_LocalizerOutputReachesArgv(t *testing.T) {
-	m, svc := localizerManager(t, func(_, _, _ string, params map[string]string) (Localized, error) {
+	m, svc := localizerManager(t, func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		out := maps.Clone(params)
 		out["template"] = "/node/local/t.jinja"
 		return Localized{Params: out, Files: map[string]string{"template": "digest"}}, nil
 	})
-	launch, files, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"template": "t.jinja"})
+	launch, files, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"template": "t.jinja"}, requireLaunchSchema(t, m, "vllm"))
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(launch.Args, " "), "--template /node/local/t.jinja")
 	assert.NotContains(t, launch.Args, "t.jinja")
@@ -324,11 +319,11 @@ func TestBuildLaunch_LocalizerOutputReachesArgv(t *testing.T) {
 // never reaches the localizer.
 func TestBuildLaunch_ValidatesBeforeLocalizing(t *testing.T) {
 	called := false
-	m, svc := localizerManager(t, func(_, _, _ string, params map[string]string) (Localized, error) {
+	m, svc := localizerManager(t, func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		called = true
 		return Localized{Params: params}, nil
 	})
-	_, _, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"key;inject": "v"})
+	_, _, err := m.buildLaunch(svc, "vllm", string(EndpointChat), process.ResolveModel(svc, "llama3"), 8100, map[string]string{"key;inject": "v"}, requireLaunchSchema(t, m, "vllm"))
 	require.ErrorIs(t, err, ErrParameterValidation)
 	assert.False(t, called)
 }
@@ -340,7 +335,7 @@ func TestBuildLaunch_ValidatesBeforeLocalizing(t *testing.T) {
 func TestEnsureRun_LocalizerRefusalRefusesLaunch(t *testing.T) {
 	var gotProvider, gotEndpoint string
 	var gotParams map[string]string
-	m, _ := localizerManager(t, func(provider, endpoint, model string, params map[string]string) (Localized, error) {
+	m, _ := localizerManager(t, func(provider, endpoint, model string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		gotProvider, gotEndpoint, gotParams = provider, endpoint, params
 		return Localized{}, errors.New("asset not on this node")
 	})

@@ -96,8 +96,8 @@ func (m *Monitor) Config() MonitorConfig {
 
 // Run starts health monitoring for an instance. It blocks until ctx is cancelled
 // or the instance transitions to a terminal state. The caller should run this in
-// a goroutine and call inst.TrackGoroutine/GoroutineDone.
-func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig CheckConfig) {
+// a goroutine and call inst.TrackGoroutine/GoroutineDone. publishRunning is required.
+func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig CheckConfig, publishRunning func(*instance.Instance)) {
 	instanceID := inst.ID
 
 	defer func() {
@@ -178,9 +178,7 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 				// provider declares a serve check, it — not the health
 				// endpoint — decides the first move to running.
 				if current.GetStatus() != instance.StatusRunning && m.Serves(ctx, current, hcConfig.ServeCheck()) {
-					if err := m.registry.UpdateStatus(instanceID, instance.StatusRunning, ""); err != nil {
-						slog.Warn("failed to update instance status", "instance", instanceID, "status", "running", "error", err)
-					}
+					publishRunning(current)
 				}
 			} else {
 				// A starting instance is loading weights, and an engine that

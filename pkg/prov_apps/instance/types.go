@@ -132,9 +132,7 @@ type EvictedRun struct {
 type Resolved struct {
 	WorkingDir  string
 	Commitments map[string]int64
-	// AutoMemory records which parameter was resolved from auto at launch.
-	AutoMemory string
-	Runtime    string
+	Runtime     string
 	// Execution fingerprints the effective runtime and wire contract.
 	Execution     string
 	WireEndpoints []string
@@ -147,7 +145,7 @@ type Resolved struct {
 
 func (r Resolved) clone() Resolved {
 	return Resolved{
-		Runtime: r.Runtime, AutoMemory: r.AutoMemory, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),
+		Runtime: r.Runtime, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),
 		Execution: r.Execution, WireEndpoints: slices.Clone(r.WireEndpoints),
 		Parameters:  copyStringMap(r.Parameters),
 		Environment: copyStringMap(r.Environment),

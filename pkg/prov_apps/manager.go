@@ -151,7 +151,7 @@ type ProviderAppManager struct {
 	localizeParams      ParamLocalizer
 	runtimeChecks       install.RuntimeChecksResolver
 	installPolicyFile   string
-	memoryBudget        func(provider string) (*schema.MemoryBudget, error)
+	providerSchema      func(provider string) (*schema.ProviderSchema, error)
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
 	memoryInventory     func(context.Context) []gpu.CardMetrics
 	idleEvictionDefault bool
@@ -173,7 +173,8 @@ type ProviderAppManager struct {
 // values this node hands its engine, such as an asset name into the path
 // of that file here. An error refuses the launch. Its output is trusted:
 // validation applies to what the operator configured, before it runs.
-type ParamLocalizer func(provider, endpoint, model string, params map[string]string) (Localized, error)
+// shapes is the endpoint schema already resolved for this preparation.
+type ParamLocalizer func(provider, endpoint, model string, params map[string]string, shapes map[string]schema.ParamShape) (Localized, error)
 
 // Localized is one launch's parameters as this node's engine is given them.
 type Localized struct {
@@ -329,9 +330,9 @@ func WithRuntimeChecks(checks install.RuntimeChecksResolver) Option {
 	return func(m *ProviderAppManager) { m.runtimeChecks = checks }
 }
 
-// WithMemoryBudget supplies release-owned engine memory-budget semantics.
-func WithMemoryBudget(resolve func(provider string) (*schema.MemoryBudget, error)) Option {
-	return func(m *ProviderAppManager) { m.memoryBudget = resolve }
+// WithProviderSchema supplies release-owned launch semantics from the merged schema.
+func WithProviderSchema(resolve func(provider string) (*schema.ProviderSchema, error)) Option {
+	return func(m *ProviderAppManager) { m.providerSchema = resolve }
 }
 
 // WithIdleMemoryEviction enables node-local reclamation of idle GPU runs.

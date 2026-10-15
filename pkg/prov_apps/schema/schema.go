@@ -31,7 +31,9 @@ type YAMLParam struct {
 	Description string   `yaml:"description,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"`
 	// Pass is how an asset reaches the engine; only type: asset takes it.
-	Pass string `yaml:"pass,omitempty"`
+	Pass   string `yaml:"pass,omitempty"`
+	Auto   string `yaml:"auto,omitempty"`
+	Served string `yaml:"served,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -111,6 +113,12 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 		}
 		out.Parameters[name] = merged
 	}
+	if out.Diagnostics != nil && out.Diagnostics.Memory != nil && out.Diagnostics.Memory.Kind == MemoryFractionTotal {
+		name := out.Diagnostics.Memory.Parameter
+		shape := out.Parameters[name]
+		shape.Auto = "auto"
+		out.Parameters[name] = shape
+	}
 	if len(y.Endpoints) > 0 {
 		out.Endpoints = make(map[string]EndpointSchema, len(y.Endpoints))
 		for epName, ep := range y.Endpoints {
@@ -166,6 +174,12 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 	if out.Pass == "" {
 		out.Pass = pass
+	}
+	if out.Auto == "" {
+		out.Auto = yp.Auto
+	}
+	if out.Served == "" {
+		out.Served = yp.Served
 	}
 	return out, nil
 }

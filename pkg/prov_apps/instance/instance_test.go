@@ -418,6 +418,31 @@ func TestInstance_MarkRunningFirstStamp(t *testing.T) {
 	assert.Equal(t, first, inst.StartedAt) // should not change
 }
 
+func TestInstance_MarkRunningCommitsOnlyTransitions(t *testing.T) {
+	inst := NewInstance("id", "p", "m", 0, 0, 10)
+	defer inst.Cancel()
+	var firsts []bool
+	commit := func(first bool) { firsts = append(firsts, first) }
+	require.True(t, inst.MarkRunning(false, commit))
+	lastHealthy := inst.LastHealthy
+	require.False(t, inst.MarkRunning(true, commit))
+	assert.Equal(t, lastHealthy, inst.LastHealthy)
+	assert.Equal(t, []bool{true}, firsts)
+	inst.MarkUnhealthy("temporary health failure")
+	require.True(t, inst.MarkRunning(true, commit))
+	assert.Equal(t, []bool{true, false}, firsts)
+	assert.Equal(t, StatusRunning, inst.GetStatus())
+	assert.Empty(t, inst.GetErrorMessage())
+}
+
+func TestInstance_SetLoadedWithoutContext(t *testing.T) {
+	inst := &Instance{Status: StatusRunning}
+	loaded := Loaded{ContextLength: 8192}
+	inst.SetLoaded(loaded)
+	assert.Equal(t, loaded, inst.Loaded())
+	assert.Equal(t, 8192, inst.ContextLength)
+}
+
 func TestInstance_Cancel(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 	ctx := inst.Context()

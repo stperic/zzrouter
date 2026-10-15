@@ -3,6 +3,9 @@
 # tensor-parallel-size, dtype). Everything here augments it.
 provider: vllm
 parameters:
+  max-model-len:
+    auto: "auto"
+    served: max_model_len
   enable-auto-tool-choice:
     type: bool
     description: Enable automatic tool calling
