@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
@@ -85,7 +86,7 @@ func (s *Security) Holds(request metadata.DownloadRequest) (bool, error) {
 		return false, err
 	}
 	if len(request.Files) == 0 {
-		return len(manifest.Files) > 0, nil
+		return layout.Complete(dir)
 	}
 	for _, f := range request.Files {
 		if _, ok := manifest.Holds(dir, f.Name, f.Size, f.SHA256); !ok {

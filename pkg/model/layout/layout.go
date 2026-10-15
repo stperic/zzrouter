@@ -19,10 +19,10 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 )
 
-// ErrIncomplete means a model lacks the weights needed to serve it.
-var ErrIncomplete = errors.New("model weights incomplete")
+// ErrIncomplete means a local copy lacks weights or files a transfer still owes.
+var ErrIncomplete = errors.New("model files incomplete")
 
-// Complete reports whether weights and every indexed shard are present, excluding feature files.
+// Complete reports whether weights and indexed shards are present and no model files are pending.
 func Complete(modelPath string) (bool, error) {
 	info, err := os.Stat(modelPath)
 	if os.IsNotExist(err) {
@@ -41,6 +41,9 @@ func Complete(modelPath string) (bool, error) {
 			return Complete(filepath.Dir(modelPath))
 		}
 		return info.Mode().IsRegular() && info.Size() > 0, nil
+	}
+	if manifest, err := integrity.ReadManifest(modelPath); err != nil || (manifest != nil && len(manifest.Pending) > 0) {
+		return false, err
 	}
 	files, err := OnDisk(modelPath)
 	if err != nil {

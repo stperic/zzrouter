@@ -116,6 +116,22 @@ func TestVerifyLocalWeights(t *testing.T) {
 		require.NoError(t, VerifyLocalWeights(t.Context(), dir, nil))
 	})
 
+	t.Run("pending non-weight files refuse launch until recorded", func(t *testing.T) {
+		dir := t.TempDir()
+		weights := writeModel(t, dir, "model.safetensors", "weights")
+		require.NoError(t, integrity.RecordFiles(dir, "org/model", "", integrity.FileChecksum{RelativePath: "model.safetensors", Size: 7}))
+		tokenizer := integrity.FileChecksum{RelativePath: "tokenizer.json", Size: 2}
+		require.NoError(t, integrity.RecordPending(dir, "org/model", "", tokenizer))
+		for _, path := range []string{dir, weights} {
+			err := VerifyLocalWeights(t.Context(), path, nil)
+			require.ErrorIs(t, err, ErrModelIncomplete)
+			require.ErrorContains(t, err, "re-download to repair")
+		}
+		writeModel(t, dir, tokenizer.RelativePath, "{}")
+		require.NoError(t, integrity.RecordFiles(dir, "org/model", "", tokenizer))
+		require.NoError(t, VerifyLocalWeights(t.Context(), dir, nil))
+	})
+
 	t.Run("directory weights do not require unused feature files", func(t *testing.T) {
 		dir := t.TempDir()
 		writeModel(t, dir, "model.safetensors", "weights")

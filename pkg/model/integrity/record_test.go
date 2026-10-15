@@ -38,6 +38,31 @@ func TestRecordFiles_AddsAndReplaces(t *testing.T) {
 	}
 }
 
+func TestRecordPending_OnlyUnheldModelFilesAndClearsRecordedPaths(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "model")
+	weights := FileChecksum{RelativePath: "model.safetensors", Size: 7, SHA256: "abc"}
+	require.NoError(t, RecordPending(dir, "org/model", "hub", weights))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, weights.RelativePath), []byte("weights"), 0600))
+	require.NoError(t, RecordFiles(dir, "org/model", "hub", weights))
+	missing := FileChecksum{RelativePath: filepath.Join("nested", "tokenizer.json"), Size: 2}
+	require.NoError(t, RecordPending(dir, "org/model", "hub", weights, missing, missing,
+		FileChecksum{RelativePath: "mmproj.gguf", Feature: "vision"}))
+	m, err := ReadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"nested/tokenizer.json"}, m.Pending, "held weights and features never become pending")
+	assert.Equal(t, int64(7), m.TotalSize)
+	require.NoError(t, RecordPending(dir, "org/model", "hub", FileChecksum{RelativePath: "vocab.json", Size: 2}))
+	require.NoError(t, RecordFiles(dir, "org/model", "hub", missing))
+	m, err = ReadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vocab.json"}, m.Pending, "recording one file preserves other obligations")
+	weights.SHA256 = "different"
+	require.NoError(t, RecordPending(dir, "org/model", "hub", weights))
+	m, err = ReadManifest(dir)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"vocab.json", "model.safetensors"}, m.Pending, "Holds checks the planned hash")
+}
+
 // Hashing a directory again keeps what each file is for, and never counts
 // a download still in progress as model content.
 func TestCreateManifest_KeepsFeaturesAndSkipsPartials(t *testing.T) {

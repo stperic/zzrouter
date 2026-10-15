@@ -225,6 +225,13 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 		return nil, fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
+	files := make([]integrity.FileChecksum, 0, len(manifest.Files))
+	for _, f := range manifest.Files {
+		files = append(files, integrity.FileChecksum{RelativePath: f.Name, Size: f.Size, SHA256: f.SHA256, Feature: f.Feature})
+	}
+	if err := integrity.RecordPending(destDir, model, sourceURL, files...); err != nil {
+		return nil, err
+	}
 	result := &Result{Success: true}
 
 	for i, file := range manifest.Files {

@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
@@ -91,10 +92,10 @@ func TestPlan(t *testing.T) {
 		{Name: "README.md"}, {Name: "M-Q4_K_M.gguf"}, {Name: "mmproj-BF16.gguf"}, {Name: "mmproj-F16.gguf"},
 		{Name: "Q8_0/M-Q8_0-00001-of-00002.gguf"}, {Name: "Q8_0/M-Q8_0-00002-of-00002.gguf"},
 	}
-	names := func(ps []planned) []string {
+	names := func(ps []metadata.DownloadFile) []string {
 		var out []string
 		for _, p := range ps {
-			out = append(out, p.file.Name+"="+p.feature)
+			out = append(out, p.Name+"="+p.Feature)
 		}
 		return out
 	}
@@ -116,7 +117,7 @@ func TestPlan(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := plan(listing, c.req)
+			got, err := Plan(listing, c.req)
 			if c.want == nil {
 				require.Error(t, err)
 				return
@@ -125,9 +126,9 @@ func TestPlan(t *testing.T) {
 			assert.Equal(t, c.want, names(got))
 		})
 	}
-	_, err := plan(listing, metadata.DownloadRequest{Weights: "Q4_K_M", Want: []string{"vision"}})
+	_, err := Plan(listing, metadata.DownloadRequest{Weights: "Q4_K_M", Want: []string{"vision"}})
 	assert.ErrorContains(t, err, "not one this engine declares")
-	_, err = plan(listing[:2], metadata.DownloadRequest{Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}})
+	_, err = Plan(listing[:2], metadata.DownloadRequest{Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}})
 	assert.ErrorContains(t, err, "no file for feature")
 }
 
@@ -219,6 +220,119 @@ func TestDownload_ForceRefetchesSelectedSet(t *testing.T) {
 	}
 }
 
+func failedNonWeightDownload(t *testing.T) (*Connector, metadata.DownloadRequest, string) {
+	t.Helper()
+	bodies := map[string]string{"config.json": "{}", "model.safetensors": "weights", "tokenizer.json": "tokenizer"}
+	hfc := &Connector{modelsDir: t.TempDir(), downloadBase: "https://hub.test/"}
+	var fetched []string
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
+		name := filepath.Base(r.URL.Path)
+		fetched = append(fetched, name)
+		if name == "tokenizer.json" {
+			return targetResponse(r, "tampered"), nil
+		}
+		return targetResponse(r, bodies[name]), nil
+	}))
+	req := metadata.DownloadRequest{Repo: "org/model"}
+	for _, name := range []string{"config.json", "model.safetensors", "tokenizer.json"} {
+		body := bodies[name]
+		sum := sha256.Sum256([]byte(body))
+		req.Files = append(req.Files, metadata.DownloadFile{TreeFileEntry: metadata.TreeFileEntry{Name: name, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}})
+	}
+	dir := filepath.Join(hfc.modelsDir, "org", "model")
+	require.ErrorContains(t, hfc.Download(t.Context(), req, nil, CatalogDestination(dir)), "failed to download tokenizer.json")
+	require.Equal(t, []string{"config.json", "model.safetensors", "tokenizer.json"}, fetched)
+	return hfc, req, dir
+}
+
+func TestDownload_FailedNonWeightStaysPending(t *testing.T) {
+	hfc, _, dir := failedNonWeightDownload(t)
+	m, err := integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, []string{"tokenizer.json"}, m.Pending)
+	assert.Len(t, m.Files, 2)
+	assert.FileExists(t, filepath.Join(dir, "model.safetensors"))
+	complete, err := layout.Complete(dir)
+	require.NoError(t, err)
+	assert.False(t, complete)
+	models, err := hfc.ScanModels()
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.True(t, models[0].Incomplete)
+}
+
+func TestDownload_RepairsOnlyPendingFile(t *testing.T) {
+	hfc, req, dir := failedNonWeightDownload(t)
+	var fetched []string
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
+		fetched = append(fetched, filepath.Base(r.URL.Path))
+		return targetResponse(r, "tokenizer"), nil
+	}))
+	require.NoError(t, hfc.Download(t.Context(), req, nil, CatalogDestination(dir)))
+	assert.Equal(t, []string{"tokenizer.json"}, fetched, "only the tokenizer was fetched")
+	m, err := integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, m.Pending)
+	assert.Len(t, m.Files, 3)
+	complete, err := layout.Complete(dir)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	models, err := hfc.ScanModels()
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.False(t, models[0].Incomplete)
+}
+
+func TestDownload_FailedFeatureKeepsComplete(t *testing.T) {
+	hfc := &Connector{modelsDir: t.TempDir(), downloadBase: "https://hub.test/"}
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
+		return targetResponse(r, "weights"), nil
+	}))
+	req := metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{
+		{TreeFileEntry: metadata.TreeFileEntry{Name: "model.gguf", Size: 7}},
+		{TreeFileEntry: metadata.TreeFileEntry{Name: "mmproj-F16.gguf", SHA256: "wrong"}, Feature: "vision"},
+	}}
+	dir := filepath.Join(hfc.modelsDir, "org", "model")
+	require.ErrorContains(t, hfc.Download(t.Context(), req, nil, CatalogDestination(dir)), "failed to download mmproj-F16.gguf")
+	m, err := integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, m.Pending)
+	assert.FileExists(t, filepath.Join(dir, "model.gguf"))
+	assert.NoFileExists(t, filepath.Join(dir, "mmproj-F16.gguf"))
+	complete, err := layout.Complete(dir)
+	require.NoError(t, err)
+	assert.True(t, complete)
+}
+
+func TestDownload_ForceStaysComplete(t *testing.T) {
+	hfc := &Connector{modelsDir: t.TempDir(), downloadBase: "https://hub.test/"}
+	req := metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{
+		{TreeFileEntry: metadata.TreeFileEntry{Name: "config.json", Size: 2}},
+		{TreeFileEntry: metadata.TreeFileEntry{Name: "model.safetensors", Size: 7}},
+		{TreeFileEntry: metadata.TreeFileEntry{Name: "tokenizer.json", Size: 2}},
+	}}
+	dir := filepath.Join(hfc.modelsDir, "org", "model")
+	observed := 0
+	hfc.SetHTTPTransport(targetTransport(func(r *http.Request) (*http.Response, error) {
+		if req.Force {
+			observed++
+			complete, err := layout.Complete(dir)
+			assert.NoError(t, err)
+			assert.True(t, complete, "a complete copy stays complete during every forced fetch")
+		}
+		body := "{}"
+		if filepath.Base(r.URL.Path) == "model.safetensors" {
+			body = "weights"
+		}
+		return targetResponse(r, body), nil
+	}))
+	require.NoError(t, hfc.Download(t.Context(), req, nil, CatalogDestination(dir)))
+	req.Force = true
+	require.NoError(t, hfc.Download(t.Context(), req, nil, CatalogDestination(dir)))
+	assert.Equal(t, 3, observed, "force fetched the entire selected set")
+}
+
 func TestPlanMissingDefaultFeatureIsOptional(t *testing.T) {
 	listing := []metadata.TreeFileEntry{{Name: "M-Q4_K_M.gguf"}}
 	req := metadata.DownloadRequest{Repo: "org/model", Weights: "Q4_K_M", Features: vision, Want: []string{"vision"}, Optional: []string{"vision"}}
@@ -229,6 +343,13 @@ func TestPlanMissingDefaultFeatureIsOptional(t *testing.T) {
 	req.Optional = nil
 	_, err = Plan(listing, req)
 	assert.ErrorContains(t, err, "no file for feature")
+}
+
+func TestPlanEmptySetStaysResolved(t *testing.T) {
+	files, err := Plan(nil, metadata.DownloadRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, files, "nil would ask a downstream transfer to resolve the plan again")
+	assert.Empty(t, files)
 }
 
 // A repository Hugging Face does not serve is recognisable as such, so a

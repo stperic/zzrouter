@@ -49,6 +49,22 @@ func TestComplete_IndexedWeightsAndFeatures(t *testing.T) {
 	assert.True(t, complete)
 }
 
+func TestComplete_LegacyManifestWithoutPending(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "model.safetensors"), []byte("weights"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, integrity.ManifestFileName), []byte(`{"version":1,"model_name":"org/model","files":[{"path":"model.safetensors","size":7}],"total_size":7}`), 0600))
+	m, err := integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Nil(t, m.Pending)
+	complete, err := Complete(dir)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	complete, err = Complete(filepath.Join(dir, "model.safetensors"))
+	require.NoError(t, err)
+	assert.True(t, complete)
+}
+
 // A split GGUF is one variant, in shard order, whether it sits at the top
 // or in a quant subdirectory, and a set missing a shard is not offered.
 func TestGGUFVariants_GroupsShards(t *testing.T) {
