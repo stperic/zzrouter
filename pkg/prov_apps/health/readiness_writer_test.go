@@ -6,7 +6,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,47 +14,58 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReadinessWriterCaptureOnceOutsideLock(t *testing.T) {
-	partial, err := os.ReadFile("../testdata/offload/partial.txt")
+func TestReadinessWriterCapturesInLineOrderOutsideLock(t *testing.T) {
+	data, err := os.ReadFile("../testdata/offload/moe_pressure.txt")
 	require.NoError(t, err)
-	full, err := os.ReadFile("../testdata/offload/full.txt")
-	require.NoError(t, err)
-	line := strings.SplitAfter(string(partial), "\n")[0]
-	for _, scenario := range []string{"one write", "separate writes", "after ready with serve", "resolved without serve", "concurrent writes"} {
+	lines := strings.SplitAfter(string(data), "\n")
+	placement := strings.Join(lines[:4], "")
+	ready := lines[4]
+	type capture struct {
+		index  int
+		groups []string
+	}
+	wantPlacement := []capture{{1, []string{}}, {0, []string{"49", "49"}}, {2, []string{"CPU", "17447.91"}}, {2, []string{"", "7651.42"}}}
+	for _, scenario := range []string{"one write", "separate writes", "split CRLF", "after ready with serve", "resolved without serve", "failure"} {
 		t.Run(scenario, func(t *testing.T) {
-			probe := &ReadinessProbe{Timeout: time.Second, LogPatterns: LogPatterns{Success: []PatternMatcher{{Pattern: "listening on http"}}}}
+			probe := &ReadinessProbe{Timeout: time.Second, LogPatterns: LogPatterns{
+				Success: []PatternMatcher{{Pattern: "listening on http"}}, Failure: []PatternMatcher{{Pattern: "out of memory"}},
+			}}
 			if scenario == "after ready with serve" {
 				probe.Serve = &ServeCheck{Path: "/check"}
 			}
 			require.NoError(t, probe.Validate())
-			var captures [][]string
+			var captures []capture
 			var writer *ReadinessWriter
-			writer = NewReadinessWriter(io.Discard, probe, regexp.MustCompile(`offloaded (\d+)/(\d+) layers to GPU`), func(values []string) {
+			writer = NewReadinessWriter(io.Discard, probe, []*regexp.Regexp{
+				regexp.MustCompile(`offloaded (\d+)/(\d+) layers to GPU`),
+				regexp.MustCompile(`tensor overrides to CPU`),
+				regexp.MustCompile(`(CPU)?\S* model buffer size = +([\d.]+) MiB`),
+			}, func(index int, values []string) {
 				writer.LastLine()
-				captures = append(captures, values)
+				captures = append(captures, capture{index, values})
 			})
+			chunks := []string{placement + placement + ready + placement}
+			want := append(append([]capture{}, wantPlacement...), wantPlacement...)
+			switch scenario {
+			case "separate writes":
+				chunks = []string{placement, placement, ready, placement}
+			case "split CRLF":
+				chunks = strings.Split(strings.ReplaceAll(chunks[0], "\n", "\r\n"), "")
+			case "after ready with serve":
+				chunks = []string{ready, placement}
+				want = wantPlacement
+			case "resolved without serve":
+				chunks = []string{ready + placement, placement}
+				want = nil
+			case "failure":
+				chunks = []string{placement + "out of memory\n" + placement, placement}
+				want = wantPlacement
+			}
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				if scenario == "after ready with serve" || scenario == "resolved without serve" {
-					ready := strings.SplitAfter(string(partial), "\n")[1]
-					_, err := writer.Write([]byte(ready))
-					assert.NoError(t, err)
-				}
-				switch scenario {
-				case "one write":
-					_, err := writer.Write([]byte(line + string(full)))
-					assert.NoError(t, err)
-				case "concurrent writes":
-					var writes sync.WaitGroup
-					for range 8 {
-						writes.Go(func() { _, err := writer.Write([]byte(line)); assert.NoError(t, err) })
-					}
-					writes.Wait()
-				default:
-					_, err := writer.Write([]byte(line))
-					assert.NoError(t, err)
-					_, err = writer.Write(full)
+				for _, chunk := range chunks {
+					_, err := writer.Write([]byte(chunk))
 					assert.NoError(t, err)
 				}
 			}()
@@ -63,10 +73,6 @@ func TestReadinessWriterCaptureOnceOutsideLock(t *testing.T) {
 			case <-done:
 			case <-time.After(time.Second):
 				t.Fatal("capture callback cannot reenter writer outside its lock")
-			}
-			want := [][]string{{"8", "29"}}
-			if scenario == "resolved without serve" {
-				want = nil // capture ends with readiness; engines log placement before ready
 			}
 			assert.Equal(t, want, captures)
 		})

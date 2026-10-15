@@ -1,0 +1,4 @@
+0.06.287.184 I load_tensors: offloaded 42/66 layers to GPU
+0.06.287.192 I load_tensors:   CPU_Mapped model buffer size = 10938.52 MiB
+0.06.287.193 I load_tensors:      Vulkan0 model buffer size = 18508.76 MiB
+0.19.729.576 I srv  llama_server: listening on http://127.0.0.1:8080

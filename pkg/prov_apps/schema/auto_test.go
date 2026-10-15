@@ -1,6 +1,8 @@
 package schema
 
 import (
+	"fmt"
+	"maps"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -9,49 +11,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMergeServedLog(t *testing.T) {
-	const valid = `offloaded (\d+)/(\d+) layers to GPU`
+func TestMergePlacementLog(t *testing.T) {
+	valid := map[string]string{
+		"layers":        `offloaded (\d+)/(\d+) layers to GPU`,
+		"cpu_overrides": `tensor overrides to CPU`,
+		"weights":       `(CPU)?\S* model buffer size = +([\d.]+) MiB`,
+	}
 	for _, endpoint := range []bool{false, true} {
-		for _, tc := range []struct {
-			name, pattern string
-			valid         bool
-		}{
-			{"two groups", valid, true},
-			{"noncapturing group", `(?:offloaded) (\d+)/(\d+) layers to GPU`, true},
-			{"invalid regex", `(`, false},
-			{"zero groups", `offloaded`, false},
-			{"one group", `offloaded (\d+)`, false},
-			{"three groups", `(offloaded) (\d+)/(\d+)`, false},
-		} {
-			t.Run(map[bool]string{false: "base/", true: "endpoint/"}[endpoint]+tc.name, func(t *testing.T) {
-				y := &YAMLSchema{Parameters: map[string]YAMLParam{"n-gpu-layers": {ServedLog: tc.pattern}}}
-				if endpoint {
-					y.Parameters["n-gpu-layers"] = YAMLParam{ServedLog: valid}
-					y.Endpoints = map[string]YAMLEndpoint{"embeddings": {Parameters: map[string]YAMLParam{"n-gpu-layers": {ServedLog: tc.pattern}}}}
-				}
-				data, err := yaml.Marshal(y)
-				require.NoError(t, err)
-				decoded, err := LoadYAMLSchema(data)
-				require.NoError(t, err)
-				merged, errs := Merge("llamacpp", decoded)
-				if !tc.valid {
-					require.NotEmpty(t, errs)
-					assert.Contains(t, errs[0].Error(), "exactly two capture groups")
-					return
-				}
-				require.Empty(t, errs)
-				param := merged.ForEndpoint(map[bool]string{false: "chat", true: "embeddings"}[endpoint])["n-gpu-layers"]
-				require.NotNil(t, param.ServedLog)
-				assert.Equal(t, tc.pattern, param.ServedLog.String())
-				assert.Equal(t, 2, param.ServedLog.NumSubexp())
-				wantBase := tc.pattern
-				if endpoint {
-					wantBase = valid
-				}
-				assert.Equal(t, wantBase, decoded.Parameters["n-gpu-layers"].ServedLog)
-			})
+		for name, groups := range map[string]int{"layers": 2, "cpu_overrides": 0, "weights": 2} {
+			for _, tc := range []struct {
+				name, pattern string
+				valid         bool
+			}{
+				{"valid", valid[name], true},
+				{"noncapturing group", `(?:prefix)` + valid[name], true},
+				{"invalid regex", `(`, false},
+				{"one group", `(value)`, false},
+				{"three groups", `(a)(b)(c)`, false},
+				{"wrong zero or two groups", map[int]string{0: `(a)(b)`, 2: `value`}[groups], false},
+			} {
+				t.Run(fmt.Sprintf("endpoint=%t/%s/%s", endpoint, name, tc.name), func(t *testing.T) {
+					patterns := maps.Clone(valid)
+					patterns[name] = tc.pattern
+					y := &YAMLSchema{Parameters: map[string]YAMLParam{"n-gpu-layers": {PlacementLog: patterns}}}
+					if endpoint {
+						y.Parameters["n-gpu-layers"] = YAMLParam{PlacementLog: maps.Clone(valid)}
+						y.Endpoints = map[string]YAMLEndpoint{"embeddings": {Parameters: map[string]YAMLParam{"n-gpu-layers": {PlacementLog: patterns}}}}
+					}
+					data, err := yaml.Marshal(y)
+					require.NoError(t, err)
+					decoded, err := LoadYAMLSchema(data)
+					require.NoError(t, err)
+					merged, errs := Merge("llamacpp", decoded)
+					if !tc.valid {
+						require.NotEmpty(t, errs)
+						assert.Contains(t, errs[0].Error(), "placement_log."+name)
+						assert.Contains(t, errs[0].Error(), fmt.Sprintf("exactly %d capture groups", groups))
+						return
+					}
+					require.Empty(t, errs)
+					param := merged.ForEndpoint(map[bool]string{false: "chat", true: "embeddings"}[endpoint])["n-gpu-layers"]
+					require.NotNil(t, param.PlacementLog[name])
+					assert.Equal(t, tc.pattern, param.PlacementLog[name].String())
+					assert.Equal(t, groups, param.PlacementLog[name].NumSubexp())
+					wantBase := tc.pattern
+					if endpoint {
+						wantBase = valid[name]
+						assert.Equal(t, wantBase, merged.Parameters["n-gpu-layers"].PlacementLog[name].String())
+					}
+					assert.Equal(t, wantBase, decoded.Parameters["n-gpu-layers"].PlacementLog[name])
+				})
+			}
 		}
 	}
+}
+
+func TestMergePlacementLogUnknownPattern(t *testing.T) {
+	_, errs := Merge("llamacpp", &YAMLSchema{Parameters: map[string]YAMLParam{
+		"n-gpu-layers": {PlacementLog: map[string]string{"buffer": "model buffer size"}},
+	}})
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Error(), "unknown placement_log.buffer")
 }
 
 func TestMergeAutoAndServed(t *testing.T) {

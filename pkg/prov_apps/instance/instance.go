@@ -528,6 +528,8 @@ func (i *Instance) notifyIdleLocked() {
 type Loaded struct {
 	Size, VRAM                                        int64
 	GPULayers, Layers                                 int64
+	CPUWeights, GPUWeights                            int64
+	CPUOverrides                                      bool
 	ContextLength                                     int
 	ExpiresAt                                         time.Time // when the daemon unloads it idle
 	Digest, Format, Family, ParameterSize, QuantLevel string
@@ -558,6 +560,9 @@ func (i *Instance) UpdateLoaded(update func(*Loaded)) {
 	gpu, total := l.VRAM, l.Size
 	if total <= 0 {
 		gpu, total = l.GPULayers, l.Layers
+		if l.CPUOverrides && l.CPUWeights+l.GPUWeights > 0 {
+			gpu, total = l.GPUWeights, l.CPUWeights+l.GPUWeights
+		}
 	}
 	switch {
 	case total <= 0:

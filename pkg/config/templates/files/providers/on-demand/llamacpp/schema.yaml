@@ -6,7 +6,10 @@ parameters:
     served: meta.n_ctx
   # Read because diagnostics.memory names n-gpu-layers with kind layers.
   n-gpu-layers:
-    served_log: 'offloaded (\d+)/(\d+) layers to GPU'
+    placement_log:
+      layers: 'offloaded (\d+)/(\d+) layers to GPU'
+      cpu_overrides: 'tensor overrides to CPU'
+      weights: '(CPU)?\S* model buffer size = +([\d.]+) MiB'
   threads:
     type: int
     min: 1

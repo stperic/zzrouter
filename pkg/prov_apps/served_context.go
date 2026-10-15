@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 
@@ -44,13 +45,37 @@ func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
 	}
 }
 
-func recordServedLayers(run *instance.Instance, values []string) {
-	gpu, gpuErr := strconv.ParseInt(values[0], 10, 64)
-	total, totalErr := strconv.ParseInt(values[1], 10, 64)
-	if gpuErr != nil || totalErr != nil || total <= 0 || gpu < 0 || gpu > total {
-		return
-	}
-	run.UpdateLoaded(func(loaded *instance.Loaded) { loaded.GPULayers, loaded.Layers = gpu, total })
+const (
+	placementLayers = iota
+	placementCPUOverrides
+	placementWeights
+)
+
+func recordPlacement(run *instance.Instance, index int, values []string) {
+	run.UpdateLoaded(func(loaded *instance.Loaded) {
+		switch index {
+		case placementLayers:
+			gpu, gpuErr := strconv.ParseInt(values[0], 10, 64)
+			total, totalErr := strconv.ParseInt(values[1], 10, 64)
+			if gpuErr == nil && totalErr == nil && total > 0 && gpu >= 0 && gpu <= total {
+				loaded.GPULayers, loaded.Layers = gpu, total
+			}
+		case placementCPUOverrides:
+			loaded.CPUOverrides = true
+		case placementWeights:
+			mib, err := strconv.ParseFloat(values[1], 64)
+			bytes := mib * constants.BytesPerMB
+			// Reject non-finite sizes and leave room for all weight buffers.
+			if err != nil || !(bytes > 0 && bytes < float64(math.MaxInt64-loaded.CPUWeights-loaded.GPUWeights)) {
+				return
+			}
+			if values[0] != "" {
+				loaded.CPUWeights += int64(bytes)
+			} else {
+				loaded.GPUWeights += int64(bytes)
+			}
+		}
+	})
 }
 
 func servedContext(entry map[string]any, field string) int {

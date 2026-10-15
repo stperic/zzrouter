@@ -208,7 +208,7 @@ type admittedRun struct {
 	logFile   *os.File
 	health    health.CheckConfig
 	transform process.EnvironmentTransform
-	layers    *regexp.Regexp
+	placement []*regexp.Regexp
 }
 
 // runLogFile opens run's log file for appending; it outlives the run on this node.
@@ -288,13 +288,20 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	inst.SetResolved(prepared.resolved)
 	inst.WireModel = prepared.launch.WireModel
-	var layers *regexp.Regexp
+	var placement []*regexp.Regexp
 	if budget := launchBudget(declared); budget != nil && budget.Kind == schema.MemoryLayers {
-		layers = declared.ForEndpoint(endpoint)[budget.Parameter].ServedLog
+		patterns := declared.ForEndpoint(endpoint)[budget.Parameter].PlacementLog
+		if len(patterns) > 0 {
+			placement = []*regexp.Regexp{
+				placementLayers:       patterns["layers"],
+				placementCPUOverrides: patterns["cpu_overrides"],
+				placementWeights:      patterns["weights"],
+			}
+		}
 	}
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
-		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, layers: layers,
+		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, placement: placement,
 	}, nil
 }
 
@@ -553,7 +560,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(inst *instance.Instance, run a
 	var logWriter io.Writer = run.logFile
 	var readinessWriter *health.ReadinessWriter
 	if run.health.ReadinessProbe != nil {
-		readinessWriter = health.NewReadinessWriter(run.logFile, run.health.ReadinessProbe, run.layers, func(values []string) { recordServedLayers(inst, values) })
+		readinessWriter = health.NewReadinessWriter(run.logFile, run.health.ReadinessProbe, run.placement, func(index int, values []string) { recordPlacement(inst, index, values) })
 		logWriter = readinessWriter
 	}
 

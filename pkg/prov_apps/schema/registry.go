@@ -47,10 +47,10 @@ type ParamShape struct {
 	Description string
 	Enum        []string
 	// Pass applies to ParamAsset only; empty means AssetPassPath.
-	Pass      AssetPass
-	Auto      string
-	Served    string
-	ServedLog *regexp.Regexp
+	Pass         AssetPass
+	Auto         string
+	Served       string
+	PlacementLog map[string]*regexp.Regexp
 }
 
 // Registry is the Go spine: launcher-load-bearing params per provider.

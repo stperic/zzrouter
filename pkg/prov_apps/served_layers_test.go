@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -47,24 +48,31 @@ func offloadWriter(t *testing.T, run *instance.Instance, serve bool) (*health.Re
 		probe.Serve = &health.ServeCheck{Path: "/check"}
 	}
 	require.NoError(t, probe.Validate())
-	return health.NewReadinessWriter(io.Discard, probe, offloadSchema(t).Parameters["n-gpu-layers"].ServedLog,
-		func(values []string) { recordServedLayers(run, values) }), probe
+	patterns := offloadSchema(t).Parameters["n-gpu-layers"].PlacementLog
+	return health.NewReadinessWriter(io.Discard, probe, []*regexp.Regexp{patterns["layers"], patterns["cpu_overrides"], patterns["weights"]},
+		func(index int, values []string) { recordPlacement(run, index, values) }), probe
 }
 
-func TestServedLayersLog(t *testing.T) {
+func TestPlacementLog(t *testing.T) {
 	partial, full, absent := offloadFixture(t, "partial"), offloadFixture(t, "full"), offloadFixture(t, "default")
+	override := strings.SplitAfter(offloadFixture(t, "moe_pressure"), "\n")[0]
 	for _, tc := range []struct {
 		name, log, want string
 		split           bool
 	}{
+		{"MoE pressure", offloadFixture(t, "moe_pressure"), "30% GPU / 70% CPU", false},
+		{"MoE alone", offloadFixture(t, "moe_alone"), "100% GPU", false},
+		{"dense pressure", offloadFixture(t, "dense27b_pressure"), "64% GPU / 36% CPU", false},
+		{"overrides without weights", override + partial, "28% GPU / 72% CPU", false},
+		{"MoE split CRLF", strings.ReplaceAll(offloadFixture(t, "moe_pressure"), "\n", "\r\n"), "30% GPU / 70% CPU", true},
 		{"partial", partial, "28% GPU / 72% CPU", false},
 		{"full", full, "100% GPU", false},
 		{"absent", absent, "", false},
-		{"first match", strings.SplitAfter(partial, "\n")[0] + full, "28% GPU / 72% CPU", false},
+		{"last layer observation", strings.SplitAfter(partial, "\n")[0] + full, "100% GPU", false},
 		{"split CRLF", strings.ReplaceAll(partial, "\n", "\r\n"), "28% GPU / 72% CPU", true},
 		{"CPU", strings.Replace(partial, "8/29", "0/29", 1), "100% CPU", false},
 		{"zero total", strings.Replace(partial, "8/29", "0/0", 1), "", false},
-		{"invalid first match", strings.SplitAfter(strings.Replace(partial, "8/29", "0/0", 1), "\n")[0] + full, "", false},
+		{"invalid then valid", strings.SplitAfter(strings.Replace(partial, "8/29", "0/0", 1), "\n")[0] + full, "100% GPU", false},
 		{"GPU exceeds total", strings.Replace(partial, "8/29", "30/29", 1), "", false},
 		{"non numeric", strings.Replace(partial, "8/29", "eight/29", 1), "", false},
 		{"GPU overflow", strings.Replace(partial, "8/29", "999999999999999999999/29", 1), "", false},
@@ -89,18 +97,61 @@ func TestServedLayersLog(t *testing.T) {
 	}
 }
 
-func TestRecordServedLayersInvalidValues(t *testing.T) {
-	for _, values := range [][]string{{"eight", "29"}, {"8", "many"}, {"-1", "29"}, {"0", "0"}, {"30", "29"}, {"8", "-29"}, {"999999999999999999999", "29"}, {"8", "999999999999999999999"}} {
-		t.Run(strings.Join(values, "/"), func(t *testing.T) {
-			run := instance.NewInstance("invalid", "engine", "model", 0, 0, 0)
-			recordServedLayers(run, values)
-			assert.Empty(t, run.ToInfo("").Processor)
-			assert.Zero(t, run.Loaded().Layers)
+func TestPlacementWeightsAndOllamaPrecedence(t *testing.T) {
+	for _, bytesFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "Ollama bytes last", true: "Ollama bytes first"}[bytesFirst], func(t *testing.T) {
+			run := instance.NewInstance("bytes", "engine", "model", 0, 0, 0)
+			setBytes := func() { run.UpdateLoaded(func(l *instance.Loaded) { l.Size, l.VRAM = 100, 80 }) }
+			if bytesFirst {
+				setBytes()
+			}
+			writer, _ := offloadWriter(t, run, false)
+			_, err := writer.Write([]byte(offloadFixture(t, "moe_pressure")))
+			require.NoError(t, err)
+			loaded := run.Loaded()
+			assert.True(t, loaded.CPUOverrides)
+			assert.InDelta(t, 17447.91*1024*1024, loaded.CPUWeights, 1)
+			assert.InDelta(t, 7651.42*1024*1024, loaded.GPUWeights, 1)
+			if !bytesFirst {
+				assert.Equal(t, "30% GPU / 70% CPU", run.ToInfo("").Processor)
+				setBytes()
+			}
+			assert.Equal(t, "80% GPU / 20% CPU", run.ToInfo("").Processor)
 		})
 	}
 }
 
-func TestServedLayersReadinessPublishers(t *testing.T) {
+func TestPlacementAccumulatesWeights(t *testing.T) {
+	lines := strings.SplitAfter(offloadFixture(t, "moe_pressure"), "\n")
+	run := instance.NewInstance("weights", "engine", "model", 0, 0, 0)
+	writer, _ := offloadWriter(t, run, false)
+	_, err := writer.Write([]byte(strings.Join(lines[:4], "") + lines[2] + lines[3] + lines[3] + lines[4]))
+	require.NoError(t, err)
+	assert.InDelta(t, 2*17447.91*1024*1024, run.Loaded().CPUWeights, 2)
+	assert.InDelta(t, 3*7651.42*1024*1024, run.Loaded().GPUWeights, 3)
+	assert.Equal(t, "40% GPU / 60% CPU", run.ToInfo("").Processor)
+}
+
+func TestRecordPlacementInvalidValues(t *testing.T) {
+	for _, values := range [][]string{{"eight", "29"}, {"8", "many"}, {"-1", "29"}, {"0", "0"}, {"30", "29"}, {"8", "-29"}, {"999999999999999999999", "29"}, {"8", "999999999999999999999"}} {
+		t.Run(strings.Join(values, "/"), func(t *testing.T) {
+			run := instance.NewInstance("invalid", "engine", "model", 0, 0, 0)
+			recordPlacement(run, placementLayers, values)
+			assert.Empty(t, run.ToInfo("").Processor)
+			assert.Zero(t, run.Loaded().Layers)
+		})
+	}
+	for _, value := range []string{"invalid", "1.2.3", "-1", "0", "NaN", "+Inf", "1e300", "1e400"} {
+		t.Run("weight/"+value, func(t *testing.T) {
+			run := instance.NewInstance("invalid", "engine", "model", 0, 0, 0)
+			recordPlacement(run, placementWeights, []string{"CPU", value})
+			assert.Zero(t, run.Loaded().CPUWeights)
+			assert.Empty(t, run.ToInfo("").Processor)
+		})
+	}
+}
+
+func TestPlacementReadinessPublishers(t *testing.T) {
 	for _, publisher := range []string{"HTTP first", "log first", "line after running with serve", "line after log readiness"} {
 		t.Run(publisher, func(t *testing.T) {
 			r := servedContextRig(t, "max_model_len", serviceProbeTransport(func(*http.Request) (*http.Response, error) {
@@ -151,7 +202,7 @@ func TestServedLayersReadinessPublishers(t *testing.T) {
 	}
 }
 
-func TestServedLayersEndingStartup(t *testing.T) {
+func TestPlacementEndingStartup(t *testing.T) {
 	for _, ending := range []string{"failure", "stop", "retirement"} {
 		for _, captureFirst := range []bool{false, true} {
 			t.Run(ending+map[bool]string{false: " before line", true: " after line"}[captureFirst], func(t *testing.T) {
@@ -187,7 +238,7 @@ func TestServedLayersEndingStartup(t *testing.T) {
 	}
 }
 
-func TestServedContextAndLayersConcurrent(t *testing.T) {
+func TestServedContextAndPlacementConcurrent(t *testing.T) {
 	for _, placementFirst := range []bool{false, true} {
 		t.Run(map[bool]string{false: "context queued first", true: "placement queued first"}[placementFirst], func(t *testing.T) {
 			response, holder := newBarrier(), newBarrier()
@@ -207,8 +258,8 @@ func TestServedContextAndLayersConcurrent(t *testing.T) {
 				response.open()
 				waitParkedOn(t, ").readServedContext(", 1, contractWait)
 			}
-			updates.Go(func() { recordServedLayers(run, []string{"8", "29"}) })
-			waitParkedOn(t, "prov_apps.recordServedLayers(", 1, contractWait)
+			updates.Go(func() { recordPlacement(run, placementLayers, []string{"8", "29"}) })
+			waitParkedOn(t, "prov_apps.recordPlacement(", 1, contractWait)
 			if placementFirst {
 				response.open()
 				waitParkedOn(t, ").readServedContext(", 1, contractWait)
@@ -222,7 +273,7 @@ func TestServedContextAndLayersConcurrent(t *testing.T) {
 	}
 }
 
-func TestServedLayersLaunchAndRestart(t *testing.T) {
+func TestPlacementLaunchAndRestart(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fit", true: "explicit n-gpu-layers"}[explicit], func(t *testing.T) {
 			declared := offloadSchema(t)
@@ -234,25 +285,25 @@ func TestServedLayersLaunchAndRestart(t *testing.T) {
 			r.m.ReloadConfig(cfg)
 			script := strings.Replace(contractEngine, "printf 'READY\\n'", `cat "$0.output"`, 1)
 			require.NoError(t, os.WriteFile(r.engine, []byte(script), 0700))
-			require.NoError(t, os.WriteFile(r.engine+".output", []byte(offloadFixture(t, "partial")), 0600))
+			require.NoError(t, os.WriteFile(r.engine+".output", []byte(offloadFixture(t, "moe_pressure")), 0600))
 			req := EnsureRequest{Provider: "generic", Model: "engine-name"}
 			if explicit {
-				req.Parameters = map[string]string{"n-gpu-layers": "8"}
+				req.Parameters = map[string]string{"n-gpu-layers": "49"}
 			}
 			result, err := r.m.EnsureRun(t.Context(), req)
 			require.NoError(t, err)
 			if explicit {
-				assert.Equal(t, "8", result.Run.Resolved().Parameters["n-gpu-layers"])
+				assert.Equal(t, "49", result.Run.Resolved().Parameters["n-gpu-layers"])
 			}
 			r.ready(t)
 			awaitRunning(t, result.Run)
-			require.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, "28% GPU / 72% CPU", result.Run.ToInfo("").Processor) }, time.Second, time.Millisecond)
+			require.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, "30% GPU / 70% CPU", result.Run.ToInfo("").Processor) }, time.Second, time.Millisecond)
 			require.NoError(t, os.Remove(r.engine+".ready"))
 			next, err := r.m.RestartInstance(t.Context(), result.Run.ID)
 			require.NoError(t, err)
 			require.NotSame(t, result.Run, next)
 			assert.Empty(t, next.ToInfo("").Processor)
-			require.NoError(t, os.WriteFile(r.engine+".output", []byte(offloadFixture(t, "full")), 0600))
+			require.NoError(t, os.WriteFile(r.engine+".output", []byte(offloadFixture(t, "moe_alone")), 0600))
 			r.ready(t)
 			awaitRunning(t, next)
 			require.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, "100% GPU", next.ToInfo("").Processor) }, time.Second, time.Millisecond)
@@ -260,13 +311,13 @@ func TestServedLayersLaunchAndRestart(t *testing.T) {
 	}
 }
 
-func TestServedLayersDeclarationScope(t *testing.T) {
+func TestPlacementDeclarationScope(t *testing.T) {
 	for _, scenario := range []string{"layers", "other kind", "other parameter", "no diagnostics", "endpoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			r := newContractRig(t, true)
 			svc, _ := r.m.AppsConfig().LookupApp("generic")
 			declared := offloadSchema(t)
-			want := declared.Parameters["n-gpu-layers"].ServedLog
+			want := declared.Parameters["n-gpu-layers"].PlacementLog
 			switch scenario {
 			case "other kind":
 				declared.Diagnostics.Memory.Kind = schema.MemoryUnified
@@ -279,7 +330,7 @@ func TestServedLayersDeclarationScope(t *testing.T) {
 				want = nil
 			case "endpoint":
 				shape := declared.Parameters["n-gpu-layers"]
-				shape.ServedLog = nil
+				shape.PlacementLog = nil
 				declared.Endpoints["chat"] = schema.EndpointSchema{Parameters: map[string]schema.ParamShape{"n-gpu-layers": shape}}
 				want = nil
 			}
@@ -288,9 +339,14 @@ func TestServedLayersDeclarationScope(t *testing.T) {
 			run.Endpoint = "chat"
 			prepared, err := r.m.prepareRun(t.Context(), run, req, launchSelection{key: "generic", config: svc, model: process.ResolveModel(svc, req.Model)}, declared)
 			require.NoError(t, err)
-			assert.Same(t, want, prepared.layers)
+			var patterns []*regexp.Regexp
+			if len(want) > 0 {
+				patterns = []*regexp.Regexp{want["layers"], want["cpu_overrides"], want["weights"]}
+			}
+			assert.Equal(t, patterns, prepared.placement)
+			delete(declared.Parameters["n-gpu-layers"].PlacementLog, "weights")
 			declared.Parameters["n-gpu-layers"] = schema.ParamShape{}
-			assert.Same(t, want, prepared.layers, "launch preparation freezes the pattern")
+			assert.Equal(t, patterns, prepared.placement, "launch preparation freezes the patterns")
 		})
 	}
 }

@@ -456,6 +456,13 @@ func TestInstanceLoadedProcessor(t *testing.T) {
 		{"bytes precede layers", Loaded{Size: 100, VRAM: 50, GPULayers: 8, Layers: 29}, "50% GPU / 50% CPU"},
 		{"GPU bytes precede CPU layers", Loaded{Size: 100, VRAM: 100, Layers: 29}, "100% GPU"},
 		{"CPU bytes precede GPU layers", Loaded{Size: 100, GPULayers: 29, Layers: 29}, "100% CPU"},
+		{"override weights precede layers", Loaded{CPUOverrides: true, CPUWeights: 70, GPUWeights: 30, GPULayers: 49, Layers: 49}, "30% GPU / 70% CPU"},
+		{"embedding buffer without overrides", Loaded{CPUWeights: 12, GPUWeights: 88, GPULayers: 49, Layers: 49}, "100% GPU"},
+		{"overrides without weights", Loaded{CPUOverrides: true, GPULayers: 8, Layers: 29}, "28% GPU / 72% CPU"},
+		{"overrides without placement", Loaded{CPUOverrides: true}, ""},
+		{"bytes precede override weights", Loaded{Size: 100, VRAM: 80, CPUOverrides: true, CPUWeights: 70, GPUWeights: 30, GPULayers: 49, Layers: 49}, "80% GPU / 20% CPU"},
+		{"CPU weights", Loaded{CPUOverrides: true, CPUWeights: 70, GPULayers: 49, Layers: 49}, "100% CPU"},
+		{"GPU weights", Loaded{CPUOverrides: true, GPUWeights: 30}, "100% GPU"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := NewInstance("id", "engine", "model", 0, 0, 0)

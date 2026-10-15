@@ -60,7 +60,10 @@ func TestLlamacppPlacementReachesExistingInstall(t *testing.T) {
 	assert.Equal(t, []string{"--log-verbosity", "4"}, svc.Runtime.Execution.Args[len(svc.Runtime.Execution.Args)-2:])
 	schemas, errs := schema.LoadFromFS(os.DirFS(dir), ".")
 	require.Empty(t, errs)
-	assert.Equal(t, `offloaded (\d+)/(\d+) layers to GPU`, schemas["llamacpp"].Parameters["n-gpu-layers"].ServedLog.String())
+	placement := schemas["llamacpp"].Parameters["n-gpu-layers"].PlacementLog
+	assert.Equal(t, `offloaded (\d+)/(\d+) layers to GPU`, placement["layers"].String())
+	assert.Equal(t, `tensor overrides to CPU`, placement["cpu_overrides"].String())
+	assert.Equal(t, `(CPU)?\S* model buffer size = +([\d.]+) MiB`, placement["weights"].String())
 }
 
 func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
