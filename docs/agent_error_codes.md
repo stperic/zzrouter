@@ -34,7 +34,7 @@ live only in `runtime.failure_patterns`.
 | `capacity_exceeded` | 503 | The instance queue is full or queueing is disabled. | Honor `Retry-After`; retry or use another replica. |
 | `queue_wait_expired` | 503 | The instance slot did not become available within the queue wait. | Honor `Retry-After`; retry or use another replica. |
 | `rate_limit_exceeded` | 429 | Per-key RPM/TPM cap or budget reservation rejected the request. | Honor `Retry-After` if present; back off. Check `/zzrouter/v1/keys/:id/usage` for current budget. |
-| `invalid_request_error` (type) | 400 | Generic validation failure. `param` names the offending field. | Read `param`; fix and retry. |
+| `invalid_request_error` (type) | 400 | Validation failure, including a run endpoint the provider cannot serve or a required endpoint runtime missing. `param` names a field when available. | Read the message and `param`; choose a supported endpoint or follow the runtime install call before retrying. |
 | `upstream_stream_interrupted` | 502 | The upstream stream ended before completing. | Treat the partial answer as incomplete; retry the request if appropriate. |
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Check whether replay is safe before retrying a billed or side-effecting request; if persistent, inspect `runtime.status`. |
 | `fallback_exhausted` | 502 | A transport failure could have occurred after the upstream ran the request. The group stops without replaying it. | Check upstream execution before resubmitting a billed or side-effecting request. |
@@ -146,6 +146,13 @@ Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
 `pinned: true`. Explicitly DELETE that run, or change launch `keep-alive` and
 restart it. Inference hints cannot pin or unpin. A refused launch leaves pins
 untouched and excludes them from `evicted_runs`.
+
+Endpoint refusals use 400 `bad_request` on runs and previews. The detail names
+provider, endpoint and served APIs; a missing feature runtime also supplies its
+install call. The existing inference code `invalid_request` carries these
+refusals with type `invalid_request_error`. No run is launched and a warm chat
+run remains untouched. Select a supported endpoint or install the required
+runtime before retrying.
 
 Common `title`/`code` pairs an agent will see:
 

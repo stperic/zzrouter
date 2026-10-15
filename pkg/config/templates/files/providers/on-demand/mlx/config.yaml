@@ -12,7 +12,78 @@ features:
       args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"]
       wire_model: path
     wire_endpoints: [chat_completions, responses, messages]
-    exclude_parameters: [chat-template]
+    exclude_parameters: [chat-template, temperature, top-p]
+    health_check:
+      path: /v1/models
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      readiness_probe:
+        logPatterns:
+          success:
+            - {pattern: "Application startup complete", isRegex: false}
+            - {pattern: "Uvicorn running on", isRegex: false}
+          failure:
+            - {pattern: "Traceback (most recent call last)", isRegex: false}
+        serve:
+          path: /v1/chat/completions
+          method: POST
+          body: '{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}'
+        timeout: 600s
+  embeddings:
+    default: false
+    runtime: mlx-vlm
+    execution:
+      type: python
+      command: python3
+      args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--embedding-model", "${MODEL_PATH}"]
+      wire_model: path
+    wire_endpoints: [embeddings]
+    exclude_parameters: [chat-template, temperature, top-p, max-tokens]
+    health_check:
+      path: /v1/models
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      readiness_probe:
+        logPatterns:
+          success:
+            - {pattern: "Application startup complete", isRegex: false}
+            - {pattern: "Uvicorn running on", isRegex: false}
+          failure:
+            - {pattern: "Traceback (most recent call last)", isRegex: false}
+        serve:
+          path: /v1/embeddings
+          method: POST
+          body: '{"model":"${WIRE_MODEL}","input":"ping"}'
+        timeout: 600s
+  reranking:
+    default: false
+    runtime: mlx-vlm
+    execution:
+      type: python
+      command: python3
+      args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--reranker-model", "${MODEL_PATH}"]
+      wire_model: path
+    wire_endpoints: [rerank]
+    exclude_parameters: [chat-template, temperature, top-p, max-tokens]
+    health_check:
+      path: /v1/models
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      readiness_probe:
+        logPatterns:
+          success:
+            - {pattern: "Application startup complete", isRegex: false}
+            - {pattern: "Uvicorn running on", isRegex: false}
+          failure:
+            - {pattern: "Traceback (most recent call last)", isRegex: false}
+        serve:
+          path: /v1/rerank
+          method: POST
+          body: '{"model":"${WIRE_MODEL}","query":"ping","documents":["ping"]}'
+        timeout: 600s
 install:
   runtimes:
     mlx:
@@ -71,8 +142,8 @@ requirements:
     max: "3.14"
 capabilities:
   formats: [mlx]
-  # mlx_lm.server exposes Chat; zzRouter derives Messages and Responses translations.
-  wire_endpoints: [chat_completions]
+  # mlx_lm.server exposes Chat and Completions; zzRouter derives the translation shims.
+  wire_endpoints: [chat_completions, completions]
 
 defaults:
   parameters:

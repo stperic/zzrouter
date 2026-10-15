@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/dispatch/steering"
@@ -101,7 +100,7 @@ func (p *Proxy) ProxyWithFallback(
 	resolved *resolver.Resolved,
 	body []byte,
 	recorder *llm.InferenceRecorder,
-	clientModel string,
+	clientModel, endpoint string,
 	suppressUsageFrame bool,
 ) string {
 	decisionStart := utils.Now()
@@ -126,7 +125,7 @@ func (p *Proxy) ProxyWithFallback(
 		}
 		admitted = append(admitted, dep)
 	}
-	candidates, onDemandAttempts := p.separateOnDemand(admitted)
+	candidates, onDemandAttempts := p.separateOnDemand(admitted, endpoint)
 	attempts = append(attempts, onDemandAttempts...)
 
 	// Filter: remove cooldown + unhealthy + tag-mismatched + steering-
@@ -147,7 +146,7 @@ func (p *Proxy) ProxyWithFallback(
 	)
 
 	// Filter: remove candidates that don't have enough memory for the model.
-	filtered = p.filterByMemory(filtered)
+	filtered = p.filterByMemory(filtered, endpoint)
 
 	// Apply routing strategy.
 	strategy := p.strategies.Get(resolved.Strategy)
@@ -161,6 +160,7 @@ func (p *Proxy) ProxyWithFallback(
 		strategyName = string(modelgroup.StrategyPriority)
 	}
 	rctx := routeMetaCtx{
+		endpoint:           endpoint,
 		clientModel:        clientModel,
 		suppressUsageFrame: suppressUsageFrame,
 		groupName:          resolved.GroupName,
@@ -283,6 +283,7 @@ type routeMetaCtx struct {
 	// own model name, which is never the group alias the caller routed
 	// through, so the response has to be put back into their spelling.
 	clientModel string
+	endpoint    string
 	// suppressUsageFrame is set when usage was forced on for metering but
 	// the caller never asked to see it, so the terminal usage frame is
 	// dropped on the way out and their wire contract is unchanged.
@@ -386,7 +387,7 @@ func (p *Proxy) tryOnce(
 	c.Request = original.WithContext(ctx)
 	start := utils.Now()
 	outcome := attemptOutcome{attempt: pfallback.Attempt{DeploymentName: dep.Name, Outcome: pfallback.OutcomeRetriable}, disposition: attemptNextReplica}
-	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery)
+	targetURL, up, inst, err := p.resolveDeploymentTarget(dep, c.Request.URL.Path, c.Request.URL.RawQuery, rctx.endpoint)
 	if err != nil {
 		attempt.SetError("unavailable", err)
 		slog.Warn("Failed to resolve deployment target", "deployment", dep.Name, "error", err)
@@ -547,13 +548,13 @@ func (p *Proxy) commitSuccess(c *gin.Context, dep pfallback.Candidate, resp *htt
 // separateOnDemand splits out on-demand deployments that aren't running.
 // Running on-demand deployments pass through. Non-running ones are
 // started async and skipped.
-func (p *Proxy) separateOnDemand(deps []pfallback.Candidate) ([]pfallback.Candidate, []pfallback.Attempt) {
+func (p *Proxy) separateOnDemand(deps []pfallback.Candidate, endpoint string) ([]pfallback.Candidate, []pfallback.Attempt) {
 	ready := make([]pfallback.Candidate, 0, len(deps))
 	var skipped []pfallback.Attempt
 
 	for _, dep := range deps {
-		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model, dep.App) {
-			err := p.deps.StartOnDemand(dep.Model, dep.App)
+		if dep.OnDemand && dep.Node == "" && !p.isModelRunning(dep.Model, dep.App, endpoint) {
+			err := p.deps.StartOnDemand(dep.Model, dep.App, endpoint)
 			skipped = append(skipped, pfallback.Attempt{
 				DeploymentName: dep.Name,
 				Outcome:        pfallback.OutcomeOnDemandSkip,
@@ -588,7 +589,7 @@ func (p *Proxy) writeSteeringError(c *gin.Context, perr *steering.ParseError) {
 
 // resolveDeploymentTarget returns the URL a deployment attempt goes to
 // and what of the caller's request travels there.
-func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQuery string) (string, backend.Upstream, *instance.Instance, error) {
+func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQuery, endpoint string) (string, backend.Upstream, *instance.Instance, error) {
 	// 1. Cloud providers — always go to their API endpoint.
 	resolved, hasEndpoint := p.deps.Backend(dep.App)
 	if hasEndpoint && resolved.Cloud {
@@ -609,12 +610,12 @@ func (p *Proxy) resolveDeploymentTarget(dep pfallback.Candidate, urlPath, rawQue
 	switch {
 	case dep.OnDemand:
 		found := false
-		if inst, found = p.deps.AppInstance(dep.Model, dep.App); !found {
+		if inst, found = p.deps.AppInstance(dep.Model, dep.App, endpoint); !found {
 			return "", backend.Upstream{}, nil, fmt.Errorf("on-demand model %q not running", dep.Model)
 		}
 	case hasEndpoint:
 		var err error
-		if inst, err = p.deps.LocalRun(dep.Model, dep.App); err != nil {
+		if inst, err = p.deps.LocalRun(dep.Model, dep.App, endpoint); err != nil {
 			return "", backend.Upstream{}, nil, err
 		}
 	default:
@@ -644,8 +645,8 @@ func attemptHeaders(h http.Header, up backend.Upstream, dep pfallback.Candidate)
 }
 
 // isModelRunning checks if a model is currently running locally on provider.
-func (p *Proxy) isModelRunning(model, provider string) bool {
-	inst, found := p.deps.AppInstance(model, provider)
+func (p *Proxy) isModelRunning(model, provider, endpoint string) bool {
+	inst, found := p.deps.AppInstance(model, provider, endpoint)
 	return found && inst.GetStatus() == instance.StatusRunning
 }
 
@@ -655,7 +656,7 @@ func (p *Proxy) isModelRunning(model, provider string) bool {
 // on-demand models that aren't already running (running models have
 // memory allocated). Rough first-pass: estimates model memory from
 // parameter count, compares against cached node metrics.
-func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Candidate {
+func (p *Proxy) filterByMemory(candidates []pfallback.Candidate, endpoint string) []pfallback.Candidate {
 	if !p.deps.NodeCacheReady() || len(candidates) <= 1 {
 		return candidates
 	}
@@ -665,7 +666,7 @@ func (p *Proxy) filterByMemory(candidates []pfallback.Candidate) []pfallback.Can
 	result := make([]pfallback.Candidate, 0, len(candidates))
 	for _, c := range candidates {
 		// Already-running models have memory allocated — pass through.
-		if c.Node == "" && p.isModelRunning(c.Model, c.App) {
+		if c.Node == "" && p.isModelRunning(c.Model, c.App, endpoint) {
 			result = append(result, c)
 			continue
 		}
@@ -739,15 +740,21 @@ func (p *Proxy) recordFallbackMetrics(recorder *llm.InferenceRecorder, attempts 
 // on-demand model starts: a cold start takes tens of seconds.
 const modelLoadingRetryAfter = 60 * time.Second
 
-// writeExhaustedResponse writes a 503 when all deployments are exhausted.
+// writeExhaustedResponse keeps client refusals distinct from unavailable deployments.
 func (p *Proxy) writeExhaustedResponse(c *gin.Context, groupName string, attempts []pfallback.Attempt) {
-	if len(attempts) > 0 {
-		allConflicts := true
+	if len(attempts) > 0 && attempts[0].Err != nil {
+		failure := p.deps.LoadFailure(attempts[0].Err)
+		allRefused := failure.Status >= 400 && failure.Status < 500
 		for _, attempt := range attempts {
-			allConflicts = allConflicts && errors.Is(attempt.Err, config.ErrModelNameConflict)
+			if attempt.Err == nil {
+				allRefused = false
+				break
+			}
+			other := p.deps.LoadFailure(attempt.Err)
+			allRefused = allRefused && other.Status == failure.Status && other.Code == failure.Code
 		}
-		if allConflicts {
-			writeError(c, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "model_name_conflict", Message: attempts[0].Err.Error()})
+		if allRefused {
+			writeError(c, failure)
 			return
 		}
 	}

@@ -86,7 +86,7 @@ func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest
 	if !cfg.IsEnabled() {
 		return preparedStart{}, ErrServiceDisabled
 	}
-	req.Endpoint = runEndpoint(cfg, req.Endpoint)
+	req.keyEndpoint = runEndpoint(cfg, req.Endpoint)
 	// A launch checks its catalog only when cold; a provider without runs gathers evidence in decide.
 	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: Lifecycle(cfg)}, ctx.Err()
 }

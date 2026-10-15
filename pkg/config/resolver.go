@@ -17,11 +17,13 @@ import (
 // constant due to the prov_apps→config dependency direction.
 const defaultEndpoint = "chat"
 
-// IsEndpointAware reports whether any tier in this provider's config
-// declares an `endpoints:` overlay. The launcher uses this to decide
-// whether per-endpoint instances coexist for one model: providers that
-// declare overlays opt in by data, no separate flag.
+// IsEndpointAware keeps endpoint overlays and runtime features on separate runs.
 func (s *ServiceConfig) IsEndpointAware() bool {
+	for name := range s.Features {
+		if endpoint := FeatureEndpoint(name); endpoint != "" && endpoint != defaultEndpoint {
+			return true
+		}
+	}
 	if s.Defaults != nil && len(s.Defaults.Endpoints) > 0 {
 		return true
 	}

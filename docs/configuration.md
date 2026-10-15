@@ -25,6 +25,30 @@ Shipped provider files are embedded in the node; initialization
 materializes this tree. The coordinator owns provider writes. Workers receive
 managed copies through peer synchronization.
 
+## Provider endpoints
+
+`capabilities.wire_endpoints` declares native APIs such as `chat_completions`,
+`completions`, `embeddings` and `rerank`; Chat also enables derived Messages and
+Responses translation shims. Run endpoints are `chat` (the default), `embeddings`
+and `reranking`, paired with `chat_completions`, `embeddings` and `rerank`.
+Completions uses a chat run. A provider that declares capabilities refuses a run
+endpoint absent from both its base declaration and the matching feature overlay.
+Runs and previews return a 400 Problem; inference returns a 400 in its API's
+error envelope. Undeclared capabilities retain unknown, permissive behavior.
+
+Tier `endpoints.<endpoint>` overlays supply parameters and environment for that
+run endpoint. A provider with endpoint overlays or non-chat runtime features
+keeps separate runs for each endpoint. Served Ollama models share one run across
+supported endpoints; reranking is refused. Node-scoped providers accept no model
+or endpoint.
+
+`features` supports `vision`, `embeddings` and `reranking`. Runtime features can
+replace `execution`, `wire_endpoints` and `health_check`, and remove launch flags
+with `exclude_parameters`. Each feature applies only to its endpoint. Missing
+required runtime support returns an actionable 400. See
+[model features](model_features.md) for MLX installation, deployment and catalog
+state details. Protocol 11 requires upgrading every node together.
+
 ## Node GPU policy
 
 `node.yaml` controls memory reclamation locally; it is not part of provider sync:

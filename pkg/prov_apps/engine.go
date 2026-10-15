@@ -76,12 +76,13 @@ func (m *ProviderAppManager) RequestModel(run *instance.Instance, model string) 
 	return run.WireModel
 }
 
-// runEndpoint is a run's key endpoint: its own only on an endpoint-aware launched provider.
+// runEndpoint is a run's key endpoint: a shared engine folds the endpoints it serves into chat,
+// so an unserved endpoint keys a run no launch admits and never finds a shared run.
 func runEndpoint(svc config.ServiceConfig, endpoint Endpoint) Endpoint {
 	if svc.RunScope == config.RunScopeNode {
 		return ""
 	}
-	if !svc.IsEndpointAware() || Lifecycle(svc) == LifecycleServed {
+	if (!svc.IsEndpointAware() || Lifecycle(svc) == LifecycleServed) && svc.ServesEndpoint(string(endpoint)) == nil {
 		return EndpointChat
 	}
 	return EndpointOrDefault(endpoint)

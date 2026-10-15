@@ -71,7 +71,7 @@ capabilities:
   # responses is native (multi-turn previous_response_id is incomplete: vllm-project/vllm#33089).
   # messages is left out so it is translated: native /v1/messages rejects the turns Claude Code
   # sends (vllm-project/vllm#44000, seen on 0.20.1).
-  wire_endpoints: [chat_completions, completions, embeddings, responses]
+  wire_endpoints: [chat_completions, completions, embeddings, rerank, responses]
 
 defaults:
   parameters:

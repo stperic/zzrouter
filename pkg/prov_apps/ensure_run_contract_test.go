@@ -958,7 +958,7 @@ func (r *servedRig) servedConfig(t *testing.T) *config.AppsConfig {
 	svc := config.ServiceConfig{
 		Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external",
 		Runtime:      &config.AppRuntimeConfig{Endpoint: servedBase, KeepAlive: "5m"},
-		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
+		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions", "embeddings"}},
 	}
 	for _, edit := range r.edits {
 		edit(&svc)

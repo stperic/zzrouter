@@ -143,13 +143,20 @@ func (*fakeDeps) FinishRelay(w http.ResponseWriter, req *http.Request, resp *htt
 
 func (f *fakeDeps) Normalizers() *normalizer.Registry { return normalizer.NewRegistry() }
 
-func (f *fakeDeps) AppInstance(model, _ string) (*instance.Instance, bool) {
+func (*fakeDeps) LoadFailure(err error) httperr.Error {
+	if errors.Is(err, config.ErrModelNameConflict) {
+		return httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: "model_name_conflict", Message: err.Error()}
+	}
+	return httperr.Error{Status: http.StatusBadGateway, Type: "server_error"}
+}
+
+func (f *fakeDeps) AppInstance(model, _, _ string) (*instance.Instance, bool) {
 	inst, ok := f.instances[model]
 	return inst, ok
 }
 
 // LocalRun answers as a provider without runs: endpoint providers here are forwarded to.
-func (f *fakeDeps) LocalRun(string, string) (*instance.Instance, error) {
+func (f *fakeDeps) LocalRun(string, string, string) (*instance.Instance, error) {
 	return nil, nil //nolint:nilnil // no run is the answer for a provider without runs
 }
 
@@ -173,7 +180,7 @@ func (f *fakeDeps) InstanceBody(_ *http.Request, lease *instance.Lease, body []b
 	return body
 }
 
-func (f *fakeDeps) StartOnDemand(model, provider string) error {
+func (f *fakeDeps) StartOnDemand(model, provider, endpoint string) error {
 	f.onDemandStartCalls.Add(1)
 	return f.onDemandErrors[provider]
 }
@@ -260,7 +267,7 @@ func TestProxyWithFallback_ExhaustedWithNoCandidates(t *testing.T) {
 		Candidates:   nil,
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-x"}`), rec, "group-x", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-x"}`), rec, "group-x", "", false)
 
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	var env map[string]any
@@ -287,7 +294,7 @@ func TestProxyWithFallback_ExhaustedOnDemandPending(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-y"}`), rec, "group-y", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-y"}`), rec, "group-y", "", false)
 
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	var env map[string]any
@@ -325,7 +332,7 @@ func TestProxyWithFallback_SuccessCommitsResponse(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-z"}`), rec, "group-z", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-z"}`), rec, "group-z", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected upstream 200 to pass through; body=%s", w.Body.String())
@@ -376,7 +383,7 @@ func TestProxyWithFallback_FallsBackPast429(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code,
 		"expected fallback to second deployment to succeed; body=%s", w.Body.String())
@@ -423,7 +430,7 @@ func proxyTwoRetriable(t *testing.T, first, second *int) map[string]int {
 			{Name: "dep-b", App: "provider-b", Model: "m", MaxRetries: second},
 		},
 	}
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-r"}`), rec, "group-r", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-r"}`), rec, "group-r", "", false)
 	return counts
 }
 
@@ -500,7 +507,7 @@ func TestProxyWithFallback_AppliesTheReplicasRequestDefaults(t *testing.T) {
 		OriginalName: "agent", GroupName: "agent", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "r", App: "llamacpp", Model: "q+agent"}},
 	}
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"agent","temperature":0.1}`), rec, "agent", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"agent","temperature":0.1}`), rec, "agent", "", false)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var sent map[string]any
@@ -537,7 +544,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, up, _, err := p.resolveDeploymentTarget(tc.dep, "/v1/chat/completions", "")
+			target, up, _, err := p.resolveDeploymentTarget(tc.dep, "/v1/chat/completions", "", "")
 			require.NoError(t, err)
 			assert.Equal(t, tc.target, target)
 			assert.Equal(t, tc.up, up)
@@ -550,7 +557,7 @@ func TestResolveDeploymentTarget_NamesTheUpstream(t *testing.T) {
 func TestResolveDeploymentTarget_UnknownNodeIsAnError(t *testing.T) {
 	p := newProxyWithFake(newFakeDeps())
 	_, _, _, err := p.resolveDeploymentTarget(
-		pfallback.Candidate{Name: "c", App: "llamacpp", Model: "m", Node: "nowhere"}, "/v1/chat/completions", "")
+		pfallback.Candidate{Name: "c", App: "llamacpp", Model: "m", Node: "nowhere"}, "/v1/chat/completions", "", "")
 	assert.ErrorContains(t, err, "cluster port")
 }
 
@@ -593,7 +600,7 @@ func TestProxyWithFallback_UnreachableReplicaFallsThrough(t *testing.T) {
 		},
 	}
 
-	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", false)
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group-q"}`), rec, "group-q", "", false)
 
 	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
 	assert.Equal(t, "provider-b", w.Header().Get("X-zzrouter-Provider"))
@@ -611,7 +618,7 @@ func TestProxyWithFallback_UnsupportedImageDoesNotRetryOrCooldown(t *testing.T) 
 	p := newProxyWithFake(deps)
 	c, w := buildGinCtx(t, `{"model":"group"}`)
 	r := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: []pfallback.Candidate{{Name: "dep-a", App: "ollama", Model: "m"}, {Name: "dep-b", App: "ollama", Model: "m"}}}
-	p.ProxyWithFallback(c, r, []byte(`{"model":"group"}`), nil, "group", false)
+	p.ProxyWithFallback(c, r, []byte(`{"model":"group"}`), nil, "group", "", false)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"type":"invalid_request_error"`)
 	assert.EqualValues(t, 1, deps.forwardCalls.Load())
@@ -630,7 +637,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Candidates: []pfallback.Candidate{
 				{Name: "conflict", App: "llamacpp", Model: "fast", OnDemand: true, Node: node},
 			}}
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", false)
+			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", "", false)
 			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 			assert.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 			assert.Zero(t, deps.forwardCalls.Load())
@@ -644,7 +651,7 @@ func TestProxyWithFallback_ConflictAdmission(t *testing.T) {
 			resolved.Candidates = append(resolved.Candidates, pfallback.Candidate{Name: "safe", App: "ollama", Model: "base"})
 			c, w = buildGinCtx(t, `{"model":"group"}`)
 			rec = llm.NewInferenceRecorder(c.Request.Context(), "group", "")
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", false)
+			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), rec, "group", "", false)
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 			assert.Equal(t, int32(1), deps.forwardCalls.Load(), "only the safe replica received a request")
 			assert.Zero(t, deps.onDemandStartCalls.Load())
@@ -665,7 +672,7 @@ func TestCommitWithRouting_CutStreamEndsWithDialectError(t *testing.T) {
 	c, w := buildGinCtx(t, `{"model":"group","stream":true}`)
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
-	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", false)
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", "", false)
 	assert.Contains(t, w.Body.String(), `"content":"partial"`)
 	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
 	assert.Equal(t, 1, strings.Count(w.Body.String(), `"error":`))
@@ -682,7 +689,7 @@ func TestCommitWithRouting_CutBodyAnswersBadGateway(t *testing.T) {
 	c, w := buildGinCtx(t, `{"model":"group"}`)
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []pfallback.Candidate{{Name: "replica", App: "engine", Model: "m"}}}
-	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 	assert.Contains(t, w.Body.String(), `"code":"upstream_stream_interrupted"`)
 	assert.NotContains(t, w.Body.String(), "data:")
@@ -718,7 +725,7 @@ func TestProxyWithFallback_DialFailureRetriesAndCoolsDown(t *testing.T) {
 		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
 			{Name: "failed", App: "failed", Model: "m", MaxRetries: intPtr(1)},
 			{Name: "next", App: "next", Model: "m"},
-		}), []byte(`{"model":"group"}`), nil, "group", false)
+		}), []byte(`{"model":"group"}`), nil, "group", "", false)
 		assert.Equal(t, http.StatusOK, w.Code)
 		assert.EqualValues(t, 3, deps.forwardCalls.Load())
 		assert.True(t, p.cooldowns.InCooldown("failed"))
@@ -742,7 +749,7 @@ func TestProxyWithFallback_WrittenFailuresStopChain(t *testing.T) {
 			p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{
 				{Name: "failed", App: "failed", Model: "m"},
 				{Name: "next", App: "failed", Model: "m"},
-			}), []byte(`{"model":"group"}`), nil, "group", false)
+			}), []byte(`{"model":"group"}`), nil, "group", "", false)
 			want := status
 			if want == 0 {
 				want = http.StatusBadGateway
@@ -766,7 +773,7 @@ func TestFilterByMemorySizesEachReplicaByItsOwnModel(t *testing.T) {
 		{Name: "small", App: "vllm", Model: "Qwen/Qwen2.5-0.5B-Instruct", Node: "small-gpu"},
 	}
 
-	kept := p.filterByMemory(candidates)
+	kept := p.filterByMemory(candidates, "")
 
 	require.Len(t, kept, 1)
 	assert.Equal(t, "small", kept[0].Name, "the 70B replica does not fit 8 GiB; the 0.5B one does")
@@ -783,10 +790,10 @@ func TestChainOnDemandRefusalCarriesCause(t *testing.T) {
 			if pending {
 				candidates = append(candidates, pfallback.Candidate{Name: "pending", Model: "m", App: "enabled", OnDemand: true})
 			}
-			_, attempts := p.separateOnDemand(candidates)
+			_, attempts := p.separateOnDemand(candidates, "")
 			assert.ErrorIs(t, attempts[0].Err, deps.onDemandErrors["disabled"])
 			resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: candidates}
-			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 			require.Equal(t, http.StatusServiceUnavailable, w.Code)
 			if pending {
 				assert.Contains(t, w.Body.String(), `"code":"model_loading"`)
@@ -798,4 +805,23 @@ func TestChainOnDemandRefusalCarriesCause(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only a refusal every replica agrees on reaches the caller; a mixed exhaustion stays unavailable.
+func TestProxyWithFallback_MixedRefusalsStayUnavailable(t *testing.T) {
+	deps := newFakeDeps()
+	deps.validationErrors = map[string]error{
+		"fast": &config.ModelNameConflictError{Model: "fast", Node: "worker"},
+		"slow": errors.New("worker unreachable"),
+	}
+	p := newProxyWithFake(deps)
+	c, w := buildGinCtx(t, `{"model":"group"}`)
+	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Candidates: []pfallback.Candidate{
+		{Name: "conflict", App: "llamacpp", Model: "fast", OnDemand: true},
+		{Name: "down", App: "llamacpp", Model: "slow", OnDemand: true},
+	}}
+	p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
+	assert.NotContains(t, w.Body.String(), `"code":"model_name_conflict"`)
+	assert.Zero(t, deps.forwardCalls.Load())
 }

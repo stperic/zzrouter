@@ -101,7 +101,7 @@ func TestLoadCauseAcrossProducerAndChainContract(t *testing.T) {
 	_, err = s.ensureLocalRun(prov_apps.EnsureRequest{Provider: "llamacpp", Model: qwenModel})
 	assert.ErrorIs(t, err, sentinel)
 	assert.Equal(t, http.StatusConflict, loadFailureWire(err).Status)
-	_, err = newChainServerDeps(s).LocalRun(qwenModel, "llamacpp")
+	_, err = newChainServerDeps(s).LocalRun(qwenModel, "llamacpp", "")
 	assert.ErrorIs(t, err, sentinel)
 	assert.Equal(t, "model_incomplete", loadFailureWire(err).Code)
 }

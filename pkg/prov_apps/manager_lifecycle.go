@@ -82,7 +82,7 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 		return launchSelection{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
 	model := process.ResolveModel(svcCfg, req.Model)
-	_, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime)
+	svcCfg, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime, string(EndpointOrDefault(req.Endpoint)))
 	if err != nil {
 		return launchSelection{}, err
 	}
@@ -134,7 +134,8 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 	}
 	inst.StopUnconfirmed.Store(req.Origin == OriginInstall) // Smoke retains ownership until strict process drain.
 	inst.Config = instance.Config{
-		Runtime: req.Runtime, DisposablePlanID: req.DisposablePlanID,
+		Endpoint: string(req.Endpoint),
+		Runtime:  req.Runtime, DisposablePlanID: req.DisposablePlanID,
 		Provider:   req.Provider,
 		LaunchMode: instance.LaunchModeNative,
 		Model:      req.Model,
@@ -1103,30 +1104,19 @@ func buildHealthCheckConfig(svcCfg config.ServiceConfig, _ int) health.CheckConf
 	return hc
 }
 
-// restartRequest rebuilds the launch request for a relaunch.
-//
-// Two things here are load-bearing and neither is obvious from the
-// field list:
-//
-//   - instance.Config carries no endpoint, so it must come off the
-//     instance itself. Dropping it relaunched an embeddings instance as
-//     a chat one, and now that launch resolves the endpoints overlay it
-//     would silently pick the wrong parameters too.
-//   - Config.Parameters holds the ORIGINAL request tier, not the merged
-//     result. Replaying it preserves the caller's explicit overrides
-//     while tiers 0-3 are re-read from current config, which is what
-//     lets a restart pick up a parameter change at all.
-//
-// Port is intentionally omitted so the pool reallocates.
+// restartRequest replays the requested shape and overrides while re-reading current provider tiers.
 func restartRequest(inst *instance.Instance) EnsureRequest {
 	cfg := inst.SnapshotConfig()
 	req := EnsureRequest{
 		Runtime: cfg.Runtime, DisposablePlanID: cfg.DisposablePlanID,
 		Provider:   cfg.Provider,
 		Model:      cfg.Model,
-		Endpoint:   Endpoint(inst.Endpoint),
+		Endpoint:   Endpoint(cfg.Endpoint),
 		Parameters: cfg.Parameters,
 		EnvVars:    cfg.EnvVars,
+	}
+	if req.Endpoint == "" {
+		req.Endpoint = Endpoint(inst.Endpoint)
 	}
 	if inst.StartedBy == instance.StartedByRequest {
 		req.Origin = OriginRequest

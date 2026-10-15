@@ -39,14 +39,14 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 		}
 	}
 	out["features"] = states
-	effective, _, _, err := m.featureRuntime(svc, process.ResolveModel(svc, model), "")
+	effective, _, _, err := m.featureRuntime(svc, process.ResolveModel(svc, model), "", string(EndpointChat))
 	if err == nil && effective.Capabilities != nil {
 		out["wire_endpoints"] = append([]string{}, wireEndpoints(effective)...)
 	}
 	// A running process retains the endpoints it actually launched with.
 	for _, inst := range m.instances.List() {
 		cfg := inst.SnapshotConfig()
-		if cfg.Provider == provider && cfg.Model == model && inst.IsRunning() {
+		if cfg.Provider == provider && cfg.Model == model && EndpointOrDefault(Endpoint(inst.Endpoint)) == EndpointChat && inst.IsRunning() {
 			if eps := inst.Resolved().WireEndpoints; eps != nil {
 				out["wire_endpoints"] = eps
 				snapshot := inst.Resolved()
@@ -57,7 +57,7 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 					if len(f.Files) > 0 && (snapshot.Parameters[f.Flag] == "" || snapshot.Parameters[f.Flag] == "false") {
 						states[name] = "available"
 					}
-					if f.Runtime != "" && !slices.Equal(eps, config.EffectiveWireEndpoints(f.WireEndpoints)) {
+					if f.Runtime != "" && config.FeatureEndpoint(name) == string(EndpointChat) && !slices.Equal(eps, config.EffectiveWireEndpoints(f.WireEndpoints)) {
 						states[name] = "available"
 					}
 				}

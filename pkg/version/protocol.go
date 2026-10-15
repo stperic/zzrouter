@@ -31,9 +31,10 @@ package version
 // Protocol 8 requires node-scoped runs, activity probes and memory commitments.
 // Protocol 9 requires provider data/model stores and owned download targets.
 // Protocol 10 adds release-owned source install recipes, which older provider schemas reject.
+// Protocol 11 adds endpoint features and feature health checks, which older provider schemas reject.
 const (
-	ClusterProtocolVersion    = 10
-	MinClusterProtocolVersion = 10
+	ClusterProtocolVersion    = 11
+	MinClusterProtocolVersion = 11
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.
