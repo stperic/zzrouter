@@ -51,6 +51,11 @@ The public `/usr/local/bin` links use these same managed copies. A dedicated ser
 user owns runtime state. Root update path/timer units perform privileged updates;
 keep the binary tree and service units outside the service user's write access.
 Windows services use machine configuration under `%PROGRAMDATA%\zzrouter`.
+An update restarts a Windows service by exiting with an error code, which
+Windows counts as a non-crash failure: its restart actions apply only when the
+service's non-crash failure flag is set. The installer sets it on new services.
+On an older service, `update status` reports a restart is required and names
+the fix; run it once as Administrator: `sc.exe failureflag zzrouter 1`.
 
 ## Updates and rollback
 
