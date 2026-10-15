@@ -69,9 +69,7 @@ func TestReconciledProviderWorkingDirectories(t *testing.T) {
 	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
 	source := filepath.Join(fsroot.ProviderDir("comfyui"), "source")
 	require.NoError(t, os.MkdirAll(source, 0o755))
-	inherited, err := os.Getwd()
-	require.NoError(t, err)
-	inherited, err = filepath.EvalSymlinks(inherited)
+	inherited, err := os.Stat(".")
 	require.NoError(t, err)
 	for _, provider := range []string{"vllm", "llamacpp", "mlx", "comfyui"} {
 		t.Run(provider, func(t *testing.T) {
@@ -96,7 +94,9 @@ func TestReconciledProviderWorkingDirectories(t *testing.T) {
 				require.NotContains(t, changed, "on-demand/comfyui/config.yaml")
 			} else {
 				require.Empty(t, prepared.WorkingDir)
-				require.Equal(t, inherited, strings.TrimSpace(output.String()))
+				printed, err := os.Stat(strings.TrimSpace(output.String()))
+				require.NoError(t, err)
+				require.True(t, os.SameFile(inherited, printed), "the run inherits the node's directory; compare identity, not spelling, on case-insensitive filesystems")
 				require.Contains(t, changed, "on-demand/"+provider+"/config.yaml")
 				require.True(t, svc.IsEnabled())
 				require.NoDirExists(t, filepath.Join(fsroot.ProviderDir(provider), "models"))
