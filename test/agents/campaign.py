@@ -1298,8 +1298,9 @@ def track_mcp(R, node, cells, agents, only, out):
             "check": check_tool_endpoint,
             "expect_error": "tool_calling_not_enabled"}, agents, only, out)
     for provider in cells:
-        R.add("mcp", node, f"{provider}.probe-embed", "embedding role configured", bool((MATRIX.get((node, provider)) or {}).get("embed")),
-              "Configure an embed role in the lab inventory for this node/provider; missing embedding coverage is a failure.")
+        if not only or only in f"{node}.{provider}.probe-embed":
+            R.add("mcp", node, f"{provider}.probe-embed", "embedding role configured", bool((MATRIX.get((node, provider)) or {}).get("embed")),
+                  "Configure an embed role in the lab inventory for this node/provider; missing embedding coverage is a failure.")
         for sc in scenarios(node, provider):
             run_scenario(R, node, f"{provider}.{sc['id']}", sc, agents, only, out)
 
