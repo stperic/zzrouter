@@ -1,0 +1,2 @@
+0.01.050.016 I load_tensors: offloaded 29/29 layers to GPU
+0.01.341.564 I srv  llama_server: listening on http://127.0.0.1:18081

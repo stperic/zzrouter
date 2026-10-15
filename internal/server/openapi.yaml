@@ -11396,6 +11396,12 @@ components:
             with, so match rows on it rather than on what you sent.
         status:   { type: string }
         port:     { type: integer }
+        processor:
+          type: string
+          description: Observed GPU and CPU share from model bytes or GPU layer counts, for example 28% GPU / 72% CPU. Omitted when unknown; split layers can overstate the GPU share.
+        context_length:
+          type: integer
+          description: Context length in tokens reported by the serving engine. Omitted when unknown.
         base_url: { type: string, format: uri, description: Direct engine URL using the node advertised address; no zzRouter authentication or proxy. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }

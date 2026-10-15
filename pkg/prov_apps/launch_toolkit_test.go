@@ -44,7 +44,7 @@ func TestPreparedToolkitReachesNativeLifecycleChild(t *testing.T) {
 	probe := &health.ReadinessProbe{Timeout: time.Minute, LogPatterns: health.LogPatterns{Failure: []health.PatternMatcher{{Pattern: "RuntimeError:"}}}}
 	require.NoError(t, probe.Validate())
 	args := []string{"-c", "printf '%s|%s|%s|%s|%s\\n' \"$PATH\" \"$LD_LIBRARY_PATH\" \"$CUDACXX\" \"$FLASHINFER_NVCC\" \"$CUDA_LIB_PATH\"; printf 'RuntimeError: synthetic fixture exit\\n'; exit 23"}
-	m.runInstanceLifecycle(inst, "/bin/sh", args, prepared.resolved.Environment, file, health.CheckConfig{ReadinessProbe: probe}, prepared.executionEnvironment)
+	m.runInstanceLifecycle(inst, admittedRun{cmd: "/bin/sh", args: args, vars: prepared.resolved.Environment, logFile: file, health: health.CheckConfig{ReadinessProbe: probe}, transform: prepared.executionEnvironment})
 	output, err := os.ReadFile(inst.LogFilePath)
 	require.NoError(t, err)
 	assert.Contains(t, string(output), filepath.Join(root, "bin")+string(os.PathListSeparator))

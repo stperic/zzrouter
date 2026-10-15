@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- llama.cpp runs report the observed GPU/CPU layer share; managed logging now
+  includes placement. MCP `zz_runs` exposes `processor` and `context_length`
+  so agents can identify CPU offload and reduce GPU memory pressure.
 - Runs, previews and inference refuse endpoints the provider does not serve
   with HTTP 400, including Ollama reranking. A warm chat run cannot absorb an
   unsupported embeddings request. Model-group chains select the requested

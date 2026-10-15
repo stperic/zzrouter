@@ -443,6 +443,49 @@ func TestInstance_SetLoadedWithoutContext(t *testing.T) {
 	assert.Equal(t, 8192, inst.ContextLength)
 }
 
+func TestInstanceLoadedProcessor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		loaded Loaded
+		want   string
+	}{
+		{"unknown", Loaded{}, ""},
+		{"layers", Loaded{GPULayers: 8, Layers: 29}, "28% GPU / 72% CPU"},
+		{"full GPU", Loaded{GPULayers: 29, Layers: 29}, "100% GPU"},
+		{"full CPU", Loaded{Layers: 29}, "100% CPU"},
+		{"bytes precede layers", Loaded{Size: 100, VRAM: 50, GPULayers: 8, Layers: 29}, "50% GPU / 50% CPU"},
+		{"GPU bytes precede CPU layers", Loaded{Size: 100, VRAM: 100, Layers: 29}, "100% GPU"},
+		{"CPU bytes precede GPU layers", Loaded{Size: 100, GPULayers: 29, Layers: 29}, "100% CPU"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := NewInstance("id", "engine", "model", 0, 0, 0)
+			run.SetLoaded(tc.loaded)
+			run.UpdateLoaded(func(l *Loaded) { l.ContextLength = 8192 })
+			assert.Equal(t, tc.want, run.ToInfo("").Processor)
+			assert.Equal(t, 8192, run.ToInfo("").ContextLength)
+			assert.Equal(t, tc.loaded.Size, run.ToInfo("").SizeBytes)
+			assert.Equal(t, tc.loaded.Layers, run.Loaded().Layers)
+		})
+	}
+}
+
+func TestInstanceFailurePreservesLoadedEvidence(t *testing.T) {
+	for _, started := range []bool{false, true} {
+		t.Run(map[bool]string{false: "starting", true: "running"}[started], func(t *testing.T) {
+			run := NewInstance("id", "engine", "model", 0, 0, 0)
+			if started {
+				run.MarkRunning(false, nil)
+			}
+			run.SetLoaded(Loaded{Size: 100, VRAM: 50, GPULayers: 8, Layers: 29, ContextLength: 8192, Digest: "keep"})
+			run.MarkFailed("failed")
+			assert.Equal(t, "50% GPU / 50% CPU", run.ToInfo("").Processor)
+			assert.Equal(t, 8192, run.ToInfo("").ContextLength)
+			assert.Equal(t, "keep", run.Loaded().Digest)
+			assert.Equal(t, int64(29), run.Loaded().Layers)
+		})
+	}
+}
+
 func TestInstance_Cancel(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 	ctx := inst.Context()

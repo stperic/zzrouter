@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -36,13 +37,20 @@ func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
 	for _, model := range models {
 		if model.FullID == run.WireModel {
 			if tokens := servedContext(model.Extra, field); tokens > 0 {
-				loaded := run.Loaded()
-				loaded.ContextLength = tokens
-				run.SetLoaded(loaded)
+				run.UpdateLoaded(func(loaded *instance.Loaded) { loaded.ContextLength = tokens })
 			}
 			return
 		}
 	}
+}
+
+func recordServedLayers(run *instance.Instance, values []string) {
+	gpu, gpuErr := strconv.ParseInt(values[0], 10, 64)
+	total, totalErr := strconv.ParseInt(values[1], 10, 64)
+	if gpuErr != nil || totalErr != nil || total <= 0 || gpu < 0 || gpu > total {
+		return
+	}
+	run.UpdateLoaded(func(loaded *instance.Loaded) { loaded.GPULayers, loaded.Layers = gpu, total })
 }
 
 func servedContext(entry map[string]any, field string) int {

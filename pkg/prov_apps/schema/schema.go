@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"maps"
 	"path"
+	"regexp"
 
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 
@@ -31,9 +32,10 @@ type YAMLParam struct {
 	Description string   `yaml:"description,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"`
 	// Pass is how an asset reaches the engine; only type: asset takes it.
-	Pass   string `yaml:"pass,omitempty"`
-	Auto   string `yaml:"auto,omitempty"`
-	Served string `yaml:"served,omitempty"`
+	Pass      string `yaml:"pass,omitempty"`
+	Auto      string `yaml:"auto,omitempty"`
+	Served    string `yaml:"served,omitempty"`
+	ServedLog string `yaml:"served_log,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -180,6 +182,13 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 	if out.Served == "" {
 		out.Served = yp.Served
+	}
+	if yp.ServedLog != "" {
+		pattern, err := regexp.Compile(yp.ServedLog)
+		if err != nil || pattern.NumSubexp() != 2 {
+			return ParamShape{}, fmt.Errorf("%s.%s: served_log requires a valid regex with exactly two capture groups", provider, qualifiedName)
+		}
+		out.ServedLog = pattern
 	}
 	return out, nil
 }

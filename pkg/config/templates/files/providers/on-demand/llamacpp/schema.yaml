@@ -4,6 +4,9 @@ parameters:
   ctx-size:
     auto: "0"
     served: meta.n_ctx
+  # Read because diagnostics.memory names n-gpu-layers with kind layers.
+  n-gpu-layers:
+    served_log: 'offloaded (\d+)/(\d+) layers to GPU'
   threads:
     type: int
     min: 1

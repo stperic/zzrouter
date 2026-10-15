@@ -3,6 +3,7 @@ package health
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,18 +36,23 @@ type ReadinessWriter struct {
 	buffer       bytes.Buffer
 	mu           sync.Mutex
 	started      bool
-	resolved     bool // true after first match — stop scanning
+	resolved     bool // true after first match — stop scanning, capture included
+	capture      *regexp.Regexp
+	onCapture    func([]string)
 }
 
 // NewReadinessWriter creates a writer that scans for readiness patterns.
 // The probe's patterns must already be compiled (call Validate() first).
 // Signals never block the write path.
-func NewReadinessWriter(inner io.Writer, probe *ReadinessProbe) *ReadinessWriter {
+// The optional capture callback fires once, outside the writer lock, for a
+// line seen before readiness resolves (engines log placement before ready).
+func NewReadinessWriter(inner io.Writer, probe *ReadinessProbe, capture *regexp.Regexp, onCapture func([]string)) *ReadinessWriter {
 	return &ReadinessWriter{
-		origin: utils.Now(),
-		inner:  inner,
-		probe:  probe,
-		Signal: make(chan ReadinessSignal, readinessSignalCapacity),
+		origin:  utils.Now(),
+		inner:   inner,
+		probe:   probe,
+		Signal:  make(chan ReadinessSignal, readinessSignalCapacity),
+		capture: capture, onCapture: onCapture,
 	}
 }
 
@@ -57,13 +63,17 @@ func (rw *ReadinessWriter) Write(p []byte) (int, error) {
 	}
 	n, err := rw.inner.Write(p)
 
+	var match []string
 	rw.mu.Lock()
 	rw.recordOutputLocked(p[:n])
 	if !rw.resolved {
 		rw.buffer.Write(p[:n])
-		rw.scanLinesLocked()
+		match = rw.scanLinesLocked()
 	}
 	rw.mu.Unlock()
+	if match != nil && rw.onCapture != nil {
+		rw.onCapture(match[1:])
+	}
 
 	return n, err
 }
@@ -100,7 +110,7 @@ func (rw *ReadinessWriter) recordOutputLocked(p []byte) {
 
 // scanLinesLocked checks complete lines against readiness patterns.
 // Caller must hold rw.mu.
-func (rw *ReadinessWriter) scanLinesLocked() {
+func (rw *ReadinessWriter) scanLinesLocked() (match []string) {
 	for {
 		line, err := rw.buffer.ReadString('\n')
 		if err != nil {
@@ -117,7 +127,11 @@ func (rw *ReadinessWriter) scanLinesLocked() {
 
 		// Trim trailing newline/carriage return
 		line = trimLine(line)
-
+		if rw.capture != nil {
+			if match = rw.capture.FindStringSubmatch(line); match != nil {
+				rw.capture = nil
+			}
+		}
 		if cause := rw.probe.FailureClassifier.Match(line); cause != nil {
 			rw.resolved = true
 			rw.Signal <- ReadinessSignal{Failed: true, Pattern: line, Cause: cause}
