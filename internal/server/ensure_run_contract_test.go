@@ -428,7 +428,7 @@ func TestEnsureRunContractServedInference(t *testing.T) {
 			return run
 		}
 		resolved := &resolver.Resolved{OriginalName: "g", GroupName: "g", Strategy: "priority", Candidates: []fallback.Candidate{{Name: "r1", App: "ollama", Model: servedClientModel}}}
-		proxy.ProxyWithFallback(c, resolved, body, llm.NewInferenceRecorder(t.Context(), "g", ""), "g", false)
+		proxy.ProxyWithFallback(c, resolved, body, llm.NewInferenceRecorder(t.Context(), "g", ""), "g", "", false)
 		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		seen := r.daemon.last(t)
 		assert.Equal(t, servedDaemonHost, seen.host)

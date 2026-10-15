@@ -81,6 +81,8 @@ func TestCatalogBuiltinAndCloudEvidence(t *testing.T) {
 	m, err := NewProviderAppManager(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, m.Stop(context.Background())) })
+	require.NoError(t, cfg.AddApp("cloud-native", config.ServiceConfig{Enabled: new(false), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://example.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"messages"}}}))
+	assert.Equal(t, []string{"messages"}, m.ModelFeatureDetails("cloud-native", "model", nil)["wire_endpoints"])
 	assert.Equal(t, "unknown", m.ModelFeatureDetails("cloud", "llava-vision", nil)["features"].(map[string]string)["vision"])
 	assert.Equal(t, []string{"chat_completions", "messages_compat", "responses_compat"}, m.ModelFeatureDetails("cloud", "llava-vision", nil)["wire_endpoints"])
 	for _, tc := range []struct {

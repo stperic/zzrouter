@@ -86,20 +86,22 @@ func (d *chainServerDeps) ValidateModel(ctx context.Context, model string) error
 	return d.s.validateModel(ctx, model)
 }
 
-func (d *chainServerDeps) AppInstance(model, provider string) (*instance.Instance, bool) {
+func (*chainServerDeps) LoadFailure(err error) httperr.Error { return loadFailureWire(err) }
+
+func (d *chainServerDeps) AppInstance(model, provider, endpoint string) (*instance.Instance, bool) {
 	if d.s.providers.appMgr == nil {
 		return nil, false
 	}
 	// Resolved as a start resolves it: an alias, a variant's base or a daemon's tag finds the run.
-	return d.s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.EndpointChat)
+	return d.s.providers.appMgr.GetInstanceByModel(provider, model, prov_apps.Endpoint(endpoint))
 }
 
 // LocalRun is the ready run serving a local model, or nil when its provider serves it without one.
-func (d *chainServerDeps) LocalRun(model, provider string) (*instance.Instance, error) {
+func (d *chainServerDeps) LocalRun(model, provider, endpoint string) (*instance.Instance, error) {
 	if !d.s.hasRuns(provider) {
 		return nil, nil //nolint:nilnil // no run is the answer for a provider without runs
 	}
-	return d.s.loadModelViaNodeAPI(model, provider, string(prov_apps.EndpointChat))
+	return d.s.loadModelViaNodeAPI(model, provider, endpoint)
 }
 
 func (d *chainServerDeps) RunUpstream(inst *instance.Instance) (string, backend.Upstream, error) {
@@ -116,8 +118,8 @@ func (d *chainServerDeps) InstanceBody(req *http.Request, lease *instance.Lease,
 	return prepared
 }
 
-func (d *chainServerDeps) StartOnDemand(model, provider string) error {
-	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Detached: true, Origin: prov_apps.OriginRequest})
+func (d *chainServerDeps) StartOnDemand(model, provider, endpoint string) error {
+	_, err := d.s.providers.appMgr.EnsureRun(context.Background(), prov_apps.EnsureRequest{Model: model, Provider: provider, Endpoint: prov_apps.Endpoint(endpoint), Detached: true, Origin: prov_apps.OriginRequest})
 	return err
 }
 

@@ -25,6 +25,11 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 11 raises the minimum from 10 to 11. Provider synchronization carries
+`embeddings` and `reranking` features and feature `health_check` overlays. Older
+strict loaders reject these names and fields. Upgrade every node together using
+the maintenance procedure below.
+
 ## Contributor policy
 
 Change `ClusterProtocolVersion` in [protocol.go](../pkg/version/protocol.go)

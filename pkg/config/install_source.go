@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -80,7 +82,8 @@ func (s ServiceConfig) RuntimeExecution(runtime string) *ExecutionConfig {
 	if runtime == s.Name && s.Runtime != nil {
 		execution = &s.Runtime.Execution
 	}
-	for _, feature := range s.Features {
+	for _, name := range slices.Sorted(maps.Keys(s.Features)) {
+		feature := s.Features[name]
 		if feature.Runtime == runtime {
 			execution = feature.Execution
 		}

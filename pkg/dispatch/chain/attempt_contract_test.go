@@ -63,7 +63,7 @@ func TestTraceAttemptPanicClosesBodyAndReleasesLease(t *testing.T) {
 	}
 	p := newProxyWithFake(&panicShapeDeps{deps})
 	require.Panics(t, func() {
-		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), []byte(`{"model":"group"}`), nil, "group", false)
+		p.ProxyWithFallback(c, leaseGroup([]pfallback.Candidate{{Name: "local", App: "engine", Model: "m", OnDemand: true}}), []byte(`{"model":"group"}`), nil, "group", "", false)
 	})
 	require.True(t, closed)
 	assert.Zero(t, inst.GetActiveRequests())

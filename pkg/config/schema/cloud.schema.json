@@ -12,74 +12,13 @@
       "additionalProperties": false,
       "properties": {
         "vision": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "default": {
-              "type": "boolean"
-            },
-            "files": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "flag": {
-              "type": "string"
-            },
-            "when": {
-              "type": "string"
-            },
-            "runtime": {
-              "type": "string"
-            },
-            "execution": {
-              "type": "object",
-              "required": [
-                "type"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "type": {
-                  "enum": [
-                    "cli",
-                    "python"
-                  ]
-                },
-                "command": {
-                  "type": "string"
-                },
-                "args": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "working_dir": {
-                  "type": "string"
-                },
-                "wire_model": {
-                  "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
-                  "enum": [
-                    "name",
-                    "path"
-                  ]
-                }
-              }
-            },
-            "wire_endpoints": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "exclude_parameters": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
+          "$ref": "#/$defs/feature"
+        },
+        "embeddings": {
+          "$ref": "#/$defs/feature"
+        },
+        "reranking": {
+          "$ref": "#/$defs/feature"
         }
       }
     },
@@ -157,6 +96,176 @@
             "timeout": { "type": "string" },
             "retries": { "type": "integer", "minimum": 0 }
           }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": "boolean"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "flag": {
+          "type": "string"
+        },
+        "when": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "execution": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "cli",
+                "python"
+              ]
+            },
+            "command": {
+              "type": "string"
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "working_dir": {
+              "type": "string"
+            },
+            "wire_model": {
+              "description": "What the engine keys on and echoes in the wire 'model' field: the client-facing name, or the weights path for engines that load whatever the request carries.",
+              "enum": [
+                "name",
+                "path"
+              ]
+            }
+          }
+        },
+        "wire_endpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclude_parameters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "health_check": {
+          "$ref": "#/$defs/healthCheck"
+        }
+      }
+    },
+    "healthCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "readiness_probe": {
+          "$ref": "#/$defs/probe"
+        },
+        "liveness_probe": {
+          "$ref": "#/$defs/probe"
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stall_timeout": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "logPatterns": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "success": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pattern"
+              }
+            },
+            "failure": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pattern"
+              }
+            }
+          }
+        },
+        "serve": {
+          "description": "Request that proves the engine can serve. Log patterns and health endpoints report a listening socket, which for lazily-loading engines precedes a usable model.",
+          "type": "object",
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            },
+            "body": {
+              "type": "string",
+              "description": "JSON body; ${WIRE_MODEL} expands to the token the engine keys on."
+            }
+          }
+        }
+      }
+    },
+    "pattern": {
+      "type": "object",
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "isRegex": {
+          "type": "boolean"
         }
       }
     }

@@ -878,7 +878,8 @@ paths:
                           node:     { type: string }
         '400':
           description: >
-            Invalid request fields, a parameter the provider's schema rejects,
+            Invalid request fields, an endpoint the provider does not serve, a required
+            endpoint runtime that is not installed, a parameter the provider's schema rejects,
             or a port outside the configured range. Retrying the same body cannot succeed.
           content:
             application/problem+json:
@@ -1270,7 +1271,9 @@ paths:
         '400':
           description: |
             `provider` missing, or a provider that is not configured or
-            not enabled on this cluster.
+            not enabled on this cluster; an endpoint the provider does not serve;
+            or a required endpoint runtime that is not installed. Endpoint refusals
+            name the provider and endpoint; missing runtimes include the install call.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -11234,10 +11237,18 @@ components:
                     unsupported is known ineligible; unknown means insufficient evidence.
                     Installed resources can remain available when tiers opt out or
                     the current process still runs its older text-only snapshot.
+                embeddings:
+                  type: string
+                  enum: [present, available, unsupported, unknown]
+                  description: Endpoint feature runtime installed (present) or eligible for installation (available).
+                reranking:
+                  type: string
+                  enum: [present, available, unsupported, unknown]
+                  description: Endpoint feature runtime installed (present) or eligible for installation (available).
             wire_endpoints:
               type: array
               items: { type: string }
-              description: Effective runtime or running-process endpoints. An explicit empty array declares none; absence falls back to provider capabilities.
+              description: Effective chat runtime or running chat process endpoints. Endpoint runs do not replace chat evidence. An explicit empty array declares none; absence falls back to provider capabilities.
 
     Model:
       type: object

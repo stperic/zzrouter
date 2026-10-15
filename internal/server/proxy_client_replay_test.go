@@ -63,7 +63,7 @@ func TestPostNotReplayedAfterRequestWritten(t *testing.T) {
 	p, group := postReplayProxy(t, upstream.Client(), upstream.URL)
 	c, w := streamEndContext(t, openaiproto.New())
 	c.Request.Header.Set("Content-Type", "application/json")
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"bill this"}]}`), nil, "group", false)
+	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"bill this"}]}`), nil, "group", "", false)
 	assert.EqualValues(t, 1, hits.Load(), "the upstream may already have executed this POST")
 	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
@@ -113,7 +113,7 @@ func TestPostWrittenTraceStopsChain(t *testing.T) {
 	transport := &replayTraceTransport{hook: "request"}
 	p, group := postReplayProxy(t, &http.Client{Transport: transport}, "http://engine.test")
 	c, w := streamEndContext(t, openaiproto.New())
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group"}`), nil, "group", false)
+	p.ProxyWithFallback(c, group, []byte(`{"model":"group"}`), nil, "group", "", false)
 	assert.EqualValues(t, 1, transport.calls.Load())
 	assert.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
 	assert.Contains(t, w.Body.String(), `"code":"fallback_exhausted"`)
@@ -157,7 +157,7 @@ func TestPostRefusedDialMovesToNextReplica(t *testing.T) {
 	c, w := streamEndContext(t, openaiproto.New())
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"hi"}]}`), nil, "group", false)
+	p.ProxyWithFallback(c, group, []byte(`{"model":"group","messages":[{"role":"user","content":"hi"}]}`), nil, "group", "", false)
 
 	assert.EqualValues(t, 1, hits.Load(), "the refused POST never ran, so the next replica serves it")
 	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())

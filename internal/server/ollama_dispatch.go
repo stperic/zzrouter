@@ -46,9 +46,7 @@ import (
 //   - Resolved to a non-Ollama provider (or group with no Ollama replicas) →
 //     404 with the canonical "use /v1/chat/completions" message.
 //
-// Ollama daemon serves all endpoints from one server, so per-endpoint
-// launch keying is meaningless here — endpointType only feeds the
-// recorder, never the dispatch decision.
+// Ollama shares a run across the endpoints its provider declares.
 func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName, endpointType string) error {
 	// Extract @node hint from the model string. Header X-Node still wins.
 	nodeHint := c.GetHeader("X-Node")
@@ -87,8 +85,12 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 			return nil
 		}
 		body = requestUsageCounts(c, body)
+		endpoint := prov_apps.EndpointChat
+		if ollamaRequestType(endpointType) == llm.RequestTypeEmbedding {
+			endpoint = prov_apps.EndpointEmbeddings
+		}
 		s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
-			callerModel(c.Request.Context(), resolved), suppressUsageFrameFromContext(c.Request.Context()))
+			callerModel(c.Request.Context(), resolved), string(endpoint), suppressUsageFrameFromContext(c.Request.Context()))
 		return nil
 	}
 

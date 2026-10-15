@@ -38,7 +38,7 @@ func TestEnsureCallersRefuseUncatalogedNameOnlyModel(t *testing.T) {
 	_, err = s.loadModelViaNodeAPI("not-downloaded", "fake", "chat")
 	require.ErrorIs(t, err, prov_apps.ErrModelNotLocal)
 	assert.Equal(t, http.StatusNotFound, answeredStatus(err))
-	err = newChainServerDeps(s).StartOnDemand("not-downloaded", "fake")
+	err = newChainServerDeps(s).StartOnDemand("not-downloaded", "fake", "")
 	require.ErrorIs(t, err, prov_apps.ErrModelNotLocal)
 	assert.Equal(t, http.StatusNotFound, answeredStatus(err))
 	runs := &RunsExecutor{appMgr: mgr, appsConfig: func() *config.AppsConfig { return cfg }}
@@ -100,7 +100,7 @@ func TestConcurrentInferenceAndChainEnsureOneRun(t *testing.T) {
 	<-entered
 	go load("canonical")
 	chainDone := make(chan error, 1)
-	go func() { chainDone <- newChainServerDeps(s).StartOnDemand("canonical", "fake") }()
+	go func() { chainDone <- newChainServerDeps(s).StartOnDemand("canonical", "fake", "") }()
 	select {
 	case err := <-chainDone:
 		require.NoError(t, err)
@@ -288,7 +288,7 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 		t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 		s := &Server{}
 		s.providers.appMgr = mgr
-		require.NoError(t, newChainServerDeps(s).StartOnDemand("cold", "fake"))
+		require.NoError(t, newChainServerDeps(s).StartOnDemand("cold", "fake", ""))
 		<-entered
 		close(release)
 		synctest.Wait()

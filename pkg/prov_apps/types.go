@@ -5,9 +5,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
 
-// Endpoint identifies the request shape an instance serves. Used as a
-// dimension in the launch-pool key when a provider opts in via
-// runtime.endpoint_aware (llama.cpp's --embeddings is mode-exclusive).
+// Endpoint separates incompatible request shapes when provider configuration requires it.
 type Endpoint string
 
 const (
@@ -19,6 +17,7 @@ const (
 // EnsureRequest contains the parameters needed to launch a provider instance.
 type EnsureRequest struct {
 	requestedModel   string
+	keyEndpoint      Endpoint // Shared engines keep one key without discarding the requested shape.
 	selectedRuntime  string
 	Detached         bool // returns an empty result on a cold start accepted in the background
 	Origin           Origin
@@ -38,7 +37,11 @@ type EnsureRequest struct {
 
 // Key returns the identity shared by registry lookups and concurrent ensures.
 func (r EnsureRequest) Key() instance.Key {
-	return instance.NewKey(r.Provider, r.Model, string(r.Endpoint))
+	endpoint := r.Endpoint
+	if r.keyEndpoint != "" {
+		endpoint = r.keyEndpoint
+	}
+	return instance.NewKey(r.Provider, r.Model, string(endpoint))
 }
 
 func (r EnsureRequest) want() Want {

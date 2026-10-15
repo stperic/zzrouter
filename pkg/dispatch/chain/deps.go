@@ -92,11 +92,14 @@ type Runtime interface {
 	// ValidateModel admits model before alias resolution, warm reuse or forwarding.
 	ValidateModel(ctx context.Context, model string) error
 
+	// LoadFailure shares the host's inference error mapping for lifecycle refusals.
+	LoadFailure(error) httperr.Error
+
 	// AppInstance returns model's run on provider, any status; callers filter.
-	AppInstance(model, provider string) (*instance.Instance, bool)
+	AppInstance(model, provider, endpoint string) (*instance.Instance, bool)
 
 	// LocalRun returns the ready run of a local model, starting one; nil for a provider without runs.
-	LocalRun(model, provider string) (*instance.Instance, error)
+	LocalRun(model, provider, endpoint string) (*instance.Instance, error)
 
 	// RunUpstream returns where a run's requests go and what of the caller's request travels there.
 	RunUpstream(inst *instance.Instance) (string, backend.Upstream, error)
@@ -108,7 +111,7 @@ type Runtime interface {
 	InstanceBody(req *http.Request, lease *instance.Lease, body []byte) []byte
 
 	// StartOnDemand returns immediate refusals before the manager owns the launch.
-	StartOnDemand(model, provider string) error
+	StartOnDemand(model, provider, endpoint string) error
 
 	// TrackProviderRateLimit consumes a backend response and updates the
 	// provider-level rate-limit snapshot used by the status API.

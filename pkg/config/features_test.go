@@ -69,9 +69,16 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	expected := map[string]map[string]Feature{
 		"llamacpp": {"vision": {Default: true, Files: []string{"mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-*.gguf"}, Flag: "mmproj"}},
-		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses", "messages"}, ExcludeParameters: []string{"chat-template"}}},
+		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses", "messages"}, ExcludeParameters: []string{"chat-template", "temperature", "top-p"}, HealthCheck: mlxFeatureHealth("/v1/chat/completions", `{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)}},
 		"vllm":     {"vision": {}},
 		"ollama":   {"vision": {}},
+	}
+	for name, endpoint := range map[string]string{"embeddings": "embeddings", "reranking": "rerank"} {
+		flag, body := "--embedding-model", `{"model":"${WIRE_MODEL}","input":"ping"}`
+		if name == "reranking" {
+			flag, body = "--reranker-model", `{"model":"${WIRE_MODEL}","query":"ping","documents":["ping"]}`
+		}
+		expected["mlx"][name] = Feature{Runtime: "mlx-vlm", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", flag, "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{endpoint}, ExcludeParameters: []string{"chat-template", "temperature", "top-p", "max-tokens"}, HealthCheck: mlxFeatureHealth("/v1/"+endpoint, body)}
 	}
 	for name, p := range cfg.providers {
 		require.NoError(t, p.Validate(), name)
@@ -137,6 +144,7 @@ func TestFeatureRuntimeUpgradeFromStep2(t *testing.T) {
 	require.NoError(t, err)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(data, &doc))
+	doc["capabilities"].(map[string]any)["wire_endpoints"] = []string{"chat_completions"}
 	doc["features"] = map[string]any{"vision": map[string]any{"default": false, "when": "vision_config", "runtime": "mlx-vlm"}}
 	old, err := yaml.Marshal(doc)
 	require.NoError(t, err)
@@ -146,6 +154,15 @@ func TestFeatureRuntimeUpgradeFromStep2(t *testing.T) {
 	cfg, err := LoadAppsConfig(dir)
 	require.NoError(t, err)
 	svc, _ := cfg.LookupApp("mlx")
+	for _, name := range []string{"embeddings", "reranking"} {
+		feature, ok := svc.Features[name]
+		require.True(t, ok)
+		assert.False(t, feature.Default)
+		assert.Equal(t, "mlx-vlm", feature.Runtime)
+		require.NotNil(t, feature.HealthCheck)
+		require.NoError(t, svc.ServesEndpoint(FeatureEndpoint(name)))
+	}
+	assert.Equal(t, []string{"chat_completions", "completions"}, svc.Capabilities.WireEndpoints)
 	f := svc.Features["vision"]
 	assert.False(t, f.Default, "operator policy survives")
 	require.NotNil(t, f.Execution)
@@ -154,4 +171,8 @@ func TestFeatureRuntimeUpgradeFromStep2(t *testing.T) {
 	require.NoError(t, cfg.SaveToDir(dir))
 	_, err = LoadAppsConfig(dir)
 	require.NoError(t, err)
+}
+
+func mlxFeatureHealth(path, body string) *HealthcheckConfig {
+	return &HealthcheckConfig{Path: "/v1/models", Interval: "30s", Timeout: "5s", Retries: 3, ReadinessProbe: &ProbeConfig{Timeout: "600s", LogPatterns: LogPatternsConfig{Success: []PatternConfig{{Pattern: "Application startup complete"}, {Pattern: "Uvicorn running on"}}, Failure: []PatternConfig{{Pattern: "Traceback (most recent call last)"}}}, Serve: &ServeCheckConfig{Path: path, Method: "POST", Body: body}}}
 }

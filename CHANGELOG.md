@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Runs, previews and inference refuse endpoints the provider does not serve
+  with HTTP 400, including Ollama reranking. A warm chat run cannot absorb an
+  unsupported embeddings request. Model-group chains select the requested
+  endpoint for warm runs and cold starts.
+- MLX supports embeddings and reranking through mlx-vlm. Install it with
+  `POST /zzrouter/v1/providers/mlx/install {"runtime":"mlx-vlm"}`, then start
+  runs with `endpoint: embeddings` or `endpoint: reranking`. Deployments can
+  provision the runtime with `features: [embeddings]` or `[reranking]`.
+  Chat, embeddings and reranking runs coexist. MLX now declares Completions;
+  llama.cpp and vLLM declare their rerank APIs.
+- MLX vision readiness uses uvicorn startup logs and a serving probe, and
+  excludes unsupported sampling flags. Endpoint runs no longer replace the
+  model catalog's chat endpoint evidence.
+- Cluster protocol and minimum rise from 10 to 11 because older provider
+  loaders reject endpoint features and feature health checks. Upgrade every
+  node together using the [protocol maintenance procedure](docs/protocol_versioning.md).
+
 - Negative resolved launch `keep-alive` (for example `-1`) pins a run against
   zzRouter idle expiry and pressure reclaim. Set it through provider tiers or
   run-start parameters. Inference `keep_alive` hints still update idle timers,

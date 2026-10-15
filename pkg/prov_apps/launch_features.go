@@ -122,25 +122,16 @@ func localizeModelFeatures(svc config.ServiceConfig, dir string, params map[stri
 	return out, nil
 }
 
-func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model process.ResolvedModel, selected string) (config.ServiceConfig, string, []string, error) {
+func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model process.ResolvedModel, selected, endpoint string) (config.ServiceConfig, string, []string, error) {
+	endpoint = string(EndpointOrDefault(Endpoint(endpoint)))
 	runtimeKey := ""
 	var excluded []string
 	hasRuntime := false
-	for _, f := range svc.Features {
-		if f.Runtime != "" {
-			hasRuntime = true
-		}
-	}
-	if !hasRuntime {
-		return svc, runtimeKey, excluded, nil
-	}
 	dir := model.Directory()
-	if dir == "" {
-		return svc, runtimeKey, excluded, nil
-	}
 	for _, name := range slices.Sorted(maps.Keys(svc.Features)) {
 		feature := svc.Features[name]
-		if feature.Runtime == "" {
+		hasRuntime = hasRuntime || feature.Runtime != ""
+		if feature.Runtime == "" || dir == "" || config.FeatureEndpoint(name) != endpoint {
 			continue
 		}
 		explicit := selected
@@ -167,6 +158,9 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model proc
 		}
 		runtimeCopy := *svc.Runtime
 		runtimeCopy.Execution = *feature.Execution
+		if feature.HealthCheck != nil {
+			runtimeCopy.HealthCheck = *feature.HealthCheck
+		}
 		svc.Runtime = &runtimeCopy
 		if svc.Capabilities != nil {
 			caps := *svc.Capabilities
@@ -175,6 +169,16 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model proc
 		}
 		runtimeKey = feature.Runtime
 		excluded = feature.ExcludeParameters
+	}
+	effective := svc
+	effective.Features = nil
+	if err := effective.ServesEndpoint(endpoint); hasRuntime && err != nil {
+		for name, feature := range svc.Features {
+			if installer, lookupErr := m.installs.Installer(feature.Runtime); config.FeatureEndpoint(name) == endpoint && feature.Runtime != "" && lookupErr == nil && !installer.IsInstalled() {
+				return svc, "", nil, fmt.Errorf("%w: %w; requires runtime %q; install with POST /zzrouter/v1/providers/%s/install {\"runtime\": \"%s\"}", ErrParameterValidation, err, feature.Runtime, svc.Name, feature.Runtime)
+			}
+		}
+		return svc, "", nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	return svc, runtimeKey, excluded, nil
 }
@@ -229,7 +233,11 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if selected == "" {
 		selected = req.selectedRuntime
 	}
-	svc, key, excluded, err := m.featureRuntime(svc, model, selected)
+	featureEndpoint := endpoint
+	if req.Endpoint != "" {
+		featureEndpoint = string(req.Endpoint)
+	}
+	svc, key, excluded, err := m.featureRuntime(svc, model, selected, featureEndpoint)
 	if err != nil {
 		return LaunchParameters{}, err
 	}

@@ -58,6 +58,7 @@ type LaunchCommand struct {
 
 // Config contains configuration for launching an instance.
 type Config struct {
+	Endpoint         string            `json:"endpoint,omitempty"`
 	Runtime          string            `json:"runtime,omitempty"`
 	DisposablePlanID string            `json:"disposable_plan_id,omitempty"`
 	Provider         string            `json:"provider"`

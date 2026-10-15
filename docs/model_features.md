@@ -1,12 +1,14 @@
 # Model features
 
-A provider declares how it supplies vision in its `config.yaml`. The supported
-feature name is `vision`. Provisioning has three forms:
+A provider declares model abilities in its `config.yaml`. The supported feature
+names are `vision`, `embeddings` and `reranking`. Vision applies to chat runs;
+embeddings and reranking each apply only to their matching run endpoint.
+Provisioning has three forms:
 
 | Form | Declaration | What deployment and launch do |
 | --- | --- | --- |
 | Files | `files` preference globs and `flag`, optionally `default: true` | Add matching files to the weights repository; inject their path into an unoccupied launch flag. |
-| Runtime | `runtime`, `execution`, optional `when`, `wire_endpoints` and `exclude_parameters` | Install through the managed installer; qualifying local weights select the installed execution overlay. |
+| Runtime | `runtime`, `execution`, optional `when`, `wire_endpoints`, `health_check` and `exclude_parameters` | Install through the managed installer; qualifying local weights select the installed execution overlay. |
 | Built in | `vision: {}` | Use model evidence from the engine or local source configuration. |
 
 For llama.cpp, the shipped file declaration prefers `mmproj-F16.gguf`, then
@@ -18,6 +20,19 @@ name. The predicate checks local `config.json`; absent evidence remains unknown.
 Implicit launch selection probes installed runtimes only, retaining the base
 runtime when optional configuration is missing, unreadable or malformed.
 Explicit runtime provisioning still requires readable qualification evidence.
+A runtime feature's `health_check` replaces the whole base runtime health check,
+just as `execution` replaces execution. MLX vision uses uvicorn startup logs
+followed by a Chat serving probe instead of the mlx-lm startup pattern.
+
+Endpoint features require a runtime and a `wire_endpoints` list containing their
+API: `embeddings` for embeddings, `rerank` for reranking. They cannot use file
+features. MLX supplies both through `mlx-vlm`, with `default: false` and no model
+predicate. Install it with
+`POST /zzrouter/v1/providers/mlx/install {"runtime":"mlx-vlm"}` or deploy with
+`features: [embeddings]` or `[reranking]`. Start separate runs with the matching
+`endpoint`; chat remains independent. Selection follows the requested endpoint,
+not the model architecture. An unavailable endpoint runtime returns HTTP 400
+with its install call instead of launching the base engine.
 
 An explicit `features: {}` provider block disables shipped declarations and
 survives configuration saves and reconciliation. Shipped declaration bodies refresh on later releases, including removal of
@@ -70,11 +85,11 @@ needs a deployment, which records one, to establish freshness.
 ## Readiness and inference
 
 The management catalog at `GET /zzrouter/v1/models` reports per-node
-`details.features.vision`:
+`details.features`, with `vision` and any declared `embeddings`/`reranking` keys:
 
 | State | Meaning |
 | --- | --- |
-| `present` | Node evidence establishes usable vision with the effective policy and running process. |
+| `present` | Node evidence establishes usable resources for the feature. Endpoint runtime installation establishes present; chat also respects policy and running snapshots. |
 | `available` | Eligibility is known, but files/runtime or a fresh enabled launch are needed. |
 | `unsupported` | The provider declares a `features` block without this feature, or evidence shows the model cannot do it. |
 | `unknown` | Evidence is insufficient, including every provider that declares no `features` block. |
@@ -106,14 +121,15 @@ refuse a translation, because no shipped provider needs one. An explicit
 `*_compat` entry still loads and means the same thing; it requires
 `chat_completions` and cannot sit beside its native endpoint.
 
-`details.wire_endpoints` reports the effective runtime endpoints or the existing
-running snapshot, including derived shims. Snapshot and worker declarations use
+`details.wire_endpoints` reports the effective chat runtime endpoints or an existing
+chat run snapshot, including derived shims. Embeddings and reranking runs never
+replace this chat evidence or downgrade endpoint feature states. Snapshot and worker declarations use
 the same derivation as provider config. An empty list explicitly declares none.
 Missing evidence falls back to the provider's effective endpoints. Native and
 translated Messages/Responses routing uses this model/provider/node evidence;
 mixed replica groups prefer native endpoints before translation.
 
-A local running instance's launched wire endpoints take precedence over catalog
+A local running chat instance's launched wire endpoints take precedence over catalog
 or provider defaults, including while the catalog is invalidated. Its provider
 identity is retained before translation; remote targets use their node-reported
 catalog evidence. Nil launch evidence falls back; an empty list declares none.
@@ -161,6 +177,8 @@ in-band; translated Responses emits `response.failed`, with no success event.
 
 ## Cluster compatibility
 
+Protocol and minimum are 11, up from 10. Upgrade every node together. Older
+strict loaders reject endpoint feature names and feature `health_check`.
 Use nodes with the same cluster protocol throughout the cluster. Provider feature declarations
 require compatible configuration on every launching node. Follow the
 [protocol maintenance procedure](protocol_versioning.md) for incompatible upgrades.

@@ -511,6 +511,49 @@ var validWireEndpoints = map[string]struct{}{
 	"messages_compat":  {},
 }
 
+// runWireEndpoints lists the APIs a run endpoint carries; declaring any one serves it.
+var runWireEndpoints = map[string][]string{
+	"chat":       {"chat_completions", "completions", "messages", "responses"},
+	"embeddings": {"embeddings"},
+	"reranking":  {"rerank"},
+}
+
+// WireEndpoints rejects unknown run endpoints before capability admission.
+func WireEndpoints(endpoint string) ([]string, error) {
+	if endpoint == "" {
+		endpoint = defaultEndpoint
+	}
+	if wires, ok := runWireEndpoints[endpoint]; ok {
+		return wires, nil
+	}
+	return nil, fmt.Errorf("unknown run endpoint %q", endpoint)
+}
+
+// ServesEndpoint admits undeclared capabilities and declared base or feature endpoints.
+func (s ServiceConfig) ServesEndpoint(endpoint string) error {
+	if endpoint == "" {
+		endpoint = defaultEndpoint
+	}
+	wires, err := WireEndpoints(endpoint)
+	if err != nil {
+		return err
+	}
+	if s.Capabilities == nil || len(s.Capabilities.WireEndpoints) == 0 {
+		return nil
+	}
+	for _, wire := range wires {
+		if s.Capabilities.SupportsWireEndpoint(wire) {
+			return nil
+		}
+		for name, feature := range s.Features {
+			if FeatureEndpoint(name) == endpoint && slices.Contains(feature.WireEndpoints, wire) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("provider %q does not serve endpoint %q (serves: %s)", s.Name, endpoint, strings.Join(s.Capabilities.EffectiveWireEndpoints(), ", "))
+}
+
 // compatShims maps each translation shim to the native endpoint it
 // stands in for. A shim translates to Chat Completions, so it needs
 // chat_completions, and it excludes its native endpoint: a provider
@@ -589,10 +632,15 @@ func (s ServiceConfig) ValidateRunTarget(model, endpoint string) error {
 		if model != "" || endpoint != "" {
 			return fmt.Errorf("node-scoped provider %q accepts no model_name or endpoint", s.Name)
 		}
-	} else if model == "" {
+		return nil
+	}
+	if model == "" {
 		return fmt.Errorf("model_name is required: a model-scoped run names its model")
 	}
-	return nil
+	if s.IsCloudProvider() {
+		return nil
+	}
+	return s.ServesEndpoint(endpoint)
 }
 
 // ValidatePlatform keeps install and launch restrictions on the same declared platforms.

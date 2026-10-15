@@ -968,7 +968,7 @@ func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string,
 	found := false
 	m.AppsConfig().RangeApps(func(key string, svc config.ServiceConfig) bool {
 		if Lifecycle(svc) == LifecycleServed {
-			run, found = m.instances.GetByKey(instance.NewKey("", m.daemonName(key, svc, model), ""))
+			run, found = m.instances.GetByKey(instance.NewKey("", m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint))))
 		}
 		return !found
 	})

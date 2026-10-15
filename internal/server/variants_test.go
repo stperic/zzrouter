@@ -382,10 +382,10 @@ func TestVariants_ChainFindsTheServingRun(t *testing.T) {
 	require.NoError(t, s.providers.appMgr.Instances().Register(inst))
 
 	deps := &chainServerDeps{s: s}
-	got, ok := deps.AppInstance(variantChat, "llamacpp")
+	got, ok := deps.AppInstance(variantChat, "llamacpp", "")
 	require.True(t, ok)
 	assert.Equal(t, "base-run", got.ID)
-	_, ok = deps.AppInstance(variantAgent, "llamacpp")
+	_, ok = deps.AppInstance(variantAgent, "llamacpp", "")
 	assert.False(t, ok, "a variant with its own launch has no run yet")
 	assert.Equal(t, 0.7, deps.RequestDefaults("llamacpp", variantChat, "/v1/chat/completions")["temperature"])
 }
@@ -493,7 +493,7 @@ func TestVariants_FallbackUsesServingInstancesWireModel(t *testing.T) {
 	rec := llm.NewInferenceRecorder(c.Request.Context(), "agent-group", "")
 	resolved := &resolver.Resolved{OriginalName: "agent-group", GroupName: "agent-group", Strategy: "priority",
 		Candidates: []fallback.Candidate{{Name: "variant", App: "llamacpp", Model: variantChat, Node: s.node.Nodename(), OnDemand: true}}}
-	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "agent-group", false)
+	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "agent-group", "", false)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	sent := <-seen
 	assert.Equal(t, wireName, sent["model"])

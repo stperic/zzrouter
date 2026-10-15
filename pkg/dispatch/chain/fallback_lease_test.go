@@ -61,7 +61,7 @@ func TestGroupRespectsInstanceCap(t *testing.T) {
 				{Name: "free", App: "next", Model: "m"},
 			})
 
-			provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 
 			assert.Equal(t, "next", provider)
 			assert.Zero(t, localCalls.Load(), "a held slot must prevent sending to this instance")
@@ -110,7 +110,7 @@ func TestIdleReaper_SparesGroupServedRun(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 	}()
 	select {
 	case active := <-reading:
@@ -152,7 +152,7 @@ func TestFallbackRetryReleasesBeforeBackoff(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 	}()
 	select {
 	case <-firstSent:
@@ -213,7 +213,7 @@ func TestStreamingReleasesAfterBody(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", false)
+		newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group","stream":true}`), nil, "group", "", false)
 	}()
 	select {
 	case active := <-reading:
@@ -261,7 +261,7 @@ func TestGroupLeaseCancellationStopsChain(t *testing.T) {
 				{Name: "next", App: "next", Model: "m"},
 			})
 			p := newProxyWithFake(deps)
-			provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+			provider := p.ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 			assert.Empty(t, provider)
 			assert.Zero(t, deps.forwardCalls.Load())
 			assert.Empty(t, w.Body.String())
@@ -289,7 +289,7 @@ func TestGroupClientGoneDuringBackoffStopsChain(t *testing.T) {
 		{Name: "next", App: "next", Model: "m"},
 	})
 
-	provider := newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+	provider := newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 
 	assert.Empty(t, provider)
 	assert.EqualValues(t, 1, deps.forwardCalls.Load(), "no retry and no next replica for a client that left")
@@ -321,7 +321,7 @@ func TestErrorBodyDrainBounded(t *testing.T) {
 	c, _ := buildGinCtx(t, `{"model":"group"}`)
 	resolved := leaseGroup([]pfallback.Candidate{{Name: "far", App: "far", Model: "m", MaxRetries: intPtr(1)}})
 
-	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", false)
+	newProxyWithFake(deps).ProxyWithFallback(c, resolved, []byte(`{"model":"group"}`), nil, "group", "", false)
 
 	attempts := int64(deps.forwardCalls.Load())
 	require.Positive(t, attempts)

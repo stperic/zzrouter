@@ -282,7 +282,7 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 		// can tag remote/local/no_backend after the chain settles.
 		span.SetAttributes(llm.RoutingDecision(llm.RoutingDecisionFallback))
 		s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
-			callerModel(c.Request.Context(), resolved), suppressUsageFrameFromContext(c.Request.Context()))
+			callerModel(c.Request.Context(), resolved), endpoint, suppressUsageFrameFromContext(c.Request.Context()))
 		llm.SetSpanOK(span)
 		return
 	}
@@ -375,7 +375,7 @@ func (s *Server) dispatchTo(c *gin.Context, resolved *resolver.Resolved, modelNa
 	if s.providers.fallback != nil && len(resolved.Candidates) > 0 {
 		recorder, _ := ctx.Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
 		served := s.providers.fallback.ProxyWithFallback(c, resolved, body, recorder,
-			callerModel(ctx, resolved), false)
+			callerModel(ctx, resolved), endpoint, false)
 		s.stashServingProvider(c, served)
 		return
 	}

@@ -162,7 +162,7 @@ func TestVariants_ConflictBlocksGroupAndWorkerWarmReuse(t *testing.T) {
 	rec := llm.NewInferenceRecorder(c.Request.Context(), "group", "")
 	resolved := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority",
 		Candidates: []fallback.Candidate{{Name: "variant", App: "llamacpp", Model: variantChat, OnDemand: true}}}
-	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "group", false)
+	s.providers.fallback.ProxyWithFallback(c, resolved, raw, rec, "group", "", false)
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), `"code":"model_name_conflict"`)
 	require.Zero(t, calls.Load())

@@ -253,3 +253,15 @@ func TestSourceInstallProtocolCutoverContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEndpointFeaturesProtocolCutoverContract(t *testing.T) {
+	if ClusterProtocolVersion < 11 || MinClusterProtocolVersion < 11 {
+		t.Fatalf("endpoint features require protocol 11/11, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(10); err == nil {
+		t.Fatal("old worker admitted despite rejecting endpoint features and feature health checks")
+	}
+	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}
