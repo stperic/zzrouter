@@ -394,19 +394,27 @@ def direct_basics(R, node, provider, name):
     R.add("direct", node, sc, "responses", code == 200 and d.get("status") in ("completed", "incomplete"), f"{code} {d.get('status') or str(d)[:200]}", ms)
 
 
+WEATHER_ASK = [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}]
+
+
+def openai_tool_call(model):
+    """One /v1 chat with the weather tool; ok when the model calls it for Paris."""
+    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": WEATHER_ASK})
+    tc = ((d.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") if code == 200 else None
+    ok = bool(tc) and tc[0]["function"]["name"] == "get_weather" and "paris" in tc[0]["function"]["arguments"].lower()
+    return code, d, ms, tc, ok
+
+
 def direct_tools(R, node, provider, name):
     """Tool calling on the big model: OpenAI tool_calls, the result round trip, Anthropic tool_use."""
     sc, model = f"{provider}:big", f"{name}@{node}"
-    ask = [{"role": "user", "content": "What is the weather in Paris right now? Use the tool."}]
-    code, d, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": ask})
+    code, d, ms, tc, ok = openai_tool_call(model)
     if code == 400 and (d.get("error") or {}).get("code") == "tool_calling_not_enabled":
         R.add("direct", node, sc, "tools refusal is classified", True, problem(d), ms)
         return
-    tc = ((d.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") if code == 200 else None
-    ok = bool(tc) and tc[0]["function"]["name"] == "get_weather" and "paris" in tc[0]["function"]["arguments"].lower()
     R.add("direct", node, sc, "openai tool_calls", ok, f"{code} {tc or d!s:.200}", ms)
     if ok:
-        msgs = ask + [d["choices"][0]["message"], {"role": "tool", "tool_call_id": tc[0]["id"],
+        msgs = WEATHER_ASK + [d["choices"][0]["message"], {"role": "tool", "tool_call_id": tc[0]["id"],
                       "content": json.dumps({"city": "Paris", "temp_c": 31, "sky": "sunny"})}]
         code, d2, ms = http("POST", "/v1/chat/completions", {"model": model, "max_tokens": ANSWER_TOKENS, "tools": [WEATHER_TOOL], "messages": msgs})
         R.add("direct", node, sc, "openai tool result round trip", code == 200 and "31" in answer(code, d2), f"{code} {answer(code, d2) or d2!s:.150}", ms)
@@ -1149,14 +1157,33 @@ def check_capability_probe(ctx, mode):
     return out
 
 
-def check_tool_calling(ctx):
-    rj = ctx["rj"] or {}
+def tool_probes(ctx):
+    """zz_chat probe=tools calls, and whether one verified tool calling."""
     probes = [c for c in tool_calls(ctx, "zz_chat", True) if (c["args"] or {}).get("probe") == "tools"]
     verified = any((c.get("evidence") or {}).get("tool_call") == "verified" and (c.get("evidence") or {}).get("verdict") == "verified" for c in probes)
+    return probes, verified
+
+
+def check_tool_calling(ctx):
+    rj = ctx["rj"] or {}
+    probes, verified = tool_probes(ctx)
     return [("probed with tools", bool(probes), len(probes)),
             ("probe verified tool calling", verified, [c["resp"][:160] for c in probes][-1:]),
             ("agent claims match the probe", rj.get("verified") is verified, rj),
             ("no runs left on node", not ctx["left"], ctx["left"])]
+
+
+def check_tool_endpoint(ctx):
+    """Acceptance is the harness's own /v1 tool call to the model the agent left serving, not the agent's word."""
+    rj = ctx["rj"] or {}
+    probes, verified = tool_probes(ctx)
+    model = rj.get("model") or ""
+    code, d, ms, tc, ok = openai_tool_call(model) if model else (None, {}, 0, None, False)
+    return [("probed with tools", bool(probes), len(probes)),
+            ("probe verified tool calling", verified, [c["resp"][:160] for c in probes][-1:]),
+            ("agent claims match the probe", rj.get("verified") is verified, rj),
+            ("left a run serving", bool(ctx["left"]), ctx["left"]),
+            ("coordinator /v1 tool call to the reported model", ok, f"{model!r} {code} {ms}ms {tc or d!s:.200}")]
 
 
 def check_contention(ctx):
@@ -1258,9 +1285,22 @@ def track_mcp(R, node, cells, agents, only, out):
                   "with the local models each can run.\nUse only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. "
                   "JSON keys: node, os, providers (list), model_count.",
         "check": check_inventory}, agents, only, out)
+    if LAB[node].get("tool_endpoint") and ROLES.get("big"):
+        run_scenario(R, node, "tool-endpoint", {
+            "prompt": f"On node {node}, serve {describe(ROLES['big'])} for tool calling. Choose the engine (one of this node's local "
+                      f"providers: {', '.join(LAB[node]['providers'])}) and the precision (build) that give the most faithful tool calls "
+                      "on this node's GPU, get what it needs onto the node, and start it. Prove tool calling with zzRouter's tool-call probe; "
+                      "if the probe or a refusal says the engine needs tool-calling settings, set them for this model only, restart and probe "
+                      "again. Leave the verified model serving: a client will call it through the coordinator's OpenAI-compatible /v1 API.\n"
+                      "Use only the zzrouter tools and this node's local providers; no cloud providers. Finish with exactly one line: "
+                      "RESULT: <compact JSON>. JSON keys: model (the exact model name a /v1 client sends), provider, build, verified (bool), "
+                      "why (one sentence on the engine and precision choice).",
+            "check": check_tool_endpoint,
+            "expect_error": "tool_calling_not_enabled"}, agents, only, out)
     for provider in cells:
-        R.add("mcp", node, f"{provider}.probe-embed", "embedding role configured", bool((MATRIX.get((node, provider)) or {}).get("embed")),
-              "Configure an embed role in the lab inventory for this node/provider; missing embedding coverage is a failure.")
+        if not only or only in f"{node}.{provider}.probe-embed":
+            R.add("mcp", node, f"{provider}.probe-embed", "embedding role configured", bool((MATRIX.get((node, provider)) or {}).get("embed")),
+                  "Configure an embed role in the lab inventory for this node/provider; missing embedding coverage is a failure.")
         for sc in scenarios(node, provider):
             run_scenario(R, node, f"{provider}.{sc['id']}", sc, agents, only, out)
 
