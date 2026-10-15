@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/retry"
@@ -39,6 +40,7 @@ type Options struct {
 	Progress  func(done, total int64) // total is -1 when unknown; done rewinds on a restart
 	Verify    func(Result) error      // the caller's check, before finalization
 	Mode      fs.FileMode             // the final file's mode; 0 keeps the partial's 0600
+	Exclusive bool                    // the caller serializes writers of dest, so an older partial of it is a dead transfer's
 }
 
 // Result describes a completed transfer.
@@ -55,11 +57,28 @@ func CreatePartial(dest string) (*os.File, error) {
 	return os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*"+PartialSuffix)
 }
 
+// removeDeadPartials deletes what a killed transfer of dest left behind; only
+// a partial's own name (prefix, random digits, suffix) is matched.
+func removeDeadPartials(dest string) {
+	prefix := "." + filepath.Base(dest) + "."
+	entries, _ := os.ReadDir(filepath.Dir(dest))
+	for _, e := range entries {
+		rest, isDest := strings.CutPrefix(e.Name(), prefix)
+		random, isPartial := strings.CutSuffix(rest, PartialSuffix)
+		if isDest && isPartial && random != "" && strings.Trim(random, "0123456789") == "" {
+			_ = os.Remove(filepath.Join(filepath.Dir(dest), e.Name()))
+		}
+	}
+}
+
 // Fetch downloads req to dest with client, which carries the caller's auth.
 // The partial is removed on cancellation or any terminal failure.
 func Fetch(client *http.Client, req *http.Request, dest string, opts Options) (result Result, err error) {
 	if err = os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return result, err
+	}
+	if opts.Exclusive {
+		removeDeadPartials(dest)
 	}
 	out, err := CreatePartial(dest)
 	if err != nil {

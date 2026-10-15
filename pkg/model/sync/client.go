@@ -380,7 +380,7 @@ func (c *Client) downloadFile(
 	lastTime, lastBytes := utils.Now(), int64(0)
 	previous := int64(0)
 	result, err := download.Fetch(c.httpClient, req, destPath, download.Options{
-		Hash: true, MaxSize: c.maxFileSize,
+		Hash: true, MaxSize: c.maxFileSize, Exclusive: true,
 		Progress: func(done, _ int64) {
 			now := utils.Now()
 			elapsed := now.Sub(lastTime).Seconds()
