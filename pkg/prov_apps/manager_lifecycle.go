@@ -40,7 +40,7 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	}
 	if budget != nil {
 		// Admission measures free memory, so admissions run one at a time.
-		node := Node{Lifecycle: LifecycleProcess, Runtime: req.selectedRuntime}
+		node := Node{ShuttingDown: m.shuttingDown(), Lifecycle: LifecycleProcess, Runtime: req.selectedRuntime}
 		select {
 		case m.memoryAdmission <- struct{}{}:
 		default:
@@ -878,6 +878,13 @@ func (m *ProviderAppManager) RestartInstance(ctx context.Context, id string) (*i
 		return nil, fmt.Errorf("relaunch %s/%s: %w", req.Provider, req.Model, err)
 	}
 	return result.Run, nil
+}
+
+// shuttingDown reports that Stop has begun or finished. Stop sets stopping
+// before it ends any run, so a caller that sees a run stopping for shutdown
+// also sees this.
+func (m *ProviderAppManager) shuttingDown() bool {
+	return m.stopping.Load() || m.shutdown.Load()
 }
 
 // Stop gracefully stops all instances and releases resources.

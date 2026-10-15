@@ -60,12 +60,13 @@ type RunView struct {
 
 // Node is the evidence one decision is made on; a site sets what it has observed.
 type Node struct {
-	Lifecycle RunLifecycle
-	Reachable bool
-	Absent    bool     // the catalog says this node does not hold the model
-	Runtime   string   // the runtime a start would use, once selected
-	Existing  *RunView // the run holding the key
-	Joined    bool     // Existing is what a start in flight produced, and the caller joined that start
+	ShuttingDown bool // the manager is stopping: nothing starts, queues or joins
+	Lifecycle    RunLifecycle
+	Reachable    bool
+	Absent       bool     // the catalog says this node does not hold the model
+	Runtime      string   // the runtime a start would use, once selected
+	Existing     *RunView // the run holding the key
+	Joined       bool     // Existing is what a start in flight produced, and the caller joined that start
 	// Blocker and AdmissionHeld are observed only for a launch measured against a memory budget.
 	Blocker       *RunView // an admitted run still starting under a budget: its claim is not visible yet
 	AdmissionHeld bool     // another launch is measuring
@@ -98,6 +99,9 @@ var errUndecided = errors.New("run policy returned no decision")
 
 // Decide is the run policy: every rule on whether and how a want becomes a run.
 func Decide(w Want, n Node) Decision {
+	if n.ShuttingDown {
+		return refuse(ErrShutdown)
+	}
 	switch n.Lifecycle {
 	case LifecycleNone:
 		if !n.Reachable {

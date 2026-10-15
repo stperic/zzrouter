@@ -14,7 +14,7 @@ import (
 // decide observes this node for prepared and asks the policy; the run returned is the one Existing describes.
 func (m *ProviderAppManager) decide(ctx context.Context, prepared preparedStart) (Decision, *instance.Instance) {
 	req := prepared.req
-	n := Node{Lifecycle: prepared.lifecycle, Absent: prepared.absent, Runtime: req.selectedRuntime}
+	n := Node{ShuttingDown: m.shuttingDown(), Lifecycle: prepared.lifecycle, Absent: prepared.absent, Runtime: req.selectedRuntime}
 	switch n.Lifecycle {
 	case LifecycleNone:
 		var listed bool
@@ -67,7 +67,7 @@ func (p preparedStart) answer() (EnsureResult, error) {
 }
 
 func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest) (preparedStart, error) {
-	if m.stopping.Load() || m.shutdown.Load() {
+	if m.shuttingDown() {
 		return preparedStart{}, ErrShutdown
 	}
 	if err := m.ValidateModel(ctx, req.Model); err != nil {
@@ -179,7 +179,7 @@ func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (
 	if f.err != nil || leads {
 		return EnsureResult{Run: f.run, Started: f.started}, f.err
 	}
-	prepared.decision = Decide(prepared.req.want(), Node{Lifecycle: LifecycleProcess, Existing: runView(f.run), Joined: true})
+	prepared.decision = Decide(prepared.req.want(), Node{ShuttingDown: m.shuttingDown(), Lifecycle: LifecycleProcess, Existing: runView(f.run), Joined: true})
 	prepared.existing = f.run
 	return prepared.answer()
 }
@@ -189,7 +189,7 @@ func (m *ProviderAppManager) joinFlight(ctx context.Context, prepared preparedSt
 	key := prepared.req.Key()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.stopping.Load() || m.shutdown.Load() {
+	if m.shuttingDown() {
 		return nil, false, ErrShutdown
 	}
 	m.flightsMu.Lock()
@@ -233,7 +233,7 @@ func (m *ProviderAppManager) fly(ctx context.Context, key instance.Key, prepared
 // flight: the flight's leader may wait on the install gate this smoke's installer holds.
 func (m *ProviderAppManager) runSmokeStart(ctx context.Context, prepared preparedStart) (EnsureResult, error) {
 	m.mu.Lock()
-	if m.stopping.Load() || m.shutdown.Load() {
+	if m.shuttingDown() {
 		m.mu.Unlock()
 		return EnsureResult{}, ErrShutdown
 	}

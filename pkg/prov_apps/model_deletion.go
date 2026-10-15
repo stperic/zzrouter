@@ -20,7 +20,7 @@ const catalogReaders int64 = 1 << 30
 
 func (m *ProviderAppManager) catalogPermit(ctx context.Context, slots int64) (context.Context, func(), error) {
 	m.mu.Lock()
-	if m.stopping.Load() || m.shutdown.Load() {
+	if m.shuttingDown() {
 		m.mu.Unlock()
 		return ctx, nil, ErrShutdown
 	}
