@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"maps"
 	"path"
+	"regexp"
 
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 
@@ -31,9 +32,10 @@ type YAMLParam struct {
 	Description string   `yaml:"description,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"`
 	// Pass is how an asset reaches the engine; only type: asset takes it.
-	Pass   string `yaml:"pass,omitempty"`
-	Auto   string `yaml:"auto,omitempty"`
-	Served string `yaml:"served,omitempty"`
+	Pass         string            `yaml:"pass,omitempty"`
+	Auto         string            `yaml:"auto,omitempty"`
+	Served       string            `yaml:"served,omitempty"`
+	PlacementLog map[string]string `yaml:"placement_log,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -180,6 +182,20 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 	if out.Served == "" {
 		out.Served = yp.Served
+	}
+	if yp.PlacementLog != nil {
+		out.PlacementLog = make(map[string]*regexp.Regexp, len(yp.PlacementLog))
+		for name, raw := range yp.PlacementLog {
+			groups, ok := map[string]int{"layers": 2, "cpu_overrides": 0, "weights": 2}[name]
+			if !ok {
+				return ParamShape{}, fmt.Errorf("%s.%s: unknown placement_log.%s", provider, qualifiedName, name)
+			}
+			pattern, err := regexp.Compile(raw)
+			if err != nil || pattern.NumSubexp() != groups {
+				return ParamShape{}, fmt.Errorf("%s.%s: placement_log.%s requires a valid regex with exactly %d capture groups", provider, qualifiedName, name, groups)
+			}
+			out.PlacementLog[name] = pattern
+		}
 	}
 	return out, nil
 }

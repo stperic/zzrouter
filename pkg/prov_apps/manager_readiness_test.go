@@ -19,7 +19,7 @@ func readinessWatch(t *testing.T, probe *health.ReadinessProbe, monitor *health.
 	t.Helper()
 	require.NoError(t, probe.Validate())
 	inst := instance.NewInstance("startup", "engine", "model", 0, 0, 0)
-	writer := health.NewReadinessWriter(io.Discard, probe)
+	writer := health.NewReadinessWriter(io.Discard, probe, nil, nil)
 	events := make(chan Event, 4)
 	manager := &ProviderAppManager{healthMon: monitor, auditEvents: events}
 	done := make(chan struct{})
@@ -156,7 +156,7 @@ func TestBuildReadinessStallDuration(t *testing.T) {
 func TestReadinessServeOutputKeepsProgressAfterLog(t *testing.T) {
 	probe := startupProbe(time.Second, 2*time.Second)
 	probe.Serve = &health.ServeCheck{Path: "/generate"}
-	writer := health.NewReadinessWriter(io.Discard, probe)
+	writer := health.NewReadinessWriter(io.Discard, probe, nil, nil)
 	_, err := writer.Write([]byte("READY\n"))
 	require.NoError(t, err)
 	before := writer.LastOutputAt()

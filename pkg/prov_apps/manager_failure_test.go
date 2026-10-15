@@ -32,7 +32,7 @@ func TestLifecycleFailure_InlineExitAndDiagnostic(t *testing.T) {
 	require.NoError(t, m.instances.Register(inst))
 	probe := &health.ReadinessProbe{Timeout: time.Minute, LogPatterns: health.LogPatterns{Failure: []health.PatternMatcher{{Pattern: "RuntimeError:"}}}}
 	require.NoError(t, probe.Validate())
-	m.runInstanceLifecycle(inst, "/bin/sh", []string{"-c", "printf 'RuntimeError: incompatible native builds\\n'; exit 23"}, nil, file, health.CheckConfig{ReadinessProbe: probe}, nil)
+	m.runInstanceLifecycle(inst, admittedRun{cmd: "/bin/sh", args: []string{"-c", "printf 'RuntimeError: incompatible native builds\\n'; exit 23"}, logFile: file, health: health.CheckConfig{ReadinessProbe: probe}})
 	snapshot := inst.ToInfo("worker")
 	require.Equal(t, instance.StatusFailed, snapshot.Status)
 	require.NotNil(t, snapshot.Failure)
@@ -62,7 +62,7 @@ func TestDeclaredReadinessAndExitFailures(t *testing.T) {
 			probe.LogPatterns.Success = []health.PatternMatcher{{Pattern: "ready"}}
 			for _, generic := range []string{"error:", "RuntimeError:", ""} {
 				probe.LogPatterns.Failure = []health.PatternMatcher{{Pattern: generic}}
-				writer := health.NewReadinessWriter(io.Discard, probe)
+				writer := health.NewReadinessWriter(io.Discard, probe, nil, nil)
 				_, err = writer.Write([]byte(tc.line + "\n"))
 				require.NoError(t, err)
 				inst := instance.NewInstance("failed", tc.provider, "model", 0, 0, 0)

@@ -527,6 +527,9 @@ func (i *Instance) notifyIdleLocked() {
 // Loaded is what the daemon serving a run reports of its model.
 type Loaded struct {
 	Size, VRAM                                        int64
+	GPULayers, Layers                                 int64
+	CPUWeights, GPUWeights                            int64
+	CPUOverrides                                      bool
 	ContextLength                                     int
 	ExpiresAt                                         time.Time // when the daemon unloads it idle
 	Digest, Format, Family, ParameterSize, QuantLevel string
@@ -541,22 +544,36 @@ func (i *Instance) endingLocked() bool {
 
 // SetLoaded records, for listings, what the daemon serving the run reports of its model.
 func (i *Instance) SetLoaded(l Loaded) {
+	i.UpdateLoaded(func(loaded *Loaded) { *loaded = l })
+}
+
+// UpdateLoaded atomically merges observations without losing concurrent context or placement.
+func (i *Instance) UpdateLoaded(update func(*Loaded)) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.endingLocked() {
 		return
 	}
-	i.loaded, i.SizeBytes, i.ContextLength = l, l.Size, l.ContextLength
+	update(&i.loaded)
+	l := i.loaded
+	i.SizeBytes, i.ContextLength = l.Size, l.ContextLength
+	gpu, total := l.VRAM, l.Size
+	if total <= 0 {
+		gpu, total = l.GPULayers, l.Layers
+		if l.CPUOverrides && l.CPUWeights+l.GPUWeights > 0 {
+			gpu, total = l.GPUWeights, l.CPUWeights+l.GPUWeights
+		}
+	}
 	switch {
-	case l.Size <= 0:
+	case total <= 0:
 		i.Processor = ""
-	case l.VRAM >= l.Size:
+	case gpu >= total:
 		i.Processor = "100% GPU"
-	case l.VRAM <= 0:
+	case gpu <= 0:
 		i.Processor = "100% CPU"
 	default:
-		gpu := float64(l.VRAM) / float64(l.Size) * percentWhole
-		i.Processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", gpu, percentWhole-gpu)
+		share := float64(gpu) / float64(total) * percentWhole
+		i.Processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", share, percentWhole-share)
 	}
 }
 

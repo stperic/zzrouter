@@ -192,6 +192,9 @@ runtime:
       - "127.0.0.1"  # loopback-only; zzrouter-node proxies external requests
       - "--port"
       - "${PORT}"
+      # zzRouter reads layer placement, which default verbosity omits.
+      - "--log-verbosity"
+      - "4"
     # --alias makes llama-server echo the client-facing name instead of the
     # .gguf filename.
     wire_model: name

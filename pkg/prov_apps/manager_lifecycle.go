@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -207,6 +208,7 @@ type admittedRun struct {
 	logFile   *os.File
 	health    health.CheckConfig
 	transform process.EnvironmentTransform
+	placement []*regexp.Regexp
 }
 
 // runLogFile opens run's log file for appending; it outlives the run on this node.
@@ -286,9 +288,20 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	inst.SetResolved(prepared.resolved)
 	inst.WireModel = prepared.launch.WireModel
+	var placement []*regexp.Regexp
+	if budget := launchBudget(declared); budget != nil && budget.Kind == schema.MemoryLayers {
+		patterns := declared.ForEndpoint(endpoint)[budget.Parameter].PlacementLog
+		if len(patterns) > 0 {
+			placement = []*regexp.Regexp{
+				placementLayers:       patterns["layers"],
+				placementCPUOverrides: patterns["cpu_overrides"],
+				placementWeights:      patterns["weights"],
+			}
+		}
+	}
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
-		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment,
+		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, placement: placement,
 	}, nil
 }
 
@@ -417,7 +430,7 @@ func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) 
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.runInstanceLifecycle")
-		m.runInstanceLifecycle(inst, run.cmd, run.args, run.vars, run.logFile, run.health, run.transform)
+		m.runInstanceLifecycle(inst, run)
 	}()
 }
 
@@ -539,22 +552,15 @@ func (m *ProviderAppManager) memoryRuns() []process.RunRef {
 
 // runInstanceLifecycle manages the launched process lifecycle in a goroutine.
 // It launches the process, starts health monitoring, and waits for process exit.
-func (m *ProviderAppManager) runInstanceLifecycle(
-	inst *instance.Instance,
-	cmd string, args []string,
-	envVars map[string]string,
-	logFile *os.File,
-	hcConfig health.CheckConfig,
-	executionEnvironment process.EnvironmentTransform,
-) {
+func (m *ProviderAppManager) runInstanceLifecycle(inst *instance.Instance, run admittedRun) {
 	defer inst.ReleaseMemory()
 	// Wrap log file with readiness writer if probe is configured.
 	// This scans process output for patterns like "INFO - Starting httpd"
 	// to detect readiness faster than HTTP polling.
-	var logWriter io.Writer = logFile
+	var logWriter io.Writer = run.logFile
 	var readinessWriter *health.ReadinessWriter
-	if hcConfig.ReadinessProbe != nil {
-		readinessWriter = health.NewReadinessWriter(logFile, hcConfig.ReadinessProbe)
+	if run.health.ReadinessProbe != nil {
+		readinessWriter = health.NewReadinessWriter(run.logFile, run.health.ReadinessProbe, run.placement, func(index int, values []string) { recordPlacement(inst, index, values) })
 		logWriter = readinessWriter
 	}
 
@@ -562,13 +568,13 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 		m.seams.beforeLaunch()
 	}
 	if inst.Context().Err() != nil { // stopped before its process: spawn nothing, fail nothing
-		logFile.Close()
+		run.logFile.Close()
 		return
 	}
 	// Launch process (exec.Command, not CommandContext — process lifetime managed by Terminate)
-	result, err := m.launcher.Launch(m.shutdownCtx, inst, cmd, args, envVars, logWriter, executionEnvironment)
+	result, err := m.launcher.Launch(m.shutdownCtx, inst, run.cmd, run.args, run.vars, logWriter, run.transform)
 	if err != nil {
-		logFile.Close()
+		run.logFile.Close()
 		inst.MarkFailedError(err)
 		m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 		return
@@ -606,7 +612,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 		go func() {
 			defer inst.GoroutineDone()
 			defer utils.RecoverAndLog("prov_apps.watchReadiness")
-			m.watchReadiness(inst, readinessWriter, hcConfig.ReadinessProbe)
+			m.watchReadiness(inst, readinessWriter, run.health.ReadinessProbe)
 		}()
 	}
 
@@ -615,7 +621,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.healthMonitor")
-		m.healthMon.Run(inst.Context(), inst, hcConfig, func(run *instance.Instance) {
+		m.healthMon.Run(inst.Context(), inst, run.health, func(run *instance.Instance) {
 			m.publishRunning(run, true, "healthy")
 		})
 	}()
@@ -636,7 +642,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(
 	}
 
 	// Process has exited — safe to close the log file
-	logFile.Close()
+	run.logFile.Close()
 
 	// Mark failed if not already stopped/failed by StopInstance or health monitor.
 	// A running instance whose process exits without going through

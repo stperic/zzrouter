@@ -3,6 +3,7 @@ package health
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,18 +36,22 @@ type ReadinessWriter struct {
 	buffer       bytes.Buffer
 	mu           sync.Mutex
 	started      bool
-	resolved     bool // true after first match — stop scanning
+	resolved     bool // Stop scanning and capture once readiness or failure resolves.
+	patterns     []*regexp.Regexp
+	onCapture    func(int, []string)
 }
 
 // NewReadinessWriter creates a writer that scans for readiness patterns.
 // The probe's patterns must already be compiled (call Validate() first).
 // Signals never block the write path.
-func NewReadinessWriter(inner io.Writer, probe *ReadinessProbe) *ReadinessWriter {
+// Capture callbacks run in line order outside the lock, until readiness resolves.
+func NewReadinessWriter(inner io.Writer, probe *ReadinessProbe, patterns []*regexp.Regexp, onCapture func(int, []string)) *ReadinessWriter {
 	return &ReadinessWriter{
-		origin: utils.Now(),
-		inner:  inner,
-		probe:  probe,
-		Signal: make(chan ReadinessSignal, readinessSignalCapacity),
+		origin:   utils.Now(),
+		inner:    inner,
+		probe:    probe,
+		Signal:   make(chan ReadinessSignal, readinessSignalCapacity),
+		patterns: patterns, onCapture: onCapture,
 	}
 }
 
@@ -57,13 +62,17 @@ func (rw *ReadinessWriter) Write(p []byte) (int, error) {
 	}
 	n, err := rw.inner.Write(p)
 
+	var captures []func()
 	rw.mu.Lock()
 	rw.recordOutputLocked(p[:n])
 	if !rw.resolved {
 		rw.buffer.Write(p[:n])
-		rw.scanLinesLocked()
+		captures = rw.scanLinesLocked()
 	}
 	rw.mu.Unlock()
+	for _, capture := range captures {
+		capture()
+	}
 
 	return n, err
 }
@@ -100,7 +109,7 @@ func (rw *ReadinessWriter) recordOutputLocked(p []byte) {
 
 // scanLinesLocked checks complete lines against readiness patterns.
 // Caller must hold rw.mu.
-func (rw *ReadinessWriter) scanLinesLocked() {
+func (rw *ReadinessWriter) scanLinesLocked() (captures []func()) {
 	for {
 		line, err := rw.buffer.ReadString('\n')
 		if err != nil {
@@ -117,7 +126,13 @@ func (rw *ReadinessWriter) scanLinesLocked() {
 
 		// Trim trailing newline/carriage return
 		line = trimLine(line)
-
+		for index, pattern := range rw.patterns {
+			if pattern != nil && rw.onCapture != nil {
+				if groups := pattern.FindStringSubmatch(line); groups != nil {
+					captures = append(captures, func() { rw.onCapture(index, groups[1:]) })
+				}
+			}
+		}
 		if cause := rw.probe.FailureClassifier.Match(line); cause != nil {
 			rw.resolved = true
 			rw.Signal <- ReadinessSignal{Failed: true, Pattern: line, Cause: cause}

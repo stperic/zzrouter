@@ -22,6 +22,50 @@ var templateKeys = map[string]string{
 	"mlx":      "chat-template",
 }
 
+func TestLlamacppPlacementReachesExistingInstall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	file := filepath.Join(dir, "on-demand", "llamacpp", "config.yaml")
+	live, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var cfg map[string]any
+	require.NoError(t, yaml.Unmarshal(live, &cfg))
+	runtime := cfg["runtime"].(map[string]any)
+	execution := runtime["execution"].(map[string]any)
+	args := execution["args"].([]any)
+	require.Equal(t, []any{"--log-verbosity", "4"}, args[len(args)-2:])
+	execution["args"] = args[:len(args)-2]
+	cfg["defaults"].(map[string]any)["parameters"].(map[string]any)["ctx-size"] = "8192"
+	stale, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, stale, 0600))
+	schemaFile := filepath.Join(dir, "on-demand", "llamacpp", "schema.yaml")
+	raw, err := os.ReadFile(schemaFile)
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(raw)
+	require.NoError(t, err)
+	delete(declared.Parameters, "n-gpu-layers")
+	stale, err = yaml.Marshal(declared)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(schemaFile, stale, 0600))
+	changed, err := templates.ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	assert.Contains(t, changed, "on-demand/llamacpp/config.yaml")
+	assert.Contains(t, changed, "on-demand/llamacpp/schema.yaml")
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	svc, ok := apps.LookupApp("llamacpp")
+	require.True(t, ok)
+	assert.Equal(t, "8192", svc.Defaults.Parameters["ctx-size"])
+	assert.Equal(t, []string{"--log-verbosity", "4"}, svc.Runtime.Execution.Args[len(svc.Runtime.Execution.Args)-2:])
+	schemas, errs := schema.LoadFromFS(os.DirFS(dir), ".")
+	require.Empty(t, errs)
+	placement := schemas["llamacpp"].Parameters["n-gpu-layers"].PlacementLog
+	assert.Equal(t, `offloaded (\d+)/(\d+) layers to GPU`, placement["layers"].String())
+	assert.Equal(t, `tensor overrides to CPU`, placement["cpu_overrides"].String())
+	assert.Equal(t, `(CPU)?\S* model buffer size = +([\d.]+) MiB`, placement["weights"].String())
+}
+
 func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(dir))

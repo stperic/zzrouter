@@ -5,6 +5,8 @@
 // the Go claim wins because it encodes structural correctness (plan §4.4).
 package schema
 
+import "regexp"
+
 // ParamKind is the typed shape category a parameter resolves to. Launcher
 // coercion (today string-only) will key off this when typed values land.
 type ParamKind string
@@ -45,9 +47,10 @@ type ParamShape struct {
 	Description string
 	Enum        []string
 	// Pass applies to ParamAsset only; empty means AssetPassPath.
-	Pass   AssetPass
-	Auto   string
-	Served string
+	Pass         AssetPass
+	Auto         string
+	Served       string
+	PlacementLog map[string]*regexp.Regexp
 }
 
 // Registry is the Go spine: launcher-load-bearing params per provider.
