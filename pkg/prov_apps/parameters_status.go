@@ -46,9 +46,6 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 	}
 
 	launched := inst.Resolved()
-	if key := launched.AutoMemory; key != "" && next.resolved.AutoMemory == key {
-		next.resolved.Parameters[key] = launched.Parameters[key]
-	}
 	changed := changedKeys(parametersPath, launched.Parameters, next.resolved.Parameters)
 	changed = append(changed, changedKeys(environmentPath, launched.Environment, next.resolved.Environment)...)
 	for _, key := range changedKeys(parametersPath, launched.Files, next.resolved.Files) {
@@ -61,11 +58,16 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 	}
 	slices.Sort(changed)
 
-	// What config alone resolves to, to name the keys the run's own
-	// request holds against it.
-	fromConfig, fromConfigEnv := m.resolveLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
-	if configured, err := m.modelLaunchParameters(ctx, svcCfg, process.ResolveModel(svcCfg, req.Model), EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint); err == nil {
-		fromConfig, fromConfigEnv = configured.Params, configured.Environment
+	// Raw tiers still name held keys when config-only preparation is invalid.
+	fromConfig, fromConfigEnv, _ := m.resolveRawLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
+	declared := next.parameters.declared
+	if declared == nil {
+		declared, err = m.launchSchema(configKey)
+	}
+	if err == nil {
+		if configured, err := m.modelLaunchParameters(ctx, svcCfg, process.ResolveModel(svcCfg, req.Model), EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint, declared); err == nil {
+			fromConfig, fromConfigEnv = configured.Params, configured.Environment
+		}
 	}
 	freezeFeaturePaths(svcCfg, req.Parameters)
 	overridden := heldKeys(parametersPath, req.Parameters, fromConfig)

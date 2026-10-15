@@ -7,6 +7,8 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stretchr/testify/assert"
@@ -58,7 +60,7 @@ func TestLoadLocalModelValidatesEachNameBeforeDedupe(t *testing.T) {
 				return nil
 			}),
 			prov_apps.WithModelSource(func(context.Context, string) string { <-release; return "" }),
-			prov_apps.WithParamLocalizer(func(_, _, _ string, _ map[string]string) (prov_apps.Localized, error) {
+			prov_apps.WithParamLocalizer(func(_, _, _ string, _ map[string]string, _ map[string]schema.ParamShape) (prov_apps.Localized, error) {
 				return prov_apps.Localized{}, stopped
 			}),
 		)

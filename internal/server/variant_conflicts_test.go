@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -509,7 +511,7 @@ func TestVariants_ForcedLoadCarriesLocalAdmission(t *testing.T) {
 	root, err := modelregistry.GetModelsRootDir()
 	require.NoError(t, err)
 	executor := s.newLoadExecutor()
-	prov_apps.WithParamLocalizer(func(_, _, _ string, params map[string]string) (prov_apps.Localized, error) {
+	prov_apps.WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (prov_apps.Localized, error) {
 		require.NoError(t, os.WriteFile(filepath.Join(root, variantAgent+".gguf"), []byte("GGUF"), 0o600))
 		return prov_apps.Localized{Params: params}, nil
 	})(s.providers.appMgr)

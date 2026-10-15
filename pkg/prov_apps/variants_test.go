@@ -152,7 +152,7 @@ func TestLocalModelAdmission_ReusesOnlyTheCheckedOperation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, tierVariant+".gguf"), []byte("GGUF"), 0o600))
 	_, err = m.AdmitLocalModel(admitted, tierVariant)
 	require.NoError(t, err)
-	_, _, err = m.buildLaunch(svc, "vllm", "chat", process.ResolveModel(svc, tierVariant), 8100, nil)
+	_, _, err = m.buildLaunch(svc, "vllm", "chat", process.ResolveModel(svc, tierVariant), 8100, nil, requireLaunchSchema(t, m, "vllm"))
 	require.NoError(t, err, "command construction must not repeat admission")
 	_, err = m.AdmitLocalModel(t.Context(), tierVariant)
 	require.ErrorIs(t, err, config.ErrModelNameConflict, "a new operation must check fresh evidence")

@@ -127,7 +127,21 @@ func (m *ProviderAppManager) record(run *instance.Instance, e Event) {
 func (m *ProviderAppManager) publishRunning(run *instance.Instance, stampActivity bool, message string) bool {
 	event := runEvent(EventInstanceRunning, run, message)
 	commit, finish := m.prepareRecord(run, event)
-	accepted := run.MarkRunning(stampActivity, commit)
+	observe := false
+	accepted := run.MarkRunning(stampActivity, func(first bool) {
+		commit()
+		observe = first && m.providerSchema != nil && run.Port > 0 && run.Model != ""
+		if observe {
+			run.TrackGoroutine()
+		}
+	})
+	if observe {
+		go func() {
+			defer run.GoroutineDone()
+			defer utils.RecoverAndLog("prov_apps.readServedContext")
+			m.readServedContext(run)
+		}()
+	}
 	finish()
 	if accepted {
 		m.notifyCatalog(event)

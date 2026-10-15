@@ -171,14 +171,6 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		}
 	}
 
-	// Parameter auto-resolution — registered on ALL nodes (workers + coordinator).
-	// Coordinators route resolve requests here via unicast so each node resolves
-	// against its own hardware (GPU, memory, etc.).
-	{
-		resolveExecutor := s.newParamsExecutor()
-		router.POST("/providers/:name/resolve", resolveExecutor.HandleInternalResolve)
-	}
-
 	// ========================================================================
 	// DISCOVER - Read-only hardware/network inventory (per-node local view)
 	// ========================================================================

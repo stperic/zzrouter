@@ -3,6 +3,7 @@ package prov_apps
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func TestRunningPublicationContractEndExclusion(t *testing.T) {
 	leftStarting := run.LeftStarting()
 	entered, release := make(chan struct{}), make(chan struct{})
 	ready, ended := make(chan bool, 1), make(chan bool, 1)
-	go func() { ready <- run.MarkRunning(false, func() { close(entered); <-release }) }()
+	go func() { ready <- run.MarkRunning(false, func(bool) { close(entered); <-release }) }()
 	select {
 	case <-entered:
 	case <-time.After(contractWait):
@@ -148,7 +149,7 @@ func TestRunningPublicationContractEndExclusion(t *testing.T) {
 	assert.Equal(t, instance.StatusRunning, run.GetStatus())
 	assert.False(t, run.GetStartedAt().IsZero())
 	called := false
-	assert.False(t, run.MarkRunning(true, func() { called = true }))
+	assert.False(t, run.MarkRunning(true, func(bool) { called = true }))
 	assert.False(t, called)
 }
 
@@ -171,4 +172,27 @@ func TestRunningPublicationContractAdoptionReentry(t *testing.T) {
 	assert.False(t, runs[0].GetStartedAt().IsZero())
 	assert.Equal(t, []EventType{EventInstanceRunning}, runningPublicationEvents(r.m))
 	assert.Contains(t, runLog(t, runs[0]), "adopted (loaded by another client)")
+}
+
+func TestRunningPublicationContractRepeatedReadiness(t *testing.T) {
+	var notifications atomic.Int32
+	r := newContractRig(t, true, WithCatalogChanged(func() { notifications.Add(1) }))
+	run := contextRun(t, r)
+	var accepted atomic.Int32
+	var publishers sync.WaitGroup
+	for range 8 {
+		publishers.Go(func() {
+			if r.m.publishRunning(run, true, "ready") {
+				accepted.Add(1)
+			}
+		})
+	}
+	publishers.Wait()
+	assert.Equal(t, int32(1), accepted.Load())
+	assert.Equal(t, []EventType{EventInstanceRunning}, runningPublicationEvents(r.m))
+	assert.Equal(t, int32(1), notifications.Load())
+	run.MarkUnhealthy("temporary health failure")
+	require.True(t, r.m.publishRunning(run, true, "recovered"))
+	assert.Equal(t, []EventType{EventInstanceRunning}, runningPublicationEvents(r.m))
+	assert.Equal(t, int32(2), notifications.Load())
 }

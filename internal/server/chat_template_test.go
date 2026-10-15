@@ -53,7 +53,7 @@ func TestMLXTemplateLocalizesToContent(t *testing.T) {
 	const template = "{{ messages }}"
 	_, err := s.configStore.WriteAsset("mlx", "t.jinja", []byte(template))
 	require.NoError(t, err)
-	out, err := assetParamLocalizer(s.configStore)("mlx", "chat", "", map[string]string{"chat-template": "t.jinja"})
+	out, err := assetParamLocalizer(s.configStore)("mlx", "chat", "", map[string]string{"chat-template": "t.jinja"}, loadProviderSchema(s.configStore, "mlx").ForEndpoint("chat"))
 	require.NoError(t, err)
 	assert.Equal(t, template, out.Params["chat-template"])
 }

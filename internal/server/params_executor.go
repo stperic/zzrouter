@@ -386,7 +386,9 @@ type schemaParamDTO struct {
 	Enum        []string `json:"enum,omitempty"`
 	// Pass is how an asset-typed value reaches the engine: its path on
 	// the launching node, or its content as the flag's value.
-	Pass string `json:"pass,omitempty"`
+	Pass   string `json:"pass,omitempty"`
+	Auto   string `json:"auto,omitempty"`
+	Served string `json:"served,omitempty"`
 }
 
 type endpointSchemaDTO struct {
@@ -449,6 +451,8 @@ func paramShapeMapToDTO(m map[string]schema.ParamShape) map[string]schemaParamDT
 			Description: shape.Description,
 			Enum:        shape.Enum,
 			Pass:        string(shape.Pass),
+			Auto:        shape.Auto,
+			Served:      shape.Served,
 		}
 	}
 	return out
@@ -916,37 +920,6 @@ func (e *ParamsExecutor) HandleInternalGetModelParameters(c *gin.Context) {
 	}
 	resolved := cfg.Resolve(e.nodename(), model)
 	c.JSON(http.StatusOK, buildLegacyModelResponse(provider, model, resolved))
-}
-
-// ============================================================================
-// POST /providers/:name/resolve — auto-sentinel filter (worker + coord)
-// ============================================================================
-
-type resolveRequest struct {
-	Model      string                 `json:"model"`
-	Parameters schema.ParameterValues `json:"parameters"`
-}
-
-type resolveResponse struct {
-	Resolved map[string]string `json:"resolved"`
-}
-
-// HandleInternalResolve handles POST /zzrouter/internal/providers/:name/resolve.
-// Filters out "auto" values and returns the remaining parameters.
-// Registered on ALL nodes so coordinators can route here per-worker.
-func (e *ParamsExecutor) HandleInternalResolve(c *gin.Context) {
-	var req resolveRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "invalid request: "+err.Error())
-		return
-	}
-	for k, v := range req.Parameters {
-		if err := validateEnvValue(k, v); err != nil {
-			BadRequest(c, err.Error())
-			return
-		}
-	}
-	c.JSON(http.StatusOK, &resolveResponse{Resolved: pkgConfig.FilterAutoValues(req.Parameters)})
 }
 
 // RetiredHandler returns 410 Gone for the parameter mutators that

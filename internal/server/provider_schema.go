@@ -18,21 +18,12 @@ import (
 // loadProviderSchema returns one provider's Go-spine ∪ schema.yaml shape
 // on this node. Without a store or a schema.yaml, the Go spine alone.
 func loadProviderSchema(store *pkgConfig.AppsConfigStore, provider string) *schema.ProviderSchema {
-	var declared *schema.YAMLSchema
-	if store != nil {
-		data, err := store.ReadProviderSchemaBytes(provider)
-		if err != nil {
-			slog.Warn("provider schema unreadable; using the Go spine", "provider", provider, "error", err)
-		} else if data != nil {
-			if declared, err = schema.LoadYAMLSchema(data); err != nil {
-				slog.Warn("provider schema malformed; using the Go spine", "provider", provider, "error", err)
-			}
-		}
+	merged, err := providerSchema(store)(provider)
+	if err != nil {
+		slog.Warn("provider schema incomplete; using available shapes", "provider", provider, "error", err)
 	}
-	merged, errs := schema.Merge(provider, declared)
-	for _, err := range errs {
-		// Silent here means a conflicting entry just drops a provider's long-tail param.
-		slog.Warn("provider schema entry dropped", "provider", provider, "error", err)
+	if merged == nil {
+		merged, _ = schema.Merge(provider, nil)
 	}
 	return merged
 }
@@ -60,8 +51,7 @@ func providerAssets(store *pkgConfig.AppsConfigStore, provider string) assetLoca
 // asset-typed parameter's name becomes the path of that asset in this
 // node's own copy of the provider's assets.
 func assetParamLocalizer(store *pkgConfig.AppsConfigStore) prov_apps.ParamLocalizer {
-	return func(provider, endpoint, _ string, params map[string]string) (prov_apps.Localized, error) {
-		shapes := loadProviderSchema(store, provider).ForEndpoint(endpoint)
+	return func(provider, _, _ string, params map[string]string, shapes map[string]schema.ParamShape) (prov_apps.Localized, error) {
 		return localizeAssetParams(provider, params, shapes, providerAssets(store, provider))
 	}
 }
@@ -153,28 +143,28 @@ func providerRuntimeChecks(store *pkgConfig.AppsConfigStore) install.RuntimeChec
 	}
 }
 
-func providerMemoryBudget(store *pkgConfig.AppsConfigStore) func(string) (*schema.MemoryBudget, error) {
-	return func(provider string) (*schema.MemoryBudget, error) {
-		if store == nil {
-			return nil, nil
+func providerSchema(store *pkgConfig.AppsConfigStore) func(string) (*schema.ProviderSchema, error) {
+	return func(provider string) (*schema.ProviderSchema, error) {
+		var declared *schema.YAMLSchema
+		if store != nil {
+			data, err := store.ReadProviderSchemaBytes(provider)
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+			if len(data) > 0 {
+				declared, err = schema.LoadYAMLSchema(data)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
-		data, err := store.ReadProviderSchemaBytes(provider)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+		merged, errs := schema.Merge(provider, declared)
+		for _, err := range errs {
+			slog.Warn("provider schema entry dropped", "provider", provider, "error", err)
 		}
-		if err != nil {
-			return nil, err
+		if declared != nil && declared.Diagnostics != nil && merged.Diagnostics == nil {
+			return merged, errors.Join(errs...)
 		}
-		declared, err := schema.LoadYAMLSchema(data)
-		if err != nil {
-			return nil, err
-		}
-		if err := declared.Diagnostics.Validate(); err != nil {
-			return nil, err
-		}
-		if declared.Diagnostics == nil {
-			return nil, nil
-		}
-		return declared.Diagnostics.Memory, nil
+		return merged, nil
 	}
 }

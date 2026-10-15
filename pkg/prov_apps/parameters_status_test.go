@@ -5,6 +5,8 @@ import (
 	"maps"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -107,7 +109,7 @@ func TestParametersStatus_RequestTierHoldsItsKeys(t *testing.T) {
 // the same name is a change, though no parameter value moved.
 func TestParametersStatus_FileContentChangeIsStale(t *testing.T) {
 	digest := "one"
-	m, _ := localizerManager(t, func(_, _, _ string, params map[string]string) (Localized, error) {
+	m, _ := localizerManager(t, func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		out := maps.Clone(params)
 		out["template"] = "/node/t.jinja"
 		return Localized{Params: out, Files: map[string]string{"template": digest}}, nil
@@ -125,7 +127,7 @@ func TestParametersStatus_FileContentChangeIsStale(t *testing.T) {
 // to compare, and restarting would leave the model down: unknown, why.
 func TestParametersStatus_UnlaunchableConfigIsUnknown(t *testing.T) {
 	refuse := false
-	m, _ := localizerManager(t, func(_, _, _ string, params map[string]string) (Localized, error) {
+	m, _ := localizerManager(t, func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
 		if refuse {
 			return Localized{}, errors.New("asset gone")
 		}

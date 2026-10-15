@@ -124,7 +124,7 @@ capabilities:
 
 defaults:
   parameters:
-    ctx-size: "8192"
+    ctx-size: "auto"
   metadata:
     shutdown_timeout: "gpu"
     context_param: "ctx-size"

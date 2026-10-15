@@ -20,14 +20,11 @@ func TestRunParameterBoundaries(t *testing.T) {
 		{"launch", func() any { return &LaunchRunRequest{} }, func(r any) schema.ParameterValues { return r.(*LaunchRunRequest).Parameters }},
 		{"preview and load", func() any { return &LoadModelRequest{} }, func(r any) schema.ParameterValues { return r.(*LoadModelRequest).Parameters }},
 		{"batch member", func() any { return &LaunchRequest{} }, func(r any) schema.ParameterValues { return r.(*LaunchRequest).Parameters }},
-		{"worker resolve", func() any { return &resolveRequest{} }, func(r any) schema.ParameterValues { return r.(*resolveRequest).Parameters }},
 	} {
 		t.Run(surface.name, func(t *testing.T) {
 			req := surface.request()
 			body := `{"provider":"studio","launch_mode":"native","parameters":{"gpu-reserve-mib":16384,"bool":false,"large":9007199254740993,"decimal":0.1234567890123456789,"str":"auto"}}`
-			if surface.name == "worker resolve" {
-				body = `{"parameters":{"gpu-reserve-mib":16384,"bool":false,"large":9007199254740993,"decimal":0.1234567890123456789,"str":"auto"}}`
-			} else if surface.name == "preview and load" {
+			if surface.name == "preview and load" {
 				body = `{"provider":"studio","parameters":{"gpu-reserve-mib":16384,"bool":false,"large":9007199254740993,"decimal":0.1234567890123456789,"str":"auto"}}`
 			}
 			c, rec := postJSON(t, body)
@@ -35,7 +32,7 @@ func TestRunParameterBoundaries(t *testing.T) {
 			require.Equal(t, schema.ParameterValues{"gpu-reserve-mib": "16384", "bool": "false", "large": "9007199254740993", "decimal": "0.1234567890123456789", "str": "auto"}, surface.parameters(req))
 			for _, value := range []string{"null", "{}", "[]"} {
 				c, rec := postJSON(t, `{"provider":"studio","launch_mode":"native","parameters":{"bad":`+value+`}}`)
-				if surface.name == "worker resolve" || surface.name == "preview and load" {
+				if surface.name == "preview and load" {
 					c, rec = postJSON(t, `{"parameters":{"bad":`+value+`}}`)
 				}
 				require.False(t, BindJSONStrict(c, surface.request()))

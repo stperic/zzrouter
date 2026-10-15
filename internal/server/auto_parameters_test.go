@@ -14,7 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
 
-func TestAutoMemoryPatchValidationOnlyDeclaredFractionKey(t *testing.T) {
+func TestAutoPatchValidationOnlyDeclaredKeys(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(root))
 	store, err := pkgConfig.NewAppsConfigStore(root)
@@ -25,6 +25,8 @@ func TestAutoMemoryPatchValidationOnlyDeclaredFractionKey(t *testing.T) {
 	patch := &paramPatchBody{Defaults: &defaultsPatch{Parameters: map[string]json.RawMessage{"gpu-memory-utilization": raw("auto")}}}
 	require.Empty(t, validatePatch("vllm", &cfg, patch, sch, patchScope{}))
 	patch.Defaults.Parameters = map[string]json.RawMessage{"max-model-len": raw("auto")}
+	require.Empty(t, validatePatch("vllm", &cfg, patch, sch, patchScope{}))
+	patch.Defaults.Parameters = map[string]json.RawMessage{"tensor-parallel-size": raw("auto")}
 	assert.NotEmpty(t, validatePatch("vllm", &cfg, patch, sch, patchScope{}))
 }
 
@@ -34,4 +36,28 @@ func TestAutoMemoryAmbiguousAliasesAreClientErrors(t *testing.T) {
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
 	RespondToError(c, err)
 	assert.Equal(t, http.StatusBadRequest, response.Code)
+}
+
+func TestAutoPatchAPI(t *testing.T) {
+	s, _ := assetTestNode(t)
+	for _, tc := range []struct {
+		provider, key string
+		status        int
+	}{
+		{"vllm", "max-model-len", http.StatusOK},
+		{"vllm", "gpu-memory-utilization", http.StatusOK},
+		{"vllm", "dtype", http.StatusOK},
+		{"llamacpp", "ctx-size", http.StatusOK},
+		{"vllm", "tensor-parallel-size", http.StatusBadRequest},
+	} {
+		t.Run(tc.provider+"/"+tc.key, func(t *testing.T) {
+			w := makeAuthRequest(t, s, http.MethodPatch, "/zzrouter/v1/providers/"+tc.provider+"/parameters", TestAdminKey, map[string]any{"defaults": map[string]any{"parameters": map[string]any{tc.key: "auto"}}})
+			require.Equal(t, tc.status, w.Code, string(w.Body))
+			if tc.status == http.StatusOK {
+				cfg, ok := s.configStore.Config().LookupApp(tc.provider)
+				require.True(t, ok)
+				assert.Equal(t, "auto", cfg.Defaults.Parameters[tc.key])
+			}
+		})
+	}
 }

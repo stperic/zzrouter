@@ -201,8 +201,8 @@ func wireEndpoints(svc config.ServiceConfig) []string {
 // LaunchParameters is the node's effective launch configuration before argv
 // construction. Preview and live preparation share this resolution.
 type LaunchParameters struct {
+	declared             *schema.ProviderSchema
 	Commitments          map[string]int64
-	autoMemory           string
 	model                process.ResolvedModel
 	ExecutionEnvironment process.EnvironmentTransform
 	Executable           string
@@ -214,7 +214,7 @@ type LaunchParameters struct {
 	RuntimeKey           string
 }
 
-func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string) (LaunchParameters, error) {
+func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc config.ServiceConfig, model process.ResolvedModel, req EnsureRequest, endpoint string, declared *schema.ProviderSchema) (LaunchParameters, error) {
 	if err := ctx.Err(); err != nil {
 		return LaunchParameters{}, err
 	}
@@ -272,22 +272,19 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		return LaunchParameters{}, err
 	}
 	maps.Copy(sources, features.Sources)
-	params, autoMemory, err := m.filterLaunchAuto(req.Provider, features.Params)
+	params, err = filterLaunchAuto(declared, endpoint, features.Params)
 	if err != nil {
 		return LaunchParameters{}, err
 	}
 	commitments := make(map[string]int64)
-	budget, err := m.launchBudget(req.Provider)
-	if err != nil {
-		return LaunchParameters{}, err
-	}
+	budget := launchBudget(declared)
 	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
 		if commitments, err = m.reservedCommitments(ctx, *budget, params, env); err != nil {
 			return LaunchParameters{}, err
 		}
 	}
 	freezeFeaturePaths(svc, params)
-	return LaunchParameters{Commitments: commitments, model: model, autoMemory: autoMemory, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+	return LaunchParameters{declared: declared, Commitments: commitments, model: model, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
 }
 
 // disposableLaunch binds a launch to a disposable plan's venv once the plan
@@ -382,7 +379,11 @@ func (m *ProviderAppManager) ResolveLaunchParameters(ctx context.Context, req En
 	if !ok {
 		return LaunchParameters{}, ErrProviderNotFound
 	}
-	return m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, string(EndpointOrDefault(req.Endpoint)))
+	declared, err := m.launchSchema(req.Provider)
+	if err != nil {
+		return LaunchParameters{}, err
+	}
+	return m.modelLaunchParameters(ctx, svc, process.ResolveModel(svc, req.Model), req, string(EndpointOrDefault(req.Endpoint)), declared)
 }
 
 // ExecutionCommand locates the effective managed executable for this launch.

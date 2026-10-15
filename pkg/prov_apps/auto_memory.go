@@ -6,45 +6,68 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
-func (m *ProviderAppManager) filterLaunchAuto(provider string, parameters map[string]string) (map[string]string, string, error) {
-	filtered := config.FilterAutoValues(parameters)
-	if m.memoryBudget == nil {
-		return filtered, "", nil
-	}
+func (m *ProviderAppManager) launchSchema(provider string) (*schema.ProviderSchema, error) {
 	if key, _, ok := m.resolveConfigKey(provider); ok {
 		provider = key
 	}
-	budget, err := m.memoryBudget(provider)
+	if m.providerSchema == nil {
+		merged, _ := schema.Merge(provider, nil)
+		return merged, nil
+	}
+	merged, err := m.providerSchema(provider)
 	if err != nil {
-		return nil, "", err
+		return nil, fmt.Errorf("provider schema: %w", err)
 	}
-	if budget == nil {
-		return filtered, "", nil
-	}
-	auto := budget.Kind == schema.MemoryFractionTotal && (parameters[budget.Parameter] == "auto" || parameters[strings.ReplaceAll(budget.Parameter, "-", "_")] == "auto")
-	if budget.Kind != schema.MemoryReserveMiB && !auto {
-		return filtered, "", nil
+	return merged, nil
+}
+
+func filterLaunchAuto(declared *schema.ProviderSchema, endpoint string, parameters map[string]string) (map[string]string, error) {
+	var budget *schema.MemoryBudget
+	if declared.Diagnostics != nil {
+		budget = declared.Diagnostics.Memory
 	}
 	parameters = maps.Clone(parameters)
-	for _, key := range []string{budget.Parameter, budget.DeviceCountParameter} {
-		if alias := strings.ReplaceAll(key, "-", "_"); alias != key {
-			if value, ok := parameters[alias]; ok {
-				if canonical, present := parameters[key]; present && canonical != value {
-					return nil, "", fmt.Errorf("%w: ambiguous memory parameter spellings %q and %q; use the hyphenated spelling", process.ErrMemoryBudgetInvalid, key, alias)
-				}
-				delete(parameters, alias)
-				parameters[key] = value
-			}
+	if err := normalizeMemoryParameters(budget, parameters); err != nil {
+		return nil, err
+	}
+	shapes := declared.ForEndpoint(endpoint)
+	for key, value := range parameters {
+		if !config.IsAuto(value) || runsettings.IsParameter(key) {
+			continue
+		}
+		shape := shapes[key]
+		if shape.Auto == "" {
+			delete(parameters, key)
 		}
 	}
-	filtered = config.FilterAutoValues(parameters)
-	if !auto {
-		return filtered, "", nil
+	return parameters, nil
+}
+
+func normalizeMemoryParameters(budget *schema.MemoryBudget, parameters map[string]string) error {
+	if budget == nil {
+		return nil
 	}
-	filtered[budget.Parameter] = "auto"
-	return filtered, budget.Parameter, nil
+	auto := budget.Kind == schema.MemoryFractionTotal && (config.IsAuto(parameters[budget.Parameter]) || config.IsAuto(parameters[strings.ReplaceAll(budget.Parameter, "-", "_")]))
+	if !auto && budget.Kind != schema.MemoryReserveMiB {
+		return nil
+	}
+	for _, key := range []string{budget.Parameter, budget.DeviceCountParameter} {
+		alias := strings.ReplaceAll(key, "-", "_")
+		if alias == key {
+			continue
+		}
+		if value, ok := parameters[alias]; ok {
+			if canonical, present := parameters[key]; present && canonical != value {
+				return fmt.Errorf("%w: ambiguous memory parameter spellings %q and %q; use the hyphenated spelling", process.ErrMemoryBudgetInvalid, key, alias)
+			}
+			delete(parameters, alias)
+			parameters[key] = value
+		}
+	}
+	return nil
 }

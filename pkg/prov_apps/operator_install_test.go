@@ -89,6 +89,6 @@ func TestInstallOwnedLaunchDoesNotRepeatPreflight(t *testing.T) {
 	r := newContractRig(t, false)
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
 	svc.Requirements = &config.AppRequirements{GPU: &config.GPURequirement{Vendor: "invalid", Policy: "required"}}
-	_, err := r.m.modelLaunchParameters(t.Context(), svc, process.ResolveModel(svc, "llm"), EnsureRequest{Provider: "generic", Model: "llm", Origin: OriginInstall}, "chat")
+	_, err := r.m.modelLaunchParameters(t.Context(), svc, process.ResolveModel(svc, "llm"), EnsureRequest{Provider: "generic", Model: "llm", Origin: OriginInstall}, "chat", requireLaunchSchema(t, r.m, "generic"))
 	require.NoError(t, err)
 }

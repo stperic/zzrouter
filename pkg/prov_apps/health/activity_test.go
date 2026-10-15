@@ -94,7 +94,10 @@ func TestActivitySamplerCancellationAndDeadRunRelease(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
 			})}})
 			run.TrackGoroutine()
-			go func() { defer run.GoroutineDone(); monitor.Run(run.Context(), run, queueConfig()) }()
+			go func() {
+				defer run.GoroutineDone()
+				monitor.Run(run.Context(), run, queueConfig(), func(current *instance.Instance) { current.MarkRunning(true, nil) })
+			}()
 			select {
 			case <-entered:
 			case <-time.After(time.Second):
@@ -159,7 +162,10 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 				cfg := queueConfig()
 				cfg.MaxRetries = policy.override
 				done := make(chan struct{})
-				go func() { defer close(done); monitor.Run(run.Context(), run, cfg) }()
+				go func() {
+					defer close(done)
+					monitor.Run(run.Context(), run, cfg, func(current *instance.Instance) { current.MarkRunning(true, nil) })
+				}()
 				defer func() {
 					run.Cancel()
 					select {

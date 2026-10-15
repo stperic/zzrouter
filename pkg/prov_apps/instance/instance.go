@@ -383,14 +383,16 @@ func (i *Instance) EvictedRuns() []EvictedRun {
 
 // MarkRunning commits readiness before releasing waiters. commit must not reenter
 // the instance or acquire registry locks; callbacks and warnings belong afterward.
-func (i *Instance) MarkRunning(stampActivity bool, commit func()) bool {
+// An already-running instance is unchanged and returns false.
+func (i *Instance) MarkRunning(stampActivity bool, commit func(first bool)) bool {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.ending || i.Status.IsTerminal() || i.Status == StatusStopping || (i.ctx != nil && i.ctx.Err() != nil) {
+	if i.endingLocked() || i.Status == StatusRunning {
 		return false
 	}
+	first := i.StartedAt.IsZero()
 	i.LastHealthy = utils.Now()
-	if i.StartedAt.IsZero() {
+	if first {
 		i.StartedAt = i.LastHealthy
 	}
 	if stampActivity {
@@ -399,7 +401,7 @@ func (i *Instance) MarkRunning(stampActivity bool, commit func()) bool {
 	i.ErrorMessage = ""
 	i.failure = nil
 	if commit != nil {
-		commit()
+		commit(first)
 	}
 	i.setStatusLocked(StatusRunning)
 	return true
@@ -545,10 +547,17 @@ type Loaded struct {
 // percentWhole is a whole share in percent.
 const percentWhole = 100
 
+func (i *Instance) endingLocked() bool {
+	return i.ending || i.Status.IsTerminal() || i.Status == StatusStopping || (i.ctx != nil && i.ctx.Err() != nil)
+}
+
 // SetLoaded records, for listings, what the daemon serving the run reports of its model.
 func (i *Instance) SetLoaded(l Loaded) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.endingLocked() {
+		return
+	}
 	i.loaded, i.SizeBytes, i.ContextLength = l, l.Size, l.ContextLength
 	switch {
 	case l.Size <= 0:

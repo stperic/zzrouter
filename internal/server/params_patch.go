@@ -112,19 +112,9 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 	knownModels := knownModelsForProvider(cfg)
 	flat := mergedSchema.Parameters
 
-	validate := func(key string, raw json.RawMessage, isEnv bool, shapes map[string]schema.ParamShape) *utils.ParamError {
-		if !isEnv && mergedSchema.Diagnostics != nil && mergedSchema.Diagnostics.Memory != nil {
-			budget := mergedSchema.Diagnostics.Memory
-			var value string
-			if budget.Kind == schema.MemoryFractionTotal && key == budget.Parameter && json.Unmarshal(raw, &value) == nil && value == "auto" {
-				return nil
-			}
-		}
-		return validateLeaf(key, raw, isEnv, shapes)
-	}
 	check := func(pp map[string]json.RawMessage, isEnv bool) {
 		for k, raw := range pp {
-			e := validate(k, raw, isEnv, flat)
+			e := validateLeaf(k, raw, isEnv, flat)
 			if e != nil {
 				errs = append(errs, *e)
 			}
@@ -140,12 +130,12 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 			}
 			scoped := mergedSchema.ForEndpoint(epName)
 			for k, raw := range ep.Parameters {
-				if e := validate(k, raw, false, scoped); e != nil {
+				if e := validateLeaf(k, raw, false, scoped); e != nil {
 					errs = append(errs, *e)
 				}
 			}
 			for k, raw := range ep.Environment {
-				if e := validate(k, raw, true, flat); e != nil {
+				if e := validateLeaf(k, raw, true, flat); e != nil {
 					errs = append(errs, *e)
 				}
 			}
@@ -287,6 +277,10 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 	if !known {
 		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag),
 			Message: fmt.Sprintf("unknown parameter %q", key)}
+	}
+	var value string
+	if shape.Auto != "" && json.Unmarshal(raw, &value) == nil && pkgConfig.IsAuto(value) {
+		return nil
 	}
 	if e := validateAgainstShape(key, raw, shape); e != nil {
 		return e
