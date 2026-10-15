@@ -767,13 +767,17 @@ func (m *ProviderAppManager) daemonHolds(ctx context.Context, provider string) (
 
 // settle records what the daemon holds of each run and retires, for why, the ready ones it no longer holds.
 func (m *ProviderAppManager) settle(runs []*instance.Instance, held map[string]protocol.RunningModelInfo, reason obsruns.StopReason, why func(*instance.Instance) string) (retired []*instance.Instance) {
+	contextChanged := false
 	for _, run := range runs {
 		if model, ok := held[strings.ToLower(run.Model)]; ok {
-			run.SetLoaded(model.Loaded)
+			contextChanged = run.SetLoaded(model.Loaded) || contextChanged
 		} else if run.GetStatus() == instance.StatusRunning {
 			m.retireRun(run, why(run), reason)
 			retired = append(retired, run)
 		}
+	}
+	if contextChanged { // a daemon reload can change it on a run already published
+		m.refreshCatalog()
 	}
 	return retired
 }

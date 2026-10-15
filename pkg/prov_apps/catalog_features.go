@@ -47,6 +47,9 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 	for _, inst := range m.instances.List() {
 		cfg := inst.SnapshotConfig()
 		if cfg.Provider == provider && cfg.Model == model && EndpointOrDefault(Endpoint(inst.Endpoint)) == EndpointChat && inst.IsRunning() {
+			if tokens := inst.Loaded().ContextLength; tokens > 0 {
+				out["context_length"] = tokens
+			}
 			if eps := inst.Resolved().WireEndpoints; eps != nil {
 				out["wire_endpoints"] = eps
 				snapshot := inst.Resolved()

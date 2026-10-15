@@ -51,6 +51,25 @@ func (m *CachedModel) WireEndpoints() ([]string, bool) {
 	return nil, false
 }
 
+// ContextLength returns the context a running replica serves, or 0 when no
+// run reports one; catalog JSON decodes it as float64.
+func (m *CachedModel) ContextLength() int {
+	if m == nil {
+		return 0
+	}
+	switch tokens := m.Details["context_length"].(type) {
+	case int:
+		if tokens > 0 {
+			return tokens
+		}
+	case float64:
+		if tokens > 0 && tokens == float64(int(tokens)) {
+			return int(tokens)
+		}
+	}
+	return 0
+}
+
 // EnrichLocalItems expands variants before applying node-local serving policy.
 // Worker evidence is published here and preserved by coordinator aggregation.
 func EnrichLocalItems(items []map[string]any, cfg *pkgConfig.AppsConfig, enrich func(string, string, map[string]any) map[string]any) []map[string]any {

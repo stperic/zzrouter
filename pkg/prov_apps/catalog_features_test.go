@@ -10,6 +10,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -171,4 +172,53 @@ func TestCatalogUndeclaredProviderIsUnknown(t *testing.T) {
 	}
 	assert.Equal(t, "unknown", vision("ollama-nas"))
 	assert.Equal(t, "unsupported", vision("vllm"))
+}
+
+// Only a running chat run speaks for the model's served context.
+func TestCatalogServedContextScope(t *testing.T) {
+	m, _, _ := featureLaunchFixture(t)
+	add := func(id, endpoint string, running bool) *instance.Instance {
+		inst := instance.NewInstance(id, "vllm", "variant", 8100, 0, 0)
+		inst.Config = instance.Config{Provider: "vllm", Model: "variant"}
+		inst.Endpoint = endpoint
+		inst.SetLoaded(instance.Loaded{ContextLength: 4096})
+		if running {
+			inst.MarkRunning(false, nil)
+		}
+		require.NoError(t, m.instances.Register(inst))
+		return inst
+	}
+	add("embed", "embeddings", true)
+	starting := add("starting", "chat", false)
+	assert.NotContains(t, m.ModelFeatureDetails("vllm", "variant", nil), "context_length")
+	require.NoError(t, m.instances.Remove(starting.ID))
+	add("chat", "chat", true)
+	assert.Equal(t, 4096, m.ModelFeatureDetails("vllm", "variant", nil)["context_length"])
+}
+
+// A daemon reload can change a published run's context; the reconcile must republish it, once per pass.
+func TestSettleRefreshesCatalogOnContextChange(t *testing.T) {
+	calls := 0
+	m, err := NewProviderAppManager(testAppsConfig(), WithCatalogChanged(func() { calls++ }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m.Stop(context.Background())) })
+	runs := make([]*instance.Instance, 0, 2)
+	for _, model := range []string{"first", "second"} {
+		run := instance.NewInstance(model, "ollama", model, 0, 0, 0)
+		run.SetLoaded(instance.Loaded{ContextLength: 4096})
+		run.MarkRunning(false, nil)
+		runs = append(runs, run)
+	}
+	held := func(first, second int) map[string]protocol.RunningModelInfo {
+		return map[string]protocol.RunningModelInfo{
+			"first":  {Name: "first", Loaded: instance.Loaded{ContextLength: first}},
+			"second": {Name: "second", Loaded: instance.Loaded{ContextLength: second}},
+		}
+	}
+	never := func(*instance.Instance) string { t.Fatal("no run should retire"); return "" }
+	m.settle(runs, held(4096, 4096), "", never)
+	assert.Equal(t, 0, calls, "an unchanged listing does not refresh")
+	m.settle(runs, held(262144, 8192), "", never)
+	assert.Equal(t, 1, calls, "two changed runs refresh once")
+	assert.Equal(t, 262144, runs[0].ToInfo("").ContextLength)
 }

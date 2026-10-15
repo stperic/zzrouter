@@ -288,3 +288,24 @@ func TestDeriveCapabilities_NameGuessOnlyWithoutDeclaredFeatures(t *testing.T) {
 		t.Error("declared provider: an unknown state must not become vision from the name")
 	}
 }
+
+// max_context_tokens is the served context its node reported, on every
+// capability shape; a model no run reports omits it.
+func TestDeriveCapabilities_ServedContext(t *testing.T) {
+	for _, tc := range []struct{ name, model string }{
+		{"chat", "qwen2.5-7b"},
+		{"embeddings", "bge-small-en"},
+		{"rerank", "bge-reranker-v2-m3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := &cache.CachedModel{Name: tc.model, Provider: "vllm", Details: map[string]any{"context_length": float64(32768)}}
+			if got := deriveCapabilities(served, fakeApps(t)).MaxContextTokens; got != 32768 {
+				t.Errorf("served: max_context_tokens = %d, want 32768", got)
+			}
+			cold := &cache.CachedModel{Name: tc.model, Provider: "vllm"}
+			if got := deriveCapabilities(cold, fakeApps(t)).MaxContextTokens; got != 0 {
+				t.Errorf("cold: max_context_tokens = %d, want 0 (omitted)", got)
+			}
+		})
+	}
+}

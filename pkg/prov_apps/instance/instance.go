@@ -543,19 +543,22 @@ func (i *Instance) endingLocked() bool {
 }
 
 // SetLoaded records, for listings, what the daemon serving the run reports of its model.
-func (i *Instance) SetLoaded(l Loaded) {
-	i.UpdateLoaded(func(loaded *Loaded) { *loaded = l })
+func (i *Instance) SetLoaded(l Loaded) (contextChanged bool) {
+	return i.UpdateLoaded(func(loaded *Loaded) { *loaded = l })
 }
 
-// UpdateLoaded atomically merges observations without losing concurrent context or placement.
-func (i *Instance) UpdateLoaded(update func(*Loaded)) {
+// UpdateLoaded atomically merges observations without losing concurrent context
+// or placement, and reports whether the served context changed.
+func (i *Instance) UpdateLoaded(update func(*Loaded)) (contextChanged bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.endingLocked() {
-		return
+		return false
 	}
+	before := i.loaded.ContextLength
 	update(&i.loaded)
 	l := i.loaded
+	contextChanged = l.ContextLength != before
 	i.SizeBytes, i.ContextLength = l.Size, l.ContextLength
 	gpu, total := l.VRAM, l.Size
 	if total <= 0 {
@@ -575,6 +578,7 @@ func (i *Instance) UpdateLoaded(update func(*Loaded)) {
 		share := float64(gpu) / float64(total) * percentWhole
 		i.Processor = fmt.Sprintf("%.0f%% GPU / %.0f%% CPU", share, percentWhole-share)
 	}
+	return contextChanged
 }
 
 // Loaded returns what SetLoaded recorded.

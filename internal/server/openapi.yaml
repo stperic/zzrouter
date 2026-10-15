@@ -11358,7 +11358,8 @@ components:
         Per-model feature flags. Every known capability is listed
         explicitly with `false` as the default so clients can branch on
         membership without null-checking. `max_context_tokens` is the
-        only scalar , zero means unknown.
+        context a running replica serves; it is omitted when no run
+        reports one, and for a group when any replica's is unknown.
       required:
         - chat
         - completions
@@ -11377,7 +11378,7 @@ components:
         vision:             { type: boolean, description: "On a provider that declares features, true only when the node reports vision present. On one that declares none, guessed from the model name." }
         stream:             { type: boolean }
         json_mode:          { type: boolean }
-        max_context_tokens: { type: integer, minimum: 0, default: 0 }
+        max_context_tokens: { type: integer, minimum: 1 }
 
     Run:
       type: object
