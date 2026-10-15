@@ -48,7 +48,7 @@ func (m *ProviderAppManager) EnsureModelFeatures(ctx context.Context, provider, 
 
 func (m *ProviderAppManager) ensureFeatureRuntime(ctx context.Context, name string, requirements *config.AppRequirements, progress func(string)) error {
 	m.mu.Lock()
-	if m.stopping.Load() || m.shutdown.Load() {
+	if m.shuttingDown() {
 		m.mu.Unlock()
 		return ErrShutdown
 	}

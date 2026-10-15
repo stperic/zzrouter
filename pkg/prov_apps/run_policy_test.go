@@ -71,6 +71,11 @@ func TestDecide(t *testing.T) {
 		{name: "served unreachable", node: Node{Lifecycle: LifecycleServed}, err: ErrProviderUnavailable},
 		{name: "served unreachable before catalog", node: Node{Lifecycle: LifecycleServed, Absent: true}, err: ErrProviderUnavailable},
 
+		// Shutdown answers first: a joiner whose flown run Stop is ending must not be told to retry.
+		{name: "shutdown refuses a joiner of a stopping run", node: Node{ShuttingDown: true, Joined: true, Existing: &RunView{ID: "flown", Provider: "fake", Status: instance.StatusStopping}}, err: ErrShutdown},
+		{name: "shutdown refuses a start", node: Node{ShuttingDown: true}, err: ErrShutdown},
+		{name: "shutdown refuses a reuse", node: Node{ShuttingDown: true, Existing: held(instance.StatusRunning, "fake")}, err: ErrShutdown},
+		{name: "shutdown refuses what the provider answers", node: Node{ShuttingDown: true, Lifecycle: LifecycleNone, Reachable: true}, err: ErrShutdown},
 		{name: "nothing running starts", act: ActStart},
 		{name: "missing catalog", node: Node{Absent: true}, err: ErrModelNotLocal},
 		{name: "running reuse", node: Node{Existing: held(instance.StatusRunning, "fake")}, act: ActReuse, run: "held"},

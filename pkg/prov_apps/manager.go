@@ -450,7 +450,7 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 	}
 	m.startOnce.Do(func() {
 		m.mu.Lock()
-		if m.stopping.Load() || m.shutdown.Load() {
+		if m.shuttingDown() {
 			m.mu.Unlock()
 			slog.Warn("Start called after Stop; manager remains shutdown")
 			return
