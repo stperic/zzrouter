@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Interrupted registry downloads and peer syncs keep local model copies incomplete
+  until their pending files arrive. MCP `zz_models` exposes `incomplete`; repair
+  with `zz_model_download` of the same model to fetch only what is missing.
 - `/v1/models` `capabilities.max_context_tokens` reports the context a running
   replica serves, worker runs included; it is omitted while no run reports one,
   and for a group when any replica's is unknown (a cloud replica always is).

@@ -49,12 +49,6 @@ func (d CatalogDestination) Path(name string) (string, error) {
 // CheckSpace preserves catalog provisioning's existing capacity behavior.
 func (d CatalogDestination) CheckSpace(_ int64) error { return nil }
 
-// planned is one file a download fetches, and the feature it belongs to.
-type planned struct {
-	file    metadata.TreeFileEntry
-	feature string
-}
-
 // Download fetches what req names from a repository into the model's
 // directory, adding to what is there. Each file is written beside its
 // destination and published into place once complete and verified, then
@@ -104,7 +98,7 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 
 	var total, done int64
 	for _, f := range files {
-		total += f.file.Size
+		total += f.Size
 	}
 	var last time.Time
 	report := func(status string) {
@@ -114,9 +108,18 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	}
 
 	sourceURL := hfc.downloadBase + req.Repo
+	if !providerStore {
+		pending := make([]integrity.FileChecksum, 0, len(files))
+		for _, f := range files {
+			pending = append(pending, integrity.FileChecksum{RelativePath: f.Name, Size: f.Size, SHA256: f.SHA256, Feature: f.Feature})
+		}
+		if err := integrity.RecordPending(dir, req.Repo, sourceURL, pending...); err != nil {
+			return err
+		}
+	}
 	for _, f := range files {
 		report("downloading")
-		dest, err := destination.Path(f.file.Name)
+		dest, err := destination.Path(f.Name)
 		if err != nil {
 			return err
 		}
@@ -125,10 +128,10 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 				return fileExistsError(err)
 			}
 		}
-		if err := destination.CheckSpace(f.file.Size); err != nil {
+		if err := destination.CheckSpace(f.Size); err != nil {
 			return err
 		}
-		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.file, dest, destination.NoReplace(), func(n int64) {
+		sum, err := hfc.fetch(ctx, req.Repo, req.EffectiveRevision(), f.TreeFileEntry, dest, destination.NoReplace(), func(n int64) {
 			done += n
 			if now := utils.Now(); n < 0 || now.Sub(last) >= progressInterval {
 				last = now
@@ -136,9 +139,9 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 			}
 		})
 		if err != nil {
-			return fmt.Errorf("failed to download %s: %w", f.file.Name, err)
+			return fmt.Errorf("failed to download %s: %w", f.Name, err)
 		}
-		dest, err = destination.Path(f.file.Name)
+		dest, err = destination.Path(f.Name)
 		if err != nil {
 			return err
 		}
@@ -146,7 +149,7 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		if err != nil {
 			return err
 		}
-		relative := filepath.FromSlash(f.file.Name)
+		relative := filepath.FromSlash(f.Name)
 		if providerStore {
 			relative, err = filepath.Rel(dir, dest)
 			if err != nil {
@@ -158,9 +161,9 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		}
 		if err := integrity.RecordFiles(dir, req.Repo, sourceURL, integrity.FileChecksum{
 			RelativePath: relative, SHA256: sum,
-			Size: info.Size(), ModTime: info.ModTime(), Feature: f.feature,
+			Size: info.Size(), ModTime: info.ModTime(), Feature: f.Feature,
 		}); err != nil {
-			return fmt.Errorf("record %s: %w", f.file.Name, err)
+			return fmt.Errorf("record %s: %w", f.Name, err)
 		}
 	}
 	return nil
@@ -173,43 +176,43 @@ func fileExistsError(err error) error {
 	return err
 }
 
-func (hfc *Connector) downloadFiles(ctx context.Context, req metadata.DownloadRequest) ([]planned, error) {
-	var files []planned
+func (hfc *Connector) downloadFiles(ctx context.Context, req metadata.DownloadRequest) ([]metadata.DownloadFile, error) {
+	var files []metadata.DownloadFile
 	if req.Files != nil {
-		for _, f := range req.Files {
+		files = req.Files
+		for _, f := range files {
 			if err := validateRepoFileName(f.Name); err != nil {
 				return nil, err
 			}
-			files = append(files, planned{file: f.TreeFileEntry, feature: f.Feature})
 		}
 	} else {
 		listing, err := hfc.getRepoFilesRevision(ctx, req.Repo, req.EffectiveRevision())
 		if err != nil {
 			return nil, fmt.Errorf("failed to get repo files: %w", err)
 		}
-		files, err = plan(listing, req)
+		files, err = Plan(listing, req)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	if req.Target.EffectiveOwner() == metadata.OwnerProviderStore && (len(files) != 1 || files[0].file.Name != req.Weights || files[0].feature != "") {
+	if req.Target.EffectiveOwner() == metadata.OwnerProviderStore && (len(files) != 1 || files[0].Name != req.Weights || files[0].Feature != "") {
 		return nil, fmt.Errorf("provider download requires exactly the requested source file")
 	}
 	return files, nil
 }
 
-// plan returns the files req names in a repository listing: the weights it
+// Plan returns the files req names in a repository listing: the weights it
 // asks for (every shard of a split set) or the whole repository, and one
 // file for each wanted feature. A feature's files are never weights.
-func plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]planned, error) {
+func Plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]metadata.DownloadFile, error) {
 	if req.Target.EffectiveOwner() == metadata.OwnerProviderStore {
 		for _, f := range listing {
 			if f.Name == req.Weights {
 				if err := validateRepoFileName(f.Name); err != nil {
 					return nil, err
 				}
-				return []planned{{file: f}}, nil
+				return []metadata.DownloadFile{{TreeFileEntry: f}}, nil
 			}
 		}
 		return nil, fmt.Errorf("no file %q in registry %q", req.Weights, req.Repo)
@@ -230,11 +233,11 @@ func plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]pla
 		}
 	}
 
-	var out []planned
+	out := make([]metadata.DownloadFile, 0)
 	switch {
 	case req.Weights == "":
 		for _, f := range weights {
-			out = append(out, planned{file: byPath[f.Path]})
+			out = append(out, metadata.DownloadFile{TreeFileEntry: byPath[f.Path]})
 		}
 	default:
 		v, ok := layout.Pick(layout.GGUFVariants(weights), req.Weights)
@@ -246,7 +249,7 @@ func plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]pla
 			v.Files = []layout.File{{Path: e.Name}}
 		}
 		for _, f := range v.Files {
-			out = append(out, planned{file: byPath[f.Path]})
+			out = append(out, metadata.DownloadFile{TreeFileEntry: byPath[f.Path]})
 		}
 	}
 
@@ -262,28 +265,14 @@ func plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]pla
 			}
 			return nil, fmt.Errorf("registry %q has no file for feature %q", req.Repo, name)
 		}
-		out = append(out, planned{file: byPath[f.Path], feature: name})
+		out = append(out, metadata.DownloadFile{TreeFileEntry: byPath[f.Path], Feature: name})
 	}
 	for _, p := range out {
-		if err := validateRepoFileName(p.file.Name); err != nil {
-			return nil, fmt.Errorf("download %s: %w", p.file.Name, err)
+		if err := validateRepoFileName(p.Name); err != nil {
+			return nil, fmt.Errorf("download %s: %w", p.Name, err)
 		}
 	}
 	return out, nil
-}
-
-// Plan resolves weights and feature declarations against one registry listing.
-// The result is shared by registry downloads and peer transfers.
-func Plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]metadata.DownloadFile, error) {
-	ps, err := plan(listing, req)
-	if err != nil {
-		return nil, err
-	}
-	files := make([]metadata.DownloadFile, 0, len(ps))
-	for _, p := range ps {
-		files = append(files, metadata.DownloadFile{TreeFileEntry: p.file, Feature: p.feature})
-	}
-	return files, nil
 }
 
 // missing splits files into those to fetch and those dir already holds as
@@ -292,15 +281,15 @@ func Plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]met
 // fails any of these is fetched again, which is how a truncated download
 // repairs. A held file is returned with the feature it is fetched for, so
 // one that arrived before it was asked for as a feature gets its tag.
-func missing(files []planned, manifest *integrity.ModelManifest, dir string) (fetch []planned, held []integrity.FileChecksum) {
+func missing(files []metadata.DownloadFile, manifest *integrity.ModelManifest, dir string) (fetch []metadata.DownloadFile, held []integrity.FileChecksum) {
 	for _, p := range files {
-		h, ok := manifest.Holds(dir, p.file.Name, p.file.Size, p.file.SHA256)
+		h, ok := manifest.Holds(dir, p.Name, p.Size, p.SHA256)
 		if !ok {
 			fetch = append(fetch, p)
 			continue
 		}
-		if h.Feature != p.feature {
-			h.Feature = p.feature
+		if h.Feature != p.Feature {
+			h.Feature = p.Feature
 			held = append(held, h)
 		}
 	}

@@ -82,6 +82,9 @@ type ModelManifest struct {
 	// Files contains checksums for all files in the model
 	Files []FileChecksum `json:"files"`
 
+	// Pending lists model files a transfer still owes, excluding feature files.
+	Pending []string `json:"pending,omitempty"`
+
 	// TotalSize is the sum of all file sizes
 	TotalSize int64 `json:"total_size"`
 
@@ -371,6 +374,39 @@ func AcquireMaterialization(ctx context.Context, dir string) (func(), error) {
 // download records each file as it lands rather than re-hashing the whole
 // directory.
 func RecordFiles(modelPath, modelName, sourceURL string, files ...FileChecksum) error {
+	return updateManifest(modelPath, modelName, sourceURL, func(manifest *ModelManifest) {
+		for _, f := range files {
+			manifest.Pending = slices.DeleteFunc(manifest.Pending, func(p string) bool { return p == filepath.ToSlash(f.RelativePath) })
+			i := slices.IndexFunc(manifest.Files, func(e FileChecksum) bool { return e.RelativePath == f.RelativePath })
+			if i < 0 {
+				manifest.Files = append(manifest.Files, f)
+			} else {
+				manifest.Files[i] = f
+			}
+		}
+		manifest.TotalSize = 0
+		for _, f := range manifest.Files {
+			manifest.TotalSize += f.Size
+		}
+	})
+}
+
+// RecordPending remembers unheld model files before a directory transfer starts.
+func RecordPending(dir, model, source string, files ...FileChecksum) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return updateManifest(dir, model, source, func(m *ModelManifest) {
+		for _, f := range files {
+			rel := filepath.ToSlash(f.RelativePath)
+			if _, held := m.Holds(dir, rel, f.Size, f.SHA256); !held && f.Feature == "" && !slices.Contains(m.Pending, rel) {
+				m.Pending = append(m.Pending, rel)
+			}
+		}
+	})
+}
+
+func updateManifest(modelPath, modelName, sourceURL string, update func(*ModelManifest)) error {
 	locks, err := locksForDirectory(modelPath)
 	if err != nil {
 		return err
@@ -386,18 +422,7 @@ func RecordFiles(modelPath, modelName, sourceURL string, files ...FileChecksum) 
 	if manifest == nil {
 		manifest = &ModelManifest{Version: 1, ModelName: modelName, SourceURL: sourceURL, CreatedAt: utils.Now()}
 	}
-	for _, f := range files {
-		i := slices.IndexFunc(manifest.Files, func(e FileChecksum) bool { return e.RelativePath == f.RelativePath })
-		if i < 0 {
-			manifest.Files = append(manifest.Files, f)
-		} else {
-			manifest.Files[i] = f
-		}
-	}
-	manifest.TotalSize = 0
-	for _, f := range manifest.Files {
-		manifest.TotalSize += f.Size
-	}
+	update(manifest)
 	return WriteManifest(modelPath, manifest)
 }
 

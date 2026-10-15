@@ -5,14 +5,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
+	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stretchr/testify/assert"
@@ -146,4 +149,104 @@ func TestHoldsReadsTheManifestNotTheBytes(t *testing.T) {
 		require.NoError(t, err, tc.name)
 		assert.Equal(t, tc.want, got, tc.name)
 	}
+}
+
+func TestSync_FailureLeavesPendingAndSuccessClears(t *testing.T) {
+	root := t.TempDir()
+	modelregistry.SetModelsRootDirOverride(root)
+	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
+	req := metadata.DownloadRequest{Repo: "org/model"}
+	manifest := SyncManifest{Model: req.Repo, Format: "huggingface"}
+	bodies := map[string]string{"config.json": "{}", "model.safetensors": "weights", "tokenizer.json": "tokenizer"}
+	for _, name := range []string{"config.json", "model.safetensors", "tokenizer.json"} {
+		body := bodies[name]
+		sum := sha256.Sum256([]byte(body))
+		manifest.Files = append(manifest.Files, FileChecksum{Name: name, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])})
+		manifest.TotalSize += int64(len(body))
+	}
+	encoded, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	dir := filepath.Join(root, req.Repo)
+	fail := true
+	var fetched []string
+	c := NewClient(ClientConfig{HTTPClient: &http.Client{Transport: resumeTransport(func(r *http.Request) (*http.Response, error) {
+		body := string(encoded)
+		if r.URL.Path == "/zzrouter/v1/internal/sync/file" {
+			name := r.URL.Query().Get("file")
+			fetched = append(fetched, name)
+			if req.Force {
+				complete, err := layout.Complete(dir)
+				assert.NoError(t, err)
+				assert.True(t, complete, "a forced re-sync preserves completeness during every fetch")
+			}
+			body = bodies[name]
+			if fail && name == "tokenizer.json" {
+				body = "tampered"
+			}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}})
+	result, err := c.SyncModel(t.Context(), "https://peer.test", req, manifest.Format, nil)
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, 1, result.FilesFailed)
+	assert.FileExists(t, filepath.Join(dir, "model.safetensors"))
+	m, err := integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Contains(t, m.Pending, "tokenizer.json")
+	complete, err := layout.Complete(dir)
+	require.NoError(t, err)
+	assert.False(t, complete)
+	held, err := NewSecurityFromRoot(root).Holds(req)
+	require.NoError(t, err)
+	assert.False(t, held)
+
+	fail, fetched = false, nil
+	result, err = c.SyncModel(t.Context(), "https://peer.test", req, manifest.Format, nil)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Equal(t, []string{"tokenizer.json"}, fetched)
+	assert.Equal(t, 2, result.FilesSkipped)
+	m, err = integrity.ReadManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, m.Pending)
+	complete, err = layout.Complete(dir)
+	require.NoError(t, err)
+	assert.True(t, complete)
+	held, err = NewSecurityFromRoot(root).Holds(req)
+	require.NoError(t, err)
+	assert.True(t, held)
+
+	req.Force, fetched = true, nil
+	result, err = c.SyncModel(t.Context(), "https://peer.test", req, manifest.Format, nil)
+	require.NoError(t, err)
+	assert.True(t, result.Success)
+	assert.Len(t, fetched, 3)
+}
+
+func TestHoldsWithoutFilesUsesComplete(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "org", "model")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	weights := filepath.Join(dir, "model.safetensors")
+	require.NoError(t, os.WriteFile(weights, []byte("weights"), 0600))
+	s := NewSecurityFromRoot(root)
+	req := metadata.DownloadRequest{Repo: "org/model"}
+	held, err := s.Holds(req)
+	require.NoError(t, err)
+	assert.False(t, held, "an unrecorded copy is what an interrupted sync leaves")
+	require.NoError(t, integrity.RecordFiles(dir, req.Repo, "", integrity.FileChecksum{RelativePath: "model.safetensors", Size: 7}))
+	held, err = s.Holds(req)
+	require.NoError(t, err)
+	assert.True(t, held)
+	require.NoError(t, integrity.RecordPending(dir, req.Repo, "", integrity.FileChecksum{RelativePath: "tokenizer.json", Size: 2}))
+	held, err = s.Holds(req)
+	require.NoError(t, err)
+	assert.False(t, held, "a copy that still owes files is not a sync source")
+	require.NoError(t, integrity.RecordFiles(dir, req.Repo, "", integrity.FileChecksum{RelativePath: "tokenizer.json", Size: 2}))
+	require.NoError(t, os.Remove(weights))
+	held, err = s.Holds(req)
+	require.NoError(t, err)
+	assert.False(t, held, "a manifest entry alone is not completeness")
 }

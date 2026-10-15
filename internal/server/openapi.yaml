@@ -11216,6 +11216,7 @@ components:
         node: { type: string }
         assigned_app: { type: string, description: Inference provider key. }
         is_cloud: { type: boolean }
+        incomplete: { type: boolean, description: Local copy is missing model files; download the same model to fetch only what is missing. }
         format: { type: string }
         size: { type: integer, format: int64 }
         modified_at: { type: string, format: date-time }

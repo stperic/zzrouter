@@ -91,6 +91,23 @@ func TestScanModels_IncompleteIndexedWeights(t *testing.T) {
 	}
 }
 
+func TestScanModels_PendingNonWeightFile(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "model.safetensors"), []byte("weights"), 0600))
+	tokenizer := integrity.FileChecksum{RelativePath: "tokenizer.json", Size: 2}
+	require.NoError(t, integrity.RecordPending(root, "model", "", tokenizer))
+	models, err := ScanModels(root)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.True(t, models[0].Incomplete)
+	require.NoError(t, os.WriteFile(filepath.Join(root, tokenizer.RelativePath), []byte("{}"), 0600))
+	require.NoError(t, integrity.RecordFiles(root, "model", "", tokenizer))
+	models, err = ScanModels(root)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.False(t, models[0].Incomplete)
+}
+
 // A file the manifest assigns to a feature (a vision projector) is not a
 // model, and a manifest that cannot be read hides nothing: the weights
 // still list, grouped.
