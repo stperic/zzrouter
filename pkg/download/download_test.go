@@ -323,3 +323,36 @@ func TestTransferLocalWriteErrorIsTerminal(t *testing.T) {
 	assert.False(t, network)
 	assert.Zero(t, result.Size)
 }
+
+func TestFetchExclusiveRemovesOnlyDeadPartialsOfDest(t *testing.T) {
+	for _, exclusive := range []bool{false, true} {
+		t.Run(fmt.Sprint(exclusive), func(t *testing.T) {
+			dir := t.TempDir()
+			dest := filepath.Join(dir, "model.safetensors")
+			dead := filepath.Join(dir, ".model.safetensors.1697557971"+PartialSuffix)
+			kept := []string{
+				filepath.Join(dir, ".model.safetensors.index.json.42"+PartialSuffix), // another file's partial
+				filepath.Join(dir, ".tokenizer.json.7"+PartialSuffix),
+				filepath.Join(dir, ".model.safetensors.x1"+PartialSuffix), // not a CreateTemp name
+			}
+			for _, p := range append([]string{dead}, kept...) {
+				require.NoError(t, os.WriteFile(p, []byte("killed"), 0600))
+			}
+			client := &http.Client{Transport: fetchTestTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, ContentLength: 7, Body: io.NopCloser(strings.NewReader("weights"))}, nil
+			})}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://fixture.test/file", nil)
+			require.NoError(t, err)
+			_, err = Fetch(client, req, dest, Options{Exclusive: exclusive})
+			require.NoError(t, err)
+			if exclusive {
+				require.NoFileExists(t, dead, "a writer holding dest's lock owns its older partials")
+			} else {
+				require.FileExists(t, dead, "without the lock a partial may be a live concurrent transfer")
+			}
+			for _, p := range kept {
+				require.FileExists(t, p)
+			}
+		})
+	}
+}
