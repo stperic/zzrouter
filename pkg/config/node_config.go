@@ -338,6 +338,9 @@ func (c *NodeConfig) Validate() error {
 	if c.Cluster.Mode == ClusterModeWorker && len(c.Cluster.Endpoints) > 0 {
 		return fmt.Errorf("%w: cluster.endpoints must be empty in worker mode (a worker learns its coordinator by pairing)", ErrInvalidConfig)
 	}
+	if err := c.Observability.ValidateForMode(c.Cluster.Mode); err != nil {
+		return err
+	}
 
 	// TLS validation: cert and key must both be set or both empty
 	if (c.Node.TLSCert == "") != (c.Node.TLSKey == "") {

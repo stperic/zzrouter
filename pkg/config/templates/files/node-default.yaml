@@ -176,9 +176,10 @@ coordinator:
 # =============================================================================
 # OBSERVABILITY
 # =============================================================================
-# OpenTelemetry metrics + traces. When enabled, the Prometheus /metrics
-# endpoint is served on the main HTTP port (same as the API). No outbound
-# network traffic is generated unless otlp.endpoint is set.
+# Tracing and OTLP export are coordinator-only (standalone included).
+# Workers allow local Prometheus metrics, served on the cluster mTLS port;
+# coordinators serve /metrics on the API port. No outbound telemetry is
+# generated unless otlp.endpoint is set. Workers reject tracing or an endpoint.
 observability:
   enabled: true                        # Master switch for the observability subsystem
   service_name: "zzrouter"             # Identifier in traces/metrics exporters
@@ -188,7 +189,7 @@ observability:
     # otlp_export: true               # False keeps local metrics without remote push
     # export_interval: 15              # OTLP push interval (seconds)
   tracing:
-    enabled: false                     # Distributed tracing : opt-in, needs otlp.endpoint
+    enabled: false                     # Coordinator-only distributed tracing, opt-in
     sample_rate: 0.1                   # 1.0 = sample all, 0.1 = 10%, 0.0 = no new roots; honors parent sampling
   # otlp:
   #   protocol: grpc                  # grpc (default) or http/protobuf

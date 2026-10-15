@@ -105,8 +105,35 @@ func TestTraceProxyAttemptBodyLifetimeAndPropagation(t *testing.T) {
 	}
 }
 
+func TestWorkerObservabilityStartupRejected(t *testing.T) {
+	for _, tracing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "endpoint", true: "tracing"}[tracing], func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("ZZROUTER_TEST_HOME", home)
+			cfg := &pkgConfig.NodeConfig{
+				Node:          pkgConfig.ServeConfig{Port: getNextTestPort()},
+				Cluster:       pkgConfig.ClusterConfig{Mode: pkgConfig.ClusterModeWorker},
+				Auth:          pkgConfig.AuthConfig{AdminKey: TestAdminKey},
+				Observability: pkgConfig.ObservabilityConfig{Tracing: pkgConfig.TracingConfig{Enabled: tracing}},
+			}
+			if !tracing {
+				cfg.Observability.OTLP.Endpoint = "http://collector.invalid"
+			}
+			server, err := NewServerWithOptions(cfg)
+			if server != nil {
+				t.Cleanup(func() { cleanupTestNode(server) })
+			}
+			require.ErrorIs(t, err, pkgConfig.ErrInvalidConfig)
+			require.Nil(t, server)
+			entries, err := os.ReadDir(home)
+			require.NoError(t, err)
+			assert.Empty(t, entries, "refused startup must not initialize node storage")
+		})
+	}
+}
+
 // Exercise the real worker listener's mTLS/OU gate and compat engine, without a deployed node.
-func TestTraceWorkerMTLSParentage(t *testing.T) {
+func TestTraceCoordinatorAttemptToWorkerWithLocalMetrics(t *testing.T) {
 	preserveTraceGlobals(t)
 	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 	paths := clusternode.PathsFromConfigDir(pkgConfig.Paths().GetConfigDir())
@@ -131,14 +158,20 @@ func TestTraceWorkerMTLSParentage(t *testing.T) {
 		Node:          pkgConfig.ServeConfig{Bind: "localhost", Port: getNextTestPort(), Name: "trace-worker"},
 		Cluster:       pkgConfig.ClusterConfig{Mode: pkgConfig.ClusterModeWorker, BindPort: 0, BindAddr: "127.0.0.1"},
 		Auth:          pkgConfig.AuthConfig{AdminKey: TestAdminKey},
-		Observability: pkgConfig.ObservabilityConfig{Enabled: true, ServiceName: "trace-worker", Tracing: pkgConfig.TracingConfig{Enabled: true, SampleRate: 1}},
+		Observability: pkgConfig.ObservabilityConfig{Enabled: true, ServiceName: "trace-worker", Metrics: pkgConfig.MetricsConfig{Enabled: true}},
 	}
 	worker, err := NewServerWithOptions(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { cleanupTestNode(worker); require.NoError(t, worker.otelProvider.Stop(context.Background())) })
 	require.Equal(t, clusternode.Worker, worker.cluster.listener.Mode())
+	require.Nil(t, worker.otelProvider.TracerProvider(), "workers must not initialize a tracer provider")
+	coordinator, err := observability.NewProvider(t.Context(), &observability.Config{
+		Enabled: true, ServiceName: "trace-coordinator", Tracing: observability.TracingConfig{Enabled: true, SampleRate: 1},
+	}, "test")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, coordinator.Stop(context.Background())) })
 	spans := tracetest.NewSpanRecorder()
-	worker.otelProvider.TracerProvider().RegisterSpanProcessor(spans)
+	coordinator.TracerProvider().RegisterSpanProcessor(spans)
 	require.NoError(t, worker.cluster.listener.Start(t.Context()))
 	t.Cleanup(func() { require.NoError(t, worker.cluster.listener.Stop(context.Background())) })
 	pool := x509.NewCertPool()
@@ -147,26 +180,24 @@ func TestTraceWorkerMTLSParentage(t *testing.T) {
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Transport: transport}
 	pc := NewProxyClient(nil, func() *http.Client { return client }, NewResponseNormalizers(), nil, nil, nil, nil)
-	ctx, parent := worker.otelProvider.Tracer("agent-fixture").Start(t.Context(), "agent")
+	ctx, parent := coordinator.Tracer("agent-fixture").Start(t.Context(), "agent")
 	defer parent.End()
 	req := httptest.NewRequest("GET", "/v1/models", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
 	pc.ForwardToBackend(w, req, "worker", "https://"+worker.cluster.listener.Addr().String()+"/v1/models", backend.Cluster(), nil)
 	require.Equal(t, 200, w.Code, w.Body.String())
-	var attempt, server sdktrace.ReadOnlySpan
-	for _, span := range spans.Ended() {
-		if span.Name() == "llm.attempt" {
-			attempt = span
-		}
-		if span.SpanKind() == trace.SpanKindServer {
-			server = span
-		}
-	}
-	require.NotNil(t, attempt)
-	require.NotNil(t, server)
+	require.Len(t, spans.Ended(), 1, "worker must not create an HTTP span")
+	attempt := spans.Ended()[0]
+	assert.Equal(t, "llm.attempt", attempt.Name())
 	assert.Equal(t, parent.SpanContext().SpanID(), attempt.Parent().SpanID())
-	assert.Equal(t, attempt.SpanContext().SpanID(), server.Parent().SpanID())
-	assert.Equal(t, parent.SpanContext().TraceID(), server.SpanContext().TraceID())
+	assert.Equal(t, parent.SpanContext().TraceID(), attempt.SpanContext().TraceID())
+	metricsReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+worker.cluster.listener.Addr().String()+"/metrics", nil)
+	require.NoError(t, err)
+	metrics, err := client.Do(metricsReq)
+	require.NoError(t, err)
+	defer metrics.Body.Close()
+	assert.Equal(t, http.StatusOK, metrics.StatusCode)
+	assert.Len(t, spans.Ended(), 1, "metrics scrapes must not add spans")
 }
 
 func TestTraceRealtimeHandshakeStatusAndPropagation(t *testing.T) {

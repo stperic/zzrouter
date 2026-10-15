@@ -75,6 +75,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// Debug mode is already initialized by CLI startup code
 	// (either from --debug flag or ZZROUTER_DEBUG env var)
 
+	if err := cfg.Observability.ValidateForMode(cfg.Cluster.Mode); err != nil {
+		return nil, err
+	}
 	if err := pkgConfig.ValidateConfiguredKeys(cfg); err != nil {
 		return nil, err
 	}

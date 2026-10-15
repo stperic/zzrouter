@@ -1,8 +1,18 @@
 # OpenTelemetry tracing
 
-zzRouter has built-in OpenTelemetry instrumentation. Enable it in the node's
-protected `node.yaml`, then restart that node. Tracing is disabled in installed
+zzRouter has built-in OpenTelemetry instrumentation. Enable tracing and OTLP
+export on the coordinator in its protected `node.yaml`, then restart it.
+Standalone nodes also serve the coordinator role. Tracing is disabled in installed
 defaults. No remote telemetry is sent unless `observability.otlp.endpoint` is set.
+
+Workers reject `observability.tracing.enabled: true` or a nonempty
+`observability.otlp.endpoint`, even when the observability master switch is off.
+Worker-local Prometheus metrics remain supported with `observability.enabled:
+true` and `observability.metrics.enabled: true`; the coordinator can scrape them
+over the existing cluster mTLS listener. To switch a tracing/exporting coordinator
+to worker mode, stop it, disable tracing, remove the OTLP endpoint and restart in
+worker mode. Clearing settings through reload alone does not stop the running
+exporter, so a live mode change is rejected until a restart.
 
 For an OTLP HTTP/protobuf collector, including a compatible zzFuse receiver:
 
@@ -63,8 +73,9 @@ Attempts cover direct proxy sends, fallback/retry dispatch, local run relays,
 worker relays and realtime connections. Realtime spans cover connection duration
 and handshake status/errors; per-frame and terminal WebSocket error reporting is
 not included in this delivery. A streaming HTTP attempt stays open through
-body consumption. Worker requests propagate through the existing cluster mTLS
-listener. MCP forwards only serialized trace context into its value-free REST
+body consumption. Coordinator attempts include requests to workers over the
+existing cluster mTLS listener; workers create no tracing spans and connect to no
+collector. MCP forwards only serialized trace context into its value-free REST
 request, preserving authentication isolation and cancellation. Caller baggage is
 not propagated.
 
@@ -84,7 +95,7 @@ contract. Existing logical inference span coverage varies by API; the common HTT
 and dispatch spans provide the basic request/attempt view. Performance acceptance
 measurements are deferred, so these settings carry no measured overhead guarantee.
 
-Configure and activate a single test node after the collector endpoint and
+Configure and activate the coordinator after the collector endpoint and
 credential are available. Follow the existing [cluster protocol compatibility
 procedure](protocol_versioning.md) before upgrading binaries; activating tracing
-on one compatible node is separate from upgrading an incompatible cluster.
+on a compatible coordinator is separate from upgrading an incompatible cluster.
