@@ -146,6 +146,25 @@ class CampaignEvidenceTest(unittest.TestCase):
         vision = copy.deepcopy(ctx); vision["calls"][-2]["args"]["probe"] = "vision"; vision["calls"][-2]["evidence"]["verdict"] = "inconclusive"; vision["rj"]["verdict"] = "inconclusive"
         self.assertFalse(passed(c.check_capability_probe(vision, "vision")))
 
+    def test_tool_endpoint_requires_harness_tool_call_to_reported_model(self):
+        from unittest.mock import patch
+        probe = call("zz_chat", {"model": "m", "node": "n", "probe": "tools"}, {"tool_call": "verified", "verdict": "verified"})
+        ctx = {"node": "n", "rj": {"model": "m", "verified": True}, "left": ["m(r)"], "calls": [probe]}
+        tool = {"choices": [{"message": {"tool_calls": [{"id": "t", "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'}}]}}]}
+        with patch.object(c, "http", return_value=(200, tool, 5)) as v1:
+            self.assertTrue(passed(c.check_tool_endpoint(ctx)))
+        self.assertEqual("m", v1.call_args.args[2]["model"], "the harness calls the model the agent reported")
+        # A verified probe and the agent's word are not enough: the endpoint must answer with the tool call.
+        with patch.object(c, "http", return_value=(200, {"choices": [{"message": {"content": "sunny"}}]}, 5)):
+            self.assertFalse(passed(c.check_tool_endpoint(ctx)))
+        stopped = copy.deepcopy(ctx); stopped["left"] = []
+        with patch.object(c, "http", return_value=(200, tool, 5)):
+            self.assertFalse(passed(c.check_tool_endpoint(stopped)))
+        unnamed = copy.deepcopy(ctx); unnamed["rj"].pop("model")
+        with patch.object(c, "http") as v1:
+            self.assertFalse(passed(c.check_tool_endpoint(unnamed)))
+        v1.assert_not_called()
+
     def test_negative_probe_requires_typed_refusal(self):
         ctx = {"node": "n", "scenario": {"pick": {"name": "m"}, "provider": "p", "expected": "not_supported", "capability_absent": True},
                "rj": {"verdict": "not_supported", "dimensions": None, "status": 400, "code": "unsupported_input"}, "left": [],
