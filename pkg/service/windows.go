@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -133,17 +134,21 @@ func (m *WindowsManager) InstallService() error {
 	}
 	defer s.Close()
 
-	// Set recovery options - restart on failure
+	// Restart after a failure exit, including the non-zero stop an update's
+	// self-exit reports: SCM counts that as a non-crash failure and skips
+	// recovery actions unless the non-crash flag is set. Failures only warn;
+	// RestartsOnExit reports them before anything relies on a restart.
 	recoveryActions := []mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
 	}
 	if err := s.SetRecoveryActions(recoveryActions, 86400); err != nil {
-		// Non-fatal - recovery options are optional
 		fmt.Printf("Warning: failed to set recovery options: %v\n", err)
 	}
-
+	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		fmt.Printf("Warning: failed to apply recovery options to non-crash failures: %v\n", err)
+	}
 	return nil
 }
 
@@ -236,11 +241,10 @@ func (m *WindowsManager) RestartService() error {
 	return m.StartService()
 }
 
-// RestartsOnExit reports whether the SCM recovery actions installed for
-// the service include a restart. SCM only applies them when the service
-// exits as a failure, which is why an update's self-exit reports a
-// non-zero status; a service whose recovery actions were cleared would
-// otherwise stay stopped.
+// RestartsOnExit reports whether SCM would start the service again after
+// an update's self-exit, a non-zero stop that SCM counts as a non-crash
+// failure. That takes a restart recovery action and the non-crash flag;
+// without either the service would stay stopped.
 func (m *WindowsManager) RestartsOnExit() (bool, string) {
 	scm, err := mgr.Connect()
 	if err != nil {
@@ -258,12 +262,22 @@ func (m *WindowsManager) RestartsOnExit() (bool, string) {
 	if err != nil {
 		return false, fmt.Sprintf("cannot read the recovery actions of %s: %v", windowsServiceName, err)
 	}
-	for _, a := range actions {
-		if a.Type == mgr.ServiceRestart {
-			return true, ""
-		}
+	nonCrash, err := s.RecoveryActionsOnNonCrashFailures()
+	if err != nil {
+		return false, fmt.Sprintf("cannot read the non-crash failure flag of %s: %v", windowsServiceName, err)
 	}
-	return false, fmt.Sprintf("service %s has no restart recovery action", windowsServiceName)
+	return restartCovered(actions, nonCrash)
+}
+
+// restartCovered is RestartsOnExit's decision over what SCM reported.
+func restartCovered(actions []mgr.RecoveryAction, nonCrash bool) (bool, string) {
+	if !slices.ContainsFunc(actions, func(a mgr.RecoveryAction) bool { return a.Type == mgr.ServiceRestart }) {
+		return false, fmt.Sprintf("service %s has no restart recovery action", windowsServiceName)
+	}
+	if !nonCrash {
+		return false, fmt.Sprintf("service %s does not restart after a non-crash exit; as Administrator run `sc.exe failureflag %s 1`", windowsServiceName, windowsServiceName)
+	}
+	return true, ""
 }
 
 // GetStatus returns the current status of the Windows service
