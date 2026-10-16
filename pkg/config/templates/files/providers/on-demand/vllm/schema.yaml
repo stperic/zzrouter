@@ -5,6 +5,7 @@ provider: vllm
 parameters:
   max-model-len:
     auto: "auto"
+    auto_min_context_tokens: 4096
     served: max_model_len
   enable-auto-tool-choice:
     type: bool

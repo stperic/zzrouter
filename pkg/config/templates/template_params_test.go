@@ -139,3 +139,22 @@ func TestReconcileStripsRetiredModelDefaults(t *testing.T) {
 		assert.Equal(t, "8", got["threads"].Value, "%s: the operator's model entry survives", provider)
 	}
 }
+
+func TestShippedAutoContextPolicies(t *testing.T) {
+	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	assert.Equal(t, int64(4096), schemas["vllm"].Parameters["max-model-len"].AutoMinContextTokens)
+	assert.Equal(t, "native", schemas["llamacpp"].Parameters["ctx-size"].AutoContextSource)
+	assert.Zero(t, schemas["llamacpp"].Parameters["ctx-size"].AutoMinContextTokens)
+	assert.Equal(t, int64(4096), schemas["mlx"].AutoMinContextTokens)
+	assert.Equal(t, "MLX_MEMORY_FRACTION", schemas["mlx"].MemoryFractionEnvironment)
+	for key := range schemas["mlx"].Parameters {
+		assert.NotEqual(t, "context", key)
+	}
+	data, err := templates.AppsFS.ReadFile("files/providers/on-demand/mlx/config.yaml")
+	require.NoError(t, err)
+	var svc config.ServiceConfig
+	require.NoError(t, yaml.Unmarshal(data, &svc))
+	assert.Empty(t, svc.GetContextParam())
+	assert.Equal(t, "0.75", svc.Defaults.Environment[schemas["mlx"].MemoryFractionEnvironment])
+}

@@ -25,6 +25,12 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 13 adds optional context-aware memory assessment fields and non-strict
+provider schema metadata. The minimum remains 12 for rolling upgrades. Node
+aggregation and run previews downgrade replies lacking `context_mode` to unknown,
+including older positive assessments. New schema metadata is outside strict
+diagnostics; the MLX fraction is an ordinary tier-resolved environment value.
+
 Protocol 12 raises the minimum from 11 to 12. Provider synchronization carries
 `features.tools`, `requires_parameters` and HTTP evidence descriptors. Older
 strict loaders reject these names and fields. Upgrade every node together using

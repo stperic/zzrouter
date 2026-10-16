@@ -148,14 +148,14 @@ func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device stri
 func (m *ProviderAppManager) AssessCapacity(ctx context.Context, req EnsureRequest) process.MemoryAssessment {
 	features, err := m.ResolveLaunchParameters(ctx, req)
 	if err != nil {
-		return process.MemoryAssessment{Status: "unknown", Reason: err.Error()}
+		return process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: err.Error()}
 	}
 	assessment, _ := m.checkMemory(ctx, features, true)
 	return assessment
 }
 
 func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchParameters, capacity bool) (process.MemoryAssessment, error) {
-	assessment := process.MemoryAssessment{Status: "unknown", Reason: "no launch memory policy"}
+	assessment := process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "no launch memory policy"}
 	budget := launchBudget(features.declared)
 	if budget == nil {
 		return assessment, nil
@@ -181,8 +181,9 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 				devices[i].FreeMiB, devices[i].Processes = devices[i].TotalMiB, nil
 			}
 		}
-		need, _ := process.ModelMemoryNeed(features.model, features.Config, params)
-		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments)
+		need, _ := process.ModelMemoryNeed(features.model, features.Config, params, features.contextPolicy)
+		fraction := environment[features.declared.MemoryFractionEnvironment]
+		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, fraction)
 	} else {
 		err = fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 		assessment.Reason = err.Error()
@@ -191,7 +192,7 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 		err = nil
 	}
 	if ctx.Err() != nil {
-		return process.MemoryAssessment{Status: "unknown", Reason: ctx.Err().Error()}, ctx.Err()
+		return process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: ctx.Err().Error()}, ctx.Err()
 	}
 	return assessment, err
 }

@@ -489,13 +489,14 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 		seen[row.Name] = true
 		fitProviders := []string{}
 		for _, assessment := range row.Assessments {
+			assessment.NormalizeLegacy()
 			result.Assessments = append(result.Assessments, assessment)
 			if assessment.Status == "fit" {
 				fitProviders = append(fitProviders, assessment.Provider)
 			}
 		}
 		if len(row.Assessments) == 0 {
-			result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: row.Name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node reported no provider assessment"}})
+			result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: row.Name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node reported no provider assessment"}})
 		}
 		if len(fitProviders) > 0 {
 			var info map[string]any
@@ -508,12 +509,12 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 	expected, err := s.ListNodes(ctx, &ListNodesRequest{})
 	if err != nil {
-		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node coverage unknown: " + err.Error()}})
+		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node coverage unknown: " + err.Error()}})
 	} else {
 		for _, node := range expected.Data {
 			name, _ := node["name"].(string)
 			if !seen[name] {
-				result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node did not report an assessment"}})
+				result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node did not report an assessment"}})
 			}
 		}
 	}

@@ -124,3 +124,39 @@ func TestMergeMemoryAutoComesFromValidatedBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestAutoContextMetadataValidationAndEndpointResolution(t *testing.T) {
+	for _, tc := range []struct {
+		declaration string
+		valid       bool
+	}{
+		{`max-model-len: {auto: auto, auto_min_context_tokens: 4096}`, true},
+		{`max-model-len: {auto: auto, auto_min_context_tokens: -1}`, false},
+		{`max-model-len: {auto_min_context_tokens: 4096}`, false},
+		{`other: {type: string, auto: auto, auto_min_context_tokens: 4096}`, false},
+		{`max-model-len: {auto: auto, auto_context_source: native}`, true},
+		{`max-model-len: {auto: auto, auto_context_source: native, auto_min_context_tokens: 4096}`, false},
+		{`max-model-len: {auto: auto, auto_context_source: guess}`, false},
+	} {
+		y, err := LoadYAMLSchema([]byte("parameters:\n  " + tc.declaration + "\n"))
+		require.NoError(t, err)
+		_, errs := Merge("vllm", y)
+		assert.Equal(t, tc.valid, len(errs) == 0, tc.declaration)
+	}
+	y, err := LoadYAMLSchema([]byte(`auto_min_context_tokens: 4096
+memory_fraction_environment: MLX_MEMORY_FRACTION
+parameters:
+  max-model-len: {auto: auto, auto_min_context_tokens: 4096}
+endpoints:
+  embeddings:
+    parameters:
+      max-model-len: {auto_min_context_tokens: 8192}
+`))
+	require.NoError(t, err)
+	merged, errs := Merge("vllm", y)
+	require.Empty(t, errs)
+	assert.Equal(t, int64(4096), merged.AutoMinContextTokens)
+	assert.Equal(t, "MLX_MEMORY_FRACTION", merged.MemoryFractionEnvironment)
+	assert.Equal(t, int64(4096), merged.ForEndpoint("chat")["max-model-len"].AutoMinContextTokens)
+	assert.Equal(t, int64(8192), merged.ForEndpoint("embeddings")["max-model-len"].AutoMinContextTokens)
+}

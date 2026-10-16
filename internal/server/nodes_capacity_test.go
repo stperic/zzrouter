@@ -45,7 +45,7 @@ func TestCompatibleNodesCachedOversizeNotAffirmative(t *testing.T) {
 	require.True(t, s.model.Cache.HasModel("same-model"))
 	assert.True(t, s.isLocalNodeCompatible("same-model", "huggingface", "vllm"), "cached weights retain download eligibility")
 	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"vllm"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
-		return process.MemoryAssessment{Status: "no_fit", Reason: "weight lower bound", RequiredMiB: 10001, CapacityMiB: 10000}
+		return process.MemoryAssessment{ContextMode: "numeric", Status: "no_fit", Reason: "weight lower bound", RequiredMiB: 10001, CapacityMiB: 10000}
 	})
 	result, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "same-model"})
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestCompatibleNodesPublicProvidersIncludeOnlyFits(t *testing.T) {
 	providers := []string{"fit", "no-fit", "unknown"}
 	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return providers }, func(_ context.Context, req prov_apps.EnsureRequest) process.MemoryAssessment {
 		status := map[string]string{"fit": "fit", "no-fit": "no_fit", "unknown": "unknown"}[req.Provider]
-		return process.MemoryAssessment{Status: status, Reason: status}
+		return process.MemoryAssessment{ContextMode: "numeric", Status: status, Reason: status}
 	})
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -116,7 +116,7 @@ func TestCompatibleNodesInventoryErrorPreservesAssessments(t *testing.T) {
 	defer cancel()
 	router := &capacityRouter{serve: func(*routing.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		_, err := rec.WriteString(`{"data":[{"name":"worker","assessments":[{"node":"worker","provider":"p","status":"fit","reason":"sized"}]}]}`)
+		_, err := rec.WriteString(`{"data":[{"name":"worker","assessments":[{"node":"worker","provider":"p","context_mode":"numeric","status":"fit","reason":"sized"}]}]}`)
 		require.NoError(t, err)
 		cancel()
 		return rec
@@ -155,7 +155,7 @@ func TestCompatibleNodesProviderIsolation(t *testing.T) {
 		if req.Provider == "small" {
 			status = "fit"
 		}
-		return process.MemoryAssessment{Status: status, Reason: status}
+		return process.MemoryAssessment{ContextMode: "numeric", Status: status, Reason: status}
 	})
 	for _, provider := range []string{"large", "LARGE", "small", "missing"} {
 		t.Run(provider, func(t *testing.T) {
@@ -181,8 +181,8 @@ func TestCompatibleNodesProviderIsolation(t *testing.T) {
 func TestCompatibleNodesWorkerAssessment(t *testing.T) {
 	state := &mockClusterState{localNode: map[string]any{"name": "coord"}, endpoints: []*mesh.Endpoint{{NodeName: "z-worker"}, {NodeName: "a-old"}, {NodeName: "timeout"}}}
 	for _, body := range []string{
-		`{"data":[{"name":"z-worker","assessments":[{"node":"z-worker","provider":"z","status":"fit","reason":"sized","required_mib":11,"capacity_mib":12},{"node":"z-worker","provider":"a","status":"unknown","reason":"missing geometry"}]},{"name":"coord","assessments":[{"node":"coord","provider":"mlx","status":"unknown","reason":"unified"}]},{"name":"a-old","compatible":true}]}`,
-		`{"data":[{"name":"a-old","compatible":true},{"name":"coord","assessments":[{"node":"coord","provider":"mlx","status":"unknown","reason":"unified"}]},{"name":"z-worker","assessments":[{"node":"z-worker","provider":"a","status":"unknown","reason":"missing geometry"},{"node":"z-worker","provider":"z","status":"fit","reason":"sized","required_mib":11,"capacity_mib":12}]}]}`,
+		`{"data":[{"name":"z-worker","assessments":[{"node":"z-worker","provider":"z","context_mode":"numeric","status":"fit","reason":"sized","required_mib":11,"capacity_mib":12},{"node":"z-worker","provider":"a","status":"unknown","reason":"missing geometry"}]},{"name":"coord","assessments":[{"node":"coord","provider":"mlx","status":"unknown","reason":"unified"}]},{"name":"a-old","compatible":true}]}`,
+		`{"data":[{"name":"a-old","compatible":true},{"name":"coord","assessments":[{"node":"coord","provider":"mlx","status":"unknown","reason":"unified"}]},{"name":"z-worker","assessments":[{"node":"z-worker","provider":"a","status":"unknown","reason":"missing geometry"},{"node":"z-worker","provider":"z","context_mode":"numeric","status":"fit","reason":"sized","required_mib":11,"capacity_mib":12}]}]}`,
 	} {
 		router := &capacityRouter{serve: func(*routing.Request) *httptest.ResponseRecorder {
 			rec := httptest.NewRecorder()
@@ -220,7 +220,7 @@ func TestCompatibleNodesWorkerAssessment(t *testing.T) {
 
 func TestDeploymentEligibilityIgnoresCapacityUnknown(t *testing.T) {
 	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, func(string, string, string, string, bool) []string { return []string{"llamacpp"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
-		return process.MemoryAssessment{Status: "unknown", Reason: "missing weights"}
+		return process.MemoryAssessment{ContextMode: "numeric", Status: "unknown", Reason: "missing weights"}
 	})
 	router := &capacityRouter{serve: func(req *routing.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -251,7 +251,7 @@ func TestPreviewWorkerWithoutAssessmentIsUnknown(t *testing.T) {
 func TestCompatibleNodesSortFits(t *testing.T) {
 	router := &capacityRouter{serve: func(*routing.Request) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		_, err := rec.WriteString(`{"data":[{"name":"z","assessments":[{"node":"z","provider":"p","status":"fit","reason":"sized"}]},{"name":"a","assessments":[{"node":"a","provider":"p","status":"fit","reason":"sized"}]}]}`)
+		_, err := rec.WriteString(`{"data":[{"name":"z","assessments":[{"node":"z","provider":"p","context_mode":"numeric","status":"fit","reason":"sized"}]},{"name":"a","assessments":[{"node":"a","provider":"p","context_mode":"numeric","status":"fit","reason":"sized"}]}]}`)
 		require.NoError(t, err)
 		return rec
 	}}
@@ -261,4 +261,48 @@ func TestCompatibleNodesSortFits(t *testing.T) {
 	require.Len(t, result.Data, 2)
 	assert.Equal(t, "a", result.Data[0]["name"])
 	assert.Equal(t, "z", result.Data[1]["name"])
+}
+
+func TestLegacyAssessmentDegradesToUnknown(t *testing.T) {
+	for _, status := range []string{"fit", "no_fit", "unknown"} {
+		t.Run(status, func(t *testing.T) {
+			assessment := `{"status":"` + status + `","reason":"old sizing","required_mib":17}`
+			router := &capacityRouter{serve: func(*routing.Request) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				_, err := rec.WriteString(`{"data":[{"name":"node","assessments":[{"node":"node","provider":"p","status":"` + status + `","reason":"old sizing"}]}]}`)
+				require.NoError(t, err)
+				return rec
+			}}
+			service := NewNodesService(&mockClusterState{localNode: map[string]any{"name": "node"}}, router, nil)
+			nodes, err := service.ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m"})
+			require.NoError(t, err)
+			require.Empty(t, nodes.Data)
+			require.Len(t, nodes.Assessments, 1)
+			assert.Equal(t, "unknown", nodes.Assessments[0].Status)
+			assert.Equal(t, "unknown", nodes.Assessments[0].ContextMode)
+			s := NewLoadService(nil, &loadResultRouter{status: 200, body: `{"model":"m","provider":"vllm","assessment":` + assessment + `}`})
+			preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "vllm", Node: "worker"})
+			require.NoError(t, err)
+			assert.Equal(t, "unknown", preview.Assessment.Status)
+			assert.Equal(t, "unknown", preview.Assessment.ContextMode)
+			assert.Zero(t, preview.Assessment.RequiredMiB)
+		})
+	}
+}
+
+func TestAutoContextRESTPreservesEvidence(t *testing.T) {
+	evidence := process.MemoryAssessment{Status: "fit", Reason: "sized", ContextMode: "auto", ContextTokens: 4096, AffordableContextTokens: 8192, Placement: "offload"}
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"p"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment { return evidence })
+	nodes, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m"})
+	require.NoError(t, err)
+	require.Len(t, nodes.Data, 1)
+	require.Len(t, nodes.Assessments, 1)
+	assert.Equal(t, evidence, nodes.Assessments[0].MemoryAssessment)
+	body, err := json.Marshal(map[string]any{"assessment": evidence})
+	require.NoError(t, err)
+	s := NewLoadService(nil, &loadResultRouter{status: 200, body: string(body)})
+	preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "p", Node: "worker"})
+	require.NoError(t, err)
+	require.NotNil(t, preview.Assessment)
+	assert.Equal(t, evidence, *preview.Assessment)
 }

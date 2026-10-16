@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Capacity previews and launch admission share context-aware sizing: auto vLLM
+  and MLX assess a declared 4096-token minimum; llama.cpp reads bounded GGUF
+  geometry and native context, honors quantized KV and reports GPU or offload
+  placement. MLX uses a tier-overridable 0.75 unified-memory fraction. Assessments
+  include context and estimated affordability; unsupported evidence stays unknown.
+  Fixed-budget failures refuse launch without eviction. Cluster protocol adds
+  context evidence while retaining rolling compatibility with older workers,
+  whose assessments degrade to unknown.
+
 - Standalone provider install preflight reports unsupported OS or architecture
   as a failed `platform` check with a remediation hint, before host probes.
   Reports still return HTTP 200 and use the selected node's installer and requirements.

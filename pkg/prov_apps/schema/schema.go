@@ -17,15 +17,18 @@ import (
 // optional per-endpoint overlay schema mirroring config.yaml's
 // defaults.endpoints.<E>.parameters tree.
 type YAMLSchema struct {
-	Provider    string                  `yaml:"provider"`
-	Parameters  map[string]YAMLParam    `yaml:"parameters,omitempty"`
-	Endpoints   map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
-	Diagnostics *Diagnostics            `yaml:"diagnostics,omitempty"`
+	AutoContext               `yaml:",inline"`
+	MemoryFractionEnvironment string                  `yaml:"memory_fraction_environment,omitempty"`
+	Provider                  string                  `yaml:"provider"`
+	Parameters                map[string]YAMLParam    `yaml:"parameters,omitempty"`
+	Endpoints                 map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
+	Diagnostics               *Diagnostics            `yaml:"diagnostics,omitempty"`
 }
 
 // YAMLParam mirrors ParamShape on disk. Kind is a string so yaml.v3 decodes
 // cleanly; Merge validates it against ParamKind.
 type YAMLParam struct {
+	AutoContext `yaml:",inline"`
 	Type        string   `yaml:"type,omitempty"`
 	Min         *float64 `yaml:"min,omitempty"`
 	Max         *float64 `yaml:"max,omitempty"`
@@ -48,9 +51,11 @@ type YAMLEndpoint struct {
 // provider. Endpoints is the per-endpoint overlay schema; absent when
 // the provider declares none.
 type ProviderSchema struct {
-	Parameters  map[string]ParamShape
-	Endpoints   map[string]EndpointSchema
-	Diagnostics *Diagnostics
+	AutoContext
+	MemoryFractionEnvironment string
+	Parameters                map[string]ParamShape
+	Endpoints                 map[string]EndpointSchema
+	Diagnostics               *Diagnostics
 }
 
 // EndpointSchema is the merged shape for one endpoint overlay's params.
@@ -101,6 +106,10 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	var errs []error
 	if y == nil {
 		return out, nil
+	}
+	out.AutoContext, out.MemoryFractionEnvironment = y.AutoContext, y.MemoryFractionEnvironment
+	if err := y.AutoContext.validate(); err != nil {
+		errs = append(errs, err)
 	}
 	if err := y.Diagnostics.Validate(); err != nil {
 		errs = append(errs, err)
@@ -179,6 +188,12 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 	if out.Auto == "" {
 		out.Auto = yp.Auto
+	}
+	if yp.AutoMinContextTokens != 0 || yp.AutoContextSource != "" {
+		out.AutoContext = yp.AutoContext
+	}
+	if err := out.AutoContext.validate(); err != nil || ((out.AutoMinContextTokens != 0 || out.AutoContextSource != "") && (out.Kind != ParamInt || out.Auto == "")) {
+		return ParamShape{}, fmt.Errorf("%s.%s: auto context policy requires an auto integer and valid metadata", provider, qualifiedName)
 	}
 	if out.Served == "" {
 		out.Served = yp.Served

@@ -1,5 +1,7 @@
 # Long-tail MLX parameters. Go spine carries max-tokens.
 provider: mlx
+auto_min_context_tokens: 4096
+memory_fraction_environment: MLX_MEMORY_FRACTION
 parameters:
   temperature:
     type: float

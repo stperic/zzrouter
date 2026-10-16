@@ -88,7 +88,7 @@ func TestCompatibleNodesUnknownEvidence(t *testing.T) {
 	}{
 		{"missing size", schema.MemoryFractionTotal, "auto", Need{}, devices},
 		{"missing geometry", schema.MemoryFractionTotal, "auto", Need{WeightsMiB: 1000, Incomplete: true}, devices},
-		{"numeric budget", schema.MemoryFractionTotal, "0.5", Need{WeightsMiB: 1000, KVMiB: 100, OverheadMiB: 100}, devices},
+		{"numeric budget missing geometry", schema.MemoryFractionTotal, "0.5", Need{WeightsMiB: 1000, Incomplete: true}, devices},
 		{"missing budget value", schema.MemoryFractionTotal, "", Need{}, devices},
 		{"missing measurement", schema.MemoryFractionTotal, "auto", Need{}, nil},
 		{"missing total", schema.MemoryFractionTotal, "auto", Need{}, []gpu.MemoryDevice{{UUID: "GPU-A"}}},
