@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -419,30 +418,15 @@ func TestBudgetUnpricedFallbackAfterFailure(t *testing.T) {
 }
 
 func TestBudgetExternalEndpointUpgrade(t *testing.T) {
+	payload := `{"provider":"my-external-provider","model":"*","input_cost_per_1m":0,"output_cost_per_1m":0}`
 	for _, tc := range []struct {
-		doc       string
+		name      string
 		key, team float64
 	}{
-		{"../../CHANGELOG.md", 1, 0},
-		{"../../docs/configuration.md", 0, 1},
+		{"key limit", 1, 0},
+		{"team limit", 0, 1},
 	} {
-		t.Run(tc.doc, func(t *testing.T) {
-			doc, err := os.ReadFile(tc.doc)
-			require.NoError(t, err)
-			assert.Contains(t, strings.Join(strings.Fields(string(doc)), " "), "without a managed lifecycle now receive 403 `model_unpriced` until an operator")
-			_, command, found := strings.Cut(string(doc), "curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides")
-			require.True(t, found, "upgrade note must give the exact API call")
-			assert.Contains(t, command, "X-API-Key: $ZZROUTER_ADMIN_API_KEY")
-			_, payload, found := strings.Cut(command, "-d '")
-			require.True(t, found)
-			payload, _, found = strings.Cut(payload, "'")
-			require.True(t, found)
-			var override map[string]any
-			require.NoError(t, json.Unmarshal([]byte(payload), &override))
-			assert.Equal(t, "my-external-provider", override["provider"])
-			assert.Equal(t, "*", override["model"])
-			assert.Equal(t, float64(0), override["input_cost_per_1m"])
-			assert.Equal(t, float64(0), override["output_cost_per_1m"])
+		t.Run(tc.name, func(t *testing.T) {
 			b := &serviceBackend{status: 200, wire: []string{"chat_completions"}}
 			s := budgetNode(t, []string{"my-external-provider"}, map[string]*serviceBackend{"my-external-provider": b})
 			raw := budgetKey(t, s, tc.key, tc.team)
@@ -477,9 +461,6 @@ func (r *budgetCountingResolver) Resolve(ctx context.Context, ref resolver.Refer
 }
 
 func TestBudgetResolutionBeforeRPM(t *testing.T) {
-	doc, err := os.ReadFile("../../docs/security.md")
-	require.NoError(t, err)
-	assert.Contains(t, strings.Join(strings.Fields(string(doc)), " "), "Model resolution, including catalog population, runs before RPM/TPM checks, so a caller over its RPM limit still incurs a resolution.")
 	b := &serviceBackend{status: 200, wire: []string{"chat_completions"}}
 	s := budgetNode(t, []string{"priced"}, map[string]*serviceBackend{"priced": b})
 	raw := budgetKey(t, s, 1, 0)

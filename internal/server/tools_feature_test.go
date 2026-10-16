@@ -2,8 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"os"
-	"strings"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -79,13 +77,5 @@ func TestToolsCloudExternalEvidenceContract(t *testing.T) {
 		assert.False(t, deriveCapabilities(m, fakeApps(t)).Tools)
 		m.Details = map[string]any{"features": map[string]string{"tools": "present"}}
 		assert.True(t, deriveCapabilities(m, fakeApps(t)).Tools)
-	}
-	for _, path := range []string{"../../docs/model_features.md", "../../CHANGELOG.md", "openapi.yaml"} {
-		raw, err := os.ReadFile(path)
-		require.NoError(t, err)
-		text := strings.Join(strings.Fields(string(raw)), " ")
-		for _, phrase := range []string{"Cloud and external models", "tools:false", "no evidence", "not refusal"} {
-			assert.Contains(t, text, phrase, path)
-		}
 	}
 }

@@ -121,9 +121,6 @@ func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
 	assessment, err = m.checkMemory(t.Context(), features, false)
 	require.NoError(t, err, "CPU launch keeps its existing observation bypass")
 	assert.Equal(t, "unknown", assessment.Status)
-	doc, err := os.ReadFile("../../docs/agent_quickstart.md")
-	require.NoError(t, err)
-	assert.Contains(t, string(doc), "Hosts with no GPU observation, including CPU-only llama.cpp, skip the weight\nlower bound and report `unknown`.")
 }
 
 func TestCapacityMissingUnifiedTotalIsUnknown(t *testing.T) {

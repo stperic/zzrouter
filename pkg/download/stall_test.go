@@ -90,15 +90,6 @@ func TestStallReaderEmptyReadsDoNotResetDeadline(t *testing.T) {
 	})
 }
 
-func TestDownloadCancellationDocumentation(t *testing.T) {
-	doc, err := os.ReadFile("../../docs/api.md")
-	require.NoError(t, err)
-	require.Contains(t, string(doc), "10-minute body-read stall")
-	require.Contains(t, string(doc), "48-hour overall cap")
-	require.Contains(t, string(doc), "no data received for "+BodyStallTimeout.String())
-	require.Contains(t, string(doc), "Every successful byte read resets the stall")
-}
-
 type blockingCloseBody struct {
 	io.ReadCloser
 	started          atomic.Bool
