@@ -18,12 +18,11 @@ const (
 	ForceTimeout    = 5 * time.Second
 )
 
-// TerminateRequest holds everything needed to stop a process tree.
-// On Unix, only PID and ProcessGroupID are used. On Windows, StdinPipe
-// and JobHandle enable the stdin-pipe graceful shutdown and Job Object
-// atomic kill paths. Callers populate from Instance fields.
+// TerminateRequest carries the identified leader through both shutdown stages.
 type TerminateRequest struct {
-	PID            int
+	PID        int
+	StartToken int64
+	Inspector
 	ProcessGroupID int
 	StdinPipe      io.WriteCloser // Windows: close to signal launcher; nil on Unix
 	JobHandle      uintptr        // Windows: Job Object handle; 0 on Unix
@@ -45,7 +44,8 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 		graceful = GracefulTimeout
 	}
 
-	if !ProcessExists(int32(req.PID)) {
+	// Identity may change between inspection and signal; the existing narrow race is accepted.
+	if !req.Owns(req.PID, req.StartToken) {
 		return nil
 	}
 
@@ -78,7 +78,7 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 // forceKill sends SIGKILL (Unix) or TerminateJobObject (Windows) to the
 // process tree.
 func forceKill(req TerminateRequest) error {
-	if !ProcessExists(int32(req.PID)) {
+	if !req.Owns(req.PID, req.StartToken) {
 		return nil
 	}
 

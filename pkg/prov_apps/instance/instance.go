@@ -121,6 +121,7 @@ type Instance struct {
 	failureCause error
 	// stopClaimed/launchClaimed: which side signalled the process; a stop may retry its own claim.
 	stopClaimed, launchClaimed bool
+	processStartToken          int64
 	// leftStarting closes when Status first leaves StatusStarting.
 	leftStarting chan struct{}
 
@@ -454,11 +455,13 @@ func (i *Instance) Resolved() Resolved {
 	return i.resolved.clone()
 }
 
-func (i *Instance) SetProcessInfo(pid, pgid int, cmd *LaunchCommand) {
+// SetProcessInfo publishes fork identity together so stops cannot observe half.
+func (i *Instance) SetProcessInfo(pid, pgid int, startToken int64, cmd *LaunchCommand) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.ProcessID = pid
 	i.ProcessGroupID = pgid
+	i.processStartToken = startToken
 	i.LaunchCommand = cmd
 }
 
@@ -472,17 +475,15 @@ func (i *Instance) SetLogFilePath(path string) {
 	i.LogFilePath = path
 }
 
-// ClaimTermination returns the recorded pid when the caller is to signal it,
-// else 0. Whichever of a stop and the launching goroutine claims first owns
-// the signal; only a stop may claim again, to retry its own failed stop.
-func (i *Instance) ClaimTermination(byStop bool) int {
+// ClaimTermination arbitrates signal ownership; only a stop may retry its claim.
+func (i *Instance) ClaimTermination(byStop bool) (int, int64) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.ProcessID <= 0 || i.launchClaimed || (i.stopClaimed && !byStop) {
-		return 0
+		return 0, 0
 	}
 	i.stopClaimed, i.launchClaimed = byStop, !byStop
-	return i.ProcessID
+	return i.ProcessID, i.processStartToken
 }
 
 // GetProcessID returns the process ID under lock.

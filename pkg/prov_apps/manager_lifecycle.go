@@ -565,18 +565,18 @@ func (m *ProviderAppManager) runInstanceLifecycle(inst *instance.Instance, run a
 	}
 
 	if m.seams.processStarted != nil {
-		m.seams.processStarted()
+		m.seams.processStarted(result)
 	}
 	inst.SetJobHandle(result.JobHandle)
 	inst.SetStdinPipe(result.StdinPipe)
-	inst.SetProcessInfo(result.PID, result.ProcessGroupID, result.Command) // last: a stop claims the process by its pid
+	inst.SetProcessInfo(result.PID, result.ProcessGroupID, result.StartToken, result.Command) // last: a stop claims the recorded identity
 	// A stop that ran before the pid was recorded saw no process; this goroutine signals it instead.
 	if inst.Context().Err() != nil {
-		if pid := inst.ClaimTermination(false); pid > 0 {
+		if pid, startToken := inst.ClaimTermination(false); pid > 0 {
 			inst.TrackGoroutine()
 			go func() {
 				defer inst.GoroutineDone()
-				if err := m.terminateProcess(context.Background(), inst, pid); err != nil {
+				if err := m.terminateProcess(context.Background(), inst, pid, startToken); err != nil {
 					slog.Warn("failed to stop a process launched during its stop", "instance", inst.ID, "pid", pid, "error", err)
 				}
 			}()
@@ -585,7 +585,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(inst *instance.Instance, run a
 
 	// Track PID on disk so orphan cleanup can find it after a crash
 	if m.pidTracker != nil {
-		if trackErr := m.pidTracker.Track(inst.ID, result.PID); trackErr != nil {
+		if trackErr := m.pidTracker.Track(inst.ID, result.PID, result.StartToken); trackErr != nil {
 			slog.Warn("failed to track PID", "instance", inst.ID, "pid", result.PID, "error", trackErr)
 		}
 	}
@@ -831,16 +831,11 @@ func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance
 
 // terminateProcess ends a run's process tree, gracefully first, within the
 // provider's shutdown_timeout.
-func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instance.Instance, pid int) error {
-	if !process.IsSafeToKill(int32(pid)) {
-		return nil
-	}
-	if !process.ProcessHasMarker(int32(pid)) {
-		slog.Warn("skipping process termination: PID may have been recycled", "instance", inst.ID, "pid", pid)
-		return nil
-	}
+func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instance.Instance, pid int, startToken int64) error {
 	req := process.TerminateRequest{
 		PID:            pid,
+		StartToken:     startToken,
+		Inspector:      m.seams.inspector,
 		ProcessGroupID: inst.GetProcessGroupID(),
 		Graceful:       m.resolveShutdownTimeout(inst.Provider),
 		JobHandle:      inst.GetJobHandle(),

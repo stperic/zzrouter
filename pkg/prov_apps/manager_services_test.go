@@ -346,8 +346,7 @@ func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := host.CommandContext(ctx, binary, args...)
-	cmd.Env, err = process.ChildEnvironment(m.providerServiceEnv("generic-daemon"))
-	require.NoError(t, err)
+	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1"}
 	started := make(chan int, 1)
 	done := make(chan error, 1)
 	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()
@@ -357,6 +356,7 @@ func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("old daemon did not start")
 	}
+	require.False(t, (process.Inspector{}).HasMarker(int32(priorPID)), "migration must also identify an unmarked daemon")
 	prior := serviceStatus(t, m)
 	require.Equal(t, "external", prior.Supervisor, "a detached process has no zzRouter supervisor yet")
 	require.True(t, prior.Managed)

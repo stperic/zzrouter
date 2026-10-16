@@ -390,7 +390,8 @@ func TestPinnedRestoreTerminalPaths(t *testing.T) {
 			case "operator":
 				require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
 			case "process":
-				require.NoError(t, process.Terminate(t.Context(), process.TerminateRequest{PID: run.GetProcessID(), ProcessGroupID: run.GetProcessGroupID(), Graceful: time.Second}))
+				pid, startToken := run.ClaimTermination(true)
+				require.NoError(t, process.Terminate(t.Context(), process.TerminateRequest{PID: pid, StartToken: startToken, ProcessGroupID: run.GetProcessGroupID(), Graceful: time.Second}))
 				require.Eventually(t, func() bool { return run.GetStatus().IsTerminal() }, contractWait, time.Millisecond)
 			case "health":
 				mon := health.NewMonitor(r.m.instances, health.MonitorConfig{Interval: time.Millisecond, Timeout: time.Millisecond, MaxRetries: 1})

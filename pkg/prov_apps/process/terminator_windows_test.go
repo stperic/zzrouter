@@ -24,7 +24,7 @@ func TestTerminateWindowsHelper(t *testing.T) {
 	_, _ = io.Copy(io.Discard, os.Stdin) // Remain alive until the parent closes stdin.
 }
 
-func startTerminateWindowsHelper(t *testing.T) (int, windows.Handle, io.WriteCloser, <-chan error) {
+func startTerminateWindowsHelper(t *testing.T) (int, int64, windows.Handle, io.WriteCloser, <-chan error) {
 	t.Helper()
 	binary, err := os.Executable()
 	require.NoError(t, err)
@@ -51,11 +51,13 @@ func startTerminateWindowsHelper(t *testing.T) (int, windows.Handle, io.WriteClo
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(cmd.Process.Pid))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = windows.CloseHandle(handle) })
-	return cmd.Process.Pid, handle, stdin, wait
+	startToken, err := StartToken(cmd.Process.Pid)
+	require.NoError(t, err)
+	return cmd.Process.Pid, startToken, handle, stdin, wait
 }
 
 func TestTerminateWindowsExitedProcessWithRetainedHandle(t *testing.T) {
-	pid, handle, stdin, wait := startTerminateWindowsHelper(t)
+	pid, startToken, handle, stdin, wait := startTerminateWindowsHelper(t)
 	require.True(t, ProcessExists(int32(pid)))
 	require.NoError(t, stdin.Close())
 	require.NoError(t, <-wait)
@@ -63,14 +65,14 @@ func TestTerminateWindowsExitedProcessWithRetainedHandle(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, windows.WAIT_OBJECT_0, event)
 	assert.False(t, ProcessExists(int32(pid)), "retained process object is not a live process")
-	require.NoError(t, Terminate(t.Context(), TerminateRequest{PID: pid, JobHandle: uintptr(windows.InvalidHandle)}))
+	require.NoError(t, Terminate(t.Context(), TerminateRequest{PID: pid, StartToken: startToken, JobHandle: uintptr(windows.InvalidHandle)}))
 }
 
 func TestTerminateWindowsStaleJobHandleFallsBackToLiveProcess(t *testing.T) {
-	pid, handle, _, wait := startTerminateWindowsHelper(t)
+	pid, startToken, handle, _, wait := startTerminateWindowsHelper(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // Exercise forced termination immediately, with a stale Job Object handle.
-	require.NoError(t, Terminate(ctx, TerminateRequest{PID: pid, JobHandle: uintptr(windows.InvalidHandle)}))
+	require.NoError(t, Terminate(ctx, TerminateRequest{PID: pid, StartToken: startToken, JobHandle: uintptr(windows.InvalidHandle)}))
 	require.Error(t, <-wait)
 	event, err := windows.WaitForSingleObject(handle, 0)
 	require.NoError(t, err)

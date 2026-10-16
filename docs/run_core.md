@@ -43,6 +43,41 @@ Served, process and adopted runs share that manager publisher; health recovery r
 transition. A served load that loses commitment undoes its landed model. An adopted run is already resident,
 so explicit Stop unloads it even if it wins before the first readiness stamp.
 
+## Process identity at shutdown
+
+The launch records its leader PID and an opaque per-platform start token together
+on the instance and in the shared JSON PID file (`start_token`). The node and
+launcher ship as a pair and both call `process.StartToken`. `ClaimTermination`
+carries the identity through the existing stop ownership path. The shared process
+terminator compares the token exactly before graceful and forced signals,
+including process-group signals. Exec preserves the token even when a procfs
+environment read returns empty. A mismatching or unreadable recorded identity is
+refused. The existing small check-then-signal window remains accepted.
+
+On Linux the token is raw start time in clock ticks from `/proc/<pid>/stat`
+field 22, parsed after the last `)` so spaces and parentheses in comm cannot shift
+fields. No boot-time or wall-clock conversion is involved. On Darwin and Windows
+it is gopsutil `CreateTime`: Darwin reads `kinfo_proc.p_starttime` via sysctl
+([source](https://github.com/shirou/gopsutil/blob/v4.26.9/process/process_darwin.go#L88-L94));
+Windows reads the kernel creation time via `GetProcessTimes`
+([conversion](https://github.com/shirou/gopsutil/blob/v4.26.9/process/process_windows.go#L412-L418),
+[kernel read](https://github.com/shirou/gopsutil/blob/v4.26.9/process/process_windows.go#L969-L984)).
+These fixed kernel values are stable across inspections. Linux gopsutil creation
+time instead adds a reconstructed boot time
+([source](https://github.com/shirou/gopsutil/blob/v4.26.9/process/process_linux.go#L1103-L1108)),
+which can shift between calls, especially with the uptime calculation in containers
+([source](https://github.com/shirou/gopsutil/blob/v4.26.9/internal/common/common_linux.go#L48-L103)).
+
+Restart-time orphan cleanup uses the same predicate and only counts a termination
+and untracks its record after confirming exit. A refusal or termination error
+keeps the record for the next pass. Already absent processes only lose their stale
+files. Integer PID files and older launcher JSON without `start_token` retain the
+environment-marker fallback, including its existing behavior when environment
+inspection is unsupported. The launcher JSON still distinguishes its leader `pid`
+from `child_pid`. Managed-daemon identification captures the same token with the
+canonical binary and fixed arguments, allowing an unmarked identified daemon to
+migrate through the same terminator. Windows keeps stdin shutdown and Job Objects.
+
 ## Waiter contract
 
 A caller that joins a start in flight gets that start's outcome, the run or the error, judged by `Decide`
