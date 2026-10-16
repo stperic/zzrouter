@@ -20,7 +20,7 @@ import (
 )
 
 func TestWeightLowerBoundProblemExplainsReach(t *testing.T) {
-	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, Incomplete: true}, map[string]string{"budget": "1"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024}}, 0, nil, nil, 0)
+	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, UnknownCause: process.MetadataInvalid}, map[string]string{"budget": "1"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024}}, 0, nil, nil, 0)
 	require.Error(t, err)
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
 	RespondToError(c, err)
@@ -60,7 +60,8 @@ func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 			assert.Equal(t, "comfy-run", holder["run"])
 			assert.Equal(t, "comfyui", holder["provider"])
 			assert.Contains(t, problem.Detail, "zzRouter run comfy-run provider comfyui (31966 MiB unused commitment; reclaim skipped: "+reason+")")
-			assert.Contains(t, problem.Errors[0].Hint, "PATCH")
+			assert.Contains(t, problem.Errors[0].Hint, "zz_params_get")
+			assert.Contains(t, problem.Errors[0].Hint, "zz_run_stop")
 			assert.Equal(t, 503, answeredStatus(fmt.Errorf("observe: %w", process.ErrMemoryObservation)))
 			assert.Equal(t, 400, answeredStatus(fmt.Errorf("budget: %w", process.ErrMemoryBudgetInvalid)))
 			classified := loadFailureWire(fmt.Errorf("cold load: %w", refusal))
@@ -141,6 +142,7 @@ func TestContextBudgetProblemReportsDeclaredShortfall(t *testing.T) {
 	assert.Contains(t, problem.Detail, "context requirement")
 	assert.NotContains(t, problem.Detail, "model weights require")
 	require.Len(t, problem.Errors, 1)
-	assert.Contains(t, problem.Errors[0].Hint, "Increase the declared budget")
-	assert.Contains(t, problem.Errors[0].Hint, "stopping holders cannot repair")
+	assert.Contains(t, problem.Errors[0].Hint, "zz_params_get")
+	assert.Contains(t, problem.Errors[0].Hint, "zz_run_preview")
+	assert.NotContains(t, problem.Errors[0].Hint, "zz_run_stop")
 }

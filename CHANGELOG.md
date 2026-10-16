@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Explain unknown capacity assessments with thirteen closed causes and MCP next
+  actions. Retain exact local weights rounded up to MiB on every status and
+  independently known capacity on unknown rows, preserving fit and admission
+  decisions. Retain vLLM Mamba-cache block counts and the logged sequence bound
+  in actionable run/job failures. Add the evidence-checked explainable-fit agent
+  campaign with owned-run cleanup. Cluster protocol advances from 13/minimum 12
+  to 14/minimum 13: upgrade the coordinator first, then protocol-13 workers;
+  older assessments normalize conservatively and protocol-12 peers must upgrade
+  before rejoining. See `docs/protocol_versioning.md` for rollout instructions.
 - Size supported HF hybrid attention and GGUF qwen35/qwen3moe models through
   the shared fit and admission path. Count full-attention KV, all expert weights
   and conservative float32 recurrent states using schema-declared row counts.

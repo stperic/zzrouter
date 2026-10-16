@@ -63,7 +63,7 @@ func TestMemoryAssessmentWeightLowerBound(t *testing.T) {
 			params := map[string]string{"budget": tc.fraction}
 			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000, Unified: tc.unified}}
 			for _, weight := range []int64{tc.reach, tc.reach + 1} {
-				assessment, err := AdmitMemoryBudget(budget, Need{WeightsMiB: weight, Incomplete: true}, maps.Clone(params), nil, devices, tc.ram, nil, nil, 0)
+				assessment, err := AdmitMemoryBudget(budget, Need{WeightsMiB: weight, UnknownCause: MetadataInvalid}, maps.Clone(params), nil, devices, tc.ram, nil, nil, 0)
 				if weight == tc.reach {
 					require.NoError(t, err)
 					assert.Equal(t, "unknown", assessment.Status)
@@ -87,8 +87,8 @@ func TestCompatibleNodesUnknownEvidence(t *testing.T) {
 		devices              []gpu.MemoryDevice
 	}{
 		{"missing size", schema.MemoryFractionTotal, "auto", Need{}, devices},
-		{"missing geometry", schema.MemoryFractionTotal, "auto", Need{WeightsMiB: 1000, Incomplete: true}, devices},
-		{"numeric budget missing geometry", schema.MemoryFractionTotal, "0.5", Need{WeightsMiB: 1000, Incomplete: true}, devices},
+		{"missing geometry", schema.MemoryFractionTotal, "auto", Need{WeightsMiB: 1000, UnknownCause: MetadataInvalid}, devices},
+		{"numeric budget missing geometry", schema.MemoryFractionTotal, "0.5", Need{WeightsMiB: 1000, UnknownCause: MetadataInvalid}, devices},
 		{"missing budget value", schema.MemoryFractionTotal, "", Need{}, devices},
 		{"missing measurement", schema.MemoryFractionTotal, "auto", Need{}, nil},
 		{"missing total", schema.MemoryFractionTotal, "auto", Need{}, []gpu.MemoryDevice{{UUID: "GPU-A"}}},
@@ -107,7 +107,7 @@ func TestCompatibleNodesUnknownEvidence(t *testing.T) {
 func TestMemoryAssessmentWeightByteBoundary(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}
 	for _, size := range []int64{512 * 1024, 512*1024 + 1} {
-		need := Need{WeightsMiB: 1, WeightsBytes: size, Incomplete: true}
+		need := Need{WeightsMiB: 1, WeightsBytes: size, UnknownCause: MetadataInvalid}
 		assessment, err := AdmitMemoryBudget(budget, need, map[string]string{"budget": "0.5"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1, FreeMiB: 1}}, 0, nil, nil, 0)
 		if size == 512*1024 {
 			require.NoError(t, err)
@@ -123,16 +123,16 @@ func TestMemoryAssessmentWeightByteBoundary(t *testing.T) {
 func TestWeightLowerBoundExplainsReachAndRoundsUp(t *testing.T) {
 	for _, kind := range []string{schema.MemoryFractionTotal, schema.MemoryLayers, schema.MemoryUnified} {
 		t.Run(kind, func(t *testing.T) {
-			need := Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, Incomplete: true}
+			need := Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, UnknownCause: MetadataInvalid}
 			assessment, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: kind, Parameter: "budget"}, need, map[string]string{"budget": "0.5"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024, Unified: kind != schema.MemoryFractionTotal}}, 1024, nil, nil, 0)
 			var fit *MemoryFitError
 			require.ErrorAs(t, err, &fit)
 			assert.Equal(t, int64(1025), fit.RequiredMiB)
 			assert.Greater(t, fit.RequiredMiB, fit.FreeMiB)
-			assert.Contains(t, assessment.Reason, "model weights require 1.0009765625 GiB")
-			assert.Contains(t, assessment.Reason, kind+" reach of ")
-			assert.Contains(t, assessment.Reason, "GiB (budget)")
-			assert.Contains(t, assessment.Reason, "smaller quantization or another node")
+			assert.Equal(t, kind, fit.BudgetKind)
+			assert.Equal(t, "no_fit", assessment.Status)
+			assert.Equal(t, fit.RequiredMiB, assessment.RequiredMiB)
+			assert.Equal(t, fit.FreeMiB, assessment.CapacityMiB)
 		})
 	}
 }
@@ -149,7 +149,7 @@ func TestMemoryAssessmentLayersReachAllVisibleDevices(t *testing.T) {
 			reach = 9000
 		}
 		for _, weights := range []int64{reach, reach + 1} {
-			assessment, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryLayers}, Need{WeightsMiB: weights, Incomplete: true}, nil, env, devices, 3000, nil, nil, 0)
+			assessment, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryLayers}, Need{WeightsMiB: weights, UnknownCause: MetadataInvalid}, nil, env, devices, 3000, nil, nil, 0)
 			if weights == reach {
 				require.NoError(t, err)
 				assert.Equal(t, "unknown", assessment.Status)
@@ -173,6 +173,6 @@ func TestUnsizedFractionReportsNoRequirement(t *testing.T) {
 		require.NoError(t, err, value)
 		assert.Equal(t, "unknown", assessment.Status, value)
 		assert.Zero(t, assessment.RequiredMiB, value)
-		assert.Zero(t, assessment.CapacityMiB, value)
+		assert.Equal(t, int64(9800), assessment.CapacityMiB, value)
 	}
 }

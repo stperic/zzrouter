@@ -26,7 +26,7 @@ parameters:
   max-num-seqs:
     type: int
     min: 1
-    description: Maximum concurrent sequences vLLM batches per forward pass
+    description: Maximum concurrent sequences vLLM batches per forward pass; max_num_seqs in engine logs names this parameter. A Mamba-cache refusal reports the supported upper bound as at most N.
   quantization:
     type: string
     description: Quantization scheme (awq | gptq | fp8 | ...)

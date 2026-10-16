@@ -25,8 +25,18 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
-Protocol 13 adds optional context-aware memory assessment fields and non-strict
-provider schema metadata. The minimum remains 12 for rolling upgrades. Node
+Protocol 14 adds optional `unknown_cause` and `weights_mib` assessment fields and
+independent `capacity_mib` evidence on unknown rows. The minimum advances from
+12 to 13, retaining exactly one previous protocol for rolling upgrades. Upgrade
+the coordinator first, then protocol-13 workers using the compatible rollout
+procedure below; protocol-12 peers must upgrade before rejoining. Context-aware
+older fit/no_fit decisions survive; older unknown replies without a cause carry
+`node_outdated`. Replies lacking context evidence also carry `node_outdated`,
+and missing worker replies carry `node_unreachable`. No fit or admission policy
+changes. New fields remain absent when the worker cannot supply them.
+
+Protocol 13 added optional context-aware memory assessment fields and non-strict
+provider schema metadata. Its minimum was 12 for rolling upgrades. Node
 aggregation and run previews downgrade replies lacking `context_mode` to unknown,
 including older positive assessments. New schema metadata is outside strict
 diagnostics; MLX's usable fraction and minimum context are release-owned,

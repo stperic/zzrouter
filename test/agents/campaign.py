@@ -590,7 +590,14 @@ CALLS, CALLS_LOCK = [], threading.Lock()
 def call_evidence(fields):
     if not isinstance(fields, dict):
         return {}
-    evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail", "deployment_id", "accepted") if k in fields}
+    evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail", "deployment_id", "accepted", "provider", "context_length", "error_message", "failure", "assessment", "parameters", "parameter_sources") if k in fields}
+    if isinstance(fields.get("runs"), list):
+        evidence["runs"] = [call_evidence(row) for row in fields["runs"][:16]]
+        if len(fields["runs"]) > 16:
+            evidence["capture_overflow"] = True
+    if isinstance(fields.get("lines"), list):
+        evidence["lines"] = [line[:1000] for line in fields["lines"] if isinstance(line, str)
+                             and re.search(r"Maximum concurrency|GPU KV cache size|Mamba cache|at most", line)][:40]
     if isinstance(fields.get("jobs"), list):
         evidence["jobs"] = [{k: row[k] for k in ("job_id", "node", "kind", "state") if k in row} for row in fields["jobs"][:2] if isinstance(row, dict)]
     if "nodes" in fields:
@@ -1186,6 +1193,70 @@ def check_tool_endpoint(ctx):
             ("coordinator /v1 tool call to the reported model", ok, f"{model!r} {code} {ms}ms {tc or d!s:.200}")]
 
 
+def fit_settings(args):
+    """Compare request settings, ignoring operation identity and preview's environment spelling."""
+    return {k: args.get(k) or {} if k in ("parameters", "env_vars") else args.get(k) or ""
+            for k in ("model", "node", "provider", "endpoint", "parameters", "env_vars")} | {
+                "env_vars": args.get("env_vars") or args.get("environment") or {}}
+
+
+def preview_covers(preview_args, start_args):
+    """A preview speaks for a start that keeps its settings and only adds non-sizing ones (keep-alive)."""
+    p, s = fit_settings(preview_args), fit_settings(start_args)
+    return all(p[k] == s[k] for k in ("model", "node", "provider", "endpoint")) and all(
+        p[k].items() <= s[k].items() for k in ("parameters", "env_vars"))
+
+
+def check_explainable_fit(ctx):
+    calls, result = ctx["calls"], ctx["rj"] or {}
+    previews, failed, starts, safe = [], set(), [], True
+    for c in calls:
+        args, evidence = c.get("args") or {}, c.get("evidence") or {}
+        if c["tool"] == "zz_run_preview" and c.get("is_error") is False:
+            previews.append(c)
+        if c["tool"] == "zz_job" and evidence.get("state") == "failed":
+            failed.add(args.get("job_id"))
+        if c["tool"] == "zz_run_start":
+            settings = fit_settings(args)
+            safe &= not any(preview_covers(p["args"], args) and (p["evidence"].get("assessment") or {}).get("status") == "no_fit" for p in previews)
+            safe &= not any(fit_settings(s["args"]) == settings and s["evidence"].get("job_id") in failed for s in starts)
+            starts.append(c)
+    selected = [s for s in starts if s.get("is_error") is False and s["evidence"].get("run_id") == result.get("run_id")
+                and all((s.get("args") or {}).get(k) == result.get(k) for k in ("model", "node", "provider"))]
+    chosen = selected[-1] if selected else None
+    assessment = next((p["evidence"].get("assessment") for p in reversed(previews)
+                       if chosen and preview_covers(p["args"], chosen["args"])), None)
+    runs_seen = [row for c in calls if c["tool"] == "zz_runs" and c.get("is_error") is False
+                 for row in (c["evidence"].get("runs") or [c["evidence"]])
+                 if row.get("run_id") == result.get("run_id") and row.get("node") == result.get("node")]
+    reports = [(float(n), int(tokens.replace(",", ""))) for c in calls if c["tool"] == "zz_logs" and c.get("is_error") is False
+               and (c.get("args") or {}).get("run_id") == result.get("run_id")
+               and (c.get("args") or {}).get("node") in (None, result.get("node")) for line in c["evidence"].get("lines", [])
+               for tokens, n in re.findall(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x", line)]
+    complete = chosen and (not chosen["evidence"].get("job_id") or any(
+        c["tool"] == "zz_job" and c.get("is_error") is False and c["evidence"].get("state") == "done"
+        and c["evidence"].get("job_id") == chosen["evidence"].get("job_id") for c in calls))
+    return [("task tools only", not any(c["tool"] in ESCAPE_HATCH for c in calls), ""),
+            ("no predictable refusal or unchanged failed retry", safe, ""),
+            ("chosen identity and completed launch evidenced", bool(complete) and chosen["evidence"].get("job_id") not in failed
+             and all(result.get(k) for k in ("model", "node", "provider", "run_id")), result),
+            ("cause matches selected preview", assessment is not None and "unknown_cause" in result
+             and result["unknown_cause"] == assessment.get("unknown_cause"), assessment),
+            ("served context matches run", result.get("served_context") is None or any(
+                r.get("context_length") == result["served_context"] for r in runs_seen), runs_seen),
+            ("concurrency matches reported context", (result.get("reported_concurrency"), result.get("concurrency_context")) == (None, None)
+             or (result.get("reported_concurrency"), result.get("concurrency_context")) in reports, reports)]
+
+
+def cleanup_fit_runs(calls, before):
+    """Only stop captured successful starts absent from the selected nodes' baseline."""
+    owned = {(c["args"].get("node"), c["evidence"].get("run_id")) for c in calls
+             if c["tool"] == "zz_run_start" and c.get("is_error") is False}
+    for node, run_id in owned:
+        if node in before and run_id and run_id not in before[node]:
+            http("DELETE", f"/zzrouter/v1/runs/{run_id}?" + urlencode({"node": node}))
+
+
 def check_contention(ctx):
     rj = ctx["rj"] or {}
     starts = tool_calls(ctx, "zz_run_start") + tool_calls(ctx, "zz_job")
@@ -1243,7 +1314,9 @@ def run_scenario(R, node, label, sc, agents, only, out):
         if only and only not in sid:
             continue
         wd = os.path.join(out, "mcp", sid); os.makedirs(wd, exist_ok=True)
-        stop_runs(node)
+        fit_nodes = sc.get("owned_nodes")
+        if not fit_nodes:
+            stop_runs(node)
         if "setup" in sc:
             ok, detail = sc["setup"]()
             R.add("mcp", node, f"{label}.{agent}", "precondition", ok, detail)
@@ -1253,7 +1326,10 @@ def run_scenario(R, node, label, sc, agents, only, out):
         with open(os.path.join(wd, "scenario.json"), "w") as context:
             json.dump({"expect_error": sc.get("expect_error"), "idempotency_namespace": namespace}, context)
         prompt = sc["prompt"] + f"\nFor tools whose input schema declares idempotency_key, prefix each new key with {namespace}: and a distinct suffix per operation. Reuse a key only to retry that same operation."
-        before = {r["id"] for r in runs(node)}
+        baseline = {n: {r["id"] for r in runs(n)} for n in (fit_nodes or [node])}
+        before = baseline[node]
+        if fit_nodes:
+            prompt += "\nPreserve existing runs; never stop, restart or change their settings: " + json.dumps({n: sorted(ids) for n, ids in baseline.items()})
         drive = run_claude_mcp if agent == "claude" else run_codex_mcp
         try:
             text, meta, secs = drive(sid, prompt, wd)
@@ -1273,13 +1349,26 @@ def run_scenario(R, node, label, sc, agents, only, out):
                 R.add("mcp", node, f"{label}.{agent}", name, ok, detail)
             R.add("mcp", node, f"{label}.{agent}", "node still healthy", node_healthy(node), "")
         finally:
-            stop_runs(node)
+            if fit_nodes:
+                cleanup_fit_runs(calls_for(sid), baseline)
+            else:
+                stop_runs(node)
             if sc.get("id") == "model-delete":
                 ok, detail = cleanup_disposable(calls_for(sid), node, sc["provider"])
                 R.add("mcp", node, f"{label}.{agent}", "disposable cleanup", ok, detail)
 
 
 def track_mcp(R, node, cells, agents, only, out):
+    if node == "localai":
+        run_scenario(R, node, "explainable-fit", {
+            "id": "explainable-fit", "owned_nodes": list(LAB),
+            "prompt": "A coding agent needs Qwen3.8-27B served in this cluster with at least 32768 tokens of context and 4 concurrent requests. "
+                      "Use a build that is already on a node (no downloads). Decide which node and engine should serve it, start it, and confirm "
+                      "from what the cluster reports that it actually meets both requirements; if it cannot, say what is missing. "
+                      "Use only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. Keys: model, node, provider, "
+                      "unknown_cause (the cause code zzRouter reported for your choice, or null), run_id, served_context, reported_concurrency, "
+                      "concurrency_context (the context size that concurrency figure is for; null when not reported).",
+            "check": check_explainable_fit}, agents, only, out)
     run_scenario(R, node, "inventory", {
         "prompt": f"Report node {node}'s operating system, GPU and free GPU memory, and its local providers ({', '.join(LAB[node]['providers'])}) "
                   "with the local models each can run.\nUse only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. "

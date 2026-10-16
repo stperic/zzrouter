@@ -4,10 +4,14 @@ package gguf
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 )
+
+// ErrUnsupported identifies valid metadata whose layout is not modelled.
+var ErrUnsupported = errors.New("unsupported GGUF architecture")
 
 // Header contains only the architecture and attention-sizing integers.
 type Header struct {
@@ -143,7 +147,7 @@ func Read(r io.Reader) (Header, error) {
 			switch text {
 			case "llama", "qwen2", "qwen3", "qwen3moe", "qwen35":
 			default:
-				return h, fmt.Errorf("unsupported GGUF architecture")
+				return h, ErrUnsupported
 			}
 			h.Architecture = text
 		} else if keep {

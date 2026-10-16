@@ -3,6 +3,7 @@ package httperr_test
 import (
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +13,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMambaCacheRefusalIsClassifiedMemory(t *testing.T) {
+	log, err := os.ReadFile("testdata/vllm_mamba_refusal.txt")
+	require.NoError(t, err)
+	failure := testClassifier(t, "vllm").Match(string(log))
+	require.NotNil(t, failure)
+	assert.Equal(t, httperr.FailureMemory, failure.Class)
+	wire := failure.HTTPError()
+	assert.Equal(t, http.StatusConflict, wire.Status)
+	assert.Equal(t, string(httperr.CodeOutOfRange), wire.Code)
+	for _, evidence := range []string{"(256)", "(152)", "at most 152"} {
+		assert.Contains(t, wire.Message, evidence)
+	}
+}
 
 func TestDeclaredEngineFailures(t *testing.T) {
 	for _, tc := range []struct {

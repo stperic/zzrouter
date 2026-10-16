@@ -148,14 +148,27 @@ func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device stri
 func (m *ProviderAppManager) AssessCapacity(ctx context.Context, req EnsureRequest) process.MemoryAssessment {
 	features, err := m.ResolveLaunchParameters(ctx, req)
 	if err != nil {
-		return process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: err.Error()}
+		assessment := process.MemoryAssessment{ContextMode: "unknown"}
+		assessment.SetUnknown(process.AssessmentFailed, err.Error())
+		return assessment
 	}
 	assessment, _ := m.checkMemory(ctx, features, true)
 	return assessment
 }
 
 func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchParameters, capacity bool) (process.MemoryAssessment, error) {
-	assessment := process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "no launch memory policy"}
+	policy := schema.AutoContext{}
+	if features.declared != nil {
+		policy = features.declared.AutoContext
+	}
+	if key := features.Config.GetContextParam(); key != "" {
+		contextPolicy := features.parameterShapes[key].AutoContext
+		policy.AutoMinContextTokens, policy.AutoContextSource = contextPolicy.AutoMinContextTokens, contextPolicy.AutoContextSource
+	}
+	// Collect best-effort weight/context evidence even when no memory policy sizes the launch.
+	need, _ := process.ModelMemoryNeed(features.model, features.Config, features.Params, policy, features.parameterShapes)
+	assessment := process.MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, WeightsMiB: need.WeightsMiB}
+	assessment.SetUnknown(process.BudgetNotSized, "")
 	budget := launchBudget(features.declared)
 	if budget == nil {
 		return assessment, nil
@@ -170,7 +183,7 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 	}
 	visible, err := visibleDeviceEnvironment(environment)
 	if err != nil {
-		assessment.Reason = err.Error()
+		assessment.SetUnknown(process.MemoryEvidenceUnavailable, err.Error())
 		return assessment, err
 	}
 	devices, systemMiB, err := m.memoryDevices(ctx, budget.Kind, capacity)
@@ -181,22 +194,18 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 				devices[i].FreeMiB, devices[i].Processes = devices[i].TotalMiB, nil
 			}
 		}
-		policy := features.declared.AutoContext
-		if key := features.Config.GetContextParam(); key != "" {
-			contextPolicy := features.parameterShapes[key].AutoContext
-			policy.AutoMinContextTokens, policy.AutoContextSource = contextPolicy.AutoMinContextTokens, contextPolicy.AutoContextSource
-		}
-		need, _ := process.ModelMemoryNeed(features.model, features.Config, params, policy, features.parameterShapes)
 		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, features.declared.MemoryUsableFraction)
 	} else {
 		err = fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
-		assessment.Reason = err.Error()
+		assessment.SetUnknown(process.MemoryEvidenceUnavailable, err.Error())
 	}
 	if !capacity && (budget.Kind == schema.MemoryLayers || budget.Kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
 		err = nil
 	}
 	if ctx.Err() != nil {
-		return process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: ctx.Err().Error()}, ctx.Err()
+		assessment = process.MemoryAssessment{WeightsMiB: need.WeightsMiB, ContextMode: need.ContextMode, ContextTokens: need.ContextTokens}
+		assessment.SetUnknown(process.AssessmentFailed, ctx.Err().Error())
+		return assessment, ctx.Err()
 	}
 	return assessment, err
 }

@@ -165,7 +165,14 @@ func TestMemoryNeedUnknownFallsBack(t *testing.T) {
 			}
 			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 			require.False(t, ok)
-			require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, Incomplete: true}, memoryAmounts(need))
+			cause := MetadataInvalid
+			switch scenario {
+			case "MLA", "null MLA", "unknown layer", "missing dtype", "unknown dtype", "unassigned sliding window", "overflow":
+				cause = ModelUnmodelled
+			case "missing context metadata", "missing context value", "unparseable context":
+				cause = ContextUnresolved
+			}
+			require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, UnknownCause: cause}, memoryAmounts(need))
 			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}
 			room, err := autoFraction(schema.MemoryBudget{Parameter: "budget"}, devices, nil)
 			require.NoError(t, err)

@@ -35,9 +35,10 @@ package version
 // Protocol 12 adds tools evidence declarations, which older provider schemas reject, and optional
 // node and preview capacity assessments.
 // Protocol 13 adds context-aware memory evidence; legacy assessments degrade to unknown.
+// Protocol 14 adds typed unknown causes and local weight evidence.
 const (
-	ClusterProtocolVersion    = 13
-	MinClusterProtocolVersion = 12
+	ClusterProtocolVersion    = 14
+	MinClusterProtocolVersion = 13
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

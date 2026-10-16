@@ -190,26 +190,26 @@ func TestGGUFContextAndQuantizedKV(t *testing.T) {
 		kv   int64
 	}{{"", "", 4096}, {"q8_0", "q8_0", 2176}, {"q4_0", "q8_0", 1664}, {"f16", "f32", 6144}, {"bf16", "bf16", 4096}, {"q4_1", "q4_1", 1280}, {"q5_0", "q5_0", 1408}, {"q5_1", "q5_1", 1536}, {"iq4_nl", "iq4_nl", 1152}} {
 		n := ggufNeed(t, "llama", map[string]string{"ctx-size": "auto", "cache-type-k": tc.k, "cache-type-v": tc.v}, nil)
-		require.False(t, n.Incomplete)
+		require.Empty(t, n.UnknownCause)
 		assert.Equal(t, int64(32768), n.ContextTokens)
 		assert.Equal(t, tc.kv, n.KVMiB)
 	}
 	n := ggufNeed(t, "qwen2", map[string]string{"ctx-size": "4096"}, map[string]int64{"attention.key_length": 64, "attention.value_length": 256})
-	require.False(t, n.Incomplete)
+	require.Empty(t, n.UnknownCause)
 	assert.Equal(t, int64(640), n.KVMiB)
 	assert.Equal(t, "numeric", n.ContextMode)
 	for _, tc := range []struct {
 		arch, cache string
 		extra       map[string]int64
 	}{{"mamba", "", nil}, {"deepseek2", "", nil}, {"llama", "unknown", nil}, {"llama", "", map[string]int64{"attention.sliding_window": 512}}} {
-		assert.True(t, ggufNeed(t, tc.arch, map[string]string{"ctx-size": "auto", "cache-type-k": tc.cache}, tc.extra).Incomplete)
+		assert.NotEmpty(t, ggufNeed(t, tc.arch, map[string]string{"ctx-size": "auto", "cache-type-k": tc.cache}, tc.extra).UnknownCause)
 	}
 }
 
 func TestSplitGGUFReadsFirstShardHeader(t *testing.T) {
 	// The fixture selects shard two, whose header is invalid; geometry lives in shard one.
 	n := ggufNeed(t, "qwen3", map[string]string{"ctx-size": "auto"}, nil)
-	require.False(t, n.Incomplete)
+	require.Empty(t, n.UnknownCause)
 	assert.Equal(t, int64(32768), n.ContextTokens)
 	assert.Equal(t, int64(16), n.WeightsMiB, "all shards still count as weights")
 	assert.Equal(t, int64(4096), n.KVMiB)
@@ -228,7 +228,7 @@ func TestKVCacheDtypeRoles(t *testing.T) {
 			n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, shapes)
 			if dtype == "future-dtype" {
 				require.False(t, ok)
-				assert.True(t, n.Incomplete)
+				assert.NotEmpty(t, n.UnknownCause)
 			} else {
 				require.True(t, ok)
 				assert.Equal(t, auto.KVMiB/2, n.KVMiB)
@@ -333,7 +333,7 @@ func TestAutoContextAliasesAndNullScaling(t *testing.T) {
 	assert.Equal(t, int64(4096), n.ContextTokens)
 	canonical := ggufNeed(t, "llama", map[string]string{"ctx-size": "auto", "cache-type-k": "q8_0", "cache-type-v": "q4_0"}, nil)
 	aliases := ggufNeed(t, "llama", map[string]string{"ctx_size": "auto", "cache_type_k": "q8_0", "cache_type_v": "q4_0"}, nil)
-	assert.False(t, aliases.Incomplete)
+	assert.Empty(t, aliases.UnknownCause)
 	assert.Equal(t, canonical.KVMiB, aliases.KVMiB)
 	assert.Equal(t, canonical.ContextTokens, aliases.ContextTokens)
 }

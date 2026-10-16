@@ -39,8 +39,8 @@ func TestHybridNeedUsesOnlyFullAttentionKV(t *testing.T) {
 			params["max-model-len"] = "auto"
 			n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, rowPolicy(rows), nil)
 			require.True(t, ok)
-			cache, ok := n.geometry.kvBytes(4096)
-			require.True(t, ok)
+			cache, cause := n.geometry.kvBytes(4096)
+			require.Empty(t, cause)
 			assert.Equal(t, int64(268435456)+156893184*rows, cache)
 			assert.Equal(t, int64(1<<30), n.WeightsBytes, "all weight shards count")
 			params["max-num-seqs"] = "1"
@@ -56,8 +56,8 @@ func TestHybridKVOverrideDoesNotQuantizeRecurrentState(t *testing.T) {
 	params["max-model-len"], params["cache"] = "4096", "fp8"
 	n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, rowPolicy(2), map[string]schema.ParamShape{"cache": {KVCacheDtype: "both"}})
 	require.True(t, ok)
-	cache, ok := n.geometry.kvBytes(4096)
-	require.True(t, ok)
+	cache, cause := n.geometry.kvBytes(4096)
+	require.Empty(t, cause)
 	assert.Equal(t, int64(134217728+2*156893184), cache)
 }
 
@@ -66,27 +66,28 @@ func TestHybridMissingOrContradictoryGeometryIsUnknown(t *testing.T) {
 		t.Run("missing "+key, func(t *testing.T) {
 			cfg := hybridConfig()
 			delete(cfg, key)
-			assertHybridUnknown(t, cfg, rowPolicy(1))
+			assertHybridUnknown(t, cfg, rowPolicy(1), MetadataInvalid)
 		})
 	}
 	for _, tc := range []struct {
 		key   string
 		value any
+		cause UnknownCause
 	}{
-		{"linear_conv_kernel_dim", 0}, {"linear_num_key_heads", -1}, {"linear_num_value_heads", 47},
-		{"linear_key_head_dim", math.MaxInt64}, {"linear_value_head_dim", math.MaxInt64},
-		{"mamba_ssm_dtype", "float64"}, {"mamba_ssm_dtype", "int32"}, {"mamba_ssm_dtype", nil},
-		{"full_attention_interval", 3}, {"full_attention_interval", -1}, {"full_attention_interval", 0},
-		{"num_key_value_heads", 5}, {"num_key_value_heads", 48}, {"linear_conv_kernel_dim", math.MaxInt64},
-		{"layer_types", []string{"linear_attention"}}, {"layer_types", nil},
+		{"linear_conv_kernel_dim", 0, MetadataInvalid}, {"linear_num_key_heads", -1, MetadataInvalid}, {"linear_num_value_heads", 47, MetadataInvalid},
+		{"linear_key_head_dim", math.MaxInt64, ModelUnmodelled}, {"linear_value_head_dim", math.MaxInt64, ModelUnmodelled},
+		{"mamba_ssm_dtype", "float64", ModelUnmodelled}, {"mamba_ssm_dtype", "int32", ModelUnmodelled}, {"mamba_ssm_dtype", nil, ModelUnmodelled},
+		{"full_attention_interval", 3, MetadataInvalid}, {"full_attention_interval", -1, MetadataInvalid}, {"full_attention_interval", 0, MetadataInvalid},
+		{"num_key_value_heads", 5, MetadataInvalid}, {"num_key_value_heads", 48, MetadataInvalid}, {"linear_conv_kernel_dim", math.MaxInt64, ModelUnmodelled},
+		{"layer_types", []string{"linear_attention"}, MetadataInvalid}, {"layer_types", nil, ModelUnmodelled},
 	} {
 		t.Run(tc.key+"="+fmtValue(tc.value), func(t *testing.T) {
 			cfg := hybridConfig()
 			cfg[tc.key] = tc.value
-			assertHybridUnknown(t, cfg, rowPolicy(1))
+			assertHybridUnknown(t, cfg, rowPolicy(1), tc.cause)
 		})
 	}
-	assertHybridUnknown(t, hybridConfig(), schema.AutoContext{})
+	assertHybridUnknown(t, hybridConfig(), schema.AutoContext{}, ModelUnmodelled)
 	for _, dtype := range []string{"float16", "bfloat16", "float32", ""} {
 		cfg := hybridConfig()
 		cfg["mamba_ssm_dtype"] = dtype
@@ -98,11 +99,12 @@ func TestHybridMissingOrContradictoryGeometryIsUnknown(t *testing.T) {
 
 func fmtValue(v any) string { data, _ := json.Marshal(v); return string(data) }
 
-func assertHybridUnknown(t *testing.T, cfg map[string]any, policy schema.AutoContext) {
+func assertHybridUnknown(t *testing.T, cfg map[string]any, policy schema.AutoContext, cause UnknownCause) {
 	t.Helper()
 	dir, svc, params := needFixture(t, cfg)
 	n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, policy, nil)
 	require.False(t, ok)
+	assert.Equal(t, cause, n.UnknownCause)
 	assert.Equal(t, int64(1<<30), n.WeightsBytes)
 	assert.Zero(t, n.Total())
 	params["budget"] = ".9"
@@ -110,6 +112,7 @@ func assertHybridUnknown(t *testing.T, cfg map[string]any, policy schema.AutoCon
 		[]gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil, 0)
 	require.NoError(t, err, "incomplete evidence cannot produce a sized refusal")
 	assert.Equal(t, "unknown", a.Status)
+	assert.Equal(t, cause, a.UnknownCause)
 }
 
 func TestHybridAffordableContextUsesSameAllocation(t *testing.T) {
@@ -135,6 +138,7 @@ func TestHybridAffordableContextUsesSameAllocation(t *testing.T) {
 	a, err = AdmitMemoryBudget(budget, n, params, map[string]string{"CUDA_VISIBLE_DEVICES": "unified,GPU-B"}, devices, 0, nil, nil, 0)
 	require.NoError(t, err)
 	assert.Equal(t, "unknown", a.Status)
+	assert.Equal(t, ModelUnmodelled, a.UnknownCause)
 	assert.Zero(t, a.AffordableContextTokens)
 }
 
@@ -157,26 +161,26 @@ func TestHybridMTPExcludedFromNormalCache(t *testing.T) {
 	for _, slots := range []string{"", "1", "4"} {
 		params := map[string]string{"ctx-size": "4096", "slots": slots}
 		n := ggufNeed(t, "qwen35", params, extra, shapes)
-		require.False(t, n.Incomplete)
+		require.Empty(t, n.UnknownCause)
 		rows := int64(4)
 		if slots == "1" {
 			rows = 1
 		}
-		cache, ok := n.geometry.kvBytes(4096)
-		require.True(t, ok)
+		cache, cause := n.geometry.kvBytes(4096)
+		require.Empty(t, cause)
 		assert.Equal(t, int64(268435456)+rows*156893184, cache, "KV is not multiplied by slots")
 	}
 	for key, value := range map[string]int64{"nextn_predict_layers": 65, "ssm.inner_size": 6145, "full_attention_interval": 0, "ssm.group_count": 0} {
 		bad := maps.Clone(extra)
 		bad[key] = value
-		assert.True(t, ggufNeed(t, "qwen35", map[string]string{"ctx-size": "4096"}, bad, shapes).Incomplete)
+		assert.NotEmpty(t, ggufNeed(t, "qwen35", map[string]string{"ctx-size": "4096"}, bad, shapes).UnknownCause)
 	}
 	for _, value := range []string{"0", "-1", "1025", "bad"} {
-		assert.True(t, ggufNeed(t, "qwen35", map[string]string{"ctx-size": "4096", "slots": value}, extra, shapes).Incomplete)
-		assert.False(t, ggufNeed(t, "qwen3", map[string]string{"ctx-size": "4096", "slots": value}, nil, shapes).Incomplete, "slot count matters only to recurrent layers")
+		assert.NotEmpty(t, ggufNeed(t, "qwen35", map[string]string{"ctx-size": "4096", "slots": value}, extra, shapes).UnknownCause)
+		assert.Empty(t, ggufNeed(t, "qwen3", map[string]string{"ctx-size": "4096", "slots": value}, nil, shapes).UnknownCause, "slot count matters only to recurrent layers")
 	}
 	moe := ggufNeed(t, "qwen3moe", map[string]string{"ctx-size": "4096"}, map[string]int64{"block_count": 48, "attention.head_count_kv": 4, "expert_count": 128, "expert_used_count": 8})
-	require.False(t, moe.Incomplete)
+	require.Empty(t, moe.UnknownCause)
 	assert.Equal(t, int64(402653184), moe.KVMiB*1024*1024)
 	assert.Equal(t, int64(16<<20), moe.WeightsBytes)
 }
@@ -189,13 +193,14 @@ func TestNativeHybridOverflowRemainsUnknown(t *testing.T) {
 	shapes := map[string]schema.ParamShape{"slots": {SequenceSlots: true, AutoContext: schema.AutoContext{RecurrentStateRows: ptrRows(4)}}}
 	for _, context := range []string{"auto", "262144"} {
 		n := ggufNeed(t, "qwen35", map[string]string{"ctx-size": context}, extra, shapes)
-		require.False(t, n.Incomplete)
+		require.Empty(t, n.UnknownCause)
 		devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}
 		budget := schema.MemoryBudget{Kind: schema.MemoryLayers}
 		a, err := AdmitMemoryBudget(budget, n, nil, nil, devices, 1000, nil, nil, 0)
 		if context == "auto" {
 			require.NoError(t, err)
 			assert.Equal(t, "unknown", a.Status)
+			assert.Equal(t, NativeContextAdaptation, a.UnknownCause)
 		} else {
 			var fit *MemoryFitError
 			require.ErrorAs(t, err, &fit)

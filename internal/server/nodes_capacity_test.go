@@ -129,7 +129,7 @@ func TestCompatibleNodesInventoryErrorPreservesAssessments(t *testing.T) {
 	require.Len(t, result.Assessments, 2)
 	assert.Empty(t, result.Assessments[0].Node)
 	assert.Equal(t, "unknown", result.Assessments[0].Status)
-	assert.Equal(t, "node coverage unknown: context canceled", result.Assessments[0].Reason)
+	assert.Equal(t, process.AssessmentFailed, result.Assessments[0].UnknownCause)
 	assert.Equal(t, "worker", result.Assessments[1].Node)
 	assert.Equal(t, "fit", result.Assessments[1].Status)
 	_, err = service.ListNodes(ctx, &ListNodesRequest{})
@@ -215,7 +215,26 @@ func TestCompatibleNodesWorkerAssessment(t *testing.T) {
 		}
 		assert.Equal(t, []string{"a-old::unknown", "coord:mlx:unknown", "timeout::unknown", "z-worker:a:unknown", "z-worker:z:fit"}, got)
 		assert.Equal(t, int64(11), reply.Metadata.Assessments[4].RequiredMiB)
+		assert.Equal(t, process.NodeOutdated, reply.Metadata.Assessments[0].UnknownCause)
+		assert.Equal(t, process.NodeUnreachable, reply.Metadata.Assessments[2].UnknownCause)
+		assert.Equal(t, process.NodeOutdated, reply.Metadata.Assessments[3].UnknownCause)
 	}
+}
+
+func TestCompatibleNodesCurrentProviderNotEligible(t *testing.T) {
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return nil }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+		t.Fatal("ineligible provider must not be assessed")
+		return process.MemoryAssessment{}
+	})
+	result, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m", Provider: "missing"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Data)
+	require.Len(t, result.Assessments, 1)
+	a := result.Assessments[0]
+	assert.Equal(t, "node", a.Node)
+	assert.Equal(t, "missing", a.Provider)
+	assert.Equal(t, "unknown", a.Status)
+	assert.Equal(t, process.ProviderNotEligible, a.UnknownCause)
 }
 
 func TestDeploymentEligibilityIgnoresCapacityUnknown(t *testing.T) {
@@ -245,6 +264,7 @@ func TestPreviewWorkerWithoutAssessmentIsUnknown(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, preview.Assessment)
 	assert.Equal(t, "unknown", preview.Assessment.Status)
+	assert.Equal(t, process.NodeOutdated, preview.Assessment.UnknownCause)
 	assert.NotEmpty(t, preview.Assessment.Reason)
 }
 
@@ -291,18 +311,30 @@ func TestLegacyAssessmentDegradesToUnknown(t *testing.T) {
 }
 
 func TestAutoContextRESTPreservesEvidence(t *testing.T) {
-	evidence := process.MemoryAssessment{Status: "fit", Reason: "sized", ContextMode: "auto", ContextTokens: 4096, AffordableContextTokens: 8192, Placement: "offload"}
-	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"p"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment { return evidence })
-	nodes, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m"})
-	require.NoError(t, err)
-	require.Len(t, nodes.Data, 1)
-	require.Len(t, nodes.Assessments, 1)
-	assert.Equal(t, evidence, nodes.Assessments[0].MemoryAssessment)
-	body, err := json.Marshal(map[string]any{"assessment": evidence})
-	require.NoError(t, err)
-	s := NewLoadService(nil, &loadResultRouter{status: 200, body: string(body)})
-	preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "p", Node: "worker"})
-	require.NoError(t, err)
-	require.NotNil(t, preview.Assessment)
-	assert.Equal(t, evidence, *preview.Assessment)
+	for _, status := range []string{"fit", "no_fit", "unknown"} {
+		t.Run(status, func(t *testing.T) {
+			evidence := process.MemoryAssessment{Status: "fit", Reason: "sized", ContextMode: "auto", ContextTokens: 4096, AffordableContextTokens: 8192, Placement: "offload"}
+			evidence.Status, evidence.WeightsMiB, evidence.CapacityMiB = status, 1024, 10000
+			if status == "unknown" {
+				evidence.UnknownCause = process.ModelUnmodelled
+			}
+			executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"p"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment { return evidence })
+			nodes, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m"})
+			require.NoError(t, err)
+			if status == "fit" {
+				require.Len(t, nodes.Data, 1)
+			} else {
+				assert.Empty(t, nodes.Data)
+			}
+			require.Len(t, nodes.Assessments, 1)
+			assert.Equal(t, evidence, nodes.Assessments[0].MemoryAssessment)
+			body, err := json.Marshal(map[string]any{"assessment": evidence})
+			require.NoError(t, err)
+			s := NewLoadService(nil, &loadResultRouter{status: 200, body: string(body)})
+			preview, err := s.PreviewRun(t.Context(), &PreviewRunRequest{ModelName: "m", Provider: "p", Node: "worker"})
+			require.NoError(t, err)
+			require.NotNil(t, preview.Assessment)
+			assert.Equal(t, evidence, *preview.Assessment)
+		})
+	}
 }
