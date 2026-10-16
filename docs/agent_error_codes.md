@@ -185,6 +185,21 @@ Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
 restart it. Inference hints cannot pin or unpin. A refused launch leaves pins
 untouched and excludes them from `evicted_runs`.
 
+The shared weight lower bound also refuses launch with HTTP 409 `out_of_range`
+before starting a process: weights exceed the selected GPU budget, GPU plus RAM
+for layer/offload engines, or the single unified pool. Above that bound, incomplete
+sizing keeps existing launch behavior. Invalid budget parameters retain HTTP 400;
+unavailable required memory observation retains HTTP 503.
+The refusal names the budget kind, reachable GiB and weight size, and recommends
+a smaller quantization or another node. Required MiB rounds up; reachable MiB rounds down.
+
+`GET /zzrouter/v1/nodes/compatible` reports `fit`, `no_fit` and `unknown` under
+`metadata.assessments`; only confirmed fits enter `data`. `unknown` stays HTTP 200,
+including missing worker replies/fields, and does not prove compatibility.
+Run preview exposes the same capacity policy under `data.assessment`. Capacity
+uses totals; launch admission still uses fresh free memory and commitments.
+Downloads can target eligible storage nodes even when capacity is unknown.
+
 Endpoint refusals use 400 `bad_request` on runs and previews. The detail names
 provider, endpoint and served APIs; a missing feature runtime also supplies its
 install call. The existing inference code `invalid_request` carries these

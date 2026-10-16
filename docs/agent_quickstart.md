@@ -17,6 +17,22 @@ install prerequisites and install plan through the advertised provider routes.
 Use the managed install API; follow the returned job and verify the runtime.
 See [managed recipes](typed_provider_recipes.md) for package authority.
 
+Before choosing a node, query `GET /zzrouter/v1/nodes/compatible?model=<exact-name>`
+with optional `provider` and `registry`. `data` contains confirmed capacity fits;
+`metadata.assessments` includes `fit`, `no_fit` and `unknown` reasons per node/provider.
+Each public row's `eligible_providers` lists only providers assessed as `fit`;
+metadata retains all provider assessments. If the node inventory cannot be read,
+an assessment with an empty `node` reports `unknown` coverage alongside collected results.
+Unknown stays HTTP 200 and is not confirmed fit. Missing worker evidence is unknown.
+Capacity uses selected device totals; a busy node may still refuse launch.
+`POST /zzrouter/v1/runs/preview` reports the same policy in `data.assessment`
+without starting, evicting or reserving memory. Cached or published weight size
+alone cannot prove runtime fit. Downloads remain possible on an explicitly
+selected eligible node when capacity is unknown.
+
+Hosts with no GPU observation, including CPU-only llama.cpp, skip the weight
+lower bound and report `unknown`. Their launches keep the existing CPU path.
+
 For an installed llama.cpp provider, launch a model and request automatic
 weight deployment when needed:
 

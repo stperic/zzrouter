@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -448,7 +447,7 @@ func (m *ProviderAppManager) startRun(inst *instance.Instance, run admittedRun) 
 // launchBudget returns the memory budget a launch is measured against: nil
 // when the provider declares none, or an external one nothing here measures.
 func launchBudget(declared *schema.ProviderSchema) *schema.MemoryBudget {
-	if declared.Diagnostics == nil {
+	if declared == nil || declared.Diagnostics == nil {
 		return nil
 	}
 	budget := declared.Diagnostics.Memory
@@ -503,22 +502,7 @@ func visibleDeviceEnvironment(environment map[string]string) (map[string]string,
 // admitMemory checks a launch's GPU memory budget, evicting idle runs when
 // the node allows it, and returns the runs it evicted.
 func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchParameters) ([]instance.EvictedRun, error) {
-	budget := launchBudget(features.declared)
-	if budget == nil {
-		return nil, nil
-	}
-	if budget.Kind != schema.MemoryFractionTotal && budget.Kind != schema.MemoryReserveMiB && !slices.ContainsFunc(m.memoryRuns(), func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
-		return nil, nil
-	}
-	visible, err := visibleDeviceEnvironment(features.Environment)
-	if err != nil {
-		return nil, err
-	}
-	need := process.Need{}
-	if config.IsAuto(features.Params[budget.Parameter]) {
-		need, _ = process.ModelMemoryNeed(features.model, features.Config, features.Params)
-	}
-	err = m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
+	_, err := m.checkMemory(ctx, features, false)
 	var fit *process.MemoryFitError
 	settings, settingsErr := config.ParseRunSettings(features.Params, m.idleEvictionDefault)
 	if settingsErr != nil {
@@ -529,7 +513,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	}
 	evicted, skipped := m.reclaimFor(ctx, fit)
 	if len(evicted) > 0 {
-		err = m.checkMemory(ctx, *budget, need, features.Params, visible, features.Commitments)
+		_, err = m.checkMemory(ctx, features, false)
 	}
 	if errors.As(err, &fit) {
 		for n, holder := range fit.Holders {
@@ -537,17 +521,6 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 		}
 	}
 	return evicted, err
-}
-
-func (m *ProviderAppManager) checkMemory(ctx context.Context, budget schema.MemoryBudget, need process.Need, params, visible map[string]string, commitments map[string]int64) error {
-	devices, err := m.memorySnapshot(ctx)
-	if err != nil {
-		return fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return process.AdmitMemoryBudget(budget, need, params, visible, devices, m.memoryRuns(), commitments)
 }
 
 func (m *ProviderAppManager) memoryRuns() []process.RunRef {
@@ -1206,7 +1179,8 @@ type preparedLaunch struct {
 type LaunchPreview struct {
 	process.Launch
 	LaunchParameters
-	Model string
+	Model      string
+	Assessment process.MemoryAssessment
 }
 
 // PreviewLaunch renders the preparation a start would make, without starting anything.
@@ -1220,7 +1194,11 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	}
 	req.Model = m.runModel(key, svc, req.Model)
 	prepared, err := m.engine(Lifecycle(svc)).prepare(ctx, svc, key, req, port)
-	return LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}, err
+	preview := LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}
+	if err == nil {
+		preview.Assessment, _ = m.checkMemory(ctx, prepared.parameters, true)
+	}
+	return preview, err
 }
 
 func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, argvParams map[string]string, configKey, endpoint string, port int) (preparedLaunch, error) {

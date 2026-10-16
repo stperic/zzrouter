@@ -18,6 +18,7 @@ type MemoryProcess struct {
 
 // MemoryDevice contains fresh per-device memory, never zero substituted for unknown.
 type MemoryDevice struct {
+	Unified       bool            `json:"unified,omitempty"`
 	UUID          string          `json:"uuid"`
 	Index         int             `json:"index"`
 	TotalMiB      int64           `json:"total_mib"`

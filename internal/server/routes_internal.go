@@ -67,8 +67,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		)
 	}
 
-	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.isLocalNodeCompatible)
-	hostsExecutor.eligibleProviders = s.eligibleDeployProviders
+	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.eligibleDeployProviders, s.providers.appMgr.AssessCapacity)
 	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
 
 	// ========================================================================

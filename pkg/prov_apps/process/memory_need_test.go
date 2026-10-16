@@ -36,7 +36,7 @@ func denseAttentionConfig() map[string]any {
 func admitNeed(t *testing.T, need Need, total, free int64) string {
 	t.Helper()
 	params := map[string]string{"budget": "auto"}
-	require.NoError(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: free}}, nil, nil))
+	require.NoError(t, admitBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: free}}, nil, nil))
 	return params["budget"]
 }
 
@@ -44,7 +44,7 @@ func TestMemoryNeedDenseGQA(t *testing.T) {
 	dir, svc, params := needFixture(t, denseAttentionConfig())
 	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params)
 	require.True(t, ok)
-	assert.Equal(t, Need{WeightsMiB: 1024, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, need)
+	assert.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, need)
 	assert.Equal(t, "0.5914", admitNeed(t, need, 10000, 9500), "(1024+256+4096) x 1.1 of 10000 MiB")
 }
 
@@ -61,7 +61,7 @@ func TestDeletionMetadataOriginContract(t *testing.T) {
 	require.Equal(t, origin, selected.Directory(), "metadata belongs to the selected repository")
 	need, ok := ModelMemoryNeed(selected, svc, params)
 	require.True(t, ok, "frozen weights must retain original attention metadata")
-	require.Equal(t, Need{WeightsMiB: 1024, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, need)
+	require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, need)
 	require.NoError(t, os.Remove(source))
 	require.NoError(t, os.Mkdir(source, 0700))
 	require.Equal(t, origin, selected.Directory(), "a changed source leaf cannot redirect the frozen metadata repository")
@@ -164,7 +164,7 @@ func TestMemoryNeedUnknownFallsBack(t *testing.T) {
 			}
 			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params)
 			require.False(t, ok)
-			require.Equal(t, Need{}, need)
+			require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, Incomplete: true}, need)
 			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}
 			room, err := autoFraction(schema.MemoryBudget{Parameter: "budget"}, devices, nil)
 			require.NoError(t, err)
@@ -190,13 +190,13 @@ func TestMemoryNeedDecidesFit(t *testing.T) {
 	need := Need{WeightsMiB: 50000, KVMiB: 10000, OverheadMiB: 2048}
 	params := map[string]string{"budget": "auto"}
 	var fit *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 40000}}, nil, nil), &fit)
+	require.ErrorAs(t, admitBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, need, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 100000, FreeMiB: 40000}}, nil, nil), &fit)
 	assert.Equal(t, int64(68260+5000), fit.RequiredMiB, "the shortfall eviction must cover is the sized need plus the margin")
 	assert.Equal(t, "auto", params["budget"], "a refused attempt leaves auto for the retry")
 
 	// Lab: a need that fits free memory but not beside the margin OOMed vLLM outside its budget.
 	params = map[string]string{"budget": "auto"}
-	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, Need{WeightsMiB: 952, OverheadMiB: 2048}, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 4000}}, nil, nil), &fit)
+	require.ErrorAs(t, admitBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, Need{WeightsMiB: 952, OverheadMiB: 2048}, params, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 4000}}, nil, nil), &fit)
 	assert.Equal(t, "0.3300", admitNeed(t, Need{WeightsMiB: 952, OverheadMiB: 2048}, 10000, 5400))
 }
 
@@ -214,7 +214,7 @@ func TestMemoryNeedTensorParallel(t *testing.T) {
 			need := Need{WeightsMiB: 2048, KVMiB: 512, OverheadMiB: 2048}
 			params := map[string]string{"budget": "auto", "devices": "2"}
 			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 9500}, {UUID: "GPU-B", TotalMiB: tc.secondTotal, FreeMiB: tc.secondTotal}}
-			require.NoError(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "devices"}, need, params, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}, devices, nil, nil))
+			require.NoError(t, admitBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "devices"}, need, params, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}, devices, nil, nil))
 			assert.Equal(t, tc.want, params["budget"])
 		})
 	}

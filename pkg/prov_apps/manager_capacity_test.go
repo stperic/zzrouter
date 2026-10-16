@@ -1,0 +1,237 @@
+package prov_apps
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"maps"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/hardware"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func capacityFixture(t *testing.T) (*ProviderAppManager, EnsureRequest, string) {
+	t.Helper()
+	m, svc, dir := featureLaunchFixture(t)
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")
+	require.NoError(t, os.Truncate(filepath.Join(dir, "weights.gguf"), 1<<30))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"num_hidden_layers":32,"num_key_value_heads":8,"num_attention_heads":32,"hidden_size":4096,"torch_dtype":"float16"}`), 0600))
+	svc.Defaults.Metadata = &config.AppMetadata{ContextParam: "max-model-len"}
+	svc.Defaults.Parameters = map[string]string{"max-model-len": "2048", "gpu-memory-utilization": "auto"}
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("vllm", svc))
+	m.ReloadConfig(cfg)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization"}, nil
+	})
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 10000}}
+	}
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 0}}, nil
+	}
+	return m, EnsureRequest{Provider: "vllm", Model: "vendor/model"}, dir
+}
+
+func TestPreviewCapacityHasNoSideEffects(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.idleEvictionDefault = true
+	observations := 0
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		observations++
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 0}}, nil
+	}
+	held := instance.NewInstance("held", "vllm", "other", 0, -1, 1)
+	held.SetStatus(instance.StatusRunning)
+	held.SetResolved(instance.Resolved{Commitments: map[string]int64{"GPU-A": 9000}})
+	require.NoError(t, m.instances.Register(held))
+	m.seams.beforeLaunch = func() { t.Error("preview launched a process") }
+	req.Parameters = map[string]string{"gpu-memory-utilization": "auto"}
+	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}
+	params, env := maps.Clone(req.Parameters), maps.Clone(req.EnvVars)
+	before, err := json.Marshal(m.AppsConfig())
+	require.NoError(t, err)
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+	require.NoError(t, err)
+	assert.Equal(t, "fit", preview.Assessment.Status)
+	assert.Equal(t, m.AssessCapacity(t.Context(), req), preview.Assessment)
+	assert.Equal(t, "auto", preview.Params["gpu-memory-utilization"])
+	assert.Equal(t, params, req.Parameters)
+	assert.Equal(t, env, req.EnvVars)
+	after, err := json.Marshal(m.AppsConfig())
+	require.NoError(t, err)
+	assert.JSONEq(t, string(before), string(after))
+	assert.Len(t, m.instances.List(), 1)
+	assert.Equal(t, instance.StatusRunning, held.GetStatus())
+	assert.Equal(t, map[string]int64{"GPU-A": 9000}, held.Resolved().Commitments)
+	assert.Empty(t, m.memoryAdmission)
+	assert.Zero(t, observations, "capacity reads use cached totals")
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, err = m.admitMemory(t.Context(), features)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit, "capacity fit must not bypass current-load admission")
+	assert.Equal(t, 1, observations)
+}
+
+func TestPreviewLaunchPreservesPartialResultOnPrepareError(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	cause := errors.New("schema unavailable")
+	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return nil, cause }
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+		t.Fatal("failed preparation must not assess capacity")
+		return nil
+	}
+	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+	require.ErrorIs(t, err, cause)
+	assert.Equal(t, req.Model, preview.Model)
+	assert.Empty(t, preview.Command)
+	assert.Empty(t, preview.Args)
+	assert.Empty(t, preview.WorkingDir)
+	assert.Nil(t, preview.Params)
+	assert.Nil(t, preview.Sources)
+	assert.Nil(t, preview.Environment)
+	assert.Empty(t, preview.Assessment.Status)
+}
+
+func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryLayers, Parameter: "gpu-layers"}, nil
+	})
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation }
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
+	assessment := m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "unknown", assessment.Status)
+	assert.Zero(t, assessment.RequiredMiB)
+	assert.Zero(t, assessment.CapacityMiB)
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	assessment, err = m.checkMemory(t.Context(), features, false)
+	require.NoError(t, err, "CPU launch keeps its existing observation bypass")
+	assert.Equal(t, "unknown", assessment.Status)
+	doc, err := os.ReadFile("../../docs/agent_quickstart.md")
+	require.NoError(t, err)
+	assert.Contains(t, string(doc), "Hosts with no GPU observation, including CPU-only llama.cpp, skip the weight\nlower bound and report `unknown`.")
+}
+
+func TestCapacityMissingUnifiedTotalIsUnknown(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
+	})
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
+	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
+	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+}
+
+func TestCompatibleNodesCachedOversizeNotAffirmative(t *testing.T) {
+	m, req, dir := capacityFixture(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
+	require.NoError(t, os.Truncate(filepath.Join(dir, "weights.gguf"), 10001*1024*1024))
+	assessment := m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "no_fit", assessment.Status)
+	assert.Equal(t, int64(10001), assessment.RequiredMiB)
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, err = m.admitMemory(t.Context(), features)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	assert.Equal(t, "reachable memory", fit.Device)
+	assert.Empty(t, m.instances.List())
+}
+
+func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return nil, errors.New("schema missing") }
+	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return &schema.ProviderSchema{}, nil }
+	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization"}, nil
+	})
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("measurement missing") }
+	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
+		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
+	}
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
+	})
+	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
+	assert.Equal(t, "no_fit", m.AssessCapacity(t.Context(), req).Status)
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, err = m.admitMemory(t.Context(), features)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+}
+
+func TestCapacityIncompleteSelectedObservationIsUnknown(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	for _, cards := range [][]gpu.CardMetrics{
+		{{UUID: "GPU-A", TotalMemoryMiB: 10000}, {UUID: "GPU-B"}},
+		{{UUID: "GPU-A", TotalMemoryMiB: 10000}, {TotalMemoryMiB: 10000}},
+	} {
+		m.memoryInventory = func(context.Context) []gpu.CardMetrics { return cards }
+		req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}
+		req.Parameters = map[string]string{"tensor-parallel-size": "2"}
+		m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+			return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization", DeviceCountParameter: "tensor-parallel-size"}, nil
+		})
+		assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+		req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}
+		req.Parameters = map[string]string{"tensor-parallel-size": "1"}
+		assert.Equal(t, "fit", m.AssessCapacity(t.Context(), req).Status)
+	}
+}
+
+func TestCapacityLayersUseUnifiedPool(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("Apple unified pool")
+	}
+	m, req, _ := capacityFixture(t)
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation }
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
+		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
+	}
+	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+		return &schema.MemoryBudget{Kind: schema.MemoryLayers, Parameter: "gpu-layers"}, nil
+	})
+	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
+	assessment := m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "no_fit", assessment.Status)
+	assert.Equal(t, int64(1024), assessment.RequiredMiB)
+	assert.Equal(t, int64(512), assessment.CapacityMiB)
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	_, err = m.admitMemory(t.Context(), features)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+}
+
+func TestCapacityPreservesEnvironmentValidation(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	features, err := m.ResolveLaunchParameters(t.Context(), req)
+	require.NoError(t, err)
+	features.Environment = map[string]string{"LD_PRELOAD": "injected"}
+	for _, capacity := range []bool{false, true} {
+		assessment, err := m.checkMemory(t.Context(), features, capacity)
+		require.ErrorIs(t, err, process.ErrDangerousEnvVar)
+		assert.NotErrorIs(t, err, process.ErrMemoryObservation)
+		assert.Equal(t, "unknown", assessment.Status)
+	}
+}

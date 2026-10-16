@@ -60,6 +60,16 @@
   Cloud and external models without present evidence now report `tools:false`;
   cloud models no longer claim `tools:true` by default. False means no evidence,
   not refusal, and does not prohibit tool requests.
+- Compatible-node queries return confirmed model capacity fits and report per-node,
+  per-provider `fit`, `no_fit` and `unknown` reasons in `metadata.assessments`.
+  Run previews and MCP `zz_run_preview` expose the same capacity assessment without
+  launching or evicting runs. Cached weights alone no longer imply compatibility.
+  Downloads retain independent storage eligibility. Launch admission also refuses
+  weights exceeding the engine's reachable memory with HTTP 409 `out_of_range`.
+- Cluster protocol rises from 11 to 12, with minimum 11 retained for this optional
+  assessment change. Old or missing worker evidence becomes unknown. A rolling
+  upgrade updates the coordinator first, then workers to obtain capacity assessments;
+  verify matching node/launcher bundles and node health after each update.
 
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.

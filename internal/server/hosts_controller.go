@@ -77,5 +77,5 @@ func (ctrl *NodesController) ListCompatibleNodes(c *gin.Context) {
 
 	// Apply pagination
 	paginatedData, total, hasMore := ApplyPagination(resp.Data, pagination)
-	respondList(c, paginatedData, total, hasMore)
+	respondListWithMetadata(c, paginatedData, total, hasMore, map[string]any{"assessments": resp.Assessments})
 }

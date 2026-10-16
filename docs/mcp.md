@@ -103,6 +103,15 @@ Only present projects to `/v1/models` `capabilities.tools: true`; false does not
 block requests. Running chat evidence survives configuration patches until a
 restart. Use `zz_chat` with `probe: tools` for request-local automatic-choice
 verification and diagnostics; no probe verdict is saved in the catalog.
+`zz_run_preview` preserves the node's capacity `assessment`, including its reason
+and optional MiB amounts. Only `fit` confirms capacity; `unknown` is uncertainty,
+and `no_fit` is a refusal by the shared memory policy. Preview never launches,
+evicts or reserves memory, and current load can still prevent a later launch.
+`zz_nodes` reports inventory; comparing file size with its memory does not prove
+fit. Use `zz_api_get` on `/zzrouter/v1/nodes/compatible` with the exact `model`
+and optional `provider`/`registry` to read confirmed nodes and all
+`metadata.assessments` unchanged. Missing worker fields or replies are unknown.
+Storage/download eligibility remains independent of capacity uncertainty.
 
 An exact `zz_models.model` name or source-id filter returning one total model
 also adds `show` to that entry. Case-insensitive exact matches qualify; globs,

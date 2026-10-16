@@ -42,6 +42,7 @@ type RunRef struct {
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
 type MemoryFitError struct {
+	BudgetKind        string         `json:"budget_kind,omitempty"`
 	Parameter         string         `json:"parameter"`
 	Device            string         `json:"device"`
 	RequiredMiB       int64          `json:"required_mib"`
@@ -53,6 +54,9 @@ type MemoryFitError struct {
 // Error names who holds the memory, so the reader can tell an idle zzRouter
 // run it may stop from a workload only the operator can release.
 func (e *MemoryFitError) Error() string {
+	if e.BudgetKind != "" {
+		return fmt.Sprintf("model weights require %g GiB, exceeding %s reach of %g GiB (%s); choose a smaller quantization or another node", float64(e.RequiredMiB)/1024, e.BudgetKind, float64(e.FreeMiB)/1024, e.Parameter)
+	}
 	msg := fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s)", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
 	var held []string
 	for _, h := range e.Holders {
@@ -94,12 +98,35 @@ func (e *MemoryFitError) Unwrap() error {
 // maxMemoryDevices bounds device selection before any observation or allocation.
 const maxMemoryDevices = 64
 
-// AdmitMemoryBudget checks a fraction-of-total budget on each GPU the launch uses. auto becomes the
-// model's need when it is known, which must fit beside the safety margin, else the free fraction left
-// after that margin; it is written to parameters only once it fits. A budget that cannot fit is a MemoryFitError naming who holds the memory.
-func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
+// MemoryAssessment separates admitted budgets from established model fit.
+type MemoryAssessment struct {
+	Status      string `json:"status"`
+	Reason      string `json:"reason"`
+	BudgetKind  string `json:"budget_kind,omitempty"`
+	RequiredMiB int64  `json:"required_mib,omitempty"`
+	CapacityMiB int64  `json:"capacity_mib,omitempty"`
+}
+
+func (assessment *MemoryAssessment) setError(err error) {
+	if err == nil {
+		return
+	}
+	assessment.Reason = err.Error()
+	var fit *MemoryFitError
+	if errors.As(err, &fit) {
+		assessment.Status, assessment.RequiredMiB, assessment.CapacityMiB = "no_fit", fit.RequiredMiB, fit.FreeMiB
+	}
+}
+
+// AdmitMemoryBudget shares capacity evidence and launch admission arithmetic.
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64) (assessment MemoryAssessment, err error) {
+	assessment = MemoryAssessment{Status: "unknown", Reason: "model fit is not established for this budget or sizing evidence", BudgetKind: budget.Kind}
+	defer func() { assessment.setError(err) }()
+	if budget.Kind == schema.MemoryExternal {
+		return assessment, nil
+	}
 	if budget.Kind == schema.MemoryReserveMiB {
-		return admitReserved(budget, parameters, environment, devices, owners, commitments)
+		return assessment, admitReserved(budget, parameters, environment, devices, owners, commitments)
 	}
 	auto := budget.Kind == schema.MemoryFractionTotal && config.IsAuto(parameters[budget.Parameter])
 	var fraction float64
@@ -107,40 +134,35 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		var err error
 		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
 		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
-			return fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+			return assessment, fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
 		}
 	}
-	count := 1
-	if value := parameters[budget.DeviceCountParameter]; value != "" {
-		var err error
-		count, err = strconv.Atoi(value)
-		if err != nil || count < 1 || count > maxMemoryDevices {
-			return fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
-		}
-	}
-	selected, err := memoryDevicesForLaunch(devices, environment, count)
+	selected, err := memoryDevicesForLaunch(devices, environment, parameters[budget.DeviceCountParameter], budget.Kind == schema.MemoryLayers && budget.DeviceCountParameter == "")
 	if err != nil {
-		return err
+		return assessment, err
+	}
+	if err := weightMemoryFit(budget, need, selected, systemMiB, fraction, auto); err != nil {
+		return assessment, err
 	}
 	if budget.Kind != schema.MemoryFractionTotal {
 		for _, device := range selected {
 			fit := memoryFitError(budget.Parameter, device, device.FreeMiB, owners)
 			if fit.FreeMiB < device.FreeMiB {
-				return fit
+				return assessment, fit
 			}
 		}
-		return nil
+		return assessment, nil
 	}
 	sized := auto && need.Total() > 0
 	switch {
 	case sized:
 		if budget.AutoSafetyMarginMiB < 0 {
-			return fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
+			return assessment, fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
 		}
 		fraction = needFraction(need, selected)
 	case auto:
 		if fraction, err = autoFraction(budget, selected, owners); err != nil {
-			return err
+			return assessment, err
 		}
 	}
 	for _, device := range selected {
@@ -148,13 +170,44 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		if sized {
 			required += safetyMargin(budget, device)
 		}
+		if assessment.CapacityMiB == 0 || device.FreeMiB-required < assessment.CapacityMiB-assessment.RequiredMiB {
+			assessment.RequiredMiB, assessment.CapacityMiB = required, device.FreeMiB
+		}
 		fit := memoryFitError(budget.Parameter, device, required, owners)
 		if required > fit.FreeMiB {
-			return fit
+			return assessment, fit
 		}
+	}
+	if sized {
+		assessment.Status, assessment.Reason = "fit", "sized model and safety margin fit on selected devices"
 	}
 	if auto {
 		parameters[budget.Parameter] = strconv.FormatFloat(fraction, 'f', 4, 64)
+	}
+	return assessment, nil
+}
+
+func weightMemoryFit(budget schema.MemoryBudget, need Need, selected []gpu.MemoryDevice, systemMiB int64, fraction float64, auto bool) error {
+	reach := float64(0)
+	for _, device := range selected {
+		amount := float64(device.TotalMiB)
+		if budget.Kind == schema.MemoryFractionTotal && !auto {
+			amount *= fraction
+		}
+		reach += amount
+	}
+	if budget.Kind == schema.MemoryLayers && !selected[0].Unified {
+		if systemMiB <= 0 {
+			return nil // Missing RAM cannot prove the engine's reachable total.
+		}
+		reach += float64(systemMiB)
+	}
+	weightMiB := float64(need.WeightsMiB)
+	if need.WeightsBytes > 0 {
+		weightMiB = float64(need.WeightsBytes) / (1024 * 1024)
+	}
+	if weightMiB > reach {
+		return &MemoryFitError{BudgetKind: budget.Kind, Parameter: budget.Parameter, Device: "reachable memory", RequiredMiB: int64(math.Ceil(weightMiB)), FreeMiB: int64(reach), Holders: []MemoryHolder{}}
 	}
 	return nil
 }
@@ -234,9 +287,20 @@ var parentPID = func(pid int32) (int32, error) {
 	return (&processinfo.Process{Pid: pid}).Ppid()
 }
 
-func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, count int) ([]gpu.MemoryDevice, error) {
+func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]string, value string, allVisible bool) ([]gpu.MemoryDevice, error) {
+	count := 1
+	if value != "" {
+		var err error
+		count, err = strconv.Atoi(value)
+		if err != nil || count < 1 || count > maxMemoryDevices {
+			return nil, fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
+		}
+	}
 	visible, configured := environment["CUDA_VISIBLE_DEVICES"]
 	if !configured {
+		if allVisible && len(devices) > 0 && len(devices) <= maxMemoryDevices {
+			return devices, nil
+		}
 		// CUDA's default ordering need not match NVML on multi-GPU nodes.
 		if len(devices) != 1 || count != 1 {
 			return nil, fmt.Errorf("%w: multiple GPUs require explicit UUID visibility for budget admission", ErrMemoryObservation)
@@ -244,7 +308,10 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 		return devices, nil
 	}
 	selectors := strings.Split(visible, ",")
-	if len(selectors) < count {
+	if allVisible {
+		count = len(selectors)
+	}
+	if len(selectors) < count || count > maxMemoryDevices {
 		return nil, fmt.Errorf("%w: insufficient visible GPUs", ErrMemoryObservation)
 	}
 	selected := make([]gpu.MemoryDevice, 0, count)
@@ -275,7 +342,7 @@ func PrepareMemoryBudget(budget schema.MemoryBudget, params, env map[string]stri
 	if budget.Kind != schema.MemoryReserveMiB {
 		return nil, nil
 	}
-	selected, err := memoryDevicesForLaunch(devices, env, 1)
+	selected, err := memoryDevicesForLaunch(devices, env, "1", false)
 	if err != nil {
 		return nil, err
 	}
