@@ -23,9 +23,17 @@ import (
 )
 
 // Synthetic daemon replies exercise real registry, REST and MCP paths.
-func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
+func detailDaemon(t *testing.T, s *Server, name string, templateBody ...string) *atomic.Int32 {
 	t.Helper()
 	mode := &atomic.Int32{}
+	template := "{{ messages }}"
+	if len(templateBody) > 0 {
+		template = templateBody[0]
+	}
+	oversizedParameters := strings.Repeat("p", 1<<17)
+	require.Greater(t, len(oversizedParameters), 64<<10, "overflow fixture must exceed the compact body limit")
+	tags := []byte(`{"models":[{"name":"m","model":"m","size":123,"details":{"format":"gguf"}}]}`)
+	ps := []byte(`{"models":[]}`)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -35,9 +43,9 @@ func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
 				_, _ = w.Write([]byte(`{"error":"inventory unavailable"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"models":[{"name":"m","model":"m","size":123,"details":{"format":"gguf"}}]}`))
+			_, _ = w.Write(tags)
 		case "/api/ps":
-			_, _ = w.Write([]byte(`{"models":[]}`))
+			_, _ = w.Write(ps)
 		case "/api/show":
 			var request struct {
 				Name    string `json:"name"`
@@ -58,9 +66,9 @@ func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
 			default:
 				parameters := name
 				if mode.Load() == 4 {
-					parameters = strings.Repeat("p", 1<<17)
+					parameters = oversizedParameters
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"parameters": parameters, "verbose": request.Verbose, "provider_model": request.Name, "template": strings.Repeat("template", 1<<18), "license": "discard in compact mode", "model_info": map[string]any{"general.architecture": "llama", "llama.context_length": 8192, "tensor_data": []any{1, 2}}, "capabilities": []string{"completion", "tools"}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"parameters": parameters, "verbose": request.Verbose, "provider_model": request.Name, "template": template, "license": "discard in compact mode", "model_info": map[string]any{"general.architecture": "llama", "llama.context_length": 8192, "tensor_data": []any{1, 2}}, "capabilities": []string{"completion", "tools"}})
 			}
 		default:
 			w.WriteHeader(404)
@@ -82,9 +90,12 @@ func detailData(t *testing.T, response *TestResponse) map[string]any {
 }
 
 func TestModelDetailBackendAndCompactContract(t *testing.T) {
+	largeTemplate := strings.Repeat("template", 1<<18)
+	require.Equal(t, 2<<20, len(largeTemplate), "preserve the original 2 MiB fixture")
+	require.Greater(t, len(largeTemplate), 1<<20)
 	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
-	detailDaemon(t, s, "ollama-detail-a")
-	detailDaemon(t, s, "ollama-detail-b")
+	detailDaemon(t, s, "ollama-detail-a", largeTemplate)
+	detailDaemon(t, s, "ollama-detail-b", largeTemplate)
 	listed := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models?model=m", TestAdminKey, nil)
 	require.Equal(t, 200, listed.Code, string(listed.Body))
 	var collection struct {
@@ -101,6 +112,7 @@ func TestModelDetailBackendAndCompactContract(t *testing.T) {
 		require.Equal(t, true, fullDetails["verbose"])
 		require.Equal(t, "m", fullDetails["provider_model"])
 		require.Greater(t, len(fullDetails["template"].(string)), 1<<20)
+		require.Equal(t, largeTemplate, fullDetails["template"], "full detail preserves every template byte")
 		compact := makeAuthRequest(t, s, "GET", path+"&compact=true", TestAdminKey, nil)
 		require.Equal(t, 200, compact.Code, string(compact.Body))
 		require.Less(t, len(compact.Body), 64<<10)
