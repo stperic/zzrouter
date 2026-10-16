@@ -122,7 +122,9 @@ capabilities:
   default_variant: "Q4_K_M"
   # Wire endpoints llama-server natively serves. /v1/responses absent :
   # see ggml-org/llama.cpp#14702. Router uses translation shim for it.
-  wire_endpoints: [chat_completions, completions, embeddings, rerank, messages]
+  # messages is left out so it is translated: native /v1/messages fails to tokenize a
+  # tool_result image followed by text in the same turn, which Claude Code sends after Read.
+  wire_endpoints: [chat_completions, completions, embeddings, rerank]
 
 defaults:
   parameters:

@@ -14,7 +14,7 @@ Provisioning has three forms:
 For llama.cpp, the shipped file declaration prefers `mmproj-F16.gguf`, then
 `mmproj-BF16.gguf`, then `mmproj-*.gguf`, and sets `flag: mmproj`. MLX declares
 `runtime: mlx-vlm` with `when: vision_config`, a Python execution overlay and
-native Chat, Responses and Messages endpoints. vLLM and Ollama declare built-in
+native Chat and Responses endpoints, with Messages translated. vLLM and Ollama declare built-in
 support. These are provider template choices; routing does not select by engine
 name. The predicate checks local `config.json`; absent evidence remains unknown.
 Launch selection inspects endpoint-applicable predicates before runtime installation
