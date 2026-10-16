@@ -296,6 +296,9 @@ func (e *DeploymentsExecutor) forgetJobKey(key, jobID string) {
 // Rejected generation/terminal writes cannot announce a physical success.
 func (e *DeploymentsExecutor) updateDownloadJob(a *downloadAttempt, key, status, file string, done, total int, progress float64, downloaded, size, speed int64) {
 	if a.ctx.Err() != nil {
+		if !modelregistry.IsTerminalStatus(status) {
+			return
+		}
 		status, speed = string(constants.StatusCancelled), 0
 	}
 	if modelregistry.IsTerminalStatus(status) {
@@ -459,16 +462,16 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, admission downloadA
 	go func() {
 		defer e.forgetJobKey(downloadKey, job.ID())
 		defer attempt.cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
-				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
-			}
-		}()
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
+				statusUpdater(string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
+			}
+		}()
 
 		if e.registry != nil {
 			e.registry.PullOllamaModel(ctx, modelName, statusUpdater)
@@ -496,13 +499,6 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 	go func() {
 		defer e.forgetJobKey(downloadKey, job.ID())
 		defer attempt.cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
-				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
-			}
-		}()
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
 			if status == string(constants.StatusCompleted) && admission.catalogProvisioning && admission.provider != "" && e.ensureFeatures != nil {
 				root, err := modelregistry.GetModelsRootDir()
@@ -515,15 +511,27 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 					status, currentFile = string(constants.StatusFailed), err.Error()
 				}
 			}
+			if modelregistry.IsTerminalStatus(status) && (status != string(constants.StatusCompleted) || ctx.Err() != nil) && admission.catalogProvisioning && e.publishCatalog != nil {
+				if err := e.publishCatalog(); err != nil {
+					currentFile = fmt.Sprintf("%s; catalog publication failed: %v", currentFile, err)
+				}
+			}
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
+				statusUpdater(string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
+			}
+		}()
 
 		if err := e.registry.DownloadHuggingFaceModel(ctx, request, statusUpdater, admission.destination); err != nil {
 			var problem httperr.Error
 			if errors.As(err, &problem) {
 				job.Meta(jobs.Meta{"error_code": problem.Code})
 			}
-			e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), err.Error(), 0, 0, 0, 0, 0, 0)
+			statusUpdater(string(constants.StatusFailed), err.Error(), 0, 0, 0, 0, 0, 0)
 		}
 	}()
 

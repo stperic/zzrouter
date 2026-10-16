@@ -84,7 +84,7 @@ func analyzeGGUF(modelsRoot string, md *metadata.ModelMetadata, path, basename s
 	if quant := metadata.ExtractQuantization(basename); quant != "" {
 		md.Quantization = quant
 	}
-	if modelID := extractModelIDFromPath(modelsRoot, path); modelID != "" {
+	if modelID := ExtractModelIDFromPath(modelsRoot, path); modelID != "" {
 		md.SourceID = modelID
 	}
 }
@@ -97,7 +97,7 @@ func analyzeSafetensors(modelsRoot string, md *metadata.ModelMetadata, path stri
 	if hasConfigJSON(dir) {
 		md.SourceRepo = metadata.SourceHuggingFace
 
-		if modelID := extractModelIDFromPath(modelsRoot, path); modelID != "" {
+		if modelID := ExtractModelIDFromPath(modelsRoot, path); modelID != "" {
 			md.SourceID = modelID
 			md.Name = modelID // Use full model ID as name (e.g., "Qwen/Qwen3-0.6B")
 		}
@@ -115,7 +115,7 @@ func analyzePyTorch(modelsRoot string, md *metadata.ModelMetadata, path string) 
 		md.Format = metadata.FormatHuggingFace
 		md.SourceRepo = metadata.SourceHuggingFace
 
-		if modelID := extractModelIDFromPath(modelsRoot, path); modelID != "" {
+		if modelID := ExtractModelIDFromPath(modelsRoot, path); modelID != "" {
 			md.SourceID = modelID
 			md.Name = modelID
 		}
@@ -191,25 +191,19 @@ func hasGitAttributes(dir string) bool {
 	return err == nil
 }
 
-// extractModelIDFromPath extracts a HuggingFace-style "org/name" model
+// ExtractModelIDFromPath extracts a HuggingFace-style "org/name" model
 // ID from a full file path relative to modelsRoot. Example:
 // /models/Qwen/Qwen2.5-VL-7B/model.safetensors → Qwen/Qwen2.5-VL-7B.
-func extractModelIDFromPath(modelsRoot, path string) string {
-	dir := filepath.Dir(path)
-
-	relPath, err := filepath.Rel(modelsRoot, dir)
-	if err != nil {
+func ExtractModelIDFromPath(modelsRoot, path string) string {
+	relPath, err := filepath.Rel(modelsRoot, filepath.Dir(path))
+	if err != nil || !filepath.IsLocal(relPath) {
 		return ""
 	}
-
-	relPath = filepath.ToSlash(relPath)
-
-	parts := strings.Split(relPath, "/")
-	if len(parts) >= 2 {
-		return strings.Join(parts[:2], "/")
+	parts := strings.SplitN(filepath.ToSlash(relPath), "/", 3)
+	if len(parts) < 2 {
+		return ""
 	}
-
-	return ""
+	return strings.Join(parts[:2], "/")
 }
 
 // inferSourceRegistry tries to infer the source repository from the
@@ -229,7 +223,7 @@ func inferSourceRegistry(modelsRoot string, md *metadata.ModelMetadata, path str
 		// Check if path structure suggests HuggingFace model (org/model
 		// pattern). Catches GGUF models downloaded from HuggingFace
 		// that might not have a config.json.
-		if modelID := extractModelIDFromPath(modelsRoot, path); modelID != "" {
+		if modelID := ExtractModelIDFromPath(modelsRoot, path); modelID != "" {
 			md.SourceRepo = metadata.SourceHuggingFace
 			md.SourceID = modelID
 		} else {

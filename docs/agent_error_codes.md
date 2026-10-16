@@ -291,11 +291,15 @@ so a later repeat runs again; duplicates already waiting must retry.
   already-terminal success is immutable. This adds no error code. Omitting
   `node` discovers the owner; incomplete lookup is 503/`node_unreachable`, while
   confirmed absence is 404/`job_not_found`. Neither proves cancellation.
-- Cancellation may publish terminal state before cleanup. Completed files remain,
-  unfinished catalog files stay pending, and the next download repairs missing
-  files and clears matching dead partials under serialization. Provider-store
-  reservations remain until unwind; Ollama owns its blob cleanup. Use a new
-  idempotency key for repair after a failed or cancelled job.
+- Hugging Face catalog downloads and peer sync publish terminal cancellation
+  after physical unwind and catalog publication. Completed files remain and
+  unfinished catalog files stay pending. Manifest-only repositories appear as
+  `incomplete: true`; repair with the same download or delete the exact catalog
+  identity. Deleting while a writer holds the repository returns 409
+  `download_in_progress`: cancel its job and await its terminal outcome first.
+  The next download clears matching dead partials under serialization.
+  Provider-store reservations remain until unwind; Ollama owns its blob cleanup.
+  Use a new idempotency key for repair after a failed or cancelled job.
 
 ## What an agent should never branch on
 

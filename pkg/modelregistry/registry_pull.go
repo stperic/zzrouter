@@ -126,6 +126,6 @@ func (r *Registry) DownloadHuggingFaceModel(ctx context.Context, req metadata.Do
 }
 
 // CatalogDestination resolves a repository in this registry's bound model root.
-func (r *Registry) CatalogDestination(repo string) huggingface.Destination {
+func (r *Registry) CatalogDestination(repo string) huggingface.CatalogDestination {
 	return huggingface.CatalogDestination(filepath.Join(r.modelsRoot, filepath.FromSlash(repo)))
 }
