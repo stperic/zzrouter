@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 (2026-10-16)
 
+- Dependency updates: Bubble Tea v2.1.0, gRPC v1.84.0, Prometheus client
+  v1.25.0, golang.org/x/crypto v0.58.0 and golang.org/x/net v0.61.0. The release
+  workflow uses upload-artifact v7.0.2 and download-artifact v8.0.2.
+- On Windows, stopping a process that has already begun exiting no longer
+  reports a kill failure (TerminateProcess answers access denied while the exit
+  completes).
+- Cluster protocol 13 (minimum 12): upgrade workers to this release to get
+  context-aware fit answers from them; older workers keep working and answer
+  `unknown`.
 - llama.cpp and the MLX vision runtime serve Anthropic Messages through the
   translator instead of their native endpoints, which mishandle images inside
   `tool_result` blocks (llama.cpp refuses the turn, mlx-vlm drops the image).
