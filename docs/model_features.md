@@ -36,7 +36,8 @@ with its install call instead of launching the base engine.
 
 An explicit `features: {}` provider block disables shipped declarations and
 survives configuration saves and reconciliation. Shipped declaration bodies refresh on later releases, including removal of
-obsolete fields. Their `default` policy and all model/node feature policies
+obsolete fields. Declarations are managed: edits to a shipped body are replaced,
+and feature names the release does not ship are removed. Their `default` policy and all model/node feature policies
 remain operator-owned; templates without declarations leave custom providers
 untouched.
 
