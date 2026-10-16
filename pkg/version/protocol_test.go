@@ -265,3 +265,14 @@ func TestEndpointFeaturesProtocolCutoverContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCapacityAssessmentProtocolWindow(t *testing.T) {
+	if ClusterProtocolVersion != 12 || MinClusterProtocolVersion != 11 {
+		t.Fatalf("capacity assessments require protocol window 11..12, got %+v", LocalProtocolWindow())
+	}
+	for _, peer := range []int{11, 12} {
+		if err := LocalProtocolWindow().Check(peer); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

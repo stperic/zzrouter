@@ -57,8 +57,8 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "devices"}
 	amount := int64(3000)
 	devices := []gpu.MemoryDevice{{UUID: "GPU-A", Index: 0, TotalMiB: 10000, FreeMiB: 6000, Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: &amount}, {PID: 43}}}}
-	require.NoError(t, AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil))
-	err := AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.95"}, nil, devices, []RunRef{{PID: 42, ID: "run-owned", Model: "org/owned-model"}}, nil)
+	require.NoError(t, admitBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil))
+	err := admitBudget(budget, Need{}, map[string]string{"budget": "0.95"}, nil, devices, []RunRef{{PID: 42, ID: "run-owned", Model: "org/owned-model"}}, nil)
 	var failure *MemoryFitError
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, int64(9500), failure.RequiredMiB)
@@ -72,17 +72,22 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 		"the message alone tells a stoppable run from a workload only the operator can release")
 	// An aggregate free total must not hide one undersized shard device.
 	devices = append(devices, gpu.MemoryDevice{UUID: "GPU-B", Index: 1, TotalMiB: 10000, FreeMiB: 5000})
-	err = AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}, devices, nil, nil)
+	err = admitBudget(budget, Need{}, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A,GPU-B"}, devices, nil, nil)
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, "GPU-B", failure.Device)
 	assert.Equal(t, int64(5500), failure.RequiredMiB)
 	assert.Equal(t, int64(5000), failure.FreeMiB)
 	for _, selector := range []string{"", "0", "GPU-A,GPU-A", "MIG-unknown"} {
-		err := AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": selector}, devices, nil, nil)
+		err := admitBudget(budget, Need{}, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": selector}, devices, nil, nil)
 		assert.ErrorIs(t, err, ErrMemoryObservation)
 	}
 	for _, fraction := range []string{"NaN", "Inf", "0", "1.5", "unknown"} {
-		assert.ErrorIs(t, AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": fraction}, nil, devices, nil, nil), ErrMemoryBudgetInvalid)
+		assert.ErrorIs(t, admitBudget(budget, Need{}, map[string]string{"budget": fraction}, nil, devices, nil, nil), ErrMemoryBudgetInvalid)
 	}
-	assert.True(t, errors.Is(AdmitMemoryBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil), ErrMemoryObservation))
+	assert.True(t, errors.Is(admitBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil), ErrMemoryObservation))
+}
+
+func admitBudget(budget schema.MemoryBudget, need Need, params, env map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
+	_, err := AdmitMemoryBudget(budget, need, params, env, devices, 0, owners, commitments)
+	return err
 }

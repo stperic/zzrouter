@@ -75,6 +75,22 @@ func TestReservationLaunchPreviewAndStaleness(t *testing.T) {
 	require.Empty(t, result.Run.Resolved().Commitments)
 }
 
+func TestReservationIgnoresUnusableInventoryCards(t *testing.T) {
+	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
+	r := reservationRig(t, false)
+	r.m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 24576}, {TotalMemoryMiB: 24576}, {UUID: "GPU-B"}, {UUID: "GPU-C", TotalMemoryMiB: -1}}
+	}
+	devices, err := r.m.memoryTotals(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576}}, devices)
+	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
+	require.NoError(t, err)
+	awaitRunning(t, result.Run)
+	require.Equal(t, map[string]int64{"GPU-A": 9000}, result.Run.Resolved().Commitments)
+	require.Equal(t, "GPU-A", result.Run.Resolved().Environment["CUDA_VISIBLE_DEVICES"])
+}
+
 func TestReservationProtectsBudgetAndReclaimsIdleTenant(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "refused", true: "evicted"}[enabled], func(t *testing.T) {

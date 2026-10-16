@@ -54,9 +54,9 @@ func TestReservationBoundsComplementAndAttribution(t *testing.T) {
 	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (pid 7, 2048 MiB)")
 	require.Contains(t, fit.Error(), "zzRouter run studio provider studio (6952 MiB unused commitment)")
 	var refused *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "fraction"}, Need{}, map[string]string{"fraction": "0.75"}, nil, []gpu.MemoryDevice{device}, owners, nil), &refused)
+	require.ErrorAs(t, admitBudget(schema.MemoryBudget{Kind: "fraction_total", Parameter: "fraction"}, Need{}, map[string]string{"fraction": "0.75"}, nil, []gpu.MemoryDevice{device}, owners, nil), &refused)
 	require.Equal(t, fit.FreeMiB, refused.FreeMiB)
-	require.ErrorAs(t, AdmitMemoryBudget(schema.MemoryBudget{Kind: "layers"}, Need{}, nil, nil, []gpu.MemoryDevice{device}, owners, nil), &refused)
+	require.ErrorAs(t, admitBudget(schema.MemoryBudget{Kind: "layers"}, Need{}, nil, nil, []gpu.MemoryDevice{device}, owners, nil), &refused)
 	owners[0].PID = 0
 	device.Processes = nil
 	require.Equal(t, int64(13528), memoryFitError("fraction", device, 18000, owners).FreeMiB)
@@ -85,10 +85,10 @@ func TestUnknownBudgetOnlyChecksSelectedDevices(t *testing.T) {
 	devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24000, FreeMiB: 24000}, {UUID: "GPU-B", TotalMiB: 24000, FreeMiB: 24000}}
 	owners := []RunRef{{ID: "tenant", Commitments: map[string]int64{"GPU-A": 4000}}}
 	budget := schema.MemoryBudget{Kind: "layers", Parameter: "gpu-layers", DeviceCountParameter: "devices"}
-	require.NoError(t, AdmitMemoryBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B"}, devices, owners, nil))
+	require.NoError(t, admitBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B"}, devices, owners, nil))
 	var fit *MemoryFitError
-	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}, devices, owners, nil), &fit)
+	require.ErrorAs(t, admitBudget(budget, Need{}, nil, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"}, devices, owners, nil), &fit)
 	require.Equal(t, "gpu-layers", fit.Parameter)
 	require.Equal(t, "GPU-A", fit.Device)
-	require.ErrorAs(t, AdmitMemoryBudget(budget, Need{}, map[string]string{"devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B,GPU-A"}, devices, owners, nil), &fit)
+	require.ErrorAs(t, admitBudget(budget, Need{}, map[string]string{"devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-B,GPU-A"}, devices, owners, nil), &fit)
 }

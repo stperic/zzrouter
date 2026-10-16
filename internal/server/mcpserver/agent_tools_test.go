@@ -512,3 +512,32 @@ func TestExactModelMetadataGuidanceContract(t *testing.T) {
 	require.NotContains(t, show, "capabilities")
 	require.NotContains(t, show, "parameters")
 }
+
+func TestMCPCompatibilityPreservesAssessment(t *testing.T) {
+	for _, status := range []string{"fit", "no_fit", "unknown"} {
+		t.Run(status, func(t *testing.T) {
+			assessment := map[string]any{"status": status, "reason": "evidence for " + status, "budget_kind": "fraction_total", "required_mib": float64(17), "capacity_mib": float64(19)}
+			nodeAssessment := map[string]any{"node": "worker", "provider": "vllm", "status": status, "reason": "evidence for " + status}
+			rest := map[string]any{"data": []any{}, "total": float64(0), "metadata": map[string]any{"assessments": []any{nodeAssessment}}}
+			calls := 0
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.Method == http.MethodGet {
+					require.Equal(t, "/zzrouter/v1/nodes/compatible", r.URL.Path)
+					require.NoError(t, json.NewEncoder(w).Encode(rest))
+					return
+				}
+				require.Equal(t, "/zzrouter/v1/runs/preview", r.URL.Path)
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"assessment": assessment, "full_command": "engine"}}))
+			})
+			d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "getNodesCompatible", nil }
+			api := callAgentTool(t, d, "zz_api_get", map[string]any{"path": "/zzrouter/v1/nodes/compatible", "query": map[string]string{"model": "m"}})
+			require.NotEqual(t, true, api["isError"])
+			assert.Equal(t, rest, api["structuredContent"].(map[string]any)["response"])
+			preview := callAgentTool(t, d, "zz_run_preview", map[string]any{"provider": "vllm", "model": "m"})
+			require.NotEqual(t, true, preview["isError"])
+			assert.Equal(t, assessment, preview["structuredContent"].(map[string]any)["assessment"])
+			assert.Equal(t, 2, calls)
+		})
+	}
+}

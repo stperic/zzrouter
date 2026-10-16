@@ -10,6 +10,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -209,15 +210,16 @@ func (req *LoadModelRequest) UnmarshalJSON(data []byte) error {
 
 // PreviewRunResponse represents a run preview
 type PreviewRunResponse struct {
-	Model            string            `json:"model"`
-	Provider         string            `json:"provider"`
-	Node             string            `json:"node"`
-	Port             int               `json:"port"`
-	FullCommand      string            `json:"full_command"`
-	Parameters       map[string]string `json:"parameters"`
-	ParameterSources map[string]string `json:"parameter_sources"`
-	Environment      map[string]string `json:"environment"`
-	WorkingDir       string            `json:"working_dir"`
+	Assessment       *process.MemoryAssessment `json:"assessment,omitempty"`
+	Model            string                    `json:"model"`
+	Provider         string                    `json:"provider"`
+	Node             string                    `json:"node"`
+	Port             int                       `json:"port"`
+	FullCommand      string                    `json:"full_command"`
+	Parameters       map[string]string         `json:"parameters"`
+	ParameterSources map[string]string         `json:"parameter_sources"`
+	Environment      map[string]string         `json:"environment"`
+	WorkingDir       string                    `json:"working_dir"`
 }
 
 // PreviewRun returns a preview of what would be run without actually running it
@@ -252,6 +254,10 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	var preview PreviewRunResponse
 	if err := json.Unmarshal(resp.Body, &preview); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if preview.Assessment == nil {
+		preview.Assessment = &process.MemoryAssessment{Status: "unknown", Reason: "node reported no capacity assessment"}
 	}
 
 	// The node that rendered this preview received every value as a

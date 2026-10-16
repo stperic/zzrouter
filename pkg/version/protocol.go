@@ -32,8 +32,9 @@ package version
 // Protocol 9 requires provider data/model stores and owned download targets.
 // Protocol 10 adds release-owned source install recipes, which older provider schemas reject.
 // Protocol 11 adds endpoint features and feature health checks, which older provider schemas reject.
+// Protocol 12 adds optional node and preview capacity assessments.
 const (
-	ClusterProtocolVersion    = 11
+	ClusterProtocolVersion    = 12
 	MinClusterProtocolVersion = 11
 )
 

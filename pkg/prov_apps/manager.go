@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/hardware"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -156,6 +157,7 @@ type ProviderAppManager struct {
 	providerSchema      func(provider string) (*schema.ProviderSchema, error)
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
 	memoryInventory     func(context.Context) []gpu.CardMetrics
+	memorySystem        func(context.Context) *hardware.HardwareInfo
 	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
@@ -352,6 +354,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
+		memorySystem:    inventory.Default().GetMemoryInfo,
 		memoryInventory: inventory.Default().GetGPUCardMetrics,
 		services:        make(map[string]*managedService),
 		flights:         make(map[instance.Key]*flight),

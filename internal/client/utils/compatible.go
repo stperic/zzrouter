@@ -39,13 +39,13 @@ type NodeWithProviders struct {
 	MemoryInfo  *NodeMemoryInfo       `json:"memory,omitempty"`
 }
 
-// GetCompatibleNodes retrieves nodes with compatible providers for a specific format and source
-// GET /zzrouter/nodes/compatible?format=<format>&source=<source>
+// GetCompatibleNodes returns confirmed capacity fits; unknown nodes remain in REST metadata.
+// Explicit node selection still permits downloads when capacity cannot be established.
 func (c *Client) GetCompatibleNodes(model, repo, provider string) ([]NodeWithProviders, error) {
 	// Build query parameters
 	params := url.Values{}
 	if model != "" {
-		params.Set("model_name", model)
+		params.Set("model", model)
 	}
 	if repo != "" {
 		params.Set("registry", repo)

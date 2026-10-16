@@ -1253,6 +1253,12 @@ paths:
         anything. The answer to "what exactly is this going to run"
         before committing a GPU to it.
 
+        data.assessment uses the same capacity policy as nodes/compatible and
+        returns fit, no_fit or unknown with a reason. Unknown is not confirmed fit.
+        It evaluates cloned parameters against selected device totals without
+        launching, evicting or reserving memory. Current load can still refuse
+        a subsequent launch. Workers without this field yield explicit unknown.
+
         `provider` is required. Preview renders one provider's launch
         command, so an omitted provider is a client error rather than
         something to guess at; `GET /zzrouter/v1/runs/capabilities`
@@ -1267,7 +1273,12 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PreviewRunResponse' }
         '400':
           description: |
             `provider` missing, or a provider that is not configured or
@@ -2413,12 +2424,31 @@ paths:
       operationId: getNodesCompatible
       summary: List nodes compatible with a model
       description: |
-        Nodes that could run a given model, filtered by what each one has:
-        provider support, and hardware where the model declares a
-        requirement.
+        Returns only nodes with at least one positively assessed provider for this
+        model. Provider and registry selectors narrow eligibility before assessment.
+        Cached weights alone never establish fit. Pagination follows fit filtering.
+        Each public row's eligible_providers lists only providers assessed as fit;
+        metadata.assessments retains all provider assessments. Internal storage
+        eligibility is independent of capacity assessment.
 
-        It answers from declared capability, not from current load: a node
-        listed here may still be too busy to take the run.
+        metadata.assessments explains fit, no_fit or unknown per node/provider,
+        including missing replies and workers without assessment support. Unknown
+        stays HTTP 200 and never qualifies a node. This measures capacity using
+        selected device totals from node inventory, not current load; launches check fresh free
+        memory and commitments. Reads do not launch or evict runs.
+        If node inventory cannot be read, collected results are retained and an
+        unknown assessment with an empty node reports unknown coverage.
+
+        Only a fully sized model with an auto fraction budget establishes fit.
+        Numeric budgets, layers/offload, unified memory, external scheduling and
+        incomplete evidence stay unknown above the weight lower bound. Weights
+        exceeding reachable memory establish no_fit: selected GPU totals times
+        the numeric budget fraction (full totals for auto), GPU plus system RAM
+        for layers (all visible GPUs unless the schema declares a device count),
+        or the single shared pool for unified memory. Local selected
+        weights are required; published file size alone cannot establish fit.
+        Hosts without GPU observation, including CPU-only llama.cpp, skip the
+        weight lower bound and report unknown; their existing launch path is preserved.
       parameters:
         - in: query
           name: model
@@ -2426,6 +2456,8 @@ paths:
           schema: { type: string }
         - $ref: '#/components/parameters/ProviderParam'
         - $ref: '#/components/parameters/RegistryParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
       responses:
         '200':
           description: OK
@@ -2439,6 +2471,19 @@ paths:
                       data:
                         type: array
                         items: { $ref: '#/components/schemas/Node' }
+                      metadata:
+                        type: object
+                        properties:
+                          assessments:
+                            type: array
+                            items:
+                              allOf:
+                                - $ref: '#/components/schemas/MemoryAssessment'
+                                - type: object
+                                  required: [node]
+                                  properties:
+                                    node: { type: string, description: Empty when node inventory failed and coverage is unknown. }
+                                    provider: { type: string, description: Omitted when no provider assessment was reported. }
         '400':
           description: Missing `model`
           content:
@@ -11595,6 +11640,10 @@ components:
           type: integer
           format: int64
           minimum: 0
+        eligible_providers:
+          type: array
+          items: { type: string }
+          description: On public compatible-node rows, only providers whose capacity assessment is fit.
         memory:
           type: object
           description: RAM summary populated when the worker reported resources on last probe. Every `*_gb` value on a node (memory, GPU, disk) is GiB, 1024^3 bytes.
@@ -11807,6 +11856,35 @@ components:
               - { type: string }
               - { type: number }
               - { type: boolean }
+
+    MemoryAssessment:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [fit, no_fit, unknown] }
+        reason: { type: string }
+        budget_kind: { type: string }
+        required_mib: { type: integer, format: int64 }
+        capacity_mib: { type: integer, format: int64 }
+      description: |
+        Budget admission alone is not proof of model fit. Amounts are optional,
+        in MiB: the limiting selected device's budget plus safety margin and
+        capacity, or aggregate reachable memory for a weight lower-bound refusal.
+        Capacity reads use totals; launch failures retain fresh free memory and holders.
+
+    PreviewRunResponse:
+      type: object
+      properties:
+        model: { type: string }
+        provider: { type: string }
+        node: { type: string }
+        port: { type: integer }
+        full_command: { type: string }
+        parameters: { type: object, additionalProperties: { type: string } }
+        parameter_sources: { type: object, additionalProperties: { type: string } }
+        environment: { type: object, additionalProperties: { type: string } }
+        working_dir: { type: string }
+        assessment: { $ref: '#/components/schemas/MemoryAssessment' }
 
     PreviewRunRequest:
       type: object

@@ -28,6 +28,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -104,7 +105,10 @@ type ListNodesResponse struct {
 // ListNodes retrieves all nodes by reading from the coordinator's EndpointRegistry.
 // No broadcasting — the coordinator already tracks all workers via HealthMonitor.
 // Pass Refresh=true to synchronously re-probe all workers before reading.
-func (s *NodesService) ListNodes(_ context.Context, req *ListNodesRequest) (*ListNodesResponse, error) {
+func (s *NodesService) ListNodes(ctx context.Context, req *ListNodesRequest) (*ListNodesResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	slog.Info("[NodesService] ListNodes", "node", req.Node, "refresh", req.Refresh)
 
 	// If refresh requested, re-probe all workers to get fresh system snapshots
@@ -427,9 +431,15 @@ type ListCompatibleNodesRequest struct {
 // ListCompatibleNodesResponse represents the response for listing compatible hosts
 // Uses standard envelope: data, total, has_more
 type ListCompatibleNodesResponse struct {
-	Data    []map[string]any `json:"data"`
-	Total   int              `json:"total"`
-	HasMore bool             `json:"has_more,omitempty"`
+	Data        []map[string]any       `json:"data"`
+	Assessments []NodeMemoryAssessment `json:"assessments"`
+}
+
+// NodeMemoryAssessment keeps uncertainty attached to its node and provider.
+type NodeMemoryAssessment struct {
+	Node     string `json:"node"`
+	Provider string `json:"provider,omitempty"`
+	process.MemoryAssessment
 }
 
 // ListCompatibleNodes retrieves hosts compatible with a given model
@@ -461,19 +471,60 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 
 	var nodesData struct {
-		Data []map[string]any `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp.Body, &nodesData); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-
-	// Peers answer a broadcast concurrently, so without this the list is
-	// in completion order and reshuffles between identical calls. This
-	// endpoint feeds node pickers, and a caller acting on a row by
-	// position would be sent to a different node than the one it chose.
-	sortNodesByName(nodesData.Data)
-
-	return &ListCompatibleNodesResponse{Data: nodesData.Data, Total: len(nodesData.Data), HasMore: false}, nil
+	result := &ListCompatibleNodesResponse{Data: []map[string]any{}, Assessments: []NodeMemoryAssessment{}}
+	seen := map[string]bool{}
+	for _, raw := range nodesData.Data {
+		var row struct {
+			Name        string                 `json:"name"`
+			Assessments []NodeMemoryAssessment `json:"assessments"`
+		}
+		if err := json.Unmarshal(raw, &row); err != nil {
+			return nil, fmt.Errorf("failed to parse node assessment: %w", err)
+		}
+		seen[row.Name] = true
+		fitProviders := []string{}
+		for _, assessment := range row.Assessments {
+			result.Assessments = append(result.Assessments, assessment)
+			if assessment.Status == "fit" {
+				fitProviders = append(fitProviders, assessment.Provider)
+			}
+		}
+		if len(row.Assessments) == 0 {
+			result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: row.Name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node reported no provider assessment"}})
+		}
+		if len(fitProviders) > 0 {
+			var info map[string]any
+			_ = json.Unmarshal(raw, &info)
+			info["compatible"] = true
+			slices.Sort(fitProviders)
+			info["eligible_providers"] = slices.Compact(fitProviders)
+			result.Data = append(result.Data, info)
+		}
+	}
+	expected, err := s.ListNodes(ctx, &ListNodesRequest{})
+	if err != nil {
+		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node coverage unknown: " + err.Error()}})
+	} else {
+		for _, node := range expected.Data {
+			name, _ := node["name"].(string)
+			if !seen[name] {
+				result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{Status: "unknown", Reason: "node did not report an assessment"}})
+			}
+		}
+	}
+	sortNodesByName(result.Data)
+	slices.SortFunc(result.Assessments, func(a, b NodeMemoryAssessment) int {
+		if n := strings.Compare(a.Node, b.Node); n != 0 {
+			return n
+		}
+		return strings.Compare(a.Provider, b.Provider)
+	})
+	return result, nil
 }
 
 // ============================================================================
@@ -729,13 +780,13 @@ func (s *Server) runRefreshLoop() {
 // NodesExecutor handles direct local host operations
 type NodesExecutor struct {
 	getLocalNodeInfo  func() map[string]any
-	isLocalCompatible func(model, repo, provider string) bool
-	eligibleProviders func(model, repo, format string, force bool) []string
+	eligibleProviders func(model, repo, format, provider string, force bool) []string
+	assessCapacity    func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment
 }
 
-// NewNodesExecutor creates a new hosts executor
-func NewNodesExecutor(getLocalNodeInfo func() map[string]any, isLocalCompatible func(model, repo, provider string) bool) *NodesExecutor {
-	return &NodesExecutor{getLocalNodeInfo: getLocalNodeInfo, isLocalCompatible: isLocalCompatible}
+// NewNodesExecutor shares the manager's launch policy on each serving node.
+func NewNodesExecutor(getLocalNodeInfo func() map[string]any, eligible func(string, string, string, string, bool) []string, assess func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment) *NodesExecutor {
+	return &NodesExecutor{getLocalNodeInfo: getLocalNodeInfo, eligibleProviders: eligible, assessCapacity: assess}
 }
 
 // HandleInternalListNodes handles GET /zzrouter/internal/nodes (internal API)
@@ -751,30 +802,21 @@ func (e *NodesExecutor) HandleInternalListCompatibleNodes(c *gin.Context) {
 		return
 	}
 
-	nodes := []map[string]any{}
-	var eligible []string
-	force := c.Query("force") == "true"
-	if e.eligibleProviders != nil {
-		eligible = e.eligibleProviders(model, c.Query("registry"), c.Query("format"), force)
+	eligible := e.eligibleProviders(model, QueryRegistry(c), c.Query("format"), QueryProvider(c), c.Query("force") == "true")
+	hostInfo := maps.Clone(e.getLocalNodeInfo())
+	name, _ := hostInfo["name"].(string)
+	assessments := []NodeMemoryAssessment{}
+	for _, provider := range eligible {
+		assessment := e.assessCapacity(c.Request.Context(), prov_apps.EnsureRequest{Provider: provider, Model: model})
+		assessments = append(assessments, NodeMemoryAssessment{Node: name, Provider: provider, MemoryAssessment: assessment})
 	}
-	compatible := e.isLocalCompatible(model, c.Query("registry"), c.Query("provider"))
-	if e.eligibleProviders != nil && (c.Query("format") != "" || force) {
-		compatible = len(eligible) > 0
-	}
-	if compatible {
-		hostInfo := e.getLocalNodeInfo()
-		hostInfo["compatible"] = true
-		if e.eligibleProviders != nil {
-			hostInfo["eligible_providers"] = eligible
-		}
-		nodes = append(nodes, hostInfo)
-	}
-	c.JSON(http.StatusOK, gin.H{"data": nodes})
+	hostInfo["eligible_providers"], hostInfo["assessments"] = eligible, assessments
+	c.JSON(http.StatusOK, gin.H{"data": []map[string]any{hostInfo}})
 }
 
 // eligibleDeployProviders names installed or configured local providers that
 // can serve the requested format, even when the weights are already cached.
-func (s *Server) eligibleDeployProviders(model, repo, format string, force bool) []string {
+func (s *Server) eligibleDeployProviders(model, repo, format, provider string, force bool) []string {
 	if format == "" {
 		format = modelregistry.DetectFormatFromName(model)
 	}
@@ -783,7 +825,7 @@ func (s *Server) eligibleDeployProviders(model, repo, format string, force bool)
 		return names
 	}
 	for _, info := range s.buildCompatibleAppsInfo() {
-		if metadata.RepoAppCompatible(repo, info.Type) && (force || modelregistry.FormatSupported(info.Formats, format)) {
+		if (provider == "" || utils.NormalizeAppType(info.Key) == utils.NormalizeAppType(provider) || strings.EqualFold(info.Type, provider)) && metadata.RepoAppCompatible(repo, info.Type) && (force || modelregistry.FormatSupported(info.Formats, format)) {
 			names = append(names, info.Key)
 		}
 	}

@@ -347,18 +347,9 @@ func (m *ProviderAppManager) disposableLaunch(ctx context.Context, svc config.Se
 // reservedCommitments sizes a reserve_mib budget against the visible NVIDIA
 // devices and pins that visibility into env.
 func (m *ProviderAppManager) reservedCommitments(ctx context.Context, budget schema.MemoryBudget, params, env map[string]string) (map[string]int64, error) {
-	cards := m.memoryInventory(ctx)
-	if err := ctx.Err(); err != nil {
+	devices, err := m.memoryTotals(ctx)
+	if err != nil {
 		return nil, err
-	}
-	devices := make([]gpu.MemoryDevice, 0, len(cards))
-	for _, card := range cards {
-		if card.UUID != "" && card.TotalMemoryMiB > 0 {
-			devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB})
-		}
-	}
-	if len(devices) == 0 {
-		return nil, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
 	}
 	visible, err := visibleDeviceEnvironment(env)
 	if err != nil {

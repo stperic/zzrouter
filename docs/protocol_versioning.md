@@ -25,6 +25,14 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 12 keeps the minimum at 11 in this branch. Optional node-row and run-preview
+capacity assessments are safe for protocol-11 peers to ignore. Replies without
+assessments, and missing worker replies, are explicitly unknown and never qualify
+a public compatible node. During a rolling upgrade, upgrade the coordinator
+first so it accepts protocol-11 workers, then upgrade workers to obtain capacity
+evidence. Retain matching node/launcher bundles and verify node health after
+each update. Other protocol-12 contracts may independently raise the minimum.
+
 Protocol 11 raises the minimum from 10 to 11. Provider synchronization carries
 `embeddings` and `reranking` features and feature `health_check` overlays. Older
 strict loaders reject these names and fields. Upgrade every node together using

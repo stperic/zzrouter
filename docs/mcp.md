@@ -87,6 +87,16 @@ a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
+`zz_run_preview` preserves the node's capacity `assessment`, including its reason
+and optional MiB amounts. Only `fit` confirms capacity; `unknown` is uncertainty,
+and `no_fit` is a refusal by the shared memory policy. Preview never launches,
+evicts or reserves memory, and current load can still prevent a later launch.
+`zz_nodes` reports inventory; comparing file size with its memory does not prove
+fit. Use `zz_api_get` on `/zzrouter/v1/nodes/compatible` with the exact `model`
+and optional `provider`/`registry` to read confirmed nodes and all
+`metadata.assessments` unchanged. Missing worker fields or replies are unknown.
+Storage/download eligibility remains independent of capacity uncertainty.
+
 An exact `zz_models.model` name or source-id filter returning one total model
 also adds `show` to that entry. Case-insensitive exact matches qualify; globs,
 suffix-only matches, truncated pages and duplicate replicas keep the list form.
