@@ -28,8 +28,7 @@ func TestComposeStream(t *testing.T) {
 
 func TestRegistryLookup(t *testing.T) {
 	r := NewRegistry()
-	r.RegisterBody("mlx", func(b []byte) []byte { return b })
-	r.RegisterStream("mlx", func(b []byte) []byte { return b })
+	r.Register("mlx", func(map[string]any) bool { return false })
 
 	if r.Body("mlx") == nil {
 		t.Error("mlx body normalizer not registered")
@@ -51,8 +50,7 @@ func TestRegistryLookup(t *testing.T) {
 	}
 
 	// nil-fn register is a no-op (does not panic).
-	r.RegisterBody("nope", nil)
-	r.RegisterStream("nope", nil)
+	r.Register("nope", nil)
 	if r.Body("nope") != nil || r.Stream("nope") != nil {
 		t.Error("nil fn should not be registered")
 	}

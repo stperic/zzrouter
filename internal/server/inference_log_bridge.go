@@ -93,7 +93,11 @@ func (b *InferenceLogBridge) OnInferenceComplete(data llm.InferenceLogData) {
 	// ResponseModel leads: it is the id the upstream reported serving,
 	// which is the only one a price table can know when model-group
 	// routing resolved a local alias to this deployment.
-	costMicro, costSource := quota.CalculateCostMicro(data.Cost, b.pricingStore, data.App,
+	var providerCost *float64
+	if data.CostSource == quota.CostSourceProvider {
+		providerCost = &data.Cost
+	}
+	costMicro, costSource := quota.CalculateCostMicro(providerCost, b.pricingStore, data.App,
 		[]string{data.ResponseModel, data.Model},
 		data.TokensIn, data.TokensOut, data.TokensCached, data.TokensReasoning)
 	costUSD := data.Cost

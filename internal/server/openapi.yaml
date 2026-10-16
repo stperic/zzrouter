@@ -6864,6 +6864,23 @@ paths:
         (vLLM / llama.cpp / MLX / cloud) from the `model` field and
         forwards the request. Supports streaming via `stream: true`.
 
+        Spend adds numeric `usage.cost` and
+        `usage.cost_details.upstream_inference_cost` when present, including
+        upstream BYOK charges when the OpenRouter account charge is zero.
+        Explicit nonnegative `usage.cost`, including a zero total, is authoritative.
+        Missing, null, malformed or negative costs use positive legacy-extension
+        costs in sorted key order, then pricing. Metering precedes normalization:
+        client responses omit `usage.cost`, `usage.cost_details`, `usage.is_byok`
+        and `usage.prompt_tokens_details.cache_write_tokens`, preserving standard
+        token details and unrelated extensions. Workers retain this evidence
+        until coordinator metering. Buffered cost metadata uses
+        `zzrouter.cost_usd` / `cost_source`; streaming metadata uses
+        `usage.zz_cost_usd` / `zz_cost_source`. Cleanup applies even with
+        `?verbose=0`, streaming metadata disabled, or usage-frame suppression.
+        Provider precision is retained in responses and logs; spend is converted
+        to whole microUSD using the existing ledger conversion.
+        Stream cost metadata retains its existing positive-completion-token gate.
+
         Image-bearing input is admitted before endpoint selection and replica
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,

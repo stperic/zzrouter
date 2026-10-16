@@ -8,7 +8,9 @@ import (
 
 func TestNormalizeMLXBody_CopiesReasoningIntoContent(t *testing.T) {
 	input := []byte(`{"choices":[{"message":{"role":"assistant","reasoning":"Thinking...","content":""}}]}`)
-	out := NormalizeMLXBody(input)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Body("mlx")(input)
 
 	var obj map[string]any
 	if err := json.Unmarshal(out, &obj); err != nil {
@@ -26,7 +28,9 @@ func TestNormalizeMLXBody_CopiesReasoningIntoContent(t *testing.T) {
 
 func TestNormalizeMLXBody_PreservesExistingContent(t *testing.T) {
 	input := []byte(`{"choices":[{"message":{"reasoning":"r","content":"already here"}}]}`)
-	out := NormalizeMLXBody(input)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Body("mlx")(input)
 
 	var obj map[string]any
 	_ = json.Unmarshal(out, &obj)
@@ -38,7 +42,9 @@ func TestNormalizeMLXBody_PreservesExistingContent(t *testing.T) {
 
 func TestNormalizeMLXBody_NoReasoningIsNoOp(t *testing.T) {
 	input := []byte(`{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`)
-	out := NormalizeMLXBody(input)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Body("mlx")(input)
 	if string(out) != string(input) {
 		t.Errorf("expected no-op; got %s", out)
 	}
@@ -47,7 +53,9 @@ func TestNormalizeMLXBody_NoReasoningIsNoOp(t *testing.T) {
 func TestNormalizeMLXStream_CopiesDeltaReasoning(t *testing.T) {
 	chunk := []byte(`data: {"choices":[{"delta":{"reasoning":"abc"}}]}` + "\n\n" +
 		`data: [DONE]` + "\n\n")
-	out := NormalizeMLXStream(chunk)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Stream("mlx")(chunk)
 	if !strings.Contains(string(out), `"content":"abc"`) {
 		t.Errorf("content not injected: %s", out)
 	}
@@ -61,7 +69,9 @@ func TestNormalizeMLXStream_CopiesDeltaReasoning(t *testing.T) {
 
 func TestNormalizeMLXStream_NoReasoningIsNoOp(t *testing.T) {
 	chunk := []byte(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n")
-	out := NormalizeMLXStream(chunk)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Stream("mlx")(chunk)
 	if string(out) != string(chunk) {
 		t.Errorf("expected no-op; got %s", out)
 	}
@@ -72,7 +82,9 @@ func TestNormalizeMLXStream_MultipleLinesInChunk(t *testing.T) {
 		`data: {"choices":[{"delta":{"reasoning":"one"}}]}` + "\n" +
 			`data: {"choices":[{"delta":{"reasoning":"two"}}]}` + "\n\n",
 	)
-	out := NormalizeMLXStream(chunk)
+	r := NewRegistry()
+	RegisterMLX(r)
+	out := r.Stream("mlx")(chunk)
 	if strings.Count(string(out), `"content":"one"`) != 1 {
 		t.Errorf("first line not normalized: %s", out)
 	}

@@ -18,6 +18,12 @@
   files remain, unfinished catalog files stay pending for repair, and provider
   destinations remain reserved through cleanup.
 
+- Chat accounting adds `usage.cost` and `usage.cost_details.upstream_inference_cost`
+  when present, including upstream charges for BYOK requests with zero account cost.
+  Explicit `usage.cost: 0` is authoritative; legacy `x_*.cost` requires a positive
+  value. Later stream cost updates replace earlier costs. Client chat responses
+  omit vendor accounting fields after metering, including when metadata is off;
+  provider costs retain their precision in responses and inference logs.
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -29,18 +31,13 @@ type UsageData struct {
 	Model string
 }
 
-// merge folds a later usage frame into the totals seen so far. Usage in
-// a stream is cumulative in every vocabulary we read (OpenAI continuous
-// usage, Anthropic's message_start then message_delta), so a count never
-// legitimately falls: each field keeps its maximum. A frame that reports
-// only part of the picture -- output tokens alone, or input without the
-// cache counts -- therefore cannot erase what an earlier frame said.
+// merge keeps cumulative token maxima but replaces cost only with later authoritative evidence.
 func (u UsageData) merge(later UsageData) UsageData {
 	u.In = max(u.In, later.In)
 	u.Out = max(u.Out, later.Out)
 	u.CachedTokens = max(u.CachedTokens, later.CachedTokens)
 	u.ReasoningTokens = max(u.ReasoningTokens, later.ReasoningTokens)
-	if later.Cost > u.Cost {
+	if later.CostSource != "" {
 		u.Cost, u.CostSource = later.Cost, later.CostSource
 	}
 	if later.Model != "" {
@@ -122,7 +119,8 @@ func ParseUsageExtended(body []byte) UsageData {
 		InputTokensDetails       *tokenDetails `json:"input_tokens_details"`
 		OutputTokensDetails      *tokenDetails `json:"output_tokens_details"`
 
-		Cost jsonNumber `json:"cost"`
+		Cost        json.RawMessage `json:"cost"`
+		CostDetails json.RawMessage `json:"cost_details"`
 	}
 	if err := json.Unmarshal(usageRaw, &usage); err != nil {
 		return UsageData{}
@@ -157,17 +155,22 @@ func ParseUsageExtended(body []byte) UsageData {
 		u.CachedTokens = cacheRead
 	}
 
-	// OpenRouter and (per current spec) every gateway that surfaces an
-	// authoritative cost puts it at usage.cost. The legacy x_*.cost
-	// extension shape is checked as a fallback for older gateway DTOs.
-	// In both arms a non-zero value sets CostSource = provider so
-	// downstream consumers know the number is upstream-authoritative.
-	if usage.Cost > 0 {
-		u.Cost = float64(usage.Cost)
-		u.CostSource = CostSourceProvider
-	} else if c := extractProviderCost(raw); c > 0 {
-		u.Cost = c
-		u.CostSource = CostSourceProvider
+	// Zero is authoritative; invalid costs must not discard valid token counts.
+	cost := parseProviderCost(usage.Cost)
+	if cost != nil {
+		var details struct {
+			UpstreamInferenceCost json.RawMessage `json:"upstream_inference_cost"`
+		}
+		if json.Unmarshal(usage.CostDetails, &details) == nil {
+			if upstream := parseProviderCost(details.UpstreamInferenceCost); upstream != nil {
+				*cost += *upstream
+			}
+		}
+	} else {
+		cost = extractProviderCost(raw)
+	}
+	if cost != nil {
+		u.Cost, u.CostSource = *cost, CostSourceProvider
 	}
 	return u
 }
@@ -176,19 +179,29 @@ func ParseUsageExtended(body []byte) UsageData {
 // extension object. Cloud providers embed cost in fields like
 // "x_openrouter": {"cost": 0.001}. This handles any "x_*" field with a
 // "cost" sub-field, so new providers work automatically.
-func extractProviderCost(raw map[string]json.RawMessage) float64 {
-	for key, val := range raw {
+func extractProviderCost(raw map[string]json.RawMessage) *float64 {
+	for _, key := range slices.Sorted(maps.Keys(raw)) {
 		if len(key) < 3 || key[:2] != "x_" {
 			continue
 		}
 		var ext struct {
-			Cost jsonNumber `json:"cost"`
+			Cost json.RawMessage `json:"cost"`
 		}
-		if err := json.Unmarshal(val, &ext); err == nil && ext.Cost != 0 {
-			return float64(ext.Cost)
+		if err := json.Unmarshal(raw[key], &ext); err == nil {
+			if cost := parseProviderCost(ext.Cost); cost != nil && *cost > 0 {
+				return cost
+			}
 		}
 	}
-	return 0
+	return nil
+}
+
+func parseProviderCost(raw json.RawMessage) *float64 {
+	var cost *float64
+	if json.Unmarshal(raw, &cost) != nil || cost == nil || *cost < 0 {
+		return nil
+	}
+	return cost
 }
 
 // ParseOllamaUsageExtended extracts token counts and the response model
@@ -317,7 +330,7 @@ func recordProxyMetrics(respBody []byte, recorder *llm.InferenceRecorder) {
 	if u.Model != "" {
 		recorder.SetResponseModel(u.Model)
 	}
-	if u.In > 0 || u.Out > 0 {
+	if u.In > 0 || u.Out > 0 || u.CostSource != "" {
 		recorder.SetExtendedUsage(u.CachedTokens, u.ReasoningTokens, u.Cost, string(u.CostSource))
 		recorder.RecordCompletion(u.In, u.Out)
 		return

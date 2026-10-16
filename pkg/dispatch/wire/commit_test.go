@@ -135,10 +135,7 @@ func TestCommitWithRouting_BodyNormalizerRuns(t *testing.T) {
 	rec := llm.NewInferenceRecorder(context.Background(), "m", "mlx")
 
 	norms := normalizer.NewRegistry()
-	// Stub normalizer replaces empty content with reasoning.
-	norms.RegisterBody("mlx", func(b []byte) []byte {
-		return []byte(strings.Replace(string(b), `"content":""`, `"content":"thinking"`, 1))
-	})
+	normalizer.RegisterMLX(norms)
 
 	commitWithRoutingFixture(context.Background(), w, resp, RoutingMetadata{Provider: "mlx", Deployment: "dep-x"}, rec, norms)
 

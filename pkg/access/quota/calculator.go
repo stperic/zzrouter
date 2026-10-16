@@ -15,7 +15,7 @@ const (
 // CalculateCostMicro returns the cost in microdollars for a request,
 // plus a closed-enum tag identifying where the number came from.
 // Priority:
-//  1. providerCost > 0 ⇒ (USDToMicro(providerCost), "provider")
+//  1. non-nil nonnegative providerCost ⇒ (USDToMicro(*providerCost), "provider")
 //  2. pricing-store hit ⇒ (computed, "zzrouter")
 //  3. otherwise ⇒ (0, "")
 //
@@ -38,15 +38,15 @@ const (
 // on the ledger micro number; only the LogEntry.Cost / response-body
 // cost_usd float can carry extra digits on the provider arm.
 func CalculateCostMicro(
-	providerCost float64,
+	providerCost *float64,
 	pricingStore *pricing.Store,
 	provider string,
 	models []string,
 	tokensIn, tokensOut, tokensCached, tokensReasoning int64,
 ) (int64, string) {
 	// Priority 1: provider-reported cost
-	if providerCost > 0 {
-		return USDToMicro(providerCost), CostSourceProvider
+	if providerCost != nil && *providerCost >= 0 {
+		return USDToMicro(*providerCost), CostSourceProvider
 	}
 
 	// Priority 2: pricing store lookup

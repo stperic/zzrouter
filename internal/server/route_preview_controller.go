@@ -310,7 +310,7 @@ type loadSnapshotter interface {
 }
 
 // projectedCost computes a body-driven cost projection for a chosen
-// replica. providerCost=0 forces CalculateCostMicro down the pricing
+// replica. providerCost=nil forces CalculateCostMicro down the pricing
 // store path; an empty source means the store has no entry for this
 // (provider, model) pair — agents see projected_cost_micro=0 +
 // projected_cost_source="" and treat it as "unknown".
@@ -318,7 +318,7 @@ func projectedCost(store *pricing.Store, c fallback.Candidate, in, out int64) (i
 	if in == 0 && out == 0 {
 		return 0, ""
 	}
-	return quota.CalculateCostMicro(0, store, c.App, []string{c.Model}, in, out, 0, 0)
+	return quota.CalculateCostMicro(nil, store, c.App, []string{c.Model}, in, out, 0, 0)
 }
 
 // strategyName mirrors live dispatch's fallback in

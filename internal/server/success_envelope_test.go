@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/dispatch/normalizer"
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
@@ -50,7 +51,7 @@ func TestRelayBuffered_StripsTransferEncodingAndSetsLength(t *testing.T) {
 }
 
 func TestRelayBuffered_NormalizerRespected(t *testing.T) {
-	body := `{"original":"yes"}`
+	body := `{"choices":[{"message":{"reasoning":"yes","content":""}}]}`
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -58,27 +59,22 @@ func TestRelayBuffered_NormalizerRespected(t *testing.T) {
 	}
 
 	regs := NewResponseNormalizers()
-	regs.RegisterBody("test-provider", func(b []byte) []byte {
-		return []byte(`{"normalized":"yes"}`)
-	})
+	normalizer.RegisterMLX(regs)
 
 	w := httptest.NewRecorder()
-	recorder := llm.NewInferenceRecorder(t.Context(), "m", "test-provider")
-	wire.RelayBuffered(w, resp, normalizedBody(regs, "test-provider",
-		wire.RoutingMetadata{Provider: "test-provider"}, recorder), recorder)
+	recorder := llm.NewInferenceRecorder(t.Context(), "m", "mlx")
+	wire.RelayBuffered(w, resp, normalizedBody(regs, "mlx",
+		wire.RoutingMetadata{Provider: "mlx"}, recorder), recorder)
 
-	assert.Contains(t, w.Body.String(), `"normalized":"yes"`)
-	assert.NotContains(t, w.Body.String(), `"original":"yes"`,
+	assert.Contains(t, w.Body.String(), `"content":"yes"`)
+	assert.NotContains(t, w.Body.String(), `"content":""`,
 		"normalizer return must replace, not append")
 }
 
-func TestRelayBuffered_NormalizerReturnsNil_KeepsOriginal(t *testing.T) {
-	// A normalizer that returns nil signals "no rewrite needed" —
-	// the original body must pass through. Pre-extraction inline
-	// code did `if rewritten := norm(b); rewritten != nil { b = rewritten }`;
-	// regression here would either crash (assigning nil) or produce
-	// an empty body.
-	body := `{"original":"kept"}`
+func TestRelayBuffered_NormalizerReportsNoChange_KeepsOriginal(t *testing.T) {
+	// A no-op editor must preserve the original body.
+
+	body := ` {"original":"kept", "reasoning":"unchanged"} `
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -86,14 +82,16 @@ func TestRelayBuffered_NormalizerReturnsNil_KeepsOriginal(t *testing.T) {
 	}
 
 	regs := NewResponseNormalizers()
-	regs.RegisterBody("noop", func(b []byte) []byte { return nil })
+	edits := 0
+	regs.Register("noop", func(map[string]any) bool { edits++; return false })
 
 	w := httptest.NewRecorder()
 	recorder := llm.NewInferenceRecorder(t.Context(), "m", "noop")
 	wire.RelayBuffered(w, resp, normalizedBody(regs, "noop",
 		wire.RoutingMetadata{Provider: "noop"}, recorder), recorder)
 
-	assert.Contains(t, w.Body.String(), `"original":"kept"`)
+	assert.Equal(t, 1, edits)
+	assert.Equal(t, body, w.Body.String())
 }
 
 func TestRelayBuffered_NoNormalizerRegistered(t *testing.T) {
