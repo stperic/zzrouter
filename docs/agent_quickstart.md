@@ -44,8 +44,10 @@ KV sizing honors schema-declared cache roles, including vLLM fp8 and llama.cpp
 GGML types.
 Hybrid sizing counts KV only on full-attention layers and adds fixed recurrent
 states with float32 convolution and SSM elements, conservatively covering the
-supported engines. Schema metadata declares `recurrent_state_rows`: vLLM uses
-two rows for one assessed request, independent of `max-num-seqs`; MLX uses one.
+supported engines. Schema metadata declares `recurrent_state_rows`: MLX uses one.
+vLLM declares none, so its hybrid models stay unknown: at startup it reserves
+recurrent state for every `max-num-seqs` sequence through a version-specific
+layer grouping, which a per-row count cannot describe.
 llama.cpp's `parallel` parameter has the `sequence_slots` role and a four-row
 engine default; an explicit value selects that many state rows without
 multiplying attention KV. MTP layers are excluded from normal decoder cache,

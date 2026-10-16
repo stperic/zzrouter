@@ -6,6 +6,7 @@
   the shared fit and admission path. Count full-attention KV, all expert weights
   and conservative float32 recurrent states using schema-declared row counts.
   Missing geometry/rows and hybrid placement across multiple devices stay unknown.
+  vLLM hybrid models stay unknown (vLLM sizes its state pool by max-num-seqs).
 - Share unified-memory detection across local inventory and legacy peer snapshots;
   remove the unused mesh HTTP adapter and broadcast serialization.
 

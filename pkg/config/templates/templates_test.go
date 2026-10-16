@@ -27,7 +27,8 @@ func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 func TestAppsFS_DeclaresRecurrentAllocationRows(t *testing.T) {
 	providers, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
 	require.Empty(t, errs)
-	assert.Equal(t, int64(2), *providers["vllm"].RecurrentStateRows)
+	// vLLM 0.29 sizes its hybrid state pool by max-num-seqs through a version-specific layer grouping; it declares no rows.
+	assert.Nil(t, providers["vllm"].RecurrentStateRows)
 	assert.Equal(t, int64(1), *providers["mlx"].RecurrentStateRows)
 	for _, endpoint := range []string{"chat", "embeddings", "reranking"} {
 		slots := providers["llamacpp"].ForEndpoint(endpoint)["parallel"]
