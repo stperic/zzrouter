@@ -162,7 +162,7 @@ func providerSchema(store *pkgConfig.AppsConfigStore) func(string) (*schema.Prov
 		for _, err := range errs {
 			slog.Warn("provider schema entry dropped", "provider", provider, "error", err)
 		}
-		if declared != nil && declared.Diagnostics != nil && merged.Diagnostics == nil {
+		if declared != nil && ((declared.Diagnostics != nil && merged.Diagnostics == nil) || (declared.CacheLog != nil && merged.CacheLog == nil)) {
 			return merged, errors.Join(errs...)
 		}
 		return merged, nil

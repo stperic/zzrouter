@@ -132,10 +132,28 @@ A current node with no eligible provider carries `provider_not_eligible`; inspec
 `zz_providers` and `zz_provider_install`, locate the model with `zz_models`, or
 choose another node.
 
-Follow `zz_run_start` with `zz_job` through terminal state. Inspect `zz_runs` for
-served context and `zz_logs` with `grep: "GPU KV cache size"` or
-`grep: "Maximum concurrency"` for engine-reported capacity at its stated context.
-Never extrapolate 4k concurrency to 32k or substitute an estimate for a report.
+Follow `zz_run_start` with `zz_job` through terminal state. Both `zz_runs` modes
+return independently reported `context_length` and optional `cache` observations:
+
+- `kv_tokens`: tokens/cells in one KV pool, exactly as reported.
+- `kv_pools`: independent pools, only when reported. zzRouter computes no aggregate.
+- `sequence_slots`: reported server slots or scheduler sequence limit.
+- `context_tokens`: per-request context for the reported layout or multiplier.
+- `sharing`: `shared` or `partitioned`, only when explicitly reported.
+- `max_concurrency`: the engine's fractional cache concurrency at `context_tokens`.
+
+For example, vLLM can report `kv_tokens: 814421`, `context_tokens: 32768` and
+`max_concurrency: 24.85` without reporting pools, sharing or scheduler limits.
+llama.cpp's four slots sharing one 32768-cell pool do not establish four full
+32768-token requests. A reported partitioned layout with four independent
+32768-cell pools and four 32768-token slots supports that direct layout reading;
+zzRouter does not invent a concurrency multiplier for it. Scheduler limits remain
+separate constraints, and cache capacity promises neither throughput nor latency.
+Never extrapolate 4k concurrency to 32k. Keep `context_length` and
+`cache.context_tokens` disagreements visible. Omitted fields, including the entire
+`cache` object, establish no capacity conclusion: MLX, current Ollama replies,
+older peers and reports outside the existing startup capture window may supply
+none. Use `zz_logs` for failure diagnostics.
 A Mamba-cache refusal retains the logged block counts and `max-num-seqs` upper
 bound in run/job failure diagnostics. Inspect `zz_params_get`, preview a supported
 change, then start again; do not repeat unchanged failed settings.

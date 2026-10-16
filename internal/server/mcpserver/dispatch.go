@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -157,8 +158,13 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	if rec.statusCode() == http.StatusNoContent {
 		return nil
 	}
-	if err := json.Unmarshal(rec.body.Bytes(), out); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(rec.body.Bytes()))
+	decoder.UseNumber() // Preserve integer observations through untyped projections.
+	if err := decoder.Decode(out); err != nil {
 		return newToolError(http.StatusBadGateway, codeResponseDecode, fmt.Sprintf("decode REST response: %v", err), err)
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return newToolError(http.StatusBadGateway, codeResponseDecode, "decode REST response: expected one JSON value", nil)
 	}
 	return nil
 }

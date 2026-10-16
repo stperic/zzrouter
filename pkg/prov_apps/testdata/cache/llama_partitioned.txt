@@ -1,0 +1,12 @@
+0.05.084.025 I llama_context: n_seq_max             = 4
+0.05.084.025 I llama_context: n_ctx                 = 131072
+0.05.084.026 I llama_context: n_ctx_seq             = 32768
+0.05.084.028 I llama_context: kv_unified            = false
+0.05.084.034 I llama_context: n_ctx_seq (32768) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.05.272.796 I llama_kv_cache: size = 8192.00 MiB ( 32768 cells,  16 layers,  4/4 seqs), K (f16): 4096.00 MiB, V (f16): 4096.00 MiB
+0.05.286.584 I llama_memory_recurrent: size =  598.50 MiB (     4 cells,  64 layers,  4 seqs  0 rs_seq), R (f32):   22.50 MiB, S (f32):  576.00 MiB
+0.06.240.100 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 32768, kv_unified = 'false'
+0.06.240.115 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 32768
+0.06.240.123 I slot   load_model: id  1 | task -1 | new slot, n_ctx = 32768
+0.06.240.123 I slot   load_model: id  2 | task -1 | new slot, n_ctx = 32768
+0.06.240.124 I slot   load_model: id  3 | task -1 | new slot, n_ctx = 32768

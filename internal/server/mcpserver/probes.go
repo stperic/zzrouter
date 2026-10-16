@@ -137,8 +137,8 @@ func (d dispatcher) embeddingProbe(ctx context.Context, model string) (agentOutp
 		return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "embedding probe requires one nonempty numeric vector", nil)
 	}
 	for _, value := range reply.Data[0].Embedding {
-		// JSON decoding rejects nonfinite and out-of-range numbers before this projection.
-		if _, numeric := value.(float64); !numeric {
+		n, numeric := value.(json.Number)
+		if _, err := n.Float64(); !numeric || err != nil {
 			return agentOutput{}, newToolError(http.StatusBadGateway, codeResponseDecode, "embedding probe requires finite values", nil)
 		}
 	}

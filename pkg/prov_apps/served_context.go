@@ -3,7 +3,9 @@ package prov_apps
 import (
 	"context"
 	"math"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -65,9 +67,29 @@ const (
 	placementLayers = iota
 	placementCPUOverrides
 	placementWeights
+	cacheTokens
+	cacheConcurrency
+	cachePools
+	cacheSlots
+	cacheSequenceSlots
 )
 
-func recordPlacement(run *instance.Instance, index int, values []string) {
+func recordObservation(run *instance.Instance, index int, values []string) {
+	var counts []int64
+	if index >= cacheTokens {
+		number := regexp.MustCompile(`^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)$`)
+		numeric := values
+		if index == cacheConcurrency || index == cacheSlots {
+			numeric = values[:len(values)-1]
+		}
+		for _, value := range numeric {
+			n, err := strconv.ParseInt(strings.ReplaceAll(value, ",", ""), 10, 64)
+			if !number.MatchString(value) || err != nil || n <= 0 {
+				return
+			}
+			counts = append(counts, n)
+		}
+	}
 	run.UpdateLoaded(func(loaded *instance.Loaded) {
 		switch index {
 		case placementLayers:
@@ -89,6 +111,22 @@ func recordPlacement(run *instance.Instance, index int, values []string) {
 				loaded.CPUWeights += int64(bytes)
 			} else {
 				loaded.GPUWeights += int64(bytes)
+			}
+		case cacheTokens:
+			loaded.Cache.KVTokens = counts[0]
+		case cachePools:
+			loaded.Cache.KVTokens, loaded.Cache.KVPools = counts[0], counts[1]
+		case cacheSequenceSlots:
+			loaded.Cache.SequenceSlots = counts[0]
+		case cacheConcurrency:
+			n, err := strconv.ParseFloat(values[1], 64)
+			if err == nil && n > 0 && n <= math.MaxFloat64 {
+				loaded.Cache.ContextTokens, loaded.Cache.MaxConcurrency = counts[0], n
+			}
+		case cacheSlots:
+			sharing := map[string]string{"true": "shared", "false": "partitioned"}[values[2]]
+			if sharing != "" {
+				loaded.Cache.SequenceSlots, loaded.Cache.ContextTokens, loaded.Cache.Sharing = counts[0], counts[1], sharing
 			}
 		}
 	})

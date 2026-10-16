@@ -37,7 +37,7 @@ func (cause UnknownCause) Reason() string {
 	case MetadataInvalid:
 		return "Sizing metadata is missing or invalid; repair with zz_model_download and zz_job, or select another build through zz_models before zz_run_preview."
 	case ModelUnmodelled:
-		return "The model allocation is not modelled; use zz_run_start, follow zz_job, then inspect zz_runs and zz_logs for served context and engine-reported cache capacity and concurrency."
+		return "The model allocation is not modelled. Use zz_run_start, follow zz_job, then inspect zz_runs.context_length and zz_runs.cache for engine-reported context, cache capacity, slots and concurrency. Omitted fields mean the engine supplied no captured evidence."
 	case KVDtypeUnsupported:
 		return "The selected KV cache dtype cannot be sized; inspect the KV parameter through zz_params_get and use zz_run_preview with a supported value."
 	case ContextUnresolved:

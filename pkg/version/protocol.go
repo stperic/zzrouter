@@ -8,6 +8,8 @@ package version
 // fragment clusters, and so wire-breaking changes have an explicit signal.
 //
 // When bumping:
+//   - Optional reply observations whose absence already means no reported evidence
+//     need no bump. Fields that change decisions or whose absence is misread do.
 //   - Wire change that old peers can safely ignore (new optional field):
 //     bump ClusterProtocolVersion only. MinClusterProtocolVersion stays on
 //     the previous value for one release so rolling upgrades work.

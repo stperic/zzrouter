@@ -337,3 +337,22 @@ diagnostics:
 	_, err = m.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Provider: "vllm", Model: "m"}, 8100)
 	require.ErrorContains(t, err, "unknown memory budget")
 }
+
+func TestInvalidCacheDeclarationsRefuseBeforeSpawn(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "m.gguf"), []byte("GGUF"), 0600))
+	cfg := DefaultTestNodeConfig()
+	cfg.SeedProvidersDir = true
+	server := createTestNodeWithModelsDir(t, cfg, root, "test-host")
+	require.NoError(t, server.configStore.SetProviderEnabled("llamacpp", true))
+	for _, declaration := range []string{"tokens: '('", "unknown: '(x)'", "tokens: '(x)(y)'"} {
+		t.Run(declaration, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(filepath.Join(server.configStore.DirPath(), "on-demand", "llamacpp", "schema.yaml"), []byte("cache_log:\n  "+declaration+"\n"), 0600))
+			_, err := providerSchema(server.configStore)("llamacpp")
+			require.Error(t, err)
+			_, err = server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "llamacpp", Model: "m"})
+			require.Error(t, err)
+			assert.Empty(t, server.providers.appMgr.Instances().List())
+		})
+	}
+}

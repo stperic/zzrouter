@@ -381,3 +381,12 @@ func TestDispatchTraceContextWithoutOuterValues(t *testing.T) {
 	require.Len(t, sr.Ended(), 1)
 	require.Equal(t, span.SpanContext().SpanID(), sr.Ended()[0].Parent().SpanID())
 }
+
+func TestDispatchRejectsTrailingJSON(t *testing.T) {
+	for _, body := range []string{`{"data":1} {"data":2}`, `{"data":1} broken`} {
+		d := testDispatcher(func(w http.ResponseWriter, r *http.Request) { writeFixture(t, w, []byte(body)) })
+		var out map[string]any
+		failure := requireToolError(t, d.call(t.Context(), request{method: "GET", path: routePrefix("/test").path()}, &out))
+		require.Equal(t, codeResponseDecode, toolErrorCode(failure.problem.Code))
+	}
+}

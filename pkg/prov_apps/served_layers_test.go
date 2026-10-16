@@ -50,7 +50,7 @@ func offloadWriter(t *testing.T, run *instance.Instance, serve bool) (*health.Re
 	require.NoError(t, probe.Validate())
 	patterns := offloadSchema(t).Parameters["n-gpu-layers"].PlacementLog
 	return health.NewReadinessWriter(io.Discard, probe, []*regexp.Regexp{patterns["layers"], patterns["cpu_overrides"], patterns["weights"]},
-		func(index int, values []string) { recordPlacement(run, index, values) }), probe
+		func(index int, values []string) { recordObservation(run, index, values) }), probe
 }
 
 func TestPlacementLog(t *testing.T) {
@@ -136,7 +136,7 @@ func TestRecordPlacementInvalidValues(t *testing.T) {
 	for _, values := range [][]string{{"eight", "29"}, {"8", "many"}, {"-1", "29"}, {"0", "0"}, {"30", "29"}, {"8", "-29"}, {"999999999999999999999", "29"}, {"8", "999999999999999999999"}} {
 		t.Run(strings.Join(values, "/"), func(t *testing.T) {
 			run := instance.NewInstance("invalid", "engine", "model", 0, 0, 0)
-			recordPlacement(run, placementLayers, values)
+			recordObservation(run, placementLayers, values)
 			assert.Empty(t, run.ToInfo("").Processor)
 			assert.Zero(t, run.Loaded().Layers)
 		})
@@ -144,7 +144,7 @@ func TestRecordPlacementInvalidValues(t *testing.T) {
 	for _, value := range []string{"invalid", "1.2.3", "-1", "0", "NaN", "+Inf", "1e300", "1e400"} {
 		t.Run("weight/"+value, func(t *testing.T) {
 			run := instance.NewInstance("invalid", "engine", "model", 0, 0, 0)
-			recordPlacement(run, placementWeights, []string{"CPU", value})
+			recordObservation(run, placementWeights, []string{"CPU", value})
 			assert.Zero(t, run.Loaded().CPUWeights)
 			assert.Empty(t, run.ToInfo("").Processor)
 		})
@@ -258,8 +258,8 @@ func TestServedContextAndPlacementConcurrent(t *testing.T) {
 				response.open()
 				waitParkedOn(t, ").readServedContext(", 1, contractWait)
 			}
-			updates.Go(func() { recordPlacement(run, placementLayers, []string{"8", "29"}) })
-			waitParkedOn(t, "prov_apps.recordPlacement(", 1, contractWait)
+			updates.Go(func() { recordObservation(run, placementLayers, []string{"8", "29"}) })
+			waitParkedOn(t, "prov_apps.recordObservation(", 1, contractWait)
 			if placementFirst {
 				response.open()
 				waitParkedOn(t, ").readServedContext(", 1, contractWait)
@@ -339,14 +339,14 @@ func TestPlacementDeclarationScope(t *testing.T) {
 			run.Endpoint = "chat"
 			prepared, err := r.m.prepareRun(t.Context(), run, req, launchSelection{key: "generic", config: svc, model: process.ResolveModel(svc, req.Model)}, declared)
 			require.NoError(t, err)
-			var patterns []*regexp.Regexp
+			patterns := make([]*regexp.Regexp, cacheTokens)
 			if len(want) > 0 {
 				patterns = []*regexp.Regexp{want["layers"], want["cpu_overrides"], want["weights"]}
 			}
-			assert.Equal(t, patterns, prepared.placement)
+			assert.Equal(t, patterns, prepared.observations[:cacheTokens])
 			delete(declared.Parameters["n-gpu-layers"].PlacementLog, "weights")
 			declared.Parameters["n-gpu-layers"] = schema.ParamShape{}
-			assert.Equal(t, patterns, prepared.placement, "launch preparation freezes the patterns")
+			assert.Equal(t, patterns, prepared.observations[:cacheTokens], "launch preparation freezes the patterns")
 		})
 	}
 }

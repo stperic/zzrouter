@@ -211,13 +211,13 @@ func (m *ProviderAppManager) releaseRun(inst *instance.Instance, cause error) {
 
 // admittedRun is what an admitted run's process is started with.
 type admittedRun struct {
-	cmd       string
-	args      []string
-	vars      map[string]string
-	logFile   *os.File
-	health    health.CheckConfig
-	transform process.EnvironmentTransform
-	placement []*regexp.Regexp
+	cmd          string
+	args         []string
+	vars         map[string]string
+	logFile      *os.File
+	health       health.CheckConfig
+	transform    process.EnvironmentTransform
+	observations []*regexp.Regexp
 }
 
 // runLogFile opens run's log file for appending; it outlives the run on this node.
@@ -297,20 +297,24 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	inst.SetResolved(prepared.resolved)
 	inst.WireModel = prepared.launch.WireModel
-	var placement []*regexp.Regexp
+	observations := []*regexp.Regexp{
+		cacheTokens:        declared.CacheLog["tokens"],
+		cacheConcurrency:   declared.CacheLog["concurrency"],
+		cachePools:         declared.CacheLog["pools"],
+		cacheSlots:         declared.CacheLog["slots"],
+		cacheSequenceSlots: declared.CacheLog["sequence_slots"],
+	}
 	if budget := launchBudget(declared); budget != nil && budget.Kind == schema.MemoryLayers {
 		patterns := declared.ForEndpoint(endpoint)[budget.Parameter].PlacementLog
 		if len(patterns) > 0 {
-			placement = []*regexp.Regexp{
-				placementLayers:       patterns["layers"],
-				placementCPUOverrides: patterns["cpu_overrides"],
-				placementWeights:      patterns["weights"],
-			}
+			observations[placementLayers] = patterns["layers"]
+			observations[placementCPUOverrides] = patterns["cpu_overrides"]
+			observations[placementWeights] = patterns["weights"]
 		}
 	}
 	return admittedRun{
 		cmd: prepared.launch.Command, args: prepared.launch.Args, vars: prepared.resolved.Environment,
-		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, placement: placement,
+		health: buildHealthCheckConfig(prepared.config, inst.Port), transform: prepared.executionEnvironment, observations: observations,
 	}, nil
 }
 
@@ -544,7 +548,7 @@ func (m *ProviderAppManager) runInstanceLifecycle(inst *instance.Instance, run a
 	var logWriter io.Writer = run.logFile
 	var readinessWriter *health.ReadinessWriter
 	if run.health.ReadinessProbe != nil {
-		readinessWriter = health.NewReadinessWriter(run.logFile, run.health.ReadinessProbe, run.placement, func(index int, values []string) { recordPlacement(inst, index, values) })
+		readinessWriter = health.NewReadinessWriter(run.logFile, run.health.ReadinessProbe, run.observations, func(index int, values []string) { recordObservation(inst, index, values) })
 		logWriter = readinessWriter
 	}
 
