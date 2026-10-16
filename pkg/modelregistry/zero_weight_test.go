@@ -116,7 +116,7 @@ func TestDeleteSelectedFreezesRepositoryMaterializationDirectory(t *testing.T) {
 	target, err := r.SelectDeletion(&metadata.ModelMetadata{Name: "weights", FullPath: first, SourceRepo: metadata.SourceHuggingFace, SourceID: "org/model", Format: metadata.FormatGGUF})
 	require.NoError(t, err)
 	require.Len(t, target.Paths, 2)
-	release, err := integrity.AcquireMaterialization(t.Context(), dir, true)
+	release, err := integrity.AcquireMaterialization(t.Context(), dir)
 	require.NoError(t, err)
 	var once sync.Once
 	unlock := func() { once.Do(release) }
@@ -144,4 +144,62 @@ func TestDeleteSelectedFreezesRepositoryMaterializationDirectory(t *testing.T) {
 	require.NoFileExists(t, second)
 	require.FileExists(t, filepath.Join(dir, "Q8/later.gguf"))
 	require.FileExists(t, filepath.Join(dir, "keep.txt"))
+}
+
+func TestDeleteRawPathRefusesWhileRepositoryMaterializes(t *testing.T) {
+	root := t.TempDir()
+	SetModelsRootDirOverride(root)
+	t.Cleanup(ClearModelsRootDirOverride)
+	r, err := NewRegistry(func() *config.AppsConfig { return &config.AppsConfig{} })
+	require.NoError(t, err)
+	t.Cleanup(r.Stop)
+	dir := string(r.CatalogDestination("org/model"))
+	path := filepath.Join(dir, "Q8/x.gguf")
+	neighbor := filepath.Join(dir, "keep.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+	for _, file := range []string{path, neighbor} {
+		require.NoError(t, os.WriteFile(file, []byte("keep"), 0600))
+	}
+	// Raw-path selection has neither catalog SourceID nor format evidence.
+	target, err := r.SelectDeletion(&metadata.ModelMetadata{FullPath: path})
+	require.NoError(t, err)
+	release, err := integrity.AcquireMaterialization(t.Context(), dir)
+	require.NoError(t, err)
+	var once sync.Once
+	unlock := func() { once.Do(release) }
+	defer unlock()
+	changed, err := r.DeleteSelected(t.Context(), target)
+	require.False(t, changed)
+	var refusal httperr.Error
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, 409, refusal.Status)
+	require.Equal(t, string(httperr.CodeDownloadInProgress), refusal.Code)
+	for _, file := range []string{path, neighbor} {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		require.Equal(t, "keep", string(data))
+	}
+	unlock()
+	changed, err = r.DeleteSelected(t.Context(), target)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.NoFileExists(t, path)
+	require.FileExists(t, neighbor)
+}
+
+func TestSelectDeletionRejectsSourceIDOutsideModelsRoot(t *testing.T) {
+	root := t.TempDir()
+	r := &Registry{modelsRoot: root}
+	path := filepath.Join(root, "org/model/weights.gguf")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0700))
+	require.NoError(t, os.WriteFile(path, []byte("keep"), 0600))
+	for _, id := range []string{"../escape", "org/../../escape", filepath.Join(t.TempDir(), "absolute"), "."} {
+		t.Run(id, func(t *testing.T) {
+			_, err := r.SelectDeletion(&metadata.ModelMetadata{FullPath: path, SourceRepo: metadata.SourceHuggingFace, SourceID: id})
+			require.Error(t, err)
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.Equal(t, "keep", string(data))
+		})
+	}
 }

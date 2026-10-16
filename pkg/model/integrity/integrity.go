@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,7 +37,6 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/download"
-	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -351,26 +351,44 @@ func locksForDirectory(dir string) (*directoryLocks, error) {
 	return locks, nil
 }
 
+// ErrMaterializationHeld means another operation owns the repository's files.
+var ErrMaterializationHeld = errors.New("repository materialization lock is held")
+
 // AcquireMaterialization serializes repository writes across registry downloads
-// and peer sync. With wait=false, a held lock refuses immediately.
-// Callers release after recording files or completing deletion.
-func AcquireMaterialization(ctx context.Context, dir string, wait bool) (func(), error) {
+// and peer sync. Callers release after recording files or completing deletion.
+func AcquireMaterialization(ctx context.Context, dir string) (func(), error) {
+	return acquireMaterialization(ctx, dir, func(gate chan struct{}) error {
+		select {
+		case gate <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+}
+
+// TryAcquireMaterialization acquires the same gate without waiting for its owner.
+func TryAcquireMaterialization(ctx context.Context, dir string) (func(), error) {
+	return acquireMaterialization(ctx, dir, func(gate chan struct{}) error {
+		select {
+		case gate <- struct{}{}:
+			return nil
+		default:
+			return ErrMaterializationHeld
+		}
+	})
+}
+
+func acquireMaterialization(ctx context.Context, dir string, acquire func(chan struct{}) error) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	lock, err := locksForDirectory(dir)
 	if err != nil {
 		return nil, err
 	}
-	if wait {
-		select {
-		case lock.materialize <- struct{}{}:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	} else {
-		select {
-		case lock.materialize <- struct{}{}:
-		default:
-			return nil, httperr.Error{Status: 409, Code: string(httperr.CodeDownloadInProgress), Message: "model files are being written; cancel the job and wait for its terminal outcome before deleting"}
-		}
+	if err := acquire(lock.materialize); err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		<-lock.materialize

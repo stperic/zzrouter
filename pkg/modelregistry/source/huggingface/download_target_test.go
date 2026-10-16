@@ -95,7 +95,7 @@ func TestProviderDownloadRechecksExistingFileUnderMaterializationGate(t *testing
 		fetched.Add(1)
 		return targetResponse(r, "weights"), nil
 	}))
-	release, err := integrity.AcquireMaterialization(t.Context(), dest.dir, true)
+	release, err := integrity.AcquireMaterialization(t.Context(), dest.dir)
 	require.NoError(t, err)
 	var once sync.Once
 	unlock := func() { once.Do(release) }

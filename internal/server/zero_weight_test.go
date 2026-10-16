@@ -145,7 +145,7 @@ func TestCancelledCatalogDownloadPublishesIncompleteIdentity(t *testing.T) {
 				finishPublication := func() { publishOnce.Do(func() { close(publishRelease) }) }
 				t.Cleanup(finishPublication)
 				id := zeroWeightTransfer(t, target, tc.kind, true, ready, closing, release, func() error {
-					unlock, lockErr := integrity.AcquireMaterialization(t.Context(), dir, false)
+					unlock, lockErr := integrity.TryAcquireMaterialization(t.Context(), dir)
 					if lockErr != nil {
 						return lockErr
 					}
@@ -328,4 +328,47 @@ func TestFailedCatalogTransfersPublishOnce(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestPanickingHFDownloadPublishesBeforeTerminal(t *testing.T) {
+	target, reader, dir, neighbor := zeroWeightNodes(t, "worker")
+	e := target.newDeploymentsExecutor()
+	e.registry.GetHuggingFaceConnector().SetHTTPTransport(mcpRoundTripper(func(*http.Request) (*http.Response, error) {
+		panic("transfer fixture")
+	}))
+	publishing, publishRelease := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	finishPublication := func() { once.Do(func() { close(publishRelease) }) }
+	t.Cleanup(finishPublication)
+	e.publishCatalog = func() error {
+		unlock, err := integrity.TryAcquireMaterialization(t.Context(), dir)
+		if err != nil {
+			return err
+		}
+		unlock()
+		close(publishing)
+		<-publishRelease
+		return target.publishCatalog()
+	}
+	id := startCancelableDownload(t, e, t.Context(), "huggingface").JobID
+	awaitDownloadSignal(t, publishing)
+	ev, err := target.jobs.Get(id)
+	require.NoError(t, err)
+	require.False(t, ev.Phase.IsTerminal(), "panic recovery must publish after releasing materialization and before terminal")
+	finishPublication()
+	ev = zeroWeightJob(t, target, id)
+	require.Equal(t, jobs.PhaseFailed, ev.Phase)
+	require.Equal(t, "failed", ev.Meta["transfer_status"])
+	require.Contains(t, ev.Err, "panic: transfer fixture")
+	listed := makeAuthRequest(t, reader, "GET", "/zzrouter/v1/models?model=org%2Fmodel", TestAdminKey, nil)
+	require.Equal(t, 200, listed.Code, string(listed.Body))
+	var listing struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(listed.Body, &listing))
+	require.Len(t, listing.Data, 1)
+	require.Equal(t, true, listing.Data[0]["incomplete"])
+	require.Equal(t, 200, zeroWeightDelete(t, reader, "worker", "REST"))
+	require.NoDirExists(t, dir)
+	require.FileExists(t, neighbor)
 }

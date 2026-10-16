@@ -462,16 +462,16 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, admission downloadA
 	go func() {
 		defer e.forgetJobKey(downloadKey, job.ID())
 		defer attempt.cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
-				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
-			}
-		}()
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
+				statusUpdater(string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
+			}
+		}()
 
 		if e.registry != nil {
 			e.registry.PullOllamaModel(ctx, modelName, statusUpdater)
@@ -499,13 +499,6 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 	go func() {
 		defer e.forgetJobKey(downloadKey, job.ID())
 		defer attempt.cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
-				e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
-			}
-		}()
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
 			if status == string(constants.StatusCompleted) && admission.catalogProvisioning && admission.provider != "" && e.ensureFeatures != nil {
 				root, err := modelregistry.GetModelsRootDir()
@@ -525,6 +518,13 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 			}
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
+
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("PANIC recovered in HuggingFace download", "panic", r, "stack", string(debug.Stack()))
+				statusUpdater(string(constants.StatusFailed), fmt.Sprintf("panic: %v", r), 0, 0, 0, 0, 0, 0)
+			}
+		}()
 
 		if err := e.registry.DownloadHuggingFaceModel(ctx, request, statusUpdater, admission.destination); err != nil {
 			var problem httperr.Error

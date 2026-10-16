@@ -73,11 +73,19 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		}
 
 		modelDir := filepath.Dir(path)
+		if basename == integrity.ManifestFileName {
+			for _, marker := range []string{"config.json", ".gitattributes"} {
+				if _, err := os.Stat(filepath.Join(modelDir, marker)); err == nil {
+					return nil
+				}
+			}
+		}
 
 		// Skip files inside known variant subdirectories.
 		pathParts := strings.SplitSeq(filepath.ToSlash(path), "/")
 		for part := range pathParts {
-			if part == "onnx" || part == "openvino" || part == "coreml" || part == "tflite" {
+			switch part {
+			case "onnx", "openvino", "coreml", "tflite":
 				return nil
 			}
 		}
@@ -115,9 +123,13 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 			return nil
 		})
 
-		files, layoutErr := layout.OnDisk(modelDir)
-		if layoutErr == nil {
-			hasGGUF = slices.ContainsFunc(files, func(file layout.File) bool { return layout.IsGGUF(file.Path) })
+		format := detectModelFormat(modelDir, modelName)
+		var files []layout.File
+		if format == metadata.FormatGGUF || basename == integrity.ManifestFileName {
+			files, err = layout.OnDisk(modelDir)
+			if err == nil {
+				hasGGUF = slices.ContainsFunc(files, func(file layout.File) bool { return layout.IsGGUF(file.Path) })
+			}
 		}
 		// Preserve existing file identities, including when a malformed manifest
 		// prevents feature inspection. A feature alone is not GGUF weights.
@@ -128,29 +140,26 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 
 		configPath := filepath.Join(modelDir, "config.json")
 		extra := parseHuggingFaceConfig(configPath)
-		format := detectModelFormat(modelDir, modelName)
 		complete, err := layout.Complete(modelDir)
 
 		// GGUF repos: one entry per weights variant; a split set is one
 		// entry, and a feature's file is none.
-		if format == metadata.FormatGGUF {
-			if variants := layout.GGUFVariants(files); len(variants) > 0 {
-				for _, v := range variants {
-					models = append(models, &metadata.ModelMetadata{
-						Name:         v.Name,
-						FullPath:     filepath.Join(modelDir, filepath.FromSlash(v.Files[0].Path)),
-						Format:       format,
-						Quantization: metadata.ExtractQuantization(v.Files[0].Path),
-						Size:         v.Size(),
-						SourceRepo:   metadata.SourceHuggingFace,
-						SourceID:     modelName,
-						Modified:     dirInfo.ModTime(),
-						AddedAt:      dirInfo.ModTime(),
-						Extra:        extra,
-					})
-				}
-				return filepath.SkipDir
+		if variants := layout.GGUFVariants(files); len(variants) > 0 {
+			for _, v := range variants {
+				models = append(models, &metadata.ModelMetadata{
+					Name:         v.Name,
+					FullPath:     filepath.Join(modelDir, filepath.FromSlash(v.Files[0].Path)),
+					Format:       format,
+					Quantization: metadata.ExtractQuantization(v.Files[0].Path),
+					Size:         v.Size(),
+					SourceRepo:   metadata.SourceHuggingFace,
+					SourceID:     modelName,
+					Modified:     dirInfo.ModTime(),
+					AddedAt:      dirInfo.ModTime(),
+					Extra:        extra,
+				})
 			}
+			return filepath.SkipDir
 		}
 
 		models = append(models, &metadata.ModelMetadata{

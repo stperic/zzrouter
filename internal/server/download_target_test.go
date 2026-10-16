@@ -108,7 +108,7 @@ func TestProviderDownloadUsesWorkerPipelineAndDestinationAdmission(t *testing.T)
 	root, err := svc.Runtime.ModelStorePath(fsroot.ProviderDir("studio"))
 	require.NoError(t, err)
 	root = filepath.Join(root, "vae")
-	release, err := integrity.AcquireMaterialization(t.Context(), root, true)
+	release, err := integrity.AcquireMaterialization(t.Context(), root)
 	require.NoError(t, err)
 	var once sync.Once
 	unlock := func() { once.Do(release) }
@@ -207,7 +207,7 @@ func TestProviderDownloadReservesExactResolvedNames(t *testing.T) {
 			svc, _ := e.appsConfig().LookupApp("studio")
 			root, err := svc.Runtime.ModelStorePath(fsroot.ProviderDir("studio"))
 			require.NoError(t, err)
-			release, err := integrity.AcquireMaterialization(t.Context(), filepath.Join(root, "vae"), true)
+			release, err := integrity.AcquireMaterialization(t.Context(), filepath.Join(root, "vae"))
 			require.NoError(t, err)
 			defer release()
 			defer e.downloads.StopAll()

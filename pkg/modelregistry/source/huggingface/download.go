@@ -71,7 +71,7 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	if err != nil {
 		return err
 	}
-	release, err := integrity.AcquireMaterialization(ctx, dir, true)
+	release, err := integrity.AcquireMaterialization(ctx, dir)
 	if err != nil {
 		return err
 	}
