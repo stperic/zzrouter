@@ -448,13 +448,15 @@ func TestMemoryReclaimSkipsPinnedAndEvictsUnpinned(t *testing.T) {
 func TestNegativeInferenceHintDoesNotPin(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	negative := time.Duration(-1)
+	// Backdate the hinted use: a coarse clock (Windows) can stamp both runs alike.
+	restore := utils.SetClock(utils.FixedClock(utils.Now().Add(-time.Hour)))
 	lease, err := f.older.Acquire(t.Context(), &keepalive.Override{Duration: &negative})
 	require.NoError(t, err)
 	lease.Release()
+	restore()
 	assert.Negative(t, f.older.GetKeepAlive())
 	assert.False(t, f.older.IdleSnapshot().Pinned)
 	assert.True(t, f.older.Evictable())
-	f.newer.StampActivityWithHints(nil) // keep the hinted run oldest
 	*f.device.Processes[1].MemoryMiB = 100
 	evicted, err := f.admit(t)
 	require.NoError(t, err)
