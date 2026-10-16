@@ -159,7 +159,9 @@ func TestCancelJob_Accepted(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"accepted":true}`)
 	})
 	c, _ := newTestClient(t, handler)
-	require.NoError(t, c.CancelJob(context.Background(), "job-9"))
+	accepted, err := c.CancelJob(context.Background(), "job-9")
+	require.NoError(t, err)
+	require.True(t, accepted)
 }
 
 func TestCancelJob_NotFoundIsNoOp(t *testing.T) {
@@ -167,12 +169,14 @@ func TestCancelJob_NotFoundIsNoOp(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	c, _ := newTestClient(t, handler)
-	require.NoError(t, c.CancelJob(context.Background(), "job-9"))
+	accepted, err := c.CancelJob(context.Background(), "job-9")
+	require.NoError(t, err)
+	require.False(t, accepted)
 }
 
 func TestCancelJob_EmptyID(t *testing.T) {
 	c := NewClient(pkgConfig.ClientNodeConfig{Address: "http://x"})
-	err := c.CancelJob(context.Background(), "")
+	_, err := c.CancelJob(context.Background(), "")
 	require.Error(t, err)
 	assert.Contains(t, strings.ToLower(err.Error()), "empty")
 }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Job cancellation stops local and worker-owned downloads. Downloads survive
+  silent upstreams under their existing 48-hour deadline. Both TUI views and MCP
+  use `job_id` for individual downloads; `deployment_id` still cancels all nodes.
+  Cancelled jobs report `failed` with `meta.transfer_status: cancelled`. Completed
+  files remain, unfinished catalog files stay pending for repair, and provider
+  destinations remain reserved through cleanup.
+
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete

@@ -46,7 +46,7 @@ func RenderJobProgress(parent context.Context, client *pkgClient.Client, jobID, 
 				fmt.Printf("%s Cancel requested, waiting for server...\n", ui.GetInfoEmoji())
 				// Detached so the cancel request isn't killed by the same Ctrl-C
 				// unwinding parent; WithoutCancel keeps the parent's values.
-				_ = client.CancelJob(context.WithoutCancel(parent), jobID)
+				_, _ = client.CancelJob(context.WithoutCancel(parent), jobID)
 				continue
 			}
 			cancel()

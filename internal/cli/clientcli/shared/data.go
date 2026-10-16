@@ -93,18 +93,17 @@ func FetchDeployments(client *pkgClient.Client) ([]DeploymentInfo, error) {
 			}
 
 			rows = append(rows, DeploymentInfo{
-				DownloadID:   n.DownloadID,
-				DeploymentID: d.ID,
-				JobID:        n.JobID,
-				Node:         n.Node,
-				Model:        d.Model,
-				Provider:     provider,
-				Status:       statusStr,
-				Progress:     progressStr,
-				Size:         sizeStr,
-				Speed:        speedStr,
-				ETA:          etaStr,
-				Error:        n.Error,
+				DownloadID: n.DownloadID,
+				JobID:      n.JobID,
+				Node:       n.Node,
+				Model:      d.Model,
+				Provider:   provider,
+				Status:     statusStr,
+				Progress:   progressStr,
+				Size:       sizeStr,
+				Speed:      speedStr,
+				ETA:        etaStr,
+				Error:      n.Error,
 			})
 		}
 	}

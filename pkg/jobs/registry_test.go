@@ -365,6 +365,27 @@ func TestSweepEvictsPastCompletedTTL(t *testing.T) {
 	}
 }
 
+func TestDownloadDefaultInactivityExempt(t *testing.T) {
+	r, fc := newTestRegistry(t)
+	h, err := r.StartDetached(KindDownload, "admin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Progress(1, "waiting for upstream", Bytes{})
+	fc.Advance(2 * time.Hour)
+	r.sweep()
+	ev, err := r.Get(h.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Phase != PhaseRunning {
+		t.Fatalf("silent download phase = %v", ev.Phase)
+	}
+	if err := h.Context().Err(); err != nil {
+		t.Fatalf("silent download cancelled: %v", err)
+	}
+}
+
 func TestSweepReapsInactive(t *testing.T) {
 	fc := clocktest.NewFakeClock(time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC))
 	r, err := NewRegistry(Config{

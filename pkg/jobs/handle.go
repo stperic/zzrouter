@@ -29,9 +29,7 @@ type Handle interface {
 	// event's Err field. Nil err is treated as an empty message.
 	Fail(err error)
 
-	// Context is cancelled when the job's lifecycle context terminates
-	// (Registry.Stop, cancel signal, or janitor reap). Producers
-	// should select on this to abort work promptly.
+	// Context lets producers stop on shutdown, Cancel, parent cancellation or any terminal transition (including reap).
 	Context() context.Context
 
 	// ID returns the kind-prefixed job ID.

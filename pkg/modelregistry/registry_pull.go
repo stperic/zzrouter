@@ -21,16 +21,14 @@ func (r *Registry) ListHuggingFaceRepoFiles(ctx context.Context, modelID string)
 	return r.huggingfaceConnector.GetRepoFiles(ctx, modelID)
 }
 
-// PullOllamaModelAsync pulls a model from Ollama in the background.
+// PullOllamaModel pulls a model from Ollama in the caller's goroutine.
 // The provided ctx is used for the HTTP request — cancelling it aborts
 // the download.
 //
 // The IsConfigured pre-check is a fast-path: PullModelWithContext would
 // itself return ollama.ErrNotConfigured on an inactive connector, but
-// by then we'd have already spawned a goroutine and fired a
-// "downloading" status update. Checking synchronously lets the caller
-// fail the request without any visible side effects.
-func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64)) {
+// by then we'd have fired a "downloading" update. Refuse before side effects.
+func (r *Registry) PullOllamaModel(ctx context.Context, modelName string, statusUpdater func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64)) {
 	if !r.ollamaConnector.IsConfigured() {
 		statusUpdater("failed", ollama.ErrNotConfigured.Error(), 0, 0, 0, 0, 0, 0)
 		return
@@ -41,57 +39,54 @@ func (r *Registry) PullOllamaModelAsync(ctx context.Context, modelName string, s
 		return
 	}
 
-	go func() {
-		defer r.wg.Done()
-		defer utils.RecoverAndLog("modelregistry.OllamaDeploy")
-		slog.Info("Ollama deploy started", "model", modelName)
-		statusUpdater("downloading", "", 0, 0, 0, 0, 0, 0)
+	defer r.wg.Done()
+	slog.Info("Ollama deploy started", "model", modelName)
+	statusUpdater("downloading", "", 0, 0, 0, 0, 0, 0)
 
-		var totalBytes int64
-		var completedBytes int64
-		startTime := utils.Now()
+	var totalBytes int64
+	var completedBytes int64
+	startTime := utils.Now()
 
-		err := r.ollamaConnector.PullModelWithContext(ctx, modelName, func(status, digest string, total, completed int64) {
-			totalBytes = total
-			completedBytes = completed
+	err := r.ollamaConnector.PullModelWithContext(ctx, modelName, func(status, digest string, total, completed int64) {
+		totalBytes = total
+		completedBytes = completed
 
-			progress := float64(0)
-			if total > 0 {
-				progress = float64(completed) / float64(total) * 100
-			}
-
-			// Calculate speed
-			elapsed := time.Since(startTime).Seconds()
-			speed := int64(0)
-			if elapsed > 0 {
-				speed = int64(float64(completed) / elapsed)
-			}
-			// Format a user-friendly message from Ollama's status
-			message := status
-			if digest != "" {
-				message = fmt.Sprintf("%s %s", status, digest)
-			}
-			statusUpdater("downloading", message, 0, 0, progress, completedBytes, totalBytes, speed)
-		})
-
-		if err != nil {
-			// Don't log context cancellation as an error — it's an intentional stop
-			if ctx.Err() != nil {
-				slog.Info("Ollama deploy cancelled", "model", modelName)
-				statusUpdater(string(constants.StatusCancelled), "", 0, 0, 0, completedBytes, totalBytes, 0)
-			} else {
-				slog.Error("Ollama deploy failed", "model", modelName, "error", err)
-				statusUpdater("failed", err.Error(), 0, 0, 0, completedBytes, totalBytes, 0)
-			}
-		} else if totalBytes == 0 {
-			// Ollama returned success but downloaded nothing — model likely doesn't exist
-			slog.Warn("Ollama deploy returned success but downloaded 0 bytes: model may not exist in Ollama registry", "model", modelName)
-			statusUpdater("failed", "model not found in Ollama registry (0 bytes downloaded)", 0, 0, 0, 0, 0, 0)
-		} else {
-			slog.Info("Ollama deploy completed", "model", modelName, "bytes", totalBytes)
-			statusUpdater("completed", "", 0, 0, 100, totalBytes, totalBytes, 0)
+		progress := float64(0)
+		if total > 0 {
+			progress = float64(completed) / float64(total) * 100
 		}
-	}()
+
+		// Calculate speed
+		elapsed := time.Since(startTime).Seconds()
+		speed := int64(0)
+		if elapsed > 0 {
+			speed = int64(float64(completed) / elapsed)
+		}
+		// Format a user-friendly message from Ollama's status
+		message := status
+		if digest != "" {
+			message = fmt.Sprintf("%s %s", status, digest)
+		}
+		statusUpdater("downloading", message, 0, 0, progress, completedBytes, totalBytes, speed)
+	})
+
+	if err != nil {
+		// Don't log context cancellation as an error — it's an intentional stop
+		if ctx.Err() != nil {
+			slog.Info("Ollama deploy cancelled", "model", modelName)
+			statusUpdater(string(constants.StatusCancelled), "", 0, 0, 0, completedBytes, totalBytes, 0)
+		} else {
+			slog.Error("Ollama deploy failed", "model", modelName, "error", err)
+			statusUpdater("failed", err.Error(), 0, 0, 0, completedBytes, totalBytes, 0)
+		}
+	} else if totalBytes == 0 {
+		// Ollama returned success but downloaded nothing — model likely doesn't exist
+		slog.Warn("Ollama deploy returned success but downloaded 0 bytes: model may not exist in Ollama registry", "model", modelName)
+		statusUpdater("failed", "model not found in Ollama registry (0 bytes downloaded)", 0, 0, 0, 0, 0, 0)
+	} else {
+		slog.Info("Ollama deploy completed", "model", modelName, "bytes", totalBytes)
+		statusUpdater("completed", "", 0, 0, 100, totalBytes, totalBytes, 0)
+	}
 }
 
 // DownloadHuggingFaceModel fetches what req names from HuggingFace in

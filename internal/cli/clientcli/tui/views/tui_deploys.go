@@ -1,7 +1,6 @@
 package views
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -210,32 +208,6 @@ func (m *DeploysViewModel) fetchAndSubscribe() tea.Cmd {
 // is surfaced instead of being dropped on the floor.
 type deploysCancelMsg struct{ err error }
 
-// cancelJobByKind routes a cancel to the call that actually stops the
-// work. Downloads are the exception: the transfer goroutine watches the
-// download tracker's cancel func and never its job context, so
-// DELETE /jobs/:id answers 202 while the bytes keep flowing. Those go
-// through the owning deployment instead, which is resolved by job ID.
-func cancelJobByKind(ctx context.Context, client *pkgClient.Client, kind, jobID string) error {
-	if kind != string(jobs.KindDownload) {
-		return client.CancelJob(ctx, jobID)
-	}
-	deployments, err := client.ListDeployments()
-	if err != nil {
-		return fmt.Errorf("resolve deployment for download: %w", err)
-	}
-	for _, d := range deployments {
-		if d == nil {
-			continue
-		}
-		for _, n := range d.Nodes {
-			if n.JobID == jobID {
-				return client.CancelDeploymentNode(d.ID, n.Node)
-			}
-		}
-	}
-	return fmt.Errorf("no active deployment owns job %s", jobID)
-}
-
 // jobMeta is the static per-job context a jobstream frame does not carry:
 // the job kind and a human label for the thing being acted on.
 type jobMeta struct {
@@ -392,13 +364,13 @@ func (m *DeploysViewModel) handleKey(msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		}
 		client := m.client
-		kind := row.Kind
 		m.actionStatus = fmt.Sprintf("Cancelling %s on %s...", row.Model, row.Node)
 		// Detached ctx so the DELETE survives a near-simultaneous view
 		// pop (matches the CLI watch.go pattern).
 		ctx := m.Context()
 		return func() tea.Msg {
-			return deploysCancelMsg{err: cancelJobByKind(ctx, client, kind, jobID)}
+			_, err := client.CancelJob(ctx, jobID)
+			return deploysCancelMsg{err: err}
 		}
 
 	case key.Matches(msg, deploysKeys.Refresh):

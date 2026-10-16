@@ -38,7 +38,4 @@ func TestKindInactivityZeroForFirehose(t *testing.T) {
 	if KindInferenceLog.DefaultInactivityTimeout() != 0 {
 		t.Errorf("inference-log must have zero inactivity timeout (firehose never idle)")
 	}
-	if KindDownload.DefaultInactivityTimeout() <= 0 {
-		t.Errorf("download must have non-zero inactivity timeout")
-	}
 }

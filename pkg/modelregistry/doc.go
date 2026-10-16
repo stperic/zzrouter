@@ -18,9 +18,9 @@
 //
 // [NewRegistry] is non-spawning — construction allocates connectors
 // and trackers only. There is no `Start(ctx)` because the registry
-// launches goroutines only in response to method calls
-// (PullOllamaModelAsync, scan triggers); those goroutines are tracked
-// on an internal WaitGroup. `(*Registry).Stop()` cancels an internal
+// launches scan goroutines only in response to method calls. Downloads run
+// in their caller's goroutine; both are tracked on an internal WaitGroup.
+// `(*Registry).Stop()` cancels an internal
 // stop signal and waits on the WaitGroup — idempotent.
 //
 // This asymmetry is deliberate and matches the doc's R4 philosophy:

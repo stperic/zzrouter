@@ -21,12 +21,14 @@
 // a terminal transition are no-ops (the producer may lose a race with
 // its own defer-Fail path). An inactivity-gated janitor flips silently
 // stalled jobs to failed after the kind's idle timeout, bounding memory.
+// Downloads have no default idle timeout because transfers own their deadline.
+// Detached jobs outlive requests; every terminal transition cancels their context.
 //
 // Subscribe-after-terminal contract (load-bearing for clients that
 // consume /jobs/:id/stream): for a terminal job still in the registry
 // (within CompletedTTL), Subscribe replays the entire ring under j.mu
 // and closes the subscriber channel — the terminal event is the last
-// ring entry, so the reader always observes done|failed|cancelled
+// ring entry, so the reader always observes done|failed
 // before end-of-stream. There is no race between the producer's
 // terminal transition and a late subscriber within that window.
 //

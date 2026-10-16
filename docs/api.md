@@ -30,7 +30,25 @@ node, plus `/models/resolve` for workflow metadata. The discovery document's
 Installation, downloads and launches may return HTTP 202 with a job ID.
 Poll `GET /zzrouter/v1/jobs/:id` or stream `GET /zzrouter/v1/jobs/:id/stream`.
 A terminal success and the resulting resource state establish completion;
-acceptance alone does not. Cancellation uses `DELETE /zzrouter/v1/jobs/:id`.
+acceptance alone does not. Cancel individual downloads and other work with
+`DELETE /zzrouter/v1/jobs/:id`; omit `node` to discover the owner, or supply a
+node name. The nonblocking 202 reply carries `accepted` and `job_id`. Observe
+the job afterward: a cancelled download is `failed` with
+`meta.transfer_status: cancelled`. Already-terminal success remains success.
+Use `DELETE /zzrouter/v1/deployments/:id` to cancel all deployment nodes, or
+`DELETE /zzrouter/v1/deployments/:id/nodes/:node` for one node.
+
+Downloads outlive the accepting request, with a 10-minute body-read stall
+deadline and a 48-hour overall cap. Every successful byte read resets the stall
+deadline; ten minutes without a byte fails the transfer with
+`no data received for 10m0s`. Downloads are exempt from default job inactivity
+reaping; explicit inactivity overrides and
+terminal retention still apply. Cancellation aborts the active transfer, but
+terminal notification may precede cleanup. Completed files stay in place;
+unfinished catalog files remain pending. Repeat the download to repair only
+missing files. Matching dead partials are removed by the next serialized fetch.
+Provider-store destinations remain reserved until physical cleanup finishes.
+Ollama owns its blobs and their cleanup.
 
 Job GET, cancellation and pre-stream failures use Problem Details. A confirmed
 absence within the selected node or complete searched scope returns

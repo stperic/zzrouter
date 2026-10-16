@@ -417,10 +417,13 @@ func TestProviderModelsCancellationDuringBufferedBodyClose(t *testing.T) {
 	require.NoError(t, json.Unmarshal(first.Body.Bytes(), &out))
 	<-reading
 	key := h.worker.downloads.GetStatus()[0].Key
-	c, _ := testGinContext("DELETE", "/?key="+url.QueryEscape(key))
-	h.worker.HandleInternalStopDownload(c)
+	w := httptest.NewRecorder()
+	downloadCancelAPI(t, h.worker, true).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/zzrouter/v1/jobs/"+out.Data.JobID, nil))
+	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
 	<-closing
-	require.Equal(t, jobs.PhaseFailed, waitJob(t, h.worker.jobs, out.Data.JobID).Phase, "progress may publish terminal state before physical cleanup")
+	event := waitJob(t, h.worker.jobs, out.Data.JobID)
+	require.Equal(t, jobs.PhaseFailed, event.Phase, "progress may publish terminal state before physical cleanup")
+	require.Equal(t, "cancelled", event.Meta["transfer_status"])
 	assertProviderModelProblem(t, h.request("DELETE", "studio/models?node=worker&category=vae&name=file", "", ""), 409, httperr.CodeDownloadInProgress)
 	assertProviderModelProblem(t, h.request("POST", "studio/models", body, ""), 409, httperr.CodeDownloadInProgress)
 	release()
