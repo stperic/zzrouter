@@ -410,3 +410,77 @@ class DisposableOwnershipTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplainableFitTest(unittest.TestCase):
+    def setUp(self):
+        args = {"model": "m", "node": "n", "provider": "p", "parameters": {"ctx": 32768}}
+        self.ctx = {"rj": {**{k: args[k] for k in ("model", "node", "provider")}, "unknown_cause": "model_unmodelled",
+                           "run_id": "r", "served_context": 32768, "reported_concurrency": 4.5, "concurrency_context": 32768},
+                    "calls": [call("zz_run_preview", args.copy(), c.call_evidence({"assessment": {"status": "unknown", "unknown_cause": "model_unmodelled", "weights_mib": 52992}, "parameters": args["parameters"]})),
+                              call("zz_run_start", args.copy(), {"run_id": "r", "job_id": "j"}),
+                              call("zz_job", {"job_id": "j"}, {"job_id": "j", "state": "done"}),
+                              call("zz_runs", {"run_id": "r", "node": "n"}, c.call_evidence({"runs": [{"run_id": "r", "node": "n", "context_length": 32768}]})),
+                              call("zz_logs", {"run_id": "r", "node": "n"}, c.call_evidence({"lines": ["Maximum concurrency for 32,768 tokens per request: 4.50x"]}))]}
+
+    def test_evidenced_claims_and_legacy_null_cause(self):
+        self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
+        self.ctx["calls"][0]["evidence"]["assessment"].pop("unknown_cause")
+        self.ctx["rj"]["unknown_cause"] = None
+        self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
+
+    def test_fabricated_claims_and_escape_tools_fail(self):
+        for field, value in (("unknown_cause", "invented"), ("node", "other"), ("provider", "other"), ("model", "other"),
+                             ("run_id", "other"), ("served_context", 65536), ("reported_concurrency", 5), ("concurrency_context", 4096)):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(self.ctx); bad["rj"][field] = value
+                self.assertFalse(passed(c.check_explainable_fit(bad)))
+        for tool in c.ESCAPE_HATCH:
+            bad = copy.deepcopy(self.ctx); bad["calls"].append(call(tool, {}, {}))
+            self.assertFalse(passed(c.check_explainable_fit(bad)))
+        bad = copy.deepcopy(self.ctx); bad["calls"][-1]["evidence"]["lines"] = ["Maximum concurrency for 4,096 tokens per request: 36.00x"]
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+
+    def test_refusal_and_failed_retry_match_settings(self):
+        bad = copy.deepcopy(self.ctx); bad["calls"][0]["evidence"]["assessment"]["status"] = "no_fit"
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        bad["calls"][1]["args"]["parameters"]["ctx"] = 4096
+        # The cause must still come from a preview matching the final settings.
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        bad = copy.deepcopy(self.ctx); bad["calls"][2]["evidence"]["state"] = "failed"
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        retry = copy.deepcopy(bad["calls"][1]); retry["args"]["idempotency_key"] = "new"; retry["evidence"]["job_id"] = "j2"
+        bad["calls"].extend([retry, call("zz_job", {"job_id": "j2"}, {"job_id": "j2", "state": "done"})])
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        retry["args"]["parameters"]["ctx"] = 65536
+        bad["calls"].insert(-2, call("zz_run_preview", retry["args"].copy(), {"assessment": {"status": "unknown", "unknown_cause": "model_unmodelled"}}))
+        self.assertTrue(passed(c.check_explainable_fit(bad)))
+
+    def test_capture_keeps_bounded_evidence_beyond_excerpt(self):
+        evidence = c.call_evidence({"failure": {"error_tail": "failure"}, "parameters": {"ctx": 32768},
+                                    "lines": ["irrelevant" * 1000] * 100 + ["GPU KV cache size: 150,000 tokens"],
+                                    "assessment": {"status": "unknown", "weights_mib": 52992, "capacity_mib": 97887}})
+        self.assertEqual(evidence["lines"], ["GPU KV cache size: 150,000 tokens"])
+        self.assertEqual(evidence["assessment"]["weights_mib"], 52992)
+        self.assertEqual(evidence["failure"]["error_tail"], "failure")
+
+    def test_cleanup_preserves_existing_unowned_and_other_nodes(self):
+        from unittest.mock import patch
+        starts = [call("zz_run_start", {"node": n}, {"run_id": r}, error) for n, r, error in
+                  [("n", "existing", False), ("n", "new", False), ("other", "foreign", False), ("n", "failed", True), ("mac", "new-mac", False)]]
+        with patch.object(c, "http") as http:
+            c.cleanup_fit_runs(starts, {"n": {"existing"}, "mac": set()})
+            self.assertEqual({x.args[1] for x in http.call_args_list}, {"/zzrouter/v1/runs/new?node=n", "/zzrouter/v1/runs/new-mac?node=mac"})
+
+    def test_scenario_never_uses_node_wide_cleanup(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        scenario = {"owned_nodes": ["n", "mac"], "prompt": "task", "check": lambda ctx: []}
+        with TemporaryDirectory() as out, patch.object(c, "stop_runs") as stop, patch.object(c, "runs", return_value=[{"id": "existing"}]), \
+                patch.object(c, "calls_for", return_value=[]), patch.object(c, "node_healthy", return_value=True), \
+                patch.object(c.time, "sleep"), patch.object(c, "run_codex_mcp", return_value=("RESULT: {}", {}, 0)) as drive:
+            c.run_scenario(SimpleNamespace(add=lambda *a: None), "n", "explainable-fit", scenario, ["codex"], "", str(Path(out)))
+            stop.assert_not_called()
+            self.assertIn('"mac": ["existing"]', drive.call_args.args[1])
