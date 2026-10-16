@@ -33,6 +33,7 @@ const ManagedProcessEnvValue = "1"
 // LaunchResult contains the outcome of a process launch.
 type LaunchResult struct {
 	PID            int
+	StartToken     int64
 	ProcessGroupID int
 	Process        *os.Process
 	Command        *instance.LaunchCommand
@@ -49,9 +50,10 @@ func (r *LaunchResult) Wait() (*os.ProcessState, error) {
 
 // Launcher starts and manages native processes for provider instances.
 type Launcher struct {
-	security *SecurityValidator
-	trusted  bool   // true for config-driven apps (skip command validation)
-	pidDir   string // directory for launcher PID files (shared with PIDTracker)
+	startToken func(int) (int64, error) // optional per-launch inspection seam
+	security   *SecurityValidator
+	trusted    bool   // true for config-driven apps (skip command validation)
+	pidDir     string // directory for launcher PID files (shared with PIDTracker)
 }
 
 // NewLauncher creates a process launcher.
@@ -216,9 +218,29 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 			"pid", pid, "error", jobErr)
 	}
 
+	readToken := l.startToken
+	if readToken == nil {
+		readToken = StartToken
+	}
+	startToken, err := readToken(pid)
+	if err != nil {
+		req := TerminateRequest{PID: pid, ProcessGroupID: pgid, JobHandle: jobHandle}
+		if inst.IsUsingLauncher() && runtime.GOOS != "windows" {
+			// The wrapper owns a separately grouped engine and bounded escalation.
+			_ = terminateProcessTree(req)
+		} else {
+			// The unreaped leader still owns its process group or Windows Job.
+			_ = killProcessTree(req)
+		}
+		_ = process.Wait()
+		CloseJobHandle(jobHandle)
+		return nil, fmt.Errorf("read launched process identity: %w", err)
+	}
+
 	// The caller records the process and its Windows handles on the instance.
 	return &LaunchResult{
 		PID:            pid,
+		StartToken:     startToken,
 		ProcessGroupID: pgid,
 		Process:        process.Process,
 		Command:        &instance.LaunchCommand{Command: originalCmd, Args: originalArgs, Environment: envVars, WorkingDir: process.Dir},

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stopping a newly launched run no longer depends on reading its environment during
+  exec. Shutdown, orphan cleanup and managed-daemon migration verify PID plus an exact
+  per-platform start token: raw Linux start ticks, kernel creation time on Darwin and
+  Windows. Legacy PID files retain marker-based ownership checks. Orphan records stay
+  tracked after a refusal or termination error until a later pass confirms exit.
+
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete

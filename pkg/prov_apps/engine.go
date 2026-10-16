@@ -97,8 +97,8 @@ func (e processEngine) up(ctx context.Context, req EnsureRequest, selection laun
 
 func (e processEngine) down(ctx context.Context, run *instance.Instance) error {
 	// No pid yet: the lifecycle goroutine sees the cancelled context and signals it.
-	if pid := run.ClaimTermination(true); pid > 0 {
-		return e.m.terminateProcess(ctx, run, pid)
+	if pid, startToken := run.ClaimTermination(true); pid > 0 {
+		return e.m.terminateProcess(ctx, run, pid, startToken)
 	}
 	return nil
 }

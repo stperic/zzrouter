@@ -690,12 +690,18 @@ func TestEnsureRunContractStopBeforeProcessRecorded(t *testing.T) {
 	const stopWait = 5 * time.Second // half the rig's readiness timeout
 	for _, stage := range []string{"before launch", "after process start"} {
 		t.Run(stage, func(t *testing.T) {
+			t.Setenv("PATH", "/usr/bin:/bin")
 			r := newContractRig(t, true)
+			var markerReads atomic.Int32
+			r.m.seams.inspector.Environ = func(int32) ([]string, error) { markerReads.Add(1); return []string{""}, nil }
 			b := newBarrier()
 			if stage == "before launch" {
 				r.m.seams.beforeLaunch = b.hold
 			} else {
-				r.m.seams.processStarted = b.hold
+				r.m.seams.processStarted = func(result *process.LaunchResult) {
+					t.Cleanup(func() { _ = result.Process.Kill() })
+					b.hold()
+				}
 			}
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "shared"})})[0]
 			require.NoError(t, o.err)
@@ -711,6 +717,8 @@ func TestEnsureRunContractStopBeforeProcessRecorded(t *testing.T) {
 			case <-time.After(stopWait):
 				t.Fatal("StopInstance waited on a process nobody signalled")
 			}
+			assert.False(t, run.IsUsingLauncher(), "this fixture must exercise direct launch")
+			assert.Zero(t, markerReads.Load(), "a launched process must not require environment evidence")
 			assert.LessOrEqual(t, r.terms(t), 1, "the process is stopped once")
 			_, err := os.Stat(filepath.Join(config.Paths().GetPIDDir(), run.ID+".pid"))
 			assert.True(t, os.IsNotExist(err), "no tracked pid left")

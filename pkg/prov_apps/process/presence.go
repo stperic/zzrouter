@@ -13,7 +13,7 @@ import (
 
 // DaemonPIDs identifies only processes with the canonical binary and fixed argv.
 // An unreadable matching executable refuses migration rather than guessing.
-func DaemonPIDs(ctx context.Context, binary string, args []string) ([]int, error) {
+func DaemonPIDs(ctx context.Context, binary string, args []string) ([]TerminateRequest, error) {
 	procs, err := process.ProcessesWithContext(ctx)
 	if err != nil {
 		return nil, err
@@ -23,7 +23,7 @@ func DaemonPIDs(ctx context.Context, binary string, args []string) ([]int, error
 	if err != nil {
 		resolved = want
 	}
-	var pids []int
+	var pids []TerminateRequest
 	for _, proc := range procs {
 		exe, err := proc.ExeWithContext(ctx)
 		if err != nil || exe == "" {
@@ -38,7 +38,11 @@ func DaemonPIDs(ctx context.Context, binary string, args []string) ([]int, error
 			return nil, fmt.Errorf("cannot identify arguments for managed executable PID %d", proc.Pid)
 		}
 		if slices.Equal(argv[1:], args) {
-			pids = append(pids, int(proc.Pid))
+			startToken, err := StartToken(int(proc.Pid))
+			if err != nil || startToken <= 0 {
+				return nil, fmt.Errorf("cannot identify start token for managed executable PID %d", proc.Pid)
+			}
+			pids = append(pids, TerminateRequest{PID: int(proc.Pid), StartToken: startToken, ProcessGroupID: int(proc.Pid)})
 		}
 	}
 	return pids, ctx.Err()
