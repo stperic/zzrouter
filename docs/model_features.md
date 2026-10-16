@@ -17,8 +17,14 @@ For llama.cpp, the shipped file declaration prefers `mmproj-F16.gguf`, then
 native Chat, Responses and Messages endpoints. vLLM and Ollama declare built-in
 support. These are provider template choices; routing does not select by engine
 name. The predicate checks local `config.json`; absent evidence remains unknown.
-Implicit launch selection probes installed runtimes only, retaining the base
-runtime when optional configuration is missing, unreadable or malformed.
+Launch selection inspects endpoint-applicable predicates before runtime installation
+state. Missing `config.json`, an absent key or a null value retains the base
+runtime. Malformed JSON or unreadable evidence refuses preview, start and cold
+inference with HTTP 409 `model_feature_evidence_invalid`, even when the optional
+runtime is not installed. Repair or re-download malformed evidence; an operator
+must correct unreadable files. Parameter status reports `unknown` with its error;
+catalog inspection also retains `unknown`. Work already accepted reports failure
+through its existing run and job.
 Explicit runtime provisioning still requires readable qualification evidence.
 A runtime feature's `health_check` replaces the whole base runtime health check,
 just as `execution` replaces execution. MLX vision uses uvicorn startup logs
@@ -167,7 +173,12 @@ use 409: the current request or allocation cannot fit, so automatic retries and
 provider cooldown would be misleading. Free memory or lower the budget first.
 
 Classification uses the serving provider's declarations, independently of the
-engine's HTTP status. Generic decoding/allocation errors without a declared
+engine's HTTP status. HTTP phrase matching for `unsupported_input` requires
+images in the actual outgoing body, including translated tool-result images.
+The same phrase in a text-only request keeps the upstream status. Explicit
+classified upstream codes remain authoritative across relays, and other failure
+classes and startup/process-log classification are unchanged.
+Generic decoding/allocation errors without a declared
 match remain server failures; unmatched 4xx responses keep their status.
 A failed run retains its typed cause before publishing its failed state.
 The engine node classifies; relays preserve its code without adding remedies

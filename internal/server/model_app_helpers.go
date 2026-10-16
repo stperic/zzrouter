@@ -22,6 +22,7 @@ import (
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/keepalive"
@@ -248,7 +249,7 @@ func (s *Server) proxyToInstance(w http.ResponseWriter, req *http.Request, inst 
 	w.Header().Set(constants.HeaderServingNode, servingNode)
 	if resp.StatusCode >= 400 {
 		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
-		writeRewrittenError(w, req, resp, inst.FailureClassifier)
+		writeRewrittenError(w, req, resp, inst.FailureClassifier, func() bool { return protocol.HasImages(body) })
 		return
 	}
 

@@ -50,7 +50,8 @@ func readCapped(r io.Reader) []byte {
 // NormalizeUpstreamResponse owns bounded error reading, status classification
 // and dialect conversion. Call before deciding whether an upstream is retriable.
 // It replaces and closes the consumed body and returns the class for open streams.
-func NormalizeUpstreamResponse(resp *http.Response, responder Responder, classifier *Classifier) Error {
+// hasImages is evaluated only for matched unsupported-input phrases; nil means false.
+func NormalizeUpstreamResponse(resp *http.Response, responder Responder, classifier *Classifier, hasImages func() bool) Error {
 	raw := readUpstreamErrorBody(resp)
 	_ = resp.Body.Close()
 	message, code := upstreamError(raw)
@@ -62,7 +63,9 @@ func NormalizeUpstreamResponse(resp *http.Response, responder Responder, classif
 		failure.Code = code
 		failure.Status = failureClasses[class].status
 		failure.Type = "invalid_request_error"
-	} else if cause := classifier.Match(message); cause != nil {
+	} else if cause := classifier.match(message, func(class FailureClass) bool {
+		return class != FailureUnsupportedInput || (hasImages != nil && hasImages())
+	}); cause != nil {
 		failure = cause.HTTPError()
 	}
 	if failure.Code != "" {

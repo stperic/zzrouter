@@ -25,8 +25,8 @@ import (
 //
 // After return, the response is fully written — caller should `return`
 // from the handler immediately.
-func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Response, classifier *httperr.Classifier) {
-	applyRewrittenError(req, resp, classifier)
+func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Response, classifier *httperr.Classifier, hasImages func() bool) {
+	applyRewrittenError(req, resp, classifier, hasImages)
 	h := w.Header()
 	h.Del("Content-Length")
 	h.Del("Content-Encoding")
@@ -39,8 +39,8 @@ func writeRewrittenError(w http.ResponseWriter, req *http.Request, resp *http.Re
 	_, _ = io.Copy(w, resp.Body)
 }
 
-func applyRewrittenError(req *http.Request, resp *http.Response, classifier *httperr.Classifier) {
-	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req), classifier)
+func applyRewrittenError(req *http.Request, resp *http.Response, classifier *httperr.Classifier, hasImages func() bool) {
+	_ = httperr.NormalizeUpstreamResponse(resp, dialectOf(req), classifier, hasImages)
 }
 
 // ollamaSurfaceErrorBody renders an upstream backend error in the

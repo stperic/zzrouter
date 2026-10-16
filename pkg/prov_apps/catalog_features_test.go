@@ -11,6 +11,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,6 +74,41 @@ func TestCatalogRuntimeFeatureStates(t *testing.T) {
 	assert.Equal(t, "available", state())
 	assert.Equal(t, []string{"messages"}, m.ModelFeatureDetails("vllm", "variant", nil)["wire_endpoints"])
 	require.NoError(t, m.instances.Remove(inst.ID))
+}
+
+func TestCatalogFileOptOutWithCorruptLaunchConfig(t *testing.T) {
+	for _, value := range []string{"", "auto", "false", "projector.gguf"} {
+		t.Run(fmt.Sprintf("value=%q", value), func(t *testing.T) {
+			m, svc, dir := featureLaunchFixture(t)
+			landProjector(t, dir, "digest")
+			svc.Models["variant"] = config.ModelSpec{From: "vendor/model", Parameters: map[string]string{"mmproj": value}}
+			cfg := &config.AppsConfig{}
+			require.NoError(t, cfg.AddApp("vllm", svc))
+			m.ReloadConfig(cfg)
+			path := filepath.Join(t.TempDir(), "schema.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("parameters: ["), 0600))
+			m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return nil, err
+				}
+				declared, err := schema.LoadYAMLSchema(data)
+				if err != nil {
+					return nil, err
+				}
+				merged, errs := schema.Merge(provider, declared)
+				return merged, errors.Join(errs...)
+			}
+			_, err := m.ResolveLaunchParameters(t.Context(), EnsureRequest{Provider: "vllm", Model: "variant"})
+			require.Error(t, err, "full launch resolution must fail on corrupt config")
+			want := "available"
+			if value == "projector.gguf" {
+				want = "present"
+			}
+			assert.Equal(t, want, m.ModelFeatureDetails("vllm", "variant", nil)["features"].(map[string]string)["vision"])
+			assert.Equal(t, "present", m.ModelFeatureDetails("vllm", "vendor/model", nil)["features"].(map[string]string)["vision"], "an absent opt-out still enables the file")
+		})
+	}
 }
 
 func TestCatalogBuiltinAndCloudEvidence(t *testing.T) {

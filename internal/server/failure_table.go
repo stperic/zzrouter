@@ -37,6 +37,7 @@ var failureTable = []failureRow{
 	{sentinel: instance.ErrStopping, status: http.StatusServiceUnavailable, code: string(httperr.CodeCapacityExceeded), message: "This model's run is stopping. Please retry shortly.", resolve: resolveAdmission},
 	{status: http.StatusServiceUnavailable, code: string(httperr.CodeCapacityExceeded), message: "This model's request queue is full. Please retry shortly.", resolve: resolveAdmission},
 
+	{sentinel: prov_apps.ErrFeatureEvidence, status: http.StatusConflict, code: "model_feature_evidence_invalid"},
 	{sentinel: config.ErrModelNameConflict, status: http.StatusConflict, code: "model_name_conflict"},
 	// Half-downloaded weights: the caller must repair the model, which 409 says and 400 does not.
 	{sentinel: prov_apps.ErrModelIncomplete, status: http.StatusConflict, code: "model_incomplete"},

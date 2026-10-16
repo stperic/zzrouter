@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -396,7 +397,7 @@ func TestApplyRewrittenErrorGzip(t *testing.T) {
 			Body:   io.NopCloser(bytes.NewReader(gzipped)),
 		}
 		resp.StatusCode = 500
-		applyRewrittenError(routedRequest(httptest.NewRequest("POST", "/api/chat", nil)), resp, nil)
+		applyRewrittenError(routedRequest(httptest.NewRequest("POST", "/api/chat", nil)), resp, nil, nil)
 		out, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 
@@ -408,7 +409,7 @@ func TestApplyRewrittenErrorGzip(t *testing.T) {
 	})
 }
 
-func TestUnsupportedImageProxyPaths(t *testing.T) {
+func TestUpstreamImageGateDispatchPaths(t *testing.T) {
 	engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After", "60")
@@ -423,33 +424,58 @@ func TestUnsupportedImageProxyPaths(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": failure.Type, "message": failure.Message, "code": failure.Code}})
 	}))
 	t.Cleanup(worker.Close)
-	for _, path := range []string{"/v1/chat/completions", "/v1/messages", "/v1/responses", "/api/chat"} {
-		for _, method := range []string{"direct", "instance", "worker"} {
-			t.Run(path+method, func(t *testing.T) {
-				body := []byte(`{"model":"org/model","stream":true}`)
-				req := routedRequest(httptest.NewRequest("POST", path, bytes.NewReader(body)))
-				w := httptest.NewRecorder()
-				switch method {
-				case "direct":
-					s.proxy.ForwardToBackend(w, req, "llamacpp", engine.URL+path, backend.Engine(), body)
-				case "instance":
+	for _, tc := range []struct{ path, image string }{
+		{"/v1/chat/completions", `"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]`},
+		{"/v1/messages", `"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[{"type":"image","source":{"type":"url","url":"x"}}]}]}]`},
+		{"/v1/responses", `"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]`},
+		{"/api/chat", `"messages":[{"role":"user","content":"describe","images":["AAA"]}]`},
+	} {
+		for _, method := range []string{"direct", "instance", "worker", "cold"} {
+			if method == "cold" && (tc.path == "/api/chat" || tc.path == "/v1/messages") {
+				continue
+			}
+			for _, images := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/images=%t", tc.path, method, images), func(t *testing.T) {
+					body := []byte(`{"model":"org/model","stream":true}`)
+					if images {
+						body = []byte(`{"model":"org/model","stream":true,` + tc.image + `}`)
+					}
+					req := routedRequest(httptest.NewRequest("POST", tc.path, bytes.NewReader(body)))
+					req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, body))
+					w := httptest.NewRecorder()
 					inst := instanceFor(t, engine, "org/model", "")
 					inst.FailureClassifier = s.failureClassifier("llamacpp")
-					s.proxyToInstance(w, req, inst, true)
-				case "worker":
-					c, _ := gin.CreateTestContext(w)
-					c.Request = req
-					s.proxyToWorkerURL(c, worker.URL, "worker", "llamacpp", body, http.DefaultClient)
-				}
-				require.Equal(t, 400, w.Code, w.Body.String())
-				assert.Empty(t, w.Header().Get("Retry-After"))
-				assert.Contains(t, w.Body.String(), "image input is not supported")
-				if path == "/api/chat" {
-					assert.JSONEq(t, `{"error":"image input is not supported Use a model that supports this input, or remove it from the request.","code":"unsupported_input"}`, w.Body.String())
-				} else {
-					assert.Contains(t, w.Body.String(), `"type":"invalid_request_error"`)
-				}
-			})
+					switch method {
+					case "direct":
+						s.proxy.ForwardToBackend(w, req, "llamacpp", engine.URL+tc.path, backend.Engine(), body)
+					case "instance":
+						s.proxyToInstance(w, req, inst, true)
+					case "worker":
+						c, _ := gin.CreateTestContext(w)
+						c.Request = req
+						s.proxyToWorkerURL(c, worker.URL, "worker", "llamacpp", body, worker.Client())
+					case "cold":
+						w.Header().Set("Content-Type", "text/event-stream")
+						w.WriteHeader(200)
+						s.streamFromInstance(w, req, inst, dialectOf(req).(httperr.InBandStreamer))
+					}
+					want, code := 500, false
+					if images || method == "worker" {
+						want, code = 400, true
+					}
+					if method == "cold" {
+						want = 200
+					} else if code {
+						assert.Empty(t, w.Header().Get("Retry-After"))
+					} else {
+						assert.Equal(t, "60", w.Header().Get("Retry-After"))
+					}
+					require.Equal(t, want, w.Code, w.Body.String())
+					assert.Equal(t, code, strings.Contains(w.Body.String(), `"code":"unsupported_input"`), w.Body.String())
+					assert.NotContains(t, w.Body.String(), `"finish_reason":"stop"`)
+					assert.NotContains(t, w.Body.String(), "response.completed")
+				})
+			}
 		}
 	}
 }
@@ -458,12 +484,12 @@ func TestDeclaredFailureOllamaRelay(t *testing.T) {
 	classifier := httperr.Classifier{{Pattern: "device allocation failed", Class: httperr.FailureMemory}}
 	require.NoError(t, classifier.Compile())
 	resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"device allocation failed"}`))}
-	failure := httperr.NormalizeUpstreamResponse(resp, &ollamaResponder{}, &classifier)
+	failure := httperr.NormalizeUpstreamResponse(resp, &ollamaResponder{}, &classifier, func() bool { return true })
 	raw, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), `"code":"out_of_range"`)
 	relay := &http.Response{StatusCode: resp.StatusCode, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw))}
-	assert.Equal(t, failure, httperr.NormalizeUpstreamResponse(relay, &ollamaResponder{}, nil))
+	assert.Equal(t, failure, httperr.NormalizeUpstreamResponse(relay, &ollamaResponder{}, nil, func() bool { return true }))
 }
 
 func TestDeclaredFailureDirectProxy(t *testing.T) {
@@ -480,9 +506,9 @@ func TestDeclaredFailureDirectProxy(t *testing.T) {
 		} {
 			t.Run(path+tc.provider+tc.raw, func(t *testing.T) {
 				s.proxy.streamClient = &http.Client{Transport: &stubRoundTripper{status: tc.status, body: []byte(tc.raw)}}
-				req := routedRequest(httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"test"}`)))
+				req := routedRequest(httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"test","images":["AAA"]}`)))
 				response := httptest.NewRecorder()
-				s.proxy.ForwardToBackend(response, req, tc.provider, "http://engine.invalid"+path, backend.Engine(), []byte(`{"model":"test"}`))
+				s.proxy.ForwardToBackend(response, req, tc.provider, "http://engine.invalid"+path, backend.Engine(), []byte(`{"model":"test","images":["AAA"]}`))
 				assert.Equal(t, tc.want, response.Code, response.Body.String())
 				if tc.code != "" {
 					assert.Contains(t, response.Body.String(), `"code":"`+tc.code+`"`)

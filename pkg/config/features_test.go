@@ -110,6 +110,27 @@ func TestFeatureStrictDecode(t *testing.T) {
 	assert.Equal(t, map[string]Feature{"vision": {}}, p.Features)
 }
 
+func TestFeatureUnknownPredicateRejectedAtLoad(t *testing.T) {
+	for kind, name := range map[string]string{"on-demand": "mlx", "external": "ollama", "cloud": "openai"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, templates.InstallDefaults(dir))
+			path := filepath.Join(dir, kind, name, "config.yaml")
+			raw, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var doc map[string]any
+			require.NoError(t, yaml.Unmarshal(raw, &doc))
+			doc["features"] = map[string]Feature{"vision": {Runtime: "test-runtime", When: "unknown_predicate", Execution: &ExecutionConfig{Type: "cli", Command: "test"}, WireEndpoints: []string{"chat_completions"}}}
+			raw, err = yaml.Marshal(doc)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(path, raw, 0600))
+			cfg, err := LoadAppsConfig(dir)
+			require.ErrorContains(t, err, `feature "vision": unknown predicate "unknown_predicate"`)
+			assert.Nil(t, cfg)
+		})
+	}
+}
+
 func TestFeatureEmptyDeclarationSurvivesReconcile(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(dir))

@@ -900,6 +900,10 @@ paths:
             is renamed or its from definition is removed. A fraction_total GPU budget
             exceeding fresh free device memory is refused before process start;
             errors[].got includes required_mib, free_mib and known holder attribution.
+            Malformed or unreadable endpoint-applicable feature evidence returns code
+            model_feature_evidence_invalid even if the optional runtime is absent.
+            Repair or re-download malformed evidence; ask the operator to correct
+            unreadable files. Already-accepted launches report failure in their run/job.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1279,7 +1283,11 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '409':
-          description: A configured variant name also identifies real weights; disambiguate the name.
+          description: >
+            A configured variant name also identifies real weights, or endpoint-applicable
+            feature evidence is malformed or unreadable (code model_feature_evidence_invalid),
+            even when the optional runtime is absent. Disambiguate a variant; repair or
+            re-download malformed evidence, or ask the operator to correct unreadable files.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -6852,8 +6860,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Image input is recognized in message content `image_url` blocks.
@@ -7270,8 +7282,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized as `input_image` in message input content.
@@ -7341,8 +7357,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         `image` blocks include images nested in `tool_result.content`. On a
@@ -9773,8 +9793,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized in the top-level `images` array.
@@ -9808,8 +9832,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized in each message's `images` array.

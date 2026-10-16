@@ -16,7 +16,10 @@ The serving node classifies declared engine failures before forwarding them.
 Relays preserve that status and code across cluster hops. Classifications apply
 at startup, process exit and inference; an unmatched upstream error keeps its
 status. The class table is `pkg/httperr/engine_failure.go`, and provider phrasings
-live only in `runtime.failure_patterns`.
+live only in `runtime.failure_patterns`. HTTP phrase matching for
+`unsupported_input` requires images in the outgoing request. Text-only requests
+keep their upstream status for those phrases. Explicit classified upstream codes
+remain authoritative; startup and process-exit classification are unchanged.
 
 ## OpenAI surface (`/v1/*`)
 
@@ -29,6 +32,7 @@ live only in `runtime.failure_patterns`.
 | `model_not_deletable` | 409 | The selected identity is cloud configuration, a logical variant or a group. | Remove its configuration entry rather than physical weights. |
 | `model_detail_unsupported` | 501 | The selected catalog identity has no detail reader. | Keep catalog evidence and use serving probes, or inspect a group's exact model. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
+| `model_feature_evidence_invalid` | 409 | Endpoint-applicable feature evidence is malformed or unreadable, even if the optional runtime is absent. Preview, start and cold inference refuse; parameter status and catalog evidence stay unknown. | Repair or re-download malformed evidence; ask the operator to correct unreadable files. Accepted work reports failure in its existing run/job. |
 | `model_incomplete` | 409 | The local copy is missing model files, including files still pending after an interrupted transfer. | Run `zz_model_download` for the same model to fetch only what is missing, then retry. |
 | `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models` (present while a run serves the model); trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |
@@ -41,7 +45,7 @@ live only in `runtime.failure_patterns`.
 | `fallback_exhausted` | 502 | A transport failure could have occurred after the upstream ran the request. The group stops without replaying it. | Check upstream execution before resubmitting a billed or side-effecting request. |
 | `upstream_timeout` | 504 | The model instance did not begin responding within its first-byte budget. The group stops without replaying it. | Check upstream execution before resubmitting; it may still be processing the request. |
 | `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details name managed runs and outside holders. Pinned holders say `reclaim skipped: pinned`; explicitly stop the run or change launch keep-alive and restart. |
-| `unsupported_input` | 400 | The `unsupported_input` class: the engine refused an input kind. | Use a model supporting that input, or remove it from the request. |
+| `unsupported_input` | 400 | The `unsupported_input` class: an image-bearing request matched a declared HTTP phrase, a startup/process failure matched it, or an explicit upstream code classified it. | Use a model supporting that input, or remove it from the request. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `chat_completions` without native `responses` automatically derive `responses_compat` and translate supported Responses requests to Chat Completions. |
 | `tool_calling_not_enabled` | 400 | The `tool_calling_not_enabled` class: required launch switches are missing. | Set the provider's tool-calling parameters through PATCH `/zzrouter/v1/providers/{name}/parameters`, then restart the run. |
 | `chat_template_rejected` | 400 | The `chat_template_rejected` class: the model's template refused to render this request. | Install and select a template that accepts it; follow `chat_templates` in `GET /zzrouter/v1`. |

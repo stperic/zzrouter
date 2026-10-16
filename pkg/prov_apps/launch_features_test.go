@@ -2,9 +2,13 @@ package prov_apps
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -299,29 +303,62 @@ func TestFeatureLaunchManagedExecutableChangeIsStale(t *testing.T) {
 
 func TestFeatureLaunchWithoutReadableConfig(t *testing.T) {
 	for _, installed := range []bool{false, true} {
-		for _, body := range []string{"missing", "unreadable", "invalid", `{"vision_config":null}`} {
-			t.Run(fmt.Sprintf("installed=%t/%s", installed, body), func(t *testing.T) {
+		for _, tc := range []struct {
+			name, body string
+			invalid    bool
+		}{
+			{"missing", "", false},
+			{"absent key", `{}`, false},
+			{"null", `{"vision_config":null}`, false},
+			{"malformed", `invalid`, true},
+			{"directory", "", true},
+			{"permission", `{"vision_config":{}}`, true},
+		} {
+			t.Run(fmt.Sprintf("installed=%t/%s", installed, tc.name), func(t *testing.T) {
+				if tc.name == "permission" && (runtime.GOOS == "windows" || os.Geteuid() == 0) {
+					t.Skip("permission denial needs an unprivileged POSIX account")
+				}
 				m, svc, dir := featureLaunchFixture(t)
 				svc.Features = map[string]config.Feature{"vision": {Runtime: "test-runtime", When: "vision_config", Execution: &config.ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "vision.server"}}, WireEndpoints: []string{"chat_completions"}}}
 				fake := newFakeInstaller("test-runtime")
 				fake.installed.Store(installed)
 				m.installs.dispatcher.Register("test-runtime", fake)
-				if body == "unreadable" {
-					require.NoError(t, os.Mkdir(filepath.Join(dir, "config.json"), 0700))
-				} else if body != "missing" {
-					require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0600))
+				path := filepath.Join(dir, "config.json")
+				if tc.name == "directory" {
+					require.NoError(t, os.Mkdir(path, 0700))
+				} else if tc.name != "missing" {
+					require.NoError(t, os.WriteFile(path, []byte(tc.body), 0600))
 				}
-				// Resolve through the configured provider to exercise preview's real path.
+				if tc.name == "permission" {
+					require.NoError(t, os.Chmod(path, 0))
+					t.Cleanup(func() { _ = os.Chmod(path, 0600) })
+				}
+				_, evidenceErr := featurePredicate(dir, "vision_config")
 				cfg := &config.AppsConfig{}
 				require.NoError(t, cfg.AddApp("vllm", svc))
 				m.ReloadConfig(cfg)
+				assert.Error(t, m.EnsureModelFeatures(t.Context(), "vllm", dir, []string{"vision"}, nil, nil))
 				got, err := m.ResolveLaunchParameters(t.Context(), EnsureRequest{Provider: "vllm", Model: "vendor/model"})
+				if tc.invalid {
+					require.ErrorIs(t, err, ErrFeatureEvidence)
+					require.Error(t, evidenceErr)
+					assert.Contains(t, err.Error(), `feature "vision"`)
+					assert.Contains(t, err.Error(), "vendor/model")
+					assert.Contains(t, err.Error(), "operator")
+					var pathErr *fs.PathError
+					if errors.As(evidenceErr, &pathErr) {
+						assert.ErrorIs(t, err, pathErr.Err)
+					} else {
+						var syntax *json.SyntaxError
+						assert.ErrorAs(t, err, &syntax)
+					}
+					_, err = m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "vllm", Model: "vendor/model"}, 8100)
+					assert.ErrorIs(t, err, ErrFeatureEvidence)
+					return
+				}
 				require.NoError(t, err)
 				assert.Empty(t, got.RuntimeKey)
 				assert.Equal(t, svc.Runtime.Execution, got.Config.Runtime.Execution)
-				if body != `{"vision_config":null}` {
-					require.Error(t, m.EnsureModelFeatures(context.Background(), "vllm", dir, []string{"vision"}, nil, nil))
-				}
 			})
 		}
 	}

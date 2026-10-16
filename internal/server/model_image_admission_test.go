@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +60,7 @@ func TestImageAdmissionAllSurfaces(t *testing.T) {
 		{"messages", "/v1/messages", `{"model":"same-model","max_tokens":1,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"x"}}]}]}`},
 		{"count", "/v1/messages/count_tokens", `{"model":"same-model","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":[{"type":"image","source":{"type":"url","url":"x"}}]}]}]}`},
 		{"responses", "/v1/responses", `{"model":"same-model","input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`},
+		{"responses function output", "/v1/responses", `{"model":"same-model","input":[{"type":"function_call_output","call_id":"a","output":[{"type":"input_image","image_url":"x"}]}]}`},
 		{"affinity", "/v1/responses", `{"model":"same-model","previous_response_id":"resp_pinned","input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]}`},
 		{"ollama chat", "/api/chat", `{"model":"same-model","messages":[{"role":"user","content":"describe","images":["AAA"]}]}`},
 		{"ollama generate", "/api/generate", `{"model":"same-model","prompt":"describe","images":["AAA"]}`},
@@ -90,6 +93,33 @@ func TestImageAdmissionAllSurfaces(t *testing.T) {
 	assert.Zero(t, calls.Load(), "known ineligible requests never reach a backend")
 }
 
+func TestUpstreamImageGateResponsesFunctionOutput(t *testing.T) {
+	for _, images := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("images=%t/stream=%t", images, stream), func(t *testing.T) {
+				backends := map[string]*serviceBackend{"native": {wire: []string{"responses"}, failures: httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}, status: 500, reply: `{"error":{"message":"image input is not supported","type":"api_error"}}`}}
+				s := newServiceGroupNode(t, []string{"native"}, backends)
+				output := `[{"type":"input_text","text":"image input is not supported"}]`
+				if images {
+					output = `[{"type":"input_image","image_url":"https://example.test/image"}]`
+				}
+				body := fmt.Sprintf(`{"model":"claude","stream":%t,"input":[{"type":"function_call_output","call_id":"a","output":%s}]}`, stream, output)
+				w := postAsAdmin(t, s, "/v1/responses", body)
+				want := 500
+				if images {
+					want = 400
+				}
+				require.Equal(t, want, w.Code, w.Body.String())
+				assert.Equal(t, images, strings.Contains(w.Body.String(), `"code":"unsupported_input"`))
+				hits := backends["native"].requests()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "/v1/responses", hits[0].Path)
+				assert.Equal(t, images, protocol.HasImages(hits[0].Body))
+			})
+		}
+	}
+}
+
 func TestColdStreamClassifiesUpstreamErrors(t *testing.T) {
 	for _, tc := range []struct {
 		status       int
@@ -109,7 +139,8 @@ func TestColdStreamClassifiesUpstreamErrors(t *testing.T) {
 			}))
 			t.Cleanup(engine.Close)
 			s := createTestNodeWithDefaults(t)
-			req := routedRequest(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"org/model","stream":true}`)))
+			req := routedRequest(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"org/model","stream":true,"images":["AAA"]}`)))
+			req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, []byte(`{"model":"org/model","stream":true,"images":["AAA"]}`)))
 			w := httptest.NewRecorder()
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(200)
@@ -220,7 +251,8 @@ func TestResponsesTranslatedUnsupportedImageBeforeAndAfterStream(t *testing.T) {
 	}))
 	t.Cleanup(engine.Close)
 	s := createTestNodeWithDefaults(t)
-	req := routedRequest(httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"org/model","stream":true}`)))
+	req := routedRequest(httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"org/model","stream":true,"images":["AAA"]}`)))
+	req = req.WithContext(context.WithValue(req.Context(), CtxKeyOriginalBody, []byte(`{"model":"org/model","stream":true,"images":["AAA"]}`)))
 	req.URL.Path = "/v1/chat/completions"
 	raw := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(raw)
@@ -255,4 +287,33 @@ type imageAdmissionCatalogPeer struct {
 
 func (p *imageAdmissionCatalogPeer) Broadcast(context.Context, string, *mesh.QueryParams) (*mesh.BroadcastResponse, error) {
 	return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{Response: &mesh.Response{StatusCode: 200, Body: p.body}}}}, nil
+}
+
+func TestUpstreamImageGateTranslatedToolResults(t *testing.T) {
+	for _, images := range []bool{false, true} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("images=%t/stream=%t", images, stream), func(t *testing.T) {
+				backends := map[string]*serviceBackend{"chat": {wire: []string{"chat_completions", "messages_compat"}, failures: httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}, status: 500, reply: `{"error":{"message":"image input is not supported","type":"api_error"}}`}}
+				s := newServiceGroupNode(t, []string{"chat"}, backends)
+				content := `[{"type":"text","text":"image input is not supported"}]`
+				if images {
+					content = `[{"type":"text","text":"capture"},{"type":"image","source":{"type":"url","url":"https://example.test/image"}}]`
+				}
+				body := fmt.Sprintf(`{"model":"claude","max_tokens":1,"stream":%t,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":%s}]}]}`, stream, content)
+				w := postAsAdmin(t, s, "/v1/messages", body)
+				want := 500
+				if images {
+					want = 400
+				}
+				require.Equal(t, want, w.Code, w.Body.String())
+				assert.Equal(t, images, strings.Contains(w.Body.String(), `"code":"unsupported_input"`))
+				hits := backends["chat"].requests()
+				require.Len(t, hits, 1)
+				assert.Equal(t, "/v1/chat/completions", hits[0].Path)
+				assert.Equal(t, images, protocol.HasImages(hits[0].Body))
+				assert.NotContains(t, w.Body.String(), "message_stop")
+				assert.NotContains(t, w.Body.String(), "[DONE]")
+			})
+		}
+	}
 }
