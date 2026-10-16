@@ -66,7 +66,7 @@ func (s *pinnedRuns) update(req EnsureRequest, pinned bool) {
 	}
 	data, _ := json.Marshal(s) // Only strings and string maps reach the encoder.
 	if err := utils.AtomicWriteFile(s.path, data, 0o600); err != nil {
-		slog.Warn("Cannot persist pinned run", "key", req.Key(), "error", err)
+		slog.Warn("Cannot persist pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
 	}
 }
 
@@ -92,11 +92,11 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 					return
 				}
 				if err != nil {
-					slog.Warn("Cannot restore pinned run", "key", req.Key(), "error", err)
+					slog.Warn("Cannot restore pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
 					m.pins.update(req, false)
 					continue
 				}
-				slog.Info("restored pinned run", "key", req.Key(), "origin", "restore")
+				slog.Info("restored pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "origin", "restore")
 			}
 		}()
 	})
