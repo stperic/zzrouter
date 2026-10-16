@@ -144,6 +144,16 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 		EnvVars:    req.EnvVars,
 		Parameters: req.Parameters,
 	}
+	if !m.engine(Lifecycle(svcCfg)).outlivesNode() && req.DisposablePlanID == "" && req.Origin != OriginInstall {
+		saved := restartRequest(inst)
+		saved.keyEndpoint = Endpoint(inst.Endpoint)
+		// Every transition passes setStatusLocked; the store writes only when a pin is added or dropped.
+		inst.CommitStatus = func(status instance.Status, pinned bool) {
+			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() {
+				m.pins.update(saved, status == instance.StatusRunning && pinned)
+			}
+		}
+	}
 
 	// Set HealthURL from provider config (not hardcoded /health)
 	if port > 0 {
@@ -407,6 +417,7 @@ func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest
 	}
 	h, err := m.jobsRegistry.StartDetached(jobs.KindRun, "", jobs.Meta{
 		"run_id":   inst.ID,
+		"origin":   req.Origin,
 		"provider": req.Provider,
 		"model":    req.Model,
 		"port":     inst.Port,

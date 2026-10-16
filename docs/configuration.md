@@ -104,8 +104,11 @@ Run reports expose `pinned: true` when pinned. A memory refusal remains 409
 and the holder's run, model and provider. If unpinned holders cannot cover the
 shortfall, nothing stops. Explicit DELETE, Force replacement and restart may stop
 pins; restart replays request overrides. Stop before uninstalling a provider.
-Pins do not autostart runs after a node restart. Surviving daemon models can be
-re-adopted, but lost models are not reloaded; daemon unloads are not prevented.
+Pinned process runs are recorded on the launching node in `<data dir>/pinned_runs.json`
+(mode 0600) and relaunched once after a node restart, including a self-update. Restore
+replays request overrides and resolves current tiers; failed restores are forgotten without
+retry. Stop the run to forget its pin. Served engines, disposable runs and install smokes
+are excluded. Surviving daemon models can be re-adopted; daemon unloads are not prevented.
 Upgrade every worker before relying on pins: an older worker keeps `-1` as
 idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.
 

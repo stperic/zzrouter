@@ -8,7 +8,7 @@ policy, the start mechanism, the engines).
 Starting, reusing, queueing, evicting and idling runs is one pure policy and one mechanism:
 
 - **Policy** (`run_policy.go`): `Decide(Want, Node) Decision` takes every start decision from what a caller
-  wants (model, provider, runtime, force, origin: API, request or install) and what the node shows (lifecycle,
+  wants (model, provider, runtime, force, origin: API, request, install or restore) and what the node shows (lifecycle,
   reachability, catalog, the run holding the key, a starting blocker, the admission slot). It returns one act
   (refuse, ready, reuse, start, queue) with a typed reason that `internal/server/failure_table.go` maps
   to the wire. An unset decision is an error.
@@ -26,8 +26,8 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   lists the daemon as it lands: what it holds is recorded, and ready runs it dropped are reported in the
   load's `evicted_runs`. The services ticker reconciles the rest (retire what the daemon dropped, adopt what
   it holds on two sightings, never while a load is in flight) and retries a managed daemon whose start was
-  refused at boot. There is no run autostart after a node restart. A surviving daemon
-  can be observed and its resident models re-adopted; this does not reload a lost model
+  refused at boot. A surviving daemon can be observed and its resident models re-adopted;
+  this does not reload a lost model
   or prove a pin. An adopted run derives its pin from current resolved launch settings.
 
 ## Readiness publication
@@ -71,6 +71,26 @@ R4 routes known run/provider refusals through one ordered wire table, including 
 
 Memory-fit holders record `reclaim_skipped_reason` from the actual selection or atomic claim decision
 (pinned, busy, in use or not idle), including after the admission retry. Unused commitment holders have no PID. Memory refusals remain 409 `out_of_range`; pinned holders are not `evicted_runs`. Run reports expose `pinned: true` separately from the mutable `keep_alive` timer.
+
+## Pins across node restarts
+
+The pinned process runs a node is serving are recorded on that node; when the node starts,
+it relaunches each recorded run once, with the request it was launched with, and the
+record follows the live runs from then on.
+
+The provider manager writes `<data dir>/pinned_runs.json` atomically with mode 0600 at
+readiness and terminal transitions. Only provider, model, endpoint, runtime and request-tier
+parameters/environment are saved. Restore re-resolves current provider tiers, paths and ports.
+Served engines, disposable-plan runs and install smokes are excluded. Shutdown preserves the
+record. To forget a saved pin, explicitly stop its run.
+
+The server calls `RestorePinnedRuns` once immediately after `Cache.Start`. The manager uses
+`EnsureRun` with restore origin (the same policy as API origin), sequentially in recorded order,
+without Force or detached starts. Existing flights and runs supply deduplication and memory
+admission. Catalog lookup populates synchronously on first use, so restore needs no readiness
+signal or polling. Stop cancels and drains restore through the existing background-start lifetime.
+Failed requests are warned and removed without retry; a run that launches unpinned drops out
+at readiness. Corrupt or unknown-version files are warned and left in place without restoring.
 
 ## Deployment outcome ownership
 
