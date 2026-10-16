@@ -2,6 +2,7 @@
 # Edit on the coordinator, never here.
 description: "Ollama local LLM app"
 features:
+  tools: {}
   vision: {}
 protocol: ollama
 enabled: false  # Enable after installing Ollama

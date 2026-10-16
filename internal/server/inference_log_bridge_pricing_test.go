@@ -84,7 +84,7 @@ func TestBridge_NoMissForProviderCostOrEmptyRequest(t *testing.T) {
 
 	b.OnInferenceComplete(llm.InferenceLogData{
 		App: "openrouter", Model: "z-ai/glm-4.6",
-		TokensIn: 1000, TokensOut: 500, Cost: 0.0042, Status: "success",
+		TokensIn: 1000, TokensOut: 500, Cost: 0.0042, CostSource: "provider", Status: "success",
 	})
 	b.OnInferenceComplete(llm.InferenceLogData{
 		App: "openai", Model: "gpt-4o", Status: "error", ErrorType: "upstream",

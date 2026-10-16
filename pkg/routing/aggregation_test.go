@@ -2,6 +2,7 @@ package routing
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
@@ -157,4 +158,23 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func TestCompatibleNodesWorkerAssessment(t *testing.T) {
+	r := &ClusterAwareRouter{}
+	body := `{"data":[{"name":"remote","assessments":[{"node":"remote","provider":"vllm","status":"fit","reason":"sized","required_mib":20,"capacity_mib":30}]}]}`
+	out, err := r.aggregateResponses(&Response{StatusCode: 200, Body: []byte(`{"data":[]}`)}, &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{nodeResp("remote", body)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got, want map[string]any
+	if err := json.Unmarshal(out.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(body), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got["data"], want["data"]) {
+		t.Fatalf("worker evidence lost: %s", out.Body)
+	}
 }

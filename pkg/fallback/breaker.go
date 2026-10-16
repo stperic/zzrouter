@@ -55,9 +55,7 @@ func DefaultBreakerConfig() BreakerConfig {
 // to obtain an instance scoped to a key (typically a URL).
 //
 // Breaker is safe for concurrent use. In HalfOpen state at most one probe
-// request is admitted at a time, guarded by an atomic CAS so concurrent
-// callers race exactly one execution rather than flooding a recovering
-// upstream.
+// request is admitted at a time so recovery cannot flood an upstream.
 type Breaker struct {
 	key string
 
@@ -68,6 +66,8 @@ type Breaker struct {
 	lastFailureTime time.Time
 	lastStateChange time.Time
 	probing         bool // guarded by mu; true while a half-open probe is in flight
+	generation      uint64
+	retained        bool // guarded by the manager
 
 	cfg BreakerConfig
 }
@@ -120,76 +120,98 @@ func (b *Breaker) Execute(fn func() error) error {
 	return err
 }
 
-// ExecuteAny is the value-returning variant of Execute, for callers that
-// need to thread a result through the breaker.
-//
-// The release path runs in defer so a panicking fn does not leak the
-// half-open probe slot — without this, one panicking probe would wedge
-// the breaker into HalfOpen forever and reject every future call.
+// ExecuteAny preserves request-driven recovery for non-mesh consumers.
 func (b *Breaker) ExecuteAny(fn func() (any, error)) (any, error) {
-	probing, err := b.acquire()
+	permit, err := b.Acquire(true)
 	if err != nil {
 		return nil, err
 	}
-
-	var (
-		result any
-		fnErr  error
-	)
-	defer func() { b.release(probing, fnErr) }()
-
-	result, fnErr = fn()
-	return result, fnErr
+	outcome := Neutral
+	defer func() { permit.Complete(outcome) }()
+	result, err := fn()
+	outcome = Success
+	if err != nil {
+		outcome = Failure
+	}
+	return result, err
 }
 
-// acquire transitions state for an incoming call and returns whether this
-// call holds the half-open probe slot. Callers must pair with release —
-// the ExecuteAny defer ensures pairing even on fn panic.
-func (b *Breaker) acquire() (probing bool, err error) {
+// Outcome distinguishes reachability evidence from caller-local failures.
+type Outcome int
+
+const (
+	Neutral Outcome = iota
+	Success
+	Failure
+)
+
+// Permit prevents late completions from changing a newer breaker generation.
+type Permit struct {
+	breaker    *Breaker
+	generation uint64
+	probing    bool
+	once       sync.Once
+}
+
+// Completion reports accepted evidence and its atomic breaker state change.
+type Completion struct {
+	Applied  bool
+	From, To BreakerState
+}
+
+// Acquire reserves recovery for probes; ordinary requests require Closed.
+func (b *Breaker) Acquire(probe bool) (*Permit, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	switch b.state {
-	case BreakerOpen:
-		remaining := b.cfg.Timeout - time.Since(b.lastStateChange)
-		if remaining > 0 {
-			return false, fmt.Errorf("circuit breaker open for %s (will retry in %v)", b.key, remaining)
-		}
-		// Cooldown elapsed — promote to HalfOpen and let this caller probe.
+	if b.state != BreakerClosed && (!probe || b.probing ||
+		(b.state == BreakerOpen && utils.Now().Sub(b.lastStateChange) < b.cfg.Timeout)) {
+		return nil, fmt.Errorf("circuit breaker open for %s", b.key)
+	}
+	if b.state == BreakerOpen {
 		b.state = BreakerHalfOpen
 		b.successCount = 0
 		b.lastStateChange = utils.Now()
-		probing = true
-
-	case BreakerHalfOpen:
-		probing = true
+		b.generation++
 	}
-
-	// Only one probe in flight at a time. The check sits under b.mu so it
-	// races correctly with concurrent acquire() calls — the prior atomic
-	// CAS was redundant since b.probing is never read or written without
-	// holding the lock.
-	if probing && b.probing {
-		return false, fmt.Errorf("circuit breaker open for %s", b.key)
-	}
-	if probing {
-		b.probing = true
-	}
-	return probing, nil
+	probing := b.state == BreakerHalfOpen
+	b.probing = probing
+	return &Permit{breaker: b, generation: b.generation, probing: probing}, nil
 }
 
-func (b *Breaker) release(probing bool, fnErr error) {
+// Complete releases even neutral probes without inventing reachability evidence.
+func (p *Permit) Complete(outcome Outcome) (result Completion) {
+	p.once.Do(func() {
+		b := p.breaker
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if p.generation != b.generation {
+			return
+		}
+		if p.probing {
+			b.probing = false
+		}
+		result.Applied = true
+		prev := b.state
+		switch outcome {
+		case Failure:
+			b.onFailureLocked()
+		case Success:
+			b.onSuccessLocked()
+		}
+		if b.state != prev {
+			b.generation++
+		}
+		result.From, result.To = prev, b.state
+	})
+	return result
+}
+
+// Invalidate discards in-flight evidence when a peer is authoritatively down.
+func (b *Breaker) Invalidate() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	if probing {
-		b.probing = false
-	}
-	if fnErr != nil {
-		b.onFailureLocked()
-		return
-	}
-	b.onSuccessLocked()
+	b.generation++
+	b.probing = false
 }
 
 func (b *Breaker) onFailureLocked() {
@@ -259,16 +281,28 @@ func NewBreakerManagerWithConfig(cfg BreakerConfig) *BreakerManager {
 // GetBreaker returns the Breaker for key, creating one on first use.
 // Safe for concurrent callers.
 func (m *BreakerManager) GetBreaker(key string) *Breaker {
-	m.mu.RLock()
-	if b, ok := m.breakers[key]; ok {
-		m.mu.RUnlock()
-		return b
-	}
-	m.mu.RUnlock()
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.getBreakerLocked(key)
+}
 
+// Retain ties a registered endpoint's breaker to its registration lifetime.
+func (m *BreakerManager) Retain(key string) *Breaker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b := m.getBreakerLocked(key)
+	b.retained = true
+	return b
+}
+
+// Release discards evidence only when the endpoint is unregistered.
+func (m *BreakerManager) Release(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.breakers, key)
+}
+
+func (m *BreakerManager) getBreakerLocked(key string) *Breaker {
 	if b, ok := m.breakers[key]; ok {
 		return b
 	}
@@ -305,7 +339,7 @@ func (m *BreakerManager) PruneStale(maxAge time.Duration) int {
 		idle := now.Sub(b.lastStateChange) > maxAge
 		state := b.state
 		b.mu.RUnlock()
-		if idle && state == BreakerOpen {
+		if !b.retained && idle && state == BreakerOpen {
 			delete(m.breakers, key)
 			removed++
 		}
@@ -325,6 +359,9 @@ func (m *BreakerManager) evictStaleLocked() {
 	}
 	candidates := make([]candidate, 0, len(m.breakers))
 	for key, b := range m.breakers {
+		if b.retained {
+			continue
+		}
 		b.mu.RLock()
 		candidates = append(candidates, candidate{key, b.lastStateChange})
 		b.mu.RUnlock()
@@ -332,7 +369,7 @@ func (m *BreakerManager) evictStaleLocked() {
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].lastChange.Before(candidates[j].lastChange)
 	})
-	for i := 0; i < evictCount; i++ {
+	for i := 0; i < min(evictCount, len(candidates)); i++ {
 		delete(m.breakers, candidates[i].key)
 	}
 }

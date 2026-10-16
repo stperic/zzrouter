@@ -79,6 +79,9 @@ var (
 	// queue behind another launch claiming GPU memory; the smoke retries.
 	errAdmissionBusy = errors.New("another launch on this node is still claiming GPU memory")
 
+	// ErrFeatureEvidence refuses a launch whose optional feature cannot be inspected safely.
+	ErrFeatureEvidence = errors.New("model feature evidence invalid")
+
 	// ErrParameterValidation marks invalid launch parameters or an endpoint the provider cannot serve.
 	ErrParameterValidation = errors.New("parameter validation failed")
 )

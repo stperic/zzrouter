@@ -4,7 +4,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,12 +16,16 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/host"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func buildFixtureLauncher(t *testing.T) string {
 	t.Helper()
+	if binary := os.Getenv("ZZROUTER_TEST_LAUNCHER"); binary != "" {
+		return binary
+	}
 	binary := filepath.Join(t.TempDir(), "zzrouter-launcher")
 	output, err := host.Command("go", "build", "-o", binary, ".").CombinedOutput()
 	require.NoError(t, err, "%s", output)
@@ -101,15 +107,30 @@ func TestLauncherStartupShutdown(t *testing.T) {
 			if tc.signal != nil {
 				require.NoError(t, cmd.Process.Signal(tc.signal))
 			}
+			startToken, err := process.StartToken(cmd.Process.Pid)
+			require.NoError(t, err)
 			reader, err := os.OpenFile(pidFile+".tmp", os.O_RDONLY|syscall.O_NONBLOCK, 0)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = reader.Close() })
+
 			select {
 			case <-done:
 			case <-time.After(8 * time.Second):
 				t.Logf("launcher alive=%t child group alive=%t", syscall.Kill(cmd.Process.Pid, 0) == nil, syscall.Kill(-childPID, 0) == nil)
 				t.Fatal("launcher did not finish bounded child shutdown")
 			}
+			metadata, err := io.ReadAll(reader)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(metadata, &fields))
+			assert.Equal(t, strconv.FormatInt(startToken, 10), string(fields["start_token"]))
+			assert.NotContains(t, fields, "start_time")
+			var published pidInfo
+			require.NoError(t, json.Unmarshal(metadata, &published))
+			assert.Equal(t, cmd.Process.Pid, published.PID)
+			assert.Equal(t, childPID, published.ChildPID)
+			assert.Equal(t, startToken, published.StartToken)
+			assert.Positive(t, published.StartToken)
 			assert.Equal(t, tc.exitCode, cmd.ProcessState.ExitCode(), "%s", output.String())
 			assert.Eventually(t, func() bool {
 				return errors.Is(syscall.Kill(-childPID, 0), syscall.ESRCH)

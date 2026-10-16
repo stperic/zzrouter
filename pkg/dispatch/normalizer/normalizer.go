@@ -1,26 +1,13 @@
-// Package normalizer provides per-provider response-body + stream
-// rewriters used by zzRouter's proxy copy sites.
-//
-// Problem: different LLM providers return OpenAI-compatible responses with
-// minor deviations (e.g. MLX's mlx_lm server returns delta.reasoning instead
-// of delta.content). OpenAI SDK clients only read delta.content and the chat
-// appears empty.
-//
-// Design: per-provider normalizers are registered on a Registry at startup
-// and applied at each proxy copy site. Two kinds of normalizer exist:
-//
-//   - BodyNormalizer: rewrites a buffered, non-streaming JSON response.
-//   - StreamNormalizer: rewrites a raw SSE/NDJSON chunk as it passes through.
-//     The relay hands it whole lines, possibly several; it must preserve framing.
-//
-// A nil Registry and an unregistered provider are both valid — Body/Stream
-// return nil, which callers treat as "no normalization." Hot paths stay
-// allocation-free in the common case.
-//
-// The Registry is read-only after construction; no locking is needed.
-// Concrete provider normalizers (e.g. MLX's reasoning→content shim in
-// mlx.go) live in this package alongside the generic mechanism.
+// Package normalizer composes provider repairs and client usage cleanup before output.
 package normalizer
+
+import (
+	"bytes"
+	"encoding/json"
+
+	"github.com/stperic/zzrouter/pkg/protocol"
+	"github.com/stperic/zzrouter/pkg/protocol/openai"
+)
 
 // BodyNormalizer rewrites a complete (non-streaming) response body.
 // Returning nil or the input as-is signals "no change".
@@ -31,54 +18,75 @@ type BodyNormalizer func(body []byte) []byte
 // must preserve line framing. Returning the input unchanged is a no-op.
 type StreamNormalizer func(chunk []byte) []byte
 
-// Registry holds per-provider response transforms. The zero value is NOT
-// usable — use NewRegistry. Lookups are read-only after construction so no
-// locking is needed.
+// ObjectNormalizer reports changes so no-op bodies retain their original bytes.
+type ObjectNormalizer func(map[string]any) bool
+
+// Registry is configured before use; editors share one decode per payload.
 type Registry struct {
-	body   map[string]BodyNormalizer
-	stream map[string]StreamNormalizer
+	edits map[string]ObjectNormalizer
+	// CleanChatUsage is evaluated per response so worker role changes retain upstream evidence.
+	CleanChatUsage func() bool
 }
 
-// NewRegistry returns an empty Registry.
+// NewRegistry leaves cleanup disabled until the client-facing hop enables it.
 func NewRegistry() *Registry {
-	return &Registry{
-		body:   make(map[string]BodyNormalizer),
-		stream: make(map[string]StreamNormalizer),
+	return &Registry{edits: make(map[string]ObjectNormalizer)}
+}
+
+// Register installs an editor shared by the body and stream adapters.
+func (r *Registry) Register(provider string, edit ObjectNormalizer) {
+	if r != nil && edit != nil {
+		r.edits[provider] = edit
 	}
 }
 
-// RegisterBody adds a body normalizer for a provider key.
-func (r *Registry) RegisterBody(provider string, fn BodyNormalizer) {
-	if r == nil || fn == nil {
-		return
-	}
-	r.body[provider] = fn
-}
-
-// RegisterStream adds a stream normalizer for a provider key.
-func (r *Registry) RegisterStream(provider string, fn StreamNormalizer) {
-	if r == nil || fn == nil {
-		return
-	}
-	r.stream[provider] = fn
-}
-
-// Body returns the body normalizer for a provider, or nil if none is
-// registered. Nil-receiver safe.
+// Body preserves malformed bodies and no-op formatting, including numeric precision.
 func (r *Registry) Body(provider string) BodyNormalizer {
 	if r == nil {
 		return nil
 	}
-	return r.body[provider]
-}
-
-// Stream returns the stream normalizer for a provider, or nil if none is
-// registered. Nil-receiver safe.
-func (r *Registry) Stream(provider string) StreamNormalizer {
-	if r == nil {
+	edit := r.edits[provider]
+	clean := r.CleanChatUsage != nil && r.CleanChatUsage()
+	if edit == nil && !clean {
 		return nil
 	}
-	return r.stream[provider]
+	return func(body []byte) []byte {
+		if !(clean && (bytes.Contains(body, []byte("cost")) || bytes.Contains(body, []byte("is_byok")) || bytes.Contains(body, []byte("cache_write_tokens")))) &&
+			!(edit != nil && bytes.Contains(body, []byte("reasoning"))) {
+			return body
+		}
+		var obj map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		if decoder.Decode(&obj) != nil || len(bytes.TrimSpace(body[decoder.InputOffset():])) != 0 {
+			return body
+		}
+		changed := false
+		if clean {
+			changed = openai.NormalizeChatUsage(obj)
+		}
+		if edit != nil {
+			changed = edit(obj) || changed
+		}
+		if !changed {
+			return body
+		}
+		if out, err := json.Marshal(obj); err == nil {
+			return out
+		}
+		return body
+	}
+}
+
+// Stream shares the body editor so repairs and cleanup cannot diverge across transports.
+func (r *Registry) Stream(provider string) StreamNormalizer {
+	body := r.Body(provider)
+	if body == nil {
+		return nil
+	}
+	return func(chunk []byte) []byte {
+		return protocol.RewriteStreamJSON(chunk, body)
+	}
 }
 
 // ChainChunks runs chunk transforms in order, skipping nils. Separate from

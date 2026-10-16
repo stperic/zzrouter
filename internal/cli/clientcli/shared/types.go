@@ -95,12 +95,6 @@ type ProviderInfo struct {
 // vocabulary rather than string literals.
 type DeploymentInfo struct {
 	DownloadID string // Per-node download ID (host/repo/model)
-	// DeploymentID addresses the owning deployment for
-	// DELETE /deployments/:id/nodes/:node, which is the only call that
-	// actually stops a transfer: the download goroutine watches the
-	// tracker's cancel func, not its job context, so cancelling the job
-	// leaves the transfer running.
-	DeploymentID string
 	// JobID identifies the job the transfer reports progress under.
 	JobID    string
 	Node     string

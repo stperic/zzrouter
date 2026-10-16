@@ -11,6 +11,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "requires_parameters": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+        "http": {"type": "object", "additionalProperties": false, "required": ["path", "field"], "properties": {"path": {"type": "string"}, "field": {"type": "string"}}},
         "default": {
           "type": "boolean"
         },
@@ -181,6 +183,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "tools": {"$ref": "#/$defs/feature"},
         "vision": {
           "$ref": "#/$defs/feature"
         },

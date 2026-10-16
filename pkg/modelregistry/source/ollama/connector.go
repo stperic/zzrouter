@@ -30,6 +30,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/download"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -72,8 +73,9 @@ type state struct {
 // writes. A request that loaded the previous state runs to completion
 // against it even if ReloadConfig swaps the pointer mid-flight.
 type Connector struct {
-	client *http.Client
-	state  atomic.Pointer[state] // nil = not configured
+	client     *http.Client
+	pullClient *http.Client
+	state      atomic.Pointer[state] // nil = not configured
 }
 
 // LayerProgress tracks progress for individual layers during a pull.
@@ -84,15 +86,16 @@ type LayerProgress struct {
 }
 
 // APITimeout is the default timeout for non-streaming Ollama API calls
-// (list, show, delete). PullModel uses per-request contexts with no
-// timeout since it streams.
+// (list, show, delete). PullModel uses a body stall deadline without an
+// overall timeout since it streams.
 const APITimeout = 30 * time.Second
 
 // NewConnector creates a new Ollama connector in the "not configured"
 // state. Call ReloadConfig with the current AppsConfig to activate it.
 func NewConnector() *Connector {
 	return &Connector{
-		client: &http.Client{Timeout: APITimeout},
+		client:     &http.Client{Timeout: APITimeout},
+		pullClient: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: APITimeout}},
 	}
 }
 
@@ -117,8 +120,8 @@ func (oc *Connector) ReloadConfig(cfg *config.AppsConfig) {
 // IsConfigured reports whether ReloadConfig has been called with a config
 // that enables Ollama. Use this as a fast-path when the caller would
 // otherwise have to call an HTTP method and inspect for ErrNotConfigured —
-// for example, Registry.PullOllamaModelAsync checks before spawning a
-// goroutine to avoid starting work that is guaranteed to fail.
+// for example, Registry.PullOllamaModel checks before starting a pull
+// to avoid starting work that is guaranteed to fail.
 func (oc *Connector) IsConfigured() bool {
 	return oc.state.Load() != nil
 }
@@ -272,9 +275,11 @@ func (oc *Connector) ListTags(ctx context.Context, daemon *backend.Resolved, pro
 			},
 		}
 
-		if vision, known := oc.modelVision(evidenceCtx, daemon, m.Name); known {
+		if capabilities, known := oc.modelCapabilities(evidenceCtx, daemon, m.Name); known {
 			details, _ := extra["details"].(map[string]any)
-			details["vision"] = vision
+			for _, feature := range []string{"vision", "tools"} {
+				details[feature] = slices.Contains(capabilities, feature)
+			}
 		}
 		models = append(models, &metadata.ModelMetadata{
 			Name:             m.Name,
@@ -366,17 +371,12 @@ func (oc *Connector) PullModelWithContext(ctx context.Context, modelName string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Use a dedicated client with no overall timeout but with a response header timeout
-	// so the initial connection can fail fast while allowing long streaming deploy responses
-	streamClient := &http.Client{
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
-	}
-	resp, err := streamClient.Do(req)
+	// The pull client bounds response headers while allowing long streaming bodies.
+	resp, err := oc.pullClient.Do(req)
 	if err != nil {
 		return err
 	}
+	resp.Body = download.NewStallReader(resp.Body)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -440,30 +440,39 @@ func (oc *Connector) PullModelWithContext(ctx context.Context, modelName string,
 	return nil
 }
 
-// modelVision reads engine evidence without making a failed probe remove a model.
-func (oc *Connector) modelVision(ctx context.Context, daemon *backend.Resolved, name string) (bool, bool) {
+// Failed evidence must not remove a model.
+func (oc *Connector) modelCapabilities(ctx context.Context, daemon *backend.Resolved, name string) ([]string, bool) {
 	body, err := json.Marshal(map[string]string{"model": name})
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	req, err := daemon.NewRequest(ctx, http.MethodPost, "/api/show", strings.NewReader(string(body)))
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := oc.client.Do(req)
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false, false
+		return nil, false
 	}
 	var result struct {
-		Capabilities *[]string `json:"capabilities"`
+		Capabilities *[]any `json:"capabilities"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&result) != nil || result.Capabilities == nil {
-		return false, false
+	raw, err := utils.ReadCapped(resp.Body, constants.MaxClusterBodySize)
+	if err != nil || json.Unmarshal(raw, &result) != nil || result.Capabilities == nil {
+		return nil, false
 	}
-	return slices.Contains(*result.Capabilities, "vision"), true
+	capabilities := make([]string, 0, len(*result.Capabilities))
+	for _, value := range *result.Capabilities {
+		capability, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities, true
 }

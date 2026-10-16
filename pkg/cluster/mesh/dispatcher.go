@@ -3,25 +3,25 @@ package mesh
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 )
 
 // Dispatcher handles request dispatch with different strategies
 type Dispatcher struct {
-	connector       *Connector
-	circuitBreakers *CircuitBreakerManager
-	localHandler    LocalHandler // For in-process local dispatch
-	localNodeURL    string
-	mu              sync.RWMutex
-	strategies      map[DispatchStrategy]DispatchHandler
+	client       *http.Client
+	localHandler LocalHandler // For in-process local dispatch
+	localNodeURL string
+	mu           sync.RWMutex
+	strategies   map[DispatchStrategy]DispatchHandler
 }
 
 // DispatcherConfig holds dispatcher configuration
 type DispatcherConfig struct {
-	Connector       *Connector
-	CircuitBreakers *CircuitBreakerManager
-	LocalHandler    LocalHandler
-	LocalNodeURL    string
+	Connector    *Connector
+	State        *StateManager
+	LocalHandler LocalHandler
+	LocalNodeURL string
 }
 
 // DispatchHandler is the interface for dispatch strategies
@@ -32,11 +32,10 @@ type DispatchHandler interface {
 // NewDispatcher creates a new dispatcher
 func NewDispatcher(config *DispatcherConfig) *Dispatcher {
 	d := &Dispatcher{
-		connector:       config.Connector,
-		circuitBreakers: config.CircuitBreakers,
-		localHandler:    config.LocalHandler,
-		localNodeURL:    config.LocalNodeURL,
-		strategies:      make(map[DispatchStrategy]DispatchHandler),
+		client:       config.State.HTTPClient(config.Connector.httpClient),
+		localHandler: config.LocalHandler,
+		localNodeURL: config.LocalNodeURL,
+		strategies:   make(map[DispatchStrategy]DispatchHandler),
 	}
 
 	// Register built-in strategies

@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 )
 
@@ -132,6 +133,8 @@ type EvictedRun struct {
 // Resolved is what one launch computed from config: the values its
 // process was given, before node-local paths replace asset names.
 type Resolved struct {
+	Features    map[string]string
+	FeatureHTTP map[string]config.FeatureHTTP
 	WorkingDir  string
 	Commitments map[string]int64
 	Runtime     string
@@ -147,6 +150,7 @@ type Resolved struct {
 
 func (r Resolved) clone() Resolved {
 	return Resolved{
+		Features: maps.Clone(r.Features), FeatureHTTP: maps.Clone(r.FeatureHTTP),
 		Runtime: r.Runtime, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),
 		Execution: r.Execution, WireEndpoints: slices.Clone(r.WireEndpoints),
 		Parameters:  copyStringMap(r.Parameters),

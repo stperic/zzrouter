@@ -13,6 +13,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
 // newTestCore returns a Core backed by empty tmp stores and a real
@@ -77,7 +78,7 @@ func TestCore_Enforce_SuspendedKey(t *testing.T) {
 			Suspended: true,
 		},
 	}
-	d, release, _ := c.Enforce(ac, "some-model")
+	d, release, _ := enforceTestCore(c, ac, "some-model")
 	assert.False(t, d.Allowed)
 	assert.Equal(t, DenyKeySuspended, d.Reason)
 	assert.Contains(t, d.Message, "suspended")
@@ -95,7 +96,7 @@ func TestCore_Enforce_SuspendedTeam(t *testing.T) {
 			Suspended: true,
 		},
 	}
-	d, _, _ := c.Enforce(ac, "some-model")
+	d, _, _ := enforceTestCore(c, ac, "some-model")
 	assert.False(t, d.Allowed)
 	assert.Equal(t, DenyTeamSuspended, d.Reason)
 }
@@ -113,7 +114,7 @@ func TestCore_Enforce_ExpiredKey(t *testing.T) {
 			ExpiresAt: &past,
 		},
 	}
-	d, _, _ := c.Enforce(ac, "some-model")
+	d, _, _ := enforceTestCore(c, ac, "some-model")
 	assert.False(t, d.Allowed)
 	assert.Equal(t, DenyKeyExpired, d.Reason)
 }
@@ -129,7 +130,7 @@ func TestCore_Enforce_ModelAccessDenied(t *testing.T) {
 			AllowedModels: []string{"allowed-model"},
 		},
 	}
-	d, _, _ := c.Enforce(ac, "other-model")
+	d, _, _ := enforceTestCore(c, ac, "other-model")
 	assert.False(t, d.Allowed)
 	assert.Equal(t, DenyModelAccess, d.Reason)
 }
@@ -141,7 +142,7 @@ func TestCore_Enforce_Happy(t *testing.T) {
 	ac := &AccessContext{
 		Key: &KeyPrincipal{ID: "vk-1", Role: RoleUser, IsVirtual: true},
 	}
-	d, release, _ := c.Enforce(ac, "any-model")
+	d, release, _ := enforceTestCore(c, ac, "any-model")
 	require.True(t, d.Allowed)
 	require.NotNil(t, release, "allowed enforce must return a release func")
 	release() // no panic
@@ -199,7 +200,7 @@ func TestCore_Enforce_ConcurrencyFailureCancelsBudget(t *testing.T) {
 	}
 
 	// First enforce — grabs the only concurrency slot.
-	d1, release1, _ := c.Enforce(ac, "model-a")
+	d1, release1, _ := enforceTestCore(c, ac, "model-a")
 	require.True(t, d1.Allowed)
 	require.NotNil(t, release1)
 	defer release1()
@@ -212,7 +213,7 @@ func TestCore_Enforce_ConcurrencyFailureCancelsBudget(t *testing.T) {
 	// Second enforce — step 4 will succeed (budget has room), step 5
 	// must fail (slot already held), and the reservation from this
 	// second Check call must be cancelled, NOT stashed.
-	d2, release2, _ := c.Enforce(ac, "model-a")
+	d2, release2, _ := enforceTestCore(c, ac, "model-a")
 	require.False(t, d2.Allowed)
 	require.Equal(t, DenyConcurrency, d2.Reason)
 	assert.Nil(t, release2, "denied enforce returns no release")
@@ -330,7 +331,7 @@ func TestCore_PendingReservations_ConcurrentSameKey(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			d, release, id := c.Enforce(ac, "model-race")
+			d, release, id := enforceTestCore(c, ac, "model-race")
 			require.True(t, d.Allowed)
 			if release != nil {
 				release()
@@ -397,7 +398,7 @@ func TestCore_PendingReservations_CancelPending_Concurrent(t *testing.T) {
 	for i := 0; i < N; i++ {
 		go func() {
 			defer enforceWg.Done()
-			_, release, id := c.Enforce(ac, "model-race")
+			_, release, id := enforceTestCore(c, ac, "model-race")
 			if release != nil {
 				release()
 			}
@@ -448,7 +449,7 @@ func TestCore_LateSettle_AfterReap(t *testing.T) {
 	ac := &AccessContext{
 		Key: &KeyPrincipal{ID: "vk-late", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
-	_, release, id := c.Enforce(ac, "model-late")
+	_, release, id := enforceTestCore(c, ac, "model-late")
 	require.NotEqual(t, NoReservation, id, "expected a stash id when SpendLimit is set")
 	release()
 
@@ -509,7 +510,7 @@ func TestCore_SettleWithinTTL_RecordsFullLedger(t *testing.T) {
 	ac := &AccessContext{
 		Key: &KeyPrincipal{ID: "vk-cold", Role: RoleUser, IsVirtual: true, Quotas: quotas},
 	}
-	_, release, id := c.Enforce(ac, "model-cold")
+	_, release, id := enforceTestCore(c, ac, "model-cold")
 	require.NotEqual(t, NoReservation, id, "expected stash id with SpendLimit set")
 	release()
 
@@ -558,11 +559,11 @@ func TestCore_Authorize_DoesNotTickRPM(t *testing.T) {
 	for range 3 {
 		require.True(t, c.Authorize(ac, "any-model").Allowed)
 	}
-	d, release, _ := c.Enforce(ac, "any-model")
+	d, release, _ := enforceTestCore(c, ac, "any-model")
 	require.True(t, d.Allowed, "Authorize calls must leave the single RPM slot unspent")
 	release()
 
-	d, _, _ = c.Enforce(ac, "any-model")
+	d, _, _ = enforceTestCore(c, ac, "any-model")
 	assert.Equal(t, DenyRPM, d.Reason, "the limit itself still holds")
 }
 
@@ -580,7 +581,14 @@ func TestCore_Authorize_DeniesWhatEnforceDenies(t *testing.T) {
 	}
 	for want, ac := range cases {
 		assert.Equal(t, want, c.Authorize(ac, "m").Reason, want.String())
-		d, _, _ := c.Enforce(ac, "m")
+		d, _, _ := enforceTestCore(c, ac, "m")
 		assert.Equal(t, want, d.Reason, want.String())
 	}
+}
+
+func enforceTestCore(c *Core, ac *AccessContext, model string) (Decision, Release, ReservationID) {
+	if d := c.Authorize(ac, model); !d.Allowed {
+		return d, nil, NoReservation
+	}
+	return c.EnforceQuotas(ac, []pricing.Quote{{Rates: &pricing.ModelPricing{InputCostPerToken: 1}}})
 }

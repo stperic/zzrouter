@@ -52,8 +52,7 @@ func (j *job) ID() string { return j.id }
 // Epoch reports the per-job nonce.
 func (j *job) Epoch() string { return j.epoch }
 
-// Context returns the job's lifecycle context. Cancelled on Registry.Stop,
-// Cancel, or after the job's caller-parent ctx cancels.
+// Context carries shutdown, Cancel, parent cancellation and terminal transitions to the producer.
 func (j *job) Context() context.Context { return j.ctx }
 
 // Progress emits a running-phase event. No-op after terminal. Percent

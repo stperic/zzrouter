@@ -36,7 +36,15 @@ func TestWindowsExecutablePathAliases(t *testing.T) {
 			assert.Equal(t, PresenceRunning, BinaryPresence(alias))
 			pids, err := DaemonPIDs(t.Context(), alias, os.Args[1:])
 			require.NoError(t, err)
-			assert.Contains(t, pids, os.Getpid())
+			require.NotEmpty(t, pids)
+			found := false
+			for _, identified := range pids {
+				if identified.PID == os.Getpid() {
+					found = true
+					assert.Positive(t, identified.StartToken)
+				}
+			}
+			assert.True(t, found)
 		})
 	}
 

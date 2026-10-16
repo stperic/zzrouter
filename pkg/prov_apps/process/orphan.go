@@ -15,13 +15,7 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// PIDTracker persists PIDs to disk for cross-restart orphan detection.
-// On startup, any tracked PIDs that are still running (and carry the
-// ZZROUTER_PROCESS_MARKER env var) are terminated gracefully.
-//
-// The PID directory is shared with zzrouter-launcher. The launcher writes
-// JSON PID files; the tracker writes plain integer PID files. Both formats
-// are understood when reading.
+// PIDTracker shares identity files with the launcher for cross-restart cleanup.
 type PIDTracker struct {
 	dir string
 	mu  sync.Mutex
@@ -35,138 +29,127 @@ func NewPIDTracker(dir string) (*PIDTracker, error) {
 	return &PIDTracker{dir: dir}, nil
 }
 
-// Track records a PID for a given instance.
-func (pt *PIDTracker) Track(instanceID string, pid int) error {
+// Track records a PID and its fork identity for a given instance.
+func (pt *PIDTracker) Track(instanceID string, pid int, startToken int64) error {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	path := filepath.Join(pt.dir, instanceID+".pid")
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)), 0640)
+	data, err := json.Marshal(launcherPIDFile{PID: pid, StartToken: startToken})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(pt.dir, instanceID+".pid"), data, 0640)
 }
 
 // Untrack removes a tracked PID.
 func (pt *PIDTracker) Untrack(instanceID string) {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
-
-	path := filepath.Join(pt.dir, instanceID+".pid")
-	_ = os.Remove(path)
+	_ = os.Remove(filepath.Join(pt.dir, instanceID+".pid"))
 }
 
-// launcherPIDFile is the JSON format written by zzrouter-launcher.
+// launcherPIDFile reads the leader identity, never the launcher's child PID.
 type launcherPIDFile struct {
-	PID      int `json:"pid"`
-	ChildPID int `json:"child_pid"`
+	PID        int   `json:"pid"`
+	StartToken int64 `json:"start_token,omitempty"`
 }
 
-// listTracked returns all tracked instance IDs and their PIDs.
-// Handles both plain integer files (written by Track) and JSON files
-// (written by zzrouter-launcher). For launcher JSON files, returns the
-// launcher PID (the parent that manages signal forwarding to the child).
-func (pt *PIDTracker) listTracked() map[string]int {
+func (pt *PIDTracker) listTracked() map[string]launcherPIDFile {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	result := make(map[string]int)
-	entries, err := os.ReadDir(pt.dir)
-	if err != nil {
-		return result
-	}
-
+	result := make(map[string]launcherPIDFile)
+	entries, _ := os.ReadDir(pt.dir)
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".pid") {
 			continue
 		}
-
-		instanceID := strings.TrimSuffix(name, ".pid")
 		data, err := os.ReadFile(filepath.Join(pt.dir, name))
 		if err != nil {
 			continue
 		}
-
-		if pid := parsePIDFile(data); pid > 0 {
-			result[instanceID] = pid
+		if identity := parsePIDFile(data); identity.PID > 0 {
+			result[strings.TrimSuffix(name, ".pid")] = identity
 		}
 	}
 	return result
 }
 
-// parsePIDFile extracts a PID from a file that may be either a plain integer
-// (written by PIDTracker.Track) or JSON (written by zzrouter-launcher).
-func parsePIDFile(data []byte) int {
-	text := strings.TrimSpace(string(data))
-
-	// Try plain integer first (most common — written by Track)
-	if pid, err := strconv.Atoi(text); err == nil && pid > 0 {
-		return pid
+// parsePIDFile preserves integer and legacy launcher compatibility.
+func parsePIDFile(data []byte) launcherPIDFile {
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+		return launcherPIDFile{PID: pid}
 	}
-
-	// Try launcher JSON format
-	var lf launcherPIDFile
-	if json.Unmarshal(data, &lf) == nil && lf.PID > 0 {
-		return lf.PID
+	var identity launcherPIDFile
+	if json.Unmarshal(data, &identity) == nil && identity.PID > 0 && identity.StartToken >= 0 {
+		return identity
 	}
-
-	return 0
+	return launcherPIDFile{}
 }
 
-// CleanupOrphans terminates tracked processes that are still running but
-// no longer have a corresponding instance in the registry.
-// Uses graceful SIGTERM → SIGKILL via Terminate() to give GPU processes
-// time to flush memory. Returns the number of processes cleaned up.
+// CleanupOrphans terminates inactive tracked identities, retaining unconfirmed exits.
 func (pt *PIDTracker) CleanupOrphans(activeInstanceIDs map[string]bool) int {
-	tracked := pt.listTracked()
+	return pt.cleanupOrphans(activeInstanceIDs, Terminate)
+}
+
+func (pt *PIDTracker) cleanupOrphans(activeInstanceIDs map[string]bool, terminate func(context.Context, TerminateRequest) error) int {
 	cleaned := 0
-
-	for instanceID, pid := range tracked {
+	for instanceID, identity := range pt.listTracked() {
 		if activeInstanceIDs[instanceID] {
-			continue // still active
+			continue
 		}
-
-		if !IsSafeToKill(int32(pid)) || !ProcessExists(int32(pid)) {
+		if !ProcessExists(int32(identity.PID)) {
 			pt.Untrack(instanceID)
 			continue
 		}
-
-		// Verify the process is ours (prevents killing recycled PIDs)
-		if !ProcessHasMarker(int32(pid)) {
-			slog.Debug("orphan PID file stale (process recycled)", "pid", pid, "instance", instanceID)
-			pt.Untrack(instanceID)
+		if err := terminate(context.Background(), TerminateRequest{PID: identity.PID, StartToken: identity.StartToken}); err != nil {
+			slog.Warn("failed to terminate orphan process", "pid", identity.PID, "instance", instanceID, "error", err)
 			continue
 		}
-
-		// Graceful termination: SIGTERM tree → wait → SIGKILL tree
-		slog.Info("terminating orphaned process", "pid", pid, "instance", instanceID)
-		if err := Terminate(context.Background(), TerminateRequest{PID: pid, Graceful: GracefulTimeout}); err != nil {
-			slog.Warn("failed to terminate orphan process", "pid", pid, "instance", instanceID, "error", err)
+		if !ProcessExists(int32(identity.PID)) {
+			pt.Untrack(instanceID)
+			cleaned++
 		}
-
-		pt.Untrack(instanceID)
-		cleaned++
 	}
 	return cleaned
 }
 
-// ProcessHasMarker checks if a process has the ZZROUTER_PROCESS_MARKER env var.
-// Used to verify process ownership before termination (prevents killing recycled PIDs).
-// Returns true if the marker is found OR if the environment cannot be read
-// (platforms where gopsutil Environ() is unsupported). In that case,
-// the caller relies on other checks (IsSafeToKill, PID tracker) for safety.
-func ProcessHasMarker(pid int32) bool {
+// Inspector permits per-operation inspection without shared mutable hooks.
+type Inspector struct {
+	ReadStartToken func(int) (int64, error)
+	Environ        func(int32) ([]string, error)
+}
+
+// Owns uses recorded fork identity; only legacy records need environment evidence.
+func (s Inspector) Owns(pid int, startToken int64) bool {
+	if !IsSafeToKill(int32(pid)) || !ProcessExists(int32(pid)) {
+		return false
+	}
+	if startToken != 0 {
+		read := s.ReadStartToken
+		if read == nil {
+			read = StartToken
+		}
+		live, err := read(pid)
+		return err == nil && live == startToken
+	}
+	return s.HasMarker(int32(pid))
+}
+
+// HasMarker preserves legacy ownership on platforms without environment access.
+func (s Inspector) HasMarker(pid int32) bool {
 	proc, err := process.NewProcess(pid)
 	if err != nil {
 		return false
 	}
-
-	envs, err := proc.Environ()
+	read := s.Environ
+	if read == nil {
+		read = func(int32) ([]string, error) { return proc.Environ() }
+	}
+	envs, err := read(pid)
 	if err != nil {
-		// Platform doesn't support reading process environment.
-		// Assume ownership — the PID was tracked at launch time and
-		// IsSafeToKill already filters system PIDs.
 		return true
 	}
-
-	target := ManagedProcessEnvKey + "=" + ManagedProcessEnvValue
-	return slices.Contains(envs, target)
+	return slices.Contains(envs, ManagedProcessEnvKey+"="+ManagedProcessEnvValue)
 }

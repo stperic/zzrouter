@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/discovery/hardware"
 	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -154,8 +155,10 @@ type ProviderAppManager struct {
 	runtimeChecks       install.RuntimeChecksResolver
 	installPolicyFile   string
 	providerSchema      func(provider string) (*schema.ProviderSchema, error)
+	featureWarnings     sync.Map // [provider, feature, key] schema warnings, once per manager
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
 	memoryInventory     func(context.Context) []gpu.CardMetrics
+	memorySystem        func(context.Context) *hardware.HardwareInfo
 	idleEvictionDefault bool
 	// memoryAdmission holds one memory admission at a time. A one-slot
 	// channel, so a queued run that is stopped stops waiting for it.
@@ -168,7 +171,11 @@ type ProviderAppManager struct {
 	sightingsMu sync.Mutex
 	sightings   map[string]map[string]bool
 	// seams pause the start path where tests must interleave; nil in production.
-	seams struct{ beforeLaunch, processStarted, flightRemoved, admitted func() }
+	seams struct {
+		beforeLaunch, flightRemoved, admitted func()
+		processStarted                        func(*process.LaunchResult)
+		inspector                             process.Inspector
+	}
 }
 
 // ParamLocalizer rewrites one launch's configured parameters into the
@@ -352,6 +359,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
 		memorySnapshot:  gpu.MemorySnapshotContext,
+		memorySystem:    inventory.Default().GetMemoryInfo,
 		memoryInventory: inventory.Default().GetGPUCardMetrics,
 		services:        make(map[string]*managedService),
 		flights:         make(map[instance.Key]*flight),
@@ -395,10 +403,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		m.healthMon = health.NewMonitor(m.instances, health.DefaultMonitorConfig())
 	}
 
-	// PID tracking: shared directory for both the launcher binary and the PIDTracker.
-	// The launcher writes JSON PID files for signal forwarding; the PIDTracker writes
-	// plain PID files for orphan detection. Both use the same directory so
-	// CleanupOrphans can find processes from either source.
+	// The launcher and tracker share identity files for cross-restart cleanup.
 	pidDir := config.Paths().GetPIDDir()
 
 	// Create process launcher (trusted = config-driven commands from provider config)

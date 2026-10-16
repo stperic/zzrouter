@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/host"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -34,6 +35,7 @@ const gracefulTimeout = 5 * time.Second
 
 type pidInfo struct {
 	PID        int    `json:"pid"`
+	StartToken int64  `json:"start_token,omitempty"`
 	ChildPID   int    `json:"child_pid"`
 	Provider   string `json:"provider"`
 	InstanceID string `json:"instance_id"`
@@ -88,8 +90,10 @@ func run() int {
 
 	// Write PID file atomically.
 	pidFile := filepath.Join(*pidDir, *instanceID+".pid")
+	startToken, _ := process.StartToken(os.Getpid())
 	if err := writePIDFile(pidFile, pidInfo{
 		PID:        os.Getpid(),
+		StartToken: startToken,
 		ChildPID:   cmd.Process.Pid,
 		Provider:   *provider,
 		InstanceID: *instanceID,

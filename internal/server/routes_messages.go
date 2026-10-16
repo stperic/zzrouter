@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
+	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/protocol/anthropic"
 )
 
@@ -45,10 +47,8 @@ func (s *Server) handleMessages(c *gin.Context) {
 		return
 	}
 	stashInferenceContext(c, req.Model, body)
-	recorder := newChatRecorder(c, req.Model, body, req.Stream)
-	s.routeMessages(c, req.Model, body, messagesAsChat, func(model string) (func(), bool) {
-		return s.enforceAndAttribute(c, model, recorder)
-	})
+	newChatRecorder(c, req.Model, body, req.Stream)
+	s.routeMessages(c, req.Model, body, messagesAsChat, true)
 }
 
 // handleCountTokens serves POST /v1/messages/count_tokens. Counting spends
@@ -62,9 +62,7 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 	}
 	stashInferenceContext(c, req.Model, body)
 	markNotInference(c)
-	s.routeMessages(c, req.Model, body, countTokensAsChat, func(model string) (func(), bool) {
-		return func() {}, s.access.Authorize(c, model)
-	})
+	s.routeMessages(c, req.Model, body, countTokensAsChat, false)
 }
 
 // routeMessages admits the request, resolves the model to the targets
@@ -74,35 +72,39 @@ func (s *Server) handleCountTokens(c *gin.Context) {
 // Anthropic body has no stream_options, and the engine reports usage
 // unasked. Either way the engine sees context turns folded into user
 // turns, here and only here.
-func (s *Server) routeMessages(c *gin.Context, model string, body []byte, tr messagesTranslation, admit func(model string) (release func(), ok bool)) {
-	nodeHint := c.GetHeader("X-Node")
-	release, ok := admit(model)
-	defer release()
+func (s *Server) routeMessages(c *gin.Context, model string, body []byte, tr messagesTranslation, metered bool) {
+	prepare := func() (*resolver.Resolved, bool) {
+		folded, err := anthropic.FoldContextTurns(body)
+		if err != nil {
+			refuseMessagesBody(c, err)
+			return nil, false
+		}
+		if !bytes.Equal(folded, body) {
+			body = folded
+			replaceRequestBody(c, body)
+		}
+		return s.prepareTarget(c, model, body, messagesEndpoint, messagesCompatEndpoint)
+	}
+	var resolved *resolver.Resolved
+	var ok bool
+	if metered {
+		recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
+		var release func()
+		resolved, release, ok = s.enforceAndAttribute(c, model, recorder, prepare)
+		defer release()
+	} else {
+		if !s.access.Authorize(c, model) {
+			return
+		}
+		resolved, ok = prepare()
+	}
 	if !ok {
 		return
 	}
-	folded, err := anthropic.FoldContextTurns(body)
-	if err != nil {
-		refuseMessagesBody(c, err)
-		return
-	}
-	if !bytes.Equal(folded, body) {
-		body = folded
-		replaceRequestBody(c, body)
-	}
-	resolved, ok := s.resolveTarget(c, model, nodeHint)
-	if !ok {
-		return
-	}
-	if !s.admitImages(c, model, body, resolved) {
-		return
-	}
-	mode, ok := s.narrowToWireEndpoint(c, model, resolved, messagesEndpoint, messagesCompatEndpoint)
-	switch {
-	case !ok:
-	case mode == wireModeCompat:
+	mode := s.targetWireMode(c.Request.Context(), resolved, messagesEndpoint, messagesCompatEndpoint)
+	if mode == wireModeCompat {
 		s.dispatchTranslated(c, resolved, model, body, tr)
-	default:
+	} else {
 		s.dispatchTo(c, resolved, model, body, "chat")
 	}
 }

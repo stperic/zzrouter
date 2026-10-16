@@ -165,6 +165,7 @@ func (e *LoadExecutor) PreviewLocalRun(ctx context.Context, req *PreviewRunReque
 		Node:             e.getNodename(),
 		Port:             projectedPort,
 		FullCommand:      fullCommand,
+		Assessment:       &launch.Assessment,
 		Parameters:       launch.Params,
 		ParameterSources: launch.Sources,
 		Environment:      launch.Environment,

@@ -243,7 +243,7 @@ func TestEvictingLaunchNamesEvictedRuns(t *testing.T) {
 			f.mgr.idleEvictionDefault = true
 			idle := instance.NewInstance("idle", "generic", tc.model, 0, 24*time.Hour, 10)
 			idle.SetStatus(instance.StatusRunning)
-			idle.SetProcessInfo(9000001, 0, nil)
+			idle.SetProcessInfo(9000001, 0, 0, nil)
 			require.NoError(t, f.mgr.instances.Register(idle))
 			f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 				free := int64(1000)

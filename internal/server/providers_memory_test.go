@@ -9,13 +9,33 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWeightLowerBoundProblemExplainsReach(t *testing.T) {
+	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, Incomplete: true}, map[string]string{"budget": "1"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024}}, 0, nil, nil)
+	require.Error(t, err)
+	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
+	RespondToError(c, err)
+	require.Equal(t, http.StatusConflict, response.Code)
+	var problem utils.ProblemDetails
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
+	assert.Equal(t, "out_of_range", problem.Code)
+	assert.Contains(t, problem.Detail, "model weights require 1.0009765625 GiB")
+	assert.Contains(t, problem.Detail, "fraction_total reach of 1 GiB")
+	assert.Contains(t, problem.Detail, "smaller quantization or another node")
+	require.Len(t, problem.Errors, 1)
+	got := problem.Errors[0].Got.(map[string]any)
+	assert.Equal(t, float64(1025), got["required_mib"])
+	assert.Equal(t, float64(1024), got["free_mib"])
+}
 
 func TestMemoryRefusalCarriesBudgetAndFreeInsideProblem(t *testing.T) {
 	for _, reason := range []string{"busy", "pinned"} {

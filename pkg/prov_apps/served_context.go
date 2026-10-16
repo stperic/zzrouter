@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"strconv"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -12,6 +11,25 @@ import (
 )
 
 func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
+	endpoint, upstream, err := m.Upstream(run)
+	if err != nil {
+		return
+	}
+	target := protocol.NewTarget(endpoint, upstream).Ready()
+	for name, evidence := range run.Resolved().FeatureHTTP {
+		ctx, cancel := context.WithTimeout(run.Context(), constants.HTTPShortTimeout)
+		present, known := target.ReadBool(ctx, m.httpClient, evidence.Path, evidence.Field)
+		cancel()
+		if known {
+			state := "unsupported"
+			if present {
+				state = "present"
+			}
+			if run.RecordFeature(name, state) {
+				m.refreshCatalog()
+			}
+		}
+	}
 	ctx, cancel := context.WithTimeout(run.Context(), constants.HTTPShortTimeout)
 	defer cancel()
 	key, svc, ok := m.resolveConfigKey(run.Provider)
@@ -27,11 +45,7 @@ func (m *ProviderAppManager) readServedContext(run *instance.Instance) {
 	if field == "" || !ok {
 		return
 	}
-	endpoint, upstream, err := m.Upstream(run)
-	if err != nil {
-		return
-	}
-	models, err := p.ListModels(ctx, protocol.NewTarget(endpoint, upstream).Ready())
+	models, err := p.ListModels(ctx, target)
 	if err != nil || ctx.Err() != nil {
 		return
 	}
@@ -81,12 +95,7 @@ func recordPlacement(run *instance.Instance, index int, values []string) {
 }
 
 func servedContext(entry map[string]any, field string) int {
-	var value any = entry
-	for _, part := range strings.Split(field, ".") {
-		object, _ := value.(map[string]any)
-		value = object[part]
-	}
-	n, _ := value.(float64)
+	n, _ := protocol.Field(entry, field).(float64)
 	tokens := int(n)
 	if tokens > 0 && float64(tokens) == n {
 		return tokens

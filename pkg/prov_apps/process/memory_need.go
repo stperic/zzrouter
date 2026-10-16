@@ -19,10 +19,17 @@ const DefaultActivationOverheadMiB int64 = 4096
 // Need is the model's weights, one context sequence's KV cache and per-device runtime overhead.
 type Need struct {
 	WeightsMiB, KVMiB, OverheadMiB int64
+	WeightsBytes                   int64 // Exact bytes prevent false refusals at fractional MiB boundaries.
+	Incomplete                     bool
 }
 
 // Total returns the single-device memory need; zero denotes unknown.
-func (n Need) Total() int64 { return n.WeightsMiB + n.KVMiB + n.OverheadMiB }
+func (n Need) Total() int64 {
+	if n.Incomplete {
+		return 0
+	}
+	return n.WeightsMiB + n.KVMiB + n.OverheadMiB
+}
 
 type attentionConfig struct {
 	Layers        int64           `json:"num_hidden_layers"`
@@ -38,25 +45,26 @@ type attentionConfig struct {
 	KVLoRARank    json.RawMessage `json:"kv_lora_rank"`
 }
 
-// ModelMemoryNeed returns unknown when local weights, context or attention geometry cannot be sized.
+// ModelMemoryNeed retains weight evidence when context or geometry cannot be sized.
 func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string) (Need, bool) {
-	context, ok := contextLength(svc, params)
-	if !ok || model.Path == "" {
-		return Need{}, false
-	}
-	cfg, ok := readAttentionConfig(model.Directory())
-	if !ok {
-		return Need{}, false
-	}
-	kvBytes, ok := cfg.kvBytes(context)
-	if !ok {
-		return Need{}, false
-	}
 	weightBytes, ok := weightsBytes(model.Path, svc)
 	if !ok {
 		return Need{}, false
 	}
-	return Need{WeightsMiB: bytesToMiB(weightBytes), KVMiB: bytesToMiB(kvBytes), OverheadMiB: DefaultActivationOverheadMiB}, true
+	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, Incomplete: true}
+	context, ok := contextLength(svc, params)
+	if !ok || model.Path == "" {
+		return partial, false
+	}
+	cfg, ok := readAttentionConfig(model.Directory())
+	if !ok {
+		return partial, false
+	}
+	kvBytes, ok := cfg.kvBytes(context)
+	if !ok {
+		return partial, false
+	}
+	return Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, KVMiB: bytesToMiB(kvBytes), OverheadMiB: DefaultActivationOverheadMiB}, true
 }
 
 // contextLength reads the provider's context parameter, under either spelling a resolved key may carry.
@@ -174,6 +182,9 @@ func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 }
 
 func weightsBytes(modelPath string, svc config.ServiceConfig) (int64, bool) {
+	if modelPath == "" {
+		return 0, false
+	}
 	files, err := layout.Weights(modelPath, featureGlobs(&svc))
 	if err != nil || len(files) == 0 {
 		return 0, false

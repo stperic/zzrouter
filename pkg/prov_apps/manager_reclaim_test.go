@@ -37,13 +37,13 @@ func newReclaimFixture(t *testing.T, enabled bool, keepAlive ...time.Duration) *
 	}
 	old := instance.NewInstance("older", "vllm", "old-model", 0, limit, 10)
 	old.SetStatus(instance.StatusRunning)
-	old.SetProcessInfo(9000001, 0, nil)
+	old.SetProcessInfo(9000001, 0, 0, nil)
 	restore := utils.SetClock(utils.FixedClock(utils.Now().Add(-time.Hour)))
 	old.StampActivityWithHints(nil)
 	restore()
 	newer := instance.NewInstance("newer", "vllm", "new-model", 0, 24*time.Hour, 10)
 	newer.SetStatus(instance.StatusRunning)
-	newer.SetProcessInfo(9000002, 0, nil)
+	newer.SetProcessInfo(9000002, 0, 0, nil)
 	newer.StampActivityWithHints(nil)
 	require.NoError(t, mgr.instances.Register(old))
 	require.NoError(t, mgr.instances.Register(newer))
@@ -185,7 +185,7 @@ func TestMemoryReclaimEligibility(t *testing.T) {
 				waiting.SetWaitingOn(f.older.ID)
 				require.NoError(t, f.mgr.instances.Register(waiting))
 			case "foreign":
-				f.older.SetProcessInfo(0, 0, nil)
+				f.older.SetProcessInfo(0, 0, 0, nil)
 			case "unknown":
 				f.device.Processes[0].MemoryMiB = nil
 			}

@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+- Standalone provider install preflight reports unsupported OS or architecture
+  as a failed `platform` check with a remediation hint, before host probes.
+  Reports still return HTTP 200 and use the selected node's installer and requirements.
+- Preview, start and cold inference refuse malformed or unreadable feature
+  evidence with 409 `model_feature_evidence_invalid`, including when the optional
+  runtime is absent. Missing or negative evidence still uses the base runtime.
+- Phrase-based upstream `unsupported_input` classification requires an
+  image-bearing outgoing request. Text-only errors keep their upstream status;
+  classified relay codes and other failure classes are unchanged.
+- Job cancellation stops local and worker-owned downloads. Downloads survive
+  silent upstreams under their existing 48-hour deadline. Both TUI views and MCP
+  use `job_id` for individual downloads; `deployment_id` still cancels all nodes.
+  Cancelled jobs report `failed` with `meta.transfer_status: cancelled`. Completed
+  files remain, unfinished catalog files stay pending for repair, and provider
+  destinations remain reserved through cleanup.
+
+- Chat accounting adds `usage.cost` and `usage.cost_details.upstream_inference_cost`
+  when present, including upstream charges for BYOK requests with zero account cost.
+  Explicit `usage.cost: 0` is authoritative; legacy `x_*.cost` requires a positive
+  value. Later stream cost updates replace earlier costs. Client chat responses
+  omit vendor accounting fields after metering, including when metadata is off;
+  provider costs retain their precision in responses and inference logs.
+- Spend-limited inference filters unpriced targets before dispatch and returns
+  403 `model_unpriced` when none remain. Explicit zero overrides and recognized
+  local engines remain free after monetary exhaustion. Admission and settlement
+  share pricing lookup, and admitted rates survive live pricing changes.
+
+- Upgrade: limited keys or teams routing to an external self-hosted endpoint
+  without a managed lifecycle now receive 403 `model_unpriced` until an operator
+  posts a zero (free) or real pricing override. Enable `models.pricing.enabled`
+  in `node.yaml` and restart if pricing is disabled. For a free endpoint, replace
+  `my-external-provider` with its configured provider name and run:
+
+  ```bash
+  curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides \
+    -H "X-API-Key: $ZZROUTER_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+    -d '{"provider":"my-external-provider","model":"*","input_cost_per_1m":0,"output_cost_per_1m":0}'
+  ```
+
+  Use a concrete model ID and real dollar rates per million tokens when billed.
+- Node health combines probe and dispatch evidence across mesh, inference, jobs
+  and provider sync. Three consecutive transport failures fail fast; recovery
+  uses the existing probes after a 30-second cooldown and two full successes.
+  REST and MCP agree, with one missed full probe retaining dispatch grace.
+  Public-only degraded and half-open recovery nodes receive no ordinary traffic.
+  Caller deadlines and errors after response headers leave node health unchanged.
+- Tools capabilities use model and serving-run evidence. Ollama preserves its
+  capability list, llama.cpp reads the running chat template capability, and
+  vLLM reports the switches its chat run launched with. MLX and cold launched
+  models stay unknown. Only `details.features.tools: present` makes
+  `/v1/models` `capabilities.tools` true; use `zz_chat` `probe: tools` to verify.
+  Serving snapshots survive patches until restart, and groups include unknown
+  replicas. Cluster protocol and minimum rise from 11 to 12 for strict provider
+  schemas; upgrade every node together using the
+  [protocol maintenance procedure](docs/protocol_versioning.md).
+  Cloud and external models without present evidence now report `tools:false`;
+  cloud models no longer claim `tools:true` by default. False means no evidence,
+  not refusal, and does not prohibit tool requests.
+- Compatible-node queries return confirmed model capacity fits and report per-node,
+  per-provider `fit`, `no_fit` and `unknown` reasons in `metadata.assessments`.
+  Run previews and MCP `zz_run_preview` expose the same capacity assessment without
+  launching or evicting runs. Cached weights alone no longer imply compatibility.
+  Downloads retain independent storage eligibility. Launch admission also refuses
+  weights exceeding the engine's reachable memory with HTTP 409 `out_of_range`.
+- Cluster protocol rises from 11 to 12, with minimum 11 retained for this optional
+  assessment change. Old or missing worker evidence becomes unknown. A rolling
+  upgrade updates the coordinator first, then workers to obtain capacity assessments;
+  verify matching node/launcher bundles and node health after each update.
+- Stopping a newly launched run no longer depends on reading its environment during
+  exec. Shutdown, orphan cleanup and managed-daemon migration verify PID plus an exact
+  per-platform start token: raw Linux start ticks, kernel creation time on Darwin and
+  Windows. Legacy PID files retain marker-based ownership checks. Orphan records stay
+  tracked after a refusal or termination error until a later pass confirms exit.
+
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete
@@ -323,6 +397,9 @@
 ## 0.1.0 (2026-10-08)
 
 First public release.
+
+- Peer sync uses the downloader's flat repository layout, preserving feature
+  roles and reusing held files; forced sync fetches them again.
 
 - Distributed model management through an authenticated API and terminal client.
 - OpenAI, Anthropic Messages and Ollama compatible inference.

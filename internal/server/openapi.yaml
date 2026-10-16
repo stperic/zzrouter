@@ -35,6 +35,16 @@ info:
     - **Errors** use RFC 9457 Problem Details (`application/problem+json`) on
       `/zzrouter/v1/*`, and the OpenAI-shaped error envelope on `/v1/*`.
 
+    Spend-limited inference removes unpriced targets before endpoint selection
+    and fallback. When none remain, HTTP 403 `model_unpriced` requires an
+    administrator to enable pricing and POST rates to `/zzrouter/v1/pricing/overrides`.
+    This refusal has no Retry-After or exhausted-budget fields. Explicit zero
+    overrides and recognized local engines are priced as free, even when table
+    pricing is disabled, and remain usable after monetary exhaustion. A zero
+    spend limit is unenforced. Authorization precedes target preparation;
+    resolution failures precede quota checks. Pre-request rates are required
+    even if an upstream may later report its own cost.
+
     ## Spec coverage
 
     This spec is hand-authored, and every route the coordinator serves on
@@ -900,6 +910,10 @@ paths:
             is renamed or its from definition is removed. A fraction_total GPU budget
             exceeding fresh free device memory is refused before process start;
             errors[].got includes required_mib, free_mib and known holder attribution.
+            Malformed or unreadable endpoint-applicable feature evidence returns code
+            model_feature_evidence_invalid even if the optional runtime is absent.
+            Repair or re-download malformed evidence; ask the operator to correct
+            unreadable files. Already-accepted launches report failure in their run/job.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1253,6 +1267,12 @@ paths:
         anything. The answer to "what exactly is this going to run"
         before committing a GPU to it.
 
+        data.assessment uses the same capacity policy as nodes/compatible and
+        returns fit, no_fit or unknown with a reason. Unknown is not confirmed fit.
+        It evaluates cloned parameters against selected device totals without
+        launching, evicting or reserving memory. Current load can still refuse
+        a subsequent launch. Workers without this field yield explicit unknown.
+
         `provider` is required. Preview renders one provider's launch
         command, so an omitted provider is a client error rather than
         something to guess at; `GET /zzrouter/v1/runs/capabilities`
@@ -1267,7 +1287,12 @@ paths:
           description: OK
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SuccessEnvelope' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PreviewRunResponse' }
         '400':
           description: |
             `provider` missing, or a provider that is not configured or
@@ -1279,7 +1304,11 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '409':
-          description: A configured variant name also identifies real weights; disambiguate the name.
+          description: >
+            A configured variant name also identifies real weights, or endpoint-applicable
+            feature evidence is malformed or unreadable (code model_feature_evidence_invalid),
+            even when the optional runtime is absent. Disambiguate a variant; repair or
+            re-download malformed evidence, or ask the operator to correct unreadable files.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -2413,12 +2442,31 @@ paths:
       operationId: getNodesCompatible
       summary: List nodes compatible with a model
       description: |
-        Nodes that could run a given model, filtered by what each one has:
-        provider support, and hardware where the model declares a
-        requirement.
+        Returns only nodes with at least one positively assessed provider for this
+        model. Provider and registry selectors narrow eligibility before assessment.
+        Cached weights alone never establish fit. Pagination follows fit filtering.
+        Each public row's eligible_providers lists only providers assessed as fit;
+        metadata.assessments retains all provider assessments. Internal storage
+        eligibility is independent of capacity assessment.
 
-        It answers from declared capability, not from current load: a node
-        listed here may still be too busy to take the run.
+        metadata.assessments explains fit, no_fit or unknown per node/provider,
+        including missing replies and workers without assessment support. Unknown
+        stays HTTP 200 and never qualifies a node. This measures capacity using
+        selected device totals from node inventory, not current load; launches check fresh free
+        memory and commitments. Reads do not launch or evict runs.
+        If node inventory cannot be read, collected results are retained and an
+        unknown assessment with an empty node reports unknown coverage.
+
+        Only a fully sized model with an auto fraction budget establishes fit.
+        Numeric budgets, layers/offload, unified memory, external scheduling and
+        incomplete evidence stay unknown above the weight lower bound. Weights
+        exceeding reachable memory establish no_fit: selected GPU totals times
+        the numeric budget fraction (full totals for auto), GPU plus system RAM
+        for layers (all visible GPUs unless the schema declares a device count),
+        or the single shared pool for unified memory. Local selected
+        weights are required; published file size alone cannot establish fit.
+        Hosts without GPU observation, including CPU-only llama.cpp, skip the
+        weight lower bound and report unknown; their existing launch path is preserved.
       parameters:
         - in: query
           name: model
@@ -2426,6 +2474,8 @@ paths:
           schema: { type: string }
         - $ref: '#/components/parameters/ProviderParam'
         - $ref: '#/components/parameters/RegistryParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
       responses:
         '200':
           description: OK
@@ -2439,6 +2489,19 @@ paths:
                       data:
                         type: array
                         items: { $ref: '#/components/schemas/Node' }
+                      metadata:
+                        type: object
+                        properties:
+                          assessments:
+                            type: array
+                            items:
+                              allOf:
+                                - $ref: '#/components/schemas/MemoryAssessment'
+                                - type: object
+                                  required: [node]
+                                  properties:
+                                    node: { type: string, description: Empty when node inventory failed and coverage is unknown. }
+                                    provider: { type: string, description: Omitted when no provider assessment was reported. }
         '400':
           description: Missing `model`
           content:
@@ -3504,9 +3567,17 @@ paths:
       operationId: deleteJob
       summary: Cancel a job
       description: |
-        Requests cancellation. Note that cancelling a job does not
-        necessarily abort work already handed to an external downloader ,
-        check the job's terminal phase rather than assuming.
+        Requests cancellation of work, including an individual download, and
+        returns a nonblocking acknowledgement with accepted and job_id. Without
+        node, the coordinator discovers the owner; node may select it explicitly.
+        Read or stream the job for the outcome: cancelled downloads report phase
+        failed with meta.transfer_status cancelled. Already-terminal success is
+        unchanged. Terminal publication can precede physical cleanup. Completed
+        files remain and unfinished catalog files stay pending; repeat the download
+        to repair missing files. Provider-store reservations last through cleanup;
+        Ollama owns its blobs. Use DELETE /deployments/{id} for all deployment nodes.
+        Downloads outlive requests and have a 48-hour deadline; default inactivity
+        reaping is disabled for downloads, while explicit overrides still apply.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
       responses:
@@ -4680,16 +4751,20 @@ paths:
       summary: Run preflight checks for an install
       description: |
         Checks the target node's prerequisites before an install is
-        attempted: interpreter, GPU tooling, network reachability, disk. It
-        changes nothing, and it answers synchronously with a report of what
-        passed and what did not.
+        attempted: platform support, interpreter, GPU tooling, network
+        reachability, disk. Installer lookup and requirements belong to the
+        selected node (`?node=<name>`; omitted means local). It changes nothing
+        and answers synchronously with a report of what passed and what did not.
+        An unsupported OS or architecture returns HTTP 200 with `all_ok:false`
+        and a failed `platform` check, message and remediation hint, before
+        host prerequisite probes. Failed checks remain report data.
 
         Run it before `POST /zzrouter/v1/providers/{name}/install`. A failed
         preflight is much cheaper to read than a failed install.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
-        '200': { description: OK }
+        '200': { description: 'Preflight report, including failed checks with all_ok:false.' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: No provider by that name, or the target node is unknown.
@@ -6844,12 +6919,33 @@ paths:
         (vLLM / llama.cpp / MLX / cloud) from the `model` field and
         forwards the request. Supports streaming via `stream: true`.
 
+        Spend adds numeric `usage.cost` and
+        `usage.cost_details.upstream_inference_cost` when present, including
+        upstream BYOK charges when the OpenRouter account charge is zero.
+        Explicit nonnegative `usage.cost`, including a zero total, is authoritative.
+        Missing, null, malformed or negative costs use positive legacy-extension
+        costs in sorted key order, then pricing. Metering precedes normalization:
+        client responses omit `usage.cost`, `usage.cost_details`, `usage.is_byok`
+        and `usage.prompt_tokens_details.cache_write_tokens`, preserving standard
+        token details and unrelated extensions. Workers retain this evidence
+        until coordinator metering. Buffered cost metadata uses
+        `zzrouter.cost_usd` / `cost_source`; streaming metadata uses
+        `usage.zz_cost_usd` / `zz_cost_source`. Cleanup applies even with
+        `?verbose=0`, streaming metadata disabled, or usage-frame suppression.
+        Provider precision is retained in responses and logs; spend is converted
+        to whole microUSD using the existing ledger conversion.
+        Stream cost metadata retains its existing positive-completion-token gate.
+
         Image-bearing input is admitted before endpoint selection and replica
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Image input is recognized in message content `image_url` blocks.
@@ -7266,8 +7362,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized as `input_image` in message input content.
@@ -7337,8 +7437,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         `image` blocks include images nested in `tool_result.content`. On a
@@ -9769,8 +9873,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized in the top-level `images` array.
@@ -9804,8 +9912,12 @@ paths:
         fallback. Present vision replicas are preferred; when none is present,
         unknown replicas remain usable. If every target is known ineligible,
         the request returns 400 in this surface's error envelope with a fix.
-        An explicit unsupported-image backend 500 is classified as invalid
-        input, without retry or deployment/provider cooldown. Genuine server
+        A declared unsupported-image phrase is classified as 400 unsupported_input
+        only when the outgoing request has images, without retry or cooldown.
+        Text-only phrase matches keep the upstream status; explicit classified
+        upstream codes remain authoritative. Invalid launch feature evidence
+        returns 409 model_feature_evidence_invalid; repair or re-download malformed
+        evidence, or ask the operator to correct unreadable files. Other server
         failures keep their status. Errors before stream opening remain HTTP
         errors; after committed cold-progress headers they travel in-band.
         Images are recognized in each message's `images` array.
@@ -11017,6 +11129,7 @@ components:
         - method_not_allowed
         - request_too_large
         - model_not_found
+        - model_unpriced
         - model_name_conflict
         - endpoint_not_supported
         - rate_limit_exceeded
@@ -11229,6 +11342,10 @@ components:
             features:
               type: object
               properties:
+                tools:
+                  type: string
+                  enum: [present, available, unsupported, unknown]
+                  description: Engine evidence or actual chat launch requirements. Cold launched models and MLX remain unknown. Running chat snapshots take precedence over desired config; endpoint runs cannot replace them. Only present projects to capabilities.tools true; verify actual behavior with zz_chat probe tools.
                 vision:
                   type: string
                   enum: [present, available, unsupported, unknown]
@@ -11375,7 +11492,7 @@ components:
         completions:        { type: boolean }
         embeddings:         { type: boolean }
         rerank:             { type: boolean }
-        tools:              { type: boolean }
+        tools:              { type: boolean, description: "True only for node-reported details.features.tools present. Cloud and external models without present evidence report tools:false; cloud models no longer claim tools:true by default. False means no evidence, not refusal, and does not prohibit requests; use zz_chat probe tools for request-local verification. Groups include unknown or missing replicas." }
         vision:             { type: boolean, description: "On a provider that declares features, true only when the node reports vision present. On one that declares none, guessed from the model name." }
         stream:             { type: boolean }
         json_mode:          { type: boolean }
@@ -11589,12 +11706,32 @@ components:
         health_status:
           type: string
           enum: [unknown, healthy, degraded, down]
+          description: |
+            Effective coordinator view shared with MCP. Three consecutive transport
+            failures open the node breaker (down). After a 30-second cooldown, two
+            successful full cluster probes recover it; half-open is degraded and
+            admits probes only. One missed full probe retains dispatch grace;
+            public-only degraded, unknown, down and half-open reject ordinary traffic.
+            HTTP provider errors, caller cancellation/deadlines and errors after
+            response headers do not count as node failures. Two consecutive
+            missed probes mark a node down; a graceful goodbye does so immediately.
+        last_seen_at:
+          type: string
+          format: date-time
+          description: Latest successful health probe, unchanged by ordinary requests or failed probes.
+        last_error:
+          type: string
+          description: Sanitized probe or dispatch transport failure, omitted when absent.
         os:            { type: string }
         version:       { type: string }
         uptime_seconds:
           type: integer
           format: int64
           minimum: 0
+        eligible_providers:
+          type: array
+          items: { type: string }
+          description: On public compatible-node rows, only providers whose capacity assessment is fit.
         memory:
           type: object
           description: RAM summary populated when the worker reported resources on last probe. Every `*_gb` value on a node (memory, GPU, disk) is GiB, 1024^3 bytes.
@@ -11807,6 +11944,35 @@ components:
               - { type: string }
               - { type: number }
               - { type: boolean }
+
+    MemoryAssessment:
+      type: object
+      required: [status, reason]
+      properties:
+        status: { type: string, enum: [fit, no_fit, unknown] }
+        reason: { type: string }
+        budget_kind: { type: string }
+        required_mib: { type: integer, format: int64 }
+        capacity_mib: { type: integer, format: int64 }
+      description: |
+        Budget admission alone is not proof of model fit. Amounts are optional,
+        in MiB: the limiting selected device's budget plus safety margin and
+        capacity, or aggregate reachable memory for a weight lower-bound refusal.
+        Capacity reads use totals; launch failures retain fresh free memory and holders.
+
+    PreviewRunResponse:
+      type: object
+      properties:
+        model: { type: string }
+        provider: { type: string }
+        node: { type: string }
+        port: { type: integer }
+        full_command: { type: string }
+        parameters: { type: object, additionalProperties: { type: string } }
+        parameter_sources: { type: object, additionalProperties: { type: string } }
+        environment: { type: object, additionalProperties: { type: string } }
+        working_dir: { type: string }
+        assessment: { $ref: '#/components/schemas/MemoryAssessment' }
 
     PreviewRunRequest:
       type: object
@@ -13942,13 +14108,13 @@ components:
           type: integer
           minimum: 0
           description: |
-            Distinct (provider, model) pairs that served traffic with no
-            price. Each settled at $0 and drew down no budget, so a
-            non-zero count is an action item, not a statistic.
+            Distinct (provider, model) pairs with missing pricing, including
+            targets removed during budget-limited admission and completed
+            unlimited traffic with no price. Explicit free prices are excluded.
         unpriced:
           type: object
           additionalProperties: { type: integer, format: int64 }
-          description: Un-priced request counts keyed `provider/model`.
+          description: Missing-price observations keyed `provider/model`, from admission or settlement.
 
     PricingOverride:
       type: object

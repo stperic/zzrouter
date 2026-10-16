@@ -126,6 +126,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		return nil, fmt.Errorf("init role manager: %w", err)
 	}
 	s.role = roleMgr
+	normalizers.CleanChatUsage = func() bool { return !s.IsWorker() }
 
 	s.backend = backend.NewResolver(func() *pkgConfig.AppsConfig { return s.appsConfig })
 	s.inference.normalizers = normalizers

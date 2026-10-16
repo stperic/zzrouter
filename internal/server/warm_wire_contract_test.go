@@ -125,7 +125,7 @@ func TestWarmWireContractAdmissionRetainsProvider(t *testing.T) {
 	s.model.Cache.Invalidate()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	resolved, ok := s.resolveTarget(c, "warm-model@"+s.node.Nodename(), "")
+	resolved, ok := s.resolveTarget(c, "warm-model@"+s.node.Nodename(), "", nil)
 	require.True(t, ok)
 	assert.Equal(t, "mlx", resolved.Provider)
 }

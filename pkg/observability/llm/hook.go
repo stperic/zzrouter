@@ -3,6 +3,8 @@ package llm
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
 // InferenceLogHook is called when an inference request completes.
@@ -22,7 +24,8 @@ type CostSetter interface {
 // InferenceLogData contains the data collected during an inference request,
 // passed to the log hook for recording.
 type InferenceLogData struct {
-	Model string
+	Model         string
+	AdmittedQuote pricing.Quote
 	// ResponseModel is the model the upstream backend reported actually
 	// using — distinct from Model when model-group routing resolves a
 	// group alias to a concrete deployment, or when a backend

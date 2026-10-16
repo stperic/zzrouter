@@ -41,8 +41,8 @@ func (m *Cluster) ValidateNode(ctx context.Context, url string) (*Connection, er
 }
 
 // RegisterAdminEndpoint registers endpointURL as a unicast routing
-// target. Safe to call idempotently; the registry short-circuits
-// duplicate URLs. Seeded at StatusUnknown so ep.Status agrees with
+// target. Repeated calls merge mutable fields without resetting health.
+// Seeded at StatusUnknown so ep.Status agrees with
 // the Liveness machine until the first probe resolves it.
 //
 // ClusterURL is derived via DeriveClusterURL(endpointURL, BindPort)

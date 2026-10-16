@@ -2,32 +2,46 @@ package builtins_test
 
 import (
 	"errors"
-	"runtime"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestDispatcher_RegisteredInstallers(t *testing.T) {
 	d := builtins.NewDispatcher(nil, nil)
 	names := d.List()
 
-	// ollama and llama.cpp should always be registered
 	assert.Contains(t, names, "ollama")
 	assert.Contains(t, names, "llamacpp")
-	assert.Contains(t, names, "comfyui")
-	assert.Contains(t, names, "mlx-vlm")
-
-	// Platform-specific
-	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-		assert.Contains(t, names, "mlx")
-	}
-	if runtime.GOOS == "linux" {
-		assert.Contains(t, names, "vllm")
+	entries, err := templates.AppsFS.ReadDir("files/providers/on-demand")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		data, err := templates.AppsFS.ReadFile("files/providers/on-demand/" + entry.Name() + "/config.yaml")
+		require.NoError(t, err)
+		var provider config.OnDemandProvider
+		require.NoError(t, yaml.Unmarshal(data, &provider))
+		if provider.Install == nil {
+			continue
+		}
+		var platforms []fsroot.Platform
+		for _, platform := range provider.Platforms {
+			platforms = append(platforms, fsroot.Platform{OS: platform.OS, Arch: platform.Arch})
+		}
+		for name := range provider.Install.Runtimes {
+			t.Run(name, func(t *testing.T) {
+				require.Contains(t, names, name)
+				inst, err := d.Get(name)
+				require.NoError(t, err)
+				assert.Equal(t, platforms, inst.SupportedPlatforms())
+			})
+		}
 	}
 }
 
@@ -50,6 +64,15 @@ func TestManagedRuntimeOwnPlatformGuards(t *testing.T) {
 			allowed := false
 			for _, platform := range tc.platforms {
 				allowed = allowed || platform == fsroot.CurrentPlatform()
+			}
+			if !allowed {
+				report := install.Preflight(t.Context(), inst, nil)
+				assert.False(t, report.AllOK)
+				require.Len(t, report.Results, 1)
+				assert.Equal(t, "platform", report.Results[0].Check)
+				assert.False(t, report.Results[0].Passed)
+				assert.Contains(t, report.Results[0].Message, fsroot.CurrentPlatform().String())
+				assert.NotEmpty(t, report.Results[0].Hint)
 			}
 			_, err = inst.InstallPlan(t.Context(), "1.0.0")
 			if allowed {

@@ -5,6 +5,17 @@ Codex. Tools call the existing REST handlers with your admin key; validation,
 cluster routing, jobs and errors are the REST contract. Workers do not expose
 this endpoint. Both 2026-07-28 and legacy 2025-06-18 clients are supported.
 
+`zz_nodes` list/detail and `zz_overview` render the same effective node health
+as REST. Three consecutive transport failures open the node breaker (`down`);
+HTTP provider errors, caller deadlines and errors after response headers are neutral.
+After a 30-second cooldown, two successful full
+cluster probes recover it without inference. Half-open recovery reports `degraded`
+and admits probes only. One missed full probe retains dispatch grace; public-only
+`degraded`, `unknown`, `down` and half-open nodes cannot receive ordinary traffic.
+Two missed probes or a graceful goodbye mark a node down. `last_seen_at` is the
+latest successful probe, and `last_error` carries sanitized probe/dispatch evidence.
+See [node routing errors](agent_error_codes.md#node-reachability).
+
 ## Connect
 
 Make `ZZROUTER_ADMIN_API_KEY` available to your client through your normal
@@ -87,6 +98,21 @@ a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
+`details.features.tools` is `present`, `available`, `unsupported` or `unknown`.
+Only present projects to `/v1/models` `capabilities.tools: true`; false does not
+block requests. Running chat evidence survives configuration patches until a
+restart. Use `zz_chat` with `probe: tools` for request-local automatic-choice
+verification and diagnostics; no probe verdict is saved in the catalog.
+`zz_run_preview` preserves the node's capacity `assessment`, including its reason
+and optional MiB amounts. Only `fit` confirms capacity; `unknown` is uncertainty,
+and `no_fit` is a refusal by the shared memory policy. Preview never launches,
+evicts or reserves memory, and current load can still prevent a later launch.
+`zz_nodes` reports inventory; comparing file size with its memory does not prove
+fit. Use `zz_api_get` on `/zzrouter/v1/nodes/compatible` with the exact `model`
+and optional `provider`/`registry` to read confirmed nodes and all
+`metadata.assessments` unchanged. Missing worker fields or replies are unknown.
+Storage/download eligibility remains independent of capacity uncertainty.
+
 An exact `zz_models.model` name or source-id filter returning one total model
 also adds `show` to that entry. Case-insensitive exact matches qualify; globs,
 suffix-only matches, truncated pages and duplicate replicas keep the list form.
@@ -138,9 +164,15 @@ This does not fan out across the cluster. `wait_seconds` requires a `job_id`.
 Call `zz_job` with each returned `job_id` and
 `wait_seconds: 45`; if it is still running, call again. Downloads return jobs
 per node. Follow a launch's `deploy_job_id` too when present. Keep the
-`deployment_id` to cancel a download through `zz_job_cancel`; ordinary work
-cancels by `job_id`. After launch succeeds, use `zz_chat` for one short smoke
-test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
+`job_id` to cancel an individual download through `zz_job_cancel`, or use
+`deployment_id` to cancel all deployment nodes. Cancellation is acknowledged
+before cleanup completes; follow each job with `zz_job`. A cancelled download
+reports `failed` with `meta.transfer_status: cancelled`; an already completed
+job stays successful. Completed files survive and unfinished catalog files
+stay pending. Repeat `zz_model_download` with a fresh idempotency key to repair
+missing files. Downloads survive the accepting request and silence, bounded by
+their 48-hour deadline or explicit cancellation. After launch succeeds, use
+`zz_chat` for one short smoke test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
 pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are
 removed, so a later run lookup returns 404 by design; its detail says where the
 run's log stays readable. Launch job results omit the serving node's local probe

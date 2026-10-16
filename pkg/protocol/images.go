@@ -5,6 +5,7 @@ import "encoding/json"
 type imageBlock struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
+	Output  json.RawMessage `json:"output"`
 }
 
 // HasImages inspects image-bearing inference fields, without searching tool
@@ -33,8 +34,17 @@ func HasImages(body []byte) bool {
 	var input []imageBlock
 	if json.Unmarshal(req.Input, &input) == nil {
 		for _, item := range input {
-			if item.Type == "input_image" || ((item.Type == "message" || item.Type == "") && contentHasImages(item.Content)) {
+			switch item.Type {
+			case "input_image":
 				return true
+			case "message", "":
+				if contentHasImages(item.Content) {
+					return true
+				}
+			case "function_call_output":
+				if contentHasImages(item.Output) {
+					return true
+				}
 			}
 		}
 	}

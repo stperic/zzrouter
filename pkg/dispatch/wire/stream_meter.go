@@ -104,5 +104,5 @@ func observeChunk(recorder *llm.InferenceRecorder, frame []byte) (UsageData, boo
 	if llm.CaptureResponses() {
 		recorder.AppendResponseText(StreamDeltaText(frame))
 	}
-	return usage, usage.In > 0 || usage.Out > 0
+	return usage, usage.In > 0 || usage.Out > 0 || usage.CostSource != ""
 }

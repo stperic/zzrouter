@@ -16,6 +16,15 @@ recipe and operator constraints. Feature selection is `runtime:"mlx-vlm"` on
 MLX's existing install, upgrade, plan and verify routes; it uses the feature's
 own package and never MLX's parent pin.
 
+Before installing, call `POST /providers/:name/install/preflight?node=<name>`.
+The selected node looks up its installer and checks its own requirements;
+omitting `node` selects the local node. Unsupported OS or architecture returns
+HTTP 200 with `data.all_ok:false` and a failed `platform` check naming the host
+platform and a remediation hint. It stops before host prerequisite probes.
+Other prerequisite failures also remain report data with their messages and hints.
+Choose a supported node before requesting an install plan or upgrade, which
+continue to refuse unsupported platforms before recipe resolution.
+
 ## Authority and threat boundary
 
 An unchanged embedded recipe has release authority and needs no policy file.

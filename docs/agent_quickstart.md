@@ -17,6 +17,22 @@ install prerequisites and install plan through the advertised provider routes.
 Use the managed install API; follow the returned job and verify the runtime.
 See [managed recipes](typed_provider_recipes.md) for package authority.
 
+Before choosing a node, query `GET /zzrouter/v1/nodes/compatible?model=<exact-name>`
+with optional `provider` and `registry`. `data` contains confirmed capacity fits;
+`metadata.assessments` includes `fit`, `no_fit` and `unknown` reasons per node/provider.
+Each public row's `eligible_providers` lists only providers assessed as `fit`;
+metadata retains all provider assessments. If the node inventory cannot be read,
+an assessment with an empty `node` reports `unknown` coverage alongside collected results.
+Unknown stays HTTP 200 and is not confirmed fit. Missing worker evidence is unknown.
+Capacity uses selected device totals; a busy node may still refuse launch.
+`POST /zzrouter/v1/runs/preview` reports the same policy in `data.assessment`
+without starting, evicting or reserving memory. Cached or published weight size
+alone cannot prove runtime fit. Downloads remain possible on an explicitly
+selected eligible node when capacity is unknown.
+
+Hosts with no GPU observation, including CPU-only llama.cpp, skip the weight
+lower bound and report `unknown`. Their launches keep the existing CPU path.
+
 For an installed llama.cpp provider, launch a model and request automatic
 weight deployment when needed:
 
@@ -47,3 +63,18 @@ select a template that accepts it. zzRouter ships no chat templates.
 Observe runs at `/zzrouter/v1/runs`, stop one with `DELETE /runs/:id` under that
 management prefix, and branch on error codes rather than message text.
 The [OpenAPI specification](../internal/server/openapi.yaml) is the field reference.
+
+Node inventory (`/zzrouter/v1/nodes` and `/nodes/:name`) and MCP use the same
+health view. Three consecutive node transport failures report `down` and refuse
+ordinary traffic, including pinned inference, jobs and provider sync. HTTP provider
+errors, caller deadlines and errors after response headers do not trip the node
+breaker. Recovery needs no inference: after a
+30-second cooldown, two successful full cluster probes restore dispatch. During
+half-open recovery the node reports `degraded` and admits probes only.
+
+One missed full probe also reports `degraded` but keeps dispatch grace; a second
+miss reports `down`. Public-only `degraded` and `unknown` nodes cannot receive
+ordinary traffic. A graceful goodbye marks the node down immediately.
+`last_seen_at` remains the latest successful probe; `last_error` contains sanitized
+probe or dispatch evidence. Restore worker connectivity or pairing, then observe
+probe-driven recovery. Repeated inference requests do not recover a node.

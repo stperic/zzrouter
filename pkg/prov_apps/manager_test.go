@@ -56,7 +56,7 @@ func TestPackageRuntimePathsAreIsolated(t *testing.T) {
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	require.NotNil(t, m.pidTracker)
-	require.NoError(t, m.pidTracker.Track("test-isolation", os.Getpid()))
+	require.NoError(t, m.pidTracker.Track("test-isolation", os.Getpid(), 0))
 	t.Cleanup(func() { m.pidTracker.Untrack("test-isolation") })
 	_, err = os.Stat(filepath.Join(root, "pids", "test-isolation.pid"))
 	assert.NoError(t, err)

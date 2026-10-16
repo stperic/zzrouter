@@ -77,8 +77,7 @@ const maxTrackedMisses = 512
 // in steady traffic would otherwise flood the log. Read the tally back
 // with Misses.
 //
-// A miss is not a benign zero: the request settles against the spend
-// ledger at $0, so a virtual key with a budget cannot be stopped by it.
+// Misses include refused budget admission and unpriced completed traffic.
 func (s *Store) RecordMiss(provider string, models ...string) {
 	if s == nil {
 		return
@@ -112,7 +111,7 @@ func (s *Store) RecordMiss(provider string, models ...string) {
 	s.missMu.Unlock()
 
 	if !seen {
-		slog.Warn("No pricing data for model; request recorded at $0 and will not draw down any budget",
+		slog.Warn("No pricing data for model; budget-limited admission requires configured rates",
 			"provider", provider, "model", model)
 	}
 }

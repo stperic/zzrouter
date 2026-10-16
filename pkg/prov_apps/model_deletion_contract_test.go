@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,8 +44,14 @@ func TestModelDeletionOwnershipContract(t *testing.T) {
 		require.Empty(t, r.m.instances.List())
 	})
 	t.Run("start registration precedes writer", func(t *testing.T) {
+		t.Setenv("PATH", "/usr/bin:/bin")
+		spawned := newBarrier()
 		barrier := newBarrier()
 		r := newContractRig(t, false, WithModelSource(func(context.Context, string) string { barrier.hold(); return "" }))
+		r.m.seams.processStarted = func(result *process.LaunchResult) {
+			t.Cleanup(func() { _ = result.Process.Kill() })
+			spawned.hold()
+		}
 		owner := deletionOwnership(t, r.m)
 		out := r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "held"})
 		barrier.reached(t)
@@ -62,6 +69,18 @@ func TestModelDeletionOwnershipContract(t *testing.T) {
 		result := collect(t, []<-chan outcome{out})[0]
 		require.NoError(t, result.err)
 		require.NoError(t, <-done)
+		spawned.reached(t)
+		stopped := make(chan error, 1)
+		go func() { stopped <- r.m.StopInstance(context.Background(), result.result.Run.ID) }()
+		waitParkedOn(t, ").stopInstance(", 1, contractWait)
+		spawned.open()
+		select {
+		case err := <-stopped:
+			require.NoError(t, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("registered process survived its stop")
+		}
+		require.False(t, process.ProcessExists(int32(result.result.Run.GetProcessID())))
 	})
 	t.Run("waiting writer cancellation releases admission", func(t *testing.T) {
 		barrier := newBarrier()

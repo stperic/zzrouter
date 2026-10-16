@@ -20,6 +20,7 @@ import (
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -292,7 +293,7 @@ func (s *Server) streamFromInstance(w http.ResponseWriter, req *http.Request, in
 	attempt.SetStatus(resp.StatusCode)
 
 	if resp.StatusCode >= 400 {
-		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req), inst.FailureClassifier)
+		failure := httperr.NormalizeUpstreamResponse(resp, dialectOf(req), inst.FailureClassifier, func() bool { return protocol.HasImages(body) })
 		if rec != nil {
 			rec.SetError(failure.Type, failure.Message)
 			rec.RecordCompletion(0, 0)

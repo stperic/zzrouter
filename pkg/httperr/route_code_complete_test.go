@@ -8,6 +8,7 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeModelUnpriced":             "model_unpriced",
 		"CodeModelInUse":                "model_in_use",
 		"CodeModelReferenced":           "model_referenced",
 		"CodeModelNotDeletable":         "model_not_deletable",

@@ -369,7 +369,7 @@ func TestSmokeCancellationStopsOwnedRunWithoutHoldingOtherRuntime(t *testing.T) 
 					once.Do(func() {
 						runs := mgr.instances.List()
 						require.Len(t, runs, 1)
-						require.True(t, process.ProcessHasMarker(int32(runs[0].GetProcessID())))
+						require.True(t, (process.Inspector{}).HasMarker(int32(runs[0].GetProcessID())))
 						closed := false
 						runs[0].SetStdinPipe(smokeStopObserver{onClose: func() {
 							closed = true

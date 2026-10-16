@@ -140,7 +140,7 @@ func TestEnforcer_BreachObserver_BudgetThresholdFires(t *testing.T) {
 		EntityID: "thresh-key",
 		Quotas:   QuotaConfig{SpendLimit: 1.0, ResetPeriod: "monthly", DefaultMaxTokens: 50_000},
 	}}
-	d, reservations := e.Check(chain)
+	d, reservations := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 	require.Len(t, reservations, 1)
 
@@ -175,11 +175,11 @@ func TestEnforcer_BreachObserver_BudgetThresholdDedupes(t *testing.T) {
 		EntityID: "dedup-key",
 		Quotas:   QuotaConfig{SpendLimit: 10.0, ResetPeriod: "monthly", DefaultMaxTokens: 50_000},
 	}}
-	d1, res1 := e.Check(chain)
+	d1, res1 := checkPaid(e, chain)
 	require.True(t, d1.Allowed)
 	e.SettleReservations(res1, 5_500_000, 0, 0) // crosses 50% ($5.50 / $10)
 
-	d2, res2 := e.Check(chain)
+	d2, res2 := checkPaid(e, chain)
 	require.True(t, d2.Allowed)
 	e.SettleReservations(res2, 500_000, 0, 0) // settles to $6.00, still inside 50% band
 
@@ -190,6 +190,6 @@ func TestEnforcer_BreachObserver_BudgetThresholdDedupes(t *testing.T) {
 }
 
 func mustCheck(e *Enforcer, chain []QuotaScope) Decision {
-	d, _ := e.Check(chain)
+	d, _ := checkPaid(e, chain)
 	return d
 }

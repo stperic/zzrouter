@@ -33,6 +33,18 @@ func TestNewInstance_DefaultLogBuffer(t *testing.T) {
 	assert.Equal(t, 100, cap(inst.Logs))
 }
 
+func TestRecordFeatureInitializesNilMap(t *testing.T) {
+	i := NewInstance("feature", "provider", "model", 0, 0, 0)
+	assert.Nil(t, i.Resolved().Features)
+	assert.False(t, i.RecordFeature("tools", "present"), "starting runs reject observations")
+	i.MarkRunning(false, nil)
+	assert.True(t, i.RecordFeature("tools", "present"))
+	assert.Equal(t, map[string]string{"tools": "present"}, i.Resolved().Features)
+	assert.False(t, i.RecordFeature("tools", "present"), "unchanged evidence does not republish")
+	assert.True(t, i.RecordFeature("vision", "unsupported"))
+	assert.Equal(t, "present", i.Resolved().Features["tools"])
+}
+
 func TestInstance_StatusTransitions(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 
@@ -571,7 +583,7 @@ func TestInstance_GetProcessGroupID(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 	assert.Equal(t, 0, inst.GetProcessGroupID())
 
-	inst.SetProcessInfo(1234, 5678, nil)
+	inst.SetProcessInfo(1234, 5678, 0, nil)
 	assert.Equal(t, 5678, inst.GetProcessGroupID())
 	assert.Equal(t, 1234, inst.GetProcessID())
 }
@@ -584,7 +596,7 @@ func TestInstance_GetProcessGroupID_Concurrent(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			if n%2 == 0 {
-				inst.SetProcessInfo(n, n*10, nil)
+				inst.SetProcessInfo(n, n*10, 0, nil)
 			} else {
 				_ = inst.GetProcessGroupID()
 				_ = inst.GetProcessID()
@@ -675,17 +687,27 @@ func TestIdleSnapshotReadsKeepAliveAndActivity(t *testing.T) {
 // One side owns the signal: a launch claim excludes every stop, a stop claim excludes the launch, and a stop
 // may retry its own claim.
 func TestClaimTerminationOwner(t *testing.T) {
-	launched := NewInstance("a", "p", "m", 0, time.Minute, 1)
-	assert.Zero(t, launched.ClaimTermination(false), "no process yet")
-	launched.SetProcessInfo(42, 42, nil)
-	assert.Equal(t, 42, launched.ClaimTermination(false))
-	assert.Zero(t, launched.ClaimTermination(true))
-
-	stopped := NewInstance("b", "p", "m", 0, time.Minute, 1)
-	stopped.SetProcessInfo(7, 7, nil)
-	assert.Equal(t, 7, stopped.ClaimTermination(true))
-	assert.Zero(t, stopped.ClaimTermination(false))
-	assert.Equal(t, 7, stopped.ClaimTermination(true), "a stop retries its own claim")
+	for _, byStop := range []bool{false, true} {
+		run := NewInstance("a", "p", "m", 0, time.Minute, 1)
+		pid, start := run.ClaimTermination(byStop)
+		assert.Zero(t, pid)
+		assert.Zero(t, start)
+		run.SetProcessInfo(42, 42, 12345, nil)
+		pid, start = run.ClaimTermination(byStop)
+		assert.Equal(t, 42, pid)
+		assert.EqualValues(t, 12345, start)
+		pid, start = run.ClaimTermination(!byStop)
+		assert.Zero(t, pid)
+		assert.Zero(t, start)
+		pid, start = run.ClaimTermination(byStop)
+		if byStop {
+			assert.Equal(t, 42, pid, "a stop retries its own claim")
+			assert.EqualValues(t, 12345, start)
+		} else {
+			assert.Zero(t, pid)
+			assert.Zero(t, start)
+		}
+	}
 }
 
 func TestToInfoKeepAliveReadsAsItsParameter(t *testing.T) {

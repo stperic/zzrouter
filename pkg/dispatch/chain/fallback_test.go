@@ -606,24 +606,39 @@ func TestProxyWithFallback_UnreachableReplicaFallsThrough(t *testing.T) {
 	assert.Equal(t, "provider-b", w.Header().Get("X-zzrouter-Provider"))
 }
 
-func TestProxyWithFallback_UnsupportedImageDoesNotRetryOrCooldown(t *testing.T) {
-	deps := newFakeDeps()
-	classifier := httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}
-	require.NoError(t, classifier.Compile())
-	deps.classifier = &classifier
-	deps.endpoints["ollama"] = "http://127.0.0.1:11434"
-	deps.forward["http://127.0.0.1:11434/v1/chat/completions"] = func() (*http.Response, error) {
-		return cannedJSON(http.StatusInternalServerError, `{"error":{"message":"image input is not supported","type":"api_error"}}`), nil
+func TestUpstreamImageGateDispatchPaths(t *testing.T) {
+	for _, images := range []bool{false, true} {
+		t.Run(fmt.Sprintf("images=%t", images), func(t *testing.T) {
+			deps := newFakeDeps()
+			classifier := httperr.Classifier{{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput}}
+			require.NoError(t, classifier.Compile())
+			deps.classifier = &classifier
+			deps.endpoints["ollama"] = "http://127.0.0.1:11434"
+			deps.forward["http://127.0.0.1:11434/v1/chat/completions"] = func() (*http.Response, error) {
+				return cannedJSON(http.StatusInternalServerError, `{"error":{"message":"image input is not supported","type":"api_error"}}`), nil
+			}
+			p := newProxyWithFake(deps)
+			body := `{"model":"group"}`
+			if images {
+				body = `{"model":"group","stream":true,"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`
+			}
+			c, w := buildGinCtx(t, body)
+			r := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: []pfallback.Candidate{{Name: "dep-a", App: "ollama", Model: "m"}, {Name: "dep-b", App: "ollama", Model: "m"}}}
+			p.ProxyWithFallback(c, r, []byte(body), nil, "group", "", false)
+			if !images {
+				require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+				assert.NotContains(t, w.Body.String(), `"code":"unsupported_input"`)
+				return
+			}
+			require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+			assert.Contains(t, w.Body.String(), `"type":"invalid_request_error"`)
+			assert.EqualValues(t, 1, deps.forwardCalls.Load())
+			assert.False(t, p.cooldowns.InCooldown("dep-a"))
+			assert.False(t, p.providerCooldowns.InCooldown("ollama"))
+			assert.NotContains(t, w.Body.String(), "[DONE]")
+			assert.NotContains(t, w.Body.String(), `"finish_reason":"stop"`)
+		})
 	}
-	p := newProxyWithFake(deps)
-	c, w := buildGinCtx(t, `{"model":"group"}`)
-	r := &resolver.Resolved{OriginalName: "group", GroupName: "group", Strategy: "priority", Candidates: []pfallback.Candidate{{Name: "dep-a", App: "ollama", Model: "m"}, {Name: "dep-b", App: "ollama", Model: "m"}}}
-	p.ProxyWithFallback(c, r, []byte(`{"model":"group"}`), nil, "group", "", false)
-	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	assert.Contains(t, w.Body.String(), `"type":"invalid_request_error"`)
-	assert.EqualValues(t, 1, deps.forwardCalls.Load())
-	assert.False(t, p.cooldowns.InCooldown("dep-a"))
-	assert.False(t, p.providerCooldowns.InCooldown("ollama"))
 }
 
 func TestProxyWithFallback_ConflictAdmission(t *testing.T) {

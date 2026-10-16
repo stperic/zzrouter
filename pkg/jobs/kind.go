@@ -102,12 +102,9 @@ func (k Kind) DefaultRingPolicy() RingPolicy {
 	return RingPolicy{Mode: RingBounded, Size: defaultRingFallback}
 }
 
-// Inactivity timeouts bound memory against stalled producers. A
-// producer that keeps calling Progress is never flipped; a silent
-// producer is. Values are ceilings for realistic operations on
-// home-lab hardware + links.
+// Inactivity timeouts bound stalled producers unless their kind owns a separate deadline.
 const (
-	inactivityDownload     = 1 * time.Hour
+	inactivityDownload     = 0 // transfers have their own deadline; silence is not failure
 	inactivityInstall      = 30 * time.Minute
 	inactivityUpdate       = 30 * time.Minute
 	inactivitySync         = 10 * time.Minute
@@ -120,7 +117,7 @@ const (
 )
 
 // DefaultInactivityTimeout returns the max-silent-stretch before the
-// janitor flips a running job to failed. Zero means "never" (firehose).
+// janitor flips a running job to failed. Zero exempts a kind from inactivity reaping.
 func (k Kind) DefaultInactivityTimeout() time.Duration {
 	switch k {
 	case KindDownload:

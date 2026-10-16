@@ -128,6 +128,8 @@ const (
 	ErrorCodeInvalidAPIKey ErrorCode = "invalid_api_key"
 
 	// --- permission_error ---
+	// ErrorCodeModelUnpriced requires pricing before enforcing a spend limit.
+	ErrorCodeModelUnpriced ErrorCode = "model_unpriced"
 
 	// ErrorCodeInsufficientPermissions is emitted on 403 when the
 	// caller is authenticated but lacks the required role/scope.
@@ -277,6 +279,7 @@ var allErrorCodes = []ErrorCode{
 	ErrorCodeInvalidRequest,
 	ErrorCodeMethodNotAllowed,
 	ErrorCodeModelNameConflict,
+	ErrorCodeModelUnpriced,
 	ErrorCodeModelNotFound,
 	ErrorCodeModelInventoryUnavailable,
 	ErrorCodeProviderNotRunning,

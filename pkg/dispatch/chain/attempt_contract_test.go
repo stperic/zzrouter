@@ -144,13 +144,13 @@ func TestTraceAttemptRawStatus(t *testing.T) {
 	deps.forward["http://engine.test/v1/chat/completions"] = func() (*http.Response, error) {
 		return cannedJSON(503, `{"error":{"message":"image input is not supported","type":"api_error"}}`), nil
 	}
-	c, w := buildGinCtx(t, `{"model":"group"}`)
+	c, w := buildGinCtx(t, `{"model":"group","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`)
 	ctx, parent := llm.Tracer().Start(c.Request.Context(), "logical")
 	defer parent.End()
 	c.Request = c.Request.WithContext(ctx)
 	dep := pfallback.Candidate{Name: "actual", App: "engine", Model: "m"}
 	p := newProxyWithFake(deps)
-	outcome := p.tryOnce(c, dep, []byte(`{"model":"group"}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now(), attemptsSoFar: []pfallback.Attempt{
+	outcome := p.tryOnce(c, dep, []byte(`{"model":"group","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`), nil, leaseGroup([]pfallback.Candidate{dep}), routeMetaCtx{decisionStart: utils.Now(), attemptsSoFar: []pfallback.Attempt{
 		{Outcome: pfallback.OutcomeOnDemandSkip}, {Outcome: pfallback.OutcomeCooldownSkip},
 	}}, 0, 0)
 	assert.Equal(t, 400, w.Code)

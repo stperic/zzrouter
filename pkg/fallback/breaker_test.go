@@ -2,6 +2,7 @@ package fallback
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -268,5 +269,70 @@ func TestBreaker_SuccessResetsFailureCount(t *testing.T) {
 
 	if cb.failureCount != 0 {
 		t.Errorf("failureCount = %d, want 0 after success", cb.failureCount)
+	}
+}
+
+func TestBreakerPermitGenerationAndNeutral(t *testing.T) {
+	b := NewBreakerManager().GetBreaker("worker")
+	lateSuccess, err := b.Acquire(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateFailure, err := b.Acquire(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		p, err := b.Acquire(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Complete(Failure)
+		p.Complete(Failure)
+	}
+	if b.State() != BreakerOpen {
+		t.Fatal("third distinct failure must open")
+	}
+	b.mu.Lock()
+	b.lastStateChange = b.lastStateChange.Add(-time.Minute)
+	b.mu.Unlock()
+	probe, err := b.Acquire(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Acquire(true); err == nil {
+		t.Fatal("second concurrent probe admitted")
+	}
+	probe.Complete(Neutral)
+	probe, err = b.Acquire(true)
+	if err != nil {
+		t.Fatal("neutral completion leaked probe slot", err)
+	}
+	probe.Complete(Success)
+	probe, err = b.Acquire(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe.Complete(Success)
+	if lateSuccess.Complete(Success).Applied || lateFailure.Complete(Failure).Applied {
+		t.Fatal("stale generation accepted")
+	}
+	if b.State() != BreakerClosed || b.Metrics()["failure_count"] != 0 {
+		t.Fatal("late completion corrupted recovered state")
+	}
+}
+
+func TestBreakerManagerRetainedBeyondCapacity(t *testing.T) {
+	m := NewBreakerManager()
+	first := m.Retain("worker")
+	for i := range maxBreakers + 1 {
+		m.Retain(fmt.Sprint(i))
+	}
+	if first != m.GetBreaker("worker") {
+		t.Fatal("retained breaker evicted")
+	}
+	m.Release("worker")
+	if first == m.GetBreaker("worker") {
+		t.Fatal("unregistered breaker retained")
 	}
 }

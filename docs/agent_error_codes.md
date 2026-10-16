@@ -16,7 +16,15 @@ The serving node classifies declared engine failures before forwarding them.
 Relays preserve that status and code across cluster hops. Classifications apply
 at startup, process exit and inference; an unmatched upstream error keeps its
 status. The class table is `pkg/httperr/engine_failure.go`, and provider phrasings
-live only in `runtime.failure_patterns`.
+live only in `runtime.failure_patterns`. HTTP phrase matching for
+`unsupported_input` requires images in the outgoing request. Text-only requests
+keep their upstream status for those phrases. Explicit classified upstream codes
+remain authoritative; startup and process-exit classification are unchanged.
+
+Catalog `details.features.tools` is engine evidence, and `capabilities.tools`
+is true only for present. A false value does not forbid a tool request. Catalog
+evidence and `zz_chat` request-local verification do not replace classified
+refusals or their recovery steps; this evidence adds no error codes.
 
 ## OpenAI surface (`/v1/*`)
 
@@ -28,20 +36,23 @@ live only in `runtime.failure_patterns`.
 | `model_referenced` | 409 | A configured variant references the selected weights. | Remove the named `models` entry through the parameters API first. |
 | `model_not_deletable` | 409 | The selected identity is cloud configuration, a logical variant or a group. | Remove its configuration entry rather than physical weights. |
 | `model_detail_unsupported` | 501 | The selected catalog identity has no detail reader. | Keep catalog evidence and use serving probes, or inspect a group's exact model. |
+| `model_unpriced` | 403 | A spend-limited caller has no priced target left after filtering. | Ask an administrator to enable pricing and POST rates to `/zzrouter/v1/pricing/overrides`; zero explicitly declares free. No Retry-After or exhausted-budget fields. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
+| `model_feature_evidence_invalid` | 409 | Endpoint-applicable feature evidence is malformed or unreadable, even if the optional runtime is absent. Preview, start and cold inference refuse; parameter status and catalog evidence stay unknown. | Repair or re-download malformed evidence; ask the operator to correct unreadable files. Accepted work reports failure in its existing run/job. |
 | `model_incomplete` | 409 | The local copy is missing model files, including files still pending after an interrupted transfer. | Run `zz_model_download` for the same model to fetch only what is missing, then retry. |
 | `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models` (present while a run serves the model); trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |
 | `capacity_exceeded` | 503 | The instance queue is full or queueing is disabled. | Honor `Retry-After`; retry or use another replica. |
 | `queue_wait_expired` | 503 | The instance slot did not become available within the queue wait. | Honor `Retry-After`; retry or use another replica. |
-| `rate_limit_exceeded` | 429 | Per-key RPM/TPM cap or budget reservation rejected the request. | Honor `Retry-After` if present; back off. Check `/zzrouter/v1/keys/:id/usage` for current budget. |
+| `rate_limit_exceeded` | 429 | Request-rate, token-rate or concurrency cap rejected the request. | Honor `Retry-After` if present; back off. |
+| `insufficient_quota` | 402 | Paid inference cannot reserve monetary budget. | Inspect key/team usage and the budget fields; honor `Retry-After` for reset or outstanding reservations. |
 | `invalid_request_error` (type) | 400 | Validation failure, including a run endpoint the provider cannot serve or a required endpoint runtime missing. `param` names a field when available. | Read the message and `param`; choose a supported endpoint or follow the runtime install call before retrying. |
 | `upstream_stream_interrupted` | 502 | The upstream stream ended before completing. | Treat the partial answer as incomplete; retry the request if appropriate. |
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Check whether replay is safe before retrying a billed or side-effecting request; if persistent, inspect `runtime.status`. |
 | `fallback_exhausted` | 502 | A transport failure could have occurred after the upstream ran the request. The group stops without replaying it. | Check upstream execution before resubmitting a billed or side-effecting request. |
 | `upstream_timeout` | 504 | The model instance did not begin responding within its first-byte budget. The group stops without replaying it. | Check upstream execution before resubmitting; it may still be processing the request. |
 | `out_of_range` | 409 | The `memory` class: admission refused the launch or the engine could not allocate memory during startup or inference. | Release memory or reduce the configured budget before retrying. Admission details name managed runs and outside holders. Pinned holders say `reclaim skipped: pinned`; explicitly stop the run or change launch keep-alive and restart. |
-| `unsupported_input` | 400 | The `unsupported_input` class: the engine refused an input kind. | Use a model supporting that input, or remove it from the request. |
+| `unsupported_input` | 400 | The `unsupported_input` class: an image-bearing request matched a declared HTTP phrase, a startup/process failure matched it, or an explicit upstream code classified it. | Use a model supporting that input, or remove it from the request. |
 | `responses_not_supported_by_provider` | 400 | The model's provider declared no native or translated `/v1/responses` support (its effective endpoints omit both `responses` and `responses_compat`). | Use `/v1/chat/completions` for inference : tools, structured outputs, and streaming all work there. Providers that natively serve `/v1/responses` (vLLM, OpenAI cloud, etc.) declare it in their `config.yaml`; agents that hit those providers see passthrough. Providers declaring `chat_completions` without native `responses` automatically derive `responses_compat` and translate supported Responses requests to Chat Completions. |
 | `tool_calling_not_enabled` | 400 | The `tool_calling_not_enabled` class: required launch switches are missing. | Set the provider's tool-calling parameters through PATCH `/zzrouter/v1/providers/{name}/parameters`, then restart the run. |
 | `chat_template_rejected` | 400 | The `chat_template_rejected` class: the model's template refused to render this request. | Install and select a template that accepts it; follow `chat_templates` in `GET /zzrouter/v1`. |
@@ -79,6 +90,25 @@ fallback. Where nothing more specific applies it is a snake_case slug of
 The more specific vocabularies below replace the baseline value when they
 apply.
 
+### Node reachability
+
+Pinned management dispatch retains HTTP 502 `node_unreachable`; inference retains
+HTTP 502 `backend_unreachable`. Both also cover admission refused by effective
+node health, without a network send. Existing job-lookup and update-preflight
+503 meanings below remain unchanged.
+
+Three consecutive transport failures open the node breaker (`down`). HTTP errors,
+caller cancellation/deadlines (including client timeouts), errors after response
+headers and local request/body failures do not count as node failures. Dial, TLS and
+pre-header connection errors or transport header timeouts count as failures.
+After a 30-second cooldown, two successful full cluster probes restore dispatch;
+half-open is `degraded` and admits probes only. Inference cannot force recovery.
+One missed full probe retains dispatch grace; public-only `degraded`, `unknown`
+and `down` are excluded. Two consecutive missed probes or a graceful goodbye mark
+a node down. Restore connectivity or pairing and observe REST/MCP health;
+`last_seen_at` remains the last successful probe and `last_error` reports sanitized
+probe or dispatch failures. Node health is separate from provider cooldowns.
+
 ### Install preflight (`POST /providers/:n/install`)
 
 | `code` | HTTP | Meaning | Recovery |
@@ -88,6 +118,13 @@ apply.
 Preflight runs synchronously on the install request path, so a 400 here
 means nothing was started : distinct from a job that starts and then
 fails.
+
+Standalone `POST /providers/:n/install/preflight?node=<name>` runs on the
+selected node; omitting `node` selects the local node. Failed checks return
+HTTP 200 with `data.all_ok:false`, preserving each check's message and hint.
+An unsupported OS or architecture yields a failed `platform` check before
+host prerequisite probes. This report is not a `preflight_failed` Problem;
+unknown installers and routing failures retain their ordinary Problem responses.
 
 ### Provider parameter validation (`PATCH /providers/:n/parameters`)
 
@@ -147,6 +184,21 @@ Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
 `pinned: true`. Explicitly DELETE that run, or change launch `keep-alive` and
 restart it. Inference hints cannot pin or unpin. A refused launch leaves pins
 untouched and excludes them from `evicted_runs`.
+
+The shared weight lower bound also refuses launch with HTTP 409 `out_of_range`
+before starting a process: weights exceed the selected GPU budget, GPU plus RAM
+for layer/offload engines, or the single unified pool. Above that bound, incomplete
+sizing keeps existing launch behavior. Invalid budget parameters retain HTTP 400;
+unavailable required memory observation retains HTTP 503.
+The refusal names the budget kind, reachable GiB and weight size, and recommends
+a smaller quantization or another node. Required MiB rounds up; reachable MiB rounds down.
+
+`GET /zzrouter/v1/nodes/compatible` reports `fit`, `no_fit` and `unknown` under
+`metadata.assessments`; only confirmed fits enter `data`. `unknown` stays HTTP 200,
+including missing worker replies/fields, and does not prove compatibility.
+Run preview exposes the same capacity policy under `data.assessment`. Capacity
+uses totals; launch admission still uses fresh free memory and commitments.
+Downloads can target eligible storage nodes even when capacity is unknown.
 
 Endpoint refusals use 400 `bad_request` on runs and previews. The detail names
 provider, endpoint and served APIs; a missing feature runtime also supplies its
@@ -233,8 +285,17 @@ so a later repeat runs again; duplicates already waiting must retry.
 - `POST /zzrouter/v1/runs` with `auto_deploy:true` is singleflight-deduped
   per `(provider, model, file)` : a retry while a deploy is in progress
   attaches to the in-flight job rather than starting a second one.
-- `DELETE /zzrouter/v1/jobs/:id` is non-blocking; the response is 202
-  and the SSE stream is authoritative for the cancel outcome.
+- `DELETE /zzrouter/v1/jobs/:id` is nonblocking; 202 with `accepted` and
+  `job_id` acknowledges the signal. Read or stream the job for the outcome.
+  A cancelled download has phase `failed` and `meta.transfer_status: cancelled`;
+  already-terminal success is immutable. This adds no error code. Omitting
+  `node` discovers the owner; incomplete lookup is 503/`node_unreachable`, while
+  confirmed absence is 404/`job_not_found`. Neither proves cancellation.
+- Cancellation may publish terminal state before cleanup. Completed files remain,
+  unfinished catalog files stay pending, and the next download repairs missing
+  files and clears matching dead partials under serialization. Provider-store
+  reservations remain until unwind; Ollama owns its blob cleanup. Use a new
+  idempotency key for repair after a failed or cancelled job.
 
 ## What an agent should never branch on
 

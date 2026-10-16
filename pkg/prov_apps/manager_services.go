@@ -215,7 +215,7 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 			return result, err
 		}
 		if len(pids) > 0 {
-			result.Supervisor, result.Running, result.PID = "external", true, pids[0]
+			result.Supervisor, result.Running, result.PID = "external", true, pids[0].PID
 		}
 	}
 	return result, nil
@@ -360,8 +360,8 @@ func (m *ProviderAppManager) controlDaemon(ctx context.Context, name, action str
 		if err != nil {
 			return err
 		}
-		for _, pid := range pids {
-			if err := process.Terminate(ctx, process.TerminateRequest{PID: pid, ProcessGroupID: pid}); err != nil {
+		for _, identified := range pids {
+			if err := process.Terminate(ctx, identified); err != nil {
 				return err
 			}
 		}

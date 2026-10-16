@@ -119,7 +119,7 @@ func TestMLXVisionAppleSiliconPlatformPredicate(t *testing.T) {
 	inst := New(Config{Name: "mlx-vlm", Platforms: []fsroot.Platform{{OS: "darwin", Arch: "arm64"}}})
 	for _, platform := range []fsroot.Platform{{OS: "linux", Arch: "amd64"}, {OS: "windows", Arch: "amd64"}, {OS: "darwin", Arch: "amd64"}, {OS: "darwin", Arch: "arm64"}} {
 		t.Run(platform.String(), func(t *testing.T) {
-			err := inst.checkPlatform(platform)
+			err := install.CheckPlatform(inst.ProviderName(), inst.SupportedPlatforms(), platform)
 			if platform.OS == "darwin" && platform.Arch == "arm64" {
 				assert.NoError(t, err)
 			} else {
@@ -144,4 +144,22 @@ func TestInstaller_Preflight(t *testing.T) {
 	report := inst.Preflight(context.Background(), reqs)
 	assert.Equal(t, "test", report.Provider)
 	assert.NotEmpty(t, report.Results)
+}
+
+func TestPreflightUnsupportedPlatformBeforeHostProbes(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "unprobed")
+	previousRoot := fsroot.ProviderRootDir()
+	fsroot.SetProviderRootOverride(root)
+	t.Cleanup(func() { fsroot.SetProviderRootOverride(previousRoot) })
+	inst := New(Config{Name: "unsupported", Platforms: []fsroot.Platform{{OS: "unsupported-os", Arch: "unsupported-arch"}}})
+	report := install.Preflight(t.Context(), inst, &config.AppRequirements{Python: &config.PythonRequirement{Min: "99.1"}})
+	assert.Equal(t, "unsupported", report.Provider)
+	assert.False(t, report.AllOK)
+	require.Len(t, report.Results, 1)
+	assert.Equal(t, "platform", report.Results[0].Check)
+	assert.False(t, report.Results[0].Passed)
+	assert.Contains(t, report.Results[0].Message, fsroot.CurrentPlatform().String())
+	assert.NotEmpty(t, report.Results[0].Hint)
+	assert.Nil(t, inst.chosen)
+	assert.NoDirExists(t, root)
 }

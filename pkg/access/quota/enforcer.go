@@ -2,13 +2,16 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // Decision is the result of a quota check. Pure data — no HTTP.
 type Decision struct {
+	Detail   string
 	Allowed  bool
 	Reason   string    // "rpm_limit_exceeded", "tpm_limit_exceeded", "budget_exhausted", "concurrency_limit_exceeded"
 	Scope    ScopeKind // which scope denied
@@ -112,8 +115,11 @@ func (e *Enforcer) FlushSpend() {
 // Returns the first denial, or an allow decision if all pass.
 // Budget reservations are made for each scope that has a spend limit;
 // the caller MUST call CancelReservations if a later step (e.g., concurrency) fails.
-func (e *Enforcer) Check(chain []QuotaScope) (Decision, []reservationRecord) {
+func (e *Enforcer) Check(chain []QuotaScope, quotes []pricing.Quote) (Decision, []reservationRecord) {
 	var reservations []reservationRecord
+	if len(quotes) == 0 {
+		quotes = []pricing.Quote{{}}
+	}
 
 	for _, qs := range chain {
 		// RPM
@@ -149,7 +155,20 @@ func (e *Enforcer) Check(chain []QuotaScope) (Decision, []reservationRecord) {
 		}
 
 		// Budget reservation
-		if qs.Quotas.SpendLimit > 0 && e.tracker != nil {
+		if qs.Quotas.SpendLimit > 0 {
+			free := len(quotes) > 0
+			for _, quote := range quotes {
+				if quote.Rates == nil {
+					e.cancelReservations(reservations)
+					e.metrics.ObserveDecision(qs.Scope, "denied", "model_unpriced")
+					return Decision{Reason: "model_unpriced", Detail: fmt.Sprintf("model %q on provider %q has no usable pricing; ask an administrator to enable pricing and POST rates to /zzrouter/v1/pricing/overrides", quote.Model, quote.Provider), Scope: qs.Scope, EntityID: qs.EntityID}, nil
+				}
+				free = free && !quote.Rates.HasPricing() && quote.Rates.CacheReadCostPerToken == 0 && quote.Rates.OutputCostPerReasoningToken == 0
+			}
+			if e.tracker == nil {
+				continue
+			}
+
 			scope := SpendScope{Kind: qs.Scope, EntityID: qs.EntityID}
 			limitMicro := qs.Quotas.SpendLimitMicro()
 			period := ParsePeriod(qs.Quotas.ResetPeriod)
@@ -179,6 +198,10 @@ func (e *Enforcer) Check(chain []QuotaScope) (Decision, []reservationRecord) {
 				if max := int64(DefaultMaxTokensFallback) * 10; estimatedCostMicro > max {
 					estimatedCostMicro = max
 				}
+			}
+
+			if free {
+				estimatedCostMicro = 0
 			}
 
 			if !e.tracker.ReserveBudget(scope, limitMicro, period, estimatedCostMicro) {

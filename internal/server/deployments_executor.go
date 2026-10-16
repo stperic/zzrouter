@@ -457,6 +457,8 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, admission downloadA
 	job, ctx := attempt.job, attempt.ctx
 
 	go func() {
+		defer e.forgetJobKey(downloadKey, job.ID())
+		defer attempt.cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("PANIC recovered in Ollama download", "panic", r, "stack", string(debug.Stack()))
@@ -464,15 +466,12 @@ func (e *DeploymentsExecutor) downloadOllama(c *gin.Context, admission downloadA
 			}
 		}()
 
-		// 48-hour safety timeout prevents orphaned contexts if StopDownload is
-		// never called. Normal downloads complete much faster or are cancelled.
-
 		statusUpdater := func(status, currentFile string, filesDownloaded, filesTotal int, progress float64, downloaded, totalSize, speed int64) {
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
 		if e.registry != nil {
-			e.registry.PullOllamaModelAsync(ctx, modelName, statusUpdater)
+			e.registry.PullOllamaModel(ctx, modelName, statusUpdater)
 		}
 	}()
 

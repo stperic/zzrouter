@@ -106,23 +106,17 @@ func (m *ModelsViewModel) executeConfirmedAction() tea.Cmd {
 		}
 	case confirmDeleteDownload:
 		if r.deploy != nil {
-			// Cancel through the deployment, not the job. The download
-			// goroutine is bound to the tracker's cancel func and never
-			// watches its job context, so DELETE /jobs/:id returns 202 and
-			// the transfer keeps going.
-			depID, node := r.deploy.DeploymentID, r.deploy.Node
-			if depID == "" || node == "" {
-				// Nothing addressable: the transfer already finished, or the
-				// record outlived the deployment. Saying so beats dropping
-				// the row and letting the next poll bring it straight back.
+			jobID := r.deploy.JobID
+			if jobID == "" {
 				return func() tea.Msg {
 					return modelsActionMsg{action: "cancel",
 						err: fmt.Errorf("this download is no longer cancellable")}
 				}
 			}
+			ctx := m.Context()
 			return func() tea.Msg {
-				err := client.CancelDeploymentNode(depID, node)
-				return modelsActionMsg{action: "cancel", err: err}
+				accepted, err := client.CancelJob(ctx, jobID)
+				return modelsActionMsg{action: "cancel", err: err, alreadyFinished: !accepted}
 			}
 		}
 	}

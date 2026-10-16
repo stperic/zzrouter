@@ -11,15 +11,13 @@ import (
 // StateManager manages all cluster state in a unified way
 type StateManager struct {
 	endpoints       *EndpointRegistry
-	circuitBreakers *CircuitBreakerManager
 	downloadTracker *DownloadTracker
 }
 
 // NewStateManager creates a new unified state manager
-func NewStateManager(endpoints *EndpointRegistry, circuitBreakers *CircuitBreakerManager) *StateManager {
+func NewStateManager(endpoints *EndpointRegistry) *StateManager {
 	return &StateManager{
 		endpoints:       endpoints,
-		circuitBreakers: circuitBreakers,
 		downloadTracker: NewDownloadTracker(),
 	}
 }
@@ -31,7 +29,7 @@ func (sm *StateManager) GetEndpoints() *EndpointRegistry {
 
 // GetCircuitBreakers returns the circuit breaker manager
 func (sm *StateManager) GetCircuitBreakers() *CircuitBreakerManager {
-	return sm.circuitBreakers
+	return sm.endpoints.breakers
 }
 
 // GetDownloadTracker returns the download tracker

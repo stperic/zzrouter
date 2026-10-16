@@ -115,6 +115,10 @@ const maxFailureReason = 300
 
 // Match returns the first declared pattern that matches message, or nil.
 func (c *Classifier) Match(message string) *EngineFailure {
+	return c.match(message, nil)
+}
+
+func (c *Classifier) match(message string, accept func(FailureClass) bool) *EngineFailure {
 	if c == nil {
 		return nil
 	}
@@ -132,6 +136,9 @@ func (c *Classifier) Match(message string) *EngineFailure {
 				reason = match[1]
 			}
 		} else if !strings.Contains(strings.ToLower(message), strings.ToLower(p.Pattern)) {
+			continue
+		}
+		if accept != nil && !accept(p.Class) {
 			continue
 		}
 		reason = strings.TrimSpace(reason)

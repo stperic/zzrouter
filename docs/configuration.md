@@ -49,6 +49,30 @@ required runtime support returns an actionable 400. See
 [model features](model_features.md) for MLX installation, deployment and catalog
 state details. Protocol 11 requires upgrading every node together.
 
+## Chat usage accounting
+
+The coordinator meters raw upstream usage before normalizing chat responses.
+Reported spend is `usage.cost` plus `usage.cost_details.upstream_inference_cost`
+when present. OpenRouter's account charge is zero for BYOK requests, while the
+upstream inference cost carries the provider's charge. An explicit nonnegative
+numeric `usage.cost`, including a zero total, is authoritative. Missing, null,
+malformed or negative costs fall back to positive legacy `x_*.cost` evidence in
+sorted key order, then the pricing store. A zero extension cost is not provider
+evidence. Response and inference-log costs retain provider precision;
+the spend ledger uses the existing whole-microUSD conversion.
+
+Client-facing chat responses omit `usage.cost`, `usage.cost_details`,
+`usage.is_byok` and `usage.prompt_tokens_details.cache_write_tokens`. Standard
+token counts, cached/reasoning details and unrelated extensions remain. Buffered
+costs appear in `zzrouter.cost_usd` / `cost_source`; streamed costs appear in
+`usage.zz_cost_usd` / `zz_cost_source` when metadata is enabled. Cleanup also
+applies with `?verbose=0`, streaming metadata disabled, or usage frames suppressed.
+Workers preserve upstream accounting until the coordinator meters it.
+Stream cost metadata retains its existing gate on positive `completion_tokens`.
+
+OpenRouter returns usage automatically. Its deprecated `usage.include` option
+is not injected, and no provider capability or cluster protocol change is needed.
+
 ## Node GPU policy
 
 `node.yaml` controls memory reclamation locally; it is not part of provider sync:
@@ -125,3 +149,37 @@ and the [API reference](api.md) for deployment and installation contracts.
 Tracing is opt-in through `observability.tracing.enabled` in `node.yaml`.
 See [OpenTelemetry tracing](observability.md) for collector protocols, ingestion
 headers, sampling and restart-required activation.
+
+## Budget pricing
+
+Set `models.pricing.enabled: true` to use the pricing table. Administrators can
+POST rates to `/zzrouter/v1/pricing/overrides`; an explicit zero rate declares
+free inference. Enable pricing before posting overrides.
+Recognized launched engines and served Ollama default to zero, with operator
+overrides taking precedence. Ollama Cloud and arbitrary external endpoints do
+not inherit local-free pricing.
+
+With a key or team `spend_limit > 0`, admission removes targets without known
+rates after wire endpoint selection and before fallback. If none remain, 403
+`model_unpriced` names the provider/model and administrator action. Callers with
+no spend limit keep every candidate. Free traffic still counts tokens and
+requests and works after monetary exhaustion; paid exhaustion remains 402.
+Authorization runs before preparation, and resolution errors precede quota
+checks. `/zzrouter/v1/pricing/status` counts missing-price observations both
+from admission (removed targets or refused requests) and from completed unlimited
+traffic. Explicit free inference creates no pricing miss. Misses are process-local;
+adding an answering override clears its counter.
+
+Upgrade: limited keys or teams routing to an external self-hosted endpoint
+without a managed lifecycle now receive 403 `model_unpriced` until an operator
+posts a zero (free) or real pricing override. Enable `models.pricing.enabled`
+in `node.yaml` and restart if pricing is disabled. For a free endpoint, replace
+`my-external-provider` with its configured provider name and run:
+
+```bash
+curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides \
+  -H "X-API-Key: $ZZROUTER_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"provider":"my-external-provider","model":"*","input_cost_per_1m":0,"output_cost_per_1m":0}'
+```
+
+Use a concrete model ID and real dollar rates per million tokens when billed.

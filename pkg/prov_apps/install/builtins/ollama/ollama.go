@@ -207,21 +207,21 @@ func windowsInstallDir() string {
 }
 
 func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements) *preflight.Report {
-	report := &preflight.Report{Provider: i.Name, AllOK: true}
+	var results []preflight.Result
 	if reqs == nil {
 		reqs = &config.AppRequirements{}
 	}
 
-	report.Results = append(report.Results, preflight.DiskAndPermissions(i.Name, reqs.DiskSpace)...)
+	results = append(results, preflight.DiskAndPermissions(i.Name, reqs.DiskSpace)...)
 
 	platform := fsroot.CurrentPlatform()
 	switch platform.OS {
 	case "linux":
-		report.Results = append(report.Results, preflight.Commands("curl", "tar", "zstd", "env", "setsid", "pkill", "pgrep")...)
+		results = append(results, preflight.Commands("curl", "tar", "zstd", "env", "setsid", "pkill", "pgrep")...)
 	case "darwin":
-		report.Results = append(report.Results, preflight.Commands("brew")...)
+		results = append(results, preflight.Commands("brew")...)
 	case "windows":
-		report.Results = append(report.Results, preflight.Commands("powershell")...)
+		results = append(results, preflight.Commands("powershell")...)
 	}
 
 	// Ollama bundles CUDA + ROCm runtimes and falls back to CPU at
@@ -229,16 +229,10 @@ func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements)
 	// informational. PolicyAdvisory surfaces the hint but never
 	// blocks the install.
 	if result, ok := preflight.GPU(ctx, reqs.GPU); ok {
-		report.Results = append(report.Results, result)
+		results = append(results, result)
 	}
 
-	for _, r := range report.Results {
-		if !r.Passed {
-			report.AllOK = false
-			break
-		}
-	}
-	return report
+	return preflight.NewReport(i.Name, results)
 }
 
 func (i *Installer) InstallPlan(ctx context.Context, version string) (*install.Plan, error) {

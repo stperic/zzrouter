@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -59,7 +60,7 @@ func TestNormalizeUpstreamResponse(t *testing.T) {
 					h.Set("Content-Encoding", "gzip")
 				}
 				resp := &http.Response{StatusCode: tc.status, Header: h, Body: io.NopCloser(bytes.NewReader(raw))}
-				got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"))
+				got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"), func() bool { return true })
 				assert.Equal(t, tc.want, resp.StatusCode)
 				assert.Equal(t, tc.typ, got.Type)
 				out, err := io.ReadAll(resp.Body)
@@ -84,14 +85,14 @@ func TestNormalizeUpstreamResponse(t *testing.T) {
 
 func TestNormalizeUpstreamResponseAnthropicAndUnreadable(t *testing.T) {
 	resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"images are not supported","type":"api_error"}}`))}
-	_ = httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil), testClassifier(t, "llamacpp"))
+	_ = httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil), testClassifier(t, "llamacpp"), func() bool { return true })
 	out, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Equal(t, 400, resp.StatusCode)
 	assert.JSONEq(t, `{"type":"error","error":{"type":"invalid_request_error","message":"images are not supported Use a model that supports this input, or remove it from the request.","code":"unsupported_input"}}`, string(out))
 	for _, raw := range []string{strings.Repeat("x", 1024*1024), "bad gzip"} {
 		resp = &http.Response{StatusCode: 500, Header: http.Header{"Content-Encoding": []string{"gzip"}}, Body: io.NopCloser(strings.NewReader(raw))}
-		got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"))
+		got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"), func() bool { return true })
 		assert.Equal(t, 500, resp.StatusCode)
 		assert.Equal(t, "api_error", got.Type)
 	}
@@ -119,7 +120,7 @@ func TestNormalizeSourceVerifiedCapabilityRefusals(t *testing.T) {
 			if strings.Contains(file, "vllm") {
 				provider = "vllm"
 			}
-			failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, provider))
+			failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, provider), func() bool { return true })
 			assert.Equal(t, 400, failure.Status)
 			assert.Equal(t, "unsupported_input", failure.Code)
 		})
@@ -142,7 +143,7 @@ func TestNormalizeChatTemplateRefusal(t *testing.T) {
 	require.NoError(t, err)
 	resp := &http.Response{StatusCode: 500, Header: http.Header{"Retry-After": {"1"}}, Body: io.NopCloser(bytes.NewReader(body))}
 
-	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"))
+	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"), func() bool { return true })
 
 	assert.Equal(t, http.StatusBadRequest, failure.Status)
 	assert.Equal(t, httperr.CodeChatTemplateRejected, failure.Code)
@@ -168,7 +169,7 @@ func TestNormalizeToolCallingNotEnabled(t *testing.T) {
 	require.NoError(t, err)
 	resp := &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(body))}
 
-	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "vllm"))
+	failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "vllm"), func() bool { return true })
 
 	assert.Equal(t, http.StatusBadRequest, failure.Status)
 	assert.Equal(t, httperr.CodeToolCallingNotEnabled, failure.Code)
@@ -180,7 +181,7 @@ func TestNormalizeToolCallingNotEnabled(t *testing.T) {
 
 	// The coordinator relays the worker's classified reply: once is enough.
 	again := &http.Response{StatusCode: 400, Header: http.Header{}, Body: io.NopCloser(bytes.NewReader(out))}
-	relayed := httperr.NormalizeUpstreamResponse(again, openaiproto.New(), nil)
+	relayed := httperr.NormalizeUpstreamResponse(again, openaiproto.New(), nil, func() bool { return true })
 	assert.Equal(t, httperr.CodeToolCallingNotEnabled, relayed.Code)
 	assert.Equal(t, failure.Message, relayed.Message)
 }
@@ -194,7 +195,7 @@ func TestChatTemplateRefusalReasonIsBounded(t *testing.T) {
 			body, err := json.Marshal(map[string]any{"error": map[string]string{"message": "Error: Jinja Exception: " + tc.reason}})
 			require.NoError(t, err)
 			resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body))}
-			failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"))
+			failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"), func() bool { return true })
 			assert.Equal(t, httperr.CodeChatTemplateRejected, failure.Code)
 			assert.Contains(t, failure.Message, "request: "+tc.want+" ")
 			assert.Less(t, len(failure.Message), 600)
@@ -214,4 +215,115 @@ func testClassifier(t *testing.T, provider string) *httperr.Classifier {
 	require.NoError(t, yaml.Unmarshal(raw, &cfg))
 	require.NoError(t, cfg.Runtime.FailurePatterns.Compile())
 	return &cfg.Runtime.FailurePatterns
+}
+
+func TestNormalizeUpstreamResponse_InputGate(t *testing.T) {
+	for _, hasImages := range []bool{false, true} {
+		for _, compressed := range []bool{false, true} {
+			for _, status := range []int{500, 503} {
+				for _, tc := range []struct {
+					name, body, code string
+					want             int
+				}{
+					{"phrase", `image input is not supported`, "unsupported_input", 400},
+					{"object", `{"error":{"message":"image input is not supported"}}`, "unsupported_input", 400},
+					{"authoritative", `{"error":{"message":"worker refusal","code":"unsupported_input"}}`, "unsupported_input", 400},
+					{"memory", `{"error":"cudaMalloc failed: out of memory"}`, "out_of_range", 409},
+					{"template", `{"error":"Jinja Exception: bad template"}`, "chat_template_rejected", 400},
+				} {
+					t.Run(fmt.Sprintf("%s/images=%t/gzip=%t/status=%d", tc.name, hasImages, compressed, status), func(t *testing.T) {
+						body := []byte(tc.body)
+						headers := http.Header{"Retry-After": {"60"}}
+						if compressed {
+							var buf bytes.Buffer
+							w := gzip.NewWriter(&buf)
+							_, err := w.Write(body)
+							require.NoError(t, err)
+							require.NoError(t, w.Close())
+							body = buf.Bytes()
+							headers.Set("Content-Encoding", "gzip")
+						}
+						resp := &http.Response{StatusCode: status, Header: headers, Body: io.NopCloser(bytes.NewReader(body))}
+						got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), testClassifier(t, "llamacpp"), func() bool { return hasImages })
+						want, code := tc.want, tc.code
+						if !hasImages && (tc.name == "phrase" || tc.name == "object") {
+							want, code = status, ""
+						}
+						assert.Equal(t, want, got.Status)
+						assert.Equal(t, want, resp.StatusCode)
+						assert.Equal(t, code, got.Code)
+						if code == "" {
+							assert.Equal(t, "api_error", got.Type)
+							assert.Equal(t, "60", resp.Header.Get("Retry-After"))
+						} else {
+							assert.Empty(t, resp.Header.Get("Retry-After"))
+						}
+						assert.Empty(t, resp.Header.Get("Content-Encoding"))
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestNormalizeUpstreamResponseContinuesAfterImageGate(t *testing.T) {
+	for _, isRegex := range []bool{false, true} {
+		for _, images := range []bool{false, true} {
+			t.Run(fmt.Sprintf("regex=%t/images=%t", isRegex, images), func(t *testing.T) {
+				classifier := httperr.Classifier{
+					{Pattern: "image input is not supported", Class: httperr.FailureUnsupportedInput, IsRegex: isRegex},
+					{Pattern: "out of memory", Class: httperr.FailureMemory, IsRegex: isRegex},
+				}
+				require.NoError(t, classifier.Compile())
+				message := "image input is not supported: out of memory"
+				assert.Equal(t, httperr.FailureUnsupportedInput, classifier.Match(message).Class, "startup matching keeps declaration order")
+				resp := &http.Response{StatusCode: 503, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(message))}
+				got := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), &classifier, func() bool { return images })
+				wantStatus, wantCode := 409, "out_of_range"
+				if images {
+					wantStatus, wantCode = 400, "unsupported_input"
+				}
+				assert.Equal(t, wantStatus, got.Status)
+				assert.Equal(t, wantStatus, resp.StatusCode)
+				assert.Equal(t, wantCode, got.Code)
+				assert.Empty(t, resp.Header.Get("Retry-After"))
+			})
+		}
+	}
+}
+
+func TestNormalizeUpstreamResponseInspectsImagesLazily(t *testing.T) {
+	unsupported := httperr.Classifier{{Pattern: "unsupported image", Class: httperr.FailureUnsupportedInput}}
+	empty := httperr.Classifier{}
+	for _, tc := range []struct {
+		name, body string
+		classifier *httperr.Classifier
+		checks     int
+	}{
+		{"nil classifier", "unsupported image", nil, 0},
+		{"empty classifier", "unsupported image", &empty, 0},
+		{"unmatched image phrase", "unrelated backend error", &unsupported, 0},
+		{"unmatched image regex", "unrelated backend error", &httperr.Classifier{{Pattern: "unsupported (image)", Class: httperr.FailureUnsupportedInput, IsRegex: true}}, 0},
+		{"authoritative", `{"error":{"message":"unsupported image","code":"unsupported_input"}}`, &unsupported, 0},
+		{"memory", "unsupported image", &httperr.Classifier{{Pattern: "unsupported image", Class: httperr.FailureMemory}, unsupported[0]}, 0},
+		{"template", "template error", &httperr.Classifier{{Pattern: "template error", Class: httperr.FailureChatTemplateRejected}}, 0},
+		{"tools", "tools disabled", &httperr.Classifier{{Pattern: "tools disabled", Class: httperr.FailureToolCallingNotEnabled}}, 0},
+		{"matched image phrase", "unsupported image", &unsupported, 1},
+		{"matched image regex", "unsupported image", &httperr.Classifier{{Pattern: "unsupported (image)", Class: httperr.FailureUnsupportedInput, IsRegex: true}}, 1},
+	} {
+		for _, images := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/images=%t", tc.name, images), func(t *testing.T) {
+				if tc.classifier != nil {
+					require.NoError(t, tc.classifier.Compile())
+				}
+				resp := &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}
+				checks := 0
+				_ = httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), tc.classifier, func() bool {
+					checks++
+					return images
+				})
+				assert.Equal(t, tc.checks, checks)
+			})
+		}
+	}
 }

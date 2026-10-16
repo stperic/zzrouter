@@ -23,6 +23,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -380,6 +381,8 @@ func (p *Proxy) tryOnce(
 	rctx routeMetaCtx,
 	retry, maxRetries int,
 ) attemptOutcome {
+	recorder.SetProvider(dep.App)
+	recorder.SetServingTarget(dep.App, dep.Model)
 	original := c.Request
 	ctx, attempt := llm.StartAttempt(original.Context(), dep.App, dep.Model)
 	defer attempt.End()
@@ -454,7 +457,7 @@ func (p *Proxy) tryOnce(
 			if up.IsCluster() {
 				classifier = nil
 			}
-			_ = httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+			_ = httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier, func() bool { return protocol.HasImages(body) })
 		}
 		outcome.attempt.StatusCode = resp.StatusCode
 	}
@@ -505,7 +508,6 @@ func (p *Proxy) tryOnce(
 func (p *Proxy) commitSuccess(c *gin.Context, dep pfallback.Candidate, resp *http.Response, recorder *llm.InferenceRecorder, resolved *resolver.Resolved, rctx routeMetaCtx, attempt pfallback.Attempt) wire.Result {
 	// Test fakes pass a nil recorder.
 	if recorder != nil {
-		recorder.SetProvider(dep.App)
 		recorder.SetModelGroup(resolved.GroupName, dep.Name)
 		if dep.Node != "" {
 			recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)

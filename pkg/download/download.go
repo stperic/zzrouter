@@ -184,6 +184,7 @@ func transfer(client *http.Client, req *http.Request, out *os.File, hasher hash.
 	if err != nil {
 		return true, err
 	}
+	resp.Body = NewStallReader(resp.Body)
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:

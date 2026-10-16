@@ -152,27 +152,28 @@ func (c *Client) SubscribeJob(ctx context.Context, jobID, node string, onEvent f
 
 // CancelJob fires DELETE /zzrouter/v1/jobs/:id. Per server contract,
 // cancel is non-blocking: the stream is authoritative for the final
-// outcome. A 404 is treated as a no-op (job already terminal / unknown)
-// and returns nil.
-func (c *Client) CancelJob(ctx context.Context, jobID string) error {
+// outcome. accepted is false for a 404 (job already terminal / unknown).
+func (c *Client) CancelJob(ctx context.Context, jobID string) (accepted bool, err error) {
 	if jobID == "" {
-		return errors.New("CancelJob: empty jobID")
+		return false, errors.New("CancelJob: empty jobID")
 	}
 	path := apipath.Job(jobID)
 	resp, err := c.DoRequest(ctx, http.MethodDelete, path, nil)
 	if err != nil {
-		return fmt.Errorf("CancelJob: %w", err)
+		return false, fmt.Errorf("CancelJob: %w", err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}()
 	switch resp.StatusCode {
-	case http.StatusAccepted, http.StatusOK, http.StatusNotFound:
-		return nil
+	case http.StatusAccepted, http.StatusOK:
+		return true, nil
+	case http.StatusNotFound:
+		return false, nil
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("CancelJob: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("CancelJob: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }
 

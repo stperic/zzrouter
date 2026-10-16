@@ -15,6 +15,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,8 +31,10 @@ type deploymentPlanRouter struct {
 }
 
 func TestCompatibleProvidersHonorsExplicitFormat(t *testing.T) {
-	e := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, func(string, string, string) bool { return false })
-	e.eligibleProviders = func(_, _, format string, _ bool) []string {
+	e := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, nil, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+		return process.MemoryAssessment{Status: "unknown", Reason: "unsized"}
+	})
+	e.eligibleProviders = func(_, _, format, _ string, _ bool) []string {
 		assert.Equal(t, "gguf", format)
 		return []string{"llamacpp"}
 	}

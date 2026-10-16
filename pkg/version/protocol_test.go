@@ -160,7 +160,7 @@ func TestLocalProtocolWindow(t *testing.T) {
 
 func TestLocalProtocolWindowRejectsOutsidePeers(t *testing.T) {
 	w := LocalProtocolWindow()
-	for _, remote := range []int{w.Min - 1, w.Max + 1} {
+	for _, remote := range []int{0, w.Min - 1, w.Max + 1} {
 		if err := w.Check(remote); err == nil {
 			t.Errorf("protocol %d admitted by window %+v", remote, w)
 		}
@@ -262,6 +262,19 @@ func TestEndpointFeaturesProtocolCutoverContract(t *testing.T) {
 		t.Fatal("old worker admitted despite rejecting endpoint features and feature health checks")
 	}
 	if err := LocalProtocolWindow().Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToolsProtocolCutover(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min != 12 || window.Max != 12 {
+		t.Fatalf("tools declarations require protocol 12/12, got %+v", window)
+	}
+	if err := window.Check(11); err == nil {
+		t.Fatal("protocol 11 strict loader must not receive tools declarations")
+	}
+	if err := window.Check(12); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -284,57 +284,12 @@ func isCloudProvider(appsConfig *pkgConfig.AppsConfig, appName string) bool {
 // Provider Configuration Helpers
 // ============================================================================
 
-// isLocalNodeCompatible checks whether the local node can serve the given
-// model. It returns true when:
-//   - The model already exists in the local registry, OR
-//   - At least one ROUTABLE provider supports the model's detected format.
-//
-// Routable is the operative word: a provider that is merely configured
-// says nothing about what this node can run. Every node ships the full
-// providers/ tree, so iterating configuration would report a Mac as able
-// to serve safetensors because vllm has a config file there.
-//
-// repo/provider narrow the search (e.g. repo="ollama" restricts to Ollama
-// providers). Used by the deploy executor to block downloads to
-// incompatible nodes, and by GET /nodes/compatible.
+// isLocalNodeCompatible shares storage eligibility with deployment planning.
 func (s *Server) isLocalNodeCompatible(model, repo, provider string) bool {
-	// Already downloaded → compatible by definition.
-	// Use the in-memory cache index (O(1)) instead of ListModels() which triggers a full scan.
 	if s.model.Cache.HasModel(model) {
 		return true
 	}
-
-	requiredFormat := modelregistry.DetectFormatFromName(model)
-	// When format can't be determined from the name, leave it empty.
-	// FormatSupported treats empty format as "unknown" and allows any provider
-	// that declares at least one format — this lets models without format
-	// indicators in their name (e.g., "dealignai/Gemma-4-31B-JANG_4M-CRACK")
-	// be downloaded to nodes that have a capable provider.
-
-	if s.providers.appMgr == nil {
-		return false
-	}
-
-	for _, info := range s.buildCompatibleAppsInfo() {
-		// Repo/provider compatibility: Ollama is a walled garden. All
-		// other combinations are open. The rule lives in modelregistry so
-		// we don't have to hard-code "ollama" in this loop.
-		if !metadata.RepoAppCompatible(repo, info.Type) {
-			continue
-		}
-
-		if provider != "" && !strings.EqualFold(info.Type, provider) {
-			continue
-		}
-
-		if !modelregistry.FormatSupported(info.Formats, requiredFormat) {
-			continue
-		}
-
-		return true
-	}
-
-	return false
+	return len(s.eligibleDeployProviders(model, repo, "", provider, false)) > 0
 }
 
 // buildIncompatibleDeployError builds a descriptive error message explaining why a

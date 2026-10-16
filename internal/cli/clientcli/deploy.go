@@ -259,7 +259,7 @@ func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []s
 			return fmt.Errorf("failed to fetch compatible nodes: %w", err)
 		}
 		if len(compatibleNodes) == 0 {
-			return fmt.Errorf("no compatible nodes found for model '%s'", modelIdentifier)
+			return fmt.Errorf("no confirmed capacity fit for model '%s'; unknown capacity is not a refusal to download, select a node explicitly", modelIdentifier)
 		}
 		for _, host := range compatibleNodes {
 			nodes = append(nodes, host.Name)
@@ -346,7 +346,7 @@ func selectCompatibleNode(client *pkgClient.Client, modelName, repository string
 	}
 
 	if len(compatibleNodes) == 0 {
-		return "", fmt.Errorf("no compatible nodes found for model '%s'", modelName)
+		return "", fmt.Errorf("no confirmed capacity fit for model '%s'; unknown capacity is not a refusal to download, select a node explicitly", modelName)
 	}
 
 	if len(compatibleNodes) == 1 {
