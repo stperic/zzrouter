@@ -196,6 +196,12 @@ a smaller quantization or another node. Required MiB rounds up; reachable MiB ro
 `GET /zzrouter/v1/nodes/compatible` reports `fit`, `no_fit` and `unknown` under
 `metadata.assessments`; only confirmed fits enter `data`. `unknown` stays HTTP 200,
 including missing worker replies/fields, and does not prove compatibility.
+Fully sized context requirements can also produce the existing memory refusal
+code. A declared-budget shortfall reports the context requirement and budget;
+stopping holders cannot repair it. Choose a smaller context (vLLM/llama.cpp),
+a larger declared budget, smaller weights or another node. MLX assesses its
+declared minimum; its generation limit is not a context setting.
+
 Run preview exposes the same capacity policy under `data.assessment`. Capacity
 uses totals; launch admission still uses fresh free memory and commitments.
 Downloads can target eligible storage nodes even when capacity is unknown.
@@ -291,11 +297,15 @@ so a later repeat runs again; duplicates already waiting must retry.
   already-terminal success is immutable. This adds no error code. Omitting
   `node` discovers the owner; incomplete lookup is 503/`node_unreachable`, while
   confirmed absence is 404/`job_not_found`. Neither proves cancellation.
-- Cancellation may publish terminal state before cleanup. Completed files remain,
-  unfinished catalog files stay pending, and the next download repairs missing
-  files and clears matching dead partials under serialization. Provider-store
-  reservations remain until unwind; Ollama owns its blob cleanup. Use a new
-  idempotency key for repair after a failed or cancelled job.
+- Hugging Face catalog downloads and peer sync publish terminal cancellation
+  after physical unwind and catalog publication. Completed files remain and
+  unfinished catalog files stay pending. Manifest-only repositories appear as
+  `incomplete: true`; repair with the same download or delete the exact catalog
+  identity. Deleting while a writer holds the repository returns 409
+  `download_in_progress`: cancel its job and await its terminal outcome first.
+  The next download clears matching dead partials under serialization.
+  Provider-store reservations remain until unwind; Ollama owns its blob cleanup.
+  Use a new idempotency key for repair after a failed or cancelled job.
 
 ## What an agent should never branch on
 

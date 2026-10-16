@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -153,9 +154,33 @@ func TestMaterializationRootAliasesShareGate(t *testing.T) {
 	cancel()
 	_, err = AcquireMaterialization(ctx, filepath.Join(alias, "org/model"))
 	require.ErrorIs(t, err, context.Canceled)
-	direct, err := locksForDirectory(filepath.Join(root, "org/model"))
+	_, err = TryAcquireMaterialization(t.Context(), filepath.Join(alias, "org/model"))
+	require.ErrorIs(t, err, ErrMaterializationHeld, "an alias must share the writer's gate")
+}
+
+func TestMaterializationTrySharesWriterGate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "org/model")
+	release, err := AcquireMaterialization(t.Context(), dir)
 	require.NoError(t, err)
-	aliased, err := locksForDirectory(filepath.Join(alias, "org/model"))
+	var once sync.Once
+	unlock := func() { once.Do(release) }
+	defer unlock()
+	tryCtx, tryCancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer tryCancel()
+	_, err = TryAcquireMaterialization(tryCtx, dir)
+	require.ErrorIs(t, err, ErrMaterializationHeld)
+	other, err := TryAcquireMaterialization(t.Context(), t.TempDir())
 	require.NoError(t, err)
-	assert.Same(t, direct, aliased)
+	other()
+	unlock()
+	acquired, err := TryAcquireMaterialization(t.Context(), dir)
+	require.NoError(t, err)
+	acquired()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = TryAcquireMaterialization(ctx, dir)
+	require.ErrorIs(t, err, context.Canceled)
+	acquired, err = TryAcquireMaterialization(t.Context(), dir)
+	require.NoError(t, err, "a cancelled acquire must release the gate")
+	acquired()
 }

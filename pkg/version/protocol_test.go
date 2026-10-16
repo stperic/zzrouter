@@ -268,13 +268,30 @@ func TestEndpointFeaturesProtocolCutoverContract(t *testing.T) {
 
 func TestToolsProtocolCutover(t *testing.T) {
 	window := LocalProtocolWindow()
-	if window.Min != 12 || window.Max != 12 {
-		t.Fatalf("tools declarations require protocol 12/12, got %+v", window)
+	if window.Min != 12 || window.Max < window.Min {
+		t.Fatalf("tools declarations require at least the tools cutover, got %+v", window)
 	}
 	if err := window.Check(11); err == nil {
 		t.Fatal("protocol 11 strict loader must not receive tools declarations")
 	}
 	if err := window.Check(12); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestContextAssessmentRollingProtocol(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Max != window.Min+1 {
+		t.Fatalf("context evidence must retain one previous protocol for rolling upgrades: %+v", window)
+	}
+	for _, peer := range []int{window.Min, window.Max} {
+		if err := window.Check(peer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, peer := range []int{window.Min - 1, window.Max + 1} {
+		if err := window.Check(peer); err == nil {
+			t.Fatalf("admitted out-of-window protocol %d", peer)
+		}
 	}
 }

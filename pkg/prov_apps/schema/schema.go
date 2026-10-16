@@ -17,25 +17,30 @@ import (
 // optional per-endpoint overlay schema mirroring config.yaml's
 // defaults.endpoints.<E>.parameters tree.
 type YAMLSchema struct {
-	Provider    string                  `yaml:"provider"`
-	Parameters  map[string]YAMLParam    `yaml:"parameters,omitempty"`
-	Endpoints   map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
-	Diagnostics *Diagnostics            `yaml:"diagnostics,omitempty"`
+	AutoContext          `yaml:",inline"`
+	MemoryUsableFraction *float64                `yaml:"memory_usable_fraction,omitempty"`
+	Provider             string                  `yaml:"provider"`
+	Parameters           map[string]YAMLParam    `yaml:"parameters,omitempty"`
+	Endpoints            map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
+	Diagnostics          *Diagnostics            `yaml:"diagnostics,omitempty"`
 }
 
 // YAMLParam mirrors ParamShape on disk. Kind is a string so yaml.v3 decodes
 // cleanly; Merge validates it against ParamKind.
 type YAMLParam struct {
+	AutoContext `yaml:",inline"`
 	Type        string   `yaml:"type,omitempty"`
 	Min         *float64 `yaml:"min,omitempty"`
 	Max         *float64 `yaml:"max,omitempty"`
 	Description string   `yaml:"description,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"`
 	// Pass is how an asset reaches the engine; only type: asset takes it.
-	Pass         string            `yaml:"pass,omitempty"`
-	Auto         string            `yaml:"auto,omitempty"`
-	Served       string            `yaml:"served,omitempty"`
-	PlacementLog map[string]string `yaml:"placement_log,omitempty"`
+	Pass            string            `yaml:"pass,omitempty"`
+	Auto            string            `yaml:"auto,omitempty"`
+	Served          string            `yaml:"served,omitempty"`
+	KVCacheDtype    string            `yaml:"kv_cache_dtype,omitempty"`
+	ContextOverride bool              `yaml:"context_override,omitempty"`
+	PlacementLog    map[string]string `yaml:"placement_log,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -48,9 +53,11 @@ type YAMLEndpoint struct {
 // provider. Endpoints is the per-endpoint overlay schema; absent when
 // the provider declares none.
 type ProviderSchema struct {
-	Parameters  map[string]ParamShape
-	Endpoints   map[string]EndpointSchema
-	Diagnostics *Diagnostics
+	AutoContext
+	MemoryUsableFraction float64
+	Parameters           map[string]ParamShape
+	Endpoints            map[string]EndpointSchema
+	Diagnostics          *Diagnostics
 }
 
 // EndpointSchema is the merged shape for one endpoint overlay's params.
@@ -102,10 +109,21 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	if y == nil {
 		return out, nil
 	}
+	out.AutoContext = y.AutoContext
+	if err := y.AutoContext.validate(); err != nil {
+		errs = append(errs, err)
+	}
 	if err := y.Diagnostics.Validate(); err != nil {
 		errs = append(errs, err)
 	} else {
 		out.Diagnostics = y.Diagnostics
+	}
+	if f := y.MemoryUsableFraction; f != nil {
+		if !(*f > 0 && *f <= 1) || out.Diagnostics == nil || out.Diagnostics.Memory == nil || out.Diagnostics.Memory.Kind != MemoryUnified {
+			errs = append(errs, fmt.Errorf("memory_usable_fraction requires a unified budget and 0 < fraction <= 1"))
+		} else {
+			out.MemoryUsableFraction = *f
+		}
 	}
 	for name, yp := range y.Parameters {
 		merged, mErr := mergeOne(provider, name, yp, out.Parameters[name])
@@ -180,9 +198,24 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if out.Auto == "" {
 		out.Auto = yp.Auto
 	}
+	if yp.AutoMinContextTokens != 0 || yp.AutoContextSource != "" {
+		out.AutoContext = yp.AutoContext
+	}
+	if err := out.AutoContext.validate(); err != nil || ((out.AutoMinContextTokens != 0 || out.AutoContextSource != "") && (out.Kind != ParamInt || out.Auto == "")) {
+		return ParamShape{}, fmt.Errorf("%s.%s: auto context policy requires an auto integer and valid metadata", provider, qualifiedName)
+	}
 	if out.Served == "" {
 		out.Served = yp.Served
 	}
+	if yp.KVCacheDtype != "" {
+		out.KVCacheDtype = yp.KVCacheDtype
+	}
+	switch out.KVCacheDtype {
+	case "", "k", "v", "both":
+	default:
+		return ParamShape{}, fmt.Errorf("%s.%s: invalid kv_cache_dtype role", provider, qualifiedName)
+	}
+	out.ContextOverride = out.ContextOverride || yp.ContextOverride
 	if yp.PlacementLog != nil {
 		out.PlacementLog = make(map[string]*regexp.Regexp, len(yp.PlacementLog))
 		for name, raw := range yp.PlacementLog {

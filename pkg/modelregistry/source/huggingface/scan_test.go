@@ -82,3 +82,32 @@ func TestScanModels_IncompleteWeightsRemainVisible(t *testing.T) {
 	}
 	assert.Equal(t, metadata.FormatMLX, byName[cases[1].repo].Format)
 }
+
+func TestScanModels_ManifestOnlyRepositoryIsIncomplete(t *testing.T) {
+	for _, kind := range []string{"pending", "metadata", "malformed", "feature-only"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "org", "model")
+			require.NoError(t, integrity.RecordPending(dir, "org/model", "", integrity.FileChecksum{RelativePath: "model.safetensors", Size: 8}))
+			if kind == "metadata" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "generation_config.json"), []byte("{}"), 0600))
+			}
+			if kind == "feature-only" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "projector.gguf"), []byte("GGUF"), 0600))
+				require.NoError(t, integrity.RecordFiles(dir, "org/model", "", integrity.FileChecksum{RelativePath: "projector.gguf", Size: 4, Feature: "vision"}))
+			}
+			if kind == "malformed" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, integrity.ManifestFileName), []byte("{"), 0600))
+			}
+			unrelated := filepath.Join(root, "org", "unrelated")
+			require.NoError(t, os.MkdirAll(unrelated, 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(unrelated, "generation_config.json"), []byte("{}"), 0600))
+			models, err := (&Connector{modelsDir: root}).ScanModels()
+			require.NoError(t, err)
+			require.Len(t, models, 1)
+			require.Equal(t, "org/model", models[0].Name)
+			require.Equal(t, dir, models[0].FullPath)
+			require.True(t, models[0].Incomplete)
+		})
+	}
+}

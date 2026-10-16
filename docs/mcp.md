@@ -113,8 +113,23 @@ and optional `provider`/`registry` to read confirmed nodes and all
 `metadata.assessments` unchanged. Missing worker fields or replies are unknown.
 Storage/download eligibility remains independent of capacity uncertainty.
 
-An exact `zz_models.model` name or source-id filter returning one total model
-also adds `show` to that entry. Case-insensitive exact matches qualify; globs,
+Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
+`affordable_context_tokens` and llama.cpp `placement`. Auto vLLM and MLX assess
+the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use
+`zz_run_preview` numeric context overrides for larger vLLM/llama.cpp workloads.
+MLX always assesses its minimum; `max-tokens` limits generation, not context.
+MLX uses release-owned `memory_usable_fraction` schema metadata (shipped at 0.75),
+alongside the release-owned `auto_min_context_tokens` minimum.
+Auto llama.cpp estimates beyond GPU plus RAM remain unknown and allow launch
+because the engine may adapt; numeric context shortfalls and weight-only
+lower-bound failures refuse launch.
+Affordability never substitutes for served context. Missing geometry, native
+range, devices or context-aware worker evidence is unknown. Fixed-budget
+failures refuse launch without eviction. Auto context keeps greedy allocation.
+
+An exact `zz_models.model` name or source-id filter returning one complete model
+also adds `show` to that entry. Incomplete rows keep their catalog identity without
+a detail request. Case-insensitive exact matches qualify; globs,
 suffix-only matches, truncated pages and duplicate replicas keep the list form.
 Show metadata includes numeric context fields under `model_info`, template
 presence and reported parameters/capabilities when known. Missing evidence stays
@@ -131,7 +146,11 @@ the metadata reaches the MCP response cap. Full REST/native show stays available
 Delete one physical model with `zz_model_delete`: use its exact `name` from
 `zz_models`, plus `node`, `provider`, `registry` and `source_id` when needed to
 identify one replica. Globs and suffix or repository aliases do not select weights
-for deletion. Incomplete physical models can be cleaned up. Cloud models, groups and logical
+for deletion. Retained manifest-only repositories appear as `incomplete: true`,
+including exact `zz_models` results without detail enrichment. Repair with
+`zz_model_download` or remove them with `zz_model_delete`. An active writer returns
+409 `download_in_progress` immediately: cancel with `zz_job_cancel` and wait for
+its terminal outcome before deleting. Cloud models, groups and logical
 variants are configuration: remove their entry with the supported configuration
 tools instead. A 409 `model_in_use` identifies the holding run to stop; a 409
 `model_referenced` identifies a variant to remove with `zz_params_set`.
@@ -168,9 +187,10 @@ per node. Follow a launch's `deploy_job_id` too when present. Keep the
 `deployment_id` to cancel all deployment nodes. Cancellation is acknowledged
 before cleanup completes; follow each job with `zz_job`. A cancelled download
 reports `failed` with `meta.transfer_status: cancelled`; an already completed
-job stays successful. Completed files survive and unfinished catalog files
-stay pending. Repeat `zz_model_download` with a fresh idempotency key to repair
-missing files. Downloads survive the accepting request and silence, bounded by
+job stays successful. Hugging Face catalog downloads and peer sync publish
+terminal cancellation after physical unwind and catalog publication. Completed
+files survive and unfinished catalog files stay pending. Repeat
+`zz_model_download` with a fresh idempotency key to repair missing files. Downloads survive the accepting request and silence, bounded by
 their 48-hour deadline or explicit cancellation. After launch succeeds, use
 `zz_chat` for one short smoke test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
 pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are

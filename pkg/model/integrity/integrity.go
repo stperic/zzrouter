@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -350,23 +351,50 @@ func locksForDirectory(dir string) (*directoryLocks, error) {
 	return locks, nil
 }
 
+// ErrMaterializationHeld means another operation owns the repository's files.
+var ErrMaterializationHeld = errors.New("repository materialization lock is held")
+
 // AcquireMaterialization serializes repository writes across registry downloads
-// and peer sync. Waiting is cancellable; callers release after recording files.
+// and peer sync. Callers release after recording files or completing deletion.
 func AcquireMaterialization(ctx context.Context, dir string) (func(), error) {
+	return acquireMaterialization(ctx, dir, func(gate chan struct{}) error {
+		select {
+		case gate <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+}
+
+// TryAcquireMaterialization acquires the same gate without waiting for its owner.
+func TryAcquireMaterialization(ctx context.Context, dir string) (func(), error) {
+	return acquireMaterialization(ctx, dir, func(gate chan struct{}) error {
+		select {
+		case gate <- struct{}{}:
+			return nil
+		default:
+			return ErrMaterializationHeld
+		}
+	})
+}
+
+func acquireMaterialization(ctx context.Context, dir string, acquire func(chan struct{}) error) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	lock, err := locksForDirectory(dir)
 	if err != nil {
 		return nil, err
 	}
-	select {
-	case lock.materialize <- struct{}{}:
-		if err := ctx.Err(); err != nil {
-			<-lock.materialize
-			return nil, err
-		}
-		return func() { <-lock.materialize }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if err := acquire(lock.materialize); err != nil {
+		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		<-lock.materialize
+		return nil, err
+	}
+	return func() { <-lock.materialize }, nil
 }
 
 // RecordFiles adds files to the manifest of modelPath, replacing any entry

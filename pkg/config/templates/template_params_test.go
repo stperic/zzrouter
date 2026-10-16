@@ -139,3 +139,27 @@ func TestReconcileStripsRetiredModelDefaults(t *testing.T) {
 		assert.Equal(t, "8", got["threads"].Value, "%s: the operator's model entry survives", provider)
 	}
 }
+
+func TestShippedAutoContextPolicies(t *testing.T) {
+	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	assert.Equal(t, int64(4096), schemas["vllm"].Parameters["max-model-len"].AutoMinContextTokens)
+	assert.Equal(t, "native", schemas["llamacpp"].Parameters["ctx-size"].AutoContextSource)
+	assert.Zero(t, schemas["llamacpp"].Parameters["ctx-size"].AutoMinContextTokens)
+	assert.Equal(t, int64(4096), schemas["mlx"].AutoMinContextTokens)
+	assert.Equal(t, 0.75, schemas["mlx"].MemoryUsableFraction)
+	assert.Equal(t, "k", schemas["llamacpp"].Parameters["cache-type-k"].KVCacheDtype)
+	assert.Equal(t, "v", schemas["llamacpp"].Parameters["cache-type-v"].KVCacheDtype)
+	assert.Equal(t, "both", schemas["vllm"].Parameters["kv-cache-dtype"].KVCacheDtype)
+	assert.True(t, schemas["vllm"].Parameters["rope-scaling"].ContextOverride)
+	assert.True(t, schemas["vllm"].Parameters["hf-overrides"].ContextOverride)
+	for key := range schemas["mlx"].Parameters {
+		assert.NotEqual(t, "context", key)
+	}
+	data, err := templates.AppsFS.ReadFile("files/providers/on-demand/mlx/config.yaml")
+	require.NoError(t, err)
+	var svc config.ServiceConfig
+	require.NoError(t, yaml.Unmarshal(data, &svc))
+	assert.Empty(t, svc.GetContextParam())
+	assert.Empty(t, svc.Defaults.Environment)
+}

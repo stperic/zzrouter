@@ -43,10 +43,14 @@ deadline and a 48-hour overall cap. Every successful byte read resets the stall
 deadline; ten minutes without a byte fails the transfer with
 `no data received for 10m0s`. Downloads are exempt from default job inactivity
 reaping; explicit inactivity overrides and
-terminal retention still apply. Cancellation aborts the active transfer, but
-terminal notification may precede cleanup. Completed files stay in place;
-unfinished catalog files remain pending. Repeat the download to repair only
-missing files. Matching dead partials are removed by the next serialized fetch.
+terminal retention still apply. For Hugging Face catalog downloads and peer sync,
+terminal cancellation follows physical unwind and catalog publication. Completed
+files stay in place; unfinished catalog files remain pending. A retained repository
+with no completed weights is listed as `incomplete: true`, even with only its
+manifest. Repeat the download to repair missing files, or delete its exact catalog
+identity through `DELETE /zzrouter/v1/models`. Deletion refuses an active writer
+immediately with 409 `download_in_progress`: cancel its job and await the terminal
+outcome first. Matching dead partials are removed by the next serialized fetch.
 Provider-store destinations remain reserved until physical cleanup finishes.
 Ollama owns its blobs and their cleanup.
 

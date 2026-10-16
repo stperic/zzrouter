@@ -421,12 +421,21 @@ func TestProviderModelsCancellationDuringBufferedBodyClose(t *testing.T) {
 	downloadCancelAPI(t, h.worker, true).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/zzrouter/v1/jobs/"+out.Data.JobID, nil))
 	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
 	<-closing
-	event := waitJob(t, h.worker.jobs, out.Data.JobID)
-	require.Equal(t, jobs.PhaseFailed, event.Phase, "progress may publish terminal state before physical cleanup")
-	require.Equal(t, "cancelled", event.Meta["transfer_status"])
+	event, err := h.worker.jobs.Get(out.Data.JobID)
+	require.NoError(t, err)
+	require.False(t, event.Phase.IsTerminal(), "terminal status must follow buffered body cleanup")
 	assertProviderModelProblem(t, h.request("DELETE", "studio/models?node=worker&category=vae&name=file", "", ""), 409, httperr.CodeDownloadInProgress)
-	assertProviderModelProblem(t, h.request("POST", "studio/models", body, ""), 409, httperr.CodeDownloadInProgress)
+	retry := h.request("POST", "studio/models", body, "")
+	require.Equal(t, http.StatusAccepted, retry.Code, retry.Body.String())
+	var repeated struct {
+		Data providerModelDownload `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(retry.Body.Bytes(), &repeated))
+	require.Equal(t, out.Data.JobID, repeated.Data.JobID, "the unsettled transfer remains the deduplication owner")
 	release()
+	event = waitJob(t, h.worker.jobs, out.Data.JobID)
+	require.Equal(t, jobs.PhaseFailed, event.Phase)
+	require.Equal(t, "cancelled", event.Meta["transfer_status"])
 	require.Eventually(t, func() bool {
 		h.worker.jobKeysMu.Lock()
 		defer h.worker.jobKeysMu.Unlock()

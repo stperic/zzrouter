@@ -42,6 +42,7 @@ type RunRef struct {
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
 type MemoryFitError struct {
+	Sized             bool           `json:"-"`
 	BudgetKind        string         `json:"budget_kind,omitempty"`
 	Parameter         string         `json:"parameter"`
 	Device            string         `json:"device"`
@@ -54,6 +55,9 @@ type MemoryFitError struct {
 // Error names who holds the memory, so the reader can tell an idle zzRouter
 // run it may stop from a workload only the operator can release.
 func (e *MemoryFitError) Error() string {
+	if e.Sized {
+		return fmt.Sprintf("model context requirement %d MiB exceeds %s budget of %d MiB (%s)", e.RequiredMiB, e.BudgetKind, e.FreeMiB, e.Parameter)
+	}
 	if e.BudgetKind != "" {
 		return fmt.Sprintf("model weights require %g GiB, exceeding %s reach of %g GiB (%s); choose a smaller quantization or another node", float64(e.RequiredMiB)/1024, e.BudgetKind, float64(e.FreeMiB)/1024, e.Parameter)
 	}
@@ -100,27 +104,41 @@ const maxMemoryDevices = 64
 
 // MemoryAssessment separates admitted budgets from established model fit.
 type MemoryAssessment struct {
-	Status      string `json:"status"`
-	Reason      string `json:"reason"`
-	BudgetKind  string `json:"budget_kind,omitempty"`
-	RequiredMiB int64  `json:"required_mib,omitempty"`
-	CapacityMiB int64  `json:"capacity_mib,omitempty"`
+	ContextMode             string `json:"context_mode"`
+	ContextTokens           int64  `json:"context_tokens,omitempty"`
+	AffordableContextTokens int64  `json:"affordable_context_tokens,omitempty"`
+	Placement               string `json:"placement,omitempty"`
+	Status                  string `json:"status"`
+	Reason                  string `json:"reason"`
+	BudgetKind              string `json:"budget_kind,omitempty"`
+	RequiredMiB             int64  `json:"required_mib,omitempty"`
+	CapacityMiB             int64  `json:"capacity_mib,omitempty"`
 }
 
 func (assessment *MemoryAssessment) setError(err error) {
 	if err == nil {
 		return
 	}
-	assessment.Reason = err.Error()
+	assessment.Status, assessment.Placement, assessment.Reason = "unknown", "", err.Error()
 	var fit *MemoryFitError
 	if errors.As(err, &fit) {
 		assessment.Status, assessment.RequiredMiB, assessment.CapacityMiB = "no_fit", fit.RequiredMiB, fit.FreeMiB
 	}
 }
 
+// NormalizeLegacy prevents old positive assessments from qualifying under the context contract.
+func (assessment *MemoryAssessment) NormalizeLegacy() {
+	if assessment.ContextMode == "" {
+		*assessment = MemoryAssessment{Status: "unknown", ContextMode: "unknown", Reason: "node reported no context-aware capacity assessment"}
+	}
+}
+
 // AdmitMemoryBudget shares capacity evidence and launch admission arithmetic.
-func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64) (assessment MemoryAssessment, err error) {
-	assessment = MemoryAssessment{Status: "unknown", Reason: "model fit is not established for this budget or sizing evidence", BudgetKind: budget.Kind}
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64, usableFraction float64) (assessment MemoryAssessment, err error) {
+	assessment = MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, Status: "unknown", Reason: "model fit is not established for this budget or sizing evidence", BudgetKind: budget.Kind}
+	if assessment.ContextMode == "" {
+		assessment.ContextMode = "unknown"
+	}
 	defer func() { assessment.setError(err) }()
 	if budget.Kind == schema.MemoryExternal {
 		return assessment, nil
@@ -128,21 +146,36 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if budget.Kind == schema.MemoryReserveMiB {
 		return assessment, admitReserved(budget, parameters, environment, devices, owners, commitments)
 	}
-	auto := budget.Kind == schema.MemoryFractionTotal && config.IsAuto(parameters[budget.Parameter])
-	var fraction float64
-	if budget.Kind == schema.MemoryFractionTotal && !auto {
-		var err error
-		fraction, err = strconv.ParseFloat(parameters[budget.Parameter], 64)
-		if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
-			return assessment, fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
-		}
+	fraction, auto, err := declaredFraction(budget, parameters, usableFraction)
+	if err != nil {
+		return assessment, err
 	}
 	selected, err := memoryDevicesForLaunch(devices, environment, parameters[budget.DeviceCountParameter], budget.Kind == schema.MemoryLayers && budget.DeviceCountParameter == "")
 	if err != nil {
 		return assessment, err
 	}
+	for _, device := range selected {
+		if device.TotalMiB <= 0 || device.FreeMiB < 0 || device.FreeMiB > device.TotalMiB {
+			return assessment, ErrMemoryObservation
+		}
+	}
 	if err := weightMemoryFit(budget, need, selected, systemMiB, fraction, auto); err != nil {
 		return assessment, err
+	}
+	sized := need.Total() > 0 && (budget.Kind == schema.MemoryFractionTotal || need.geometry != nil)
+	if sized {
+		assessment.RequiredMiB, assessment.CapacityMiB, assessment.Placement, err = sizedMemoryFit(budget, need, selected, systemMiB, fraction, auto, owners)
+		assessment.AffordableContextTokens = affordableContext(budget, need, selected, systemMiB, fraction, auto, owners)
+		if err != nil {
+			var fit *MemoryFitError
+			if budget.Kind != schema.MemoryLayers || !need.nativeContext || !errors.As(err, &fit) {
+				return assessment, err
+			}
+			err = nil
+			assessment.Placement, assessment.Reason = "", "native context exceeds assessed memory; the engine may adapt"
+		} else {
+			assessment.Status, assessment.Reason = "fit", "sized context requirement fits the assessed memory budget"
+		}
 	}
 	if budget.Kind != schema.MemoryFractionTotal {
 		for _, device := range selected {
@@ -153,38 +186,126 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		}
 		return assessment, nil
 	}
-	sized := auto && need.Total() > 0
-	switch {
-	case sized:
-		if budget.AutoSafetyMarginMiB < 0 {
-			return assessment, fmt.Errorf("%w: auto safety margin must not be negative", ErrMemoryBudgetInvalid)
-		}
-		fraction = needFraction(need, selected)
-	case auto:
-		if fraction, err = autoFraction(budget, selected, owners); err != nil {
-			return assessment, err
+	err = admitFraction(budget, need, parameters, selected, owners, fraction, auto, sized)
+	return assessment, err
+}
+
+func declaredFraction(budget schema.MemoryBudget, parameters map[string]string, usableFraction float64) (float64, bool, error) {
+	switch budget.Kind {
+	case schema.MemoryUnified:
+		return usableFraction, false, nil
+	case schema.MemoryFractionTotal:
+	default:
+		return 0, false, nil
+	}
+	value := parameters[budget.Parameter]
+	if config.IsAuto(value) {
+		return 0, true, nil
+	}
+	fraction, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
+		return 0, false, fmt.Errorf("%w: %s must be a finite fraction greater than zero and at most one", ErrMemoryBudgetInvalid, budget.Parameter)
+	}
+	return fraction, false, nil
+}
+
+func admitFraction(budget schema.MemoryBudget, need Need, parameters map[string]string, selected []gpu.MemoryDevice, owners []RunRef, fraction float64, auto, sized bool) (err error) {
+	if auto {
+		if sized && need.ContextMode != "auto" {
+			fraction = needFraction(need, selected)
+		} else if fraction, err = autoFraction(budget, selected, owners); err != nil {
+			return err
 		}
 	}
-	for _, device := range selected {
-		required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
-		if sized {
-			required += safetyMargin(budget, device)
+	if !sized {
+		// The engine's reservation is admitted here, not the model's need, so the
+		// assessment reports no requirement.
+		for _, device := range selected {
+			required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
+			fit := memoryFitError(budget.Parameter, device, required, owners)
+			if required > fit.FreeMiB {
+				return fit
+			}
 		}
-		if assessment.CapacityMiB == 0 || device.FreeMiB-required < assessment.CapacityMiB-assessment.RequiredMiB {
-			assessment.RequiredMiB, assessment.CapacityMiB = required, device.FreeMiB
-		}
-		fit := memoryFitError(budget.Parameter, device, required, owners)
-		if required > fit.FreeMiB {
-			return assessment, fit
-		}
-	}
-	if sized {
-		assessment.Status, assessment.Reason = "fit", "sized model and safety margin fit on selected devices"
 	}
 	if auto {
 		parameters[budget.Parameter] = strconv.FormatFloat(fraction, 'f', 4, 64)
 	}
-	return assessment, nil
+	return nil
+}
+
+func affordableContext(budget schema.MemoryBudget, need Need, selected []gpu.MemoryDevice, systemMiB int64, fraction float64, auto bool, owners []RunRef) int64 {
+	if need.ContextMode != "auto" || need.geometry == nil {
+		return 0
+	}
+	low, high := int64(0), need.geometry.NativeContext
+	for low < high {
+		mid := low + (high-low)/2 + 1
+		candidate, ok := need.atContext(mid)
+		_, _, _, err := sizedMemoryFit(budget, candidate, selected, systemMiB, fraction, auto, owners)
+		if ok && candidate.Total() > 0 && err == nil {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	return low
+}
+
+// sizedMemoryFit is also the affordability predicate; placement and launch use the same rounded need.
+func sizedMemoryFit(budget schema.MemoryBudget, need Need, selected []gpu.MemoryDevice, systemMiB int64, fraction float64, auto bool, owners []RunRef) (required, capacity int64, placement string, err error) {
+	if budget.Kind != schema.MemoryFractionTotal {
+		var total int64
+		for _, device := range selected {
+			total += device.TotalMiB
+		}
+		if budget.Kind == schema.MemoryUnified {
+			if fraction == 0 {
+				return 0, 0, "", ErrMemoryObservation
+			}
+			total = int64(float64(total) * fraction)
+		}
+		required = int64(math.Ceil(float64(need.Total()) * (1 + DefaultAutoHeadroomFraction)))
+		capacity, placement = total, ""
+		if budget.Kind == schema.MemoryLayers {
+			placement = "gpu"
+			if required > total && !selected[0].Unified {
+				if systemMiB <= 0 {
+					return required, 0, "", ErrMemoryObservation
+				}
+				capacity, placement = total+systemMiB, "offload"
+			}
+		}
+		if required > capacity {
+			err = &MemoryFitError{Sized: true, BudgetKind: budget.Kind, Parameter: budget.Parameter, RequiredMiB: required, FreeMiB: capacity}
+		}
+		return
+	}
+	if auto && budget.AutoSafetyMarginMiB < 0 {
+		return 0, 0, "", ErrMemoryBudgetInvalid
+	}
+	sizedFraction := needFraction(need, selected)
+	for _, device := range selected {
+		amount := int64(math.Ceil(float64(device.TotalMiB) * sizedFraction))
+		available := memoryFitError(budget.Parameter, device, amount, owners)
+		if !auto && sizedFraction > fraction {
+			return amount, int64(float64(device.TotalMiB) * fraction), "", &MemoryFitError{Sized: true, BudgetKind: budget.Kind, Parameter: budget.Parameter, Device: device.UUID, RequiredMiB: amount, FreeMiB: int64(float64(device.TotalMiB) * fraction)}
+		}
+		if auto {
+			amount += safetyMargin(budget, device)
+		} else if reserved := int64(math.Ceil(float64(device.TotalMiB) * fraction)); reserved > available.FreeMiB {
+			available.RequiredMiB = reserved
+			return reserved, available.FreeMiB, "", available
+		}
+		if capacity == 0 || available.FreeMiB-amount < capacity-required {
+			required, capacity = amount, available.FreeMiB
+		}
+		if amount > available.FreeMiB {
+			available.RequiredMiB = amount
+			return amount, available.FreeMiB, "", available
+		}
+	}
+	return
 }
 
 func weightMemoryFit(budget schema.MemoryBudget, need Need, selected []gpu.MemoryDevice, systemMiB int64, fraction float64, auto bool) error {

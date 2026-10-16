@@ -3,6 +3,7 @@ provider: llamacpp
 parameters:
   ctx-size:
     auto: "0"
+    auto_context_source: native
     served: meta.n_ctx
   # Read because diagnostics.memory names n-gpu-layers with kind layers.
   n-gpu-layers:
@@ -10,6 +11,14 @@ parameters:
       layers: 'offloaded (\d+)/(\d+) layers to GPU'
       cpu_overrides: 'tensor overrides to CPU'
       weights: '(CPU)?\S* model buffer size = +([\d.]+) MiB'
+  cache-type-k:
+    type: string
+    kv_cache_dtype: k
+    description: KV key cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
+  cache-type-v:
+    type: string
+    kv_cache_dtype: v
+    description: KV value cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
   threads:
     type: int
     min: 1

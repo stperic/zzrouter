@@ -141,7 +141,11 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 	if !errors.As(err, &memory) {
 		return nil
 	}
-	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads."}}}
+	hint := "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads."
+	if memory.Sized {
+		hint = "Increase the declared budget, choose a smaller numeric context where supported, use smaller weights, or choose another node; stopping holders cannot repair a declared-budget shortfall."
+	}
+	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
 }
 
 func resolveAdmission(err error, wire *httperr.Error) bool {

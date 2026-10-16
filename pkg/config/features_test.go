@@ -69,7 +69,7 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	expected := map[string]map[string]Feature{
 		"llamacpp": {"vision": {Default: true, Files: []string{"mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-*.gguf"}, Flag: "mmproj"}},
-		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses", "messages"}, ExcludeParameters: []string{"chat-template", "temperature", "top-p"}, HealthCheck: mlxFeatureHealth("/v1/chat/completions", `{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)}},
+		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses"}, ExcludeParameters: []string{"chat-template", "temperature", "top-p"}, HealthCheck: mlxFeatureHealth("/v1/chat/completions", `{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)}},
 		"vllm":     {"vision": {}},
 		"ollama":   {"vision": {}},
 	}
@@ -195,7 +195,7 @@ func TestFeatureRuntimeUpgradeFromStep2(t *testing.T) {
 	assert.False(t, f.Default, "operator policy survives")
 	require.NotNil(t, f.Execution)
 	assert.Contains(t, f.Execution.Args, "mlx_vlm.server")
-	assert.Equal(t, []string{"chat_completions", "responses", "messages"}, f.WireEndpoints)
+	assert.Equal(t, []string{"chat_completions", "responses"}, f.WireEndpoints)
 	require.NoError(t, cfg.SaveToDir(dir))
 	_, err = LoadAppsConfig(dir)
 	require.NoError(t, err)

@@ -111,7 +111,7 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 			require.Equal(t, "present", states["reranking"])
 			require.NoError(t, m.instances.Remove(chat.ID))
 			details = m.ModelFeatureDetails("mlx", req.Model, nil)
-			require.Contains(t, details["wire_endpoints"], "messages")
+			require.Contains(t, details["wire_endpoints"], "messages_compat")
 			require.Contains(t, details["wire_endpoints"], "responses")
 		})
 	}

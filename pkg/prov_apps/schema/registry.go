@@ -5,7 +5,10 @@
 // the Go claim wins because it encodes structural correctness (plan §4.4).
 package schema
 
-import "regexp"
+import (
+	"fmt"
+	"regexp"
+)
 
 // ParamKind is the typed shape category a parameter resolves to. Launcher
 // coercion (today string-only) will key off this when typed values land.
@@ -41,16 +44,32 @@ const (
 // empty Kind means "not structurally gated by Go" — only YAML policy
 // applies.
 type ParamShape struct {
+	AutoContext
 	Kind        ParamKind
 	Min         *float64
 	Max         *float64
 	Description string
 	Enum        []string
 	// Pass applies to ParamAsset only; empty means AssetPassPath.
-	Pass         AssetPass
-	Auto         string
-	Served       string
-	PlacementLog map[string]*regexp.Regexp
+	Pass            AssetPass
+	Auto            string
+	Served          string
+	KVCacheDtype    string
+	ContextOverride bool
+	PlacementLog    map[string]*regexp.Regexp
+}
+
+// AutoContext declares what an engine assesses while context selection stays automatic.
+type AutoContext struct {
+	AutoMinContextTokens int64  `yaml:"auto_min_context_tokens,omitempty"`
+	AutoContextSource    string `yaml:"auto_context_source,omitempty"`
+}
+
+func (a AutoContext) validate() error {
+	if a.AutoMinContextTokens < 0 || (a.AutoContextSource != "" && a.AutoContextSource != "native") || (a.AutoContextSource != "" && a.AutoMinContextTokens != 0) {
+		return fmt.Errorf("invalid auto context policy")
+	}
+	return nil
 }
 
 // Registry is the Go spine: launcher-load-bearing params per provider.

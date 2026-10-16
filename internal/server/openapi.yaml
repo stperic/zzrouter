@@ -531,6 +531,10 @@ paths:
         models. It rejects globs and suffix or source-id aliases. Optional
         provider, registry, source_id and node select one physical replica;
         otherwise normal local preference and cluster ambiguity rules apply.
+        Retained repositories with no completed weights, including manifest-only
+        repositories, are listed as incomplete and can be deleted by that identity.
+        A live download or peer sync returns 409 download_in_progress immediately;
+        cancel its job and await its terminal outcome before deleting.
         Cloud models, logical variants and groups require configuration removal instead.
 
         Held weights and configured variant references return actionable 409
@@ -564,7 +568,7 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
-          description: Held weights, configured reference, logical identity or ambiguous replica. Codes include model_in_use, model_referenced, model_not_deletable and model_source_ambiguous.
+          description: Held weights, active writer, configured reference, logical identity or ambiguous replica. Codes include model_in_use, download_in_progress, model_referenced, model_not_deletable and model_source_ambiguous.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -2457,14 +2461,17 @@ paths:
         If node inventory cannot be read, collected results are retained and an
         unknown assessment with an empty node reports unknown coverage.
 
-        Only a fully sized model with an auto fraction budget establishes fit.
-        Numeric budgets, layers/offload, unified memory, external scheduling and
-        incomplete evidence stay unknown above the weight lower bound. Weights
-        exceeding reachable memory establish no_fit: selected GPU totals times
+        Supported geometry establishes fit for auto or numeric fraction budgets,
+        layers/offload and unified memory at the assessed context. External
+        scheduling and incomplete evidence stay unknown above the weight lower bound.
+        Weights exceeding reachable memory establish no_fit: selected GPU totals times
         the numeric budget fraction (full totals for auto), GPU plus system RAM
         for layers (all visible GPUs unless the schema declares a device count),
         or the single shared pool for unified memory. Local selected
         weights are required; published file size alone cannot establish fit.
+        Under auto llama.cpp, a native-context estimate exceeding GPU plus RAM
+        stays unknown and allows launch because the engine may adapt. Numeric
+        context shortfalls and weight-only lower-bound failures refuse launch.
         Hosts without GPU observation, including CPU-only llama.cpp, skip the
         weight lower bound and report unknown; their existing launch path is preserved.
       parameters:
@@ -3572,9 +3579,11 @@ paths:
         node, the coordinator discovers the owner; node may select it explicitly.
         Read or stream the job for the outcome: cancelled downloads report phase
         failed with meta.transfer_status cancelled. Already-terminal success is
-        unchanged. Terminal publication can precede physical cleanup. Completed
+        unchanged. For Hugging Face catalog downloads and peer sync, terminal
+        cancellation follows physical unwind and catalog publication. Completed
         files remain and unfinished catalog files stay pending; repeat the download
-        to repair missing files. Provider-store reservations last through cleanup;
+        to repair missing files or delete the retained incomplete catalog identity.
+        Provider-store reservations last through cleanup;
         Ollama owns its blobs. Use DELETE /deployments/{id} for all deployment nodes.
         Downloads outlive requests and have a 48-hour deadline; default inactivity
         reaping is disabled for downloads, while explicit overrides still apply.
@@ -11329,7 +11338,7 @@ components:
         node: { type: string }
         assigned_app: { type: string, description: Inference provider key. }
         is_cloud: { type: boolean }
-        incomplete: { type: boolean, description: Local copy is missing model files; download the same model to fetch only what is missing. }
+        incomplete: { type: boolean, description: "Local copy is missing model files, including a retained repository with only a manifest. Download the same model to repair it, or delete its exact catalog identity." }
         format: { type: string }
         size: { type: integer, format: int64 }
         modified_at: { type: string, format: date-time }
@@ -11954,10 +11963,30 @@ components:
         budget_kind: { type: string }
         required_mib: { type: integer, format: int64 }
         capacity_mib: { type: integer, format: int64 }
+        context_mode: { type: string, enum: [auto, numeric, unknown] }
+        context_tokens: { type: integer, format: int64 }
+        affordable_context_tokens: { type: integer, format: int64 }
+        placement: { type: string, enum: [gpu, offload] }
       description: |
+        Supported geometry establishes fit at the assessed context: the declared
+        minimum for auto vLLM and MLX (shipped as 4096), native GGUF context for
+        auto llama.cpp, or the requested numeric context for vLLM/llama.cpp.
+        MLX has no context parameter; max-tokens limits generation only.
+        affordable_context_tokens is an estimate within the recognized native range,
+        not served context. The engine's profiler remains authoritative.
+        llama.cpp placement is gpu or offload into system RAM. Native auto context
+        beyond GPU plus RAM stays unknown and allows launch because the engine
+        may adapt; numeric context shortfalls and weight-only failures refuse.
+        MLX uses memory_usable_fraction (shipped as 0.75), release-owned schema
+        metadata alongside auto_min_context_tokens.
+        Missing or unsupported geometry, context range or devices remains unknown;
+        older replies lacking context_mode degrade to unknown.
+        Numeric context overrides assess workload requirements. Fully evidenced
+        failures refuse launch; fixed budget shortfalls do not evict holders.
         Budget admission alone is not proof of model fit. Amounts are optional,
-        in MiB: the limiting selected device's budget plus safety margin and
-        capacity, or aggregate reachable memory for a weight lower-bound refusal.
+        in MiB: the limiting selected device's sized requirement (including an
+        auto-only margin) and available memory, or aggregate amounts for layers,
+        unified memory and weight lower-bound refusals.
         Capacity reads use totals; launch failures retain fresh free memory and holders.
 
     PreviewRunResponse:
