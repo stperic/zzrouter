@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -189,41 +190,51 @@ func TestCatalogMutationRescanPublishesBeforeResponse(t *testing.T) {
 }
 
 func TestCatalogMutationWorkerWaitsForAcknowledgement(t *testing.T) {
+	// Cluster services outlive the request, so construct them outside its bubble.
 	target, reader, dir := mutationNodes(t, "worker")
-	entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	engine := buildCoordInternalEngine(reader)
-	client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
-		close(entered)
-		<-release
-		rec := httptest.NewRecorder()
-		engine.ServeHTTP(rec, r)
-		return rec.Result(), nil
-	})}
-	target.cluster.signaler.Stop(context.Background())
-	target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
-	signalCtx, cancelSignal := context.WithCancel(context.Background())
-	t.Cleanup(cancelSignal)
-	target.cluster.signaler.Start(signalCtx)
-	c, rec := mutationContext(t, http.MethodDelete, "/zzrouter/v1/internal/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
-	go func() { target.newInternalExecutor().HandleInternalDeleteModels(c); close(returned) }()
-	t.Cleanup(func() {
-		close(release)
-		<-returned
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		require.False(t, reader.model.Cache.HasModel("weights"))
+	synctest.Test(t, func(t *testing.T) {
+		// Context Done channels first read here must also be closed here.
+		t.Cleanup(func() {
+			cleanupTestNode(reader)
+			cleanupTestNode(target)
+			target.cluster.signaler.Stop(context.Background())
+		})
+		entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		engine := buildCoordInternalEngine(reader)
+		client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+			close(entered)
+			<-release
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, r)
+			return rec.Result(), nil
+		})}
+		target.cluster.signaler.Stop(context.Background())
+		target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+		signalCtx, cancelSignal := context.WithCancel(context.Background())
+		t.Cleanup(cancelSignal)
+		target.cluster.signaler.Start(signalCtx)
+		c, rec := mutationContext(t, http.MethodDelete, "/zzrouter/v1/internal/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
+		go func() { target.newInternalExecutor().HandleInternalDeleteModels(c); close(returned) }()
+		t.Cleanup(func() {
+			close(release)
+			<-returned
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.False(t, reader.model.Cache.HasModel("weights"))
+		})
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("deletion did not request coordinator publication")
+		}
+		synctest.Wait()
+		select {
+		case <-returned:
+			t.Fatal("delete answered before acknowledgement")
+		default:
+		}
+		require.False(t, target.model.Cache.HasModel("weights"))
+		require.True(t, reader.model.Cache.HasModel("weights"))
 	})
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("deletion did not request coordinator publication")
-	}
-	select {
-	case <-returned:
-		t.Fatal("delete answered before acknowledgement")
-	default:
-	}
-	require.False(t, target.model.Cache.HasModel("weights"))
-	require.True(t, reader.model.Cache.HasModel("weights"))
 }
 
 func TestCatalogMutationProviderWritesPublish(t *testing.T) {

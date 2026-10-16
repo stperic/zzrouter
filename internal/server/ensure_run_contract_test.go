@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -495,43 +496,50 @@ func TestServedSurfaces(t *testing.T) {
 			Details: OllamaModelDetails{Format: "gguf", Family: "llama", ParameterSize: "8B", QuantLevel: "Q4_K_M"}}, ps.Models[0])
 	})
 	t.Run("a served run's log is its lifecycle, readable where the 404 points once the daemon drops it", func(t *testing.T) {
-		r := newServedServerRig(t)
-		r.mgr.Start(t.Context()) // the services ticker reconciles
-		executor := &RunsExecutor{appMgr: r.mgr, getNodename: r.s.node.Nodename}
-		internal := gin.New()
-		internal.GET("/zzrouter/v1/internal/runs", executor.HandleInternalListRuns)
-		internal.GET("/zzrouter/v1/internal/runs/:id", executor.HandleInternalGetRun)
-		ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
-		logs := &LogsHandlers{appMgr: r.mgr, getClusterClient: func() mesh.ClusterClient { return nil }, isLocalNode: func(n string) bool { return n == "node-a" }}
-		public := gin.New()
-		public.GET("/zzrouter/v1/runs/:id", ctrl.GetRun)
-		public.GET("/zzrouter/v1/runs/:id/logs", logs.HandleGetRunLogsPublic)
-		get := func(path string) *httptest.ResponseRecorder {
-			rec := httptest.NewRecorder()
-			public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
-			return rec
-		}
+		synctest.Test(t, func(t *testing.T) {
+			r := newServedServerRig(t)
+			r.mgr.Start(t.Context()) // the services ticker reconciles
+			executor := &RunsExecutor{appMgr: r.mgr, getNodename: r.s.node.Nodename}
+			internal := gin.New()
+			internal.GET("/zzrouter/v1/internal/runs", executor.HandleInternalListRuns)
+			internal.GET("/zzrouter/v1/internal/runs/:id", executor.HandleInternalGetRun)
+			ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+			logs := &LogsHandlers{appMgr: r.mgr, getClusterClient: func() mesh.ClusterClient { return nil }, isLocalNode: func(n string) bool { return n == "node-a" }}
+			public := gin.New()
+			public.GET("/zzrouter/v1/runs/:id", ctrl.GetRun)
+			public.GET("/zzrouter/v1/runs/:id/logs", logs.HandleGetRunLogsPublic)
+			get := func(path string) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				public.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				return rec
+			}
 
-		run := r.served(t)
-		rec := get("/zzrouter/v1/runs/" + run.ID + "/logs")
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		assert.Regexp(t, `load requested, keep-alive 5m0s.*loaded`, rec.Body.String())
+			run := r.served(t)
+			rec := get("/zzrouter/v1/runs/" + run.ID + "/logs")
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.Regexp(t, `load requested, keep-alive 5m0s.*loaded`, rec.Body.String())
 
-		r.daemon.mu.Lock()
-		delete(r.daemon.loaded, servedDaemonModel)
-		r.daemon.mu.Unlock()
-		require.Eventually(t, func() bool { _, live := r.mgr.GetInstance(run.ID); return !live }, 3*health.DefaultInterval, servedSettle)
-		rec = get("/zzrouter/v1/runs/" + run.ID)
-		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
-		var problem struct {
-			Detail string `json:"detail"`
-		}
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-		_, advice, found := strings.Cut(problem.Detail, "its log stays readable at GET ")
-		require.True(t, found, problem.Detail)
-		rec = get(strings.Replace(advice, "<node it ran on>", "node-a", 1))
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		assert.Contains(t, rec.Body.String(), "dropped by the daemon")
+			r.daemon.mu.Lock()
+			delete(r.daemon.loaded, servedDaemonModel)
+			r.daemon.mu.Unlock()
+			require.Eventually(t, func() bool { _, live := r.mgr.GetInstance(run.ID); return !live }, 3*health.DefaultInterval, servedSettle)
+			rec = get("/zzrouter/v1/runs/" + run.ID)
+			require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+			var problem struct {
+				Detail string `json:"detail"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+			_, advice, found := strings.Cut(problem.Detail, "its log stays readable at GET ")
+			require.True(t, found, problem.Detail)
+			rec = get(strings.Replace(advice, "<node it ran on>", "node-a", 1))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), "dropped by the daemon")
+			require.NoError(t, r.mgr.Stop(context.Background()))
+			// Stop leaves the trailing audit timer active; advance only virtual time.
+			synctest.Wait()
+			time.Sleep(health.DefaultInterval)
+			synctest.Wait()
+		})
 	})
 	t.Run("a batch launch with no model is refused and loads nothing", func(t *testing.T) {
 		r := newServedServerRig(t)

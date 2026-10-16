@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -97,8 +99,8 @@ func TestProviderSyncFanOut_AwaitQuiesceWaitsForTheRound(t *testing.T) {
 	f.Listener()(store.Config())
 	<-pushed // the round is inside the push and cannot have finished
 
-	early, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
+	early, cancel := context.WithCancel(t.Context())
+	cancel()
 	assert.Equal(t, SyncPending, f.AwaitQuiesce(early).State,
 		"quiesced while a push was still blocked in the worker's handler")
 
@@ -205,51 +207,61 @@ func TestProviderSyncFanOut_LandedNamesOnlyWorkersThatTookIt(t *testing.T) {
 // that arrives after the next round has begun holds the new channel
 // and waits correctly no matter how the boundary was written.
 func TestProviderSyncFanOut_AReFireOwedIsStillInFlight(t *testing.T) {
-	store := newFanOutTestStore(t)
-	release := make(chan struct{})
-	pushed := make(chan struct{}, 8)
-	srv := newBlockingSyncServer(t, release, pushed)
+	synctest.Test(t, func(t *testing.T) {
+		store := newFanOutTestStore(t)
+		release := make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		defer unblock()
+		pushed := make(chan struct{}, 8)
+		client := &http.Client{Transport: syncTestTransport(func(r *http.Request) (*http.Response, error) {
+			pushed <- struct{}{}
+			<-release
+			return syncTestResponse(r, http.StatusOK, ""), nil
+		})}
 
-	f := newProviderSyncFanOut(
-		store,
-		func() bool { return true },
-		func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: srv.URL, NodeName: "w1"}} },
-		func() *http.Client { return srv.Client() },
-		compatibleSyncClusterClient,
-	)
+		f := newProviderSyncFanOut(
+			store,
+			func() bool { return true },
+			func() []*mesh.Endpoint { return []*mesh.Endpoint{{URL: "https://worker.test", NodeName: "w1"}} },
+			func() *http.Client { return client },
+			compatibleSyncClusterClient,
+		)
 
-	f.Listener()(store.Config())
-	<-pushed
-	// Arrives mid-round: coalesced into a re-fire that is now owed.
-	f.Listener()(store.Config())
+		f.Listener()(store.Config())
+		<-pushed
+		// Arrives mid-round: coalesced into a re-fire that is now owed.
+		f.Listener()(store.Config())
 
-	// Start waiting BEFORE the round boundary, the way a PATCH whose
-	// mutation was coalesced does.
-	woke := make(chan SyncState, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		woke <- f.AwaitQuiesce(ctx).State
-	}()
+		// Start waiting BEFORE the round boundary, the way a PATCH whose
+		// mutation was coalesced does.
+		woke := make(chan SyncState, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			woke <- f.AwaitQuiesce(ctx).State
+		}()
 
-	// Let round one finish. Round two starts and blocks on the gate.
-	release <- struct{}{}
-	<-pushed
+		synctest.Wait()
+		// Let round one finish. Round two starts and blocks on the gate.
+		release <- struct{}{}
+		<-pushed
+		synctest.Wait()
 
-	select {
-	case state := <-woke:
-		t.Fatalf("woke with %q at the round boundary: a write coalesced into the re-fire "+
-			"would read as delivered before its own push ran", state)
-	case <-time.After(250 * time.Millisecond):
-	}
+		select {
+		case state := <-woke:
+			t.Fatalf("woke with %q at the round boundary: a write coalesced into the re-fire "+
+				"would read as delivered before its own push ran", state)
+		default:
+		}
 
-	close(release)
-	select {
-	case state := <-woke:
-		assert.Equal(t, SyncComplete, state)
-	case <-time.After(5 * time.Second):
-		t.Fatal("never woke after every round completed")
-	}
+		unblock()
+		select {
+		case state := <-woke:
+			assert.Equal(t, SyncComplete, state)
+		case <-time.After(5 * time.Second):
+			t.Fatal("never woke after every round completed")
+		}
+	})
 }
 
 // A worker that hangs on the push holds the round open past the wait. The
@@ -257,31 +269,31 @@ func TestProviderSyncFanOut_AReFireOwedIsStillInFlight(t *testing.T) {
 // hide one that has the write. Only a round carrying the waiter's write
 // is trusted for that, which a round started for it always does.
 func TestProviderSyncFanOut_PendingNamesWorkersThatAlreadyTookIt(t *testing.T) {
-	store := newFanOutTestStore(t)
-	took := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	t.Cleanup(took.Close)
-	release := make(chan struct{})
-	hangs := newBlockingSyncServer(t, release, make(chan struct{}, 8))
-
-	f := newProviderSyncFanOut(
-		store,
-		func() bool { return true },
-		func() []*mesh.Endpoint {
-			return []*mesh.Endpoint{{URL: took.URL, NodeName: "awake"}, {URL: hangs.URL, NodeName: "asleep"}}
-		},
-		func() *http.Client { return took.Client() },
-		compatibleSyncClusterClient,
-	)
-	f.Listener()(store.Config())
-
-	var got SyncReport
-	require.Eventually(t, func() bool {
-		ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-		defer cancel()
-		got = f.AwaitQuiesce(ctx)
-		return got.Reached("awake")
-	}, 5*time.Second, 10*time.Millisecond, "the worker that took the push was never named")
-	assert.Equal(t, SyncPending, got.State)
-	assert.False(t, got.Reached("asleep"))
-	close(release)
+	synctest.Test(t, func(t *testing.T) {
+		store := newFanOutTestStore(t)
+		release, entered := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		defer unblock()
+		client := &http.Client{Transport: syncTestTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host == "asleep.test" {
+				close(entered)
+				<-release
+			}
+			return syncTestResponse(r, http.StatusOK, ""), nil
+		})}
+		f := newProviderSyncFanOut(store, func() bool { return true }, func() []*mesh.Endpoint {
+			return []*mesh.Endpoint{{URL: "https://awake.test", NodeName: "awake"}, {URL: "https://asleep.test", NodeName: "asleep"}}
+		}, func() *http.Client { return client }, compatibleSyncClusterClient)
+		f.Listener()(store.Config())
+		<-entered
+		synctest.Wait()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		got := f.AwaitQuiesce(ctx)
+		require.True(t, got.Reached("awake"), "the worker that took the push was never named")
+		assert.Equal(t, SyncPending, got.State)
+		assert.False(t, got.Reached("asleep"))
+		unblock()
+		require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
+	})
 }

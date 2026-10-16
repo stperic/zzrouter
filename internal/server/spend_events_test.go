@@ -124,21 +124,14 @@ func TestSpendEventsStream_ReceivesBreachEvent(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 
-	// Inject the breach AFTER the subscription is live. Busy-loop on
-	// SubscriberCount instead of a fixed sleep so -race -count=20
-	// can't lose the publish to a slow CI box.
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) && server.spendEvents.SubscriberCount() == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		server.spendEvents.OnBreach(quota.BreachEvent{
-			Time:    time.Now().UTC(),
-			Scope:   quota.ScopeKey,
-			ScopeID: "alice",
-			Reason:  "budget_exhausted",
-		})
-	}()
+	// Receiving the initial flush proves the subscription is live.
+	require.Positive(t, server.spendEvents.SubscriberCount())
+	server.spendEvents.OnBreach(quota.BreachEvent{
+		Time:    time.Now().UTC(),
+		Scope:   quota.ScopeKey,
+		ScopeID: "alice",
+		Reason:  "budget_exhausted",
+	})
 
 	scanner := bufio.NewScanner(resp.Body)
 	deadline := time.Now().Add(2 * time.Second)
@@ -181,22 +174,18 @@ func TestSpendEventsStream_ReceivesThresholdEvent(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
-	go func() {
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) && server.spendEvents.SubscriberCount() == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		server.spendEvents.OnBreach(quota.BreachEvent{
-			Time:             time.Now().UTC(),
-			Scope:            quota.ScopeKey,
-			ScopeID:          "alice",
-			Reason:           "budget_threshold_50",
-			SpendLimitMicro:  1_000_000,
-			SpendUsedMicro:   600_000,
-			BudgetPeriod:     "monthly",
-			ThresholdPercent: 50,
-		})
-	}()
+	// Receiving the initial flush proves the subscription is live.
+	require.Positive(t, server.spendEvents.SubscriberCount())
+	server.spendEvents.OnBreach(quota.BreachEvent{
+		Time:             time.Now().UTC(),
+		Scope:            quota.ScopeKey,
+		ScopeID:          "alice",
+		Reason:           "budget_threshold_50",
+		SpendLimitMicro:  1_000_000,
+		SpendUsedMicro:   600_000,
+		BudgetPeriod:     "monthly",
+		ThresholdPercent: 50,
+	})
 
 	scanner := bufio.NewScanner(resp.Body)
 	deadline := time.Now().Add(2 * time.Second)
