@@ -287,9 +287,9 @@ capabilities:
 	assert.False(t, updated, "an in-sync config must not be rewritten")
 }
 
-// The upgrade this exists for: a llamacpp config written before llama-server
-// spoke the Messages API gains it on the next start.
-func TestReconcileManagedSpine_AddsMessagesToAnExistingLlamacpp(t *testing.T) {
+// An existing llamacpp config that still declares native Messages loses it on
+// the next start, so Messages is translated there too.
+func TestReconcileManagedSpine_DropsNativeMessagesFromAnExistingLlamacpp(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, InstallDefaults(dir))
 
@@ -298,7 +298,7 @@ func TestReconcileManagedSpine_AddsMessagesToAnExistingLlamacpp(t *testing.T) {
 	require.NoError(t, err)
 	var doc map[string]any
 	require.NoError(t, yaml.Unmarshal(seeded, &doc))
-	doc["capabilities"].(map[string]any)["wire_endpoints"] = []any{"chat_completions"}
+	doc["capabilities"].(map[string]any)["wire_endpoints"] = []any{"chat_completions", "completions", "embeddings", "rerank", "messages"}
 	stale, err := yaml.Marshal(doc)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, stale, 0o600))
@@ -310,7 +310,7 @@ func TestReconcileManagedSpine_AddsMessagesToAnExistingLlamacpp(t *testing.T) {
 	repaired, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.NoError(t, yaml.Unmarshal(repaired, &doc))
-	assert.Contains(t, doc["capabilities"].(map[string]any)["wire_endpoints"], "messages")
+	assert.NotContains(t, doc["capabilities"].(map[string]any)["wire_endpoints"], "messages")
 }
 
 // wire_endpoints is required of an enabled provider, so a template with a
