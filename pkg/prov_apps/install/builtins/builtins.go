@@ -1,4 +1,4 @@
-// Package builtins wires the three built-in provider installers (Ollama,
+// Package builtins wires the built-in provider installers (Ollama, Strata,
 // llama.cpp, vLLM, MLX — the last two share the pythonvenv installer with
 // different configs) into a fresh install.Dispatcher. It's the single
 // call site that knows which concrete installers exist; install root
@@ -21,6 +21,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins/llamacpp"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins/ollama"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins/pythonvenv"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/builtins/strata"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 )
 
@@ -37,6 +38,7 @@ func register(d *install.Dispatcher, serviceEnv install.ServiceEnvFunc, checks i
 		checks = shippedRuntimeChecks
 	}
 	d.Register("ollama", ollama.New(serviceEnv))
+	d.Register("strata", strata.New(serviceEnv))
 	d.Register("llamacpp", llamacpp.New())
 
 	resolver := shippedRecipe

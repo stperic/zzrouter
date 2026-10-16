@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a disabled, zzRouter-installable provider for Niko1221/Strata with
+  managed service controls. Enabled external OpenAI-compatible providers now
+  publish their `/v1/models` inventory in the catalog the way external Ollama
+  providers already do, under the same `name@node` identity; zzRouter refuses
+  to delete those provider-owned models. `service.manager: none` now selects
+  zzRouter supervision. Strata Messages uses Chat Completions compatibility
+  until its native tool-result image contract is verified. The
+  cluster-internal wire schema is unchanged, so cluster protocol remains
+  14/minimum 13.
 - Explain unknown capacity assessments with thirteen closed causes and MCP next
   actions. Retain exact local weights rounded up to MiB on every status and
   independently known capacity on unknown rows, preserving fit and admission
