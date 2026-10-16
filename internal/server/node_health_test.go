@@ -30,8 +30,7 @@ func nodeHealthServer(t *testing.T) (*Server, string, *atomic.Int32, *atomic.Boo
 	t.Helper()
 	cfg := DefaultTestNodeConfig()
 	cfg.ClusterMode = pkgConfig.ClusterModeCoordinator
-	cfg.SeedProvidersDir = true
-	s := createTestNode(t, cfg)
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	require.NotNil(t, s.cluster.coordinator)
 	s.cluster.coordinator.GetHealthMonitor().Stop()
 	var sends atomic.Int32

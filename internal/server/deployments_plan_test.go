@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -96,16 +95,18 @@ func TestDeployChecksSourceAgainstEachTargetsPlan(t *testing.T) {
 func featureTestConfig(t *testing.T) *pkgConfig.AppsConfig {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(dir))
+	seedTestProviders(t, dir, []string{"llamacpp", "mlx", "vllm", "huggingface", "openai"}, nil)
 	cfg, err := pkgConfig.LoadAppsConfig(dir)
 	require.NoError(t, err)
 	return cfg
 }
 
 func TestDeployPlansDefaultsAndExplicitSelection(t *testing.T) {
+	t.Parallel()
 	cfg := featureTestConfig(t)
 	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp"}}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
+	t.Cleanup(func() { s.Stop(context.Background()) })
 	s.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
 		return []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}, nil
 	}
@@ -128,9 +129,11 @@ func TestDeployPlansDefaultsAndExplicitSelection(t *testing.T) {
 }
 
 func TestDeployRefusesAmbiguousOrWrongProviderBeforeStarting(t *testing.T) {
+	t.Parallel()
 	cfg := featureTestConfig(t)
 	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp", "mlx"}}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
+	t.Cleanup(func() { s.Stop(context.Background()) })
 	for _, provider := range []string{"", "vllm"} {
 		_, err := s.Deploy(context.Background(), &DeployRequest{Model: "org/model", Nodes: []string{"worker"}, Provider: provider, Force: true})
 		require.Error(t, err)
@@ -248,6 +251,8 @@ func (r *unreachableRouter) Route(ctx context.Context, req *routing.Request) (*r
 // request is a 400, a part of this node not yet available a 503, and a node
 // or registry that did not answer a 502.
 func TestDeployPlanErrorsSayWhose(t *testing.T) {
+	t.Parallel()
+	cfg := featureTestConfig(t)
 	listing := func(err error) func(context.Context, string) ([]metadata.TreeFileEntry, error) {
 		return func(context.Context, string) ([]metadata.TreeFileEntry, error) {
 			return []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}, err
@@ -276,7 +281,7 @@ func TestDeployPlanErrorsSayWhose(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := featureTestConfig(t)
+			t.Parallel()
 			router := &unreachableRouter{
 				deploymentPlanRouter: deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp"}, "ghost": {"ghost-provider"}}},
 				down:                 "down",
@@ -288,6 +293,7 @@ func TestDeployPlanErrorsSayWhose(t *testing.T) {
 				}
 				return nil
 			})
+			t.Cleanup(func() { s.Stop(context.Background()) })
 			s.repoFiles = tc.files
 			req := tc.req
 			req.Model = "org/model-GGUF"

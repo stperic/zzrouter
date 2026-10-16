@@ -20,13 +20,18 @@ import (
 // assetTestNode is a coordinator with the shipped providers, whose
 // llamacpp schema declares chat-template-file an asset, plus the
 // operator asset t.jinja.
-func assetTestNode(t *testing.T) (*Server, assets.Dir) {
+func assetTestNode(t *testing.T, enabled ...string) (*Server, assets.Dir) {
 	t.Helper()
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
-	_, err := server.configStore.WriteAsset("llamacpp", "t.jinja", []byte("{{ messages }}"))
-	require.NoError(t, err)
+	server := createSeededTestNode(t, seededTestNodeConfig{
+		TestNodeConfig: cfg,
+		providers:      []string{"llamacpp", "vllm", "mlx", "ollama", "huggingface"},
+		enabled:        enabled,
+		prepareProviders: func(dir string) {
+			_, err := assets.NewDir(filepath.Join(dir, "on-demand", "llamacpp")).Write("t.jinja", []byte("{{ messages }}"))
+			require.NoError(t, err)
+		},
+	})
 	dir, err := server.configStore.Assets("llamacpp")
 	require.NoError(t, err)
 	return server, dir
@@ -147,12 +152,10 @@ func TestProviderAssetsAPI_OversizedStrayIsNot413(t *testing.T) {
 // A worker's assets are a copy the next sync overwrites, so a worker
 // mounts no asset routes and a write there is sent to the coordinator.
 func TestProviderAssetsAPI_WorkerWritesAreMisdirected(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{
-		AdminKey:         TestAdminKey,
-		ClusterKey:       TestClusterKey,
-		ClusterMode:      pkgConfig.ClusterModeWorker,
-		SeedProvidersDir: true,
-	})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{
+		AdminKey:    TestAdminKey,
+		ClusterKey:  TestClusterKey,
+		ClusterMode: pkgConfig.ClusterModeWorker}})
 	path := apipath.ProviderAsset("llamacpp", "mine.jinja")
 
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {

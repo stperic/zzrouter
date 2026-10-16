@@ -12,8 +12,7 @@ import (
 
 func TestProviderSchemaReportsReleaseDiagnostics(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	response := makeAuthRequest(t, server, http.MethodGet, "/zzrouter/v1/providers/mlx/schema", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, response.Code, string(response.Body))
 	var result schemaResponse
@@ -26,8 +25,7 @@ func TestProviderSchemaReportsReleaseDiagnostics(t *testing.T) {
 func TestProviderSyncRejectsUnsafeDiagnosticsBeforeWrite(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
 	cfg.ClusterMode = pkgConfig.ClusterModeWorker
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	original, err := server.configStore.ReadProviderSchemaBytes("ollama")
 	require.NoError(t, err)
 	body := ProviderSyncBody{

@@ -10,15 +10,13 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestInstallPatchRejectsBeforeWriting(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	node := server.node.Nodename()
 	path := filepath.Join(server.configStore.DirPath(), "on-demand", "mlx", "config.yaml")
 	before, err := os.ReadFile(path)
@@ -59,7 +57,7 @@ func TestInstallPatchCollectsTypedFieldErrors(t *testing.T) {
 
 func TestInstallPatchChecksOnlyAffectedNodeAndOfflineRefusal(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(dir))
+	seedTestProviders(t, dir, []string{"mlx"}, nil)
 	apps, err := config.LoadAppsConfig(dir)
 	require.NoError(t, err)
 	before, ok := apps.LookupApp("mlx")

@@ -37,17 +37,7 @@ func budgetKey(t *testing.T, s *Server, keyLimit, teamLimit float64) string {
 	resp := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey,
 		map[string]any{"id": "budget-team", "name": "Budget", "spend_limit": teamLimit})
 	require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))
-	resp = makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey,
-		map[string]any{"id": "budget-key", "name": "Budget", "team_id": "budget-team", "spend_limit": keyLimit})
-	require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))
-	var out struct {
-		Data struct {
-			Key string `json:"key"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(resp.Body, &out))
-	require.NotEmpty(t, out.Data.Key)
-	return out.Data.Key
+	return loadTestKey(t, s, "budget-key", keys.VirtualKey{Name: "Budget", TeamID: "budget-team", QuotaConfig: quota.QuotaConfig{SpendLimit: keyLimit}})
 }
 
 func budgetNode(t *testing.T, order []string, backends map[string]*serviceBackend) *Server {

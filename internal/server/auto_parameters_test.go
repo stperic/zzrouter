@@ -10,13 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
 
 func TestAutoPatchValidationOnlyDeclaredKeys(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"vllm"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	sch := loadProviderSchema(store, "vllm")

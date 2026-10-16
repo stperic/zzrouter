@@ -24,8 +24,7 @@ func workerVariantCatalog(t *testing.T) (*Server, string) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, qwenModel+".gguf"), []byte("GGUF"), 0600))
 	modelregistry.SetModelsRootDirOverride(root)
 	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "localai", SeedProvidersDir: true})
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "localai"}, providers: []string{"llamacpp", "huggingface"}, enabled: []string{"llamacpp"}})
 	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(sc *config.ServiceConfig) error {
 		sc.Models = map[string]config.ModelSpec{variantChat: {From: qwenModel}}
 		return nil

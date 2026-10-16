@@ -52,7 +52,7 @@ func TestOpenAPIDrift_Admin_RoutesMatchSpec(t *testing.T) {
 	// Without it POST /providers/instances is absent from the engine and
 	// the spec entry for it reads as stale, which is a fact about the
 	// test node rather than about the API.
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 
 	spec := loadOpenAPI(t)
 	specSet := map[routeKey]struct{}{}

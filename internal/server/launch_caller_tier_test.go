@@ -32,8 +32,8 @@ func TestEnsureRun_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "tier-model.gguf"), []byte("GGUF"), 0o644))
 
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNodeWithModelsDir(t, cfg, root, "tier-node")
+	cfg.NodeName = "tier-node"
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, modelsDir: root})
 
 	const provider = "tierprov"
 	enabled := true

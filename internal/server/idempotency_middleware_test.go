@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,7 @@ import (
 // makeIdemRouter builds a minimal gin engine that runs the
 // idempotency middleware in front of a counter handler. The handler
 // returns 202 + a synthetic job_id derived from a per-router counter.
-func makeIdemRouter(principal string, slowness time.Duration) (*gin.Engine, *idempotencyStore, *atomic.Int64) {
+func makeIdemRouter(principal string, release <-chan struct{}) (*gin.Engine, *idempotencyStore, *atomic.Int64) {
 	gin.SetMode(gin.TestMode)
 	store := newIdempotencyStore()
 	calls := &atomic.Int64{}
@@ -43,8 +44,8 @@ func makeIdemRouter(principal string, slowness time.Duration) (*gin.Engine, *ide
 		}
 	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
 		n := calls.Add(1)
-		if slowness > 0 {
-			time.Sleep(slowness)
+		if release != nil {
+			<-release
 		}
 		c.JSON(http.StatusAccepted, gin.H{"job_id": "J" + string(rune('0'+n))})
 	})
@@ -65,7 +66,7 @@ func doPOST(r *gin.Engine, body string, headers map[string]string) *httptest.Res
 // 1. Happy path replay — same key + same body → same job_id, handler
 // runs only once.
 func TestIdempotency_Replay(t *testing.T) {
-	r, _, calls := makeIdemRouter("alice", 0)
+	r, _, calls := makeIdemRouter("alice", nil)
 	body := `{"model_name":"x","provider":"vllm"}`
 	headers := map[string]string{"Idempotency-Key": "abc"}
 
@@ -84,7 +85,7 @@ func TestIdempotency_Replay(t *testing.T) {
 // 2. Body-mismatch conflict — same key, different body → 422 with
 // idempotency_key_conflict and the original launch is unaffected.
 func TestIdempotency_BodyMismatchConflict(t *testing.T) {
-	r, _, calls := makeIdemRouter("alice", 0)
+	r, _, calls := makeIdemRouter("alice", nil)
 	headers := map[string]string{"Idempotency-Key": "abc"}
 
 	w1 := doPOST(r, `{"model_name":"x"}`, headers)
@@ -128,28 +129,34 @@ func TestIdempotency_FailureIsNotReplayed(t *testing.T) {
 // same key+body. One wins, the other blocks on inflight and replays.
 // The handler runs exactly once.
 func TestIdempotency_ConcurrentRace(t *testing.T) {
-	r, _, calls := makeIdemRouter("alice", 100*time.Millisecond)
-	body := `{"model_name":"x"}`
-	headers := map[string]string{"Idempotency-Key": "race"}
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		r, _, calls := makeIdemRouter("alice", release)
+		body := `{"model_name":"x"}`
+		headers := map[string]string{"Idempotency-Key": "race"}
 
-	var wg sync.WaitGroup
-	results := make([]*httptest.ResponseRecorder, 2)
-	for i := range results {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			results[i] = doPOST(r, body, headers)
-		}(i)
-	}
-	wg.Wait()
+		var wg sync.WaitGroup
+		results := make([]*httptest.ResponseRecorder, 2)
+		for i := range results {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				results[i] = doPOST(r, body, headers)
+			}(i)
+		}
+		synctest.Wait()
+		assert.EqualValues(t, 1, calls.Load(), "one original is blocked and its duplicate waits")
+		close(release)
+		wg.Wait()
 
-	assert.EqualValues(t, 1, calls.Load(),
-		"handler must run exactly once even under concurrent duplicates")
-	for i, w := range results {
-		assert.Equal(t, http.StatusAccepted, w.Code, "result %d", i)
-	}
-	assert.Equal(t, results[0].Body.String(), results[1].Body.String(),
-		"both requests must observe the same response body")
+		assert.EqualValues(t, 1, calls.Load(),
+			"handler must run exactly once even under concurrent duplicates")
+		for i, w := range results {
+			assert.Equal(t, http.StatusAccepted, w.Code, "result %d", i)
+		}
+		assert.Equal(t, results[0].Body.String(), results[1].Body.String(),
+			"both requests must observe the same response body")
+	})
 }
 
 // 4. Per-principal scoping — two virtual keys POSTing with the same
@@ -188,7 +195,7 @@ func TestIdempotency_PerPrincipalScoping(t *testing.T) {
 
 // 5. No header → middleware is a no-op (every request runs the handler).
 func TestIdempotency_NoHeader_Passthrough(t *testing.T) {
-	r, _, calls := makeIdemRouter("alice", 0)
+	r, _, calls := makeIdemRouter("alice", nil)
 	body := `{"model_name":"x"}`
 
 	doPOST(r, body, nil)
@@ -406,7 +413,7 @@ func TestIdempotency_KeyIncludesQuery(t *testing.T) {
 // 11. Anonymous callers share one principal, so nothing is recorded:
 // two identical keyed requests with no principal both run the handler.
 func TestIdempotency_AnonymousNotRecorded(t *testing.T) {
-	r, _, calls := makeIdemRouter("", 0)
+	r, _, calls := makeIdemRouter("", nil)
 	body := `{"model_name":"x"}`
 	headers := map[string]string{"Idempotency-Key": "abc"}
 
@@ -421,64 +428,65 @@ func TestIdempotency_AnonymousNotRecorded(t *testing.T) {
 // 12. A handler that panics must still release its duplicates and forget
 // its entry. The duplicate gets a 500 at once, and a retry runs again.
 func TestIdempotency_PanicReleasesWaiters(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	store := newIdempotencyStore()
-	calls := &atomic.Int64{}
-	entered := make(chan struct{})
-	release := make(chan struct{})
+	synctest.Test(t, func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		store := newIdempotencyStore()
+		calls := &atomic.Int64{}
+		entered := make(chan struct{})
+		release := make(chan struct{})
 
-	r := gin.New()
-	r.Use(gin.Recovery())
-	r.POST("/runs", func(c *gin.Context) {
-		c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
-	}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
-		if calls.Add(1) == 1 {
-			close(entered)
-			<-release
-			panic("boom")
+		r := gin.New()
+		r.Use(gin.Recovery())
+		r.POST("/runs", func(c *gin.Context) {
+			c.Set(string(CtxKeyAccessContext), &AccessContext{Key: &KeyPrincipal{ID: "alice"}})
+		}, store.middlewareWithBodySkip(nil), func(c *gin.Context) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+				panic("boom")
+			}
+			c.JSON(http.StatusAccepted, gin.H{"ok": true})
+		})
+
+		body := `{"model_name":"x"}`
+		headers := map[string]string{"Idempotency-Key": "panic"}
+
+		var original sync.WaitGroup
+		original.Add(1)
+		go func() {
+			defer original.Done()
+			idemRequest(r, "POST", "/runs", body, headers)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("original handler was never entered")
 		}
-		c.JSON(http.StatusAccepted, gin.H{"ok": true})
+
+		dupCode := make(chan int, 1)
+		go func() {
+			dupCode <- idemRequest(r, "POST", "/runs", body, headers).Code
+		}()
+		// Let the duplicate reach its in-flight wait before the original panics.
+		synctest.Wait()
+		close(release)
+		synctest.Wait()
+
+		select {
+		case code := <-dupCode:
+			assert.Equal(t, http.StatusInternalServerError, code,
+				"a duplicate of a request that ended without a response must not replay")
+
+		default:
+			t.Fatal("duplicate was not released after the original panicked")
+		}
+		original.Wait()
+
+		w3 := idemRequest(r, "POST", "/runs", body, headers)
+		assert.Equal(t, http.StatusAccepted, w3.Code,
+			"the panicked entry must be forgotten, so a retry runs the handler again")
+		assert.EqualValues(t, 2, calls.Load())
 	})
-
-	body := `{"model_name":"x"}`
-	headers := map[string]string{"Idempotency-Key": "panic"}
-
-	var original sync.WaitGroup
-	original.Add(1)
-	go func() {
-		defer original.Done()
-		idemRequest(r, "POST", "/runs", body, headers)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("original handler was never entered")
-	}
-
-	dupCode := make(chan int, 1)
-	start := time.Now()
-	go func() {
-		dupCode <- idemRequest(r, "POST", "/runs", body, headers).Code
-	}()
-	// Let the duplicate reach its in-flight wait before the original panics.
-	time.Sleep(100 * time.Millisecond)
-	close(release)
-
-	select {
-	case code := <-dupCode:
-		assert.Equal(t, http.StatusInternalServerError, code,
-			"a duplicate of a request that ended without a response must not replay")
-		assert.Less(t, time.Since(start), 2*time.Second,
-			"a panicked original must release its duplicates well before idempotencyWaitTimeout")
-	case <-time.After(5 * time.Second):
-		t.Fatal("duplicate was not released after the original panicked")
-	}
-	original.Wait()
-
-	w3 := idemRequest(r, "POST", "/runs", body, headers)
-	assert.Equal(t, http.StatusAccepted, w3.Code,
-		"the panicked entry must be forgotten, so a retry runs the handler again")
-	assert.EqualValues(t, 2, calls.Load())
 }
 
 // One store serves every route. The key includes the path, so the same
@@ -692,7 +700,7 @@ func TestIdempotencyStore_NeverEvictsInflight(t *testing.T) {
 }
 
 func TestIdempotencyStore_SweepExpires(t *testing.T) {
-	r, store, _ := makeIdemRouter("alice", 0)
+	r, store, _ := makeIdemRouter("alice", nil)
 	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
 	for _, key := range []string{"a", "b"} {

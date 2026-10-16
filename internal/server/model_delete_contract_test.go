@@ -29,7 +29,7 @@ func TestModelDeleteExactContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
 	detailWeights(t, root, "org/b", "base-long", 8192)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	for _, model := range []string{"ase", "org/a", "base*", "missing"} {
 		response := makeAuthRequest(t, s, "DELETE", "/zzrouter/v1/models", TestAdminKey, map[string]any{"model": model})
 		if model == "base*" {
@@ -105,7 +105,7 @@ func TestModelDeleteIncompleteExactContract(t *testing.T) {
 	dir := filepath.Join(root, "org", "incomplete")
 	require.NoError(t, os.MkdirAll(dir, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{}`), 0600))
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	response := makeAuthRequest(t, s, "DELETE", "/zzrouter/v1/models", TestAdminKey, map[string]any{"model": "org/incomplete"})
 	require.Equal(t, 200, response.Code, string(response.Body))
 	require.NoDirExists(t, dir)
@@ -115,8 +115,7 @@ func TestModelDeleteSourceIdentityContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "shared", 4096)
 	detailWeights(t, root, "org/b", "shared", 8192)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	response := makeAuthRequest(t, s, "DELETE", "/zzrouter/v1/models", TestAdminKey, map[string]any{"model": "shared", "provider": "llamacpp", "registry": "huggingface"})
 	require.Equal(t, 409, response.Code, string(response.Body))
 	response = makeAuthRequest(t, s, "DELETE", "/zzrouter/v1/models", TestAdminKey, map[string]any{"model": "shared", "provider": "llamacpp", "registry": "huggingface", "source_id": "org/a"})
@@ -128,7 +127,7 @@ func TestModelDeleteSourceIdentityContract(t *testing.T) {
 func TestModelDeleteAppliedFailureReplayContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	executor := s.newInternalExecutor()
 	var publications atomic.Int32
 	executor.publishCatalog = func(context.Context) error { publications.Add(1); return errors.New("synthetic publication failure") }
@@ -209,7 +208,7 @@ func deletionDaemon(t *testing.T, s *Server, name string, afterDelete ...func() 
 }
 
 func TestModelDeleteSelectedDaemonContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	a, ad, _, _ := deletionDaemon(t, s, "ollama-delete-a")
 	b, bd, status, _ := deletionDaemon(t, s, "ollama-delete-b")
 	status.Store(401)
@@ -231,7 +230,7 @@ func TestModelDeleteSelectedDaemonContract(t *testing.T) {
 }
 
 func TestModelDeleteUnknownDaemonEffectContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	present, deletes, _, _ := deletionDaemon(t, s, "ollama-delete-unknown", func() error { return errors.New("response failed after deletion") })
 	call := func() map[string]any {
 		wire := mcpWireResponse(t, s, mcpWireRequest(t, "tools/call", "2025-06-18", map[string]any{"name": "zz_model_delete", "arguments": map[string]any{"model": "m", "provider": "ollama-delete-unknown", "idempotency_key": "unknown-delete-once"}}), 200)
@@ -253,7 +252,7 @@ func TestModelDeleteUnknownDaemonEffectContract(t *testing.T) {
 }
 
 func TestModelDeleteUnavailableInventoryContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator}, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	mode := detailDaemon(t, s, "ollama-delete-offline")
 	mode.Store(5)
 	s.model.Cache.Invalidate()
@@ -282,7 +281,7 @@ func (r deleteBroadcastContractRouter) MultiRoute(_ context.Context, path, metho
 }
 
 func TestModelDeletePublicBroadcastContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	s.services.Model.router = deleteBroadcastContractRouter{t: t}
 	response := makeAuthRequest(t, s, "DELETE", "/zzrouter/v1/models", TestAdminKey, map[string]any{"pattern": "*"})
 	require.Equal(t, 503, response.Code, string(response.Body))
@@ -295,7 +294,7 @@ func TestModelDeletePublicBroadcastContract(t *testing.T) {
 func TestModelDeletePatternContinuesContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	executor := s.newInternalExecutor()
 	response := &DeleteModelsResponse{}
 	targets, err := executor.deletionTargets(&DeleteModelsRequest{Pattern: "*"}, []*metadata.ModelMetadata{{Name: "offline", AssignedApp: "missing-daemon", SourceRepo: metadata.SourceOllama}, {Name: "base", FullPath: filepath.Join(root, "org/a/base.gguf"), Format: metadata.FormatGGUF}}, response)
@@ -308,7 +307,7 @@ func TestModelDeletePatternContinuesContract(t *testing.T) {
 func TestModelDeleteMixedCloudContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	require.NoError(t, s.configStore.AddProviderInstance("cloud-test", &config.CloudProvider{Enabled: new(true), Runtime: config.CloudRuntime{Endpoint: "https://cloud.test", API: config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-old"}, WireEndpoints: []string{"chat_completions"}}}))
 	deletionDaemon(t, s, "ollama-cloud-scope")
 	c, recorder := mutationContext(t, "DELETE", "/zzrouter/v1/internal/models", DeleteModelsRequest{Model: "cloud-old", Provider: "cloud-test", Registry: "cloud-test"})
@@ -336,7 +335,7 @@ func TestModelDeleteMixedCloudContract(t *testing.T) {
 }
 
 func TestModelDeleteRetargetedInventoryContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	a, ad, _, _ := deletionDaemon(t, s, "ollama-delete-a")
 	b, bd, _, endpoint := deletionDaemon(t, s, "ollama-delete-b")
 	models, _, err := s.model.Registry.ModelSnapshot(t.Context())
@@ -360,7 +359,7 @@ func TestModelDeleteRetargetedInventoryContract(t *testing.T) {
 func TestModelDeleteNativeErrorDialectContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	run := instance.NewInstance("native-holder", "llamacpp", "base", 0, -1, 0)
 	run.SetStatus(instance.StatusRunning)
 	require.NoError(t, s.providers.appMgr.Instances().Register(run))
@@ -381,7 +380,7 @@ func TestModelDeleteRunGuardContract(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			root := t.TempDir()
 			detailWeights(t, root, "org/a", "base", 4096)
-			s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+			s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 			run := instance.NewInstance("delete-holder", "llamacpp", "base", 0, -1, 0)
 			run.SetStatus(status)
 			run.StopUnconfirmed.Store(true)
@@ -398,7 +397,7 @@ func TestModelDeleteRunGuardContract(t *testing.T) {
 func TestModelDeleteVariantGuardContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "base", 4096)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(sc *config.ServiceConfig) error {
 		sc.Models = map[string]config.ModelSpec{"base+agent": {From: "base"}}
 		return nil
@@ -420,7 +419,7 @@ func TestMCPModelDeleteContract(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			root := t.TempDir()
 			detailWeights(t, root, "org/a", "base", 4096)
-			s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "delete-node")
+			s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "delete-node"}, modelsDir: root, providers: []string{"llamacpp", "ollama", "huggingface"}})
 			for range 2 {
 				wire := mcpWireResponse(t, s, mcpWireRequest(t, "tools/call", version, map[string]any{"name": "zz_model_delete", "arguments": map[string]any{"model": "base", "node": "delete-node", "idempotency_key": "delete-once-" + url.QueryEscape(version)}}), http.StatusOK)
 				result, ok := wire["result"].(map[string]any)

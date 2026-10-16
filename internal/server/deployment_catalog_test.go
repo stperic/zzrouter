@@ -61,8 +61,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 				if location == "worker" {
 					mode = config.ClusterModeWorker
 				}
-				target := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location, SeedProvidersDir: true})
-				require.NoError(t, target.configStore.SetProviderEnabled(provider, true))
+				target := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location}, providers: []string{"llamacpp", "mlx", "huggingface"}, enabled: []string{provider}})
 				reader := target
 				if location == "worker" {
 					reader = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator"})

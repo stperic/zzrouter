@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/quota"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -281,43 +283,32 @@ func TestNativeWire_AdmitsOnlyCallersItCanHoldToTheirLimits(t *testing.T) {
 	call := func(key string) *TestResponse {
 		return makeAuthRequest(t, server, http.MethodPost, "/vendor/v1/thing", key, map[string]any{"x": 1})
 	}
-	createKey := func(body map[string]any) string {
-		resp := makeAuthRequest(t, server, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey, body)
-		require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))
-		var out struct {
-			Data struct {
-				Key string `json:"key"`
-			} `json:"data"`
-		}
-		require.NoError(t, json.Unmarshal(resp.Body, &out))
-		return out.Data.Key
-	}
 
 	assert.Equal(t, http.StatusOK, call("").Code, "keyless, local backend")
 	assert.Equal(t, http.StatusOK, call(TestAdminKey).Code, "static key")
 
-	spend := call(createKey(map[string]any{"id": "spender", "name": "spender", "spend_limit": 5}))
+	spend := call(loadTestKey(t, server, "spender", keys.VirtualKey{Name: "spender", QuotaConfig: quota.QuotaConfig{SpendLimit: 5}}))
 	assert.Equal(t, http.StatusForbidden, spend.Code)
 	assert.Contains(t, string(spend.Body), "spend limit")
 
-	tpm := call(createKey(map[string]any{"id": "tokens", "name": "tokens", "tpm_limit": 1000}))
+	tpm := call(loadTestKey(t, server, "tokens", keys.VirtualKey{Name: "tokens", QuotaConfig: quota.QuotaConfig{TPMLimit: 1000}}))
 	assert.Equal(t, http.StatusForbidden, tpm.Code)
 	assert.Contains(t, string(tpm.Body), "tokens-per-minute")
 
-	rpmKey := createKey(map[string]any{"id": "rate", "name": "rate", "rpm_limit": 1})
+	rpmKey := loadTestKey(t, server, "rate", keys.VirtualKey{Name: "rate", QuotaConfig: quota.QuotaConfig{RPMLimit: 1}})
 	assert.Equal(t, http.StatusOK, call(rpmKey).Code)
 	assert.Equal(t, http.StatusTooManyRequests, call(rpmKey).Code, "request rate is enforced on a mount")
 
 	teamResp := makeAuthRequest(t, server, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey, map[string]any{"id": "budget-team", "name": "Budget", "spend_limit": 5})
 	require.Equal(t, http.StatusCreated, teamResp.Code, string(teamResp.Body))
-	teamSpend := call(createKey(map[string]any{"id": "team-spender", "name": "Team spender", "team_id": "budget-team"}))
+	teamSpend := call(loadTestKey(t, server, "team-spender", keys.VirtualKey{Name: "Team spender", TeamID: "budget-team"}))
 	assert.Equal(t, http.StatusForbidden, teamSpend.Code)
 	assert.Contains(t, string(teamSpend.Body), "spend limit")
 
 	resp := makeAuthRequest(t, server, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey,
 		map[string]any{"id": "gated", "name": "Gated", "allowed_models": []string{"some-model"}})
 	require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))
-	gated := call(createKey(map[string]any{"id": "member", "name": "member", "team_id": "gated"}))
+	gated := call(loadTestKey(t, server, "member", keys.VirtualKey{Name: "member", TeamID: "gated"}))
 	assert.Equal(t, http.StatusForbidden, gated.Code)
 	assert.Contains(t, string(gated.Body), "limits which models")
 }

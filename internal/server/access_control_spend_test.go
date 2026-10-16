@@ -41,6 +41,7 @@ func newGatewayWithEnforcer(t *testing.T) (*AccessControl, *quota.Enforcer) {
 // ============================================================================
 
 func TestAccessControl_GetKeySpend_ReflectsSettledTraffic(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Pre-condition: no traffic yet.
@@ -71,6 +72,7 @@ func TestAccessControl_GetKeySpend_ReflectsSettledTraffic(t *testing.T) {
 }
 
 func TestAccessControl_GetTeamSpend_Independent(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Multi-scope chain: key AND team both reserve.
@@ -113,6 +115,7 @@ func TestAccessControl_GetTeamSpend_Independent(t *testing.T) {
 }
 
 func TestAccessControl_ResetKeySpend_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	chain := []quota.QuotaScope{{
@@ -139,6 +142,7 @@ func TestAccessControl_ResetKeySpend_ZerosLedger(t *testing.T) {
 }
 
 func TestAccessControl_GetAllSpendStates_AllScopes(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// One key-only request, one team-only request, one multi-scope request.
@@ -183,13 +187,13 @@ func TestAccessControl_GetAllSpendStates_AllScopes(t *testing.T) {
 // ============================================================================
 
 func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Seed the key store.
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 
 	svc := NewKeysService(keyStore, nil, gw)
 
@@ -223,12 +227,12 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 }
 
 func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
 
 	chain := []quota.QuotaScope{{
@@ -252,14 +256,13 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 }
 
 func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
-	_, err = keyStore.Create("bob", &keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
 
 	// Two key-scope requests + one team-scope request. The report must
@@ -295,6 +298,7 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 }
 
 func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -335,6 +339,7 @@ func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
 }
 
 func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -363,6 +368,7 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 }
 
 func TestTeamsService_GetTeamUsage_NotFound(t *testing.T) {
+	t.Parallel()
 	gw, _ := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()

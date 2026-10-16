@@ -568,7 +568,7 @@ func TestProviderModelsActualSurfaceAuthAndWorkerIsolation(t *testing.T) {
 func TestProviderModelsReservationSpansTrustedMounts(t *testing.T) {
 	root := t.TempDir()
 	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker}})
 	fsroot.SetProviderRootOverride(root)
 	mtls := buildInternalEngine(s)
 	e := s.newDeploymentsExecutor()

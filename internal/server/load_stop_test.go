@@ -41,6 +41,7 @@ func TestLoadStopsBeforeRelaunchWhenProcessExitIsUnconfirmed(t *testing.T) {
 				assert.Same(t, run, retained)
 				assert.True(t, run.StopUnconfirmed.Load())
 				run.GoroutineDone()
+				require.NoError(t, manager.Stop(context.Background()))
 				synctest.Wait()
 			})
 		})

@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -78,7 +77,7 @@ func TestSourceInstallCannotSelectAdditionalPackages(t *testing.T) {
 
 func TestInstalledSourcePolicyEvidenceNeverBecomesAnOverride(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"comfyui"}, nil)
 	store, err := config.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	apps := store.Config()

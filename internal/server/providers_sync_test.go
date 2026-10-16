@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stretchr/testify/require"
 )
 
 // newFanOutTestStore builds a real AppsConfigStore backed by a tempdir
@@ -110,8 +111,13 @@ func TestProviderSyncFanOut_CoalescesBursts(t *testing.T) {
 	store := newFanOutTestStore(t)
 	var hits int64
 	block := make(chan struct{})
+	entered := make(chan struct{}, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt64(&hits, 1)
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
 		<-block
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -126,17 +132,15 @@ func TestProviderSyncFanOut_CoalescesBursts(t *testing.T) {
 	)
 	// First fire enters run(); subsequent fires during the block coalesce.
 	f.Listener()(store.Config())
+	<-entered
 	for i := 0; i < 20; i++ {
 		f.Listener()(store.Config())
 	}
 	// Release the in-flight push. Re-fire (if any) executes next.
 	close(block)
-	// Allow re-fire to run.
-	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
 	got := atomic.LoadInt64(&hits)
-	if got < 1 || got > 2 {
-		t.Errorf("coalesce bound violated: hits=%d, want 1 or 2", got)
-	}
+	require.EqualValues(t, 2, got, "the mutation burst owes one re-fire")
 }
 
 func TestProviderSyncFanOut_SkipsCloudProviders(t *testing.T) {
@@ -181,17 +185,12 @@ func TestProviderSyncFanOut_SkipsCloudProviders(t *testing.T) {
 	)
 	_ = f.Listener()(store.Config())
 
-	done := time.After(500 * time.Millisecond)
+	require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
 	var paths []string
-loop:
-	for {
-		select {
-		case r := <-recv:
-			paths = append(paths, r.path)
-		case <-done:
-			break loop
-		}
+	for len(recv) > 0 {
+		paths = append(paths, (<-recv).path)
 	}
+
 	if len(paths) != 1 {
 		t.Fatalf("expected exactly one push (ollama); got %d paths: %v", len(paths), paths)
 	}
@@ -226,8 +225,7 @@ func TestProviderSyncFanOut_SkipsLocalEndpoint(t *testing.T) {
 		compatibleSyncClusterClient,
 	)
 	_ = f.Listener()(store.Config())
-	// Give run() a brief window; no push should fire.
-	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
 	if got := atomic.LoadInt64(&hits); got != 0 {
 		t.Errorf("pushes to local endpoint = %d, want 0", got)
 	}

@@ -53,7 +53,7 @@ func TestResolvedModelFeatureProvenanceAndPreview(t *testing.T) {
 }
 
 func TestResolvedWorkerRouteAndRemotePropagation(t *testing.T) {
-	worker := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "feature-worker", SeedProvidersDir: true})
+	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "feature-worker"}})
 	require.True(t, worker.node.IsWorker())
 	remote := makeInternalRequest(t, worker, TestRequest{Method: http.MethodGet, Path: "/zzrouter/v1/internal/providers/llamacpp/resolved?model=vendor/model"})
 	require.Equal(t, http.StatusOK, remote.Code, string(remote.Body))

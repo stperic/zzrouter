@@ -40,8 +40,7 @@ func variantNode(t *testing.T) *Server {
 	require.NoError(t, os.WriteFile(filepath.Join(root, qwenModel+".gguf"), []byte("GGUF"), 0o600))
 	modelregistry.SetModelsRootDirOverride(root)
 	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
-	s, _ := assetTestNode(t)
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s, _ := assetTestNode(t, "llamacpp")
 	return s
 }
 

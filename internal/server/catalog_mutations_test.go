@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -51,7 +52,7 @@ func TestIncompleteModel_ListRefuseAndDelete(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "m-00001-of-00002.gguf"), []byte("weights"), 0o600))
 		}
 	}
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator", SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator"}})
 	resp := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/models", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
 	var listed struct {
@@ -84,8 +85,10 @@ func mutationNodes(t *testing.T, location string) (target, reader *Server, dir s
 	if location == "worker" {
 		mode = config.ClusterModeWorker
 	}
-	target = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location, SeedProvidersDir: true})
-	require.NoError(t, target.configStore.SetProviderEnabled("llamacpp", true))
+	target = createSeededTestNode(t, seededTestNodeConfig{
+		TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location},
+		providers:      []string{"llamacpp", "mlx", "ollama", "huggingface"}, enabled: []string{"llamacpp"},
+	})
 	reader = target
 	if location == "worker" {
 		reader = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator"})
@@ -187,41 +190,51 @@ func TestCatalogMutationRescanPublishesBeforeResponse(t *testing.T) {
 }
 
 func TestCatalogMutationWorkerWaitsForAcknowledgement(t *testing.T) {
+	// Cluster services outlive the request, so construct them outside its bubble.
 	target, reader, dir := mutationNodes(t, "worker")
-	entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	engine := buildCoordInternalEngine(reader)
-	client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
-		close(entered)
-		<-release
-		rec := httptest.NewRecorder()
-		engine.ServeHTTP(rec, r)
-		return rec.Result(), nil
-	})}
-	target.cluster.signaler.Stop(context.Background())
-	target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
-	signalCtx, cancelSignal := context.WithCancel(context.Background())
-	t.Cleanup(cancelSignal)
-	target.cluster.signaler.Start(signalCtx)
-	c, rec := mutationContext(t, http.MethodDelete, "/zzrouter/v1/internal/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
-	go func() { target.newInternalExecutor().HandleInternalDeleteModels(c); close(returned) }()
-	t.Cleanup(func() {
-		close(release)
-		<-returned
-		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-		require.False(t, reader.model.Cache.HasModel("weights"))
+	synctest.Test(t, func(t *testing.T) {
+		// Context Done channels first read here must also be closed here.
+		t.Cleanup(func() {
+			cleanupTestNode(reader)
+			cleanupTestNode(target)
+			target.cluster.signaler.Stop(context.Background())
+		})
+		entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		engine := buildCoordInternalEngine(reader)
+		client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+			close(entered)
+			<-release
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, r)
+			return rec.Result(), nil
+		})}
+		target.cluster.signaler.Stop(context.Background())
+		target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+		signalCtx, cancelSignal := context.WithCancel(context.Background())
+		t.Cleanup(cancelSignal)
+		target.cluster.signaler.Start(signalCtx)
+		c, rec := mutationContext(t, http.MethodDelete, "/zzrouter/v1/internal/models", DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}})
+		go func() { target.newInternalExecutor().HandleInternalDeleteModels(c); close(returned) }()
+		t.Cleanup(func() {
+			close(release)
+			<-returned
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.False(t, reader.model.Cache.HasModel("weights"))
+		})
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("deletion did not request coordinator publication")
+		}
+		synctest.Wait()
+		select {
+		case <-returned:
+			t.Fatal("delete answered before acknowledgement")
+		default:
+		}
+		require.False(t, target.model.Cache.HasModel("weights"))
+		require.True(t, reader.model.Cache.HasModel("weights"))
 	})
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("deletion did not request coordinator publication")
-	}
-	select {
-	case <-returned:
-		t.Fatal("delete answered before acknowledgement")
-	default:
-	}
-	require.False(t, target.model.Cache.HasModel("weights"))
-	require.True(t, reader.model.Cache.HasModel("weights"))
 }
 
 func TestCatalogMutationProviderWritesPublish(t *testing.T) {
@@ -588,7 +601,7 @@ func TestCatalogMutationOllamaCommandSelection(t *testing.T) {
 	for _, command := range []string{"create", "copy", "delete", "show", "push"} {
 		t.Run(command, func(t *testing.T) {
 			if command == "delete" {
-				node := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+				node := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 				present, calls, _, _ := deletionDaemon(t, node, "ollama-selection")
 				response := makeAuthRequest(t, node, "DELETE", "/api/delete", TestAdminKey, map[string]any{"model": "ollama-selection/m"})
 				require.Equal(t, 200, response.Code, string(response.Body))

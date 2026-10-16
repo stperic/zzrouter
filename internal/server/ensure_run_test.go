@@ -283,7 +283,17 @@ func TestLoadProviderAutodetectResolvesVariant(t *testing.T) {
 func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
-		mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithModelSource(func(context.Context, string) string { close(entered); <-release; return "" }))
+		started := make(chan error, 1)
+		mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t),
+			prov_apps.WithModelSource(func(context.Context, string) string {
+				close(entered)
+				<-release
+				return ""
+			}),
+			prov_apps.WithStartObserver(func(ctx context.Context, _ prov_apps.EnsureRequest) (context.Context, func(prov_apps.EnsureResult, error)) {
+				return ctx, func(_ prov_apps.EnsureResult, err error) { started <- err }
+			}),
+		)
 		require.NoError(t, err)
 		t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 		s := &Server{}
@@ -291,10 +301,12 @@ func TestChainColdStartReturnsBeforeProcessPreparation(t *testing.T) {
 		require.NoError(t, newChainServerDeps(s).StartOnDemand("cold", "fake", ""))
 		<-entered
 		close(release)
-		synctest.Wait()
+		require.NoError(t, <-started)
 		runs := mgr.Instances().List()
 		require.Len(t, runs, 1)
 		assert.Equal(t, instance.StartedByRequest, runs[0].StartedBy)
+		require.NoError(t, mgr.Stop(context.Background()))
+		synctest.Wait()
 	})
 }
 

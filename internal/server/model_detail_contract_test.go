@@ -23,9 +23,17 @@ import (
 )
 
 // Synthetic daemon replies exercise real registry, REST and MCP paths.
-func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
+func detailDaemon(t *testing.T, s *Server, name string, templateBody ...string) *atomic.Int32 {
 	t.Helper()
 	mode := &atomic.Int32{}
+	template := "{{ messages }}"
+	if len(templateBody) > 0 {
+		template = templateBody[0]
+	}
+	oversizedParameters := strings.Repeat("p", 1<<17)
+	require.Greater(t, len(oversizedParameters), 64<<10, "overflow fixture must exceed the compact body limit")
+	tags := []byte(`{"models":[{"name":"m","model":"m","size":123,"details":{"format":"gguf"}}]}`)
+	ps := []byte(`{"models":[]}`)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -35,9 +43,9 @@ func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
 				_, _ = w.Write([]byte(`{"error":"inventory unavailable"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"models":[{"name":"m","model":"m","size":123,"details":{"format":"gguf"}}]}`))
+			_, _ = w.Write(tags)
 		case "/api/ps":
-			_, _ = w.Write([]byte(`{"models":[]}`))
+			_, _ = w.Write(ps)
 		case "/api/show":
 			var request struct {
 				Name    string `json:"name"`
@@ -58,9 +66,9 @@ func detailDaemon(t *testing.T, s *Server, name string) *atomic.Int32 {
 			default:
 				parameters := name
 				if mode.Load() == 4 {
-					parameters = strings.Repeat("p", 1<<17)
+					parameters = oversizedParameters
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"parameters": parameters, "verbose": request.Verbose, "provider_model": request.Name, "template": strings.Repeat("template", 1<<18), "license": "discard in compact mode", "model_info": map[string]any{"general.architecture": "llama", "llama.context_length": 8192, "tensor_data": []any{1, 2}}, "capabilities": []string{"completion", "tools"}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"parameters": parameters, "verbose": request.Verbose, "provider_model": request.Name, "template": template, "license": "discard in compact mode", "model_info": map[string]any{"general.architecture": "llama", "llama.context_length": 8192, "tensor_data": []any{1, 2}}, "capabilities": []string{"completion", "tools"}})
 			}
 		default:
 			w.WriteHeader(404)
@@ -82,9 +90,12 @@ func detailData(t *testing.T, response *TestResponse) map[string]any {
 }
 
 func TestModelDetailBackendAndCompactContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
-	detailDaemon(t, s, "ollama-detail-a")
-	detailDaemon(t, s, "ollama-detail-b")
+	largeTemplate := strings.Repeat("template", 1<<18)
+	require.Equal(t, 2<<20, len(largeTemplate), "preserve the original 2 MiB fixture")
+	require.Greater(t, len(largeTemplate), 1<<20)
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
+	detailDaemon(t, s, "ollama-detail-a", largeTemplate)
+	detailDaemon(t, s, "ollama-detail-b", largeTemplate)
 	listed := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models?model=m", TestAdminKey, nil)
 	require.Equal(t, 200, listed.Code, string(listed.Body))
 	var collection struct {
@@ -101,6 +112,7 @@ func TestModelDetailBackendAndCompactContract(t *testing.T) {
 		require.Equal(t, true, fullDetails["verbose"])
 		require.Equal(t, "m", fullDetails["provider_model"])
 		require.Greater(t, len(fullDetails["template"].(string)), 1<<20)
+		require.Equal(t, largeTemplate, fullDetails["template"], "full detail preserves every template byte")
 		compact := makeAuthRequest(t, s, "GET", path+"&compact=true", TestAdminKey, nil)
 		require.Equal(t, 200, compact.Code, string(compact.Body))
 		require.Less(t, len(compact.Body), 64<<10)
@@ -121,7 +133,7 @@ func TestModelDetailBackendAndCompactContract(t *testing.T) {
 }
 
 func TestModelDetailFailureStatusContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	mode := detailDaemon(t, s, "ollama-detail")
 	for _, tc := range []struct {
 		name string
@@ -150,7 +162,7 @@ func TestModelDetailFailureStatusContract(t *testing.T) {
 }
 
 func TestNativeModelDetailUncatalogedContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	response := makeAuthRequest(t, s, "POST", "/api/show", TestAdminKey, map[string]any{"model": "ollama-detail/hidden", "verbose": true})
 	require.Equal(t, 200, response.Code, string(response.Body))
@@ -192,9 +204,8 @@ func (c *detailWorkerClient) Unicast(ctx context.Context, node, path string, par
 func TestModelDetailWorkerContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/worker", "served", 32768)
-	worker := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true}, root, "worker")
-	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
-	coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
+	coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}})
 	coordinator.model.Cache = cache.New(cache.Config{Node: coordinator.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *config.AppsConfig { return worker.appsConfig }, ClusterClient: func() mesh.ClusterClient { return deploymentCatalogClient{worker: worker} }, ResolveEndpointToNodename: func(string) string { return "" }})
 	client := &detailWorkerClient{deploymentCatalogClient: deploymentCatalogClient{worker: worker}, t: t, engine: buildInternalEngine(worker)}
 	coordinator.services.Model.router = routing.NewClusterAwareRouterWithClient(coordinator.node.Nodename(), client, "9090", coordinator.ServeLocalRequest, coordinator.httpClient)
@@ -210,7 +221,7 @@ func TestModelDetailWorkerContract(t *testing.T) {
 }
 
 func TestNativeModelDetailLocalDoesNotBroadcastContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator}, providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	require.NoError(t, s.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{Name: "other", URL: "http://other.test:9090", ClusterURL: "https://other.test:9091"}))
 	s.clusterMTLSClient = &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -237,8 +248,7 @@ func TestModelDetailSourceIdentityContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "shared", 4096)
 	detailWeights(t, root, "org/b", "shared", 8192)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	for _, tc := range []struct {
 		repo string
 		ctx  int
@@ -258,7 +268,7 @@ func TestModelDetailSourceIdentityContract(t *testing.T) {
 func TestModelDetailVariantAndGroupConstraintContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/base", "base", 16384)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}})
 	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(sc *config.ServiceConfig) error {
 		sc.Enabled = new(bool)
 		*sc.Enabled = true
@@ -281,8 +291,7 @@ func TestModelDetailVariantAndGroupConstraintContract(t *testing.T) {
 func TestModelDetailPublisherNamespaceContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "llamacpp/publisher", "publisher-weight", 65536)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	response := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models/show?provider=llamacpp&registry=huggingface&model=llamacpp%2Fpublisher&compact=true", TestAdminKey, nil)
 	require.Equal(t, 200, response.Code, string(response.Body))
 	require.EqualValues(t, 65536, detailData(t, response)["model_info"].(map[string]any)["max_position_embeddings"])
@@ -295,7 +304,7 @@ func TestModelDetailPublisherNamespaceContract(t *testing.T) {
 }
 
 func TestNativeModelDetailGroupContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	require.NoError(t, s.model.Groups.Set("group-alias", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "m", Model: "m", App: "ollama-detail"}}}))
 	response := makeAuthRequest(t, s, "POST", "/api/show", TestAdminKey, map[string]any{"model": "group-alias"})

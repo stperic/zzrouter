@@ -180,8 +180,7 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 
 func TestMCPProvidersFreshInventory(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	s := createTestNode(t, cfg)
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	result := callMCPWireTool(t, s, "zz_providers", map[string]any{})
 	require.NotEqual(t, true, result["isError"], result)
 	providers := result["structuredContent"].(map[string]any)["providers"].([]any)
@@ -210,8 +209,7 @@ func TestMCPProvidersFreshInventory(t *testing.T) {
 
 func TestMCPPreviewProviderErrorsBelongToREST(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	s := createTestNode(t, cfg)
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	for _, tc := range []struct{ provider, version, detail, next, absent string }{
 		{"missing-provider", "", "not configured on this node", "GET /zzrouter/v1/providers", "enabled=true"},
 		{"llamacpp", "", "configured but disabled on this node", "POST /zzrouter/v1/providers/llamacpp/install", "PATCH"},
@@ -272,11 +270,10 @@ func (r *previewWorkerRouter) Unicast(ctx context.Context, node, path, method st
 
 func TestMCPPreviewRecoveryUsesTargetInventory(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	coordinator := createTestNode(t, cfg)
+	coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	cfg.ClusterMode = config.ClusterModeWorker
 	cfg.NodeName = "preview-worker"
-	worker := createTestNode(t, cfg)
+	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 	coordinator.services.Load.router = &previewWorkerRouter{worker: buildInternalEngine(worker)}
 	for _, tc := range []struct{ localVersion, workerVersion, next, absent string }{
 		{"1.2.3", "", "POST /zzrouter/v1/providers/llamacpp/install", "PATCH"},

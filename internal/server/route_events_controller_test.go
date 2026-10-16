@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -102,17 +103,23 @@ func TestRouteEventsStream_DeliversPublishedEvent(t *testing.T) {
 	// Spawn the stream request and arrange a cancellation so the handler
 	// exits cleanly once we've seen the event.
 	pr, pw := newPipeReaderWriter()
-	defer pr.Close()
-	req := httptest.NewRequest("GET", "/zzrouter/v1/model-groups/events", nil)
-	w := &flushRecorder{ResponseWriter: pw}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	finished := make(chan struct{})
+	defer func() { cancel(); _ = pr.Close(); <-finished }()
+	req := httptest.NewRequestWithContext(ctx, "GET", "/zzrouter/v1/model-groups/events", nil)
+	w := &flushRecorder{ResponseWriter: pw, flushed: make(chan struct{})}
 	go func() {
+		defer close(finished)
 		defer pw.Close()
 		r.ServeHTTP(w, req)
 	}()
 
-	// Publish in a goroutine because the handler must already be
-	// subscribed before the publish fans out.
-	time.Sleep(20 * time.Millisecond)
+	// The initial flush happens only after subscription.
+	select {
+	case <-w.flushed:
+	case <-ctx.Done():
+		t.Fatal("stream never subscribed")
+	}
 	bus.Publish(route_events.Event{
 		Type:  route_events.EventRouteCreated,
 		Route: "fast-chat",
@@ -161,14 +168,15 @@ func newPipeReaderWriter() (*io.PipeReader, io.WriteCloser) {
 }
 
 // flushRecorder is a gin/http.ResponseWriter-compatible wrapper around
-// an io.Writer. The handler's c.Writer.Flush() becomes a no-op on this
-// shape (writes are inherently un-buffered through the pipe), which is
-// the desired semantic for streaming tests.
+// an io.Writer. Pipe writes are unbuffered; an optional flushed channel
+// exposes the initial subscription boundary.
 type flushRecorder struct {
 	ResponseWriter io.Writer
 	mu             sync.Mutex
 	status         int
 	headers        http.Header
+	flushed        chan struct{}
+	flushOnce      sync.Once
 }
 
 func (f *flushRecorder) Header() http.Header {
@@ -182,13 +190,17 @@ func (f *flushRecorder) Header() http.Header {
 
 func (f *flushRecorder) Write(p []byte) (int, error) { return f.ResponseWriter.Write(p) }
 func (f *flushRecorder) WriteHeader(code int)        { f.status = code }
-func (f *flushRecorder) Flush()                      {}
-func (f *flushRecorder) Status() int                 { return f.status }
-func (f *flushRecorder) Size() int                   { return 0 }
-func (f *flushRecorder) Written() bool               { return f.status != 0 }
-func (f *flushRecorder) WriteHeaderNow()             {}
-func (f *flushRecorder) Pusher() http.Pusher         { return nil }
-func (f *flushRecorder) CloseNotify() <-chan bool    { return make(chan bool) }
+func (f *flushRecorder) Flush() {
+	if f.flushed != nil {
+		f.flushOnce.Do(func() { close(f.flushed) })
+	}
+}
+func (f *flushRecorder) Status() int              { return f.status }
+func (f *flushRecorder) Size() int                { return 0 }
+func (f *flushRecorder) Written() bool            { return f.status != 0 }
+func (f *flushRecorder) WriteHeaderNow()          {}
+func (f *flushRecorder) Pusher() http.Pusher      { return nil }
+func (f *flushRecorder) CloseNotify() <-chan bool { return make(chan bool) }
 func (f *flushRecorder) Hijack() (interface{}, interface{}, error) {
 	return nil, nil, nil
 }
