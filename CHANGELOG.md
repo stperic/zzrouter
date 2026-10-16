@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pinned process runs return after node restarts and self-updates, replaying their
+  request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete
   until their pending files arrive. MCP `zz_models` exposes `incomplete`; repair
   with `zz_model_download` of the same model to fetch only what is missing.
@@ -35,8 +37,7 @@
   but never pin or unpin. Run reports expose `pinned: true`; a blocked launch
   keeps 409 `out_of_range` and names pinned holders with
   `reclaim_skipped_reason: pinned`. Explicit stop, Force replace and restart
-  remain available; restart replays request overrides. Pins do not autostart
-  runs after a node restart. Upgrade every worker before relying on pins:
+  remain available; restart replays request overrides. Upgrade every worker before relying on pins:
   an older worker keeps `-1` as idle-only and may reclaim it under pressure.
 
 - vLLM and llama.cpp size context to the GPU by default: new installs ship

@@ -524,6 +524,7 @@ func (s *Server) startCommonSubsystems() error {
 	if s.model.Cache != nil {
 		s.model.Cache.Start(s.shutdownCtx)
 	}
+	s.providers.appMgr.RestorePinnedRuns()
 	// Filesystem-watcher invalidation: pair the cache lifetime with an
 	// fsnotify watch so out-of-band rm against the models root flips
 	// the catalog truthful. Errors are logged + ignored — the periodic

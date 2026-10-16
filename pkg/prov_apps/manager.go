@@ -91,6 +91,8 @@ type ProviderAppManager struct {
 	shutdown       atomic.Bool // true once Stop() has drained instances; gates emitEvent
 	stopping       atomic.Bool // single-shot guard for concurrent Stop() callers
 	startOnce      sync.Once
+	restoreOnce    sync.Once
+	pins           *pinnedRuns
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 	// startsCtx is shutdownCtx's child for background on-demand starts, cancelled first by Stop.
@@ -433,6 +435,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	m.installs.catalogChanged = m.catalogChanged
 	m.installs.serviceControl = m.controlInstallService
 	m.installs.smoke = m.smokeInstalledRuntime
+	m.loadPinnedRuns()
 	return m, nil
 }
 

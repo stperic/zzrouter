@@ -39,6 +39,7 @@ const (
 	OriginAPI     Origin = iota // a management call
 	OriginRequest               // an inference request to a model with no run
 	OriginInstall               // an install smoke, while the installer holds the runtime
+	OriginRestore               // a recorded pin, using management-call policy
 )
 
 // Want is one caller's demand on a run key (model and endpoint).

@@ -19,20 +19,20 @@ type EnsureRequest struct {
 	requestedModel   string
 	keyEndpoint      Endpoint // Shared engines keep one key without discarding the requested shape.
 	selectedRuntime  string
-	Detached         bool // returns an empty result on a cold start accepted in the background
-	Origin           Origin
-	Force            bool
-	Unload           bool // a zero keep-alive hint: start nothing for a model with no run
-	Runtime          string
-	DisposablePlanID string
-	Provider         string
-	Model            string
-	Endpoint         Endpoint // empty defaults to EndpointChat
-	Port             int      // 0 = auto-allocate
-	Parameters       map[string]string
-	EnvVars          map[string]string
-	Files            []instance.FileMount
-	NativeConfig     *instance.NativeConfig
+	Detached         bool                   `json:"-"` // returns an empty result on a cold start accepted in the background
+	Origin           Origin                 `json:"-"`
+	Force            bool                   `json:"-"`
+	Unload           bool                   `json:"-"` // a zero keep-alive hint: start nothing for a model with no run
+	Runtime          string                 `json:"runtime,omitempty"`
+	DisposablePlanID string                 `json:"-"`
+	Provider         string                 `json:"provider"`
+	Model            string                 `json:"model,omitempty"`
+	Endpoint         Endpoint               `json:"endpoint,omitempty"` // empty defaults to EndpointChat
+	Port             int                    `json:"-"`                  // 0 = auto-allocate
+	Parameters       map[string]string      `json:"parameters,omitempty"`
+	EnvVars          map[string]string      `json:"env_vars,omitempty"`
+	Files            []instance.FileMount   `json:"-"`
+	NativeConfig     *instance.NativeConfig `json:"-"`
 }
 
 // Key returns the identity shared by registry lookups and concurrent ensures.
