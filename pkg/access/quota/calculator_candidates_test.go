@@ -45,7 +45,7 @@ var gpt4o = pricing.ModelPricing{
 func TestCalculateCostMicro_PricesResponseModelWhenRequestWasAnAlias(t *testing.T) {
 	store := storeWith(t, map[string]pricing.ModelPricing{"gpt-4o": gpt4o})
 
-	micro, src := CalculateCostMicro(0, store, "openai", []string{"gpt-4o", "fast-chat"}, 1000, 500, 0, 0)
+	micro, src := CalculateCostMicro(nil, store, "openai", []string{"gpt-4o", "fast-chat"}, 1000, 500, 0, 0)
 
 	assert.Equal(t, CostSourceZZRouter, src)
 	assert.Equal(t, USDToMicro(1000*0.0000025+500*0.00001), micro)
@@ -56,7 +56,7 @@ func TestCalculateCostMicro_PricesResponseModelWhenRequestWasAnAlias(t *testing.
 func TestCalculateCostMicro_FallsBackToRequestedModel(t *testing.T) {
 	store := storeWith(t, map[string]pricing.ModelPricing{"gpt-4o": gpt4o})
 
-	micro, src := CalculateCostMicro(0, store, "openai", []string{"", "gpt-4o"}, 1000, 500, 0, 0)
+	micro, src := CalculateCostMicro(nil, store, "openai", []string{"", "gpt-4o"}, 1000, 500, 0, 0)
 
 	assert.Equal(t, CostSourceZZRouter, src)
 	assert.Equal(t, USDToMicro(1000*0.0000025+500*0.00001), micro)
@@ -70,7 +70,7 @@ func TestCalculateCostMicro_SkipsZeroPricedCandidate(t *testing.T) {
 		"gpt-oss:120b-cloud":  gpt4o,
 	})
 
-	micro, src := CalculateCostMicro(0, store, "ollama", []string{"gpt-oss:120b", "gpt-oss:120b-cloud"}, 1000, 500, 0, 0)
+	micro, src := CalculateCostMicro(nil, store, "ollama", []string{"gpt-oss:120b", "gpt-oss:120b-cloud"}, 1000, 500, 0, 0)
 
 	assert.Equal(t, CostSourceZZRouter, src)
 	assert.Equal(t, USDToMicro(1000*0.0000025+500*0.00001), micro)
@@ -79,7 +79,7 @@ func TestCalculateCostMicro_SkipsZeroPricedCandidate(t *testing.T) {
 func TestCalculateCostMicro_AllCandidatesMiss(t *testing.T) {
 	store := storeWith(t, map[string]pricing.ModelPricing{"gpt-4o": gpt4o})
 
-	micro, src := CalculateCostMicro(0, store, "ollama-cloud", []string{"gpt-oss:120b", "fast-chat"}, 1000, 500, 0, 0)
+	micro, src := CalculateCostMicro(nil, store, "ollama-cloud", []string{"gpt-oss:120b", "fast-chat"}, 1000, 500, 0, 0)
 
 	assert.Equal(t, int64(0), micro)
 	assert.Equal(t, "", src, "no candidate priced ⇒ empty source ⇒ caller records a miss")

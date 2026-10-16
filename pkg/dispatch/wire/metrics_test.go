@@ -34,7 +34,12 @@ func TestExtractProviderCost(t *testing.T) {
 			var raw map[string]json.RawMessage
 			require.NoError(t, json.Unmarshal([]byte(tt.body), &raw))
 			cost := extractProviderCost(raw)
-			assert.InDelta(t, tt.wantCost, cost, 0.0000001)
+			if tt.wantCost == 0 {
+				assert.Nil(t, cost)
+			} else {
+				require.NotNil(t, cost)
+				assert.InDelta(t, tt.wantCost, *cost, 0.0000001)
+			}
 		})
 	}
 }
@@ -70,9 +75,9 @@ func TestParseUsageExtended_OpenRouterUsageCost(t *testing.T) {
 	u := ParseUsageExtended(body)
 	assert.Equal(t, int64(19), u.In)
 	assert.Equal(t, int64(3), u.Out)
-	assert.InDelta(t, 0.000001989, u.Cost, 1e-12)
+	assert.InDelta(t, 0.000001989*2, u.Cost, 1e-12)
 	assert.Equal(t, CostSourceProvider, u.CostSource,
-		"upstream usage.cost is authoritative ⇒ source must be provider")
+		"usage.cost plus upstream inference cost is authoritative")
 }
 
 // TestParseUsageExtended_NoCost confirms an empty CostSource

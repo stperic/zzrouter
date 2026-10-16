@@ -8,6 +8,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/protocol"
 )
 
 // CostSource is a closed-enum tag describing where the cost number on
@@ -499,13 +501,6 @@ func StreamFromBody(body []byte) bool {
 	return json.Unmarshal(body, &probe) == nil && probe.Stream
 }
 
-// SSE framing tokens. Declared once so the parser and any future frame
-// handling agree on the exact bytes.
-var (
-	sseDataPrefix = []byte("data: ")
-	sseDoneFrame  = []byte("data: [DONE]")
-)
-
 // RewriteModelInStreamChunk replaces the "model" field of every JSON frame
 // in a streamed chunk, in either framing this proxy carries: SSE
 // `data: {...}` lines on /v1/*, and bare NDJSON objects on /api/*.
@@ -524,36 +519,9 @@ func RewriteModelInStreamChunk(chunk []byte, newModel string) []byte {
 	if !bytes.Contains(chunk, []byte(`"model"`)) {
 		return chunk
 	}
-	lines := bytes.Split(chunk, []byte("\n"))
-	modified := false
-	for i, line := range lines {
-		payload, at := streamFrameJSON(line)
-		if payload == nil || !bytes.Contains(payload, []byte(`"model"`)) {
-			continue
-		}
-		rewritten := SetModelIfPresent(payload, newModel)
-		// SetModelIfPresent returns its input unchanged when the payload
-		// does not parse or already names the caller's model, so equality
-		// -- not nil -- is what says "nothing to do". Leaving the line
-		// untouched in that case is the whole safety property here: a
-		// frame split across a read boundary arrives as unparseable JSON,
-		// and rebuilding it would strip the whitespace that its
-		// continuation needs in order to reassemble.
-		if bytes.Equal(rewritten, payload) {
-			continue
-		}
-		// Splice into the original line rather than emitting prefix+JSON,
-		// so indentation and a trailing CR survive a rewrite.
-		out := make([]byte, 0, len(line)-len(payload)+len(rewritten))
-		out = append(out, line[:at]...)
-		out = append(out, rewritten...)
-		lines[i] = append(out, line[at+len(payload):]...)
-		modified = true
-	}
-	if !modified {
-		return chunk
-	}
-	return bytes.Join(lines, []byte("\n"))
+	return protocol.RewriteStreamJSON(chunk, func(payload []byte) []byte {
+		return SetModelIfPresent(payload, newModel)
+	})
 }
 
 // StripUsageOnlyFrames removes the terminal usage-only frame from a stream
@@ -582,7 +550,7 @@ func StripUsageOnlyFrames(chunk []byte) []byte {
 	kept := make([][]byte, 0, len(lines))
 	dropped := false
 	for _, line := range lines {
-		payload, _ := streamFrameJSON(line)
+		payload, _ := protocol.StreamFrameJSON(line)
 		if payload != nil && isUsageOnlyFrame(payload) {
 			dropped = true
 			continue
@@ -606,30 +574,4 @@ func isUsageOnlyFrame(payload []byte) bool {
 		return false
 	}
 	return len(probe.Choices) == 0 && len(probe.Usage) > 0
-}
-
-// frameSpace is the whitespace that surrounds a frame's payload on the
-// wire. Trimmed for parsing, preserved on output.
-const frameSpace = " \t\r"
-
-// streamFrameJSON locates the JSON payload inside one line of a streamed
-// body and returns it with its offset in that line, so a rewrite can be
-// spliced back without disturbing the framing bytes around it. Returns a
-// nil payload for anything that is not a JSON frame: blank separators,
-// SSE comments, and the [DONE] sentinel.
-func streamFrameJSON(line []byte) (payload []byte, at int) {
-	lead := len(line) - len(bytes.TrimLeft(line, frameSpace))
-	body := bytes.TrimRight(line[lead:], frameSpace)
-
-	if bytes.Equal(body, sseDoneFrame) {
-		return nil, 0
-	}
-	if rest, ok := bytes.CutPrefix(body, sseDataPrefix); ok {
-		return rest, lead + len(sseDataPrefix)
-	}
-	// NDJSON: the line is the object.
-	if len(body) > 0 && body[0] == '{' {
-		return body, lead
-	}
-	return nil, 0
 }

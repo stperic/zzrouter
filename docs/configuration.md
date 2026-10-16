@@ -49,6 +49,30 @@ required runtime support returns an actionable 400. See
 [model features](model_features.md) for MLX installation, deployment and catalog
 state details. Protocol 11 requires upgrading every node together.
 
+## Chat usage accounting
+
+The coordinator meters raw upstream usage before normalizing chat responses.
+Reported spend is `usage.cost` plus `usage.cost_details.upstream_inference_cost`
+when present. OpenRouter's account charge is zero for BYOK requests, while the
+upstream inference cost carries the provider's charge. An explicit nonnegative
+numeric `usage.cost`, including a zero total, is authoritative. Missing, null,
+malformed or negative costs fall back to positive legacy `x_*.cost` evidence in
+sorted key order, then the pricing store. A zero extension cost is not provider
+evidence. Response and inference-log costs retain provider precision;
+the spend ledger uses the existing whole-microUSD conversion.
+
+Client-facing chat responses omit `usage.cost`, `usage.cost_details`,
+`usage.is_byok` and `usage.prompt_tokens_details.cache_write_tokens`. Standard
+token counts, cached/reasoning details and unrelated extensions remain. Buffered
+costs appear in `zzrouter.cost_usd` / `cost_source`; streamed costs appear in
+`usage.zz_cost_usd` / `zz_cost_source` when metadata is enabled. Cleanup also
+applies with `?verbose=0`, streaming metadata disabled, or usage frames suppressed.
+Workers preserve upstream accounting until the coordinator meters it.
+Stream cost metadata retains its existing gate on positive `completion_tokens`.
+
+OpenRouter returns usage automatically. Its deprecated `usage.include` option
+is not injected, and no provider capability or cluster protocol change is needed.
+
 ## Node GPU policy
 
 `node.yaml` controls memory reclamation locally; it is not part of provider sync:
