@@ -1200,6 +1200,13 @@ def fit_settings(args):
                 "env_vars": args.get("env_vars") or args.get("environment") or {}}
 
 
+def preview_covers(preview_args, start_args):
+    """A preview speaks for a start that keeps its settings and only adds non-sizing ones (keep-alive)."""
+    p, s = fit_settings(preview_args), fit_settings(start_args)
+    return all(p[k] == s[k] for k in ("model", "node", "provider", "endpoint")) and all(
+        p[k].items() <= s[k].items() for k in ("parameters", "env_vars"))
+
+
 def check_explainable_fit(ctx):
     calls, result = ctx["calls"], ctx["rj"] or {}
     previews, failed, starts, safe = [], set(), [], True
@@ -1211,14 +1218,14 @@ def check_explainable_fit(ctx):
             failed.add(args.get("job_id"))
         if c["tool"] == "zz_run_start":
             settings = fit_settings(args)
-            safe &= not any(fit_settings(p["args"]) == settings and (p["evidence"].get("assessment") or {}).get("status") == "no_fit" for p in previews)
+            safe &= not any(preview_covers(p["args"], args) and (p["evidence"].get("assessment") or {}).get("status") == "no_fit" for p in previews)
             safe &= not any(fit_settings(s["args"]) == settings and s["evidence"].get("job_id") in failed for s in starts)
             starts.append(c)
     selected = [s for s in starts if s.get("is_error") is False and s["evidence"].get("run_id") == result.get("run_id")
                 and all((s.get("args") or {}).get(k) == result.get(k) for k in ("model", "node", "provider"))]
     chosen = selected[-1] if selected else None
     assessment = next((p["evidence"].get("assessment") for p in reversed(previews)
-                       if chosen and fit_settings(p["args"]) == fit_settings(chosen["args"])), None)
+                       if chosen and preview_covers(p["args"], chosen["args"])), None)
     runs_seen = [row for c in calls if c["tool"] == "zz_runs" and c.get("is_error") is False
                  for row in (c["evidence"].get("runs") or [c["evidence"]])
                  if row.get("run_id") == result.get("run_id") and row.get("node") == result.get("node")]

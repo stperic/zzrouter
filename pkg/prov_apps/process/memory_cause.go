@@ -33,7 +33,7 @@ func (assessment *MemoryAssessment) SetUnknown(cause UnknownCause, detail string
 func (cause UnknownCause) Reason() string {
 	switch cause {
 	case WeightsUnavailable:
-		return "Local weights are not established; inspect zz_models, repair with zz_model_download, follow zz_job, then use zz_run_preview."
+		return "Local weights are absent or incomplete on this node; inspect zz_models, download or repair with zz_model_download, follow zz_job, then use zz_run_preview."
 	case MetadataInvalid:
 		return "Sizing metadata is missing or invalid; repair with zz_model_download and zz_job, or select another build through zz_models before zz_run_preview."
 	case ModelUnmodelled:

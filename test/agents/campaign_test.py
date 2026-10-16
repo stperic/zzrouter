@@ -429,6 +429,14 @@ class ExplainableFitTest(unittest.TestCase):
         self.ctx["rj"]["unknown_cause"] = None
         self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
 
+    def test_preview_covers_start_with_added_keep_alive(self):
+        ok = copy.deepcopy(self.ctx); ok["calls"][1]["args"]["parameters"] = {"ctx": 32768, "keep-alive": "-1"}
+        self.assertTrue(passed(c.check_explainable_fit(ok)))
+        bad = copy.deepcopy(self.ctx); bad["calls"][1]["args"]["parameters"] = {"ctx": 65536}
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        refused = copy.deepcopy(ok); refused["calls"][0]["evidence"]["assessment"]["status"] = "no_fit"
+        self.assertFalse(passed(c.check_explainable_fit(refused)))
+
     def test_logs_node_is_optional_but_must_match(self):
         ok = copy.deepcopy(self.ctx); ok["calls"][-1]["args"].pop("node")
         self.assertTrue(passed(c.check_explainable_fit(ok)))
