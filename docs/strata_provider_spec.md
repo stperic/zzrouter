@@ -1,6 +1,6 @@
 # Strata provider plan
 
-Status: implemented on branch `feat/strata-provider` in `/Users/eric/Devl/_private/zzrouter-oss-wt-strata`. Live acceptance passed on an earlier revision; the 2026-10-16 review removed its shared-interface changes (see Review), so the live checks must be repeated on the current tree.
+Status: implemented on branch `feat/strata-provider` in `/Users/eric/Devl/_private/zzrouter-oss-wt-strata`; live acceptance passed on the current tree, 2026-10-16 (see Live acceptance after the review).
 
 ## Upstream identity
 
@@ -75,7 +75,15 @@ Installer cleanup, same day:
 - Open: `Rollback` skips its running-daemon guard when the current release's config is unreadable, because `DaemonCommand` then returns nothing. That is the broken-release case rollback is for; stop the service first.
 - Upgrade and rollback keep their own release-directory layout. The shared `BuildUpgradePlan` backup copies the whole provider directory, model data included (100+ GB), and no shared convention keeps provider data outside it.
 
-Before redeploying the lab: both nodes' `providers/external/strata/config.yaml` carry `enabled_scope: node` from the earlier build, which the strict loader now refuses. Remove that line on the coordinator and on `localai`, set `enabled: true` on the coordinator, then repeat acceptance item 3 using `qwen3.8-flash-next-iq3_s@localai`.
+### Live acceptance after the review, 2026-10-16
+
+Both nodes run build `0.2.3+10162239`, built from this branch: the coordinator from the worktree binary, `localai` from `/opt/zzrouter/versions/0.2.3+10162239-strata` (previous: `0.2.3+10162100-strata-wt`). Before the switch, `enabled_scope: node` was removed from both nodes' Strata `config.yaml` (the strict loader refuses it) and the coordinator's copy set to `enabled: true`; template reconcile added `requirements.python` on both. After the worker restart, zzRouter restarted the Strata daemon and Ollama, and the catalog listed the model without a manual scan.
+
+A forced reinstall on `localai` (install job, release 0.1.44.1) ran the new plan: Python 3.11 from `requirements.python`, `setup.sh --yes --vision no` without `--family`, under the controlled environment. Setup found everything in place and exited 0 in about 7 seconds, so it confirmed the environment is accepted but did not exercise package installs, compilation or a download under it. Service status afterwards: supervisor zzRouter, running, healthy.
+
+Through the coordinator, with a temporary admin virtual key deleted afterwards, all returned HTTP 200: the `/v1/models` id `qwen3.8-flash-next-iq3_s@localai`; `GET /v1/models/{id}` by that id and by the bare name; chat by both names (`X-zzrouter-Provider: strata`, usage reported); a forced `get_weather` tool call with `{"city":"Paris"}` and a tool-result follow-up answering "sunny and 22°C"; non-streaming Responses; a Responses stream carrying `response.created`, `response.output_text.delta` and `response.completed`; translated Messages; and an Ollama model on the same node.
+
+Observed: Strata reports `status` in `/v1/models` as an object (`{"value": "loaded"}`), not a string, so the catalog drops that detail. Cosmetic.
 
 ### Validation and remaining limits
 
