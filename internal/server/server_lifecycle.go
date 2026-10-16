@@ -47,6 +47,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.shutdownCtx, s.shutdownCancel = context.WithCancel(ctx)
 
+	//nolint:contextcheck // subsystems live for the node's lifetime and stop via s.shutdownCtx, not this call's ctx
 	if err := s.startCommonSubsystems(); err != nil {
 		return err
 	}
