@@ -88,6 +88,6 @@ func TestAnonymousCloudGateDeniesLookupError(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
-	require.False(t, s.access.Enforce(c, "unknown"))
+	require.False(t, s.access.Enforce(c, "unknown", paidPreparation))
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 }

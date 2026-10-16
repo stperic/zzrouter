@@ -380,6 +380,8 @@ func (p *Proxy) tryOnce(
 	rctx routeMetaCtx,
 	retry, maxRetries int,
 ) attemptOutcome {
+	recorder.SetProvider(dep.App)
+	recorder.SetServingTarget(dep.App, dep.Model)
 	original := c.Request
 	ctx, attempt := llm.StartAttempt(original.Context(), dep.App, dep.Model)
 	defer attempt.End()
@@ -505,7 +507,6 @@ func (p *Proxy) tryOnce(
 func (p *Proxy) commitSuccess(c *gin.Context, dep pfallback.Candidate, resp *http.Response, recorder *llm.InferenceRecorder, resolved *resolver.Resolved, rctx routeMetaCtx, attempt pfallback.Attempt) wire.Result {
 	// Test fakes pass a nil recorder.
 	if recorder != nil {
-		recorder.SetProvider(dep.App)
 		recorder.SetModelGroup(resolved.GroupName, dep.Name)
 		if dep.Node != "" {
 			recorder.SetRouting(llm.RoutingDecisionRemote, dep.Node)

@@ -3,6 +3,8 @@ package quota
 import (
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/model/pricing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +25,7 @@ func TestEnforcer_Check_SingleScope_AllPass(t *testing.T) {
 		Quotas:   QuotaConfig{RPMLimit: 100, TPMLimit: 100000},
 	}}
 
-	d, reservations := e.Check(chain)
+	d, reservations := checkPaid(e, chain)
 	assert.True(t, d.Allowed)
 	assert.Empty(t, reservations)
 }
@@ -38,11 +40,11 @@ func TestEnforcer_Check_RPMDenied(t *testing.T) {
 	}}
 
 	// First request passes
-	d, _ := e.Check(chain)
+	d, _ := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 
 	// Second request denied
-	d, _ = e.Check(chain)
+	d, _ = checkPaid(e, chain)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, "rpm_limit_exceeded", d.Reason)
 	assert.Equal(t, ScopeKey, d.Scope)
@@ -61,7 +63,7 @@ func TestEnforcer_Check_BudgetDenied(t *testing.T) {
 	// First reservation may pass (depends on estimate vs limit)
 	// With SpendLimit=0.001 = 1000 microdollars, and DefaultMaxTokens=50000 * 10 = 500000 micro estimate
 	// This should be denied immediately
-	d, _ := e.Check(chain)
+	d, _ := checkPaid(e, chain)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, "budget_exhausted", d.Reason)
 }
@@ -74,10 +76,10 @@ func TestEnforcer_Check_MultiScope_KeyDenied(t *testing.T) {
 		{Scope: ScopeTeam, EntityID: "team-1", Quotas: QuotaConfig{RPMLimit: 100}},
 	}
 
-	d, _ := e.Check(chain)
+	d, _ := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 
-	d, _ = e.Check(chain)
+	d, _ = checkPaid(e, chain)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, ScopeKey, d.Scope) // Key denied, not team
 }
@@ -90,10 +92,10 @@ func TestEnforcer_Check_MultiScope_TeamDenied(t *testing.T) {
 		{Scope: ScopeTeam, EntityID: "team-1", Quotas: QuotaConfig{RPMLimit: 1}},
 	}
 
-	d, _ := e.Check(chain)
+	d, _ := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 
-	d, _ = e.Check(chain)
+	d, _ = checkPaid(e, chain)
 	assert.False(t, d.Allowed)
 	assert.Equal(t, ScopeTeam, d.Scope) // Team denied
 }
@@ -147,7 +149,7 @@ func TestEnforcer_BudgetReservationCancelledOnConcurrencyDenial(t *testing.T) {
 	}}
 
 	// First: check quotas (reserves budget) + acquire concurrency
-	d, reservations := e.Check(chain)
+	d, reservations := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 	require.Len(t, reservations, 1)
 
@@ -155,7 +157,7 @@ func TestEnforcer_BudgetReservationCancelledOnConcurrencyDenial(t *testing.T) {
 	require.True(t, d.Allowed)
 
 	// Second: check quotas (reserves budget) + concurrency should be denied
-	d2, reservations2 := e.Check(chain)
+	d2, reservations2 := checkPaid(e, chain)
 	require.True(t, d2.Allowed)
 
 	_, d3 := e.AcquireConcurrency(chain)
@@ -198,7 +200,7 @@ func TestEnforcer_SpendIntrospection_RoundTrip(t *testing.T) {
 	require.Nil(t, e.GetSpendState(scope), "unexpected spend state before first check")
 
 	// Reserve + settle one request.
-	d, reservations := e.Check(chain)
+	d, reservations := checkPaid(e, chain)
 	require.True(t, d.Allowed)
 	require.Len(t, reservations, 1)
 	e.SettleReservations(reservations, 420_000 /* $0.42 */, 100, 200)
@@ -263,7 +265,7 @@ func TestEnforcer_SmartReservationFallback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			e := newTestEnforcer()
-			d, _ := e.Check([]QuotaScope{{
+			d, _ := checkPaid(e, []QuotaScope{{
 				Scope:    ScopeKey,
 				EntityID: "smart-" + tt.name,
 				Quotas:   QuotaConfig{SpendLimit: tt.spendLimitUSD, ResetPeriod: "monthly"},
@@ -282,7 +284,7 @@ func TestEnforcer_SmartReservationFallback(t *testing.T) {
 		// First N reservations must all succeed against $1 budget at
 		// 10240µ each — confirms we're using the cap, not $0.50.
 		for i := 0; i < 5; i++ {
-			d, _ := e.Check([]QuotaScope{{
+			d, _ := checkPaid(e, []QuotaScope{{
 				Scope:    ScopeKey,
 				EntityID: "cap-check",
 				Quotas:   QuotaConfig{SpendLimit: 1.00, ResetPeriod: "monthly"},
@@ -306,14 +308,14 @@ func TestEnforcer_SmartReservationFallback(t *testing.T) {
 		// Second reservation: 0+10240+10240 = 20480, not > 20480 ⇒ allow.
 		// Third reservation: 0+20480+10240 = 30720 > 20480 ⇒ deny.
 		for i := 0; i < 2; i++ {
-			d, _ := e.Check([]QuotaScope{{
+			d, _ := checkPaid(e, []QuotaScope{{
 				Scope:    ScopeKey,
 				EntityID: "threshold",
 				Quotas:   QuotaConfig{SpendLimit: 0.02048, ResetPeriod: "monthly"},
 			}})
 			require.True(t, d.Allowed, "reservation %d at threshold budget should fit", i+1)
 		}
-		d, _ := e.Check([]QuotaScope{{
+		d, _ := checkPaid(e, []QuotaScope{{
 			Scope:    ScopeKey,
 			EntityID: "threshold",
 			Quotas:   QuotaConfig{SpendLimit: 0.02048, ResetPeriod: "monthly"},
@@ -329,7 +331,7 @@ func TestEnforcer_SmartReservationFallback(t *testing.T) {
 	// mode is preserved (100 > 50 budget ⇒ deny).
 	t.Run("floor for sub-200µ budgets", func(t *testing.T) {
 		e := newTestEnforcer()
-		d, _ := e.Check([]QuotaScope{{
+		d, _ := checkPaid(e, []QuotaScope{{
 			Scope:    ScopeKey,
 			EntityID: "floor",
 			// $0.00005 = 50µ: half = 25µ, but floor brings it to 100µ.
@@ -338,4 +340,8 @@ func TestEnforcer_SmartReservationFallback(t *testing.T) {
 		}})
 		assert.False(t, d.Allowed, "floor must keep sub-floor budgets in the loud-deny path")
 	})
+}
+
+func checkPaid(e *Enforcer, chain []QuotaScope) (Decision, []ReservationRecord) {
+	return e.Check(chain, []pricing.Quote{{Rates: &pricing.ModelPricing{InputCostPerToken: 1}}})
 }

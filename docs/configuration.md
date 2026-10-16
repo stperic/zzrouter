@@ -125,3 +125,37 @@ and the [API reference](api.md) for deployment and installation contracts.
 Tracing is opt-in through `observability.tracing.enabled` in `node.yaml`.
 See [OpenTelemetry tracing](observability.md) for collector protocols, ingestion
 headers, sampling and restart-required activation.
+
+## Budget pricing
+
+Set `models.pricing.enabled: true` to use the pricing table. Administrators can
+POST rates to `/zzrouter/v1/pricing/overrides`; an explicit zero rate declares
+free inference. Enable pricing before posting overrides.
+Recognized launched engines and served Ollama default to zero, with operator
+overrides taking precedence. Ollama Cloud and arbitrary external endpoints do
+not inherit local-free pricing.
+
+With a key or team `spend_limit > 0`, admission removes targets without known
+rates after wire endpoint selection and before fallback. If none remain, 403
+`model_unpriced` names the provider/model and administrator action. Callers with
+no spend limit keep every candidate. Free traffic still counts tokens and
+requests and works after monetary exhaustion; paid exhaustion remains 402.
+Authorization runs before preparation, and resolution errors precede quota
+checks. `/zzrouter/v1/pricing/status` counts missing-price observations both
+from admission (removed targets or refused requests) and from completed unlimited
+traffic. Explicit free inference creates no pricing miss. Misses are process-local;
+adding an answering override clears its counter.
+
+Upgrade: limited keys or teams routing to an external self-hosted endpoint
+without a managed lifecycle now receive 403 `model_unpriced` until an operator
+posts a zero (free) or real pricing override. Enable `models.pricing.enabled`
+in `node.yaml` and restart if pricing is disabled. For a free endpoint, replace
+`my-external-provider` with its configured provider name and run:
+
+```bash
+curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides \
+  -H "X-API-Key: $ZZROUTER_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"provider":"my-external-provider","model":"*","input_cost_per_1m":0,"output_cost_per_1m":0}'
+```
+
+Use a concrete model ID and real dollar rates per million tokens when billed.

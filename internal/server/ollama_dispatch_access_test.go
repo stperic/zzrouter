@@ -88,13 +88,13 @@ func TestDispatchOllamaInference_QuotaDenialUsesOllamaEnvelope(t *testing.T) {
 	// which is fine — only the second call's envelope is under test.
 	first, _ := ollamaRequest(t, raw, body)
 	require.True(t, rig.access.Authenticate(first, RoleUser))
-	release, ok := s.enforceAndAttribute(first, "smollm:135m", nil)
+	_, release, ok := s.enforceAndAttribute(first, "smollm:135m", nil, nil)
 	require.True(t, ok, "first request under an RPM of 1 must be allowed")
 	release()
 
 	c, w := ollamaRequest(t, raw, body)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	_, ok = s.enforceAndAttribute(c, "smollm:135m", nil)
+	_, _, ok = s.enforceAndAttribute(c, "smollm:135m", nil, nil)
 	require.False(t, ok, "second request under an RPM of 1 must be denied")
 
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)

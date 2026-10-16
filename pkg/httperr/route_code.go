@@ -8,6 +8,8 @@ package httperr
 type RouteErrorCode string
 
 const (
+	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
+	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.
 	CodeModelInUse RouteErrorCode = "model_in_use"
 	// CodeModelReferenced refuses weights deletion while variants reference them.

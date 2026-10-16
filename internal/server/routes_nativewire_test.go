@@ -308,6 +308,12 @@ func TestNativeWire_AdmitsOnlyCallersItCanHoldToTheirLimits(t *testing.T) {
 	assert.Equal(t, http.StatusOK, call(rpmKey).Code)
 	assert.Equal(t, http.StatusTooManyRequests, call(rpmKey).Code, "request rate is enforced on a mount")
 
+	teamResp := makeAuthRequest(t, server, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey, map[string]any{"id": "budget-team", "name": "Budget", "spend_limit": 5})
+	require.Equal(t, http.StatusCreated, teamResp.Code, string(teamResp.Body))
+	teamSpend := call(createKey(map[string]any{"id": "team-spender", "name": "Team spender", "team_id": "budget-team"}))
+	assert.Equal(t, http.StatusForbidden, teamSpend.Code)
+	assert.Contains(t, string(teamSpend.Body), "spend limit")
+
 	resp := makeAuthRequest(t, server, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey,
 		map[string]any{"id": "gated", "name": "Gated", "allowed_models": []string{"some-model"}})
 	require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))

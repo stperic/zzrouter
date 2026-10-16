@@ -184,62 +184,51 @@ func (s *Server) handleResponses(c *gin.Context) {
 		return
 	}
 
-	nodeHint := c.GetHeader("X-Node")
 	recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
-	release, ok := s.enforceAndAttribute(c, req.Model, recorder)
+	var affinityBackend *backend.Resolved
+	resolved, release, ok := s.enforceAndAttribute(c, req.Model, recorder, func() (*resolver.Resolved, bool) {
+		if req.PreviousResponseID != "" && s.inference.affinity != nil {
+			if providerKey, hit := s.inference.affinity.Lookup(req.PreviousResponseID); hit {
+				targetModel := s.responseAffinityTarget(req.Model, providerKey)
+				for _, name := range []string{req.Model, targetModel.ModelName} {
+					if err := s.validateModel(c.Request.Context(), name); err != nil {
+						writeModelAdmissionError(c.Writer, c.Request, err)
+						return nil, false
+					}
+				}
+				mode := s.targetWireMode(c.Request.Context(), targetModel, "responses", "responses_compat")
+				if resolved, ok := s.backend.Resolve(providerKey); ok && (mode == wireModeNative || mode == wireModeUnknown) {
+					if !s.admitImages(c, req.Model, body, targetModel) {
+						return nil, false
+					}
+					s.quoteTargets(c, targetModel)
+					affinityBackend = resolved
+					return targetModel, true
+				}
+			}
+		}
+		return s.prepareTarget(c, req.Model, body, "responses", "responses_compat")
+	})
 	defer release()
 	if !ok {
 		return
 	}
-	if req.PreviousResponseID != "" && s.inference.affinity != nil {
-		if providerKey, hit := s.inference.affinity.Lookup(req.PreviousResponseID); hit {
-			targetModel := s.responseAffinityTarget(req.Model, providerKey)
-			for _, name := range []string{req.Model, targetModel.ModelName} {
-				if err := s.validateModel(c.Request.Context(), name); err != nil {
-					writeModelAdmissionError(c.Writer, c.Request, err)
-					return
-				}
-			}
-			mode := s.targetWireMode(c.Request.Context(), targetModel, "responses", "responses_compat")
-			if resolved, ok := s.backend.Resolve(providerKey); ok && (mode == wireModeNative || mode == wireModeUnknown) {
-				if !s.admitImages(c, req.Model, body, targetModel) {
-					return
-				}
-				body = s.resolvedRequestBody(c, targetModel, req.Model, body)
-				stashInferenceContext(c, s.modelIdentity(req.Model), body)
-				target := backend.PassthroughTarget(resolved.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
-				capturer := newResponseIDCapturingWriter(c.Writer)
-				c.Writer = capturer
-				// Affinity hit dispatches to the cached provider without
-				// running the resolver. Outcome is local from the
-				// node's perspective — the routing decision was "send
-				// to the previously-pinned backend" and that backend
-				// is reached via the configured endpoint, not via a
-				// peer node.
-				routing.RecordDecision(c.Request.Context(),
-					s.routingStrategy(), routing.OutcomeLocal,
-					string(genai.ProviderName(providerKey)),
-					string(genai.OperationName(c.FullPath())))
-				s.proxy.ForwardToBackend(c.Writer, c.Request, providerKey, target, resolved.Upstream, body)
-				if id := capturer.ExtractedID(); id != "" {
-					s.inference.affinity.Record(id, providerKey)
-				}
-				return
-			}
+	if affinityBackend != nil {
+		body = s.resolvedRequestBody(c, resolved, req.Model, body)
+		stashInferenceContext(c, s.modelIdentity(req.Model), body)
+		target := backend.PassthroughTarget(affinityBackend.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
+		capturer := newResponseIDCapturingWriter(c.Writer)
+		c.Writer = capturer
+		routing.RecordDecision(c.Request.Context(), s.routingStrategy(), routing.OutcomeLocal,
+			string(genai.ProviderName(resolved.Provider)), string(genai.OperationName(c.FullPath())))
+		s.proxy.ForwardToBackend(c.Writer, c.Request, resolved.Provider, target, affinityBackend.Upstream, body)
+		if id := capturer.ExtractedID(); id != "" {
+			s.inference.affinity.Record(id, resolved.Provider)
 		}
+		return
 	}
 
-	resolved, ok := s.resolveTarget(c, req.Model, nodeHint)
-	if !ok {
-		return
-	}
-	if !s.admitImages(c, req.Model, body, resolved) {
-		return
-	}
-	mode, ok := s.narrowToWireEndpoint(c, req.Model, resolved, "responses", "responses_compat")
-	if !ok {
-		return
-	}
+	mode := s.targetWireMode(c.Request.Context(), resolved, "responses", "responses_compat")
 	if mode == wireModeCompat {
 		s.handleResponsesViaTranslation(c, resolved, req.Model, body)
 		return

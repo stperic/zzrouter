@@ -28,13 +28,15 @@ live only in `runtime.failure_patterns`.
 | `model_referenced` | 409 | A configured variant references the selected weights. | Remove the named `models` entry through the parameters API first. |
 | `model_not_deletable` | 409 | The selected identity is cloud configuration, a logical variant or a group. | Remove its configuration entry rather than physical weights. |
 | `model_detail_unsupported` | 501 | The selected catalog identity has no detail reader. | Keep catalog evidence and use serving probes, or inspect a group's exact model. |
+| `model_unpriced` | 403 | A spend-limited caller has no priced target left after filtering. | Ask an administrator to enable pricing and POST rates to `/zzrouter/v1/pricing/overrides`; zero explicitly declares free. No Retry-After or exhausted-budget fields. |
 | `model_not_found` | 404 | The named model is not in the catalog. | List `/v1/models` to discover canonical names + SourceID aliases. If you expected a deploy, POST `/zzrouter/v1/runs` with `auto_deploy:true`. |
 | `model_incomplete` | 409 | The local copy is missing model files, including files still pending after an interrupted transfer. | Run `zz_model_download` for the same model to fetch only what is missing, then retry. |
 | `context_length_exceeded` | 400 | Prompt + max_tokens exceeds the model's context window. | Read `capabilities.max_context_tokens` from `/v1/models` (present while a run serves the model); trim prompt or lower `max_tokens`. |
 | `request_too_large` | 413 | Multipart upload exceeds the configured ceiling. | Split the upload or reduce file size. |
 | `capacity_exceeded` | 503 | The instance queue is full or queueing is disabled. | Honor `Retry-After`; retry or use another replica. |
 | `queue_wait_expired` | 503 | The instance slot did not become available within the queue wait. | Honor `Retry-After`; retry or use another replica. |
-| `rate_limit_exceeded` | 429 | Per-key RPM/TPM cap or budget reservation rejected the request. | Honor `Retry-After` if present; back off. Check `/zzrouter/v1/keys/:id/usage` for current budget. |
+| `rate_limit_exceeded` | 429 | Request-rate, token-rate or concurrency cap rejected the request. | Honor `Retry-After` if present; back off. |
+| `insufficient_quota` | 402 | Paid inference cannot reserve monetary budget. | Inspect key/team usage and the budget fields; honor `Retry-After` for reset or outstanding reservations. |
 | `invalid_request_error` (type) | 400 | Validation failure, including a run endpoint the provider cannot serve or a required endpoint runtime missing. `param` names a field when available. | Read the message and `param`; choose a supported endpoint or follow the runtime install call before retrying. |
 | `upstream_stream_interrupted` | 502 | The upstream stream ended before completing. | Treat the partial answer as incomplete; retry the request if appropriate. |
 | `backend_error` (type) | 502/503/504 | Upstream provider failed. | Check whether replay is safe before retrying a billed or side-effecting request; if persistent, inspect `runtime.status`. |

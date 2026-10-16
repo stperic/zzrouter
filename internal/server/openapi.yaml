@@ -35,6 +35,16 @@ info:
     - **Errors** use RFC 9457 Problem Details (`application/problem+json`) on
       `/zzrouter/v1/*`, and the OpenAI-shaped error envelope on `/v1/*`.
 
+    Spend-limited inference removes unpriced targets before endpoint selection
+    and fallback. When none remain, HTTP 403 `model_unpriced` requires an
+    administrator to enable pricing and POST rates to `/zzrouter/v1/pricing/overrides`.
+    This refusal has no Retry-After or exhausted-budget fields. Explicit zero
+    overrides and recognized local engines are priced as free, even when table
+    pricing is disabled, and remain usable after monetary exhaustion. A zero
+    spend limit is unenforced. Authorization precedes target preparation;
+    resolution failures precede quota checks. Pre-request rates are required
+    even if an upstream may later report its own cost.
+
     ## Spec coverage
 
     This spec is hand-authored, and every route the coordinator serves on
@@ -11017,6 +11027,7 @@ components:
         - method_not_allowed
         - request_too_large
         - model_not_found
+        - model_unpriced
         - model_name_conflict
         - endpoint_not_supported
         - rate_limit_exceeded
@@ -13942,13 +13953,13 @@ components:
           type: integer
           minimum: 0
           description: |
-            Distinct (provider, model) pairs that served traffic with no
-            price. Each settled at $0 and drew down no budget, so a
-            non-zero count is an action item, not a statistic.
+            Distinct (provider, model) pairs with missing pricing, including
+            targets removed during budget-limited admission and completed
+            unlimited traffic with no price. Explicit free prices are excluded.
         unpriced:
           type: object
           additionalProperties: { type: integer, format: int64 }
-          description: Un-priced request counts keyed `provider/model`.
+          description: Missing-price observations keyed `provider/model`, from admission or settlement.
 
     PricingOverride:
       type: object

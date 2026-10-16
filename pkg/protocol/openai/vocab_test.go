@@ -71,6 +71,7 @@ func TestErrorCode_ValidCoversAllConstants(t *testing.T) {
 		ErrorCodeMethodNotAllowed,
 		ErrorCodeRequestTooLarge,
 		ErrorCodeModelNotFound,
+		ErrorCodeModelUnpriced,
 		ErrorCodeEndpointNotSupported,
 		ErrorCodeRateLimitExceeded,
 		ErrorCodeInternalError,

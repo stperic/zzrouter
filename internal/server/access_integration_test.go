@@ -30,6 +30,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/inferencelog"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 )
 
@@ -177,7 +178,7 @@ func TestAccessIntegration_FullAuthAndEnforce_HappyPath(t *testing.T) {
 	assert.Equal(t, "eng", ac.Team.ID)
 	assert.Equal(t, teams.RoleOwner, ac.Team.MemberRole)
 
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	val, exists := c.Get(string(CtxKeyConcurrencyRelease))
 	require.True(t, exists)
@@ -204,12 +205,12 @@ func TestAccessIntegration_KeyRPMDenial(t *testing.T) {
 
 	c1, w1 := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c1, RoleUser))
-	require.True(t, rig.access.Enforce(c1, "llama3"))
+	require.True(t, rig.access.Enforce(c1, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusOK, w1.Code, "first request should pass through")
 
 	c2, w2 := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c2, RoleUser))
-	require.False(t, rig.access.Enforce(c2, "llama3"))
+	require.False(t, rig.access.Enforce(c2, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusTooManyRequests, w2.Code)
 	assert.Contains(t, w2.Body.String(), "RPM limit exceeded")
 
@@ -247,19 +248,19 @@ func TestAccessIntegration_TeamBudgetExhaustionBlocksMembers(t *testing.T) {
 
 	cA, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(cA, RoleUser))
-	require.True(t, rig.access.Enforce(cA, "llama3"))
+	require.True(t, rig.access.Enforce(cA, "llama3", paidPreparation))
 
 	rig.access.RecordSpendByKey("alice", reservationIDFromCtx(cA), 10_000, 50, 100)
 
 	cA2, wA2 := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(cA2, RoleUser))
-	assert.False(t, rig.access.Enforce(cA2, "llama3"))
+	assert.False(t, rig.access.Enforce(cA2, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusPaymentRequired, wA2.Code)
 	assert.Contains(t, wA2.Body.String(), "Budget exhausted")
 
 	cB, wB := rig.makeRequest(bobRaw)
 	require.True(t, rig.access.Authenticate(cB, RoleUser))
-	assert.False(t, rig.access.Enforce(cB, "llama3"))
+	assert.False(t, rig.access.Enforce(cB, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusPaymentRequired, wB.Code)
 	assert.Contains(t, wB.Body.String(), "Budget exhausted")
 }
@@ -293,7 +294,7 @@ func TestAccessIntegration_TeamModelAccess(t *testing.T) {
 			c, w := rig.makeRequest(aliceRaw)
 			require.True(t, rig.access.Authenticate(c, RoleUser))
 
-			allowed := rig.access.Enforce(c, tc.model)
+			allowed := rig.access.Enforce(c, tc.model, paidPreparation)
 			assert.Equal(t, tc.wantAllow, allowed)
 			if !tc.wantAllow {
 				assert.Equal(t, http.StatusForbidden, w.Code)
@@ -337,7 +338,7 @@ func TestAccessIntegration_SuspendedTeamRejectedAtEnforce(t *testing.T) {
 
 	c, w := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.False(t, rig.access.Enforce(c, "llama3"))
+	require.False(t, rig.access.Enforce(c, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), `suspended`)
 }
@@ -375,7 +376,7 @@ func TestAccessIntegration_ConcurrentRequestsRespectRPMLimit(t *testing.T) {
 				denied.Add(1)
 				return
 			}
-			if rig.access.Enforce(c, "llama3") {
+			if rig.access.Enforce(c, "llama3", paidPreparation) {
 				allowed.Add(1)
 			} else {
 				denied.Add(1)
@@ -420,7 +421,7 @@ func TestAccessIntegration_SettlementRoundTrip_KeyAndTeam(t *testing.T) {
 
 	c, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	const actualCostMicro = 1_750_000
 	rig.access.RecordSpendByKey("alice", reservationIDFromCtx(c), actualCostMicro, 400, 800)
@@ -483,14 +484,14 @@ func TestAccessIntegration_ConcurrencyDenialRollsBackBudgetReservation(t *testin
 
 	c1, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c1, RoleUser))
-	require.True(t, rig.access.Enforce(c1, "llama3"))
+	require.True(t, rig.access.Enforce(c1, "llama3", paidPreparation))
 
 	reservedAfterFirst := rig.access.GetKeySpend("alice").ReservedMicro
 	require.Greater(t, reservedAfterFirst, int64(0))
 
 	c2, w2 := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c2, RoleUser))
-	require.False(t, rig.access.Enforce(c2, "llama3"))
+	require.False(t, rig.access.Enforce(c2, "llama3", paidPreparation))
 	assert.Equal(t, http.StatusTooManyRequests, w2.Code)
 	assert.Contains(t, w2.Body.String(), "Too many concurrent requests")
 
@@ -506,7 +507,7 @@ func TestAccessIntegration_ConcurrencyDenialRollsBackBudgetReservation(t *testin
 
 	c3, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c3, RoleUser))
-	assert.True(t, rig.access.Enforce(c3, "llama3"))
+	assert.True(t, rig.access.Enforce(c3, "llama3", paidPreparation))
 }
 
 // ============================================================================
@@ -529,7 +530,7 @@ func TestAccessIntegration_CancelPendingReservationIfUnsettled_ReleasesBudget(t 
 
 	c, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	reservedAfterEnforce := rig.access.GetKeySpend("alice").ReservedMicro
 	require.Greater(t, reservedAfterEnforce, int64(0))
@@ -556,7 +557,7 @@ func TestAccessIntegration_CancelPendingReservationIfUnsettled_NoopAfterBridgeSe
 
 	c, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	const actualCostMicro = 500_000
 	rig.access.RecordSpendByKey("alice", reservationIDFromCtx(c), actualCostMicro, 100, 200)
@@ -631,7 +632,7 @@ func TestAccessIntegration_BridgeReleasesReservationOnErrorPath(t *testing.T) {
 
 	c, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	// Guard: assertions below prove nothing if no reservation exists.
 	reservedAfterEnforce := rig.access.GetKeySpend("alice").ReservedMicro
@@ -692,7 +693,7 @@ func TestAccessIntegration_TeamModelAccess_CatalogIDs(t *testing.T) {
 			c, w := rig.makeRequest(aliceRaw)
 			require.True(t, rig.access.Authenticate(c, RoleUser))
 
-			assert.Equal(t, tc.wantAllow, rig.access.Enforce(c, tc.model))
+			assert.Equal(t, tc.wantAllow, rig.access.Enforce(c, tc.model, paidPreparation))
 			if !tc.wantAllow {
 				assert.Equal(t, http.StatusForbidden, w.Code)
 			}
@@ -716,10 +717,18 @@ func TestAccessIntegration_RateLimitRemainingCountsThisRequest(t *testing.T) {
 	for i, want := range []string{"4", "3", "2"} {
 		c, w := rig.makeRequest(raw)
 		require.True(t, rig.access.Authenticate(c, RoleUser))
-		require.True(t, rig.access.Enforce(c, "llama3"), "request %d denied under a limit of 5", i+1)
+		require.True(t, rig.access.Enforce(c, "llama3", paidPreparation), "request %d denied under a limit of 5", i+1)
 
 		assert.Equal(t, "5", w.Header().Get("X-Ratelimit-Limit-Requests"))
 		assert.Equalf(t, want, w.Header().Get("X-Ratelimit-Remaining-Requests"),
 			"after request %d", i+1)
 	}
+}
+
+func paidPreparation() ([]pricing.Quote, bool) {
+	return paidQuotes(), true
+}
+
+func paidQuotes() []pricing.Quote {
+	return []pricing.Quote{{Provider: "test", Model: "llama3", Rates: &pricing.ModelPricing{InputCostPerToken: 1}}}
 }

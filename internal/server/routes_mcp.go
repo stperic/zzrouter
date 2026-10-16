@@ -81,7 +81,7 @@ func (s *Server) registerMCPRoutes() int {
 			if !s.admitOpaqueForward(c, surface, mount.srv.Upstream.API() != nil) {
 				return
 			}
-			release, ok := s.enforceAndAttribute(c, "mcp "+surface, nil)
+			_, release, ok := s.enforceAndAttribute(c, "mcp "+surface, nil, nil)
 			if !ok {
 				return
 			}

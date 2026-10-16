@@ -84,3 +84,30 @@ func TestCalculateCostMicro_AllCandidatesMiss(t *testing.T) {
 	assert.Equal(t, int64(0), micro)
 	assert.Equal(t, "", src, "no candidate priced ⇒ empty source ⇒ caller records a miss")
 }
+
+func TestPricingExplicitZero_LocalEvidenceBeatsTable(t *testing.T) {
+	store := storeWith(t, map[string]pricing.ModelPricing{"model": gpt4o, "ambiguous": {}})
+	micro, source := CalculateCostMicro(0, store, "local", []string{"model"}, 100, 50, 0, 0, pricing.Quote{Local: true, Rates: &pricing.ModelPricing{}})
+	assert.Zero(t, micro)
+	assert.Equal(t, CostSourceZZRouter, source)
+	assert.Nil(t, pricing.Resolve(store, "cloud", []string{"ambiguous"}, false).Rates)
+}
+
+func TestBudgetQuoteSurvivesLocalOverrideDeletion(t *testing.T) {
+	store := storeWith(t, map[string]pricing.ModelPricing{"model": gpt4o})
+	require.NoError(t, store.SetOverride(pricing.Override{Provider: "local", Model: "model", InputCostPerToken: 0.001}))
+	admitted := pricing.Resolve(store, "local", []string{"model"}, true)
+	_, err := store.DeleteOverride("local", "model")
+	require.NoError(t, err)
+	micro, source := CalculateCostMicro(0, store, "local", []string{"model"}, 10, 0, 0, 0, admitted)
+	assert.EqualValues(t, 10_000, micro)
+	assert.Equal(t, CostSourceZZRouter, source)
+}
+
+func TestBudgetQuotePrefersResponseModel(t *testing.T) {
+	store := storeWith(t, map[string]pricing.ModelPricing{"response": {InputCostPerToken: 0.01}})
+	admitted := pricing.Quote{Provider: "cloud", Model: "concrete", Rates: &pricing.ModelPricing{InputCostPerToken: 0.001}}
+	micro, source := CalculateCostMicro(0, store, "cloud", []string{"response", "concrete"}, 2, 0, 0, 0, admitted)
+	assert.EqualValues(t, 20_000, micro)
+	assert.Equal(t, CostSourceZZRouter, source)
+}

@@ -149,7 +149,7 @@ func TestRunningInstanceDoesNotDependOnAnotherProvidersInventory(t *testing.T) {
 	require.NoError(t, s.providers.appMgr.Instances().Register(running))
 	t.Cleanup(func() { require.NoError(t, s.providers.appMgr.Instances().Remove(running.ID)) })
 	c, _ := inventoryContext()
-	resolved, ok := s.resolveTarget(c, "uncatalogued", "")
+	resolved, ok := s.resolveTarget(c, "uncatalogued", "", nil)
 	require.True(t, ok)
 	require.Equal(t, "healthy-provider", resolved.Provider)
 }
