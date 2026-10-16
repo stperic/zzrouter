@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/assert"
@@ -79,7 +80,7 @@ func TestLaunchTokenReadFailureStopsTree(t *testing.T) {
 				}
 				return 0, failure
 			}
-			result, launchErr := launcher.Launch(t.Context(), inst, "/bin/sh", []string{"-c", `trap '' TERM INT; printf '%s' "$$" > "$1"; while :; do :; done`, "engine", pidFile}, nil, nil)
+			result, launchErr := launcher.Launch(t.Context(), inst, "/bin/sh", []string{"-c", testproc.Script(`trap '' TERM INT; printf '%s' "$$" > "$1"; while kill -0 $test_owner; do :; done`), "engine", pidFile}, nil, nil)
 			assert.ErrorIs(t, launchErr, failure)
 			assert.Nil(t, result)
 			assert.Equal(t, wrapped, inst.IsUsingLauncher())

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -23,7 +24,7 @@ func TestPinnedRestoreServerStartup(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	require.NoError(t, s.providers.appMgr.Stop(t.Context()))
 	engine := filepath.Join(t.TempDir(), "engine")
-	require.NoError(t, os.WriteFile(engine, []byte("#!/bin/sh\ntrap 'kill $! 2>/dev/null; exit 0' TERM INT\nprintf 'READY\\n'\nwhile :; do /bin/sleep 1 & wait $!; done\n"), 0o700))
+	require.NoError(t, os.WriteFile(engine, []byte(testproc.Script("trap 'kill $! 2>/dev/null; exit 0' TERM INT\nprintf 'READY\\n'\nwhile kill -0 $test_owner; do /bin/sleep 1 & wait $!; done\n")), 0o700))
 	apps := &config.AppsConfig{}
 	require.NoError(t, apps.AddApp("generic", config.ServiceConfig{
 		Enabled: new(true), Name: "generic", Mode: "on-demand", Protocol: config.ProtocolOpenAI,

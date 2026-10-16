@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
@@ -51,7 +52,7 @@ func TestProviderDaemonHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "RuntimeError: managed daemon failed; token=sk-123456789012345678901234567890123456")
 		os.Exit(17)
 	}
-	select {}
+	testproc.AwaitOwner()
 }
 
 func newServiceTestManager(t *testing.T, managed, crash bool) *ProviderAppManager {
@@ -61,7 +62,8 @@ func newServiceTestManager(t *testing.T, managed, crash bool) *ProviderAppManage
 	cfg := testAppsConfig()
 	svc, _ := cfg.LookupApp("ollama")
 	svc.Service = nil
-	svc.Defaults = &config.AppDefaultsConfig{Environment: map[string]string{"PROVIDER_DAEMON_HELPER": "1"}}
+	owner, pid := testproc.OwnerEnv()
+	svc.Defaults = &config.AppDefaultsConfig{Environment: map[string]string{"PROVIDER_DAEMON_HELPER": "1", owner: pid}}
 	if crash {
 		svc.Defaults.Environment["PROVIDER_DAEMON_CRASH"] = "1"
 	}
@@ -383,7 +385,8 @@ func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := host.CommandContext(ctx, binary, args...)
-	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1"}
+	owner, pid := testproc.OwnerEnv()
+	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1", owner + "=" + pid}
 	started := make(chan int, 1)
 	done := make(chan error, 1)
 	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/jobs"
@@ -93,7 +94,7 @@ func newQueueFixture(t *testing.T) queueFixture {
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 	engine := filepath.Join(root, "engine")
-	require.NoError(t, os.WriteFile(engine, []byte("#!/bin/sh\ntouch \"$0.started\"\nwhile [ ! -e \"$0.ready\" ]; do /bin/sleep 0.01; done\nprintf 'READY\\n'\nexec /bin/sleep 60\n"), 0o700))
+	require.NoError(t, os.WriteFile(engine, []byte(testproc.Script("touch \"$0.started\"\nwhile kill -0 $test_owner && [ ! -e \"$0.ready\" ]; do /bin/sleep 0.01; done\nkill -0 $test_owner || exit 0\nprintf 'READY\\n'\nexec /bin/sleep 60\n")), 0o700))
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("generic", config.ServiceConfig{
 		Enabled: new(true), Name: "generic", Protocol: config.ProtocolOpenAI, Mode: "on-demand",

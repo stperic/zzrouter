@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -26,7 +27,7 @@ func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsCo
 		t.Skip("Unix process fixture")
 	}
 	engine := filepath.Join(t.TempDir(), "studio")
-	require.NoError(t, os.WriteFile(engine, []byte("#!/bin/sh\ntrap 'kill $! 2>/dev/null; exit 0' TERM INT\nprintf 'READY\\n'\nwhile :; do /bin/sleep 1 & wait $!; done\n"), 0o700))
+	require.NoError(t, os.WriteFile(engine, []byte(testproc.Script("trap 'kill $! 2>/dev/null; exit 0' TERM INT\nprintf 'READY\\n'\nwhile kill -0 $test_owner; do /bin/sleep 1 & wait $!; done\n")), 0o700))
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("studio", config.ServiceConfig{
 		Name: "studio", RunScope: config.RunScopeNode, Enabled: new(true), Mode: "on-demand",
