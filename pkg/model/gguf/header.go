@@ -132,7 +132,7 @@ func Read(r io.Reader) (Header, error) {
 		keep := key == "general.architecture"
 		switch suffix {
 		case "block_count", "context_length", "embedding_length", "attention.head_count", "attention.head_count_kv", "attention.key_length", "attention.value_length", "attention.sliding_window",
-			"nextn_predict_layers", "full_attention_interval", "ssm.conv_kernel", "ssm.group_count", "ssm.time_step_rank", "ssm.state_size", "ssm.inner_size", "attention.recurrent":
+			"nextn_predict_layers", "full_attention_interval", "ssm.conv_kernel", "ssm.group_count", "ssm.time_step_rank", "ssm.state_size", "ssm.inner_size", "attention.recurrent_layers":
 			keep = true
 		}
 		n, text := d.value(kind, keep)
@@ -147,7 +147,7 @@ func Read(r io.Reader) (Header, error) {
 			}
 			h.Architecture = text
 		} else if keep {
-			if suffix == "attention.recurrent" || kind == 8 || kind == 9 || kind == 6 || kind == 7 || kind == 12 || n < 0 || (n == 0 && suffix != "nextn_predict_layers") {
+			if suffix == "attention.recurrent_layers" || kind == 8 || kind == 9 || kind == 6 || kind == 7 || kind == 12 || n < 0 || (n == 0 && suffix != "nextn_predict_layers") {
 				return h, fmt.Errorf("invalid GGUF geometry")
 			}
 			h.Values[key] = n

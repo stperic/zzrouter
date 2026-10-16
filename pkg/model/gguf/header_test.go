@@ -139,7 +139,7 @@ func FuzzRead(f *testing.F) {
 		f.Add(header(entry("qwen35."+key, 8, "bad geometry")))
 		f.Add(header(entry("qwen35."+key, 4, uint32(1)), entry("qwen35."+key, 4, uint32(1))))
 	}
-	f.Add(header(entry("qwen35.attention.recurrent", 9, uint32(7), uint64(4), []byte{1, 1, 1, 0})))
+	f.Add(header(entry("qwen35.attention.recurrent_layers", 9, uint32(7), uint64(4), []byte{1, 1, 1, 0})))
 	f.Add([]byte("GGUF"))
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = Read(bytes.NewReader(data)) })
 }
@@ -165,7 +165,7 @@ func TestHybridHeaderBoundsAndTypes(t *testing.T) {
 		_, err := Read(bytes.NewReader(data[:i]))
 		require.Error(t, err, "prefix %d", i)
 	}
-	for _, key := range append(hybridKeys(), "attention.recurrent") {
+	for _, key := range append(hybridKeys(), "attention.recurrent_layers") {
 		key = "qwen35." + key
 		for _, bad := range [][]byte{
 			entry(key, 8, "4"), entry(key, 9, uint32(4), uint64(0)),

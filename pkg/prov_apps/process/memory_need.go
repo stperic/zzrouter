@@ -113,17 +113,11 @@ func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[s
 func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shapes map[string]schema.ParamShape, auto bool) bool {
 	for name, shape := range shapes {
 		value := memoryParameter(name, params)
-		if shape.SequenceSlots {
-			if shape.RecurrentStateRows == nil {
-				return false
-			}
+		if shape.SequenceSlots && shape.RecurrentStateRows != nil {
 			cfg.stateRows = *shape.RecurrentStateRows
 			if value != "" {
-				var err error
-				cfg.stateRows, err = strconv.ParseInt(value, 10, 64)
-				if err != nil {
-					return false
-				}
+				// An unparsable count leaves zero rows, which only a recurrent layer refuses to size.
+				cfg.stateRows, _ = strconv.ParseInt(value, 10, 64)
 			}
 		}
 		if shape.ContextOverride && value != "" && auto {

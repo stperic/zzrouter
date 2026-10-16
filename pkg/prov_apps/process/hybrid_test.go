@@ -173,6 +173,7 @@ func TestHybridMTPExcludedFromNormalCache(t *testing.T) {
 	}
 	for _, value := range []string{"0", "-1", "1025", "bad"} {
 		assert.True(t, ggufNeed(t, "qwen35", map[string]string{"ctx-size": "4096", "slots": value}, extra, shapes).Incomplete)
+		assert.False(t, ggufNeed(t, "qwen3", map[string]string{"ctx-size": "4096", "slots": value}, nil, shapes).Incomplete, "slot count matters only to recurrent layers")
 	}
 	moe := ggufNeed(t, "qwen3moe", map[string]string{"ctx-size": "4096"}, map[string]int64{"block_count": 48, "attention.head_count_kv": 4, "expert_count": 128, "expert_used_count": 8})
 	require.False(t, moe.Incomplete)
