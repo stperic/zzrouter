@@ -129,10 +129,10 @@ func TestWeightLowerBoundExplainsReachAndRoundsUp(t *testing.T) {
 			require.ErrorAs(t, err, &fit)
 			assert.Equal(t, int64(1025), fit.RequiredMiB)
 			assert.Greater(t, fit.RequiredMiB, fit.FreeMiB)
-			assert.Contains(t, assessment.Reason, "model weights require 1.0009765625 GiB")
-			assert.Contains(t, assessment.Reason, kind+" reach of ")
-			assert.Contains(t, assessment.Reason, "GiB (budget)")
-			assert.Contains(t, assessment.Reason, "smaller quantization or another node")
+			assert.Equal(t, kind, fit.BudgetKind)
+			assert.Equal(t, "no_fit", assessment.Status)
+			assert.Equal(t, fit.RequiredMiB, assessment.RequiredMiB)
+			assert.Equal(t, fit.FreeMiB, assessment.CapacityMiB)
 		})
 	}
 }

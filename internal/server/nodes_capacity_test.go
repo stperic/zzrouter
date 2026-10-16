@@ -129,7 +129,7 @@ func TestCompatibleNodesInventoryErrorPreservesAssessments(t *testing.T) {
 	require.Len(t, result.Assessments, 2)
 	assert.Empty(t, result.Assessments[0].Node)
 	assert.Equal(t, "unknown", result.Assessments[0].Status)
-	assert.Equal(t, process.NodeUnreachable, result.Assessments[0].UnknownCause)
+	assert.Equal(t, process.AssessmentFailed, result.Assessments[0].UnknownCause)
 	assert.Equal(t, "worker", result.Assessments[1].Node)
 	assert.Equal(t, "fit", result.Assessments[1].Status)
 	_, err = service.ListNodes(ctx, &ListNodesRequest{})

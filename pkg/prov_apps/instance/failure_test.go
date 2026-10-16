@@ -8,9 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClassifiedFailureSummaryRetainsBoundedEngineNumbers(t *testing.T) {
+	for _, class := range httperr.FailureClasses() {
+		t.Run(class, func(t *testing.T) {
+			classifier := httperr.Classifier{{Pattern: `RuntimeError: (x+)`, IsRegex: true, Class: httperr.FailureClass(class)}}
+			require.NoError(t, classifier.Compile())
+			path := filepath.Join(t.TempDir(), "engine.log")
+			line := "RuntimeError: " + strings.Repeat("x", 650) + " (256) blocks, (152) available; at most 152. " + strings.Repeat("y", 650)
+			require.NoError(t, os.WriteFile(path, []byte(line), 0600))
+			failure, summary := CaptureFailure(path, "failed", nil, "", &classifier)
+			require.NotNil(t, failure.cause)
+			assert.Equal(t, httperr.FailureClass(class), failure.cause.Class)
+			assert.LessOrEqual(t, len(summary), failureSummaryBytes)
+			assert.True(t, failure.Truncated)
+			for _, evidence := range []string{"(256)", "(152)", "at most 152"} {
+				assert.Contains(t, summary, evidence)
+			}
+		})
+	}
+}
 
 func TestFailureCauseSurvivesLaterExit(t *testing.T) {
 	inst := NewInstance("id", "provider", "model", 0, 0, 0)

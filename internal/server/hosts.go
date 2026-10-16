@@ -513,7 +513,7 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 	expected, err := s.ListNodes(ctx, &ListNodesRequest{})
 	if err != nil {
-		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.NodeUnreachable, Reason: err.Error() + ". " + process.NodeUnreachable.Reason()}})
+		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.AssessmentFailed, Reason: err.Error() + ". " + process.AssessmentFailed.Reason()}})
 	} else {
 		for _, node := range expected.Data {
 			name, _ := node["name"].(string)

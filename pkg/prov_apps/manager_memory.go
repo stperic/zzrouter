@@ -165,6 +165,7 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 		contextPolicy := features.parameterShapes[key].AutoContext
 		policy.AutoMinContextTokens, policy.AutoContextSource = contextPolicy.AutoMinContextTokens, contextPolicy.AutoContextSource
 	}
+	// Collect best-effort weight/context evidence even when no memory policy sizes the launch.
 	need, _ := process.ModelMemoryNeed(features.model, features.Config, features.Params, policy, features.parameterShapes)
 	assessment := process.MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, WeightsMiB: need.WeightsMiB}
 	assessment.SetUnknown(process.BudgetNotSized, "")
@@ -202,6 +203,7 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 		err = nil
 	}
 	if ctx.Err() != nil {
+		assessment = process.MemoryAssessment{WeightsMiB: need.WeightsMiB, ContextMode: need.ContextMode, ContextTokens: need.ContextTokens}
 		assessment.SetUnknown(process.AssessmentFailed, ctx.Err().Error())
 		return assessment, ctx.Err()
 	}

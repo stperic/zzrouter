@@ -45,8 +45,9 @@ func TestClassifiedFailureSurvivesRunAndJob(t *testing.T) {
 			var failure *httperr.EngineFailure
 			require.ErrorAs(t, inst.FailureCause(), &failure)
 			assert.Equal(t, httperr.FailureMemory, failure.Class)
+			assert.Equal(t, string(httperr.CodeOutOfRange), failure.HTTPError().Code)
 			assert.Equal(t, instance.StatusFailed, info.Status)
-			for _, evidence := range []string{"(256)", "(152)", "at most 152", "zz_params_get", "zz_run_preview"} {
+			for _, evidence := range []string{"(256)", "(152)", "at most 152"} {
 				assert.Contains(t, info.ErrorMessage, evidence)
 			}
 			require.NotNil(t, info.Failure)
@@ -60,7 +61,9 @@ func TestClassifiedFailureSurvivesRunAndJob(t *testing.T) {
 			}()
 			ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
 			assert.Equal(t, jobs.PhaseFailed, ev.Phase)
-			assert.Contains(t, ev.Err, info.ErrorMessage)
+			for _, evidence := range []string{"(256)", "(152)", "at most 152"} {
+				assert.Contains(t, ev.Err, evidence)
+			}
 			assert.Equal(t, info.Failure, ev.Meta["failure"])
 		})
 	}

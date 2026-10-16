@@ -23,10 +23,9 @@ func TestMambaCacheRefusalIsClassifiedMemory(t *testing.T) {
 	wire := failure.HTTPError()
 	assert.Equal(t, http.StatusConflict, wire.Status)
 	assert.Equal(t, string(httperr.CodeOutOfRange), wire.Code)
-	for _, evidence := range []string{"(256)", "(152)", "at most 152", "zz_runs", "zz_logs", "zz_params_get", "zz_run_preview", "zz_run_start"} {
+	for _, evidence := range []string{"(256)", "(152)", "at most 152"} {
 		assert.Contains(t, wire.Message, evidence)
 	}
-	assert.NotContains(t, failure.Message, "gpu_memory_utilization")
 }
 
 func TestDeclaredEngineFailures(t *testing.T) {

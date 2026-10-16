@@ -84,13 +84,16 @@ func CaptureFailure(path, reason string, exitCode *int, signal string, classifie
 			break
 		}
 	}
-	if len(summary) > failureSummaryBytes {
-		summary = summary[:failureSummaryBytes]
-		truncated = true
-	}
 	failure := &FailureInfo{ErrorTail: tail, Truncated: truncated, specific: specific, cause: classifier.Match(strings.Join(tail, "\n"))}
 	if failure.cause != nil {
-		summary, failure.specific = failure.cause.HTTPError().Message, true
+		if !specific {
+			summary = failure.cause.Message
+		}
+		summary, failure.specific = (&httperr.EngineFailure{Class: failure.cause.Class, Message: summary}).HTTPError().Message, true
+	}
+	if len(summary) > failureSummaryBytes {
+		summary = summary[:failureSummaryBytes]
+		failure.Truncated = true
 	}
 	if exitCode != nil {
 		code := *exitCode

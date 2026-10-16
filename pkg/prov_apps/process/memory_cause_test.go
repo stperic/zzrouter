@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"maps"
 	"math"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,26 +162,442 @@ func TestHybridAllocationUnknownUsesExistingBudgetFallback(t *testing.T) {
 }
 
 func TestUnknownCauseDoesNotChangeMemoryDecisions(t *testing.T) {
-	// Existing pre-contract fixtures: requirements and capacities are pinned only for decisions.
+	// GOLDEN values were captured by running these inputs on main at the merge base.
+	// Only the former Incomplete flag maps to UnknownCause; unknown amounts are new evidence.
+	type golden struct {
+		status, placement              string
+		required, capacity, affordable int64
+		params, environment            map[string]string
+		commitments                    map[string]int64
+		observation, invalid           bool
+		fit                            *MemoryFitError
+		class                          httperr.FailureClass
+	}
+	numeric := Need{WeightsMiB: 2048, KVMiB: 512, OverheadMiB: 2048, ContextMode: "numeric", ContextTokens: 4096, geometry: &attentionConfig{}}
+	native := numeric
+	native.ContextMode, native.nativeContext = "auto", true
+	nativeHeavy := native
+	nativeHeavy.WeightsMiB = 6001
+	incomplete := Need{WeightsMiB: 1024, UnknownCause: ModelUnmodelled, ContextMode: "numeric", ContextTokens: 4096}
+	weightRefusal := incomplete
+	weightRefusal.WeightsMiB = 5001
+	autoWeightRefusal := incomplete
+	autoWeightRefusal.WeightsMiB = 10001
+	auto := autoNeed(t, denseAttentionConfig())
 	for _, tc := range []struct {
-		name, fraction, status   string
-		need                     Need
-		free, required, capacity int64
+		name, kind, value      string
+		need                   Need
+		total, free, ram, held int64
+		usable                 float64
+		want                   golden
 	}{
-		{"rounded boundary", "auto", "fit", Need{WeightsMiB: 2048, KVMiB: 512, OverheadMiB: 2048}, 7117, 7117, 7117},
-		{"margin short", "auto", "no_fit", Need{WeightsMiB: 2048, KVMiB: 512, OverheadMiB: 2048}, 7116, 7117, 7116},
-		{"fraction short", "0.5", "no_fit", Need{WeightsMiB: 2048, KVMiB: 512, OverheadMiB: 2048}, 10000, 5069, 5000},
-		{"incomplete", "0.9", "unknown", Need{WeightsMiB: 1024, UnknownCause: ModelUnmodelled}, 10000, 0, 0},
-		{"weight refusal", "0.5", "no_fit", Need{WeightsMiB: 5001, UnknownCause: ModelUnmodelled}, 10000, 5001, 5000},
+		{
+			name: "fraction numeric fit", kind: schema.MemoryFractionTotal, value: "0.6", need: numeric,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "", required: 5069, capacity: 10000, affordable: 0,
+				params:      map[string]string{"budget": "0.6"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction numeric sized refusal", kind: schema.MemoryFractionTotal, value: "0.5", need: numeric,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 5069, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": "0.5"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Sized: true, BudgetKind: "fraction_total", Parameter: "budget", Device: "GPU-A", RequiredMiB: 5069, FreeMiB: 5000},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction numeric reservation refusal", kind: schema.MemoryFractionTotal, value: "0.6", need: numeric,
+			total: 10000, free: 5999, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 6000, capacity: 5999, affordable: 0,
+				params:      map[string]string{"budget": "0.6"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 6000, FreeMiB: 5999, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction auto rounded boundary", kind: schema.MemoryFractionTotal, value: "auto", need: numeric,
+			total: 10000, free: 7117, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "", required: 7117, capacity: 7117, affordable: 0,
+				params:      map[string]string{"budget": "0.5069"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction auto margin short", kind: schema.MemoryFractionTotal, value: "auto", need: numeric,
+			total: 10000, free: 7116, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 7117, capacity: 7116, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 7117, FreeMiB: 7116, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction numeric incomplete admit", kind: schema.MemoryFractionTotal, value: "0.9", need: incomplete,
+			total: 10000, free: 9800, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "0.9"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction numeric incomplete reservation refusal", kind: schema.MemoryFractionTotal, value: "0.9", need: incomplete,
+			total: 10000, free: 8999, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 9000, capacity: 8999, affordable: 0,
+				params:      map[string]string{"budget": "0.9"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 9000, FreeMiB: 8999, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction numeric weight refusal", kind: schema.MemoryFractionTotal, value: "0.5", need: weightRefusal,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 5001, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": "0.5"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{BudgetKind: "fraction_total", Parameter: "budget", Device: "reachable memory", RequiredMiB: 5001, FreeMiB: 5000, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction auto incomplete admit", kind: schema.MemoryFractionTotal, value: "auto", need: incomplete,
+			total: 10000, free: 9800, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "0.7752"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction auto incomplete margin refusal", kind: schema.MemoryFractionTotal, value: "auto", need: incomplete,
+			total: 10000, free: 2048, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 2049, capacity: 2048, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 2049, FreeMiB: 2048, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction auto weight refusal", kind: schema.MemoryFractionTotal, value: "auto", need: autoWeightRefusal,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 10001, capacity: 10000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{BudgetKind: "fraction_total", Parameter: "budget", Device: "reachable memory", RequiredMiB: 10001, FreeMiB: 10000, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction auto context admit", kind: schema.MemoryFractionTotal, value: "auto", need: auto,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "", required: 8244, capacity: 10000, affordable: 16872,
+				params:      map[string]string{"budget": "0.7952"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction auto context refusal", kind: schema.MemoryFractionTotal, value: "auto", need: auto,
+			total: 7000, free: 7000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 8245, capacity: 7000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 8245, FreeMiB: 7000, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "fraction numeric auto context admit", kind: schema.MemoryFractionTotal, value: "0.95", need: auto,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "", required: 6196, capacity: 10000, affordable: 28128,
+				params:      map[string]string{"budget": "0.95"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "fraction invalid", kind: schema.MemoryFractionTotal, value: "bad", need: numeric,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "bad"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				invalid:     true,
+			},
+		},
+		{
+			name: "fraction missing observation", kind: schema.MemoryFractionTotal, value: "auto", need: numeric,
+			total: 0, free: 0, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				observation: true,
+			},
+		},
+		{
+			name: "layers gpu admit", kind: schema.MemoryLayers, value: "auto", need: numeric,
+			total: 10000, free: 10000, ram: 20000, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "gpu", required: 5069, capacity: 10000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "layers gpu commitment refusal", kind: schema.MemoryLayers, value: "auto", need: numeric,
+			total: 10000, free: 10000, ram: 20000, held: 1000, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 10000, capacity: 9000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 10000, FreeMiB: 9000, Holders: []MemoryHolder{{MemoryMiB: new(int64(1000)), Run: "held", Ownership: "zzrouter", UnusedCommitmentMiB: 1000}}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "layers offload admit", kind: schema.MemoryLayers, value: "auto", need: numeric,
+			total: 4000, free: 4000, ram: 2000, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "offload", required: 5069, capacity: 6000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "layers offload refusal", kind: schema.MemoryLayers, value: "auto", need: numeric,
+			total: 4000, free: 4000, ram: 1000, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 5069, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Sized: true, BudgetKind: "layers", Parameter: "budget", RequiredMiB: 5069, FreeMiB: 5000},
+				class:       "memory",
+			},
+		},
+		{
+			name: "layers native adaptation admit", kind: schema.MemoryLayers, value: "auto", need: native,
+			total: 4000, free: 4000, ram: 1000, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 5069, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "layers native weight refusal", kind: schema.MemoryLayers, value: "auto", need: nativeHeavy,
+			total: 4000, free: 4000, ram: 1000, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 6001, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{BudgetKind: "layers", Parameter: "budget", Device: "reachable memory", RequiredMiB: 6001, FreeMiB: 5000, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "layers auto context admit", kind: schema.MemoryLayers, value: "auto", need: auto,
+			total: 10000, free: 10000, ram: 20000, held: 0, usable: 0,
+			want: golden{
+				status: "fit", placement: "gpu", required: 6196, capacity: 10000, affordable: 131072,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "layers missing ram", kind: schema.MemoryLayers, value: "auto", need: numeric,
+			total: 4000, free: 4000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 5069, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "auto"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				observation: true,
+			},
+		},
+		{
+			name: "unified admit", kind: schema.MemoryUnified, value: "", need: numeric,
+			total: 10000, free: 10000, ram: 10000, held: 0, usable: .75,
+			want: golden{
+				status: "fit", placement: "", required: 5069, capacity: 7500, affordable: 0,
+				params:      map[string]string{"budget": ""},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "unified sized refusal", kind: schema.MemoryUnified, value: "", need: numeric,
+			total: 10000, free: 10000, ram: 10000, held: 0, usable: .5,
+			want: golden{
+				status: "no_fit", placement: "", required: 5069, capacity: 5000, affordable: 0,
+				params:      map[string]string{"budget": ""},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Sized: true, BudgetKind: "unified", Parameter: "budget", RequiredMiB: 5069, FreeMiB: 5000},
+				class:       "memory",
+			},
+		},
+		{
+			name: "unified weight refusal", kind: schema.MemoryUnified, value: "", need: autoWeightRefusal,
+			total: 10000, free: 10000, ram: 10000, held: 0, usable: .75,
+			want: golden{
+				status: "no_fit", placement: "", required: 10001, capacity: 10000, affordable: 0,
+				params:      map[string]string{"budget": ""},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{BudgetKind: "unified", Parameter: "budget", Device: "reachable memory", RequiredMiB: 10001, FreeMiB: 10000, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "unified auto context admit", kind: schema.MemoryUnified, value: "", need: auto,
+			total: 10000, free: 10000, ram: 10000, held: 0, usable: .75,
+			want: golden{
+				status: "fit", placement: "", required: 6196, capacity: 7500, affordable: 13584,
+				params:      map[string]string{"budget": ""},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "reserve admit", kind: schema.MemoryReserveMiB, value: "4096", need: numeric,
+			total: 10000, free: 4096, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "4096", "complement": "5.765625"},
+				environment: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"},
+				commitments: map[string]int64{"GPU-A": 4096},
+			},
+		},
+		{
+			name: "reserve refusal", kind: schema.MemoryReserveMiB, value: "4096", need: numeric,
+			total: 10000, free: 4095, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "no_fit", placement: "", required: 4096, capacity: 4095, affordable: 0,
+				params:      map[string]string{"budget": "4096", "complement": "5.765625"},
+				environment: map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-A"},
+				commitments: map[string]int64{},
+				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 4096, FreeMiB: 4095, Holders: []MemoryHolder{}},
+				class:       "memory",
+			},
+		},
+		{
+			name: "reserve invalid", kind: schema.MemoryReserveMiB, value: "0", need: numeric,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "0"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+				invalid:     true,
+			},
+		},
+		{
+			name: "external admit", kind: schema.MemoryExternal, value: "", need: numeric,
+			total: 10000, free: 10000, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": ""},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
+		{
+			name: "external admits without evidence", kind: schema.MemoryExternal, value: "bad", need: autoWeightRefusal,
+			total: 0, free: 0, ram: 0, held: 0, usable: 0,
+			want: golden{
+				status: "unknown", placement: "", required: 0, capacity: 0, affordable: 0,
+				params:      map[string]string{"budget": "bad"},
+				environment: map[string]string{},
+				commitments: map[string]int64{},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a, _ := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, tc.need, map[string]string{"budget": tc.fraction}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: tc.free}}, 0, nil, nil, 0)
-			assert.Equal(t, tc.status, a.Status)
-			assert.Equal(t, tc.need.WeightsMiB, a.WeightsMiB)
+			params := map[string]string{"budget": tc.value}
+			environment := map[string]string{}
+			commitments := map[string]int64{}
+			var devices []gpu.MemoryDevice
+			if tc.total > 0 {
+				devices = []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: tc.total, FreeMiB: tc.free, Unified: tc.kind == schema.MemoryUnified}}
+			}
+			var owners []RunRef
+			if tc.held > 0 {
+				owners = []RunRef{{ID: "held", Commitments: map[string]int64{"GPU-A": tc.held}}}
+			}
+			budget := schema.MemoryBudget{Kind: tc.kind, Parameter: "budget"}
+			if tc.kind == schema.MemoryReserveMiB {
+				budget.ComplementParameter = "complement"
+			}
+			a, err := AdmitMemoryBudget(budget, tc.need, params, environment, devices, tc.ram, owners, commitments, tc.usable)
+
+			assert.Equal(t, tc.want.status, a.Status)
+			assert.Equal(t, tc.want.placement, a.Placement)
 			if a.Status != "unknown" {
-				assert.Equal(t, tc.required, a.RequiredMiB)
-				assert.Equal(t, tc.capacity, a.CapacityMiB)
+				assert.Equal(t, tc.want.required, a.RequiredMiB)
+				assert.Equal(t, tc.want.capacity, a.CapacityMiB)
 				assert.Empty(t, a.UnknownCause)
+			}
+			assert.Equal(t, tc.need.WeightsMiB, a.WeightsMiB)
+			assert.Equal(t, tc.want.affordable, a.AffordableContextTokens)
+			assert.Equal(t, tc.want.params, params)
+			assert.Equal(t, tc.want.environment, environment)
+			assert.Equal(t, tc.want.commitments, commitments)
+			assert.Equal(t, tc.want.observation, errors.Is(err, ErrMemoryObservation))
+			assert.Equal(t, tc.want.invalid, errors.Is(err, ErrMemoryBudgetInvalid))
+			var fit *MemoryFitError
+			require.Equal(t, tc.want.fit != nil, errors.As(err, &fit))
+			assert.Equal(t, tc.want.fit, fit)
+			var engine *httperr.EngineFailure
+			require.Equal(t, tc.want.class != "", errors.As(err, &engine))
+			if engine != nil {
+				assert.Equal(t, tc.want.class, engine.Class)
+			}
+			if tc.want.fit == nil && !tc.want.observation && !tc.want.invalid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
 			}
 		})
 	}

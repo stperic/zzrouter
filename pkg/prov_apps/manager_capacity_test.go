@@ -6,11 +6,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
@@ -202,7 +204,104 @@ func TestCancelledAssessmentRetainsCollectedEvidence(t *testing.T) {
 	assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
 	assert.Equal(t, int64(1024), assessment.WeightsMiB)
 	assert.Equal(t, int64(2048), assessment.ContextTokens)
+	assert.Empty(t, assessment.BudgetKind)
+	assert.Zero(t, assessment.RequiredMiB)
+	assert.Zero(t, assessment.CapacityMiB)
+	assert.Zero(t, assessment.AffordableContextTokens)
 	assert.Empty(t, m.instances.List())
+}
+
+func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
+	for _, kind := range []string{schema.MemoryFractionTotal, schema.MemoryLayers} {
+		t.Run(kind, func(t *testing.T) {
+			m, req := autoCapacityFixture(t)
+			base := m.providerSchema
+			m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+				declared, err := base(provider)
+				declared.Diagnostics.Memory.Kind = kind
+				return declared, err
+			}
+			m.memorySystem = func(context.Context) *hardware.HardwareInfo {
+				return &hardware.HardwareInfo{TotalRAM: 20000 << 20}
+			}
+			features, err := m.ResolveLaunchParameters(t.Context(), req)
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
+			}
+			decision, err := m.checkMemory(ctx, features, false)
+			require.NoError(t, err)
+			require.Equal(t, "fit", decision.Status)
+			require.Positive(t, decision.RequiredMiB)
+			require.Positive(t, decision.CapacityMiB)
+			require.Positive(t, decision.AffordableContextTokens)
+			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				cancel()
+				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
+			}
+			assessment, err := m.checkMemory(ctx, features, false)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, "unknown", assessment.Status)
+			assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
+			assert.Equal(t, int64(1024), assessment.WeightsMiB)
+			assert.Equal(t, "auto", assessment.ContextMode)
+			assert.Equal(t, int64(4096), assessment.ContextTokens)
+			assert.Empty(t, assessment.BudgetKind)
+			assert.Empty(t, assessment.Placement)
+			assert.Zero(t, assessment.RequiredMiB)
+			assert.Zero(t, assessment.CapacityMiB)
+			assert.Zero(t, assessment.AffordableContextTokens)
+		})
+	}
+}
+
+func TestNilBudgetLaunchEvidenceIsBestEffort(t *testing.T) {
+	for _, kind := range []string{"", schema.MemoryExternal} {
+		for _, missing := range []bool{false, true} {
+			t.Run(kind+"/missing="+fmt.Sprint(missing), func(t *testing.T) {
+				m, req, _ := capacityFixture(t)
+				m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
+					if kind == "" {
+						return nil, nil
+					}
+					return &schema.MemoryBudget{Kind: kind}, nil
+				})
+				features, err := m.ResolveLaunchParameters(t.Context(), req)
+				require.NoError(t, err)
+				dir := t.TempDir()
+				if missing {
+					dir = filepath.Join(dir, "absent")
+				} else {
+					require.NoError(t, os.Chmod(dir, 0))
+					t.Cleanup(func() { require.NoError(t, os.Chmod(dir, 0700)) })
+					_, err := os.ReadDir(dir)
+					if err == nil {
+						t.Skip("directory read permissions are not restricted on this host")
+					}
+					require.ErrorIs(t, err, os.ErrPermission)
+				}
+				features.model = process.ResolvedModel{Path: dir}
+				m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+					t.Fatal("nil budgets must not observe or wait for device memory")
+					return nil, nil
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				assessment, err := m.checkMemory(ctx, features, false)
+				require.NoError(t, err)
+				assert.Equal(t, "unknown", assessment.Status)
+				assert.Equal(t, process.BudgetNotSized, assessment.UnknownCause)
+				assert.Zero(t, assessment.WeightsMiB)
+				assert.Equal(t, "numeric", assessment.ContextMode)
+				assert.Equal(t, int64(2048), assessment.ContextTokens)
+				_, err = m.admitMemory(ctx, features)
+				require.NoError(t, err)
+				require.NoError(t, ctx.Err())
+			})
+		}
+	}
 }
 
 func TestCapacityIncompleteSelectedObservationIsUnknown(t *testing.T) {
