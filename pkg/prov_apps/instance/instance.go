@@ -546,6 +546,7 @@ func (i *Instance) notifyIdleLocked() {
 // Loaded is what the daemon serving a run reports of its model.
 type Loaded struct {
 	Cache                                             CacheCapacity
+	CachePoolsAmbiguous                               bool
 	Size, VRAM                                        int64
 	GPULayers, Layers                                 int64
 	CPUWeights, GPUWeights                            int64

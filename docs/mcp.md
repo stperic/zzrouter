@@ -136,7 +136,9 @@ Follow `zz_run_start` with `zz_job` through terminal state. Both `zz_runs` modes
 return independently reported `context_length` and optional `cache` observations:
 
 - `kv_tokens`: tokens/cells in one KV pool, exactly as reported.
-- `kv_pools`: independent pools, only when reported. zzRouter computes no aggregate.
+- `kv_pools`: independent pools, only when reported. Absence means the engine
+  reported no pool count, as with vLLM's aggregate pool size. zzRouter computes
+  no aggregate.
 - `sequence_slots`: reported server slots or scheduler sequence limit.
 - `context_tokens`: per-request context for the reported layout or multiplier.
 - `sharing`: `shared` or `partitioned`, only when explicitly reported.
@@ -154,6 +156,12 @@ Never extrapolate 4k concurrency to 32k. Keep `context_length` and
 `cache` object, establish no capacity conclusion: MLX, current Ollama replies,
 older peers and reports outside the existing startup capture window may supply
 none. Use `zz_logs` for failure diagnostics.
+
+Conflicting `pools` reports, such as separate non-SWA and sliding-window caches,
+omit `kv_tokens` and `kv_pools` for that run. Identical repeats retain them.
+Provider declarations and role ownership are described in
+[cache observations](configuration.md#cache-observations).
+
 A Mamba-cache refusal retains the logged block counts and `max-num-seqs` upper
 bound in run/job failure diagnostics. Inspect `zz_params_get`, preview a supported
 change, then start again; do not repeat unchanged failed settings.

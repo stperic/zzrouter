@@ -11537,6 +11537,9 @@ components:
             All fields are optional; absence establishes no capacity conclusion, including
             on older workers. Independent of API context_length and launch decisions.
             Slots sharing a pool do not establish that many full-context requests.
+            Conflicting pool reports omit both kv_tokens and kv_pools for the run.
+            An absent kv_pools means the engine reported no pool count, for example
+            vLLM reports an aggregate pool size without a count.
             Scheduler limits are separate; cache capacity promises no throughput or latency.
           additionalProperties: false
           properties:
@@ -11549,7 +11552,7 @@ components:
               type: integer
               format: int64
               minimum: 1
-              description: Independent KV pools, only when the engine reports their count.
+              description: Independent KV pools, only when the engine reports their count; absent means no reported count, as with vLLM's aggregate pool size. Conflicting pool reports omit both KV fields.
             sequence_slots:
               type: integer
               format: int64

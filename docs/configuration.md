@@ -91,6 +91,24 @@ translation until Strata's native tool-result image behavior is verified.
 Strata's Responses API is stateless: agents must send the conversation in each
 request and cannot use `previous_response_id`.
 
+## Cache observations
+
+Provider `schema.yaml` may declare a root `cache_log` map of startup regexes.
+Roles and ordered capture groups are `tokens` (KV tokens), `concurrency` (context
+tokens, multiplier), `pools` (tokens/cells per pool, pool count), `slots` (sequence
+slots, context tokens, unified-cache Boolean), and `sequence_slots` (sequence
+limit). Each role owns its fields: a provider must not declare two roles that
+report the same field from different sources. The shipped providers comply.
+
+Captures replace their fields without adding capacity. Identical `pools` repeats
+change nothing; conflicting pairs omit both KV fields for the rest of that run,
+because multiple cache allocations cannot establish one capacity. Other cache
+observations remain available. A bad regex, unknown role or wrong capture count
+drops the entire optional `cache_log` map with one warning naming the provider
+and problem per schema validation. The remaining schema loads. Launches and
+provider synchronization proceed with no cache capture installed. Capture
+uses the existing startup window and never delays readiness.
+
 ## Provider endpoints
 
 `capabilities.wire_endpoints` declares native APIs such as `chat_completions`,

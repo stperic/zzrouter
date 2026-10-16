@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"path"
 	"regexp"
@@ -115,7 +116,7 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	var err error
 	out.CacheLog, err = compileLogPatterns("cache_log", y.CacheLog, map[string]int{"tokens": 1, "concurrency": 2, "pools": 2, "slots": 3, "sequence_slots": 1})
 	if err != nil {
-		errs = append(errs, err)
+		slog.Warn("provider cache_log dropped", "provider", provider, "error", err)
 	}
 	out.AutoContext = y.AutoContext
 	if err := y.AutoContext.validate(); err != nil {

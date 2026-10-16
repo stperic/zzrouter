@@ -1,10 +1,15 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,6 +17,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -338,21 +344,61 @@ diagnostics:
 	require.ErrorContains(t, err, "unknown memory budget")
 }
 
-func TestInvalidCacheDeclarationsRefuseBeforeSpawn(t *testing.T) {
+func assertCacheWarning(t *testing.T, provider string, action func()) {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	func() {
+		defer slog.SetDefault(previous)
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		action()
+	}()
+	require.Equal(t, 1, bytes.Count(logs.Bytes(), []byte("\n")), logs.String())
+	var record map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &record))
+	assert.Equal(t, "WARN", record["level"])
+	assert.Equal(t, provider, record["provider"])
+	assert.NotEmpty(t, record["error"])
+}
+
+func TestInvalidCacheDeclarationsDoNotBlockLaunch(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "m.gguf"), []byte("GGUF"), 0600))
-	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNodeWithModelsDir(t, cfg, root, "test-host")
-	require.NoError(t, server.configStore.SetProviderEnabled("llamacpp", true))
+	dir := filepath.Join(root, "on-demand", "fake")
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`enabled: true
+protocol: openai
+runtime:
+  base_port: 8780
+  port_range: [8780, 8789]
+  execution: {type: cli, command: engine}
+capabilities:
+  wire_endpoints: [chat_completions]
+`), 0600))
+	store, err := pkgConfig.NewAppsConfigStore(root)
+	require.NoError(t, err)
 	for _, declaration := range []string{"tokens: '('", "unknown: '(x)'", "tokens: '(x)(y)'"} {
 		t.Run(declaration, func(t *testing.T) {
-			require.NoError(t, os.WriteFile(filepath.Join(server.configStore.DirPath(), "on-demand", "llamacpp", "schema.yaml"), []byte("cache_log:\n  "+declaration+"\n"), 0600))
-			_, err := providerSchema(server.configStore)("llamacpp")
-			require.Error(t, err)
-			_, err = server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "llamacpp", Model: "m"})
-			require.Error(t, err)
-			assert.Empty(t, server.providers.appMgr.Instances().List())
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "schema.yaml"), []byte("parameters:\n  long-tail: {type: int}\ncache_log:\n  concurrency: 'Maximum concurrency for ([0-9]+) tokens per request: ([0-9.]+)x'\n  "+declaration+"\n"), 0600))
+			assertCacheWarning(t, "fake", func() {
+				merged, err := providerSchema(store)("fake")
+				require.NoError(t, err)
+				assert.Nil(t, merged.CacheLog)
+				assert.Equal(t, schema.ParamInt, merged.Parameters["long-tail"].Kind)
+			})
+			r := newReadinessRig(t, prov_apps.WithProviderSchema(providerSchema(store)))
+			script := strings.Replace(crashingEngine, `printf 'READY\n'`, `printf 'GPU KV cache size: 814421 tokens\nMaximum concurrency for 32768 tokens per request: 24.85x\nREADY\n'`, 1)
+			require.NoError(t, os.WriteFile(r.engine, []byte(script), 0700))
+			require.NoError(t, os.WriteFile(r.engine+".crashed", nil, 0600))
+			result, err := r.mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "fake", Model: "m", Parameters: map[string]string{"long-tail": "7"}})
+			require.NoError(t, err)
+			select {
+			case <-result.Run.LeftStarting():
+			case <-time.After(readinessWait):
+				t.Fatal("run never became ready")
+			}
+			assert.Equal(t, instance.StatusRunning, result.Run.GetStatus())
+			assert.Nil(t, result.Run.ToInfo("").Cache)
+			assert.Equal(t, "7", result.Run.Resolved().Parameters["long-tail"])
 		})
 	}
 }

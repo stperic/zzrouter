@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"maps"
 	"net/http"
@@ -24,8 +25,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These supplied log excerpts have no invented timestamps. The partitioned fixture
-// is the complete verbatim 2026-10-16 lab capture, including recurrent state rows.
+// The partitioned fixture is the verbatim 2026-10-16 lab capture. The iswa and
+// repeat fixtures model two-cache output and identical repeated output.
 func cacheFixture(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile("testdata/cache/" + name + ".txt")
@@ -96,6 +97,49 @@ func TestLlamaPartitionedCachePreservesPerPoolUnits(t *testing.T) {
 	_, err := cacheWriter(t, run, "llamacpp", false).Write([]byte(cacheFixture(t, "llama_partitioned")))
 	require.NoError(t, err)
 	assert.Equal(t, &instance.CacheCapacity{KVTokens: 32768, KVPools: 4, SequenceSlots: 4, ContextTokens: 32768, Sharing: "partitioned"}, run.ToInfo("").Cache)
+}
+
+func TestLlamaPoolCapturesOmitAmbiguousKV(t *testing.T) {
+	for _, fixture := range []string{"llama_iswa", "llama_repeat"} {
+		t.Run(fixture, func(t *testing.T) {
+			run := instance.NewInstance("r", "engine", "model", 0, 0, 0)
+			writer := cacheWriter(t, run, "llamacpp", false)
+			lines := strings.SplitAfter(cacheFixture(t, fixture), "\n")
+			_, err := writer.Write([]byte(lines[0]))
+			require.NoError(t, err)
+			assert.Equal(t, &instance.CacheCapacity{KVTokens: 32768, KVPools: 1}, run.ToInfo("").Cache)
+			_, err = writer.Write([]byte(lines[1]))
+			require.NoError(t, err)
+			if fixture == "llama_iswa" {
+				assert.Nil(t, run.ToInfo("").Cache)
+			}
+			recordObservation(run, cacheSlots, []string{"4", "32768", "true"})
+			// Neither the first nor the second pair can restore ambiguous KV evidence.
+			_, err = writer.Write([]byte(cacheFixture(t, fixture)))
+			require.NoError(t, err)
+			want := &instance.CacheCapacity{SequenceSlots: 4, ContextTokens: 32768, Sharing: "shared"}
+			if fixture == "llama_repeat" {
+				want.KVTokens, want.KVPools = 32768, 1
+			}
+			assert.Equal(t, want, run.ToInfo("").Cache)
+			raw, err := json.Marshal(run.ToInfo(""))
+			require.NoError(t, err)
+			var wire struct {
+				Cache map[string]any `json:"cache"`
+			}
+			require.NoError(t, json.Unmarshal(raw, &wire))
+			if fixture == "llama_iswa" {
+				assert.NotContains(t, wire.Cache, "kv_tokens")
+				assert.NotContains(t, wire.Cache, "kv_pools")
+			}
+		})
+	}
+	// A different pool count is just as ambiguous as a different cell count.
+	run := instance.NewInstance("r", "engine", "model", 0, 0, 0)
+	recordObservation(run, cachePools, []string{"32768", "1"})
+	recordObservation(run, cachePools, []string{"32768", "4"})
+	recordObservation(run, cachePools, []string{"32768", "1"})
+	assert.Nil(t, run.ToInfo("").Cache)
 }
 
 func TestRecurrentStateCellsAreNotKVTokens(t *testing.T) {
@@ -341,7 +385,7 @@ func TestCacheCaptureReplacesReportedGroups(t *testing.T) {
 	recordObservation(run, cacheSlots, []string{"4", "32768", "false"})
 	recordObservation(run, cachePools, []string{"65536", "1"})
 	recordObservation(run, cacheSlots, []string{"8", "65536", "true"})
-	assert.Equal(t, instance.CacheCapacity{KVTokens: 65536, KVPools: 1, SequenceSlots: 8, ContextTokens: 65536, Sharing: "shared"}, run.Loaded().Cache)
+	assert.Equal(t, instance.CacheCapacity{SequenceSlots: 8, ContextTokens: 65536, Sharing: "shared"}, run.Loaded().Cache)
 	run = instance.NewInstance("r", "engine", "model", 0, 0, 0)
 	writer := cacheWriter(t, run, "vllm", false)
 	_, err := writer.Write([]byte(cacheFixture(t, "vllm_4096") + cacheFixture(t, "vllm_32768")))

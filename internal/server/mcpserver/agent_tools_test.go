@@ -580,10 +580,10 @@ func TestMCPModels_IncompleteExactResultNeedsNoDetail(t *testing.T) {
 	require.Equal(t, true, models[0].(map[string]any)["incomplete"])
 }
 
-func TestRunCachePreservesIntegerTokens(t *testing.T) {
+func TestRunCachePreservesReportedCapacity(t *testing.T) {
 	for _, single := range []bool{false, true} {
 		d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
-			row := `{"id":"r","cache":{"kv_tokens":9223372036854775807,"kv_pools":9007199254740993,"max_concurrency":24.85}}`
+			row := `{"id":"r","cache":{"kv_tokens":814421,"context_tokens":32768,"max_concurrency":24.85}}`
 			if single {
 				writeFixture(t, w, []byte(`{"data":`+row+`}`))
 			} else {
@@ -636,10 +636,11 @@ func TestRunCachePreservesIntegerTokens(t *testing.T) {
 		}
 		require.JSONEq(t, string(raw), string(fields["cache"]))
 		raw = fields["cache"]
-		require.JSONEq(t, `{"kv_tokens":9223372036854775807,"kv_pools":9007199254740993,"max_concurrency":24.85}`, string(raw))
+		require.JSONEq(t, `{"kv_tokens":814421,"context_tokens":32768,"max_concurrency":24.85}`, string(raw))
 		var cache map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal(raw, &cache))
-		require.Equal(t, "9223372036854775807", string(cache["kv_tokens"]))
-		require.Equal(t, "9007199254740993", string(cache["kv_pools"]))
+		require.Equal(t, "814421", string(cache["kv_tokens"]))
+		require.Equal(t, "32768", string(cache["context_tokens"]))
+		require.NotContains(t, cache, "kv_pools")
 	}
 }

@@ -57,7 +57,9 @@ rows. Neither weight size nor a capacity amount proves runtime fit. The closed
 Estimates never establish concurrency or served context. Follow launch jobs to
 their terminal state. Inspect `zz_runs.context_length` and optional `zz_runs.cache`.
 `cache.kv_tokens` counts tokens/cells per pool; `kv_pools` counts independent pools
-only when reported, with no computed aggregate. `sequence_slots` is the reported
+only when reported, with no computed aggregate. An absent pool count means the
+engine reported no count, as with vLLM's aggregate pool size. Conflicting pool
+reports omit both KV fields for the run. `sequence_slots` is the reported
 slot or scheduler limit; `sharing` is explicitly reported `shared` or `partitioned`.
 Four slots sharing one 32768-cell pool do not establish four full 32768-token
 requests. A partitioned layout must report enough independent pools, tokens per
