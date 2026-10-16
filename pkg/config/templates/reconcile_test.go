@@ -475,6 +475,21 @@ func TestReconcileRefreshesFeatureDeclarations(t *testing.T) {
 	}
 }
 
+// Feature declarations are managed: an operator keeps only each feature's
+// default, so edited files and flags and unshipped names are replaced.
+func TestReconcileReplacesOperatorFeatureEdits(t *testing.T) {
+	live := []byte("features:\n  vision:\n    default: false\n    files: [custom-*.gguf]\n    flag: custom\n  draft:\n    files: [draft-*.gguf]\n    flag: model-draft\n")
+	tmpl := []byte("features:\n  vision:\n    default: true\n    files: [mmproj-*.gguf]\n    flag: mmproj\n")
+	got, changed, err := mergeManagedSpine(live, tmpl, nil)
+	require.NoError(t, err)
+	require.True(t, changed)
+	var doc map[string]any
+	require.NoError(t, yaml.Unmarshal(got, &doc))
+	features := doc["features"].(map[string]any)
+	assert.NotContains(t, features, "draft")
+	assert.Equal(t, map[string]any{"default": false, "files": []any{"mmproj-*.gguf"}, "flag": "mmproj"}, features["vision"])
+}
+
 func TestReconcileRemovesRetiredFeatureDeclaration(t *testing.T) {
 	got, changed, err := mergeManagedSpine([]byte("features:\n  vision: {builtin: true}\n"), []byte("features: {}\n"), nil)
 	require.NoError(t, err)
