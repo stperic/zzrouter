@@ -161,3 +161,18 @@ func TestMemoryAssessmentLayersReachAllVisibleDevices(t *testing.T) {
 		}
 	}
 }
+
+// An unsized fraction admits only the engine's reservation, so an unknown
+// assessment must not present that reservation as the model's requirement.
+func TestUnsizedFractionReportsNoRequirement(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}
+	devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 9800}}
+	for _, value := range []string{"auto", "0.9"} {
+		params := map[string]string{"budget": value}
+		assessment, err := AdmitMemoryBudget(budget, Need{}, params, nil, devices, 0, nil, nil, 0)
+		require.NoError(t, err, value)
+		assert.Equal(t, "unknown", assessment.Status, value)
+		assert.Zero(t, assessment.RequiredMiB, value)
+		assert.Zero(t, assessment.CapacityMiB, value)
+	}
+}
