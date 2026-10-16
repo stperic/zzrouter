@@ -66,7 +66,7 @@ func TestManagedRuntimeOwnPlatformGuards(t *testing.T) {
 				allowed = allowed || platform == fsroot.CurrentPlatform()
 			}
 			if !allowed {
-				report := inst.Preflight(t.Context(), nil)
+				report := install.Preflight(t.Context(), inst, nil)
 				assert.False(t, report.AllOK)
 				require.Len(t, report.Results, 1)
 				assert.Equal(t, "platform", report.Results[0].Check)
