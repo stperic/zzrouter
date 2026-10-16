@@ -172,9 +172,10 @@ func ggufNeed(t *testing.T, arch string, params map[string]string, extra map[str
 	first := filepath.Join(dir, "part-00001-of-00002.gguf")
 	second := filepath.Join(dir, "part-00002-of-00002.gguf")
 	require.NoError(t, os.WriteFile(first, b.Bytes(), 0600))
-	require.NoError(t, os.Truncate(first, 512<<20))
+	// Small shards: Windows runners allocate every byte of a truncated file.
+	require.NoError(t, os.Truncate(first, 8<<20))
 	require.NoError(t, os.WriteFile(second, []byte("not a header"), 0600))
-	require.NoError(t, os.Truncate(second, 512<<20))
+	require.NoError(t, os.Truncate(second, 8<<20))
 	svc.Defaults.Metadata.ContextParam = "ctx-size"
 	n, _ := ModelMemoryNeed(ResolvedModel{Path: second}, svc, params, schema.AutoContext{AutoContextSource: "native"}, map[string]schema.ParamShape{"cache-type-k": {KVCacheDtype: "k"}, "cache-type-v": {KVCacheDtype: "v"}})
 	return n
@@ -206,7 +207,7 @@ func TestSplitGGUFReadsFirstShardHeader(t *testing.T) {
 	n := ggufNeed(t, "qwen3", map[string]string{"ctx-size": "auto"}, nil)
 	require.False(t, n.Incomplete)
 	assert.Equal(t, int64(32768), n.ContextTokens)
-	assert.Equal(t, int64(1024), n.WeightsMiB, "all shards still count as weights")
+	assert.Equal(t, int64(16), n.WeightsMiB, "all shards still count as weights")
 	assert.Equal(t, int64(4096), n.KVMiB)
 }
 
@@ -241,14 +242,14 @@ func TestKVCacheDtypeRoles(t *testing.T) {
 	require.Error(t, err, "auto KV exceeds the same numeric budget")
 }
 func TestLlamaPlacementBoundaries(t *testing.T) {
-	// (1024 weights + 4096 KV + 4096 overhead) * 1.1, rounded up.
-	required := int64(10138)
+	// (16 weights + 4096 KV + 4096 overhead) * 1.1, rounded up.
+	required := int64(9029)
 	for _, context := range []string{"auto", "32768"} {
 		n := ggufNeed(t, "llama", map[string]string{"ctx-size": context}, nil)
 		for _, tc := range []struct {
 			gpu, ram          int64
 			status, placement string
-		}{{required, 1, "fit", "gpu"}, {required - 1, 1, "fit", "offload"}, {required - 2, 1, "no_fit", ""}, {required - 1, 0, "unknown", ""}, {512, 1, "no_fit", ""}} {
+		}{{required, 1, "fit", "gpu"}, {required - 1, 1, "fit", "offload"}, {required - 2, 1, "no_fit", ""}, {required - 1, 0, "unknown", ""}, {8, 1, "no_fit", ""}} {
 			a, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryLayers}, n, nil, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: tc.gpu, FreeMiB: tc.gpu}}, tc.ram, nil, nil, 0)
 			want := tc.status
 			if context == "auto" && tc.gpu == required-2 {
