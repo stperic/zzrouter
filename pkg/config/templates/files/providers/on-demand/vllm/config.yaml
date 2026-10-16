@@ -99,6 +99,9 @@ runtime:
     - pattern: "CUDA out of memory"
       isRegex: false
       class: memory
+    - pattern: '(max_num_seqs \(\d+\) exceeds available Mamba cache blocks \(\d+\)\.[^\r\n]*?Please lower max_num_seqs to at most \d+)'
+      isRegex: true
+      class: memory
     - pattern: "No available memory for the cache blocks"
       isRegex: false
       class: memory

@@ -257,7 +257,7 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	}
 
 	if preview.Assessment == nil {
-		preview.Assessment = &process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node reported no capacity assessment"}
+		preview.Assessment = &process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.NodeOutdated, Reason: process.NodeOutdated.Reason()}
 	}
 
 	preview.Assessment.NormalizeLegacy()

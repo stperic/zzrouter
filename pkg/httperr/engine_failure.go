@@ -39,7 +39,7 @@ var failureClasses = map[FailureClass]struct {
 	status               int
 	code, prefix, remedy string
 }{
-	FailureMemory:                {http.StatusConflict, string(CodeOutOfRange), "", "Release memory or reduce the configured budget before retrying."},
+	FailureMemory:                {http.StatusConflict, string(CodeOutOfRange), "", "Inspect zz_runs, zz_logs and zz_params_get; preview a supported change with zz_run_preview before zz_run_start."},
 	FailureUnsupportedInput:      {http.StatusBadRequest, CodeUnsupportedInput, "", "Use a model that supports this input, or remove it from the request."},
 	FailureChatTemplateRejected:  {http.StatusBadRequest, CodeChatTemplateRejected, "the model's chat template rejected this request: ", ChatTemplateRemedy},
 	FailureToolCallingNotEnabled: {http.StatusBadRequest, CodeToolCallingNotEnabled, "this model's engine was launched without tool calling: ", ToolCallingRemedy},

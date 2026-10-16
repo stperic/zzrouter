@@ -496,7 +496,11 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 			}
 		}
 		if len(row.Assessments) == 0 {
-			result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: row.Name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node reported no provider assessment"}})
+			cause := process.NodeOutdated
+			if row.Assessments != nil {
+				cause = process.ProviderNotEligible
+			}
+			result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: row.Name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: cause, Reason: cause.Reason()}})
 		}
 		if len(fitProviders) > 0 {
 			var info map[string]any
@@ -509,12 +513,12 @@ func (s *NodesService) ListCompatibleNodes(ctx context.Context, req *ListCompati
 	}
 	expected, err := s.ListNodes(ctx, &ListNodesRequest{})
 	if err != nil {
-		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node coverage unknown: " + err.Error()}})
+		result.Assessments = append(result.Assessments, NodeMemoryAssessment{MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.NodeUnreachable, Reason: err.Error() + ". " + process.NodeUnreachable.Reason()}})
 	} else {
 		for _, node := range expected.Data {
 			name, _ := node["name"].(string)
 			if !seen[name] {
-				result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node did not report an assessment"}})
+				result.Assessments = append(result.Assessments, NodeMemoryAssessment{Node: name, Provider: req.Provider, MemoryAssessment: process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", UnknownCause: process.NodeUnreachable, Reason: process.NodeUnreachable.Reason()}})
 			}
 		}
 	}

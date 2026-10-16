@@ -11959,10 +11959,21 @@ components:
       required: [status, reason]
       properties:
         status: { type: string, enum: [fit, no_fit, unknown] }
+        unknown_cause:
+          type: string
+          enum: [weights_unavailable, metadata_invalid, model_unmodelled, kv_dtype_unsupported, context_unresolved, context_below_minimum, native_context_adaptation, budget_not_sized, memory_evidence_unavailable, assessment_failed, node_outdated, node_unreachable, provider_not_eligible]
+          description: Primary evidence gap, present only for unknown. Reason names the next MCP tools; no fit or launch decision is inferred from the cause.
+        weights_mib:
+          type: integer
+          format: int64
+          description: Exact selected local weight bytes rounded up to MiB, on any status when known. This lower bound does not establish runtime fit.
         reason: { type: string }
         budget_kind: { type: string }
         required_mib: { type: integer, format: int64 }
-        capacity_mib: { type: integer, format: int64 }
+        capacity_mib:
+          type: integer
+          format: int64
+          description: Assessed capacity compared by the shared policy, including on unknown rows when independently known. This is not a separate engine allocation estimate.
         context_mode: { type: string, enum: [auto, numeric, unknown] }
         context_tokens: { type: integer, format: int64 }
         affordable_context_tokens: { type: integer, format: int64 }
@@ -11989,7 +12000,11 @@ components:
         MLX uses memory_usable_fraction (shipped as 0.75), release-owned schema
         metadata alongside auto_min_context_tokens.
         Missing or unsupported geometry, context range or devices remains unknown;
-        older replies lacking context_mode degrade to unknown.
+        older replies lacking context_mode degrade to unknown with node_outdated.
+        Context-aware older fit/no_fit decisions survive; older unknown replies
+        without a cause receive node_outdated. Missing worker replies carry
+        node_unreachable. A current node reporting no eligible provider carries
+        provider_not_eligible. New weight evidence remains absent on older replies.
         Numeric context overrides assess workload requirements. Fully evidenced
         failures refuse launch; fixed budget shortfalls do not evict holders.
         Budget admission alone is not proof of model fit. Amounts are optional,
@@ -11997,6 +12012,12 @@ components:
         auto-only margin) and available memory, or aggregate amounts for layers,
         unified memory and weight lower-bound refusals.
         Capacity reads use totals; launch failures retain fresh free memory and holders.
+        An unknown assessment may retain weights_mib and capacity_mib without
+        establishing runtime fit, context capacity or concurrency. Reason explains
+        the cause and next MCP tools; use zz_params_get for accepted parameter names,
+        zz_run_preview for a numeric-context assessment, or zz_run_start and zz_job
+        followed by zz_runs and zz_logs for engine reports. Compare concurrency
+        only at the reported context; estimates never become served context.
 
     PreviewRunResponse:
       type: object

@@ -113,6 +113,33 @@ and optional `provider`/`registry` to read confirmed nodes and all
 `metadata.assessments` unchanged. Missing worker fields or replies are unknown.
 Storage/download eligibility remains independent of capacity uncertainty.
 
+`assessment.unknown_cause` is a closed code for the primary evidence gap, with
+MCP next actions in `reason`. Codes are `weights_unavailable`, `metadata_invalid`,
+`model_unmodelled`, `kv_dtype_unsupported`, `context_unresolved`,
+`context_below_minimum`, `native_context_adaptation`, `budget_not_sized`,
+`memory_evidence_unavailable`, `assessment_failed`, `node_outdated`,
+`node_unreachable` and `provider_not_eligible`. Use `zz_params_get` to find accepted context and KV parameter
+names before previewing overrides. Unmodelled allocation calls for a measured run
+or another build/provider; zzRouter does not tune parameters or retry for the agent.
+
+`weights_mib` reports exact selected local bytes rounded up to MiB whenever known,
+on every status. Unknown rows also retain independently known `capacity_mib`,
+using the existing policy's assessed capacity, without claiming runtime fit.
+Older workers omit new evidence: context-aware fit/no_fit decisions survive;
+older unknown or contextless replies receive `node_outdated`. Missing replies
+receive `node_unreachable`.
+A current node with no eligible provider carries `provider_not_eligible`; inspect
+`zz_providers` and `zz_provider_install`, locate the model with `zz_models`, or
+choose another node.
+
+Follow `zz_run_start` with `zz_job` through terminal state. Inspect `zz_runs` for
+served context and `zz_logs` with `grep: "GPU KV cache size"` or
+`grep: "Maximum concurrency"` for engine-reported capacity at its stated context.
+Never extrapolate 4k concurrency to 32k or substitute an estimate for a report.
+A Mamba-cache refusal retains the logged block counts and `max-num-seqs` upper
+bound in run/job failure diagnostics. Inspect `zz_params_get`, preview a supported
+change, then start again; do not repeat unchanged failed settings.
+
 Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
 `affordable_context_tokens` and llama.cpp `placement`. Auto vLLM and MLX assess
 the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use

@@ -2,6 +2,7 @@ package process
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ const DefaultActivationOverheadMiB int64 = 4096
 type Need struct {
 	WeightsMiB, KVMiB, OverheadMiB int64
 	WeightsBytes                   int64 // Exact bytes prevent false refusals at fractional MiB boundaries.
-	Incomplete                     bool
+	UnknownCause                   UnknownCause
 	ContextMode                    string
 	ContextTokens                  int64
 	nativeContext                  bool
@@ -32,7 +33,7 @@ type Need struct {
 
 // Total returns the single-device memory need; zero denotes unknown.
 func (n Need) Total() int64 {
-	if n.Incomplete || n.WeightsMiB > math.MaxInt64-n.KVMiB || n.WeightsMiB+n.KVMiB > math.MaxInt64-n.OverheadMiB {
+	if n.UnknownCause != "" || n.WeightsMiB > math.MaxInt64-n.KVMiB || n.WeightsMiB+n.KVMiB > math.MaxInt64-n.OverheadMiB {
 		return 0
 	}
 	return n.WeightsMiB + n.KVMiB + n.OverheadMiB
@@ -68,7 +69,7 @@ type attentionConfig struct {
 // ModelMemoryNeed retains weight evidence when context or geometry cannot be sized.
 func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string, policy schema.AutoContext, shapes map[string]schema.ParamShape) (Need, bool) {
 	weightBytes, header, ok := weightsBytes(model.Path, svc)
-	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, Incomplete: true, ContextMode: "unknown"}
+	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, UnknownCause: WeightsUnavailable, ContextMode: "unknown"}
 	value := memoryParameter(svc.GetContextParam(), params)
 	context, parseErr := strconv.ParseInt(value, 10, 64)
 	numeric := parseErr == nil && context > 0
@@ -81,28 +82,43 @@ func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[s
 		partial.ContextMode = "auto"
 		context = policy.AutoMinContextTokens
 	}
-	cfg, geometry := readAttentionConfig(model.Directory())
-	if header != "" && (!geometry || policy.AutoContextSource == "native") {
-		cfg, geometry = readGGUFConfig(header)
+	cfg, cause := readAttentionConfig(model.Directory())
+	if header != "" && (cause != "" || policy.AutoContextSource == "native") {
+		cfg, cause = readGGUFConfig(header)
 	}
 	if partial.ContextMode == "auto" && policy.AutoContextSource == "native" {
 		partial.nativeContext = true
 		context = cfg.NativeContext
 	}
 	partial.ContextTokens = context
-	if !ok || !geometry || context <= 0 || (partial.ContextMode == "auto" && (cfg.NativeContext < context || (len(cfg.RopeScaling) > 0 && string(cfg.RopeScaling) != "null"))) {
+	if !ok {
+		return partial, false
+	}
+	partial.UnknownCause = cause
+	if cause != "" {
+		return partial, false
+	}
+	partial.UnknownCause = ContextUnresolved
+	if context <= 0 || (partial.ContextMode == "auto" && len(cfg.RopeScaling) > 0 && string(cfg.RopeScaling) != "null") {
+		return partial, false
+	}
+	if partial.ContextMode == "auto" && cfg.NativeContext < context {
+		if cfg.NativeContext > 0 {
+			partial.UnknownCause = ContextBelowMinimum
+		}
 		return partial, false
 	}
 	if policy.RecurrentStateRows != nil {
 		cfg.stateRows = *policy.RecurrentStateRows
 	}
-	if !cfg.applyCacheParameters(params, shapes, partial.ContextMode == "auto") {
+	if partial.UnknownCause = cfg.applyCacheParameters(params, shapes, partial.ContextMode == "auto"); partial.UnknownCause != "" {
 		return partial, false
 	}
 
 	partial.geometry = &cfg
 	sized, complete := partial.atContext(context)
 	if !complete {
+		partial.UnknownCause = sized.UnknownCause
 		partial.geometry = nil
 		return partial, false
 	}
@@ -110,7 +126,7 @@ func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[s
 }
 
 // applyCacheParameters interprets sizing roles after ordinary parameter resolution.
-func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shapes map[string]schema.ParamShape, auto bool) bool {
+func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shapes map[string]schema.ParamShape, auto bool) UnknownCause {
 	for name, shape := range shapes {
 		value := memoryParameter(name, params)
 		if shape.SequenceSlots && shape.RecurrentStateRows != nil {
@@ -121,7 +137,7 @@ func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shape
 			}
 		}
 		if shape.ContextOverride && value != "" && auto {
-			return false
+			return ContextUnresolved
 		}
 		if shape.KVCacheDtype == "k" || shape.KVCacheDtype == "both" {
 			cfg.CacheK = value
@@ -130,22 +146,31 @@ func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shape
 			cfg.CacheV = value
 		}
 	}
-	return true
+	return ""
 }
 
 func (n Need) atContext(context int64) (Need, bool) {
-	kv, ok := n.geometry.kvBytes(context)
-	n.KVMiB, n.OverheadMiB, n.Incomplete = bytesToMiB(kv), DefaultActivationOverheadMiB, !ok
-	return n, ok
+	kv, cause := n.geometry.kvBytes(context)
+	n.KVMiB, n.OverheadMiB, n.UnknownCause = bytesToMiB(kv), DefaultActivationOverheadMiB, cause
+	if cause == "" && n.Total() == 0 {
+		n.UnknownCause = ModelUnmodelled
+	}
+	return n, n.UnknownCause == ""
 }
 
-func readGGUFConfig(path string) (attentionConfig, bool) {
+func readGGUFConfig(path string) (attentionConfig, UnknownCause) {
 	file, err := os.Open(path)
 	if err != nil {
-		return attentionConfig{}, false
+		return attentionConfig{}, MetadataInvalid
 	}
 	defer file.Close()
 	h, err := gguf.Read(file)
+	if err != nil {
+		if errors.Is(err, gguf.ErrUnsupported) {
+			return attentionConfig{}, ModelUnmodelled
+		}
+		return attentionConfig{}, MetadataInvalid
+	}
 	v := func(key string) int64 { return h.Values[h.Architecture+"."+key] }
 	raw := func(n int64) json.RawMessage {
 		if n == 0 {
@@ -161,11 +186,17 @@ func readGGUFConfig(path string) (attentionConfig, bool) {
 		cfg.LinearKHeads, cfg.LinearVHeads, cfg.LinearKDim = v("ssm.group_count"), v("ssm.time_step_rank"), v("ssm.state_size")
 		inner := v("ssm.inner_size")
 		if *cfg.FullInterval <= 0 || cfg.LinearVHeads <= 0 || inner <= 0 || inner%cfg.LinearVHeads != 0 {
-			return cfg, false
+			return cfg, MetadataInvalid
 		}
 		cfg.LinearVDim = inner / cfg.LinearVHeads
 	}
-	return cfg, err == nil && cfg.Layers > 0 && cfg.Heads > 0 && v("attention.sliding_window") == 0
+	if cfg.Layers <= 0 || cfg.Heads <= 0 {
+		return cfg, MetadataInvalid
+	}
+	if v("attention.sliding_window") != 0 {
+		return cfg, ModelUnmodelled
+	}
+	return cfg, ""
 }
 
 // memoryParameter reads either spelling accepted by command construction.
@@ -178,35 +209,38 @@ func memoryParameter(key string, params map[string]string) string {
 }
 
 // readAttentionConfig reads the language model's config.json, nested under text_config in multimodal models.
-func readAttentionConfig(dir string) (attentionConfig, bool) {
+func readAttentionConfig(dir string) (attentionConfig, UnknownCause) {
 	if dir == "" {
-		return attentionConfig{}, false
+		return attentionConfig{}, MetadataInvalid
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		return attentionConfig{}, false
+		return attentionConfig{}, MetadataInvalid
 	}
 	var envelope struct {
 		TextConfig json.RawMessage `json:"text_config"`
 	}
 	if json.Unmarshal(data, &envelope) != nil {
-		return attentionConfig{}, false
+		return attentionConfig{}, MetadataInvalid
 	}
 	if len(envelope.TextConfig) > 0 {
 		data = envelope.TextConfig
 	}
 	var cfg attentionConfig
-	if json.Unmarshal(data, &cfg) != nil || cfg.Layers <= 0 || cfg.Heads <= 0 || len(cfg.KVLoRARank) > 0 || (cfg.FullInterval != nil && cfg.LayerTypes == nil) {
-		return attentionConfig{}, false
+	if json.Unmarshal(data, &cfg) != nil || cfg.Layers <= 0 || cfg.Heads <= 0 {
+		return attentionConfig{}, MetadataInvalid
 	}
-	return cfg, true
+	if len(cfg.KVLoRARank) > 0 || (cfg.FullInterval != nil && cfg.LayerTypes == nil) {
+		return cfg, ModelUnmodelled
+	}
+	return cfg, ""
 }
 
 // kvBytes sizes attention KV plus fixed float32 recurrent states at the declared row count.
-func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
+func (cfg attentionConfig) kvBytes(context int64) (int64, UnknownCause) {
 	heads, ok := geometryValue(cfg.KVHeads, cfg.Heads)
 	if !ok || cfg.Heads <= 0 || cfg.Heads%heads != 0 {
-		return 0, false
+		return 0, MetadataInvalid
 	}
 	dim := int64(0)
 	if cfg.HiddenSize > 0 && cfg.HiddenSize%cfg.Heads == 0 {
@@ -214,20 +248,20 @@ func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
 	}
 	if len(cfg.KeyDim) == 0 || len(cfg.ValueDim) == 0 {
 		if dim, ok = geometryValue(cfg.HeadDim, dim); !ok {
-			return 0, false
+			return 0, MetadataInvalid
 		}
 	}
 	dtypeBytes, ok := cfg.dtypeBytes()
 	if !ok {
-		return 0, false
+		return 0, ModelUnmodelled
 	}
-	layerTokens, recurrent, ok := cfg.layerTokens(context)
-	if !ok {
-		return 0, false
+	layerTokens, recurrent, cause := cfg.layerTokens(context)
+	if cause != "" {
+		return 0, cause
 	}
-	total, ok := cfg.recurrentBytes(recurrent)
-	if !ok {
-		return 0, false
+	total, cause := cfg.recurrentBytes(recurrent)
+	if cause != "" {
+		return 0, cause
 	}
 	for _, cache := range []struct {
 		dim   json.RawMessage
@@ -255,18 +289,21 @@ func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
 		case "q5_1":
 			block, size = 32, 24
 		default:
-			return 0, false
+			return 0, KVDtypeUnsupported
 		}
-		if !valid || dimension%block != 0 {
-			return 0, false
+		if !valid {
+			return 0, MetadataInvalid
+		}
+		if dimension%block != 0 {
+			return 0, KVDtypeUnsupported
 		}
 		part, err := needProduct([]int64{layerTokens, heads, dimension / block, size})
 		if err != nil || part > math.MaxInt64-total {
-			return 0, false
+			return 0, ModelUnmodelled
 		}
 		total += part
 	}
-	return total, true
+	return total, ""
 }
 
 func (cfg attentionConfig) dtypeBytes() (int64, bool) {
@@ -284,29 +321,32 @@ func (cfg attentionConfig) dtypeBytes() (int64, bool) {
 }
 
 // layerTokens sums attention tokens separately from recurrent layers.
-func (cfg attentionConfig) layerTokens(context int64) (int64, int64, bool) {
+func (cfg attentionConfig) layerTokens(context int64) (int64, int64, UnknownCause) {
 	if cfg.FullInterval != nil && *cfg.FullInterval <= 0 {
-		return 0, 0, false
+		return 0, 0, MetadataInvalid
 	}
 	if cfg.LayerTypes == nil {
 		// use_sliding_window: false (Qwen2 family) declares a window it does not apply.
 		if cfg.SlidingWindow != nil && (cfg.UseSliding == nil || *cfg.UseSliding) {
-			return 0, 0, false
+			return 0, 0, ModelUnmodelled
 		}
 		layers := cfg.Layers
 		if cfg.FullInterval != nil {
 			layers /= *cfg.FullInterval
 		}
 		total, err := needProduct([]int64{layers, context})
-		return total, cfg.Layers - layers, err == nil
+		if err != nil {
+			return 0, 0, ModelUnmodelled
+		}
+		return total, cfg.Layers - layers, ""
 	}
 	if int64(len(cfg.LayerTypes)) != cfg.Layers {
-		return 0, 0, false
+		return 0, 0, MetadataInvalid
 	}
 	var total, recurrent int64
 	for i, layer := range cfg.LayerTypes {
 		if cfg.FullInterval != nil && (((int64(i)+1)%*cfg.FullInterval == 0) != (layer == "full_attention") || (layer != "full_attention" && layer != "linear_attention")) {
-			return 0, 0, false
+			return 0, 0, MetadataInvalid
 		}
 		var tokens int64
 		switch layer {
@@ -316,48 +356,54 @@ func (cfg attentionConfig) layerTokens(context int64) (int64, int64, bool) {
 			tokens = context
 		case "sliding_attention":
 			if cfg.SlidingWindow == nil || *cfg.SlidingWindow <= 0 {
-				return 0, 0, false
+				return 0, 0, MetadataInvalid
 			}
 			tokens = min(*cfg.SlidingWindow, context)
 		default:
-			return 0, 0, false
+			return 0, 0, ModelUnmodelled
 		}
 		if total > math.MaxInt64-tokens {
-			return 0, 0, false
+			return 0, 0, ModelUnmodelled
 		}
 		total += tokens
 	}
-	return total, recurrent, true
+	return total, recurrent, ""
 }
 
-func (cfg attentionConfig) recurrentBytes(layers int64) (int64, bool) {
+func (cfg attentionConfig) recurrentBytes(layers int64) (int64, UnknownCause) {
 	if layers == 0 {
-		return 0, true
+		return 0, ""
 	}
 	var dtype string
 	if len(cfg.StateDtype) > 0 && (string(cfg.StateDtype) == "null" || json.Unmarshal(cfg.StateDtype, &dtype) != nil) {
-		return 0, false
+		return 0, ModelUnmodelled
 	}
 	switch dtype {
 	case "", "float16", "bfloat16", "float32":
 	default:
-		return 0, false
+		return 0, ModelUnmodelled
 	}
-	if cfg.LinearKernel < 1 || cfg.LinearKHeads < 1 || cfg.LinearVHeads < 1 || cfg.LinearVHeads%cfg.LinearKHeads != 0 || cfg.LinearKDim < 1 || cfg.LinearVDim < 1 || cfg.stateRows < 1 || cfg.stateRows > schema.MaxRecurrentStateRows {
-		return 0, false
+	if cfg.LinearKernel < 1 || cfg.LinearKHeads < 1 || cfg.LinearVHeads < 1 || cfg.LinearVHeads%cfg.LinearKHeads != 0 || cfg.LinearKDim < 1 || cfg.LinearVDim < 1 {
+		return 0, MetadataInvalid
+	}
+	if cfg.stateRows < 1 || cfg.stateRows > schema.MaxRecurrentStateRows {
+		return 0, ModelUnmodelled
 	}
 	k, ek := needProduct([]int64{2, cfg.LinearKHeads, cfg.LinearKDim})
 	v, ev := needProduct([]int64{cfg.LinearVHeads, cfg.LinearVDim})
 	if ek != nil || ev != nil || k > math.MaxInt64-v {
-		return 0, false
+		return 0, ModelUnmodelled
 	}
 	conv, ec := needProduct([]int64{cfg.LinearKernel - 1, k + v, 4})
 	ssm, es := needProduct([]int64{v, cfg.LinearKDim, 4})
 	if ec != nil || es != nil || conv > math.MaxInt64-ssm {
-		return 0, false
+		return 0, ModelUnmodelled
 	}
 	total, err := needProduct([]int64{conv + ssm, layers, cfg.stateRows})
-	return total, err == nil
+	if err != nil {
+		return 0, ModelUnmodelled
+	}
+	return total, ""
 }
 
 func weightsBytes(modelPath string, svc config.ServiceConfig) (int64, string, bool) {

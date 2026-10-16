@@ -141,9 +141,9 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 	if !errors.As(err, &memory) {
 		return nil
 	}
-	hint := "Stop an idle zzRouter run through DELETE /runs/:id, reduce this node's budget through PATCH /providers/:name/parameters, or ask the operator to release memory held by other workloads."
+	hint := "Inspect holders with zz_runs and zz_logs, accepted settings with zz_params_get, then use zz_run_stop or zz_params_set as appropriate and zz_run_preview before zz_run_start."
 	if memory.Sized {
-		hint = "Increase the declared budget, choose a smaller numeric context where supported, use smaller weights, or choose another node; stopping holders cannot repair a declared-budget shortfall."
+		hint = "Inspect accepted settings with zz_params_get and candidates with zz_models and zz_nodes; use zz_run_preview with a supported budget or numeric context, then zz_run_start."
 	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
 }

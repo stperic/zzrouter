@@ -89,6 +89,9 @@ func CaptureFailure(path, reason string, exitCode *int, signal string, classifie
 		truncated = true
 	}
 	failure := &FailureInfo{ErrorTail: tail, Truncated: truncated, specific: specific, cause: classifier.Match(strings.Join(tail, "\n"))}
+	if failure.cause != nil {
+		summary, failure.specific = failure.cause.HTTPError().Message, true
+	}
 	if exitCode != nil {
 		code := *exitCode
 		failure.ExitCode = &code

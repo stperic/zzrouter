@@ -104,46 +104,60 @@ const maxMemoryDevices = 64
 
 // MemoryAssessment separates admitted budgets from established model fit.
 type MemoryAssessment struct {
-	ContextMode             string `json:"context_mode"`
-	ContextTokens           int64  `json:"context_tokens,omitempty"`
-	AffordableContextTokens int64  `json:"affordable_context_tokens,omitempty"`
-	Placement               string `json:"placement,omitempty"`
-	Status                  string `json:"status"`
-	Reason                  string `json:"reason"`
-	BudgetKind              string `json:"budget_kind,omitempty"`
-	RequiredMiB             int64  `json:"required_mib,omitempty"`
-	CapacityMiB             int64  `json:"capacity_mib,omitempty"`
+	UnknownCause            UnknownCause `json:"unknown_cause,omitempty"`
+	WeightsMiB              int64        `json:"weights_mib,omitempty"`
+	ContextMode             string       `json:"context_mode"`
+	ContextTokens           int64        `json:"context_tokens,omitempty"`
+	AffordableContextTokens int64        `json:"affordable_context_tokens,omitempty"`
+	Placement               string       `json:"placement,omitempty"`
+	Status                  string       `json:"status"`
+	Reason                  string       `json:"reason"`
+	BudgetKind              string       `json:"budget_kind,omitempty"`
+	RequiredMiB             int64        `json:"required_mib,omitempty"`
+	CapacityMiB             int64        `json:"capacity_mib,omitempty"`
 }
 
-func (assessment *MemoryAssessment) setError(err error) {
-	if err == nil {
-		return
+func (assessment *MemoryAssessment) finish(err error) {
+	if err != nil {
+		assessment.SetUnknown(MemoryEvidenceUnavailable, err.Error())
+		var fit *MemoryFitError
+		if errors.As(err, &fit) {
+			assessment.Status, assessment.UnknownCause, assessment.Reason, assessment.RequiredMiB, assessment.CapacityMiB = "no_fit", "", err.Error(), fit.RequiredMiB, fit.FreeMiB
+		}
 	}
-	assessment.Status, assessment.Placement, assessment.Reason = "unknown", "", err.Error()
-	var fit *MemoryFitError
-	if errors.As(err, &fit) {
-		assessment.Status, assessment.RequiredMiB, assessment.CapacityMiB = "no_fit", fit.RequiredMiB, fit.FreeMiB
+	if assessment.Status == "unknown" && assessment.WeightsMiB > 0 && assessment.CapacityMiB >= assessment.WeightsMiB {
+		assessment.Reason = fmt.Sprintf("Weights %d MiB passed the weight-only check; assessed capacity is %d MiB. %s", assessment.WeightsMiB, assessment.CapacityMiB, assessment.Reason)
 	}
 }
 
 // NormalizeLegacy prevents old positive assessments from qualifying under the context contract.
 func (assessment *MemoryAssessment) NormalizeLegacy() {
 	if assessment.ContextMode == "" {
-		*assessment = MemoryAssessment{Status: "unknown", ContextMode: "unknown", Reason: "node reported no context-aware capacity assessment"}
+		*assessment = MemoryAssessment{ContextMode: "unknown"}
+		assessment.SetUnknown(NodeOutdated, "")
+	}
+	if assessment.Status == "unknown" && assessment.UnknownCause == "" {
+		assessment.SetUnknown(NodeOutdated, "")
 	}
 }
 
 // AdmitMemoryBudget shares capacity evidence and launch admission arithmetic.
 func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64, usableFraction float64) (assessment MemoryAssessment, err error) {
-	assessment = MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, Status: "unknown", Reason: "model fit is not established for this budget or sizing evidence", BudgetKind: budget.Kind}
+	assessment = MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, Status: "unknown", WeightsMiB: need.WeightsMiB, BudgetKind: budget.Kind}
 	if assessment.ContextMode == "" {
 		assessment.ContextMode = "unknown"
 	}
-	defer func() { assessment.setError(err) }()
+	assessment.SetUnknown(need.UnknownCause, "")
+	if assessment.UnknownCause == "" {
+		assessment.SetUnknown(ModelUnmodelled, "")
+	}
+	defer func() { assessment.finish(err) }()
 	if budget.Kind == schema.MemoryExternal {
+		assessment.SetUnknown(BudgetNotSized, "")
 		return assessment, nil
 	}
 	if budget.Kind == schema.MemoryReserveMiB {
+		assessment.SetUnknown(BudgetNotSized, "")
 		return assessment, admitReserved(budget, parameters, environment, devices, owners, commitments)
 	}
 	fraction, auto, err := declaredFraction(budget, parameters, usableFraction)
@@ -165,7 +179,8 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if len(selected) > 1 && need.geometry != nil {
 		_, recurrent, _ := need.geometry.layerTokens(need.ContextTokens)
 		if recurrent > 0 {
-			need.Incomplete, need.geometry = true, nil
+			need.UnknownCause, need.geometry = ModelUnmodelled, nil
+			assessment.SetUnknown(ModelUnmodelled, "")
 		}
 	}
 	sized := need.Total() > 0 && (budget.Kind == schema.MemoryFractionTotal || need.geometry != nil)
@@ -178,9 +193,16 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 				return assessment, err
 			}
 			err = nil
-			assessment.Placement, assessment.Reason = "", "native context exceeds assessed memory; the engine may adapt"
+			assessment.SetUnknown(NativeContextAdaptation, "")
 		} else {
-			assessment.Status, assessment.Reason = "fit", "sized context requirement fits the assessed memory budget"
+			assessment.Status, assessment.UnknownCause, assessment.Reason = "fit", "", "sized context requirement fits the assessed memory budget"
+		}
+	}
+	if !sized {
+		var evidenceErr error
+		_, assessment.CapacityMiB, _, evidenceErr = sizedMemoryFit(budget, Need{WeightsMiB: need.WeightsMiB}, selected, systemMiB, fraction, auto, owners)
+		if errors.Is(evidenceErr, ErrMemoryObservation) || errors.Is(evidenceErr, ErrMemoryBudgetInvalid) {
+			assessment.SetUnknown(MemoryEvidenceUnavailable, evidenceErr.Error())
 		}
 	}
 	if budget.Kind != schema.MemoryFractionTotal {

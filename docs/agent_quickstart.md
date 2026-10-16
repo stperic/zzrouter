@@ -30,6 +30,38 @@ without starting, evicting or reserving memory. Cached or published weight size
 alone cannot prove runtime fit. Downloads remain possible on an explicitly
 selected eligible node when capacity is unknown.
 
+Assessments include `weights_mib` whenever exact local weight bytes are known,
+rounded up to MiB on every status. Unknown rows retain `capacity_mib` when the
+shared policy can independently establish it, with the same meaning as on fit
+rows. Neither weight size nor a capacity amount proves runtime fit. The closed
+`unknown_cause` identifies the primary gap; `reason` names the next MCP tools:
+
+- `weights_unavailable` or `metadata_invalid`: inspect `zz_models`, repair with
+  `zz_model_download`, follow `zz_job`, then `zz_run_preview`, or select another build.
+- `model_unmodelled`: use `zz_run_start`, follow `zz_job`, then inspect `zz_runs`
+  and `zz_logs` for measured evidence, or select another build/provider.
+- `kv_dtype_unsupported`, `context_unresolved` or `context_below_minimum`: inspect
+  accepted parameter names with `zz_params_get` and preview a supported KV dtype
+  or numeric context; a below-minimum model may need a different build.
+- `native_context_adaptation`: preview numeric context for an enforceable answer,
+  or launch and inspect served context with `zz_runs`.
+- `budget_not_sized`: measure through `zz_run_start`, `zz_job`, `zz_runs` and `zz_logs`.
+- `memory_evidence_unavailable`: inspect `zz_nodes` and `zz_params_get`.
+- `assessment_failed`: inspect `zz_providers` and `zz_params_get`, then retry the read.
+- `node_outdated`: inspect `zz_update_status` and upgrade with `zz_update_apply`.
+  Context-aware older fit/no_fit decisions survive, with new evidence omitted.
+- `node_unreachable`: inspect `zz_nodes` before retrying the assessment.
+- `provider_not_eligible`: inspect `zz_providers` and `zz_provider_install`, locate
+  the model with `zz_models`, or choose another node.
+
+Estimates never establish concurrency or served context. Follow launch jobs to
+their terminal state. Use `zz_runs` for served context and `zz_logs` with
+`grep: "GPU KV cache size"` or `grep: "Maximum concurrency"` for engine reports.
+Concurrency at 4096 tokens cannot establish concurrency at 32768 tokens. A
+Mamba-cache startup refusal retains both block counts and its logged upper bound
+for `max-num-seqs`; inspect `zz_params_get` and preview a supported change before
+another start. An unchanged retry supplies no new evidence.
+
 Supported dense, MoE and hybrid-attention models assess auto vLLM and MLX at the
 declared minimum of 4096 context tokens. MLX has no context parameter: `max-tokens` limits generation,
 and its usable unified working set uses `memory_usable_fraction`, shipped at

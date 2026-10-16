@@ -4,15 +4,67 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
+
+func TestClassifiedFailureSurvivesRunAndJob(t *testing.T) {
+	for _, first := range []string{"readiness", "exit"} {
+		t.Run(first, func(t *testing.T) {
+			m, reg := newWatcherTestMgr(t)
+			declaration, err := templates.AppsFS.ReadFile("files/providers/on-demand/vllm/config.yaml")
+			require.NoError(t, err)
+			var svc config.ServiceConfig
+			require.NoError(t, yaml.Unmarshal(declaration, &svc))
+			require.NoError(t, svc.Runtime.FailurePatterns.Compile())
+			log, err := os.ReadFile("../httperr/testdata/vllm_mamba_refusal.txt")
+			require.NoError(t, err)
+			inst := instance.NewInstance("failed", "vllm", "model", 0, 0, 0)
+			inst.FailureClassifier = &svc.Runtime.FailurePatterns
+			inst.LogFilePath = filepath.Join(t.TempDir(), "engine.log")
+			require.NoError(t, os.WriteFile(inst.LogFilePath, log, 0600))
+			require.NoError(t, m.instances.Register(inst))
+			if first == "readiness" {
+				inst.MarkFailed("readiness failed")
+			}
+			inst.MarkFailedWithExit("process exited", new(1), "")
+			inst.MarkFailed("later generic readiness failure")
+			info := inst.ToInfo("node")
+			var failure *httperr.EngineFailure
+			require.ErrorAs(t, inst.FailureCause(), &failure)
+			assert.Equal(t, httperr.FailureMemory, failure.Class)
+			assert.Equal(t, instance.StatusFailed, info.Status)
+			for _, evidence := range []string{"(256)", "(152)", "at most 152", "zz_params_get", "zz_run_preview"} {
+				assert.Contains(t, info.ErrorMessage, evidence)
+			}
+			require.NotNil(t, info.Failure)
+			assert.Equal(t, 1, *info.Failure.ExitCode)
+			h, err := reg.Start(t.Context(), jobs.KindRun, "", jobs.Meta{"run_id": inst.ID})
+			require.NoError(t, err)
+			inst.TrackGoroutine()
+			go func() {
+				defer inst.GoroutineDone()
+				m.watchInstanceReadiness(inst, h)
+			}()
+			ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
+			assert.Equal(t, jobs.PhaseFailed, ev.Phase)
+			assert.Contains(t, ev.Err, info.ErrorMessage)
+			assert.Equal(t, info.Failure, ev.Meta["failure"])
+		})
+	}
+}
 
 // newWatcherTestMgr wires a ProviderAppManager with a live jobs registry
 // so watchInstanceReadiness has a real handle to emit into. Includes a

@@ -1,0 +1,1 @@
+ValueError: max_num_seqs (256) exceeds available Mamba cache blocks (152). Each decode sequence requires one Mamba cache block, so CUDA graph capture cannot proceed. Please lower max_num_seqs to at most 152 or increase gpu_memory_utilization.

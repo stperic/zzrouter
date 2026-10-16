@@ -116,6 +116,8 @@ func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
 	assessment := m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
+	assert.Equal(t, process.MemoryEvidenceUnavailable, assessment.UnknownCause)
+	assert.Equal(t, int64(1024), assessment.WeightsMiB)
 	assert.Zero(t, assessment.RequiredMiB)
 	assert.Zero(t, assessment.CapacityMiB)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
@@ -154,15 +156,24 @@ func TestCompatibleNodesCachedOversizeNotAffirmative(t *testing.T) {
 func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	m, req, _ := capacityFixture(t)
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return nil, errors.New("schema missing") }
-	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	assessment := m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "unknown", assessment.Status)
+	assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return &schema.ProviderSchema{}, nil }
-	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	assessment = m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "unknown", assessment.Status)
+	assert.Equal(t, process.BudgetNotSized, assessment.UnknownCause)
+	assert.Equal(t, int64(1024), assessment.WeightsMiB)
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization"}, nil
 	})
 	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
 	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("measurement missing") }
-	assert.Equal(t, "unknown", m.AssessCapacity(t.Context(), req).Status)
+	assessment = m.AssessCapacity(t.Context(), req)
+	assert.Equal(t, "unknown", assessment.Status)
+	assert.Equal(t, process.MemoryEvidenceUnavailable, assessment.UnknownCause)
+	assert.Equal(t, int64(1024), assessment.WeightsMiB)
+	assert.Equal(t, int64(2048), assessment.ContextTokens)
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
 		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
 	}
@@ -176,6 +187,22 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	_, err = m.admitMemory(t.Context(), features)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
+}
+
+func TestCancelledAssessmentRetainsCollectedEvidence(t *testing.T) {
+	m, req, _ := capacityFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+		cancel()
+		return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: 10000}}
+	}
+	assessment := m.AssessCapacity(ctx, req)
+	assert.Equal(t, "unknown", assessment.Status)
+	assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
+	assert.Equal(t, int64(1024), assessment.WeightsMiB)
+	assert.Equal(t, int64(2048), assessment.ContextTokens)
+	assert.Empty(t, m.instances.List())
 }
 
 func TestCapacityIncompleteSelectedObservationIsUnknown(t *testing.T) {
