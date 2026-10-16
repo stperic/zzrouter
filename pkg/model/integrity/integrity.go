@@ -329,8 +329,8 @@ func (m *ModelManifest) Holds(dir, rel string, size int64, sha256 string) (FileC
 	return FileChecksum{}, false
 }
 
-// manifestLocks coordinates materialization and manifest updates by repository.
-var manifestLocks sync.Map // model dir -> *directoryLocks
+// repositoryLocks retains holder and waiter identities for process life: O(distinct canonical repository paths).
+var repositoryLocks sync.Map // model dir -> *directoryLocks
 
 type directoryLocks struct {
 	manifest    sync.Mutex
@@ -342,7 +342,7 @@ func locksForDirectory(dir string) (*directoryLocks, error) {
 	if err != nil {
 		return nil, err
 	}
-	v, _ := manifestLocks.LoadOrStore(key, &directoryLocks{materialize: make(chan struct{}, 1)})
+	v, _ := repositoryLocks.LoadOrStore(key, &directoryLocks{materialize: make(chan struct{}, 1)})
 	locks, ok := v.(*directoryLocks)
 	if !ok {
 		return nil, fmt.Errorf("invalid repository lock for %q", dir)

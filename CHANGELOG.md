@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preview, start and cold inference refuse malformed or unreadable feature
+  evidence with 409 `model_feature_evidence_invalid`, including when the optional
+  runtime is absent. Missing or negative evidence still uses the base runtime.
+- Phrase-based upstream `unsupported_input` classification requires an
+  image-bearing outgoing request. Text-only errors keep their upstream status;
+  classified relay codes and other failure classes are unchanged.
+
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete
@@ -323,6 +330,9 @@
 ## 0.1.0 (2026-10-08)
 
 First public release.
+
+- Peer sync uses the downloader's flat repository layout, preserving feature
+  roles and reusing held files; forced sync fetches them again.
 
 - Distributed model management through an authenticated API and terminal client.
 - OpenAI, Anthropic Messages and Ollama compatible inference.

@@ -31,11 +31,10 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 	}
 
 	// Apply the same tier opt-outs as launch.
-	if launch, err := m.ResolveLaunchParameters(m.shutdownCtx, EnsureRequest{Provider: provider, Model: model}); err == nil {
-		for name, f := range svc.Features {
-			if len(f.Files) > 0 && states[name] == "present" && (launch.Params[f.Flag] == "" || launch.Params[f.Flag] == "false") {
-				states[name] = "available"
-			}
+	params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: provider, Model: model}, string(EndpointChat))
+	for name, f := range svc.Features {
+		if value, set := params[f.Flag]; len(f.Files) > 0 && states[name] == "present" && set && (value == "" || config.IsAuto(value) || value == "false") {
+			states[name] = "available"
 		}
 	}
 	out["features"] = states

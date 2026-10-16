@@ -33,7 +33,7 @@ func TestDeclaredEngineFailures(t *testing.T) {
 			classifier := testClassifier(t, tc.provider)
 			for _, status := range []int{tc.status, http.StatusBadRequest, http.StatusNotFound, http.StatusInternalServerError, http.StatusServiceUnavailable} {
 				resp := &http.Response{StatusCode: status, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(tc.body))}
-				failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), classifier)
+				failure := httperr.NormalizeUpstreamResponse(resp, openaiproto.New(), classifier, func() bool { return true })
 				assert.Equal(t, tc.code, failure.Code)
 				wantStatus := http.StatusBadRequest
 				if tc.code == string(httperr.CodeOutOfRange) {
@@ -44,7 +44,7 @@ func TestDeclaredEngineFailures(t *testing.T) {
 				out, err := io.ReadAll(resp.Body)
 				require.NoError(t, err)
 				relay := &http.Response{StatusCode: resp.StatusCode, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(out)))}
-				assert.Equal(t, failure, httperr.NormalizeUpstreamResponse(relay, openaiproto.New(), nil))
+				assert.Equal(t, failure, httperr.NormalizeUpstreamResponse(relay, openaiproto.New(), nil, func() bool { return true }))
 			}
 		})
 	}
@@ -73,10 +73,10 @@ func TestDeclaredFailureRelayDialects(t *testing.T) {
 		classifier := httperr.Classifier{{Pattern: "engine failure", Class: class}}
 		require.NoError(t, classifier.Compile())
 		resp := &http.Response{StatusCode: 500, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"engine failure"}`))}
-		got := httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil), &classifier)
+		got := httperr.NormalizeUpstreamResponse(resp, anthropic.New(nil), &classifier, func() bool { return true })
 		out, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 		relay := &http.Response{StatusCode: resp.StatusCode, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(out)))}
-		assert.Equal(t, got, httperr.NormalizeUpstreamResponse(relay, anthropic.New(nil), nil))
+		assert.Equal(t, got, httperr.NormalizeUpstreamResponse(relay, anthropic.New(nil), nil, func() bool { return true }))
 	}
 }

@@ -22,6 +22,7 @@ import (
 	obsgenai "github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -213,7 +214,7 @@ func (p *ProxyClient) ForwardToBackend(w http.ResponseWriter, req *http.Request,
 		if up.IsCluster() {
 			classifier = nil
 		}
-		writeRewrittenError(w, req, resp, classifier)
+		writeRewrittenError(w, req, resp, classifier, func() bool { return protocol.HasImages(body) })
 		wire.RecordPreByteCopyErrorFromStatus(recorder, resp.StatusCode)
 		return
 	}

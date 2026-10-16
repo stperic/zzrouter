@@ -23,6 +23,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	"github.com/stperic/zzrouter/pkg/observability/routing"
+	"github.com/stperic/zzrouter/pkg/protocol"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -454,7 +455,7 @@ func (p *Proxy) tryOnce(
 			if up.IsCluster() {
 				classifier = nil
 			}
-			_ = httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier)
+			_ = httperr.NormalizeUpstreamResponse(resp, httperr.FromRequest(c.Request), classifier, func() bool { return protocol.HasImages(body) })
 		}
 		outcome.attempt.StatusCode = resp.StatusCode
 	}

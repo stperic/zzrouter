@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
 
 	"github.com/stperic/zzrouter/pkg/model/integrity"
@@ -96,4 +99,66 @@ func TestRunPreviewRendersLaunchCommand(t *testing.T) {
 	require.Contains(t, response.FullCommand, qwenModel+".gguf")
 	require.Contains(t, response.FullCommand, "--ctx-size 65536")
 	require.Contains(t, response.FullCommand, response.Parameters["ctx-size"])
+}
+
+func TestFeatureEvidencePublicSurfaces(t *testing.T) {
+	root := t.TempDir()
+	modelregistry.SetModelsRootDirOverride(root)
+	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
+	dir := filepath.Join(root, "vendor/model")
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("weights"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`invalid`), 0600))
+	worker, _ := assetTestNode(t)
+	require.NoError(t, worker.configStore.ApplyParameterPatch("llamacpp", func(svc *config.ServiceConfig) error {
+		svc.Enabled = new(true)
+		svc.Features = map[string]config.Feature{"vision": {Runtime: "llamacpp", When: "vision_config", Execution: &svc.Runtime.Execution, WireEndpoints: []string{"chat_completions"}}}
+		return nil
+	}))
+	prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) { return true, nil })(worker.providers.appMgr)
+	worker.model.Resolver = staticModelResolver{provider: "llamacpp"}
+	coordinator, _ := assetTestNode(t)
+	router := &previewWorkerRouter{worker: buildInternalEngine(worker)}
+	coordinator.services.Load.router = router
+	coordinator.services.Runs.router = router
+	body := []byte(`{"model":"vendor/model","provider":"llamacpp","node":"feature-worker","launch_mode":"native"}`)
+	for _, path := range []string{"/zzrouter/v1/runs", "/zzrouter/v1/runs/preview", "/zzrouter/v1/runs/load"} {
+		t.Run(path, func(t *testing.T) {
+			requestBody := body
+			if path != "/zzrouter/v1/runs" {
+				requestBody = []byte(`{"model":"vendor/model","provider":"llamacpp","node":"feature-worker"}`)
+			}
+			w := assetRequest(t, coordinator, http.MethodPost, path, requestBody)
+			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+			assert.Contains(t, w.Body.String(), `"code":"model_feature_evidence_invalid"`)
+			assert.Contains(t, w.Body.String(), "operator")
+		})
+	}
+	result := callMCPWireTool(t, coordinator, "zz_run_preview", map[string]any{"model": "vendor/model", "provider": "llamacpp", "node": "feature-worker"})
+	require.Equal(t, true, result["isError"])
+	assert.Equal(t, "model_feature_evidence_invalid", result["structuredContent"].(map[string]any)["code"])
+	assert.Contains(t, result["content"].([]any)[0].(map[string]any)["text"], "model_feature_evidence_invalid")
+	compat := httptest.NewServer(buildWorkerCompatEngine(worker))
+	t.Cleanup(compat.Close)
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"} {
+		t.Run(path, func(t *testing.T) {
+			body := []byte(`{"model":"vendor/model","messages":[{"role":"user","content":"hi"}],"input":"hi","max_tokens":1,"stream":false}`)
+			req := routedRequest(httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = req
+			coordinator.proxyToWorkerURL(c, compat.URL, "feature-worker", "llamacpp", body, compat.Client())
+			require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+			assert.Contains(t, w.Body.String(), `"code":"model_feature_evidence_invalid"`)
+		})
+	}
+	assert.Empty(t, worker.providers.appMgr.ListInstances(""))
+	assert.Empty(t, worker.providers.appMgr.Ports().ListAllAllocated())
+	run := instance.NewInstance("evidence-status", "llamacpp", "vendor/model", 8100, 0, 0)
+	run.Config = instance.Config{Provider: "llamacpp", Model: "vendor/model", Port: 8100}
+	status := worker.providers.appMgr.ParametersStatus(t.Context(), run)
+	assert.Equal(t, instance.ParametersUnknown, status.State)
+	assert.Contains(t, status.Error, prov_apps.ErrFeatureEvidence.Error())
+	details := worker.providers.appMgr.ModelFeatureDetails("llamacpp", "vendor/model", nil)
+	assert.Equal(t, "unknown", details["features"].(map[string]string)["vision"])
 }
