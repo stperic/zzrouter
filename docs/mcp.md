@@ -87,6 +87,12 @@ a guessed model task. The download's registry model name
 is not necessarily the local name. A `node` input is a node name, never an
 address. Lists default to 50 results; use `limit` and `offset` to bound output.
 
+`details.features.tools` is `present`, `available`, `unsupported` or `unknown`.
+Only present projects to `/v1/models` `capabilities.tools: true`; false does not
+block requests. Running chat evidence survives configuration patches until a
+restart. Use `zz_chat` with `probe: tools` for request-local automatic-choice
+verification and diagnostics; no probe verdict is saved in the catalog.
+
 An exact `zz_models.model` name or source-id filter returning one total model
 also adds `show` to that entry. Case-insensitive exact matches qualify; globs,
 suffix-only matches, truncated pages and duplicate replicas keep the list form.

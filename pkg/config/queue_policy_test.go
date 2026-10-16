@@ -1,4 +1,4 @@
-package config
+package config_test
 
 import (
 	"context"
@@ -8,12 +8,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 func TestLease_WaitExpires(t *testing.T) {
-	rt := &AppRuntimeConfig{}
+	rt := &config.AppRuntimeConfig{}
 	assert.Equal(t, constants.DefaultQueueWait, rt.GetQueueTimeout())
 	assert.Positive(t, rt.GetQueueTimeout())
 	for _, value := range []string{"invalid", "-1s"} {
@@ -27,7 +28,7 @@ func TestLease_WaitExpires(t *testing.T) {
 }
 
 func TestQueueTimeoutCaller(t *testing.T) {
-	rt := &AppRuntimeConfig{MaxConcurrentRequests: 1, QueueTimeout: "caller"}
+	rt := &config.AppRuntimeConfig{MaxConcurrentRequests: 1, QueueTimeout: "caller"}
 	require.Equal(t, constants.QueueUntilCallerDeadline, rt.GetQueueTimeout())
 	inst := instance.NewInstance("id", "p", "m", 0, 0, 0)
 	inst.InitConcurrencyLimit(instance.ConcurrencyConfig{MaxConcurrentRequests: 1, MaxQueuedRequests: rt.QueueDepth(), QueueTimeout: rt.GetQueueTimeout()})
@@ -43,6 +44,6 @@ func TestQueueTimeoutCaller(t *testing.T) {
 }
 
 func TestQueueDepth(t *testing.T) {
-	assert.Equal(t, constants.DefaultQueueDepthFactor*2, (&AppRuntimeConfig{MaxConcurrentRequests: 2}).QueueDepth())
-	assert.Zero(t, (&AppRuntimeConfig{}).QueueDepth(), "an unlimited instance never queues")
+	assert.Equal(t, constants.DefaultQueueDepthFactor*2, (&config.AppRuntimeConfig{MaxConcurrentRequests: 2}).QueueDepth())
+	assert.Zero(t, (&config.AppRuntimeConfig{}).QueueDepth(), "an unlimited instance never queues")
 }

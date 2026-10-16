@@ -3,8 +3,10 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 // recordingEndpoint answers every request a protocol client makes and
@@ -178,4 +181,43 @@ func TestOllamaIdentity(t *testing.T) {
 	} {
 		assert.Equal(t, want, ollama.Identity(name), name)
 	}
+}
+
+type evidenceTransport func(*http.Request) (*http.Response, error)
+
+func (f evidenceTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestToolsEngineEvidenceAuthenticationAndCancellation(t *testing.T) {
+	for _, cancelResponse := range []bool{false, true} {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		calls := 0
+		client := &http.Client{Transport: evidenceTransport(func(req *http.Request) (*http.Response, error) {
+			calls++
+			assert.Equal(t, "Bearer evidence-secret", req.Header.Get("Authorization"))
+			assert.Equal(t, "/prefix/props", req.URL.Path)
+			if cancelResponse {
+				cancel()
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"caps":{"tools":true}}`))}, nil
+		})}
+		value, known := NewTarget("https://engine.invalid/prefix", bearer("evidence-secret")).Ready().ReadBool(ctx, client, "/props", "caps.tools")
+		cancel()
+		assert.Equal(t, !cancelResponse, known)
+		assert.Equal(t, !cancelResponse, value)
+		assert.Equal(t, 1, calls)
+	}
+}
+
+func TestTargetBodyLimitOnlyAppliesToEvidence(t *testing.T) {
+	body := `{"caps":{"tools":true},"padding":"` + strings.Repeat("x", constants.MaxClusterBodySize) + `"}`
+	client := &http.Client{Transport: evidenceTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	target := NewTarget("https://engine.invalid", backend.Engine()).Ready()
+	value, known := target.ReadBool(t.Context(), client, "/props", "caps.tools")
+	assert.False(t, known, "oversized boolean evidence stays unknown")
+	assert.False(t, value)
+	resp, err := target.call(t.Context(), client, http.MethodGet, "/v1/models", nil)
+	require.NoError(t, err, "ordinary provider calls still read their entire response")
+	assert.Equal(t, body, string(resp.Body), "the evidence cap does not persist on the target")
 }

@@ -9,9 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -27,6 +29,8 @@ type Target struct {
 	// probe waits out a daemon that may still be starting before the first
 	// call. A hosted API is up or it is not, and its own answer says why.
 	probe bool
+	// maxResponseBytes is set only for bounded evidence reads; ordinary calls read the whole body.
+	maxResponseBytes int64
 }
 
 // NewTarget returns the target at endpoint (scheme://host[/prefix]; a
@@ -83,7 +87,12 @@ func (t Target) call(ctx context.Context, client *http.Client, method, path stri
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
+	var raw []byte
+	if t.maxResponseBytes > 0 {
+		raw, err = utils.ReadCapped(resp.Body, t.maxResponseBytes)
+	} else {
+		raw, err = io.ReadAll(resp.Body)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -92,3 +101,28 @@ func (t Target) call(ctx context.Context, client *http.Client, method, path stri
 
 // Endpoint identifies the physical daemon observed through this target.
 func (t Target) Endpoint() string { return t.base }
+
+// Only explicit booleans provide capability evidence.
+func (t Target) ReadBool(ctx context.Context, client *http.Client, path, field string) (bool, bool) {
+	t.maxResponseBytes = constants.MaxClusterBodySize
+	resp, err := t.call(ctx, client, http.MethodGet, path, nil)
+	if err != nil || ctx.Err() != nil || resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+	var object map[string]any
+	if json.Unmarshal(resp.Body, &object) != nil {
+		return false, false
+	}
+	value, known := Field(object, field).(bool)
+	return value, known
+}
+
+// Context and feature observations must use the same field resolution.
+func Field(object map[string]any, field string) any {
+	var value any = object
+	for _, part := range strings.Split(field, ".") {
+		object, _ = value.(map[string]any)
+		value = object[part]
+	}
+	return value
+}

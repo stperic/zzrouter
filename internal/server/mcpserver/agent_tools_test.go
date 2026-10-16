@@ -512,3 +512,19 @@ func TestExactModelMetadataGuidanceContract(t *testing.T) {
 	require.NotContains(t, show, "capabilities")
 	require.NotContains(t, show, "parameters")
 }
+
+func TestToolsCatalogRoundTrip(t *testing.T) {
+	for _, state := range []string{"present", "available", "unsupported", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/zzrouter/v1/models", r.URL.Path)
+				writeFixture(t, w, []byte(fmt.Sprintf(`{"data":[{"name":"weights","node":"worker","assigned_app":"llamacpp","details":{"features":{"tools":%q}}}],"total":1}`, state)))
+			})
+			result := callAgentTool(t, d, "zz_models", map[string]any{"node": "worker"})
+			require.NotEqual(t, true, result["isError"])
+			raw, err := json.Marshal(result["structuredContent"])
+			require.NoError(t, err)
+			assert.Contains(t, string(raw), `"tools":"`+state+`"`)
+		})
+	}
+}

@@ -1239,9 +1239,10 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, ar
 	if runtime == "" {
 		runtime = svcCfg.Name
 	}
+	states, probes := m.launchFeatureEvidence(configKey, svcCfg.Features, params, features.declared.ForEndpoint(endpoint))
 	return preparedLaunch{
 		launch: launch, config: svcCfg, parameters: features, executionEnvironment: features.ExecutionEnvironment,
-		resolved: instance.Resolved{WorkingDir: launch.WorkingDir, Commitments: features.Commitments, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
+		resolved: instance.Resolved{Features: states, FeatureHTTP: probes, WorkingDir: launch.WorkingDir, Commitments: features.Commitments, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
 	}, nil
 }
 

@@ -11229,6 +11229,10 @@ components:
             features:
               type: object
               properties:
+                tools:
+                  type: string
+                  enum: [present, available, unsupported, unknown]
+                  description: Engine evidence or actual chat launch requirements. Cold launched models and MLX remain unknown. Running chat snapshots take precedence over desired config; endpoint runs cannot replace them. Only present projects to capabilities.tools true; verify actual behavior with zz_chat probe tools.
                 vision:
                   type: string
                   enum: [present, available, unsupported, unknown]
@@ -11375,7 +11379,7 @@ components:
         completions:        { type: boolean }
         embeddings:         { type: boolean }
         rerank:             { type: boolean }
-        tools:              { type: boolean }
+        tools:              { type: boolean, description: "True only for node-reported details.features.tools present. Cloud and external models without present evidence report tools:false; cloud models no longer claim tools:true by default. False means no evidence, not refusal, and does not prohibit requests; use zz_chat probe tools for request-local verification. Groups include unknown or missing replicas." }
         vision:             { type: boolean, description: "On a provider that declares features, true only when the node reports vision present. On one that declares none, guessed from the model name." }
         stream:             { type: boolean }
         json_mode:          { type: boolean }

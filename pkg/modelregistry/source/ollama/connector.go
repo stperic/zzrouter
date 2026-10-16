@@ -272,9 +272,11 @@ func (oc *Connector) ListTags(ctx context.Context, daemon *backend.Resolved, pro
 			},
 		}
 
-		if vision, known := oc.modelVision(evidenceCtx, daemon, m.Name); known {
+		if capabilities, known := oc.modelCapabilities(evidenceCtx, daemon, m.Name); known {
 			details, _ := extra["details"].(map[string]any)
-			details["vision"] = vision
+			for _, feature := range []string{"vision", "tools"} {
+				details[feature] = slices.Contains(capabilities, feature)
+			}
 		}
 		models = append(models, &metadata.ModelMetadata{
 			Name:             m.Name,
@@ -440,30 +442,39 @@ func (oc *Connector) PullModelWithContext(ctx context.Context, modelName string,
 	return nil
 }
 
-// modelVision reads engine evidence without making a failed probe remove a model.
-func (oc *Connector) modelVision(ctx context.Context, daemon *backend.Resolved, name string) (bool, bool) {
+// Failed evidence must not remove a model.
+func (oc *Connector) modelCapabilities(ctx context.Context, daemon *backend.Resolved, name string) ([]string, bool) {
 	body, err := json.Marshal(map[string]string{"model": name})
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	req, err := daemon.NewRequest(ctx, http.MethodPost, "/api/show", strings.NewReader(string(body)))
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := oc.client.Do(req)
 	if err != nil {
-		return false, false
+		return nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false, false
+		return nil, false
 	}
 	var result struct {
-		Capabilities *[]string `json:"capabilities"`
+		Capabilities *[]any `json:"capabilities"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&result) != nil || result.Capabilities == nil {
-		return false, false
+	raw, err := utils.ReadCapped(resp.Body, constants.MaxClusterBodySize)
+	if err != nil || json.Unmarshal(raw, &result) != nil || result.Capabilities == nil {
+		return nil, false
 	}
-	return slices.Contains(*result.Capabilities, "vision"), true
+	capabilities := make([]string, 0, len(*result.Capabilities))
+	for _, value := range *result.Capabilities {
+		capability, ok := value.(string)
+		if !ok {
+			return nil, false
+		}
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities, true
 }

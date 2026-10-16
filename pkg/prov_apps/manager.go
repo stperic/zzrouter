@@ -154,6 +154,7 @@ type ProviderAppManager struct {
 	runtimeChecks       install.RuntimeChecksResolver
 	installPolicyFile   string
 	providerSchema      func(provider string) (*schema.ProviderSchema, error)
+	featureWarnings     sync.Map // [provider, feature, key] schema warnings, once per manager
 	memorySnapshot      func(context.Context) ([]gpu.MemoryDevice, error)
 	memoryInventory     func(context.Context) []gpu.CardMetrics
 	idleEvictionDefault bool

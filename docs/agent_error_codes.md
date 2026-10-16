@@ -18,6 +18,11 @@ at startup, process exit and inference; an unmatched upstream error keeps its
 status. The class table is `pkg/httperr/engine_failure.go`, and provider phrasings
 live only in `runtime.failure_patterns`.
 
+Catalog `details.features.tools` is engine evidence, and `capabilities.tools`
+is true only for present. A false value does not forbid a tool request. Catalog
+evidence and `zz_chat` request-local verification do not replace classified
+refusals or their recovery steps; this evidence adds no error codes.
+
 ## OpenAI surface (`/v1/*`)
 
 | `error.code` | HTTP | Meaning | Recovery |

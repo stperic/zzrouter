@@ -2,6 +2,8 @@
 # Edit on the coordinator, never here.
 description: "vLLM high-performance inference engine"
 features:
+  tools:
+    requires_parameters: [enable-auto-tool-choice, tool-call-parser]
   vision: {}
 install:
   runtimes:

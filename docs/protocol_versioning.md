@@ -25,7 +25,13 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
-Protocol 11 raises the minimum from 10 to 11. Provider synchronization carries
+Protocol 12 raises the minimum from 11 to 12. Provider synchronization carries
+`features.tools`, `requires_parameters` and HTTP evidence descriptors. Older
+strict loaders reject these names and fields. Upgrade every node together using
+the maintenance procedure below. Public capability booleans retain their wire
+shape, so this does not bump the OpenAI SpecVersion.
+
+Protocol 11 raised the minimum from 10 to 11. Provider synchronization carries
 `embeddings` and `reranking` features and feature `health_check` overlays. Older
 strict loaders reject these names and fields. Upgrade every node together using
 the maintenance procedure below.

@@ -383,7 +383,7 @@ func (p *ActivityProbe) Validate() error {
 	if p == nil {
 		return nil
 	}
-	if !strings.HasPrefix(p.Path, "/") || strings.HasPrefix(p.Path, "//") || strings.ContainsAny(p.Path, "?#\\") || len(p.BusyWhenNonempty) == 0 {
+	if !validHTTPPath(p.Path) || len(p.BusyWhenNonempty) == 0 {
 		return fmt.Errorf("activity_probe requires a local path and busy_when_nonempty fields")
 	}
 	seen := make(map[string]bool)
@@ -394,4 +394,8 @@ func (p *ActivityProbe) Validate() error {
 		seen[field] = true
 	}
 	return nil
+}
+
+func validHTTPPath(value string) bool {
+	return strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "//") && !strings.ContainsAny(value, "?#\\")
 }

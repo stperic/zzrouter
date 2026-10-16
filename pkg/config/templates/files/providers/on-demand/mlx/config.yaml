@@ -2,6 +2,7 @@
 # Edit on the coordinator, never here.
 description: "Apple MLX inference engine for Apple Silicon"
 features:
+  tools: {}
   vision:
     default: true
     when: vision_config
