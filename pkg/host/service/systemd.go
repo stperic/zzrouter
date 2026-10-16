@@ -27,18 +27,12 @@ type Systemd struct{}
 
 func (s *Systemd) Name() string { return "systemd" }
 
-func (s *Systemd) Detect(serviceName string) bool {
-	return s.DetectContext(context.Background(), serviceName)
-}
-
-func (s *Systemd) DetectContext(ctx context.Context, serviceName string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
+func (s *Systemd) DetectContext(ctx context.Context, serviceName string) (bool, error) {
 	out, err := host.CommandContext(ctx, "systemctl", "show", serviceName, "--property=LoadState").Output()
 	if err != nil {
-		return false
+		return false, probeErr(ctx, "systemctl show", err)
 	}
-	return strings.Contains(string(out), "LoadState=loaded")
+	return strings.Contains(string(out), "LoadState=loaded"), nil
 }
 
 func (s *Systemd) ApplyEnv(serviceName string, env map[string]string) *ApplyResult {

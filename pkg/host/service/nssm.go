@@ -17,19 +17,13 @@ type NSSM struct{}
 
 func (n *NSSM) Name() string { return "nssm" }
 
-func (n *NSSM) Detect(serviceName string) bool {
-	return n.DetectContext(context.Background(), serviceName)
-}
-
-func (n *NSSM) DetectContext(ctx context.Context, serviceName string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
+func (n *NSSM) DetectContext(ctx context.Context, serviceName string) (bool, error) {
 	out, err := host.CommandContext(ctx, "nssm", "status", serviceName).Output()
 	if err != nil {
-		return false
+		return false, probeErr(ctx, "nssm status", err)
 	}
 	output := strings.TrimSpace(string(out))
-	return output != "" && !strings.Contains(output, "Can't open service")
+	return output != "" && !strings.Contains(output, "Can't open service"), nil
 }
 
 func (n *NSSM) ApplyEnv(serviceName string, env map[string]string) *ApplyResult {

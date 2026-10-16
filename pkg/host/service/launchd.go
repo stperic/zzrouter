@@ -31,13 +31,7 @@ type Launchd struct {
 
 func (l *Launchd) Name() string { return "launchd" }
 
-func (l *Launchd) Detect(serviceName string) bool {
-	return l.DetectContext(context.Background(), serviceName)
-}
-
-func (l *Launchd) DetectContext(ctx context.Context, serviceName string) bool {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
+func (l *Launchd) DetectContext(ctx context.Context, serviceName string) (bool, error) {
 	// Try known labels directly (O(1) per label) instead of listing all services
 	candidates := []string{
 		"homebrew.mxcl." + serviceName,
@@ -45,14 +39,18 @@ func (l *Launchd) DetectContext(ctx context.Context, serviceName string) bool {
 		"com." + serviceName,
 	}
 	for _, label := range candidates {
-		if err := host.CommandContext(ctx, "launchctl", "list", label).Run(); err == nil {
+		err := host.CommandContext(ctx, "launchctl", "list", label).Run()
+		if err == nil {
 			l.detectedLabel = label
 			l.isBrew = strings.HasPrefix(label, "homebrew.mxcl.")
 			l.detectedPlist = l.findPlistForLabel(label)
-			return true
+			return true, nil
+		}
+		if err := probeErr(ctx, "launchctl list", err); err != nil {
+			return false, err
 		}
 	}
-	return false
+	return false, nil
 }
 
 func (l *Launchd) ApplyEnv(serviceName string, env map[string]string) *ApplyResult {

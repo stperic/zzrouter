@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,6 +109,34 @@ func TestManagedServiceBootStopRestartAndShutdown(t *testing.T) {
 	require.NotEqual(t, first.PID, serviceStatus(t, m).PID)
 	require.NoError(t, m.Stop(context.Background()))
 	require.False(t, serviceStatus(t, m).Running)
+}
+
+// A host supervisor probe that stalls past the old 3 s cut (as on a loaded
+// Windows runner) still lets boot start the daemon, and a resolved "no OS
+// supervisor" is not re-probed by later status reads.
+func TestStalledSupervisorProbeStillStartsManagedDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process fixture")
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	probe := "#!/bin/sh\necho \"$*\" >> " + calls + "\n" +
+		"if [ ! -e " + dir + "/stalled ]; then : > " + dir + "/stalled; /bin/sleep 3.5; fi\nexit 1\n"
+	for _, name := range []string{"launchctl", "systemctl", "nssm"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(probe), 0o700))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m := newServiceTestManager(t, true, false)
+	m.Start(context.Background())
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	before, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	for range 20 {
+		serviceStatus(t, m)
+	}
+	after, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "a resolved supervisor is not re-probed per status read")
 }
 
 func TestManagedServiceCrashRecordsExitAndBacksOff(t *testing.T) {
@@ -451,7 +481,7 @@ type blockedOSProbe struct {
 	entered chan struct{}
 }
 
-func (s *blockedOSProbe) DetectContext(context.Context, string) bool { return true }
+func (s *blockedOSProbe) DetectContext(context.Context, string) (bool, error) { return true, nil }
 func (s *blockedOSProbe) StatusContext(ctx context.Context, _ string) service.ServiceStatus {
 	close(s.entered)
 	<-ctx.Done()

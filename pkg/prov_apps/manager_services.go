@@ -73,6 +73,7 @@ type managedService struct {
 	done            chan struct{}
 	manualStop      bool
 	manager         service.Manager
+	noOSManager     bool // resolved: no host service manager owns it, so zzRouter supervises
 	managerSetting  string
 	status          ProviderServiceStatus
 	observedRunning *bool
@@ -103,9 +104,9 @@ func (m *ProviderAppManager) serviceConfig(name string) (config.ServiceConfig, e
 	return config.ServiceConfig{}, fmt.Errorf("provider %q is not configured", name)
 }
 
+// serviceManager resolves the host supervisor within the caller's budget; a
+// probe that cannot answer is an error, never a missing service.
 func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	if cfg.Service != nil && cfg.Service.Manager == "none" {
 		return nil, nil
 	}
@@ -114,21 +115,22 @@ func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) 
 		if err != nil {
 			return nil, err
 		}
-		probe, ok := manager.(service.Probe)
-		detected := ok && probe.DetectContext(ctx, name)
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		detected := false
+		if probe, ok := manager.(service.Probe); ok {
+			if detected, err = probe.DetectContext(ctx, name); err != nil {
+				return nil, err
+			}
 		}
 		if !detected {
 			return nil, fmt.Errorf("configured %s service is unavailable for %s; host owner must restore it", manager.Name(), name)
 		}
 		return manager, nil
 	}
-	manager := service.DetectContext(ctx, name)
-	return manager, ctx.Err()
+	return service.DetectContext(ctx, name)
 }
 
-// Remember detected ownership when stop unloads a service's registration.
+// Remember the resolved supervisor, including none: stop may unload a
+// service's registration, and re-probing would spawn host commands per read.
 func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
 	setting := ""
 	if cfg.Service != nil {
@@ -137,12 +139,12 @@ func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name st
 	state := m.serviceState(name)
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if state.manager != nil && state.managerSetting == setting {
+	if (state.manager != nil || state.noOSManager) && state.managerSetting == setting {
 		return state.manager, nil
 	}
 	manager, err := serviceManager(ctx, name, cfg)
 	if err == nil {
-		state.manager, state.managerSetting = manager, setting
+		state.manager, state.noOSManager, state.managerSetting = manager, manager == nil, setting
 	}
 	return manager, err
 }
