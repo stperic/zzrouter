@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/jobstream"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -110,3 +111,90 @@ func TestDeploys_CancelTearsDownAllRows(t *testing.T) {
 // Compile-time guard: DeploysViewModel implements tea.Model + Canceller
 // via the package interfaces.
 var _ tea.Model = (*DeploysViewModel)(nil)
+
+func TestTUICancelUsesJobID(t *testing.T) {
+	for _, view := range []string{"jobs", "models", "missing job"} {
+		t.Run(view, func(t *testing.T) {
+			var requests []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.Method+" "+r.URL.RequestURI())
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method != http.MethodDelete || r.URL.Path != "/zzrouter/v1/jobs/dl_selected" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = fmt.Fprint(w, `{"accepted":true,"job_id":"dl_selected"}`)
+			}))
+			t.Cleanup(srv.Close)
+			client := pkgClient.NewClient(pkgConfig.ClientNodeConfig{Address: srv.URL, APIKey: "k"})
+			styles := ui.NewStyles(ui.CatppuccinMocha())
+			if view == "jobs" {
+				v := NewDeploysViewModel(client, styles)
+				v.rows["dl_done"] = &deployRow{JobID: "dl_done", stream: &jobstream.Row{Done: true}}
+				v.rows["dl_selected"] = &deployRow{JobID: "dl_selected", Kind: "download", stream: &jobstream.Row{}}
+				v.rows["dl_other"] = &deployRow{JobID: "dl_other", Kind: "download", stream: &jobstream.Row{}}
+				v.order = []string{"dl_done", "dl_other", "dl_selected"}
+				v.cursor = 1
+				require.Equal(t, "dl_selected", v.orderSorted()[v.cursor])
+				require.Equal(t, "dl_other", v.order[v.cursor])
+				cmd := v.handleKey(tea.KeyPressMsg{Code: 'x', Text: "x"})
+				require.NotNil(t, cmd)
+				msg, ok := cmd().(deploysCancelMsg)
+				require.True(t, ok)
+				require.NoError(t, msg.err)
+			} else {
+				v := NewModelsViewModel(client, styles)
+				jobID := "dl_selected"
+				if view == "missing job" {
+					jobID = ""
+				}
+				v.rows = []modelRow{{deploy: &shared.DeploymentInfo{JobID: jobID}}}
+				v.syncListItems()
+				v.confirmKind = confirmDeleteDownload
+				cmd := v.executeConfirmedAction()
+				require.NotNil(t, cmd)
+				msg, ok := cmd().(modelsActionMsg)
+				require.True(t, ok)
+				if view == "missing job" {
+					require.EqualError(t, msg.err, "this download is no longer cancellable")
+					require.Empty(t, requests)
+					return
+				}
+				require.NoError(t, msg.err)
+			}
+			require.Equal(t, []string{"DELETE /zzrouter/v1/jobs/dl_selected"}, requests)
+		})
+	}
+}
+
+func TestModelsCancelTerminalJob(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{name: "accepted", status: http.StatusAccepted, want: "cancel completed"},
+		{name: "terminal or evicted", status: http.StatusNotFound, want: "Download already finished"},
+		{name: "unreachable", status: http.StatusServiceUnavailable, want: "Error: CancelJob: status 503:"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests = append(requests, r.Method+" "+r.URL.RequestURI())
+				w.WriteHeader(tc.status)
+			}))
+			t.Cleanup(srv.Close)
+			client := pkgClient.NewClient(pkgConfig.ClientNodeConfig{Address: srv.URL, APIKey: "k"})
+			v := NewModelsViewModel(client, ui.NewStyles(ui.CatppuccinMocha()))
+			v.rows = []modelRow{{deploy: &shared.DeploymentInfo{JobID: "dl_finished"}}}
+			v.syncListItems()
+			v.confirmKind = confirmDeleteDownload
+			cmd := v.executeConfirmedAction()
+			require.NotNil(t, cmd)
+			_, _ = v.Update(cmd())
+			require.Contains(t, v.statusMsg, tc.want)
+			require.Equal(t, []string{"DELETE /zzrouter/v1/jobs/dl_finished"}, requests)
+		})
+	}
+}

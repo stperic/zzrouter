@@ -71,7 +71,7 @@ func TestRegistryStop_RefusesSubsequentDownloadOllama(t *testing.T) {
 	r.Stop()
 
 	called := atomic.Bool{}
-	r.PullOllamaModelAsync(context.Background(), "irrelevant",
+	r.PullOllamaModel(context.Background(), "irrelevant",
 		func(s, _ string, _, _ int, _ float64, _, _, _ int64) {
 			if s == "failed" {
 				called.Store(true)

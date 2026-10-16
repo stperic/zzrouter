@@ -244,8 +244,17 @@ so a later repeat runs again; duplicates already waiting must retry.
 - `POST /zzrouter/v1/runs` with `auto_deploy:true` is singleflight-deduped
   per `(provider, model, file)` : a retry while a deploy is in progress
   attaches to the in-flight job rather than starting a second one.
-- `DELETE /zzrouter/v1/jobs/:id` is non-blocking; the response is 202
-  and the SSE stream is authoritative for the cancel outcome.
+- `DELETE /zzrouter/v1/jobs/:id` is nonblocking; 202 with `accepted` and
+  `job_id` acknowledges the signal. Read or stream the job for the outcome.
+  A cancelled download has phase `failed` and `meta.transfer_status: cancelled`;
+  already-terminal success is immutable. This adds no error code. Omitting
+  `node` discovers the owner; incomplete lookup is 503/`node_unreachable`, while
+  confirmed absence is 404/`job_not_found`. Neither proves cancellation.
+- Cancellation may publish terminal state before cleanup. Completed files remain,
+  unfinished catalog files stay pending, and the next download repairs missing
+  files and clears matching dead partials under serialization. Provider-store
+  reservations remain until unwind; Ollama owns its blob cleanup. Use a new
+  idempotency key for repair after a failed or cancelled job.
 
 ## What an agent should never branch on
 

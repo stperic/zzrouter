@@ -3512,9 +3512,17 @@ paths:
       operationId: deleteJob
       summary: Cancel a job
       description: |
-        Requests cancellation. Note that cancelling a job does not
-        necessarily abort work already handed to an external downloader ,
-        check the job's terminal phase rather than assuming.
+        Requests cancellation of work, including an individual download, and
+        returns a nonblocking acknowledgement with accepted and job_id. Without
+        node, the coordinator discovers the owner; node may select it explicitly.
+        Read or stream the job for the outcome: cancelled downloads report phase
+        failed with meta.transfer_status cancelled. Already-terminal success is
+        unchanged. Terminal publication can precede physical cleanup. Completed
+        files remain and unfinished catalog files stay pending; repeat the download
+        to repair missing files. Provider-store reservations last through cleanup;
+        Ollama owns its blobs. Use DELETE /deployments/{id} for all deployment nodes.
+        Downloads outlive requests and have a 48-hour deadline; default inactivity
+        reaping is disabled for downloads, while explicit overrides still apply.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
       responses:

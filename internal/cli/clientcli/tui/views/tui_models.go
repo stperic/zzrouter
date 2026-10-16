@@ -100,8 +100,9 @@ type deploymentsRefreshedMsg struct {
 
 // modelsActionMsg is returned after an async action (start/stop/delete) completes
 type modelsActionMsg struct {
-	action string // "start", "stop", "delete"
-	err    error
+	action          string // "start", "stop", "delete", "cancel"
+	err             error
+	alreadyFinished bool
 }
 
 // modelConfirmKind identifies the pending confirmation action.
@@ -434,6 +435,9 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 			return m, nil
 		}
 		m.statusMsg = msg.action + " completed"
+		if msg.alreadyFinished {
+			m.statusMsg = "Download already finished"
+		}
 		m.applyActionResult(msg.action)
 		return m, nil
 

@@ -28,7 +28,7 @@ import (
 // File layout (under pkg/modelregistry/):
 //   - registry.go            — this file: struct + lifecycle (Stop, Reload).
 //   - registry_scan.go       — ListAllModels, buildModelList, scan cache.
-//   - registry_pull.go       — PullOllamaModelAsync, DownloadHuggingFaceModel.
+//   - registry_pull.go       — PullOllamaModel, DownloadHuggingFaceModel.
 //   - registry_delete.go     — GetModel, DeleteModelByNameAndSource, validators.
 //   - operations.go          — DeleteModel, VerifyModel, GetTotalDiskUsage, GetLargestModels.
 //   - filter.go              — ModelFilter + GetStats + RegistryStats.

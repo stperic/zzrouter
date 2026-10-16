@@ -243,14 +243,7 @@ func (r *Registry) start(ctx context.Context, kind Kind, createdBy, id string, m
 	return j, nil
 }
 
-// StartDetached opens a job whose lifecycle is bounded only by the
-// Registry's own ctx — Registry.Stop and explicit Cancel still cancel
-// Handle.Context(); nothing else can. Use for any HTTP handler that
-// returns 202 + job_id and expects the work to outlive the request.
-//
-// Equivalent to Start(context.Background(), ...) but explicit at the
-// call site, so a future reader doesn't have to recognize "background"
-// as the safe choice from the caller-ctx footgun.
+// StartDetached lets accepted work outlive its request; shutdown, Cancel and terminal transitions still cancel it.
 func (r *Registry) StartDetached(kind Kind, createdBy string, meta Meta) (Handle, error) {
 	return r.Start(context.Background(), kind, createdBy, meta)
 }

@@ -138,9 +138,15 @@ This does not fan out across the cluster. `wait_seconds` requires a `job_id`.
 Call `zz_job` with each returned `job_id` and
 `wait_seconds: 45`; if it is still running, call again. Downloads return jobs
 per node. Follow a launch's `deploy_job_id` too when present. Keep the
-`deployment_id` to cancel a download through `zz_job_cancel`; ordinary work
-cancels by `job_id`. After launch succeeds, use `zz_chat` for one short smoke
-test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
+`job_id` to cancel an individual download through `zz_job_cancel`, or use
+`deployment_id` to cancel all deployment nodes. Cancellation is acknowledged
+before cleanup completes; follow each job with `zz_job`. A cancelled download
+reports `failed` with `meta.transfer_status: cancelled`; an already completed
+job stays successful. Completed files survive and unfinished catalog files
+stay pending. Repeat `zz_model_download` with a fresh idempotency key to repair
+missing files. Downloads survive the accepting request and silence, bounded by
+their 48-hour deadline or explicit cancellation. After launch succeeds, use
+`zz_chat` for one short smoke test. Pass `run_id` to `zz_runs`, `zz_logs`, `zz_run_restart` or `zz_run_stop`;
 pass `job_id` to `zz_job`. The stop reply confirms completion. Stopped runs are
 removed, so a later run lookup returns 404 by design; its detail says where the
 run's log stays readable. Launch job results omit the serving node's local probe
