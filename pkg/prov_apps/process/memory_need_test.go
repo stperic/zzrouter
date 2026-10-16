@@ -42,7 +42,7 @@ func admitNeed(t *testing.T, need Need, total, free int64) string {
 
 func TestMemoryNeedDenseGQA(t *testing.T) {
 	dir, svc, params := needFixture(t, denseAttentionConfig())
-	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok)
 	assert.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, memoryAmounts(need))
 	assert.Equal(t, "0.5914", admitNeed(t, need, 10000, 9500), "(1024+256+4096) x 1.1 of 10000 MiB")
@@ -59,7 +59,7 @@ func TestDeletionMetadataOriginContract(t *testing.T) {
 	origin, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 	require.Equal(t, origin, selected.Directory(), "metadata belongs to the selected repository")
-	need, ok := ModelMemoryNeed(selected, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(selected, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok, "frozen weights must retain original attention metadata")
 	require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, KVMiB: 256, OverheadMiB: DefaultActivationOverheadMiB}, memoryAmounts(need))
 	require.NoError(t, os.Remove(source))
@@ -79,7 +79,7 @@ func TestMemoryNeedHybridTextConfig(t *testing.T) {
 	dir, svc, params := needFixture(t, cfg)
 	params["max-model-len"] = "8192"
 	// vLLM needs one recurrent state per max-num-seqs sequence (lab, Qwen3.8-27B: 256 seqs, room for 105).
-	_, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	_, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	assert.False(t, ok, "linear-attention state cannot be sized generically")
 
 	for i := range layers {
@@ -87,7 +87,7 @@ func TestMemoryNeedHybridTextConfig(t *testing.T) {
 	}
 	dir, svc, params = needFixture(t, cfg)
 	params["max-model-len"] = "8192"
-	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok, "the same geometry without recurrent layers is sized")
 	assert.Equal(t, int64(2048), need.KVMiB, "text_config nesting and the dtype key are read")
 }
@@ -104,7 +104,7 @@ func TestMemoryNeedSlidingAttention(t *testing.T) {
 	}{{"2048", 10}, {"128", 1}} {
 		t.Run(tc.context, func(t *testing.T) {
 			params["max-model-len"] = tc.context
-			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 			require.True(t, ok)
 			assert.Equal(t, tc.kv, need.KVMiB)
 		})
@@ -162,7 +162,7 @@ func TestMemoryNeedUnknownFallsBack(t *testing.T) {
 			case "unparseable context":
 				params["max-model-len"] = "auto"
 			}
-			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+			need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 			require.False(t, ok)
 			require.Equal(t, Need{WeightsMiB: 1024, WeightsBytes: 1 << 30, Incomplete: true}, memoryAmounts(need))
 			devices := []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 6000}}
@@ -180,7 +180,7 @@ func TestMemoryNeedFallbackGeometryAndMoE(t *testing.T) {
 	cfg["num_local_experts"] = 128
 	cfg["torch_dtype"] = "float32"
 	dir, svc, params := needFixture(t, cfg)
-	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok)
 	assert.Equal(t, int64(2048), need.KVMiB)
 }
@@ -228,30 +228,30 @@ func TestMemoryNeedSelectedGGUFShardsAndFeatures(t *testing.T) {
 	require.NoError(t, os.Truncate(filepath.Join(dir, "part-00001-of-00002.gguf"), 256*1024*1024))
 	require.NoError(t, os.Truncate(filepath.Join(dir, "part-00002-of-00002.gguf"), 256*1024*1024+1))
 	svc.Features = map[string]config.Feature{"vision": {Files: []string{"projector.gguf"}, Flag: "mmproj"}}
-	need, ok := ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "part-00001-of-00002.gguf")}, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "part-00001-of-00002.gguf")}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok)
 	assert.Equal(t, int64(513), need.WeightsMiB)
-	_, ok = ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "projector.gguf")}, svc, params, schema.AutoContext{})
+	_, ok = ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "projector.gguf")}, svc, params, schema.AutoContext{}, nil)
 	assert.False(t, ok)
 	require.NoError(t, os.Remove(filepath.Join(dir, "part-00002-of-00002.gguf")))
-	_, ok = ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "part-00001-of-00002.gguf")}, svc, params, schema.AutoContext{})
+	_, ok = ModelMemoryNeed(ResolvedModel{Path: filepath.Join(dir, "part-00001-of-00002.gguf")}, svc, params, schema.AutoContext{}, nil)
 	assert.False(t, ok)
 }
 
 func TestMemoryNeedDisabledSlidingWindowIsDense(t *testing.T) {
 	cfg := denseAttentionConfig()
 	dir, svc, params := needFixture(t, cfg)
-	dense, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	dense, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok)
 	cfg["sliding_window"] = 32768
 	cfg["use_sliding_window"] = false
 	dir, svc, params = needFixture(t, cfg)
-	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	require.True(t, ok, "a declared but disabled window is a dense model")
 	assert.Equal(t, memoryAmounts(dense), memoryAmounts(need))
 	cfg["use_sliding_window"] = true
 	dir, svc, params = needFixture(t, cfg)
-	_, ok = ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{})
+	_, ok = ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	assert.False(t, ok, "an enabled window without layer_types cannot be placed")
 }
 

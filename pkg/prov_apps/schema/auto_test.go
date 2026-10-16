@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"maps"
+	"math"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -144,7 +145,6 @@ func TestAutoContextMetadataValidationAndEndpointResolution(t *testing.T) {
 		assert.Equal(t, tc.valid, len(errs) == 0, tc.declaration)
 	}
 	y, err := LoadYAMLSchema([]byte(`auto_min_context_tokens: 4096
-memory_fraction_environment: MLX_MEMORY_FRACTION
 parameters:
   max-model-len: {auto: auto, auto_min_context_tokens: 4096}
 endpoints:
@@ -156,7 +156,52 @@ endpoints:
 	merged, errs := Merge("vllm", y)
 	require.Empty(t, errs)
 	assert.Equal(t, int64(4096), merged.AutoMinContextTokens)
-	assert.Equal(t, "MLX_MEMORY_FRACTION", merged.MemoryFractionEnvironment)
 	assert.Equal(t, int64(4096), merged.ForEndpoint("chat")["max-model-len"].AutoMinContextTokens)
 	assert.Equal(t, int64(8192), merged.ForEndpoint("embeddings")["max-model-len"].AutoMinContextTokens)
+}
+
+func TestMemoryUsableFractionValidation(t *testing.T) {
+	for _, kind := range []string{MemoryUnified, MemoryLayers, MemoryFractionTotal, ""} {
+		for _, fraction := range []float64{0, -0.1, 0.75, 1, 1.1, math.NaN(), math.Inf(1)} {
+			y := &YAMLSchema{MemoryUsableFraction: &fraction}
+			if kind != "" {
+				y.Diagnostics = &Diagnostics{Runtime: "test", Runtimes: map[string]RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &MemoryBudget{Kind: kind, Parameter: "budget"}}
+			}
+			merged, errs := Merge("generic", y)
+			valid := kind == MemoryUnified && fraction > 0 && fraction <= 1
+			assert.Equal(t, valid, len(errs) == 0, "kind=%s fraction=%g", kind, fraction)
+			if valid {
+				assert.Equal(t, fraction, merged.MemoryUsableFraction)
+			}
+		}
+	}
+	// Older workers decode the non-strict envelope and retain strict diagnostics.
+	data := []byte("auto_min_context_tokens: 4096\nmemory_usable_fraction: 0.75\ndiagnostics:\n  runtime: test\n  runtimes: {test: {kernels: unknown}}\n  memory: {kind: unified}\n")
+	var legacy struct {
+		Diagnostics *Diagnostics `yaml:"diagnostics"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &legacy))
+	require.NoError(t, legacy.Diagnostics.Validate())
+	declared, err := LoadYAMLSchema(data)
+	require.NoError(t, err)
+	merged, errs := Merge("generic", declared)
+	require.Empty(t, errs)
+	assert.Equal(t, 0.75, merged.MemoryUsableFraction)
+}
+
+func TestMemoryParameterRolesMerge(t *testing.T) {
+	for _, role := range []string{"", "k", "v", "both", "invalid"} {
+		data := fmt.Appendf(nil, "parameters:\n  cache: {type: string, kv_cache_dtype: %q}\n  override: {type: string, context_override: true}\nendpoints:\n  embeddings:\n    parameters:\n      cache: {kv_cache_dtype: v}\n", role)
+		declared, err := LoadYAMLSchema(data)
+		require.NoError(t, err)
+		merged, errs := Merge("generic", declared)
+		if role == "invalid" {
+			require.NotEmpty(t, errs)
+			continue
+		}
+		require.Empty(t, errs)
+		assert.Equal(t, role, merged.ForEndpoint("chat")["cache"].KVCacheDtype)
+		assert.Equal(t, "v", merged.ForEndpoint("embeddings")["cache"].KVCacheDtype)
+		assert.True(t, merged.ForEndpoint("embeddings")["override"].ContextOverride)
+	}
 }

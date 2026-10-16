@@ -1,7 +1,9 @@
 package prov_apps
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -317,16 +319,16 @@ func TestFixedBudgetShortfallDoesNotEvictOrLaunch(t *testing.T) {
 	}
 }
 
-func TestUnifiedProviderMetadataAndTierFraction(t *testing.T) {
+func TestUnifiedProviderMetadataFraction(t *testing.T) {
 	m, req := autoCapacityFixture(t)
 	svc, _ := m.AppsConfig().LookupApp("vllm")
 	svc.Defaults.Metadata.ContextParam = ""
-	svc.Defaults.Environment = map[string]string{"MLX_MEMORY_FRACTION": "0.75"}
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	m.ReloadConfig(cfg)
+	fraction := 0.75
 	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
-		declared, errs := schema.Merge(provider, &schema.YAMLSchema{AutoContext: schema.AutoContext{AutoMinContextTokens: 4096}, MemoryFractionEnvironment: "MLX_MEMORY_FRACTION", Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: schema.MemoryUnified}}})
+		declared, errs := schema.Merge(provider, &schema.YAMLSchema{AutoContext: schema.AutoContext{AutoMinContextTokens: 4096}, MemoryUsableFraction: &fraction, Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: schema.MemoryUnified}}})
 		require.Empty(t, errs)
 		return declared, nil
 	}
@@ -334,19 +336,22 @@ func TestUnifiedProviderMetadataAndTierFraction(t *testing.T) {
 		return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
 	}
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
-	for _, fraction := range []string{"", "0.6"} {
-		if fraction != "" {
-			req.EnvVars["MLX_MEMORY_FRACTION"] = fraction
-		}
+	var originalEnvironment map[string]string
+	for _, f := range []float64{0.75, 0.6} {
+		fraction = f
 		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 		require.NoError(t, err)
 		features, err := m.ResolveLaunchParameters(t.Context(), req)
 		require.NoError(t, err)
+		if originalEnvironment == nil {
+			originalEnvironment = maps.Clone(features.Environment)
+		}
+		assert.Equal(t, originalEnvironment, features.Environment, "schema fraction never changes recorded engine environment")
 		admission, err := m.checkMemory(t.Context(), features, false)
 		assert.Equal(t, preview.Assessment, admission)
 		assert.Equal(t, "auto", admission.ContextMode)
 		assert.Equal(t, int64(4096), admission.ContextTokens)
-		if fraction == "" {
+		if fraction == 0.75 {
 			require.NoError(t, err)
 			assert.Equal(t, "fit", admission.Status)
 		} else {
@@ -357,6 +362,101 @@ func TestUnifiedProviderMetadataAndTierFraction(t *testing.T) {
 			var refusal *process.MemoryFitError
 			require.ErrorAs(t, err, &refusal)
 			assert.True(t, refusal.Sized)
+		}
+	}
+}
+
+func TestNativeContextAdmissionAllowsEngineAdaptation(t *testing.T) {
+	m, req, dir := capacityFixture(t)
+	var b bytes.Buffer
+	write := func(v any) { require.NoError(t, binary.Write(&b, binary.LittleEndian, v)) }
+	text := func(v string) { write(uint64(len(v))); b.WriteString(v) }
+	for _, v := range []any{uint32(0x46554747), uint32(3), uint64(0), uint64(6)} {
+		write(v)
+	}
+	text("general.architecture")
+	write(uint32(8))
+	text("llama")
+	for key, value := range map[string]uint32{"block_count": 32, "context_length": 32768, "embedding_length": 4096, "attention.head_count": 32, "attention.head_count_kv": 8} {
+		text("llama." + key)
+		write(uint32(4))
+		write(value)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "weights.gguf"), os.O_WRONLY, 0600)
+	require.NoError(t, err)
+	_, err = f.WriteAt(b.Bytes(), 0)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	base := m.providerSchema
+	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+		declared, err := base(provider)
+		declared.Diagnostics.Memory = &schema.MemoryBudget{Kind: schema.MemoryLayers}
+		shape := declared.Parameters["max-model-len"]
+		shape.Auto, shape.AutoContextSource = "auto", "native"
+		declared.Parameters["max-model-len"] = shape
+		return declared, err
+	}
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
+	}
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
+		return &hardware.HardwareInfo{TotalRAM: 1024 * 1024}
+	}
+	for _, context := range []string{"auto", "32768"} {
+		req.Parameters = map[string]string{"max-model-len": context, "gpu-memory-utilization": "0.95"}
+		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+		require.NoError(t, err)
+		features, err := m.ResolveLaunchParameters(t.Context(), req)
+		require.NoError(t, err)
+		assessment, err := m.checkMemory(t.Context(), features, false)
+		assert.Equal(t, preview.Assessment, assessment)
+		if context == "auto" {
+			require.NoError(t, err)
+			assert.Equal(t, "unknown", assessment.Status)
+			assert.Contains(t, assessment.Reason, "engine may adapt")
+			_, err = m.admitMemory(t.Context(), features)
+			require.NoError(t, err)
+		} else {
+			assert.Equal(t, "no_fit", assessment.Status)
+			var fit *process.MemoryFitError
+			require.ErrorAs(t, err, &fit)
+			assert.True(t, fit.Sized)
+			m.seams.beforeLaunch = func() { t.Error("numeric native-context shortfall launched a process") }
+			_, err = m.EnsureRun(t.Context(), req)
+			require.ErrorAs(t, err, &fit)
+		}
+	}
+}
+
+func TestKVCacheRolesReachPreviewAndAdmission(t *testing.T) {
+	m, req := autoCapacityFixture(t)
+	base := m.providerSchema
+	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+		declared, err := base(provider)
+		declared.Parameters["kv-cache-dtype"] = schema.ParamShape{Kind: schema.ParamString, KVCacheDtype: "both"}
+		return declared, err
+	}
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
+	}
+	for _, dtype := range []string{"auto", "fp8", "future-dtype"} {
+		req.Parameters = map[string]string{"max-model-len": "4096", "gpu-memory-utilization": "0.6", "kv-cache-dtype": dtype}
+		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+		require.NoError(t, err)
+		features, err := m.ResolveLaunchParameters(t.Context(), req)
+		require.NoError(t, err)
+		assessment, err := m.checkMemory(t.Context(), features, false)
+		assert.Equal(t, preview.Assessment, assessment)
+		switch dtype {
+		case "auto":
+			require.Error(t, err)
+			assert.Equal(t, "no_fit", assessment.Status)
+		case "fp8":
+			require.NoError(t, err)
+			assert.Equal(t, "fit", assessment.Status)
+		default:
+			require.NoError(t, err)
+			assert.Equal(t, "unknown", assessment.Status)
 		}
 	}
 }

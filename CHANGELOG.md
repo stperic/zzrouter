@@ -5,8 +5,11 @@
 - Capacity previews and launch admission share context-aware sizing: auto vLLM
   and MLX assess a declared 4096-token minimum; llama.cpp reads bounded GGUF
   geometry and native context, honors quantized KV and reports GPU or offload
-  placement. MLX uses a tier-overridable 0.75 unified-memory fraction. Assessments
+  placement. MLX uses a release-owned 0.75 unified-memory fraction. Assessments
   include context and estimated affordability; unsupported evidence stays unknown.
+  Native llama.cpp estimates beyond GPU plus RAM allow engine adaptation;
+  numeric-context shortfalls still refuse launch. Schema-declared KV encodings
+  include vLLM fp8, and bounded GGUF reads skip arrays in bulk.
   Fixed-budget failures refuse launch without eviction. Cluster protocol adds
   context evidence while retaining rolling compatibility with older workers,
   whose assessments degrade to unknown.

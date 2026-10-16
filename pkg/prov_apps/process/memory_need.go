@@ -25,6 +25,7 @@ type Need struct {
 	Incomplete                     bool
 	ContextMode                    string
 	ContextTokens                  int64
+	nativeContext                  bool
 	geometry                       *attentionConfig
 }
 
@@ -56,7 +57,7 @@ type attentionConfig struct {
 }
 
 // ModelMemoryNeed retains weight evidence when context or geometry cannot be sized.
-func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string, policy schema.AutoContext) (Need, bool) {
+func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string, policy schema.AutoContext, shapes map[string]schema.ParamShape) (Need, bool) {
 	weightBytes, header, ok := weightsBytes(model.Path, svc)
 	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, Incomplete: true, ContextMode: "unknown"}
 	value := memoryParameter(svc.GetContextParam(), params)
@@ -76,13 +77,25 @@ func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[s
 		cfg, geometry = readGGUFConfig(header)
 	}
 	if partial.ContextMode == "auto" && policy.AutoContextSource == "native" {
+		partial.nativeContext = true
 		context = cfg.NativeContext
 	}
 	partial.ContextTokens = context
-	if !ok || !geometry || context <= 0 || (partial.ContextMode == "auto" && (cfg.NativeContext < context || memoryParameter("rope-scaling", params) != "" || memoryParameter("hf-overrides", params) != "" || (len(cfg.RopeScaling) > 0 && string(cfg.RopeScaling) != "null"))) {
+	if !ok || !geometry || context <= 0 || (partial.ContextMode == "auto" && (cfg.NativeContext < context || (len(cfg.RopeScaling) > 0 && string(cfg.RopeScaling) != "null"))) {
 		return partial, false
 	}
-	cfg.CacheK, cfg.CacheV = memoryParameter("cache-type-k", params), memoryParameter("cache-type-v", params)
+	for name, shape := range shapes {
+		value := memoryParameter(name, params)
+		if shape.ContextOverride && value != "" && partial.ContextMode == "auto" {
+			return partial, false
+		}
+		if shape.KVCacheDtype == "k" || shape.KVCacheDtype == "both" {
+			cfg.CacheK = value
+		}
+		if shape.KVCacheDtype == "v" || shape.KVCacheDtype == "both" {
+			cfg.CacheV = value
+		}
+	}
 	partial.geometry = &cfg
 	sized, complete := partial.atContext(context)
 	if !complete {
@@ -105,11 +118,6 @@ func readGGUFConfig(path string) (attentionConfig, bool) {
 	}
 	defer file.Close()
 	h, err := gguf.Read(file)
-	switch h.Architecture {
-	case "llama", "qwen2", "qwen3":
-	default:
-		return attentionConfig{}, false
-	}
 	v := func(key string) int64 { return h.Values[h.Architecture+"."+key] }
 	raw := func(n int64) json.RawMessage {
 		if n == 0 {
@@ -185,15 +193,23 @@ func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
 		// GGML quantized blocks include their scale bytes; never treat q8 as one byte.
 		block, size := int64(1), dtypeBytes
 		switch cache.dtype {
-		case "":
-		case "f16":
+		case "", "auto":
+		case "f16", "bf16":
 			size = 2
 		case "f32":
 			size = 4
+		case "fp8", "fp8_e4m3", "fp8_e5m2":
+			size = 1
 		case "q8_0":
 			block, size = 32, 34
-		case "q4_0":
+		case "q4_0", "iq4_nl":
 			block, size = 32, 18
+		case "q4_1":
+			block, size = 32, 20
+		case "q5_0":
+			block, size = 32, 22
+		case "q5_1":
+			block, size = 32, 24
 		default:
 			return 0, false
 		}

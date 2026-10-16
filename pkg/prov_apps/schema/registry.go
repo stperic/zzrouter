@@ -51,10 +51,12 @@ type ParamShape struct {
 	Description string
 	Enum        []string
 	// Pass applies to ParamAsset only; empty means AssetPassPath.
-	Pass         AssetPass
-	Auto         string
-	Served       string
-	PlacementLog map[string]*regexp.Regexp
+	Pass            AssetPass
+	Auto            string
+	Served          string
+	KVCacheDtype    string
+	ContextOverride bool
+	PlacementLog    map[string]*regexp.Regexp
 }
 
 // AutoContext declares what an engine assesses while context selection stays automatic.

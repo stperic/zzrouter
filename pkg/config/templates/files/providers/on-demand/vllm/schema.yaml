@@ -32,7 +32,16 @@ parameters:
     description: Quantization scheme (awq | gptq | fp8 | ...)
   rope-scaling:
     type: string
+    context_override: true
     description: RoPE scaling strategy (linear | dynamic | yarn)
+  hf-overrides:
+    type: string
+    context_override: true
+    description: Overrides to the model configuration
+  kv-cache-dtype:
+    type: string
+    kv_cache_dtype: both
+    description: KV cache encoding; sizing supports auto (model dtype), fp8, fp8_e4m3 and fp8_e5m2
   block-size:
     type: int
     min: 1

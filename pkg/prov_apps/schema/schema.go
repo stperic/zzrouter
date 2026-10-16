@@ -17,12 +17,12 @@ import (
 // optional per-endpoint overlay schema mirroring config.yaml's
 // defaults.endpoints.<E>.parameters tree.
 type YAMLSchema struct {
-	AutoContext               `yaml:",inline"`
-	MemoryFractionEnvironment string                  `yaml:"memory_fraction_environment,omitempty"`
-	Provider                  string                  `yaml:"provider"`
-	Parameters                map[string]YAMLParam    `yaml:"parameters,omitempty"`
-	Endpoints                 map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
-	Diagnostics               *Diagnostics            `yaml:"diagnostics,omitempty"`
+	AutoContext          `yaml:",inline"`
+	MemoryUsableFraction *float64                `yaml:"memory_usable_fraction,omitempty"`
+	Provider             string                  `yaml:"provider"`
+	Parameters           map[string]YAMLParam    `yaml:"parameters,omitempty"`
+	Endpoints            map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
+	Diagnostics          *Diagnostics            `yaml:"diagnostics,omitempty"`
 }
 
 // YAMLParam mirrors ParamShape on disk. Kind is a string so yaml.v3 decodes
@@ -35,10 +35,12 @@ type YAMLParam struct {
 	Description string   `yaml:"description,omitempty"`
 	Enum        []string `yaml:"enum,omitempty"`
 	// Pass is how an asset reaches the engine; only type: asset takes it.
-	Pass         string            `yaml:"pass,omitempty"`
-	Auto         string            `yaml:"auto,omitempty"`
-	Served       string            `yaml:"served,omitempty"`
-	PlacementLog map[string]string `yaml:"placement_log,omitempty"`
+	Pass            string            `yaml:"pass,omitempty"`
+	Auto            string            `yaml:"auto,omitempty"`
+	Served          string            `yaml:"served,omitempty"`
+	KVCacheDtype    string            `yaml:"kv_cache_dtype,omitempty"`
+	ContextOverride bool              `yaml:"context_override,omitempty"`
+	PlacementLog    map[string]string `yaml:"placement_log,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -52,10 +54,10 @@ type YAMLEndpoint struct {
 // the provider declares none.
 type ProviderSchema struct {
 	AutoContext
-	MemoryFractionEnvironment string
-	Parameters                map[string]ParamShape
-	Endpoints                 map[string]EndpointSchema
-	Diagnostics               *Diagnostics
+	MemoryUsableFraction float64
+	Parameters           map[string]ParamShape
+	Endpoints            map[string]EndpointSchema
+	Diagnostics          *Diagnostics
 }
 
 // EndpointSchema is the merged shape for one endpoint overlay's params.
@@ -107,7 +109,7 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	if y == nil {
 		return out, nil
 	}
-	out.AutoContext, out.MemoryFractionEnvironment = y.AutoContext, y.MemoryFractionEnvironment
+	out.AutoContext = y.AutoContext
 	if err := y.AutoContext.validate(); err != nil {
 		errs = append(errs, err)
 	}
@@ -115,6 +117,13 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 		errs = append(errs, err)
 	} else {
 		out.Diagnostics = y.Diagnostics
+	}
+	if f := y.MemoryUsableFraction; f != nil {
+		if !(*f > 0 && *f <= 1) || out.Diagnostics == nil || out.Diagnostics.Memory == nil || out.Diagnostics.Memory.Kind != MemoryUnified {
+			errs = append(errs, fmt.Errorf("memory_usable_fraction requires a unified budget and 0 < fraction <= 1"))
+		} else {
+			out.MemoryUsableFraction = *f
+		}
 	}
 	for name, yp := range y.Parameters {
 		merged, mErr := mergeOne(provider, name, yp, out.Parameters[name])
@@ -198,6 +207,15 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if out.Served == "" {
 		out.Served = yp.Served
 	}
+	if yp.KVCacheDtype != "" {
+		out.KVCacheDtype = yp.KVCacheDtype
+	}
+	switch out.KVCacheDtype {
+	case "", "k", "v", "both":
+	default:
+		return ParamShape{}, fmt.Errorf("%s.%s: invalid kv_cache_dtype role", provider, qualifiedName)
+	}
+	out.ContextOverride = out.ContextOverride || yp.ContextOverride
 	if yp.PlacementLog != nil {
 		out.PlacementLog = make(map[string]*regexp.Regexp, len(yp.PlacementLog))
 		for name, raw := range yp.PlacementLog {

@@ -118,7 +118,11 @@ Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
 the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use
 `zz_run_preview` numeric context overrides for larger vLLM/llama.cpp workloads.
 MLX always assesses its minimum; `max-tokens` limits generation, not context.
-MLX uses the tier-resolved `MLX_MEMORY_FRACTION` environment value (default 0.75).
+MLX uses release-owned `memory_usable_fraction` schema metadata (shipped at 0.75),
+alongside the release-owned `auto_min_context_tokens` minimum.
+Auto llama.cpp estimates beyond GPU plus RAM remain unknown and allow launch
+because the engine may adapt; numeric context shortfalls and weight-only
+lower-bound failures refuse launch.
 Affordability never substitutes for served context. Missing geometry, native
 range, devices or context-aware worker evidence is unknown. Fixed-budget
 failures refuse launch without eviction. Auto context keeps greedy allocation.

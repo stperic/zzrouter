@@ -20,7 +20,7 @@ import (
 )
 
 func TestWeightLowerBoundProblemExplainsReach(t *testing.T) {
-	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, Incomplete: true}, map[string]string{"budget": "1"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024}}, 0, nil, nil)
+	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, WeightsBytes: 1024*1024*1024 + 1, Incomplete: true}, map[string]string{"budget": "1"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 1024, FreeMiB: 1024}}, 0, nil, nil, 0)
 	require.Error(t, err)
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
 	RespondToError(c, err)
@@ -130,7 +130,7 @@ func TestPinnedRunExplicitDELETE(t *testing.T) {
 }
 
 func TestContextBudgetProblemReportsDeclaredShortfall(t *testing.T) {
-	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, KVMiB: 512, OverheadMiB: 4096, ContextMode: "auto", ContextTokens: 4096}, map[string]string{"budget": "0.6"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil)
+	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{WeightsMiB: 1024, KVMiB: 512, OverheadMiB: 4096, ContextMode: "auto", ContextTokens: 4096}, map[string]string{"budget": "0.6"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil, 0)
 	require.Error(t, err)
 	c, response := testGinContext("POST", "/zzrouter/v1/internal/runs")
 	RespondToError(c, err)

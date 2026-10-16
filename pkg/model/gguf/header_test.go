@@ -3,8 +3,13 @@ package gguf
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"math"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -40,13 +45,52 @@ func validHeader() []byte {
 
 func TestHeaderStopsBeforeTensors(t *testing.T) {
 	data := validHeader()
-	r := bytes.NewReader(append(data, []byte("untrusted tensor descriptors")...))
+	// Invalid tensor descriptors must not be parsed. Buffer read-ahead is bounded.
+	tensors := bytes.Repeat([]byte{0xff}, 8192)
+	r := bytes.NewReader(append(data, tensors...))
 	h, err := Read(r)
 	require.NoError(t, err)
 	require.Equal(t, "llama", h.Architecture)
 	require.Equal(t, int64(32), h.Values["llama.block_count"])
 	require.Len(t, h.Values, 1)
-	require.Equal(t, len("untrusted tensor descriptors"), r.Len())
+	require.GreaterOrEqual(t, r.Len(), len(tensors)-4096)
+}
+
+func TestHeaderManyMaxSizeArraysCompletesPromptly(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "arrays-*.gguf")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, f.Close()) })
+	_, err = f.Write(header(make([][]byte, 7)...))
+	require.NoError(t, err)
+	for i := 0; i < 7; i++ {
+		_, err = f.Write(entry(fmt.Sprintf("array.%d", i), 9, uint32(10), uint64(1<<20)))
+		require.NoError(t, err)
+		end, err := f.Seek(8<<20, io.SeekCurrent)
+		require.NoError(t, err)
+		require.NoError(t, f.Truncate(end))
+	}
+	_, err = f.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+	start := time.Now()
+	_, err = Read(f)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), time.Second, "bounded metadata must not stall admission")
+}
+
+func TestHeaderKeyLimitAndTruncatedValue(t *testing.T) {
+	_, err := Read(bytes.NewReader(header(entry(strings.Repeat("k", 256), 4, uint32(1)))))
+	require.NoError(t, err)
+	_, err = Read(bytes.NewReader(header(entry(strings.Repeat("k", 257), 4, uint32(1)))))
+	require.Error(t, err)
+	data := header(entry("llama.block_count", 4, uint32(32)))
+	for _, missing := range []int{1, 4} {
+		_, err := Read(bytes.NewReader(data[:len(data)-missing]))
+		if missing == 4 {
+			require.ErrorIs(t, err, io.EOF)
+		} else {
+			require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		}
+	}
 }
 func TestHostileAndTruncatedHeaders(t *testing.T) {
 	data := validHeader()

@@ -2,6 +2,7 @@
 package gguf
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ type Header struct {
 }
 
 type decoder struct {
-	r   *io.LimitedReader
+	r   *bufio.Reader
 	err error
 }
 
@@ -27,9 +28,9 @@ func (d *decoder) number(size int) uint64 {
 	return binary.LittleEndian.Uint64(b[:])
 }
 
-func (d *decoder) text(keep bool) string {
+func (d *decoder) text(keep bool, limit uint64) string {
 	n := d.number(8)
-	if n > 1<<20 {
+	if d.err == nil && n > limit {
 		d.err = fmt.Errorf("GGUF string limit exceeded")
 	}
 	if d.err != nil {
@@ -47,29 +48,24 @@ func (d *decoder) text(keep bool) string {
 // value skips arrays without allocation or recursion; nested arrays are unsupported.
 func (d *decoder) value(kind uint64, keep bool) (int64, string) {
 	if kind == 8 {
-		return 0, d.text(keep)
+		return 0, d.text(keep, 1<<20)
 	}
 	if kind == 9 {
 		element, n := d.number(4), d.number(8)
-		if element > 12 || element == 9 || n > 1<<20 {
+		if d.err == nil && (element > 12 || element == 9 || n > 1<<20) {
 			d.err = fmt.Errorf("unsupported GGUF array")
 		}
-		for i := uint64(0); i < n && d.err == nil; i++ {
-			d.value(element, false)
+		if element != 8 && d.err == nil {
+			_, d.err = io.CopyN(io.Discard, d.r, int64(n)*int64(valueSize(element)))
+		} else {
+			for i := uint64(0); i < n && d.err == nil; i++ {
+				d.text(false, 1<<20)
+			}
 		}
 		return 0, ""
 	}
-	size := 0
-	switch kind {
-	case 0, 1, 7:
-		size = 1
-	case 2, 3:
-		size = 2
-	case 4, 5, 6:
-		size = 4
-	case 10, 11, 12:
-		size = 8
-	default:
+	size := valueSize(kind)
+	if size == 0 && d.err == nil {
 		d.err = fmt.Errorf("unknown GGUF value type")
 		return 0, ""
 	}
@@ -91,20 +87,40 @@ func (d *decoder) value(kind uint64, keep bool) (int64, string) {
 	return 0, ""
 }
 
+func valueSize(kind uint64) int {
+	switch kind {
+	case 0, 1, 7:
+		return 1
+	case 2, 3:
+		return 2
+	case 4, 5, 6:
+		return 4
+	case 10, 11, 12:
+		return 8
+	}
+	return 0
+}
+
 // Read accepts little-endian GGUF v2/v3, with at most 4096 keys and 64 MiB of metadata.
 func Read(r io.Reader) (Header, error) {
-	d := decoder{r: &io.LimitedReader{R: r, N: 64 << 20}}
+	d := decoder{r: bufio.NewReader(&io.LimitedReader{R: r, N: 64 << 20})}
 	h := Header{Values: map[string]int64{}}
 	magic, version := d.number(4), d.number(4)
 	d.number(8) // Tensor count is intentionally never followed.
 	count := d.number(8)
+	if d.err != nil {
+		return h, d.err
+	}
 	if magic != 0x46554747 || (version != 2 && version != 3) || count > 4096 {
 		return h, fmt.Errorf("unsupported GGUF header")
 	}
 	seen := map[string]bool{}
 	for i := uint64(0); i < count && d.err == nil; i++ {
-		key := d.text(true)
+		key := d.text(true, 256)
 		kind := d.number(4)
+		if d.err != nil {
+			return h, d.err
+		}
 		if seen[key] {
 			return h, fmt.Errorf("duplicate GGUF key")
 		}
@@ -116,7 +132,15 @@ func Read(r io.Reader) (Header, error) {
 			keep = true
 		}
 		n, text := d.value(kind, keep)
+		if d.err != nil {
+			return h, d.err
+		}
 		if key == "general.architecture" {
+			switch text {
+			case "llama", "qwen2", "qwen3":
+			default:
+				return h, fmt.Errorf("unsupported GGUF architecture")
+			}
 			h.Architecture = text
 		} else if keep {
 			if kind == 8 || kind == 9 || kind == 6 || kind == 7 || kind == 12 || n <= 0 {

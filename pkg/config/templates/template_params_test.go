@@ -147,7 +147,12 @@ func TestShippedAutoContextPolicies(t *testing.T) {
 	assert.Equal(t, "native", schemas["llamacpp"].Parameters["ctx-size"].AutoContextSource)
 	assert.Zero(t, schemas["llamacpp"].Parameters["ctx-size"].AutoMinContextTokens)
 	assert.Equal(t, int64(4096), schemas["mlx"].AutoMinContextTokens)
-	assert.Equal(t, "MLX_MEMORY_FRACTION", schemas["mlx"].MemoryFractionEnvironment)
+	assert.Equal(t, 0.75, schemas["mlx"].MemoryUsableFraction)
+	assert.Equal(t, "k", schemas["llamacpp"].Parameters["cache-type-k"].KVCacheDtype)
+	assert.Equal(t, "v", schemas["llamacpp"].Parameters["cache-type-v"].KVCacheDtype)
+	assert.Equal(t, "both", schemas["vllm"].Parameters["kv-cache-dtype"].KVCacheDtype)
+	assert.True(t, schemas["vllm"].Parameters["rope-scaling"].ContextOverride)
+	assert.True(t, schemas["vllm"].Parameters["hf-overrides"].ContextOverride)
 	for key := range schemas["mlx"].Parameters {
 		assert.NotEqual(t, "context", key)
 	}
@@ -156,5 +161,5 @@ func TestShippedAutoContextPolicies(t *testing.T) {
 	var svc config.ServiceConfig
 	require.NoError(t, yaml.Unmarshal(data, &svc))
 	assert.Empty(t, svc.GetContextParam())
-	assert.Equal(t, "0.75", svc.Defaults.Environment[schemas["mlx"].MemoryFractionEnvironment])
+	assert.Empty(t, svc.Defaults.Environment)
 }

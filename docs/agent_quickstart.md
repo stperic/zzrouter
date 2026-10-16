@@ -32,12 +32,16 @@ selected eligible node when capacity is unknown.
 
 Supported dense models assess auto vLLM and MLX at the declared minimum of 4096
 context tokens. MLX has no context parameter: `max-tokens` limits generation,
-and its usable unified working set is the tier-resolved `MLX_MEMORY_FRACTION`
-environment value, shipped at `0.75`. Auto llama.cpp assesses the GGUF native
-context and reports `placement: gpu` or `offload` (GPU plus system RAM).
+and its usable unified working set uses `memory_usable_fraction`, shipped at
+`0.75`. This fraction and `auto_min_context_tokens` are release-owned schema
+metadata. Auto llama.cpp assesses the GGUF native context and reports
+`placement: gpu` or `offload` (GPU plus system RAM).
+If that native-context estimate exceeds GPU plus RAM, the result is unknown
+and launch proceeds because the engine may adapt. A numeric context shortfall
+still refuses launch, as does the weight-only lower bound in either mode.
 GGUF sizing recognizes llama, qwen2 and qwen3 attention architectures. KV sizing
-honors `cache-type-k` and `cache-type-v` for f16, f32, q8_0 and q4_0; unsupported
-encodings or recurrent, MLA and ambiguous sliding geometry remain unknown.
+honors schema-declared cache roles, including vLLM fp8 and llama.cpp GGML types.
+Unsupported encodings or recurrent, MLA and ambiguous sliding geometry remain unknown.
 Assessments report `context_mode`, `context_tokens`, and, for supported auto
 cases, `affordable_context_tokens`. Affordability is an estimate within the
 recognized native range, never served context or a performance guarantee.

@@ -88,6 +88,6 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 }
 
 func admitBudget(budget schema.MemoryBudget, need Need, params, env map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
-	_, err := AdmitMemoryBudget(budget, need, params, env, devices, 0, owners, commitments)
+	_, err := AdmitMemoryBudget(budget, need, params, env, devices, 0, owners, commitments, 0)
 	return err
 }

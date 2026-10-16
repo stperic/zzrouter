@@ -13,10 +13,12 @@ parameters:
       weights: '(CPU)?\S* model buffer size = +([\d.]+) MiB'
   cache-type-k:
     type: string
-    description: KV key cache encoding; sizing supports f16, f32, q8_0 and q4_0
+    kv_cache_dtype: k
+    description: KV key cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
   cache-type-v:
     type: string
-    description: KV value cache encoding; sizing supports f16, f32, q8_0 and q4_0
+    kv_cache_dtype: v
+    description: KV value cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
   threads:
     type: int
     min: 1

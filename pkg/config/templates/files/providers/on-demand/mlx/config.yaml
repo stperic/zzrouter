@@ -147,8 +147,6 @@ capabilities:
   wire_endpoints: [chat_completions, completions]
 
 defaults:
-  environment:
-    MLX_MEMORY_FRACTION: "0.75"  # Usable unified working set; tier-overridable.
   parameters:
     max-tokens: "4096"            # MLX default is 512, too low for thinking models
   metadata:

@@ -29,7 +29,8 @@ Protocol 13 adds optional context-aware memory assessment fields and non-strict
 provider schema metadata. The minimum remains 12 for rolling upgrades. Node
 aggregation and run previews downgrade replies lacking `context_mode` to unknown,
 including older positive assessments. New schema metadata is outside strict
-diagnostics; the MLX fraction is an ordinary tier-resolved environment value.
+diagnostics; MLX's usable fraction and minimum context are release-owned,
+provider-level schema metadata that older workers ignore.
 
 Protocol 12 raises the minimum from 11 to 12. Provider synchronization carries
 `features.tools`, `requires_parameters` and HTTP evidence descriptors. Older

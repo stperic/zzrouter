@@ -181,9 +181,12 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 				devices[i].FreeMiB, devices[i].Processes = devices[i].TotalMiB, nil
 			}
 		}
-		need, _ := process.ModelMemoryNeed(features.model, features.Config, params, features.contextPolicy)
-		fraction := environment[features.declared.MemoryFractionEnvironment]
-		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, fraction)
+		policy := features.declared.AutoContext
+		if key := features.Config.GetContextParam(); key != "" {
+			policy = features.parameterShapes[key].AutoContext
+		}
+		need, _ := process.ModelMemoryNeed(features.model, features.Config, params, policy, features.parameterShapes)
+		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, features.declared.MemoryUsableFraction)
 	} else {
 		err = fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 		assessment.Reason = err.Error()

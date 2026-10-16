@@ -134,7 +134,7 @@ func (assessment *MemoryAssessment) NormalizeLegacy() {
 }
 
 // AdmitMemoryBudget shares capacity evidence and launch admission arithmetic.
-func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64, usableFraction ...string) (assessment MemoryAssessment, err error) {
+func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, environment map[string]string, devices []gpu.MemoryDevice, systemMiB int64, owners []RunRef, commitments map[string]int64, usableFraction float64) (assessment MemoryAssessment, err error) {
 	assessment = MemoryAssessment{ContextMode: need.ContextMode, ContextTokens: need.ContextTokens, Status: "unknown", Reason: "model fit is not established for this budget or sizing evidence", BudgetKind: budget.Kind}
 	if assessment.ContextMode == "" {
 		assessment.ContextMode = "unknown"
@@ -167,9 +167,15 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		assessment.RequiredMiB, assessment.CapacityMiB, assessment.Placement, err = sizedMemoryFit(budget, need, selected, systemMiB, fraction, auto, owners)
 		assessment.AffordableContextTokens = affordableContext(budget, need, selected, systemMiB, fraction, auto, owners)
 		if err != nil {
-			return assessment, err
+			var fit *MemoryFitError
+			if budget.Kind != schema.MemoryLayers || !need.nativeContext || !errors.As(err, &fit) {
+				return assessment, err
+			}
+			err = nil
+			assessment.Placement, assessment.Reason = "", "native context exceeds assessed memory; the engine may adapt"
+		} else {
+			assessment.Status, assessment.Reason = "fit", "sized context requirement fits the assessed memory budget"
 		}
-		assessment.Status, assessment.Reason = "fit", "sized context requirement fits the assessed memory budget"
 	}
 	if budget.Kind != schema.MemoryFractionTotal {
 		for _, device := range selected {
@@ -184,14 +190,17 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	return assessment, err
 }
 
-func declaredFraction(budget schema.MemoryBudget, parameters map[string]string, usableFraction []string) (float64, bool, error) {
-	value := parameters[budget.Parameter]
-	auto := budget.Kind == schema.MemoryFractionTotal && config.IsAuto(value)
-	if budget.Kind == schema.MemoryUnified && len(usableFraction) > 0 {
-		value = usableFraction[0]
+func declaredFraction(budget schema.MemoryBudget, parameters map[string]string, usableFraction float64) (float64, bool, error) {
+	switch budget.Kind {
+	case schema.MemoryUnified:
+		return usableFraction, false, nil
+	case schema.MemoryFractionTotal:
+	default:
+		return 0, false, nil
 	}
-	if auto || (budget.Kind != schema.MemoryFractionTotal && budget.Kind != schema.MemoryUnified) || (budget.Kind == schema.MemoryUnified && value == "") {
-		return 0, auto, nil
+	value := parameters[budget.Parameter]
+	if config.IsAuto(value) {
+		return 0, true, nil
 	}
 	fraction, err := strconv.ParseFloat(value, 64)
 	if err != nil || math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction <= 0 || fraction > 1 {
