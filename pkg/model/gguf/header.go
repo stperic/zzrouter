@@ -37,7 +37,7 @@ func (d *decoder) text(keep bool, limit uint64) string {
 		return ""
 	}
 	if !keep {
-		_, d.err = io.CopyN(io.Discard, d.r, int64(n))
+		_, d.err = d.r.Discard(int(n))
 		return ""
 	}
 	b := make([]byte, int(n))
