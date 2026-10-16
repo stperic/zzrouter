@@ -119,11 +119,11 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 }
 
 func TestMLXVisionReadinessOverlay(t *testing.T) {
-	m, svc, dir := mlxEndpointFixture(t, true)
+	m, _, dir := mlxEndpointFixture(t, true)
 	cfg := m.AppsConfig()
 	require.NoError(t, cfg.UpdateApp("mlx", func(svc *config.ServiceConfig) error { svc.Runtime.HealthCheck.Path = "/base-only"; return nil }))
 	m.ReloadConfig(cfg)
-	svc, _ = cfg.LookupApp("mlx")
+	svc, _ := cfg.LookupApp("mlx")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
 	selected, _, excluded, err := m.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
 	require.NoError(t, err)

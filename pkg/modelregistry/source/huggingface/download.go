@@ -79,21 +79,10 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 	if _, err := destination.Directory(); err != nil {
 		return err
 	}
-	manifest, err := integrity.ReadManifest(dir)
+	sourceURL := hfc.downloadBase + req.Repo
+	files, err = owed(req, files, dir, sourceURL, destination)
 	if err != nil {
 		return err
-	}
-	var held []integrity.FileChecksum
-	if !req.Force && !providerStore {
-		files, held = missing(files, manifest, dir)
-	}
-	if len(held) > 0 {
-		if _, err := destination.Directory(); err != nil {
-			return err
-		}
-		if err := integrity.RecordFiles(dir, req.Repo, hfc.downloadBase+req.Repo, held...); err != nil {
-			return err
-		}
 	}
 
 	var total, done int64
@@ -107,16 +96,6 @@ func (hfc *Connector) Download(ctx context.Context, req metadata.DownloadRequest
 		}
 	}
 
-	sourceURL := hfc.downloadBase + req.Repo
-	if !providerStore {
-		pending := make([]integrity.FileChecksum, 0, len(files))
-		for _, f := range files {
-			pending = append(pending, integrity.FileChecksum{RelativePath: f.Name, Size: f.Size, SHA256: f.SHA256, Feature: f.Feature})
-		}
-		if err := integrity.RecordPending(dir, req.Repo, sourceURL, pending...); err != nil {
-			return err
-		}
-	}
 	for _, f := range files {
 		report("downloading")
 		dest, err := destination.Path(f.Name)
@@ -273,6 +252,33 @@ func Plan(listing []metadata.TreeFileEntry, req metadata.DownloadRequest) ([]met
 		}
 	}
 	return out, nil
+}
+
+// owed returns the files a download must fetch into dir and records the rest
+// of the plan in the manifest: files it already holds keep their feature tag,
+// and model files still to fetch are pending until they arrive.
+func owed(req metadata.DownloadRequest, files []metadata.DownloadFile, dir, sourceURL string, destination Destination) ([]metadata.DownloadFile, error) {
+	manifest, err := integrity.ReadManifest(dir)
+	if err != nil || req.Target.EffectiveOwner() == metadata.OwnerProviderStore {
+		return files, err
+	}
+	var held []integrity.FileChecksum
+	if !req.Force {
+		files, held = missing(files, manifest, dir)
+	}
+	if len(held) > 0 {
+		if _, err := destination.Directory(); err != nil {
+			return nil, err
+		}
+		if err := integrity.RecordFiles(dir, req.Repo, sourceURL, held...); err != nil {
+			return nil, err
+		}
+	}
+	pending := make([]integrity.FileChecksum, 0, len(files))
+	for _, f := range files {
+		pending = append(pending, integrity.FileChecksum{RelativePath: f.Name, Size: f.Size, SHA256: f.SHA256, Feature: f.Feature})
+	}
+	return files, integrity.RecordPending(dir, req.Repo, sourceURL, pending...)
 }
 
 // missing splits files into those to fetch and those dir already holds as
