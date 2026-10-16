@@ -205,3 +205,66 @@ func TestMemoryParameterRolesMerge(t *testing.T) {
 		assert.True(t, merged.ForEndpoint("embeddings")["override"].ContextOverride)
 	}
 }
+
+func TestRecurrentRowsValidationAndEndpointResolution(t *testing.T) {
+	for _, rows := range []int64{-1, 0, 1, 4, MaxRecurrentStateRows, MaxRecurrentStateRows + 1} {
+		for _, parameter := range []bool{false, true} {
+			y := &YAMLSchema{AutoContext: AutoContext{RecurrentStateRows: &rows}}
+			if parameter {
+				y = &YAMLSchema{Parameters: map[string]YAMLParam{"slots": {Type: "int", SequenceSlots: true, AutoContext: AutoContext{RecurrentStateRows: &rows}}}}
+			}
+			_, errs := Merge("generic", y)
+			assert.Equal(t, rows >= 1 && rows <= MaxRecurrentStateRows, len(errs) == 0)
+		}
+	}
+	for _, declaration := range []string{
+		`slots: {type: string, sequence_slots: true, recurrent_state_rows: 4}`,
+		`slots: {type: int, sequence_slots: true}`,
+		`slots: {type: int, recurrent_state_rows: 4}`,
+	} {
+		y, err := LoadYAMLSchema([]byte("parameters:\n  " + declaration + "\n"))
+		require.NoError(t, err)
+		_, errs := Merge("generic", y)
+		require.NotEmpty(t, errs, declaration)
+	}
+	y, err := LoadYAMLSchema([]byte(`recurrent_state_rows: 2
+parameters:
+  slots: {type: int, sequence_slots: true, recurrent_state_rows: 4}
+endpoints:
+  embeddings:
+    parameters:
+      slots: {recurrent_state_rows: 1}
+`))
+	require.NoError(t, err)
+	merged, errs := Merge("generic", y)
+	require.Empty(t, errs)
+	assert.Equal(t, int64(2), *merged.RecurrentStateRows)
+	assert.Equal(t, int64(4), *merged.ForEndpoint("chat")["slots"].RecurrentStateRows)
+	assert.Equal(t, int64(1), *merged.ForEndpoint("embeddings")["slots"].RecurrentStateRows)
+	assert.True(t, merged.ForEndpoint("embeddings")["slots"].SequenceSlots)
+}
+
+func TestLegacySchemaIgnoresRecurrentMetadata(t *testing.T) {
+	data := []byte(`recurrent_state_rows: 2
+parameters:
+  slots: {type: int, sequence_slots: true, recurrent_state_rows: 4}
+diagnostics:
+  runtime: test
+  runtimes: {test: {kernels: unknown}}
+  memory: {kind: layers}
+`)
+	var legacy struct {
+		Parameters map[string]struct {
+			Type string `yaml:"type"`
+		} `yaml:"parameters"`
+		Diagnostics *Diagnostics `yaml:"diagnostics"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &legacy))
+	require.NoError(t, legacy.Diagnostics.Validate())
+	assert.Equal(t, "int", legacy.Parameters["slots"].Type)
+	y, err := LoadYAMLSchema(data)
+	require.NoError(t, err)
+	merged, errs := Merge("generic", y)
+	require.Empty(t, errs)
+	assert.Equal(t, int64(2), *merged.RecurrentStateRows)
+}

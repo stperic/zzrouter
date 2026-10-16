@@ -1,5 +1,6 @@
 # Long-tail MLX parameters. Go spine carries max-tokens.
 provider: mlx
+recurrent_state_rows: 1
 auto_min_context_tokens: 4096
 memory_usable_fraction: 0.75
 parameters:

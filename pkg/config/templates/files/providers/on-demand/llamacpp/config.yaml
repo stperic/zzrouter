@@ -179,7 +179,7 @@ runtime:
   port_range: [8080, 8089]
   base_port: 8080
   keep_alive: 30m
-  max_concurrent_requests: 1  # Single model slot by default (override with --parallel)
+  max_concurrent_requests: 1  # Router request limit; llama-server defaults to four sequence slots
 
   execution:
     type: cli

@@ -190,7 +190,7 @@ func snapshotGPUInfo(snap mesh.EndpointSnapshot) map[string]any {
 	// hiding the GPU: a caller that cannot see the accelerator will not
 	// schedule anything on it, and one that cannot see the sharing will
 	// double-count the node's memory.
-	if snap.GPUType == "apple" {
+	if gpu.IsUnifiedMemory(snap.GPUType) {
 		gpuInfo["unified_memory"] = true
 	}
 

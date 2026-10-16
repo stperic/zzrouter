@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -90,23 +89,18 @@ func TestBroadcastPreservesNodeBodies(t *testing.T) {
 	if result.Nodes[2].Error == nil {
 		t.Error("expected the unreachable node to keep its error")
 	}
-	if result.Metadata["nodes_failed"] != 1 {
-		t.Errorf("expected nodes_failed=1, got %v", result.Metadata["nodes_failed"])
+	if result.Body != nil {
+		t.Fatal("broadcast must only carry typed results")
 	}
-
-	// The wire form must carry the same bodies, unmerged.
-	var envelopes []nodeEnvelope
-	if err := json.Unmarshal(result.Body, &envelopes); err != nil {
-		t.Fatalf("wire form is not a node-envelope list: %v", err)
+	if result.Nodes[0].Node != nodes[0].Node || result.Nodes[0].NodeName != "host1" || result.Nodes[0].Response.StatusCode != 200 {
+		t.Fatal("node identity or status lost")
 	}
-	if len(envelopes) != 3 {
-		t.Fatalf("expected 3 envelopes, got %d", len(envelopes))
+	parsed, err := (&DefaultClusterClient{}).parseBroadcastResponse(result)
+	if err != nil || len(parsed.Errors) != 1 {
+		t.Fatalf("failed node count lost: %v, result: %+v", err, parsed)
 	}
-	if string(envelopes[0].Body) != `{"data":[{"id":"model1"}]}` {
-		t.Errorf("envelope body was rewritten: %s", envelopes[0].Body)
-	}
-	if envelopes[2].Error == "" {
-		t.Error("expected the failed node to surface its error on the wire")
+	if !errors.Is(parsed.Errors[0], nodes[2].Error) {
+		t.Fatal("failed node error was replaced")
 	}
 }
 
@@ -140,8 +134,7 @@ func TestBroadcastWithNoWorkersYieldsZeroNodesNotOneUnknown(t *testing.T) {
 
 // A node behind a misconfigured reverse proxy answers with an HTML error
 // page. That is precisely when an operator needs to see the body, so it
-// must survive into the wire form rather than being dropped for not
-// being JSON.
+// must survive through the typed client response.
 func TestBroadcastKeepsNonJSONBodies(t *testing.T) {
 	t.Parallel()
 	handler := NewBroadcastHandler(&Dispatcher{})
@@ -154,22 +147,12 @@ func TestBroadcastKeepsNonJSONBodies(t *testing.T) {
 		t.Fatalf("collect: %v", err)
 	}
 
-	var envelopes []nodeEnvelope
-	if err := json.Unmarshal(result.Body, &envelopes); err != nil {
-		t.Fatalf("wire form is not a node-envelope list: %v", err)
+	got, err := (&DefaultClusterClient{}).parseBroadcastResponse(result)
+	if err != nil || len(got.Responses) != 1 {
+		t.Fatalf("parse: %v, result: %+v", err, got)
 	}
-	if len(envelopes) != 1 {
-		t.Fatalf("expected 1 envelope, got %d", len(envelopes))
-	}
-	var got string
-	if err := json.Unmarshal(envelopes[0].Body, &got); err != nil {
-		t.Fatalf("non-JSON body was not carried as a JSON string: %v", err)
-	}
-	if got != html {
-		t.Errorf("body altered: %q", got)
-	}
-	if envelopes[0].Status != 502 {
-		t.Errorf("status lost: %d", envelopes[0].Status)
+	if string(got.Responses[0].Response.Body) != html || got.Responses[0].Response.StatusCode != 502 {
+		t.Fatal("non-JSON body or status lost")
 	}
 }
 

@@ -132,6 +132,54 @@ func TestHostileAndTruncatedHeaders(t *testing.T) {
 }
 func FuzzRead(f *testing.F) {
 	f.Add(validHeader())
+	f.Add(header(hybridEntries()...))
+	for _, key := range hybridKeys() {
+		f.Add(header(entry("general.architecture", 8, "qwen35"), entry("qwen35."+key, 9, uint32(4), uint64(math.MaxUint64))))
+		f.Add(header(entry("qwen35."+key, 10, uint64(math.MaxUint64))))
+		f.Add(header(entry("qwen35."+key, 8, "bad geometry")))
+		f.Add(header(entry("qwen35."+key, 4, uint32(1)), entry("qwen35."+key, 4, uint32(1))))
+	}
+	f.Add(header(entry("qwen35.attention.recurrent_layers", 9, uint32(7), uint64(4), []byte{1, 1, 1, 0})))
 	f.Add([]byte("GGUF"))
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = Read(bytes.NewReader(data)) })
+}
+
+func hybridKeys() []string {
+	return []string{"block_count", "nextn_predict_layers", "full_attention_interval", "ssm.conv_kernel", "ssm.group_count", "ssm.time_step_rank", "ssm.state_size", "ssm.inner_size"}
+}
+
+func hybridEntries() [][]byte {
+	entries := [][]byte{entry("general.architecture", 8, "qwen35")}
+	for i, key := range hybridKeys() {
+		entries = append(entries, entry("qwen35."+key, 4, uint32(i+1)))
+	}
+	return entries
+}
+
+func TestHybridHeaderBoundsAndTypes(t *testing.T) {
+	data := header(hybridEntries()...)
+	h, err := Read(bytes.NewReader(data))
+	require.NoError(t, err)
+	require.Len(t, h.Values, len(hybridKeys()))
+	for i := range data {
+		_, err := Read(bytes.NewReader(data[:i]))
+		require.Error(t, err, "prefix %d", i)
+	}
+	for _, key := range append(hybridKeys(), "attention.recurrent_layers") {
+		key = "qwen35." + key
+		for _, bad := range [][]byte{
+			entry(key, 8, "4"), entry(key, 9, uint32(4), uint64(0)),
+			entry(key, 9, uint32(4), uint64(1<<20+1)), entry(key, 10, uint64(math.MaxUint64)),
+			entry(key, 5, int32(-1)), entry(key, 6, float32(4)), entry(key, 7, uint8(1)), entry(key, 12, float64(4)),
+		} {
+			_, err := Read(bytes.NewReader(header(bad)))
+			require.Error(t, err, key)
+		}
+		_, err := Read(bytes.NewReader(header(entry(key, 4, uint32(1)), entry(key, 4, uint32(1)))))
+		require.Error(t, err, "duplicate %s", key)
+	}
+	_, err = Read(bytes.NewReader(header(entry("general.architecture", 8, "qwen3moe"))))
+	require.NoError(t, err)
+	_, err = Read(bytes.NewReader(header(entry("qwen35.nextn_predict_layers", 4, uint32(0)))))
+	require.NoError(t, err, "zero MTP layers is valid")
 }

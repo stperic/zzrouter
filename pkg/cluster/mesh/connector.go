@@ -14,6 +14,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/retry"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -461,7 +462,7 @@ func (c *Connector) performHealthCheck(ctx context.Context, hostURL string) (*Co
 				}
 			}
 			// Apple Silicon: unified memory — use system RAM as VRAM
-			if conn.GPUType == "apple" && conn.VRAMTotalGB == 0 && conn.RAMTotalGB > 0 {
+			if gpu.IsUnifiedMemory(conn.GPUType) && conn.VRAMTotalGB == 0 && conn.RAMTotalGB > 0 {
 				conn.VRAMTotalGB = conn.RAMTotalGB
 				conn.VRAMAvailableGB = conn.RAMAvailableGB
 			}

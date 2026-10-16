@@ -56,16 +56,24 @@ type ParamShape struct {
 	Served          string
 	KVCacheDtype    string
 	ContextOverride bool
+	SequenceSlots   bool
 	PlacementLog    map[string]*regexp.Regexp
 }
 
-// AutoContext declares what an engine assesses while context selection stays automatic.
+// AutoContext declares context and recurrent-state allocation evidence for sizing.
 type AutoContext struct {
 	AutoMinContextTokens int64  `yaml:"auto_min_context_tokens,omitempty"`
 	AutoContextSource    string `yaml:"auto_context_source,omitempty"`
+	RecurrentStateRows   *int64 `yaml:"recurrent_state_rows,omitempty"`
 }
 
+// MaxRecurrentStateRows bounds declared/default sequence allocations, far beyond normal server concurrency.
+const MaxRecurrentStateRows int64 = 1024
+
 func (a AutoContext) validate() error {
+	if a.RecurrentStateRows != nil && (*a.RecurrentStateRows < 1 || *a.RecurrentStateRows > MaxRecurrentStateRows) {
+		return fmt.Errorf("recurrent_state_rows must be between 1 and %d", MaxRecurrentStateRows)
+	}
 	if a.AutoMinContextTokens < 0 || (a.AutoContextSource != "" && a.AutoContextSource != "native") || (a.AutoContextSource != "" && a.AutoMinContextTokens != 0) {
 		return fmt.Errorf("invalid auto context policy")
 	}
