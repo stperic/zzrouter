@@ -429,6 +429,12 @@ class ExplainableFitTest(unittest.TestCase):
         self.ctx["rj"]["unknown_cause"] = None
         self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
 
+    def test_logs_node_is_optional_but_must_match(self):
+        ok = copy.deepcopy(self.ctx); ok["calls"][-1]["args"].pop("node")
+        self.assertTrue(passed(c.check_explainable_fit(ok)))
+        bad = copy.deepcopy(self.ctx); bad["calls"][-1]["args"]["node"] = "other"
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+
     def test_fabricated_claims_and_escape_tools_fail(self):
         for field, value in (("unknown_cause", "invented"), ("node", "other"), ("provider", "other"), ("model", "other"),
                              ("run_id", "other"), ("served_context", 65536), ("reported_concurrency", 5), ("concurrency_context", 4096)):

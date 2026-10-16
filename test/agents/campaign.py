@@ -1224,7 +1224,7 @@ def check_explainable_fit(ctx):
                  if row.get("run_id") == result.get("run_id") and row.get("node") == result.get("node")]
     reports = [(float(n), int(tokens.replace(",", ""))) for c in calls if c["tool"] == "zz_logs" and c.get("is_error") is False
                and (c.get("args") or {}).get("run_id") == result.get("run_id")
-               and (c.get("args") or {}).get("node") == result.get("node") for line in c["evidence"].get("lines", [])
+               and (c.get("args") or {}).get("node") in (None, result.get("node")) for line in c["evidence"].get("lines", [])
                for tokens, n in re.findall(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x", line)]
     complete = chosen and (not chosen["evidence"].get("job_id") or any(
         c["tool"] == "zz_job" and c.get("is_error") is False and c["evidence"].get("state") == "done"
@@ -1355,14 +1355,12 @@ def track_mcp(R, node, cells, agents, only, out):
     if node == "localai":
         run_scenario(R, node, "explainable-fit", {
             "id": "explainable-fit", "owned_nodes": list(LAB),
-            "prompt": "Serve an already-local Qwen3.8-27B build for a coding agent requiring at least 32768 context tokens and four concurrent requests. "
-                      "Compare the Mac and localai using zzRouter evidence. Explain what the localai vLLM assessment knows and cannot establish, "
-                      "select node and engine, preview the required settings, start it, follow its job, and report measured evidence. "
-                      "Separate estimates from engine reports. Use only task tools; no zz_api, zz_api_get or zz_api_search. "
-                      "Do not retry unchanged settings after a failed job or start settings already assessed no_fit. "
-                      "Use zz_runs and zz_logs for served context and reported concurrency at the requested context. "
-                      "Finish with RESULT: <compact JSON>. Keys: model, node, provider, unknown_cause (observed code or null), run_id, "
-                      "served_context, reported_concurrency, concurrency_context (null when unavailable). Do not extrapolate concurrency across contexts.",
+            "prompt": "A coding agent needs Qwen3.8-27B served in this cluster with at least 32768 tokens of context and 4 concurrent requests. "
+                      "Use a build that is already on a node (no downloads). Decide which node and engine should serve it, start it, and confirm "
+                      "from what the cluster reports that it actually meets both requirements; if it cannot, say what is missing. "
+                      "Use only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. Keys: model, node, provider, "
+                      "unknown_cause (the cause code zzRouter reported for your choice, or null), run_id, served_context, reported_concurrency, "
+                      "concurrency_context (the context size that concurrency figure is for; null when not reported).",
             "check": check_explainable_fit}, agents, only, out)
     run_scenario(R, node, "inventory", {
         "prompt": f"Report node {node}'s operating system, GPU and free GPU memory, and its local providers ({', '.join(LAB[node]['providers'])}) "
