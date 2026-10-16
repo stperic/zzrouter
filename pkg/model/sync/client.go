@@ -216,7 +216,7 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 	if err != nil {
 		return nil, err
 	}
-	release, err := integrity.AcquireMaterialization(ctx, destDir)
+	release, err := integrity.AcquireMaterialization(ctx, destDir, true)
 	if err != nil {
 		return nil, err
 	}

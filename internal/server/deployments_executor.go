@@ -296,6 +296,9 @@ func (e *DeploymentsExecutor) forgetJobKey(key, jobID string) {
 // Rejected generation/terminal writes cannot announce a physical success.
 func (e *DeploymentsExecutor) updateDownloadJob(a *downloadAttempt, key, status, file string, done, total int, progress float64, downloaded, size, speed int64) {
 	if a.ctx.Err() != nil {
+		if !modelregistry.IsTerminalStatus(status) {
+			return
+		}
 		status, speed = string(constants.StatusCancelled), 0
 	}
 	if modelregistry.IsTerminalStatus(status) {
@@ -515,6 +518,11 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 					status, currentFile = string(constants.StatusFailed), err.Error()
 				}
 			}
+			if modelregistry.IsTerminalStatus(status) && (status != string(constants.StatusCompleted) || ctx.Err() != nil) && admission.catalogProvisioning && e.publishCatalog != nil {
+				if err := e.publishCatalog(); err != nil {
+					currentFile = fmt.Sprintf("%s; catalog publication failed: %v", currentFile, err)
+				}
+			}
 			e.updateDownloadJob(attempt, downloadKey, status, currentFile, filesDownloaded, filesTotal, progress, downloaded, totalSize, speed)
 		}
 
@@ -523,7 +531,7 @@ func (e *DeploymentsExecutor) downloadHuggingFace(c *gin.Context, admission down
 			if errors.As(err, &problem) {
 				job.Meta(jobs.Meta{"error_code": problem.Code})
 			}
-			e.updateDownloadJob(attempt, downloadKey, string(constants.StatusFailed), err.Error(), 0, 0, 0, 0, 0, 0)
+			statusUpdater(string(constants.StatusFailed), err.Error(), 0, 0, 0, 0, 0, 0)
 		}
 	}()
 

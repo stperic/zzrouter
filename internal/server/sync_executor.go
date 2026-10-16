@@ -605,22 +605,22 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 		request = *req.Download
 	}
 	result, err := syncClient.SyncModel(syncCtx, clusterSourceURL, request, req.Format, progressCallback)
-	if err != nil {
-		slog.Error("Sync failed", "model", req.Model, "job", req.JobID, "source", req.SourceNode, "error", err)
-		fail(err)
-		return
-	}
-	if result.Success && req.Provider != "" && e.ensureFeatures != nil {
+	if err == nil && result.Success && req.Provider != "" && e.ensureFeatures != nil {
 		root, ferr := modelregistry.GetModelsRootDir()
 		if ferr == nil {
 			ferr = e.ensureFeatures(syncCtx, req.Provider, filepath.Join(root, request.Repo), req.Features, request.Optional, func(message string) {
 				handle.Progress(99, message, jobs.Bytes{})
 			})
 		}
-		if ferr != nil {
-			fail(ferr)
-			return
-		}
+		err = ferr
+	}
+	if e.refreshIndex != nil {
+		err = errors.Join(err, e.refreshIndex())
+	}
+	if err != nil {
+		slog.Error("Sync failed", "model", req.Model, "job", req.JobID, "source", req.SourceNode, "error", err)
+		fail(err)
+		return
 	}
 
 	slog.Info("[SyncExecutor] Sync complete",
@@ -628,13 +628,6 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 		"files_downloaded", result.FilesDownloaded,
 		"files_skipped", result.FilesSkipped,
 		"files_failed", result.FilesFailed)
-
-	if result.Success && e.refreshIndex != nil {
-		if err := e.refreshIndex(); err != nil {
-			fail(err)
-			return
-		}
-	}
 
 	if err := handle.Context().Err(); err != nil {
 		fail(err)

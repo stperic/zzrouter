@@ -557,3 +557,21 @@ func TestMCPCompatibilityPreservesAssessment(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPModels_IncompleteExactResultNeedsNoDetail(t *testing.T) {
+	calls := 0
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/zzrouter/v1/models" {
+			http.Error(w, "detail is unavailable", http.StatusBadGateway)
+			return
+		}
+		writeFixture(t, w, []byte(`{"data":[{"name":"org/model","source_id":"org/model","source_repo":"huggingface","node":"worker","incomplete":true}],"total":1}`))
+	})
+	result := callAgentTool(t, d, "zz_models", map[string]any{"model": "org/model"})
+	require.NotEqual(t, true, result["isError"], result)
+	require.Equal(t, 1, calls)
+	fields := result["structuredContent"].(map[string]any)
+	models := fields["models"].([]any)
+	require.Equal(t, true, models[0].(map[string]any)["incomplete"])
+}

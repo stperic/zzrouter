@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
@@ -83,9 +84,10 @@ func (r *Registry) ValidateHuggingFaceModel(ctx context.Context, modelID string)
 
 // DeletionTarget freezes physical files or the observed daemon for execution without lookup.
 type DeletionTarget struct {
-	Model   *metadata.ModelMetadata
-	Paths   []string
-	Backend *backend.Resolved
+	Model     *metadata.ModelMetadata
+	Paths     []string
+	Backend   *backend.Resolved
+	directory string
 }
 
 // SelectDeletion freezes a catalog entry's physical deletion identity.
@@ -101,6 +103,13 @@ func (r *Registry) SelectDeletion(model *metadata.ModelMetadata) (DeletionTarget
 		}
 		target.Backend = resolved
 		return target, nil
+	}
+	target.directory = filepath.Dir(model.FullPath)
+	if info, err := os.Stat(model.FullPath); err == nil && info.IsDir() {
+		target.directory = model.FullPath
+	}
+	if model.SourceRepo == metadata.SourceHuggingFace && model.SourceID != "" {
+		target.directory = filepath.Join(r.modelsRoot, filepath.FromSlash(model.SourceID))
 	}
 	target.Paths = []string{model.FullPath}
 	if model.Format == metadata.FormatGGUF && !model.Incomplete {
@@ -125,6 +134,11 @@ func (r *Registry) DeleteSelected(ctx context.Context, target DeletionTarget) (b
 		knownRefusal := errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500
 		return !knownRefusal, err // transport and 5xx outcomes may have applied the deletion
 	}
+	release, err := integrity.AcquireMaterialization(ctx, target.directory, false)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	changed := false
 	for _, path := range target.Paths {
 		if err := ctx.Err(); err != nil {

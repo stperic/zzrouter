@@ -86,7 +86,7 @@ func TestInternalDeployKeepsConcurrentFeatureObligations(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("held"), 0600))
 		require.NoError(t, integrity.RecordFiles(dir, "org/model", "", integrity.FileChecksum{RelativePath: name, Size: 4, SHA256: "held"}))
 	}
-	release, err := integrity.AcquireMaterialization(t.Context(), dir)
+	release, err := integrity.AcquireMaterialization(t.Context(), dir, true)
 	require.NoError(t, err)
 	var releaseOnce sync.Once
 	unlock := func() { releaseOnce.Do(release) }

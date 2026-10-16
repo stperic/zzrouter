@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/download"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -351,22 +352,31 @@ func locksForDirectory(dir string) (*directoryLocks, error) {
 }
 
 // AcquireMaterialization serializes repository writes across registry downloads
-// and peer sync. Waiting is cancellable; callers release after recording files.
-func AcquireMaterialization(ctx context.Context, dir string) (func(), error) {
+// and peer sync. With wait=false, a held lock refuses immediately.
+// Callers release after recording files or completing deletion.
+func AcquireMaterialization(ctx context.Context, dir string, wait bool) (func(), error) {
 	lock, err := locksForDirectory(dir)
 	if err != nil {
 		return nil, err
 	}
-	select {
-	case lock.materialize <- struct{}{}:
-		if err := ctx.Err(); err != nil {
-			<-lock.materialize
-			return nil, err
+	if wait {
+		select {
+		case lock.materialize <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		return func() { <-lock.materialize }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	} else {
+		select {
+		case lock.materialize <- struct{}{}:
+		default:
+			return nil, httperr.Error{Status: 409, Code: string(httperr.CodeDownloadInProgress), Message: "model files are being written; cancel the job and wait for its terminal outcome before deleting"}
+		}
 	}
+	if err := ctx.Err(); err != nil {
+		<-lock.materialize
+		return nil, err
+	}
+	return func() { <-lock.materialize }, nil
 }
 
 // RecordFiles adds files to the manifest of modelPath, replacing any entry

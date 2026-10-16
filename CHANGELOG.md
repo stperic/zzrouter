@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Cancelled Hugging Face downloads and peer sync publish retained manifest-only
+  repositories as incomplete models before their jobs turn terminal. REST and MCP
+  can list, repair or delete them. Deletion immediately refuses an active writer
+  with 409 `download_in_progress`; completed catalog names stay unchanged.
+
 - Standalone provider install preflight reports unsupported OS or architecture
   as a failed `platform` check with a remediation hint, before host probes.
   Reports still return HTTP 200 and use the selected node's installer and requirements.

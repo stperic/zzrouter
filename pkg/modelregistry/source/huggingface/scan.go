@@ -7,10 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
 )
 
 // ModelExists checks if a model exists on HuggingFace.
@@ -40,7 +43,8 @@ func (hfc *Connector) ModelExists(ctx context.Context, modelID string) (bool, er
 
 // ScanModels scans the models directory for downloaded HuggingFace
 // models. HuggingFace models are identified by having config.json or
-// .gitattributes files. Variant subdirectories (onnx/, openvino/, etc.)
+// .gitattributes files, or a retained manifest before weights arrive.
+// Variant subdirectories (onnx/, openvino/, etc.)
 // are skipped to avoid duplicates. Returns one ModelMetadata per model
 // directory (not per file) — except for GGUF repos, where one entry is
 // created per .gguf variant so users can pick a quantization.
@@ -64,7 +68,7 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		basename := filepath.Base(path)
 
 		// HuggingFace marker files live in the model root.
-		if basename != "config.json" && basename != ".gitattributes" {
+		if basename != "config.json" && basename != ".gitattributes" && basename != integrity.ManifestFileName {
 			return nil
 		}
 
@@ -78,12 +82,10 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 			}
 		}
 
-		// Mark as added immediately — prevents duplicate entry when both
-		// config.json and .gitattributes land the walker in the same dir.
+		// A recognized root has one catalog owner even with several markers.
 		if addedModels[modelDir] {
 			return nil
 		}
-		addedModels[modelDir] = true
 
 		// Extract model name from path relative to models root (e.g. "Qwen/Qwen3-0.6B").
 		relPath, _ := filepath.Rel(hfc.modelsDir, modelDir)
@@ -100,12 +102,29 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		}
 
 		totalSize := int64(0)
+		hasWeights, hasGGUF := false, false
 		_ = filepath.Walk(modelDir, func(p string, fi os.FileInfo, err error) error {
 			if err == nil && !fi.IsDir() {
 				totalSize += fi.Size()
+				if layout.IsGGUF(p) {
+					hasGGUF = true
+				} else {
+					hasWeights = hasWeights || filesystem.IsModelFile(p) || strings.EqualFold(filepath.Ext(p), ".npz")
+				}
 			}
 			return nil
 		})
+
+		files, layoutErr := layout.OnDisk(modelDir)
+		if layoutErr == nil {
+			hasGGUF = slices.ContainsFunc(files, func(file layout.File) bool { return layout.IsGGUF(file.Path) })
+		}
+		// Preserve existing file identities, including when a malformed manifest
+		// prevents feature inspection. A feature alone is not GGUF weights.
+		if basename == integrity.ManifestFileName && (hasWeights || hasGGUF) {
+			return nil
+		}
+		addedModels[modelDir] = true
 
 		configPath := filepath.Join(modelDir, "config.json")
 		extra := parseHuggingFaceConfig(configPath)
@@ -115,7 +134,6 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		// GGUF repos: one entry per weights variant; a split set is one
 		// entry, and a feature's file is none.
 		if format == metadata.FormatGGUF {
-			files, _ := layout.OnDisk(modelDir)
 			if variants := layout.GGUFVariants(files); len(variants) > 0 {
 				for _, v := range variants {
 					models = append(models, &metadata.ModelMetadata{
