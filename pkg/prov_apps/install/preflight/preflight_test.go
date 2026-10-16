@@ -40,3 +40,23 @@ func TestWritePermission(t *testing.T) {
 		_ = os.Chmod(readonly, 0755)
 	}
 }
+
+func TestNewReportSummarizesEveryCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		results []Result
+		allOK   bool
+	}{
+		{"empty", nil, true},
+		{"passing", []Result{{Check: "ok", Passed: true}}, true},
+		{"first failure", []Result{{Check: "first failure"}, {Check: "ok", Passed: true}}, false},
+		{"last failure", []Result{{Check: "ok", Passed: true}, {Check: "last failure"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			report := NewReport("worker", tc.results)
+			assert.Equal(t, "worker", report.Provider)
+			assert.Equal(t, tc.results, report.Results)
+			assert.Equal(t, tc.allOK, report.AllOK)
+		})
+	}
+}

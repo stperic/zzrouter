@@ -10,6 +10,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 )
 
 // nameNormalizer strips dots and hyphens so that "llamacpp" matches "llama.cpp".
@@ -65,6 +66,26 @@ type ProviderInstaller interface {
 	// ctx bounds GPU probes; callers that will also invoke InstallPlan should
 	// pre-wrap with gpu.WithCachedInventory so both paths share one probe.
 	Preflight(ctx context.Context, reqs *config.AppRequirements) *PreflightReport
+}
+
+// Preflight is how every caller runs an installer's preflight: an unsupported platform is a failed check, not a probe.
+func Preflight(ctx context.Context, inst ProviderInstaller, reqs *config.AppRequirements) *PreflightReport {
+	if err := CheckPlatform(inst.ProviderName(), inst.SupportedPlatforms(), fsroot.CurrentPlatform()); err != nil {
+		return preflight.NewReport(inst.ProviderName(), []preflight.Result{{Check: "platform", Message: err.Error(), Hint: "Choose a node with a supported OS and architecture"}})
+	}
+	return inst.Preflight(ctx, reqs)
+}
+
+// CheckPlatform keeps installer admission on the provider configuration's platform rule.
+func CheckPlatform(name string, platforms []fsroot.Platform, current fsroot.Platform) error {
+	svc := config.ServiceConfig{Name: name, Platforms: make([]config.InstallPlatform, len(platforms))}
+	for n, platform := range platforms {
+		svc.Platforms[n] = config.InstallPlatform{OS: platform.OS, Arch: platform.Arch}
+	}
+	if err := svc.ValidatePlatform(current.OS, current.Arch); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
+	}
+	return nil
 }
 
 // BinaryLocator is an optional interface implemented by installers whose

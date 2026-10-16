@@ -160,7 +160,7 @@ func TestLocalProtocolWindow(t *testing.T) {
 
 func TestLocalProtocolWindowRejectsOutsidePeers(t *testing.T) {
 	w := LocalProtocolWindow()
-	for _, remote := range []int{w.Min - 1, w.Max + 1} {
+	for _, remote := range []int{0, w.Min - 1, w.Max + 1} {
 		if err := w.Check(remote); err == nil {
 			t.Errorf("protocol %d admitted by window %+v", remote, w)
 		}

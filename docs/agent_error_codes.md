@@ -89,6 +89,13 @@ Preflight runs synchronously on the install request path, so a 400 here
 means nothing was started : distinct from a job that starts and then
 fails.
 
+Standalone `POST /providers/:n/install/preflight?node=<name>` runs on the
+selected node; omitting `node` selects the local node. Failed checks return
+HTTP 200 with `data.all_ok:false`, preserving each check's message and hint.
+An unsupported OS or architecture yields a failed `platform` check before
+host prerequisite probes. This report is not a `preflight_failed` Problem;
+unknown installers and routing failures retain their ordinary Problem responses.
+
 ### Provider parameter validation (`PATCH /providers/:n/parameters`)
 
 Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is

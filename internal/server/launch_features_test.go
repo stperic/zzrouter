@@ -77,10 +77,18 @@ type featureResolvedRouter struct {
 	fakeRouter
 	worker  http.Handler
 	request *routing.Request
+	err     error
 }
 
 func (r *featureResolvedRouter) Route(ctx context.Context, req *routing.Request) (*routing.Response, error) {
 	r.request = req
+	r.calls = append(r.calls, *req)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
 	response := httptest.NewRecorder()
 	r.worker.ServeHTTP(response, httptest.NewRequestWithContext(ctx, req.Method, req.Path, nil))
 	return &routing.Response{StatusCode: response.Code, Body: response.Body.Bytes(), Headers: response.Header()}, nil

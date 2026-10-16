@@ -113,17 +113,17 @@ func (i *Installer) InstalledVersion() (string, error) {
 
 // Preflight checks for required download tools (curl, tar on Unix; PowerShell on Windows).
 func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements) *preflight.Report {
-	report := &preflight.Report{Provider: i.Name, AllOK: true}
+	var results []preflight.Result
 	if reqs == nil {
 		reqs = &config.AppRequirements{}
 	}
 
 	// Disk space + write permissions
-	report.Results = append(report.Results, preflight.DiskAndPermissions(i.Name, reqs.DiskSpace)...)
+	results = append(results, preflight.DiskAndPermissions(i.Name, reqs.DiskSpace)...)
 
 	// Download tools
 	if fsroot.CurrentPlatform().OS == "windows" {
-		report.Results = append(report.Results, preflight.Commands("powershell")...)
+		results = append(results, preflight.Commands("powershell")...)
 		// llama.cpp's pre-built Windows binaries are linked against
 		// MSVC 14.30+ runtime DLLs. Bare Windows images (Vultr, Server
 		// 2022/2025) ship MSVCP140 14.22 from the 2019 redist — too
@@ -132,9 +132,9 @@ func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements)
 		// followed by an opaque verify-step failure. Catch this at
 		// preflight so the user sees an actionable hint and never
 		// burns the bandwidth.
-		report.Results = append(report.Results, preflight.MSVCRedist())
+		results = append(results, preflight.MSVCRedist())
 	} else {
-		report.Results = append(report.Results, preflight.Commands("curl", "tar")...)
+		results = append(results, preflight.Commands("curl", "tar")...)
 	}
 
 	// llama.cpp ships CPU + CUDA + ROCm variants and the variant
@@ -144,16 +144,10 @@ func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements)
 	// install. When the user explicitly declares the CUDA variant
 	// in provider config they can raise the policy to required.
 	if result, ok := preflight.GPU(ctx, reqs.GPU); ok {
-		report.Results = append(report.Results, result)
+		results = append(results, result)
 	}
 
-	for _, r := range report.Results {
-		if !r.Passed {
-			report.AllOK = false
-			break
-		}
-	}
-	return report
+	return preflight.NewReport(i.Name, results)
 }
 
 func (i *Installer) InstallPlan(ctx context.Context, version string) (*install.Plan, error) {
