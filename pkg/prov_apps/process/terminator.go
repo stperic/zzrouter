@@ -82,12 +82,9 @@ func forceKill(req TerminateRequest) error {
 		return nil
 	}
 
-	if err := killProcessTree(req); err != nil {
-		if !ProcessExists(int32(req.PID)) {
-			return nil
-		}
-		return fmt.Errorf("failed to kill process tree (pid=%d): %w", req.PID, err)
-	}
+	// A process already exiting refuses the kill (Windows: access denied), so a
+	// kill error is reported only if the process outlives the force wait.
+	killErr := killProcessTree(req)
 
 	forceTimer := time.After(ForceTimeout)
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -98,6 +95,9 @@ func forceKill(req TerminateRequest) error {
 		case <-forceTimer:
 			if !ProcessExists(int32(req.PID)) {
 				return nil
+			}
+			if killErr != nil {
+				return fmt.Errorf("failed to kill process tree (pid=%d): %w", req.PID, killErr)
 			}
 			return fmt.Errorf("process %d did not exit after force kill", req.PID)
 		case <-ticker.C:

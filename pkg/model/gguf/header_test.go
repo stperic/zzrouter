@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -56,25 +54,35 @@ func TestHeaderStopsBeforeTensors(t *testing.T) {
 	require.GreaterOrEqual(t, r.Len(), len(tensors)-4096)
 }
 
-func TestHeaderManyMaxSizeArraysCompletesPromptly(t *testing.T) {
-	f, err := os.CreateTemp(t.TempDir(), "arrays-*.gguf")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, f.Close()) })
-	_, err = f.Write(header(make([][]byte, 7)...))
-	require.NoError(t, err)
-	for i := 0; i < 7; i++ {
-		_, err = f.Write(entry(fmt.Sprintf("array.%d", i), 9, uint32(10), uint64(1<<20)))
-		require.NoError(t, err)
-		end, err := f.Seek(8<<20, io.SeekCurrent)
-		require.NoError(t, err)
-		require.NoError(t, f.Truncate(end))
+// countingReader counts reads reaching the source, the cost a per-element
+// read loop would multiply.
+type countingReader struct {
+	r     io.Reader
+	reads int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	c.reads++
+	return c.r.Read(p)
+}
+
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+func TestHeaderManyMaxSizeArraysReadInBulk(t *testing.T) {
+	const arrays, elements, size = 7, 1 << 20, 8
+	parts := []io.Reader{bytes.NewReader(header(make([][]byte, arrays)...))}
+	for i := range arrays {
+		parts = append(parts, bytes.NewReader(entry(fmt.Sprintf("array.%d", i), 9, uint32(10), uint64(elements))), io.LimitReader(zeros{}, elements*size))
 	}
-	_, err = f.Seek(0, io.SeekStart)
+	src := &countingReader{r: io.MultiReader(parts...)}
+	_, err := Read(src)
 	require.NoError(t, err)
-	start := time.Now()
-	_, err = Read(f)
-	require.NoError(t, err)
-	require.Less(t, time.Since(start), 5*time.Second, "bounded metadata must not stall admission")
+	require.Less(t, src.reads, arrays*elements/64, "skipped array elements must not cost a read each")
 }
 
 func TestHeaderKeyLimitAndTruncatedValue(t *testing.T) {
