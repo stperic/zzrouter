@@ -79,6 +79,25 @@ fallback. Where nothing more specific applies it is a snake_case slug of
 The more specific vocabularies below replace the baseline value when they
 apply.
 
+### Node reachability
+
+Pinned management dispatch retains HTTP 502 `node_unreachable`; inference retains
+HTTP 502 `backend_unreachable`. Both also cover admission refused by effective
+node health, without a network send. Existing job-lookup and update-preflight
+503 meanings below remain unchanged.
+
+Three consecutive transport failures open the node breaker (`down`). HTTP errors,
+caller cancellation/deadlines (including client timeouts), errors after response
+headers and local request/body failures do not count as node failures. Dial, TLS and
+pre-header connection errors or transport header timeouts count as failures.
+After a 30-second cooldown, two successful full cluster probes restore dispatch;
+half-open is `degraded` and admits probes only. Inference cannot force recovery.
+One missed full probe retains dispatch grace; public-only `degraded`, `unknown`
+and `down` are excluded. Two consecutive missed probes or a graceful goodbye mark
+a node down. Restore connectivity or pairing and observe REST/MCP health;
+`last_seen_at` remains the last successful probe and `last_error` reports sanitized
+probe or dispatch failures. Node health is separate from provider cooldowns.
+
 ### Install preflight (`POST /providers/:n/install`)
 
 | `code` | HTTP | Meaning | Recovery |

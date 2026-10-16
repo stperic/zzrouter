@@ -74,8 +74,17 @@ type Endpoint struct {
 	NodeName   string // Nodename reported by worker (discovered at runtime)
 	Strategy   DispatchStrategy
 	IsLocal    bool
+	recovering bool // Half-open has no missed-probe grace.
+	generation uint64
+	breaker    *CircuitBreaker
+	Quality    HealthQuality
 	Status     EndpointStatus   // Health status (updated by HealthMonitor)
 	Snapshot   EndpointSnapshot // System-resource snapshot from the most recent successful probe
+}
+
+// Usable preserves one missed full probe's grace without admitting public-only peers.
+func (e *Endpoint) Usable() bool {
+	return e.IsLocal || e.Status == StatusUp || (e.Status == StatusDegraded && e.Quality == QualityFull && !e.recovering)
 }
 
 // HealthReport is the typed payload parsed from a worker's /health

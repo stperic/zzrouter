@@ -33,10 +33,9 @@ func TestCheckAllNodes_ProbesStatusUpEndpoint(t *testing.T) {
 	reg.mu.Unlock()
 
 	hm := NewHealthMonitor(&HealthMonitorConfig{
-		Connector:       NewConnector(ConnectorConfig{HTTPClient: srv.Client()}),
-		Registry:        reg,
-		CircuitBreakers: NewCircuitBreakerManager(),
-		CheckInterval:   500 * time.Millisecond,
+		Connector:     NewConnector(ConnectorConfig{HTTPClient: srv.Client()}),
+		Registry:      reg,
+		CheckInterval: 500 * time.Millisecond,
 	})
 
 	hm.checkAllNodes()

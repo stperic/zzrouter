@@ -5,7 +5,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -20,8 +22,11 @@ const livenessThreshold = 2
 // Per-endpoint health hysteresis lives in a parallel liveness map keyed by URL,
 // mutated only through Observe.
 type EndpointRegistry struct {
-	endpoints map[string]*Endpoint
-	liveness  map[string]*Liveness
+	endpoints    map[string]*Endpoint
+	liveness     map[string]*Liveness
+	breakers     *CircuitBreakerManager
+	byClusterURL map[string]string
+	onTransition func(string, Transition) // Wired by HealthMonitor before traffic starts.
 
 	// Reverse indexes: lowercase key → endpoint URL (for O(1) targeted lookups)
 	byAlias    map[string]string
@@ -41,11 +46,13 @@ type EndpointRegistry struct {
 // NewEndpointRegistry creates a new endpoint registry
 func NewEndpointRegistry() *EndpointRegistry {
 	return &EndpointRegistry{
-		endpoints:  make(map[string]*Endpoint),
-		liveness:   make(map[string]*Liveness),
-		byAlias:    make(map[string]string),
-		byName:     make(map[string]string),
-		byNodeName: make(map[string]string),
+		endpoints:    make(map[string]*Endpoint),
+		breakers:     NewCircuitBreakerManager(),
+		byClusterURL: make(map[string]string),
+		liveness:     make(map[string]*Liveness),
+		byAlias:      make(map[string]string),
+		byName:       make(map[string]string),
+		byNodeName:   make(map[string]string),
 	}
 }
 
@@ -58,6 +65,14 @@ func (r *EndpointRegistry) RegisterEndpoint(endpoint *Endpoint) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if old := r.endpoints[endpoint.URL]; old != nil {
+		r.deindexEndpoint(old)
+		old.ClusterURL, old.Alias, old.Name = endpoint.ClusterURL, endpoint.Alias, endpoint.Name
+		r.indexEndpoint(old)
+		return nil
+	}
+	endpoint = copyEndpoint(endpoint)
+	endpoint.breaker = r.breakers.Retain(endpoint.URL)
 	r.endpoints[endpoint.URL] = endpoint
 	r.liveness[endpoint.URL] = NewLiveness(livenessThreshold)
 	r.indexEndpoint(endpoint)
@@ -110,12 +125,16 @@ func (r *EndpointRegistry) UnregisterEndpoint(url string) error {
 	r.deindexEndpoint(ep)
 	delete(r.endpoints, url)
 	delete(r.liveness, url)
+	r.breakers.Release(url)
 	return nil
 }
 
 // indexEndpoint adds the endpoint's fields to the reverse lookup maps.
 // Must be called with mu held for writing.
 func (r *EndpointRegistry) indexEndpoint(ep *Endpoint) {
+	if ep.ClusterURL != "" {
+		r.byClusterURL[ep.ClusterURL] = ep.URL
+	}
 	if ep.Alias != "" {
 		r.byAlias[strings.ToLower(ep.Alias)] = ep.URL
 	}
@@ -131,6 +150,9 @@ func (r *EndpointRegistry) indexEndpoint(ep *Endpoint) {
 // Only deletes if the index still points to this endpoint (guards against alias collisions).
 // Must be called with mu held for writing.
 func (r *EndpointRegistry) deindexEndpoint(ep *Endpoint) {
+	if r.byClusterURL[ep.ClusterURL] == ep.URL {
+		delete(r.byClusterURL, ep.ClusterURL)
+	}
 	if ep.Alias != "" {
 		key := strings.ToLower(ep.Alias)
 		if r.byAlias[key] == ep.URL {
@@ -156,6 +178,17 @@ func (r *EndpointRegistry) deindexEndpoint(ep *Endpoint) {
 // without holding the registry lock.
 func copyEndpoint(ep *Endpoint) *Endpoint {
 	cp := *ep
+	if !ep.IsLocal && ep.breaker != nil {
+		switch ep.breaker.State() {
+		case StateOpen:
+			cp.Status = StatusDown
+		case StateHalfOpen:
+			if cp.Status != StatusDown {
+				cp.Status = StatusDegraded
+			}
+			cp.recovering = true
+		}
+	}
 	// Struct copy above duplicates scalar fields; Apps is a typed slice
 	// whose backing array aliases the registry's storage — clone it.
 	// Nested provider diagnostics must not alias another caller's snapshot.
@@ -244,13 +277,26 @@ func (r *EndpointRegistry) GetEndpointsByURLs(urls []string) []*Endpoint {
 	return endpoints
 }
 
-// GetEndpointByURL returns a snapshot copy of the endpoint for given URL.
+// GetEndpointByURL shares registered evidence with requests beneath the same base URL.
 func (r *EndpointRegistry) GetEndpointByURL(url string) (*Endpoint, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if ep, ok := r.endpoints[url]; ok {
-		return copyEndpoint(ep), nil
+	for candidate := url; ; {
+		for _, address := range []string{candidate, candidate + "/"} {
+			key := address
+			if public, ok := r.byClusterURL[address]; ok {
+				key = public
+			}
+			if ep, ok := r.endpoints[key]; ok {
+				return copyEndpoint(ep), nil
+			}
+		}
+		i := strings.LastIndex(candidate, "/")
+		if i < strings.Index(candidate, "://")+3 {
+			break
+		}
+		candidate = candidate[:i]
 	}
 	return nil, fmt.Errorf("endpoint not found: %s", url)
 }
@@ -279,6 +325,22 @@ func (r *EndpointRegistry) Observe(url string, probe ProbeResult) Transition {
 		utils.LogDebugf("[Registry] Observe: endpoint %s not in registry, skipping", url)
 		return Transition{}
 	}
+	if probe.endpoint != nil && (probe.endpoint.breaker != ep.breaker || probe.endpoint.generation != ep.generation) {
+		return Transition{}
+	}
+	before := copyEndpoint(ep).Status
+	if probe.permit != nil {
+		outcome := fallback.Failure
+		if probe.OK && probe.Quality == QualityFull {
+			outcome = fallback.Success
+		}
+		if !probe.permit.Complete(outcome).Applied {
+			return Transition{}
+		}
+	}
+	if probe.OK {
+		ep.Quality = probe.Quality
+	}
 	liv, ok := r.liveness[url]
 	if !ok {
 		liv = NewLiveness(livenessThreshold)
@@ -287,17 +349,33 @@ func (r *EndpointRegistry) Observe(url string, probe ProbeResult) Transition {
 
 	t := liv.Observe(probe, utils.Now())
 	ep.Status = liv.Status()
+	if t.To == StatusDown {
+		ep.generation++
+		ep.breaker.Invalidate()
+	}
 
 	if probe.Err != nil {
-		ep.Snapshot.LastError = probe.Err.Error()
-	} else {
-		ep.Snapshot.LastError = ""
+		ep.Snapshot.LastError = security.RedactSensitive(utils.SanitizeErrorMessage(probe.Err.Error()))
+	} else if probe.OK {
+		clearLastError(ep)
 	}
 
 	if probe.OK && probe.Snapshot != nil {
 		r.applyConnectionSnapshot(ep, probe.Snapshot)
 	}
+	after := copyEndpoint(ep).Status
+	if before == after {
+		return Transition{}
+	}
+	t.From, t.To, t.At, t.Err, t.Snapshot = before, after, utils.Now(), probe.Err, probe.Snapshot
 	return t
+}
+
+// clearLastError requires full probe evidence and a closed breaker; r.mu must be held.
+func clearLastError(ep *Endpoint) {
+	if ep.Quality == QualityFull && ep.breaker.State() == StateClosed {
+		ep.Snapshot.LastError = ""
+	}
 }
 
 // MarkDown forces a single endpoint to StatusDown immediately,
@@ -320,6 +398,8 @@ func (r *EndpointRegistry) MarkDown(url string, reason error) Transition {
 		liv = NewLiveness(livenessThreshold)
 		r.liveness[url] = liv
 	}
+	ep.generation++
+	ep.breaker.Invalidate()
 	t := liv.ForceDown(utils.Now(), reason)
 	ep.Status = liv.Status()
 	if reason != nil {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -41,7 +42,6 @@ type NameObserver func(hostURL, nodeName string)
 type HealthMonitor struct {
 	connector            *Connector
 	registry             *EndpointRegistry
-	circuitBreakers      *CircuitBreakerManager // unused here post UP-skip removal; breakers are driven by dispatch in strategies.go
 	checkInterval        time.Duration
 	reconnectionCallback ReconnectionCallback
 	nameObserver         NameObserver
@@ -54,7 +54,6 @@ type HealthMonitor struct {
 type HealthMonitorConfig struct {
 	Connector            *Connector
 	Registry             *EndpointRegistry
-	CircuitBreakers      *CircuitBreakerManager
 	CheckInterval        time.Duration
 	ReconnectionCallback ReconnectionCallback
 	NameObserver         NameObserver
@@ -66,16 +65,17 @@ func NewHealthMonitor(config *HealthMonitorConfig) *HealthMonitor {
 		config.CheckInterval = constants.HealthCheckInterval
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &HealthMonitor{
+	hm := &HealthMonitor{
 		connector:            config.Connector,
 		registry:             config.Registry,
-		circuitBreakers:      config.CircuitBreakers,
 		checkInterval:        config.CheckInterval,
 		reconnectionCallback: config.ReconnectionCallback,
 		nameObserver:         config.NameObserver,
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
+	hm.registry.onTransition = hm.handleTransition
+	return hm
 }
 
 // Start launches the monitor's periodic probe goroutine.
@@ -107,8 +107,8 @@ func (hm *HealthMonitor) safeCheckAllNodes() {
 	hm.checkAllNodes()
 }
 
-// checkAllNodes probes every non-local, non-circuit-open endpoint on each
-// tick. UP-skip was removed so polling acts as the correctness floor for
+// checkAllNodes probes every non-local endpoint, including open breakers for recovery.
+// UP-skip was removed so polling acts as the correctness floor for
 // dropped-notify cases: a worker that silently mutates state still gets
 // reconciled within HealthCheckInterval. Cost at small clusters (N≤10)
 // is one HTTP probe per worker per cadence — negligible.
@@ -158,12 +158,20 @@ func (hm *HealthMonitor) fanOutProbes(targets []*Endpoint, perProbeTimeout time.
 // probe runs one health probe against url, feeds the result into the
 // registry's liveness state machine, and acts on the resulting transition.
 func (hm *HealthMonitor) probe(ctx context.Context, url string) {
+	ep, lookupErr := hm.registry.GetEndpointByURL(url)
+	if lookupErr != nil {
+		return
+	}
+	permit, _ := ep.breaker.Acquire(true)
+	if permit != nil {
+		defer permit.Complete(fallback.Neutral)
+	}
 	conn, err := hm.connector.ConnectToClusterNode(ctx, url)
 
 	// If the monitor is shutting down, ctx cancellation will surface as
 	// the probe error — don't attribute shutdown to the peer by driving
 	// the liveness machine toward DOWN.
-	if err != nil && ctx.Err() != nil {
+	if err != nil && hm.ctx.Err() != nil {
 		return
 	}
 
@@ -177,7 +185,12 @@ func (hm *HealthMonitor) probe(ctx context.Context, url string) {
 		}
 	}
 
+	result.endpoint, result.permit = ep, permit
 	t := hm.registry.Observe(url, result)
+	hm.registry.onTransition(url, t)
+}
+
+func (hm *HealthMonitor) handleTransition(url string, t Transition) {
 	if t.IsZero() {
 		return
 	}

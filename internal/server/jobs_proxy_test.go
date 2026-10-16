@@ -681,18 +681,21 @@ func TestJobLookupFoundOnPeer(t *testing.T) {
 	})
 }
 
-// A peer the health monitor marks down is not asked, so it cannot turn every job miss into a 503.
-func TestListJobsPeers_SkipsDownPeers(t *testing.T) {
+// Shared eligibility avoids turning an unusable peer into an inconclusive job lookup.
+func TestListJobsPeers_SkipsUnusablePeers(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	coord, err := mesh.NewCluster(&mesh.Config{}, "http://127.0.0.1:9090", nil, nil, nil)
 	require.NoError(t, err)
+	coord.Stop()
 	s.cluster.coordinator = coord
 	for _, ep := range []*mesh.Endpoint{
-		{Name: "up", NodeName: "up", URL: "http://10.9.9.1:9090", Status: mesh.StatusUp},
-		{Name: "unknown", NodeName: "unknown", URL: "http://10.9.9.2:9090", Status: mesh.StatusUnknown},
-		{Name: "down", NodeName: "down", URL: "http://10.9.9.3:9090", Status: mesh.StatusDown},
+		{Name: "up", NodeName: "up", URL: "http://up.invalid:9080", Status: mesh.StatusUp},
+		{Name: "unknown", NodeName: "unknown", URL: "http://unknown.invalid:9080", Status: mesh.StatusUnknown},
+		{Name: "down", NodeName: "down", URL: "http://down.invalid:9080", Status: mesh.StatusDown},
+		{Name: "grace", NodeName: "grace", URL: "http://grace.invalid:9080", Status: mesh.StatusDegraded, Quality: mesh.QualityFull},
+		{Name: "public", NodeName: "public", URL: "http://public.invalid:9080", Status: mesh.StatusDegraded},
 	} {
 		require.NoError(t, coord.RegisterEndpoint(ep))
 	}
-	assert.ElementsMatch(t, []string{"up", "unknown"}, s.listJobsPeers())
+	assert.ElementsMatch(t, []string{"up", "grace"}, s.listJobsPeers())
 }

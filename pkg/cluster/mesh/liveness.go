@@ -1,6 +1,10 @@
 package mesh
 
-import "time"
+import (
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/fallback"
+)
 
 // HealthQuality describes which probe path succeeded.
 //
@@ -21,6 +25,8 @@ const (
 
 // ProbeResult is the outcome of a single health probe fed into Liveness.
 type ProbeResult struct {
+	endpoint *Endpoint
+	permit   *fallback.Permit
 	OK       bool
 	Quality  HealthQuality
 	Err      error

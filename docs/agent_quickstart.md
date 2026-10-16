@@ -47,3 +47,18 @@ select a template that accepts it. zzRouter ships no chat templates.
 Observe runs at `/zzrouter/v1/runs`, stop one with `DELETE /runs/:id` under that
 management prefix, and branch on error codes rather than message text.
 The [OpenAPI specification](../internal/server/openapi.yaml) is the field reference.
+
+Node inventory (`/zzrouter/v1/nodes` and `/nodes/:name`) and MCP use the same
+health view. Three consecutive node transport failures report `down` and refuse
+ordinary traffic, including pinned inference, jobs and provider sync. HTTP provider
+errors, caller deadlines and errors after response headers do not trip the node
+breaker. Recovery needs no inference: after a
+30-second cooldown, two successful full cluster probes restore dispatch. During
+half-open recovery the node reports `degraded` and admits probes only.
+
+One missed full probe also reports `degraded` but keeps dispatch grace; a second
+miss reports `down`. Public-only `degraded` and `unknown` nodes cannot receive
+ordinary traffic. A graceful goodbye marks the node down immediately.
+`last_seen_at` remains the latest successful probe; `last_error` contains sanitized
+probe or dispatch evidence. Restore worker connectivity or pairing, then observe
+probe-driven recovery. Repeated inference requests do not recover a node.

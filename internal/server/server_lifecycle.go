@@ -314,7 +314,6 @@ func (s *Server) runMaintenance(tickCount int) {
 		}
 	}
 	if s.cluster.coordinator != nil {
-		s.cluster.coordinator.GetState().GetCircuitBreakers().PruneStale(1 * time.Hour)
 		// Re-push the provider tree to every worker. The interesting
 		// case is the one no event covers: a config.yaml edited on disk
 		// while this node was stopped is not a change, so nothing fires
