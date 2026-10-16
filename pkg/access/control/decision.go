@@ -26,6 +26,8 @@ const (
 	DenyTPM
 	// DenyBudget — spend budget reservation exhausted.
 	DenyBudget
+	// DenyModelUnpriced requires pricing before budget enforcement.
+	DenyModelUnpriced
 	// DenyConcurrency — concurrent-request slot cap exceeded.
 	DenyConcurrency
 	// DenyAnonymousGated — anonymous request to a gated /v1/* or /api/*
@@ -52,6 +54,8 @@ func (r DenialReason) String() string {
 		return "rpm_limit_exceeded"
 	case DenyTPM:
 		return "tpm_limit_exceeded"
+	case DenyModelUnpriced:
+		return "model_unpriced"
 	case DenyBudget:
 		return "budget_exhausted"
 	case DenyConcurrency:
@@ -63,7 +67,7 @@ func (r DenialReason) String() string {
 	}
 }
 
-// Decision is the pure-domain outcome of Core.Enforce. It is intentionally
+// Decision is the pure-domain outcome of Core.EnforceQuotas. It is intentionally
 // free of HTTP-shaped fields (status codes, OpenAI error types, Retry-After
 // values) — those are adapter concerns derived by switching on Reason.
 // RateLimitHeaders stays because it IS pure domain data (values emitted by

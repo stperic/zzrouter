@@ -11,6 +11,17 @@ virtual keys grant narrower access; virtual keys are Argon2id-hashed and can be
 limited by team, model access, requests, tokens, concurrency and budget.
 Do not give an inference client the admin credential.
 
+A key or team spend limit requires known pricing before inference. Unpriced
+targets are removed from model-group chains; if none remain, the request returns
+403 `model_unpriced` with an administrator action and no retry or exhausted-budget
+fields. Upstream-reported cost cannot substitute for pre-request rates. Recognized
+local engines and explicit zero overrides are free, including after monetary
+exhaustion. Zero spend limits remain unenforced. Workers retain the synthetic
+static-admin bypass because the coordinator alone enforces client budgets.
+
+Model resolution, including catalog population, runs before RPM/TPM checks, so
+a caller over its RPM limit still incurs a resolution.
+
 Anonymous inference is allowed only when configured. The installer enables it
 for loopback; network binds require keys. Team model allowlists also prevent
 anonymous access. Anonymous cloud access is disabled by default.

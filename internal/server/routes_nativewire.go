@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -61,7 +62,7 @@ func (s *Server) handleNativeWirePassthrough(c *gin.Context, mount, providerKey 
 	if !s.admitOpaqueForward(c, "/"+mount, resolved.Cloud) {
 		return
 	}
-	release, ok := s.enforceAndAttribute(c, nativeWireLabel(mount), nil)
+	_, release, ok := s.enforceAndAttribute(c, nativeWireLabel(mount), nil, nil)
 	if !ok {
 		return
 	}
@@ -116,7 +117,7 @@ func (s *Server) admitOpaqueForward(c *gin.Context, surface string, billed bool)
 	switch {
 	case ac.Team != nil && len(ac.Team.AllowedModels) > 0:
 		unenforceable = "its team limits which models it may use"
-	case ac.Key.Quotas.SpendLimit > 0 || (ac.Team != nil && ac.Team.Quotas.SpendLimit > 0):
+	case control.HasSpendLimit(ac):
 		unenforceable = "it has a spend limit"
 	case ac.Key.Quotas.TPMLimit > 0 || (ac.Team != nil && ac.Team.Quotas.TPMLimit > 0):
 		unenforceable = "it has a tokens-per-minute limit"

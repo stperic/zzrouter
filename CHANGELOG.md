@@ -24,6 +24,25 @@
   value. Later stream cost updates replace earlier costs. Client chat responses
   omit vendor accounting fields after metering, including when metadata is off;
   provider costs retain their precision in responses and inference logs.
+- Spend-limited inference filters unpriced targets before dispatch and returns
+  403 `model_unpriced` when none remain. Explicit zero overrides and recognized
+  local engines remain free after monetary exhaustion. Admission and settlement
+  share pricing lookup, and admitted rates survive live pricing changes.
+
+- Upgrade: limited keys or teams routing to an external self-hosted endpoint
+  without a managed lifecycle now receive 403 `model_unpriced` until an operator
+  posts a zero (free) or real pricing override. Enable `models.pricing.enabled`
+  in `node.yaml` and restart if pricing is disabled. For a free endpoint, replace
+  `my-external-provider` with its configured provider name and run:
+
+  ```bash
+  curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides \
+    -H "X-API-Key: $ZZROUTER_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+    -d '{"provider":"my-external-provider","model":"*","input_cost_per_1m":0,"output_cost_per_1m":0}'
+  ```
+
+  Use a concrete model ID and real dollar rates per million tokens when billed.
+
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete

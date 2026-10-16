@@ -56,34 +56,32 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 	// The recorder is consumed by InferenceLogBridge on response completion.
 	recorder := newOllamaInferenceRecorder(c, modelName, body, endpointType)
 
-	release, ok := s.enforceAndAttribute(c, modelName, recorder)
+	resolved, release, ok := s.enforceAndAttribute(c, modelName, recorder, func() (*resolver.Resolved, bool) {
+		target, ok := s.resolveTarget(c, modelName, nodeHint, func(target *resolver.Resolved) bool {
+			original := len(target.Candidates)
+			target.Candidates = filterCandidatesByProvider(target.Candidates, constants.AppOllama)
+			if original > 0 && len(target.Candidates) == 0 || original == 0 && target.Provider != "" && target.Provider != constants.AppOllama {
+				RespondToError(c, ollamaUnavailableErr(modelName))
+				return false
+			}
+			return true
+		})
+		if !ok {
+			return nil, false
+		}
+		if !s.admitImages(c, modelName, body, target) {
+			return nil, false
+		}
+		s.quoteTargets(c, target)
+		return target, true
+	})
 	defer release()
 	if !ok {
-		// Enforce wrote the denial in the Ollama dialect already.
 		return nil
 	}
-
-	if err := s.validateModel(c.Request.Context(), modelName); err != nil {
-		writeModelAdmissionError(c.Writer, c.Request, err)
-		return nil
-	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
-	if err != nil {
-		routing.RecordDecision(c.Request.Context(),
-			s.routingStrategy(), routing.OutcomeNoBackend,
-			"", string(genai.OperationName(c.FullPath())))
-		return err
-	}
-
-	// Enforce the /api/* Ollama-provider-scope invariant.
-	origCandidateCount := len(resolved.Candidates)
-	resolved.Candidates = filterCandidatesByProvider(resolved.Candidates, constants.AppOllama)
 
 	// Group case: at least one Ollama replica → load-balanced dispatch.
 	if len(resolved.Candidates) > 0 {
-		if !s.admitResolvedModels(c, resolved, nodeHint) || !s.admitImages(c, modelName, body, resolved) {
-			return nil
-		}
 		body = requestUsageCounts(c, body)
 		endpoint := prov_apps.EndpointChat
 		if ollamaRequestType(endpointType) == llm.RequestTypeEmbedding {
@@ -94,20 +92,6 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 		return nil
 	}
 
-	// A group existed but held no Ollama replicas after filtering → the
-	// model is known but not reachable via /api/*.
-	if origCandidateCount > 0 {
-		return ollamaUnavailableErr(modelName)
-	}
-
-	// Single-deployment resolution (no group). Reject non-Ollama providers.
-	if resolved.Provider != "" && resolved.Provider != constants.AppOllama {
-		return ollamaUnavailableErr(modelName)
-	}
-
-	if !s.admitResolvedModels(c, resolved, nodeHint) || !s.admitImages(c, modelName, body, resolved) {
-		return nil
-	}
 	body = s.resolvedRequestBody(c, resolved, modelName, body)
 	// The Ollama surface never set this, so /api/* answered with no node at
 	// all. Group dispatch returns above and is attributed by CommitWithRouting.

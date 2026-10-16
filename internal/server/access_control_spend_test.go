@@ -57,7 +57,7 @@ func TestAccessControl_GetKeySpend_ReflectsSettledTraffic(t *testing.T) {
 			DefaultMaxTokens: 500,
 		},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 500_000, 100, 200)
 
 	state := gw.GetKeySpend("alice")
@@ -94,7 +94,7 @@ func TestAccessControl_GetTeamSpend_Independent(t *testing.T) {
 			},
 		},
 	}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	// Each scope in the chain has its own SpendState ledger; SettleReservations
 	// applies the full actualCost to each scope (key AND team each spent $0.25).
 	enforcer.SettleReservations(reservations, 250_000, 50, 100)
@@ -124,7 +124,7 @@ func TestAccessControl_ResetKeySpend_ZerosLedger(t *testing.T) {
 			DefaultMaxTokens: 100,
 		},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 123_456, 10, 20)
 
 	require.NotNil(t, gw.GetKeySpend("alice"))
@@ -155,7 +155,7 @@ func TestAccessControl_GetAllSpendStates_AllScopes(t *testing.T) {
 		},
 	}
 	for _, c := range tracks {
-		_, reservations := enforcer.Check(c)
+		_, reservations := enforcer.Check(c, paidQuotes())
 		enforcer.SettleReservations(reservations, 100_000, 10, 10)
 	}
 
@@ -209,7 +209,7 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 			DefaultMaxTokens: 100,
 		},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 750_000, 50, 150)
 
 	usage, err = svc.GetKeyUsage("alice")
@@ -240,7 +240,7 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 			DefaultMaxTokens: 100,
 		},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 500_000, 10, 20)
 
 	require.NoError(t, svc.ResetKeyUsage("alice", "test"))
@@ -270,7 +270,7 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 			EntityID: entity,
 			Quotas:   quota.QuotaConfig{SpendLimit: 5, ResetPeriod: "monthly", DefaultMaxTokens: 100},
 		}}
-		_, reservations := enforcer.Check(chain)
+		_, reservations := enforcer.Check(chain, paidQuotes())
 		enforcer.SettleReservations(reservations, 250_000, 10, 10)
 	}
 	teamChain := []quota.QuotaScope{{
@@ -278,7 +278,7 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 		EntityID: "eng",
 		Quotas:   quota.QuotaConfig{SpendLimit: 5, ResetPeriod: "monthly", DefaultMaxTokens: 100},
 	}}
-	_, reservations := enforcer.Check(teamChain)
+	_, reservations := enforcer.Check(teamChain, paidQuotes())
 	enforcer.SettleReservations(reservations, 100_000, 5, 5)
 
 	report := svc.GetSpendReport()
@@ -323,7 +323,7 @@ func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
 			DefaultMaxTokens: 100,
 		},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 2_000_000, 200, 400)
 
 	usage, err = svc.GetTeamUsage("eng")
@@ -350,7 +350,7 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 		EntityID: "eng",
 		Quotas:   quota.QuotaConfig{SpendLimit: 10, ResetPeriod: "monthly", DefaultMaxTokens: 100},
 	}}
-	_, reservations := enforcer.Check(chain)
+	_, reservations := enforcer.Check(chain, paidQuotes())
 	enforcer.SettleReservations(reservations, 1_500_000, 50, 75)
 
 	require.NoError(t, svc.ResetTeamUsage("eng", "test"))

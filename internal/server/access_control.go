@@ -28,6 +28,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -273,24 +274,24 @@ func (a *AccessControl) rejectAuth(c *gin.Context, status int, detail string) {
 
 // ===== Enforcement =====
 
-// Enforce runs the full enforcement chain after authentication and once
-// the model name is known. Short-circuits for anonymous / static-key
-// paths (no quotas); otherwise delegates to core.Enforce and translates
-// the Decision into HTTP.
-//
-// Order per design doc §"Adapter call flow — pinned order":
-//  1. Read AccessContext from gin.
-//  2. Short-circuit: anonymous → gated-guard check; static key → allow.
-//  3. Call core.Enforce(ac, modelName).
-//  4. Unconditionally write decision.RateLimitHeaders.
-//  5. On deny → writeQuotaDenial; on allow → stash Release.
-func (a *AccessControl) Enforce(c *gin.Context, modelName string) bool {
-	ac, admitted := a.resolveVirtualOrRespond(c, modelName)
-	if ac == nil {
-		return admitted
+// Enforce prepares targets only after authorization, before any metered checks.
+func (a *AccessControl) Enforce(c *gin.Context, modelName string, prepare func() ([]pricing.Quote, bool)) bool {
+	if !a.Authorize(c, modelName) {
+		return false
 	}
-
-	decision, release, reservationID := a.core.Enforce(ac, modelName)
+	var quotes []pricing.Quote
+	if prepare != nil {
+		var ok bool
+		quotes, ok = prepare()
+		if !ok {
+			return false
+		}
+	}
+	ac := GetAccessContext(c)
+	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+		return true
+	}
+	decision, release, reservationID := a.core.EnforceQuotas(ac, quotes)
 
 	// Write rate-limit headers unconditionally — nil map is a no-op.
 	for k, v := range decision.RateLimitHeaders {
@@ -386,6 +387,10 @@ func (a *AccessControl) writeQuotaDenial(c *gin.Context, d control.Decision) {
 	errType := "rate_limit_error"
 	code := "rate_limit_exceeded"
 	switch d.Reason {
+	case control.DenyModelUnpriced:
+		status = http.StatusForbidden
+		errType = "permission_error"
+		code = string(httperr.CodeModelUnpriced)
 	case control.DenyBudget:
 		status = http.StatusPaymentRequired
 		errType = "insufficient_quota"

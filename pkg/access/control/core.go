@@ -12,6 +12,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -83,12 +84,12 @@ type Core struct {
 }
 
 // ReservationID identifies a single budget reservation batch that
-// Enforce stashed for post-response settlement. Zero is reserved for
+// EnforceQuotas stashed for post-response settlement. Zero is reserved for
 // "no reservation held" (a request without budget caps); valid IDs
 // start at 1 and are assigned by a process-local atomic counter.
 type ReservationID uint64
 
-// NoReservation is the sentinel returned by Enforce when no budget
+// NoReservation is the sentinel returned by EnforceQuotas when no budget
 // stash was created — either the request had no spend limits or
 // enforcement denied before the reservation step.
 const NoReservation ReservationID = 0
@@ -208,41 +209,13 @@ func (c *Core) buildAccessContext(p *KeyPrincipal) *AccessContext {
 	return ac
 }
 
-// Enforce runs the full enforcement chain after authentication and once
-// the model name is known. Pure — returns a Decision and a Release
-// callback; HTTP rendering is adapter's responsibility.
-//
-// INVARIANT — enforcement order must not change:
-//  1. Suspended check (key, then team)
-//  2. Expired check (key)
-//  3. Model access (team.AllowedModels intersection, group-aware)
-//     (steps 1-3 are Authorize; Enforce runs it first)
-//  4. Quota chain — key scope first, team scope second — RPM → TPM → budget reservation
-//  5. Concurrency slot acquisition
-//
-// On concurrency failure, in-flight budget reservations are cancelled
-// before returning (preserves the access_control.go:360-363 invariant).
-//
-// Callers pass a non-nil AccessContext with IsVirtual=true. Static keys
-// and anonymous paths are short-circuited by the adapter BEFORE reaching
-// Enforce — they don't have quotas.
-//
-// On success with a non-zero budget reservation, returns a
-// ReservationID the caller MUST thread to RecordSpendByKey so the
-// settlement lands on the right reservation even when multiple
-// concurrent requests on the same key are in flight. When no
-// reservation is held (no spend caps configured or the chain had no
-// spend step), the returned ID is NoReservation.
-func (c *Core) Enforce(ac *AccessContext, modelName string) (Decision, Release, ReservationID) {
-	if d := c.Authorize(ac, modelName); !d.Allowed {
-		return d, nil, NoReservation
-	}
-
+// EnforceQuotas runs metered checks only after authorization and target preparation.
+func (c *Core) EnforceQuotas(ac *AccessContext, quotes []pricing.Quote) (Decision, Release, ReservationID) {
 	// Build quota chain: key first, then team.
 	chain := buildQuotaChain(ac)
 
 	// 4. Quota chain (RPM/TPM/budget reservation).
-	qd, reservations := c.enforcer.Check(chain)
+	qd, reservations := c.enforcer.Check(chain, quotes)
 
 	// Headers are snapshotted AFTER Check so "remaining" counts this
 	// request. Taken before, a fresh key answered its first call with
@@ -291,9 +264,7 @@ func (c *Core) Enforce(ac *AccessContext, modelName string) (Decision, Release, 
 }
 
 // Authorize runs the admission checks that cost the caller nothing:
-// suspension, expiry and model access. Enforce runs it first, then the
-// metered steps. A request that consumes no tokens (counting them, for
-// one) calls Authorize alone, so it neither ticks RPM nor holds budget.
+// suspension, expiry and model access. Token counting owes no metered checks.
 func (c *Core) Authorize(ac *AccessContext, modelName string) Decision {
 	// 1. Suspended check.
 	if ac.Key.Suspended {
@@ -392,6 +363,8 @@ func translateQuotaReason(quotaReason string) DenialReason {
 		return DenyRPM
 	case "tpm_limit_exceeded":
 		return DenyTPM
+	case "model_unpriced":
+		return DenyModelUnpriced
 	case "budget_exhausted":
 		return DenyBudget
 	case "concurrency_limit_exceeded":
@@ -409,6 +382,8 @@ func translateQuotaReason(quotaReason string) DenialReason {
 // code at access_control.go:505-520.
 func humanQuotaMessage(d quota.Decision) string {
 	switch d.Reason {
+	case "model_unpriced":
+		return d.Detail
 	case "budget_exhausted":
 		return fmt.Sprintf("Budget exhausted for %s %s", d.Scope, d.EntityID)
 	case "rpm_limit_exceeded":
@@ -420,4 +395,17 @@ func humanQuotaMessage(d quota.Decision) string {
 	default:
 		return fmt.Sprintf("%s for %s %s", d.Reason, d.Scope, d.EntityID)
 	}
+}
+
+// HasSpendLimit shares the quota chain's scope and zero-limit semantics.
+func HasSpendLimit(ac *AccessContext) bool {
+	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+		return false
+	}
+	for _, scope := range buildQuotaChain(ac) {
+		if scope.Quotas.SpendLimit > 0 {
+			return true
+		}
+	}
+	return false
 }

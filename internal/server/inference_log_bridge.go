@@ -97,9 +97,13 @@ func (b *InferenceLogBridge) OnInferenceComplete(data llm.InferenceLogData) {
 	if data.CostSource == quota.CostSourceProvider {
 		providerCost = &data.Cost
 	}
+	models := []string{data.ResponseModel, data.Model}
+	if data.AdmittedQuote.Model != "" {
+		models[1] = data.AdmittedQuote.Model
+	}
 	costMicro, costSource := quota.CalculateCostMicro(providerCost, b.pricingStore, data.App,
-		[]string{data.ResponseModel, data.Model},
-		data.TokensIn, data.TokensOut, data.TokensCached, data.TokensReasoning)
+		models,
+		data.TokensIn, data.TokensOut, data.TokensCached, data.TokensReasoning, data.AdmittedQuote)
 	costUSD := data.Cost
 	if costSource == quota.CostSourceZZRouter {
 		costUSD = quota.MicroToUSD(costMicro)
@@ -108,7 +112,7 @@ func (b *InferenceLogBridge) OnInferenceComplete(data llm.InferenceLogData) {
 	// priced it: it settles at $0 and draws down no budget. Record it
 	// so the gap is visible on /pricing/status instead of looking free.
 	if costSource == "" && (data.TokensIn > 0 || data.TokensOut > 0) {
-		b.pricingStore.RecordMiss(data.App, data.ResponseModel, data.Model)
+		b.pricingStore.RecordMiss(data.App, models...)
 	}
 	// Push the resolved (cost, source) back onto the recorder so any
 	// post-completion Snapshot reader observes the pricing-store-

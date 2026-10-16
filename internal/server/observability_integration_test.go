@@ -1021,7 +1021,7 @@ func TestBudgetSnapshotter_IncludesReservedInCurrentSpend(t *testing.T) {
 	})
 	c, _ := rig.makeRequest(aliceRaw)
 	require.True(t, rig.access.Authenticate(c, RoleUser))
-	require.True(t, rig.access.Enforce(c, "llama3"))
+	require.True(t, rig.access.Enforce(c, "llama3", paidPreparation))
 
 	// Enforce now holds a reservation. The snapshot must surface
 	// limit - (spend + reserved) as current spend, not just spend.

@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/semconv/v1.40.0/genaiconv"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -373,6 +374,8 @@ func RequestTypeToOperation(rt string) genaiconv.OperationNameAttr {
 // enrichment phase, then hands it to the streaming path which calls
 // RecordFirstToken and RecordCompletion sequentially.
 type InferenceRecorder struct {
+	quotes   []pricing.Quote
+	serving  pricing.Quote
 	ctx      context.Context
 	metrics  *Metrics
 	model    string
@@ -797,6 +800,7 @@ func (r *InferenceRecorder) RecordCompletion(tokensIn, tokensOut int64) {
 			CostSetter:      r,
 			Model:           r.model,
 			ResponseModel:   r.responseModel,
+			AdmittedQuote:   r.serving,
 			App:             r.provider,
 			RequestType:     r.requestType,
 			Stream:          r.stream,
@@ -895,4 +899,25 @@ func (r *InferenceRecorder) RecordFirstToken() {
 // nanotime returns the current time in nanoseconds.
 func nanotime() int64 {
 	return utils.Now().UnixNano()
+}
+
+// SetQuotes preserves admitted rates across live pricing changes.
+func (r *InferenceRecorder) SetQuotes(quotes []pricing.Quote) {
+	if r != nil {
+		r.quotes = quotes
+	}
+}
+
+// SetServingTarget follows fallback selection without trusting response model spellings.
+func (r *InferenceRecorder) SetServingTarget(provider, model string) {
+	if r == nil {
+		return
+	}
+	r.serving = pricing.Quote{Provider: provider, Model: model}
+	for _, quote := range r.quotes {
+		if quote.Provider == provider && quote.Model == model {
+			r.serving = quote
+			break
+		}
+	}
 }

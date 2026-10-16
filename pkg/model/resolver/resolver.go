@@ -11,6 +11,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/model/cache"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
 // Reference carries the client's model spelling and separately trusted routing hints.
@@ -28,6 +29,8 @@ type Reference struct {
 // Resolved is the result of resolving a client-facing model name to a
 // concrete routing target.
 type Resolved struct {
+	// Quotes snapshot admitted rates for the remaining concrete targets.
+	Quotes []pricing.Quote
 	// OriginalName is what the client requested (e.g., "fast-chat" or "llama3.3:70b")
 	OriginalName string
 

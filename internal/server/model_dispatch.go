@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/dispatch/wire"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/model/pricing"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/observability/genai"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
@@ -202,7 +203,13 @@ func callerModel(ctx context.Context, resolved *resolver.Resolved) string {
 // Every dispatcher goes through here. A surface that resolves models on
 // its own instead is a surface with no quotas, no model access, and no
 // spend attribution — which is what /api/* silently was.
-func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder *llm.InferenceRecorder) (release func(), ok bool) {
+func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder *llm.InferenceRecorder, prepare func() (*resolver.Resolved, bool)) (resolved *resolver.Resolved, release func(), ok bool) {
+	if recorder == nil && prepare != nil {
+		recorder = requestRecorder(c.Request.Context(), modelName, "")
+		mirrorCallerIdentityToRecorder(c, recorder)
+		c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), CtxKeyInferenceRecorder, recorder))
+	}
+
 	// Key + team IDs feed post-response settlement and log attribution.
 	// LiteLLM-vocabulary caller labels (api_key_alias, hashed_api_key,
 	// team_alias) are mirrored at recorder construction by
@@ -215,8 +222,20 @@ func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder 
 		}
 	}
 
-	if !s.access.Enforce(c, modelName) {
-		return func() {}, false
+	if !s.access.Enforce(c, modelName, func() ([]pricing.Quote, bool) {
+		if prepare == nil {
+			return nil, true
+		}
+		var prepared bool
+		resolved, prepared = prepare()
+		if !prepared {
+			return nil, false
+		}
+		recorder.SetQuotes(resolved.Quotes)
+		recorder.SetServingTarget(resolved.Provider, resolved.ModelName)
+		return resolved.Quotes, true
+	}) {
+		return nil, func() {}, false
 	}
 
 	// Mirror the reservation ID that Enforce stashed on gin onto the
@@ -227,7 +246,7 @@ func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder 
 
 	// Order matches the LIFO the two separate defers used to produce:
 	// refund an unsettled reservation, then drop the concurrency slot.
-	return func() {
+	return resolved, func() {
 		s.access.CancelPendingReservationIfUnsettled(c)
 		ReleaseConcurrency(c)
 	}, true
@@ -237,38 +256,11 @@ func (s *Server) enforceAndAttribute(c *gin.Context, modelName string, recorder 
 // updating the inference recorder and span with routing decisions.
 // Used by instrumented handlers (chat completions, completions).
 func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string, body []byte, recorder *llm.InferenceRecorder, span trace.Span, endpoint string) {
-	// Extract @node hint from the model string. Header X-Node still wins.
-	nodeHint := c.GetHeader("X-Node")
-
-	release, ok := s.enforceAndAttribute(c, modelName, recorder)
+	resolved, release, ok := s.enforceAndAttribute(c, modelName, recorder, func() (*resolver.Resolved, bool) {
+		return s.prepareTarget(c, modelName, body, "", "")
+	})
 	defer release()
 	if !ok {
-		return
-	}
-
-	if err := s.validateModel(c.Request.Context(), modelName); err != nil {
-		llm.SetSpanError(span, err)
-		recorder.SetError("model_admission_failed", err.Error())
-		recorder.RecordCompletion(0, 0)
-		writeModelAdmissionError(c.Writer, c.Request, err)
-		return
-	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
-	if err != nil {
-		llm.SetSpanError(span, err)
-		recorder.SetError("model_resolve_failed", err.Error())
-		recorder.RecordCompletion(0, 0)
-		// Provider is unknown on resolve failure — emit empty so the
-		// no-backend bucket lights up regardless of which provider the
-		// caller asked for.
-		routing.RecordDecision(c.Request.Context(),
-			s.routingStrategy(), routing.OutcomeNoBackend,
-			"", string(genai.OperationName(c.FullPath())))
-		RespondToError(c, err)
-		return
-	}
-
-	if !s.admitResolvedModels(c, resolved, nodeHint) || !s.admitImages(c, modelName, body, resolved) {
 		return
 	}
 	body = requestUsageCounts(c, body)
@@ -327,22 +319,15 @@ func (s *Server) resolveAndDispatchWithRecorder(c *gin.Context, modelName string
 // model and dispatches the body unchanged: no span, and no body rewrite
 // beyond the model name. A handler that stashed an inference recorder on
 // the request context (CtxKeyInferenceRecorder) gets key, team and
-// reservation attribution on it, so spend settles; without one the proxy
-// sites log a keyless row.
+// reservation attribution on it, so spend settles; otherwise the shared
+// gate creates the recorder before admission.
 func (s *Server) resolveAndDispatchSimple(c *gin.Context, modelName string, body []byte, endpoint string) {
-	nodeHint := c.GetHeader("X-Node")
-
 	recorder, _ := c.Request.Context().Value(CtxKeyInferenceRecorder).(*llm.InferenceRecorder)
-	release, ok := s.enforceAndAttribute(c, modelName, recorder)
+	resolved, release, ok := s.enforceAndAttribute(c, modelName, recorder, func() (*resolver.Resolved, bool) {
+		return s.prepareTarget(c, modelName, body, "", "")
+	})
 	defer release()
 	if !ok {
-		return
-	}
-	resolved, ok := s.resolveTarget(c, modelName, nodeHint)
-	if !ok {
-		return
-	}
-	if !s.admitImages(c, modelName, body, resolved) {
 		return
 	}
 	s.dispatchTo(c, resolved, modelName, body, endpoint)
@@ -350,17 +335,23 @@ func (s *Server) resolveAndDispatchSimple(c *gin.Context, modelName string, body
 
 // resolveTarget resolves modelName for dispatch. On false the failure
 // has been written.
-func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string) (*resolver.Resolved, bool) {
+func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string, scope func(*resolver.Resolved) bool) (*resolver.Resolved, bool) {
 	if err := s.validateModel(c.Request.Context(), modelName); err != nil {
+		llm.SetSpanError(trace.SpanFromContext(c.Request.Context()), err)
+		recordErrorOnContext(c.Request.Context(), "model_admission_failed", err.Error())
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil, false
 	}
 	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
 	if err != nil {
+		llm.SetSpanError(trace.SpanFromContext(c.Request.Context()), err)
 		routing.RecordDecision(c.Request.Context(),
 			s.routingStrategy(), routing.OutcomeNoBackend, "", string(genai.OperationName(c.FullPath())))
 		recordErrorOnContext(c.Request.Context(), "server_error", "Failed to resolve model")
 		RespondToError(c, err)
+		return nil, false
+	}
+	if scope != nil && !scope(resolved) {
 		return nil, false
 	}
 	return resolved, s.admitResolvedModels(c, resolved, nodeHint)
@@ -466,4 +457,21 @@ func (s *Server) stashServingProvider(c *gin.Context, provider string) {
 	}
 	c.Request = c.Request.WithContext(
 		context.WithValue(c.Request.Context(), CtxKeyProvider, provider))
+}
+
+// prepareTarget shares admission ordering before any quota is consumed.
+func (s *Server) prepareTarget(c *gin.Context, model string, body []byte, native, compat string) (*resolver.Resolved, bool) {
+	target, ok := s.resolveTarget(c, model, c.GetHeader("X-Node"), nil)
+	if !ok || !s.admitImages(c, model, body, target) {
+		return nil, false
+	}
+	if native != "" {
+		if _, ok := s.narrowToWireEndpoint(c, model, target, native, compat); !ok {
+			return nil, false
+		}
+	}
+	if notInference, _ := c.Request.Context().Value(CtxKeyNotInference).(bool); !notInference {
+		s.quoteTargets(c, target)
+	}
+	return target, true
 }

@@ -75,7 +75,7 @@ func TestCostTruthResponseLogLedger(t *testing.T) {
 						Key:  &KeyPrincipal{ID: "alice", IsVirtual: true, Quotas: q},
 						Team: &TeamPrincipal{ID: "eng", Quotas: q},
 					})
-					require.True(t, access.Enforce(c, "gpt-4o"))
+					require.True(t, access.Enforce(c, "gpt-4o", paidPreparation))
 					rec := llm.NewInferenceRecorder(t.Context(), "gpt-4o", "openrouter")
 					rec.SetKeyID("alice")
 					rec.SetTeamID("eng")
