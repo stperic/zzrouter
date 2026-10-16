@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"sync"
 
@@ -244,36 +243,6 @@ func (m *Cluster) HandleRequest(ctx context.Context, req *Request) (*Response, e
 
 	// 3. Dispatch request using appropriate strategy
 	return m.dispatcher.Dispatch(ctx, strategy, endpoints, req)
-}
-
-// HandleHTTPRequest handles HTTP requests directly
-func (m *Cluster) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) error {
-	// Create cluster request from HTTP request
-	req := NewRequestFromHTTP(r)
-
-	// Extract strategy from query parameter
-	if strategyParam := r.URL.Query().Get("cluster_strategy"); strategyParam != "" {
-		if strategy, err := ParseStrategy(strategyParam); err == nil {
-			req.Strategy = strategy
-		}
-	}
-
-	// Extract strategy from header (lower priority than query param)
-	if req.Strategy == 0 { // Not set by query param
-		if strategyHeader := r.Header.Get("X-Cluster-Strategy"); strategyHeader != "" {
-			if strategy, err := ParseStrategy(strategyHeader); err == nil {
-				req.Strategy = strategy
-			}
-		}
-	}
-
-	// Handle the request
-	resp, err := m.HandleRequest(r.Context(), req)
-	if err != nil {
-		return err
-	}
-
-	return resp.WriteHTTP(w)
 }
 
 // determineStrategy selects the appropriate routing strategy

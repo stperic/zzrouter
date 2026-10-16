@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Size supported HF hybrid attention and GGUF qwen35/qwen3moe models through
+  the shared fit and admission path. Count full-attention KV, all expert weights
+  and conservative float32 recurrent states using schema-declared row counts.
+  Missing geometry/rows and hybrid placement across multiple devices stay unknown.
+- Share unified-memory detection across local inventory and legacy peer snapshots;
+  remove the unused mesh HTTP adapter and broadcast serialization.
+
 ## 0.2.3 (2026-10-16)
 
 - Dependency updates: Bubble Tea v2.1.0, gRPC v1.84.0, Prometheus client

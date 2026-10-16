@@ -75,6 +75,9 @@ func (d *decoder) value(kind uint64, keep bool) (int64, string) {
 		if n <= 1<<63-1 {
 			return int64(n), ""
 		}
+		if keep {
+			d.err = fmt.Errorf("GGUF integer overflow")
+		}
 	case 1:
 		return int64(int8(n)), ""
 	case 3:
@@ -128,7 +131,8 @@ func Read(r io.Reader) (Header, error) {
 		_, suffix, _ := strings.Cut(key, ".")
 		keep := key == "general.architecture"
 		switch suffix {
-		case "block_count", "context_length", "embedding_length", "attention.head_count", "attention.head_count_kv", "attention.key_length", "attention.value_length", "attention.sliding_window":
+		case "block_count", "context_length", "embedding_length", "attention.head_count", "attention.head_count_kv", "attention.key_length", "attention.value_length", "attention.sliding_window",
+			"nextn_predict_layers", "full_attention_interval", "ssm.conv_kernel", "ssm.group_count", "ssm.time_step_rank", "ssm.state_size", "ssm.inner_size", "attention.recurrent":
 			keep = true
 		}
 		n, text := d.value(kind, keep)
@@ -137,13 +141,13 @@ func Read(r io.Reader) (Header, error) {
 		}
 		if key == "general.architecture" {
 			switch text {
-			case "llama", "qwen2", "qwen3":
+			case "llama", "qwen2", "qwen3", "qwen3moe", "qwen35":
 			default:
 				return h, fmt.Errorf("unsupported GGUF architecture")
 			}
 			h.Architecture = text
 		} else if keep {
-			if kind == 8 || kind == 9 || kind == 6 || kind == 7 || kind == 12 || n <= 0 {
+			if suffix == "attention.recurrent" || kind == 8 || kind == 9 || kind == 6 || kind == 7 || kind == 12 || n < 0 || (n == 0 && suffix != "nextn_predict_layers") {
 				return h, fmt.Errorf("invalid GGUF geometry")
 			}
 			h.Values[key] = n

@@ -11971,6 +11971,14 @@ components:
         Supported geometry establishes fit at the assessed context: the declared
         minimum for auto vLLM and MLX (shipped as 4096), native GGUF context for
         auto llama.cpp, or the requested numeric context for vLLM/llama.cpp.
+        Supported dense, MoE and hybrid-attention models share this sizing path.
+        Hybrid cache includes full-attention KV plus conservative float32 recurrent
+        states. Schema recurrent_state_rows declares allocated rows: vLLM two per
+        assessed request, MLX one; llama.cpp uses its sequence_slots parameter
+        (parallel, engine default four). Slots do not multiply attention KV and
+        max-num-seqs does not multiply minimum viability. MTP cache is excluded;
+        MoE sizing counts all expert weights. Missing rows or hybrid placement
+        across multiple selected devices remains unknown. No page/pool modelling.
         MLX has no context parameter; max-tokens limits generation only.
         affordable_context_tokens is an estimate within the recognized native range,
         not served context. The engine's profiler remains authoritative.

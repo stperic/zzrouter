@@ -78,13 +78,14 @@ func TestMemoryNeedHybridTextConfig(t *testing.T) {
 	cfg := map[string]any{"text_config": map[string]any{"num_hidden_layers": 64, "num_key_value_heads": 4, "num_attention_heads": 24, "head_dim": 256, "hidden_size": 5120, "dtype": "bfloat16", "sliding_window": nil, "full_attention_interval": 4, "layer_types": layers}, "model_type": "synthetic_hybrid", "num_hidden_layers": 999}
 	dir, svc, params := needFixture(t, cfg)
 	params["max-model-len"] = "8192"
-	// vLLM needs one recurrent state per max-num-seqs sequence (lab, Qwen3.8-27B: 256 seqs, room for 105).
+	// A layer mask alone cannot establish recurrent geometry or allocated rows.
 	_, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)
 	assert.False(t, ok, "linear-attention state cannot be sized generically")
 
 	for i := range layers {
 		layers[i] = "full_attention"
 	}
+	delete(cfg["text_config"].(map[string]any), "full_attention_interval")
 	dir, svc, params = needFixture(t, cfg)
 	params["max-model-len"] = "8192"
 	need, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, nil)

@@ -24,6 +24,19 @@ func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 	assert.Empty(t, errs, "schema.yaml ↔ Go spine drift: %v", errs)
 }
 
+func TestAppsFS_DeclaresRecurrentAllocationRows(t *testing.T) {
+	providers, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	assert.Equal(t, int64(2), *providers["vllm"].RecurrentStateRows)
+	assert.Equal(t, int64(1), *providers["mlx"].RecurrentStateRows)
+	for _, endpoint := range []string{"chat", "embeddings", "reranking"} {
+		slots := providers["llamacpp"].ForEndpoint(endpoint)["parallel"]
+		require.True(t, slots.SequenceSlots)
+		require.NotNil(t, slots.RecurrentStateRows)
+		assert.Equal(t, int64(4), *slots.RecurrentStateRows)
+	}
+}
+
 // Drift-guard: every per-provider YAML under AppsFS must validate against
 // its kind's schema. If a provider file adds a field the schema forbids,
 // or vice versa, this test catches it on every CI run.

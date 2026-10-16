@@ -162,6 +162,12 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 	if err := weightMemoryFit(budget, need, selected, systemMiB, fraction, auto); err != nil {
 		return assessment, err
 	}
+	if len(selected) > 1 && need.geometry != nil {
+		_, recurrent, _ := need.geometry.layerTokens(need.ContextTokens)
+		if recurrent > 0 {
+			need.Incomplete, need.geometry = true, nil
+		}
+	}
 	sized := need.Total() > 0 && (budget.Kind == schema.MemoryFractionTotal || need.geometry != nil)
 	if sized {
 		assessment.RequiredMiB, assessment.CapacityMiB, assessment.Placement, err = sizedMemoryFit(budget, need, selected, systemMiB, fraction, auto, owners)

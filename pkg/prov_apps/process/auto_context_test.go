@@ -148,7 +148,7 @@ func TestAutoContextSelectedDevicesAndMargins(t *testing.T) {
 	require.Error(t, err)
 }
 
-func ggufNeed(t *testing.T, arch string, params map[string]string, extra map[string]int64) Need {
+func ggufNeed(t *testing.T, arch string, params map[string]string, extra map[string]int64, overlays ...map[string]schema.ParamShape) Need {
 	t.Helper()
 	dir, svc, _ := needFixture(t, denseAttentionConfig())
 	require.NoError(t, os.Remove(filepath.Join(dir, "config.json")))
@@ -177,7 +177,11 @@ func ggufNeed(t *testing.T, arch string, params map[string]string, extra map[str
 	require.NoError(t, os.WriteFile(second, []byte("not a header"), 0600))
 	require.NoError(t, os.Truncate(second, 8<<20))
 	svc.Defaults.Metadata.ContextParam = "ctx-size"
-	n, _ := ModelMemoryNeed(ResolvedModel{Path: second}, svc, params, schema.AutoContext{AutoContextSource: "native"}, map[string]schema.ParamShape{"cache-type-k": {KVCacheDtype: "k"}, "cache-type-v": {KVCacheDtype: "v"}})
+	shapes := map[string]schema.ParamShape{"cache-type-k": {KVCacheDtype: "k"}, "cache-type-v": {KVCacheDtype: "v"}}
+	for _, overlay := range overlays {
+		maps.Copy(shapes, overlay)
+	}
+	n, _ := ModelMemoryNeed(ResolvedModel{Path: second}, svc, params, schema.AutoContext{AutoContextSource: "native"}, shapes)
 	return n
 }
 func TestGGUFContextAndQuantizedKV(t *testing.T) {

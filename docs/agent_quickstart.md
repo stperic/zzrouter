@@ -30,8 +30,8 @@ without starting, evicting or reserving memory. Cached or published weight size
 alone cannot prove runtime fit. Downloads remain possible on an explicitly
 selected eligible node when capacity is unknown.
 
-Supported dense models assess auto vLLM and MLX at the declared minimum of 4096
-context tokens. MLX has no context parameter: `max-tokens` limits generation,
+Supported dense, MoE and hybrid-attention models assess auto vLLM and MLX at the
+declared minimum of 4096 context tokens. MLX has no context parameter: `max-tokens` limits generation,
 and its usable unified working set uses `memory_usable_fraction`, shipped at
 `0.75`. This fraction and `auto_min_context_tokens` are release-owned schema
 metadata. Auto llama.cpp assesses the GGUF native context and reports
@@ -39,9 +39,20 @@ metadata. Auto llama.cpp assesses the GGUF native context and reports
 If that native-context estimate exceeds GPU plus RAM, the result is unknown
 and launch proceeds because the engine may adapt. A numeric context shortfall
 still refuses launch, as does the weight-only lower bound in either mode.
-GGUF sizing recognizes llama, qwen2 and qwen3 attention architectures. KV sizing
-honors schema-declared cache roles, including vLLM fp8 and llama.cpp GGML types.
-Unsupported encodings or recurrent, MLA and ambiguous sliding geometry remain unknown.
+GGUF sizing recognizes llama, qwen2, qwen3, qwen3moe and qwen35 architectures.
+KV sizing honors schema-declared cache roles, including vLLM fp8 and llama.cpp
+GGML types.
+Hybrid sizing counts KV only on full-attention layers and adds fixed recurrent
+states with float32 convolution and SSM elements, conservatively covering the
+supported engines. Schema metadata declares `recurrent_state_rows`: vLLM uses
+two rows for one assessed request, independent of `max-num-seqs`; MLX uses one.
+llama.cpp's `parallel` parameter has the `sequence_slots` role and a four-row
+engine default; an explicit value selects that many state rows without
+multiplying attention KV. MTP layers are excluded from normal decoder cache,
+and every expert's weight bytes count for MoE models. These estimates include
+the existing runtime overhead and headroom, without modelling pages or pools.
+Missing row metadata, unsupported geometry/dtypes, MLA, ambiguous sliding
+geometry, and hybrid placement across multiple selected devices remain unknown.
 Assessments report `context_mode`, `context_tokens`, and, for supported auto
 cases, `affordable_context_tokens`. Affordability is an estimate within the
 recognized native range, never served context or a performance guarantee.

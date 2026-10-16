@@ -40,6 +40,7 @@ type YAMLParam struct {
 	Served          string            `yaml:"served,omitempty"`
 	KVCacheDtype    string            `yaml:"kv_cache_dtype,omitempty"`
 	ContextOverride bool              `yaml:"context_override,omitempty"`
+	SequenceSlots   bool              `yaml:"sequence_slots,omitempty"`
 	PlacementLog    map[string]string `yaml:"placement_log,omitempty"`
 }
 
@@ -198,24 +199,13 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if out.Auto == "" {
 		out.Auto = yp.Auto
 	}
-	if yp.AutoMinContextTokens != 0 || yp.AutoContextSource != "" {
-		out.AutoContext = yp.AutoContext
-	}
-	if err := out.AutoContext.validate(); err != nil || ((out.AutoMinContextTokens != 0 || out.AutoContextSource != "") && (out.Kind != ParamInt || out.Auto == "")) {
-		return ParamShape{}, fmt.Errorf("%s.%s: auto context policy requires an auto integer and valid metadata", provider, qualifiedName)
-	}
 	if out.Served == "" {
 		out.Served = yp.Served
 	}
-	if yp.KVCacheDtype != "" {
-		out.KVCacheDtype = yp.KVCacheDtype
+	if err := out.mergeSizing(yp); err != nil {
+		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 	}
-	switch out.KVCacheDtype {
-	case "", "k", "v", "both":
-	default:
-		return ParamShape{}, fmt.Errorf("%s.%s: invalid kv_cache_dtype role", provider, qualifiedName)
-	}
-	out.ContextOverride = out.ContextOverride || yp.ContextOverride
+
 	if yp.PlacementLog != nil {
 		out.PlacementLog = make(map[string]*regexp.Regexp, len(yp.PlacementLog))
 		for name, raw := range yp.PlacementLog {
@@ -231,6 +221,32 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 		}
 	}
 	return out, nil
+}
+
+func (out *ParamShape) mergeSizing(yp YAMLParam) error {
+	if yp.AutoMinContextTokens != 0 || yp.AutoContextSource != "" {
+		out.AutoMinContextTokens, out.AutoContextSource = yp.AutoMinContextTokens, yp.AutoContextSource
+	}
+	if yp.RecurrentStateRows != nil {
+		out.RecurrentStateRows = yp.RecurrentStateRows
+	}
+	out.SequenceSlots = out.SequenceSlots || yp.SequenceSlots
+	if (out.SequenceSlots && (out.Kind != ParamInt || out.RecurrentStateRows == nil)) || (!out.SequenceSlots && out.RecurrentStateRows != nil) {
+		return fmt.Errorf("sequence_slots requires an integer and default recurrent_state_rows")
+	}
+	if err := out.AutoContext.validate(); err != nil || ((out.AutoMinContextTokens != 0 || out.AutoContextSource != "") && (out.Kind != ParamInt || out.Auto == "")) {
+		return fmt.Errorf("auto context policy requires an auto integer and valid metadata")
+	}
+	if yp.KVCacheDtype != "" {
+		out.KVCacheDtype = yp.KVCacheDtype
+	}
+	switch out.KVCacheDtype {
+	case "", "k", "v", "both":
+	default:
+		return fmt.Errorf("invalid kv_cache_dtype role")
+	}
+	out.ContextOverride = out.ContextOverride || yp.ContextOverride
+	return nil
 }
 
 // parsePass validates an asset's pass mode. It means nothing for any

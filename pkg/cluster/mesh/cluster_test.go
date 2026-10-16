@@ -2,8 +2,6 @@ package mesh
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -159,55 +157,5 @@ func TestDetermineStrategy(t *testing.T) {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
 		})
-	}
-}
-
-func TestHandleHTTPRequest_StrategyFromQueryParam(t *testing.T) {
-	t.Parallel()
-	cfg := &Config{Enabled: false}
-	localHandler := &MockLocalHandler{}
-	c, err := NewCluster(cfg, "http://localhost:8080", localHandler, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create cluster: %v", err)
-	}
-
-	// Build HTTP request with cluster_strategy query param (no stray space)
-	req := httptest.NewRequest("GET", "/zzrouter/v1/models?cluster_strategy=broadcast", nil)
-	w := httptest.NewRecorder()
-
-	// HandleHTTPRequest should parse query param and set strategy
-	err = c.HandleHTTPRequest(w, req)
-	if err != nil {
-		t.Fatalf("HandleHTTPRequest failed: %v", err)
-	}
-
-	// If strategy was not parsed, it would fall back to unicast.
-	// We verify by checking the response completed (mock handler returns 200).
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", w.Code)
-	}
-}
-
-func TestHandleHTTPRequest_StrategyFromHeader(t *testing.T) {
-	t.Parallel()
-	cfg := &Config{Enabled: false}
-	localHandler := &MockLocalHandler{}
-	c, err := NewCluster(cfg, "http://localhost:8080", localHandler, nil, nil)
-	if err != nil {
-		t.Fatalf("Failed to create cluster: %v", err)
-	}
-
-	// Build HTTP request with X-Cluster-Strategy header (no stray space)
-	req := httptest.NewRequest("GET", "/zzrouter/v1/models", nil)
-	req.Header.Set("X-Cluster-Strategy", "broadcast")
-	w := httptest.NewRecorder()
-
-	err = c.HandleHTTPRequest(w, req)
-	if err != nil {
-		t.Fatalf("HandleHTTPRequest failed: %v", err)
-	}
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected 200, got %d", w.Code)
 	}
 }

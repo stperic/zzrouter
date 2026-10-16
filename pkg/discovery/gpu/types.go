@@ -174,3 +174,8 @@ func ParsePolicy(s string) (Policy, error) {
 		return "", fmt.Errorf("gpu: unknown policy %q (want advisory or required)", s)
 	}
 }
+
+// IsUnifiedMemory reports whether the GPU type addresses the system RAM pool.
+func IsUnifiedMemory(gpuType string) bool {
+	return gpuType == string(VendorApple)
+}

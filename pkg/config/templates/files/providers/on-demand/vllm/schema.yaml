@@ -2,6 +2,7 @@
 # carries launcher-load-bearing shape (max-model-len, gpu-memory-utilization,
 # tensor-parallel-size, dtype). Everything here augments it.
 provider: vllm
+recurrent_state_rows: 2
 parameters:
   max-model-len:
     auto: "auto"

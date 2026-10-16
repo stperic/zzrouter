@@ -460,3 +460,73 @@ func TestKVCacheRolesReachPreviewAndAdmission(t *testing.T) {
 		}
 	}
 }
+
+func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
+	for _, kind := range []string{schema.MemoryFractionTotal, schema.MemoryLayers, schema.MemoryUnified} {
+		t.Run(kind, func(t *testing.T) {
+			m, req, dir := capacityFixture(t)
+			layers := make([]string, 64)
+			for i := range layers {
+				layers[i] = "linear_attention"
+				if (i+1)%4 == 0 {
+					layers[i] = "full_attention"
+				}
+			}
+			data, err := json.Marshal(map[string]any{"num_hidden_layers": 64, "num_attention_heads": 24,
+				"num_key_value_heads": 4, "head_dim": 256, "dtype": "bfloat16", "max_position_embeddings": 262144,
+				"linear_conv_kernel_dim": 4, "linear_key_head_dim": 128, "linear_value_head_dim": 128,
+				"linear_num_key_heads": 16, "linear_num_value_heads": 48, "layer_types": layers, "full_attention_interval": 4})
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), data, 0600))
+			fraction := .75
+			m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+				y, err := schema.LoadYAMLSchema([]byte("recurrent_state_rows: 2\nparameters:\n  max-model-len: {auto: auto, auto_min_context_tokens: 4096}\n"))
+				require.NoError(t, err)
+				y.Diagnostics = &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: kind, Parameter: "gpu-memory-utilization"}}
+				if kind == schema.MemoryUnified {
+					y.MemoryUsableFraction = &fraction
+				}
+				declared, errs := schema.Merge(provider, y)
+				require.Empty(t, errs)
+				return declared, nil
+			}
+			total := int64(10000)
+			m.memoryInventory = func(context.Context) []gpu.CardMetrics {
+				return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: total}}
+			}
+			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: total}}, nil
+			}
+			m.memorySystem = func(context.Context) *hardware.HardwareInfo {
+				return &hardware.HardwareInfo{TotalRAM: total * 1024 * 1024}
+			}
+			req.Parameters = map[string]string{"max-model-len": "4096", "gpu-memory-utilization": "0.75"}
+			if kind == schema.MemoryUnified {
+				req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
+			}
+			for _, want := range []string{"fit", "no_fit"} {
+				if want == "no_fit" {
+					total = 3000
+				}
+				preview, err := m.PreviewLaunch(t.Context(), req, 8100)
+				require.NoError(t, err)
+				assert.Equal(t, want, preview.Assessment.Status)
+				assert.Equal(t, m.AssessCapacity(t.Context(), req), preview.Assessment)
+				features, err := m.ResolveLaunchParameters(t.Context(), req)
+				require.NoError(t, err)
+				admission, err := m.checkMemory(t.Context(), features, false)
+				assert.Equal(t, preview.Assessment, admission)
+				if want == "fit" {
+					require.NoError(t, err)
+				} else {
+					var fit *process.MemoryFitError
+					require.ErrorAs(t, err, &fit)
+					assert.True(t, fit.Sized)
+					m.seams.beforeLaunch = func() { t.Error("hybrid refusal launched a process") }
+					_, err = m.EnsureRun(t.Context(), req)
+					require.ErrorAs(t, err, &fit)
+				}
+			}
+		})
+	}
+}

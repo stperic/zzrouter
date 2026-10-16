@@ -3,7 +3,6 @@ package mesh
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
@@ -208,7 +207,7 @@ func newNodeFailure(ep *Endpoint, err error) *NodeResponse {
 // so no layer between the worker and the caller may merge, unwrap or
 // re-key them: a caller that aggregates a `{"data": [...]}` envelope
 // cannot do so once an intermediate layer has stripped the envelope.
-// Nodes is the authoritative in-process view; Body is its wire form.
+// Nodes is the authoritative in-process view.
 func (h *BroadcastHandler) collect(nodes []*NodeResponse) (*Response, error) {
 	// Never nil: Nodes being non-nil is what tells the client this was a
 	// broadcast at all. A nil slice would send "no reachable workers" down
@@ -218,73 +217,12 @@ func (h *BroadcastHandler) collect(nodes []*NodeResponse) (*Response, error) {
 		nodes = []*NodeResponse{}
 	}
 
-	envelopes, failed := toNodeEnvelopes(nodes)
-	body, err := json.Marshal(envelopes)
-	if err != nil {
-		return nil, fmt.Errorf("marshal broadcast envelopes: %w", err)
-	}
-
 	return &Response{
 		StatusCode: http.StatusOK,
 		Headers:    make(http.Header),
-		Body:       body,
 		SourceNode: broadcastSourceNode,
 		Nodes:      nodes,
-		Metadata: map[string]any{
-			"nodes_total":  len(nodes),
-			"nodes_failed": failed,
-		},
 	}, nil
-}
-
-// nodeEnvelope is the wire form of one node's contribution to a
-// broadcast: its identity plus its response exactly as it sent it.
-type nodeEnvelope struct {
-	Node   string          `json:"node"`
-	Name   string          `json:"name,omitempty"`
-	Status int             `json:"status,omitempty"`
-	Body   json.RawMessage `json:"body,omitempty"`
-	Error  string          `json:"error,omitempty"`
-}
-
-// jsonOrQuoted returns a body unchanged when it is JSON, and as a JSON
-// string when it is not.
-//
-// Dropping a non-JSON body would lose it in exactly the case an operator
-// needs it: a reverse proxy answering with an HTML error page instead of
-// the node. Nodes keeps the raw bytes either way; this keeps the wire
-// form agreeing with it.
-func jsonOrQuoted(body []byte) json.RawMessage {
-	if len(body) == 0 {
-		return nil
-	}
-	if json.Valid(body) {
-		return body
-	}
-	quoted, err := json.Marshal(string(body))
-	if err != nil {
-		return nil
-	}
-	return quoted
-}
-
-// toNodeEnvelopes renders the wire form and reports how many nodes failed.
-func toNodeEnvelopes(nodes []*NodeResponse) ([]nodeEnvelope, int) {
-	out := make([]nodeEnvelope, 0, len(nodes))
-	failed := 0
-	for _, n := range nodes {
-		env := nodeEnvelope{Node: n.Node, Name: n.NodeName}
-		if n.Error != nil {
-			env.Error = n.Error.Error()
-			failed++
-		}
-		if n.Response != nil {
-			env.Status = n.Response.StatusCode
-			env.Body = jsonOrQuoted(n.Response.Body)
-		}
-		out = append(out, env)
-	}
-	return out, failed
 }
 
 // RoundRobinHandler load balances across endpoints

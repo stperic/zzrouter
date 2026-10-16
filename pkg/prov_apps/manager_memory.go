@@ -183,7 +183,8 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 		}
 		policy := features.declared.AutoContext
 		if key := features.Config.GetContextParam(); key != "" {
-			policy = features.parameterShapes[key].AutoContext
+			contextPolicy := features.parameterShapes[key].AutoContext
+			policy.AutoMinContextTokens, policy.AutoContextSource = contextPolicy.AutoMinContextTokens, contextPolicy.AutoContextSource
 		}
 		need, _ := process.ModelMemoryNeed(features.model, features.Config, params, policy, features.parameterShapes)
 		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, features.declared.MemoryUsableFraction)

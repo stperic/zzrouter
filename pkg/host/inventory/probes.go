@@ -173,7 +173,7 @@ func GatherGPU(ctx context.Context, inv gpu.Inventory, cache *Cache) *NodeGPU {
 	// memory directly, so system RAM IS the budget a model is sized
 	// against. Reporting zero here read as "this node has no usable GPU
 	// memory" and took the whole machine out of scheduling consideration.
-	if out.Type == "apple" {
+	if gpu.IsUnifiedMemory(out.Type) {
 		out.UnifiedMemory = true
 		if mem := GatherMemory(ctx, cache); mem != nil {
 			// Rounded to the tenth of a GB that peers are reported at, so

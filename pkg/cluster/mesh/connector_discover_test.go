@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,33 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestConnectorUnifiedMemoryFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		reported, want float64
+	}{
+		{"Apple M3 Pro", 0, 64}, {"Apple M3 Pro", 64, 64}, {"NVIDIA RTX", 12, 12}, {"NVIDIA RTX", 0, 0},
+	} {
+		t.Run(fmt.Sprintf("%s/%g", tc.name, tc.reported), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"memory_total":     map[string]any{"value": 64 * 1024 * 1024 * 1024},
+					"memory_available": map[string]any{"value": 32 * 1024 * 1024 * 1024},
+					"gpus":             []map[string]any{{"name": tc.name, "memory_total_gb": tc.reported}},
+				})
+			}))
+			defer srv.Close()
+			conn, err := NewConnector(ConnectorConfig{}).performHealthCheck(t.Context(), srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conn.VRAMTotalGB != tc.want {
+				t.Fatalf("VRAM=%g, want %g", conn.VRAMTotalGB, tc.want)
+			}
+		})
+	}
+}
 
 // TestConnector_DiscoverVersion_PrefersClusterURL pins the post-
 // af3e7214 invariant: when the Connector is configured with a

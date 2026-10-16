@@ -1,0 +1,1 @@
+- Hybrid fit uses one conservative float32 convolution/SSM formula; allocated state rows belong in schema metadata, never engine-name branches in Go.

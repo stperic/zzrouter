@@ -15,14 +15,10 @@
 package mesh
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"maps"
 	"net/http"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 )
 
@@ -47,16 +43,11 @@ type Response struct {
 	Body       []byte
 
 	// Cluster-specific fields
-	SourceNode string         // Which node responded (hostname, IP, or endpoint URL)
-	Metadata   map[string]any // Additional metadata
+	SourceNode string // Which node responded (hostname, IP, or endpoint URL)
 
 	// Nodes carries the per-node results of a broadcast, each holding
 	// that node's response body verbatim. Only BroadcastHandler sets it,
 	// and it is what every in-process caller reads.
-	//
-	// Body holds the same information in wire form, for HandleHTTPRequest
-	// — the package's HTTP entry point, which nothing in this repo calls
-	// today. Do not read Body on a broadcast path; read Nodes.
 	Nodes []*NodeResponse
 }
 
@@ -224,32 +215,6 @@ type Config struct {
 type StrategyDefault struct {
 	PathPrefix string
 	Default    string
-}
-
-// NewRequestFromHTTP creates a cluster request from HTTP request
-func NewRequestFromHTTP(r *http.Request) *Request {
-	body, _ := io.ReadAll(io.LimitReader(r.Body, constants.MaxClusterRequestBodySize))
-	_ = r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
-	return &Request{
-		Method:   r.Method,
-		Path:     r.URL.Path,
-		Query:    r.URL.RawQuery,
-		Headers:  r.Header.Clone(),
-		Body:     body,
-		Metadata: make(map[string]any),
-	}
-}
-
-// WriteHTTP writes response to HTTP response writer
-func (r *Response) WriteHTTP(w http.ResponseWriter) error {
-	// Copy headers
-	maps.Copy(w.Header(), r.Headers)
-
-	w.WriteHeader(r.StatusCode)
-	_, err := w.Write(r.Body)
-	return err
 }
 
 // String returns strategy name

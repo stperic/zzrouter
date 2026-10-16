@@ -32,9 +32,11 @@ parameters:
     min: 1
     description: Physical micro-batch size
   parallel:
+    sequence_slots: true
+    recurrent_state_rows: 4
     type: int
     min: 1
-    description: Number of concurrent completions served per slot
+    description: Number of sequence slots; recurrent states allocate one row per slot
   flash-attn:
     type: bool
     description: Enable flash attention kernels when available
