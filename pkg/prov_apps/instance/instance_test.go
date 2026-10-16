@@ -33,6 +33,18 @@ func TestNewInstance_DefaultLogBuffer(t *testing.T) {
 	assert.Equal(t, 100, cap(inst.Logs))
 }
 
+func TestRecordFeatureInitializesNilMap(t *testing.T) {
+	i := NewInstance("feature", "provider", "model", 0, 0, 0)
+	assert.Nil(t, i.Resolved().Features)
+	assert.False(t, i.RecordFeature("tools", "present"), "starting runs reject observations")
+	i.MarkRunning(false, nil)
+	assert.True(t, i.RecordFeature("tools", "present"))
+	assert.Equal(t, map[string]string{"tools": "present"}, i.Resolved().Features)
+	assert.False(t, i.RecordFeature("tools", "present"), "unchanged evidence does not republish")
+	assert.True(t, i.RecordFeature("vision", "unsupported"))
+	assert.Equal(t, "present", i.Resolved().Features["tools"])
+}
+
 func TestInstance_StatusTransitions(t *testing.T) {
 	inst := NewInstance("id", "p", "m", 0, 0, 10)
 

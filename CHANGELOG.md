@@ -48,6 +48,18 @@
   REST and MCP agree, with one missed full probe retaining dispatch grace.
   Public-only degraded and half-open recovery nodes receive no ordinary traffic.
   Caller deadlines and errors after response headers leave node health unchanged.
+- Tools capabilities use model and serving-run evidence. Ollama preserves its
+  capability list, llama.cpp reads the running chat template capability, and
+  vLLM reports the switches its chat run launched with. MLX and cold launched
+  models stay unknown. Only `details.features.tools: present` makes
+  `/v1/models` `capabilities.tools` true; use `zz_chat` `probe: tools` to verify.
+  Serving snapshots survive patches until restart, and groups include unknown
+  replicas. Cluster protocol and minimum rise from 11 to 12 for strict provider
+  schemas; upgrade every node together using the
+  [protocol maintenance procedure](docs/protocol_versioning.md).
+  Cloud and external models without present evidence now report `tools:false`;
+  cloud models no longer claim `tools:true` by default. False means no evidence,
+  not refusal, and does not prohibit tool requests.
 
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.

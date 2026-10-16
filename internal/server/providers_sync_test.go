@@ -579,3 +579,31 @@ func TestWriteProviderFiles_AssetFailureKeepsOldConfig(t *testing.T) {
 		t.Error("the new config landed without the assets it names")
 	}
 }
+
+func TestToolsFeatureSync(t *testing.T) {
+	store := newFanOutTestStore(t)
+	body := ProviderSyncBody{Kind: pkgConfig.KindExternal, ConfigYAML: []byte("protocol: ollama\nfeatures:\n  tools:\n    requires_parameters: [tool-mode]\n    http: {path: /props, field: caps.tools}\nruntime:\n  endpoint: http://engine.invalid\ncapabilities:\n  wire_endpoints: [chat_completions]\n")}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received ProviderSyncBody
+	if err := json.Unmarshal(raw, &received); err != nil {
+		t.Fatal(err)
+	}
+	provider, err := pkgConfig.DecodeProviderBytes(received.Kind, "ollama", received.ConfigYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.WriteProviderFiles("ollama", received.Kind, pkgConfig.ProviderFiles{Config: received.ConfigYAML}); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := store.Config().LookupApp("ollama")
+	feature, ok := svc.Features["tools"]
+	if !ok || len(feature.RequiresParameters) != 1 || feature.RequiresParameters[0] != "tool-mode" || feature.HTTP == nil || feature.HTTP.Path != "/props" || feature.HTTP.Field != "caps.tools" {
+		t.Fatalf("lost tools declaration in sync: %+v", feature)
+	}
+}

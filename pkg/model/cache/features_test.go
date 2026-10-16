@@ -153,3 +153,30 @@ func TestContextLengthWorkerRoundTrip(t *testing.T) {
 	}
 	assert.Zero(t, (*CachedModel)(nil).ContextLength())
 }
+
+func TestToolsCatalogRoundTrip(t *testing.T) {
+	cfg := variantApps(t, true, nil)
+	for _, state := range []string{"present", "available", "unsupported", "unknown"} {
+		t.Run(state, func(t *testing.T) {
+			items := EnrichLocalItems([]map[string]any{{"name": "weights", "node": "worker", "assigned_app": "llamacpp", "source_id": "repo", "details": map[string]any{"family": "neutral"}}}, cfg, func(_, _ string, details map[string]any) map[string]any {
+				out := maps.Clone(details)
+				out["features"] = map[string]string{"tools": state}
+				return out
+			})
+			raw, err := json.Marshal(items)
+			require.NoError(t, err)
+			var remote []map[string]any
+			require.NoError(t, json.Unmarshal(raw, &remote))
+			coordinator := New(Config{AppsConfig: func() *pkgConfig.AppsConfig { return cfg }, ModelDetails: func(_, _ string, _ map[string]any) map[string]any {
+				t.Fatal("coordinator must not re-derive worker evidence")
+				return nil
+			}})
+			coordinator.populateModelCacheFromItems(remote)
+			got, err := coordinator.LookupTarget(t.Context(), "weights", "llamacpp", "worker")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, state, got.FeatureState("tools"))
+			assert.Equal(t, "repo", got.SourceID)
+		})
+	}
+}

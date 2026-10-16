@@ -265,3 +265,16 @@ func TestEndpointFeaturesProtocolCutoverContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestToolsProtocolCutover(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min != 12 || window.Max != 12 {
+		t.Fatalf("tools declarations require protocol 12/12, got %+v", window)
+	}
+	if err := window.Check(11); err == nil {
+		t.Fatal("protocol 11 strict loader must not receive tools declarations")
+	}
+	if err := window.Check(12); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -42,7 +42,7 @@ func fakeApps(t *testing.T) *pkgConfig.AppsConfig {
 // TestDeriveCapabilities_OpenAIProtocol pins the full flag set for a
 // conventional chat model served via the OpenAI protocol.
 func TestDeriveCapabilities_OpenAIProtocol(t *testing.T) {
-	m := &cache.CachedModel{Name: "Qwen2.5-7B-Instruct", Provider: "vllm"}
+	m := &cache.CachedModel{Name: "Qwen2.5-7B-Instruct", Provider: "vllm", Details: map[string]any{"features": map[string]string{"tools": "present"}}}
 	caps := deriveCapabilities(m, fakeApps(t))
 
 	wantTrue := []struct {

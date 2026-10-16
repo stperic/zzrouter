@@ -41,16 +41,15 @@
 // crashes). Rules:
 //
 //   - Protocol "openai": chat, completions, stream, json_mode all true.
-//     tools defaults to true; overridden off for providers that have
-//     not been verified to handle tool calls end-to-end.
-//   - Protocol "ollama": chat and stream true; completions and
-//     tools true. json_mode is false (Ollama does not accept
+//   - Protocol "ollama": chat and stream true;
+//     completions true. json_mode is false (Ollama does not accept
 //     response_format).
 //   - Model reports an encoder-only architecture (family "bert",
 //     "nomic-bert", ...) or its name contains an embedding marker
 //     ("embed", "bge", "e5-", "gte-", "minilm") → embeddings=true,
 //     chat/completions/tools=false. The architecture is the stronger
 //     signal and is checked even when the name says nothing.
+//   - Tools requires present node-reported feature evidence.
 //   - Node-reported vision presence sets vision=true. Legacy providers
 //     without a feature declaration retain the model-name fallback.
 //
@@ -140,19 +139,15 @@ func deriveCapabilities(m *cache.CachedModel, appsConfig *pkgConfig.AppsConfig) 
 	switch protocol {
 	case string(pkgConfig.ProtocolOpenAI):
 		caps.Completions = true
-		caps.Tools = true
 		caps.JSONMode = true
 	case string(pkgConfig.ProtocolOllama):
 		caps.Completions = true
-		// Tool support in Ollama is model-dependent; claim it by
-		// default so tool-aware clients can try, and rely on
-		// backend error propagation to flag failures.
-		caps.Tools = true
 		caps.JSONMode = false
 	default:
 		// Unknown protocol: fall back to chat-only.
 	}
 
+	caps.Tools = m.FeatureState("tools") == "present"
 	caps.MaxContextTokens = m.ContextLength()
 	caps.Vision = m.FeatureState("vision") == "present"
 	if !caps.Vision && m.FeatureState("vision") == "unknown" && !declaresFeatures(m.Provider, appsConfig) {

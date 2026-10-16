@@ -73,6 +73,10 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 		"vllm":     {"vision": {}},
 		"ollama":   {"vision": {}},
 	}
+	expected["llamacpp"]["tools"] = Feature{HTTP: &FeatureHTTP{Path: "/props", Field: "chat_template_caps.supports_tools"}}
+	expected["vllm"]["tools"] = Feature{RequiresParameters: []string{"enable-auto-tool-choice", "tool-call-parser"}}
+	expected["mlx"]["tools"] = Feature{}
+	expected["ollama"]["tools"] = Feature{}
 	for name, endpoint := range map[string]string{"embeddings": "embeddings", "reranking": "rerank"} {
 		flag, body := "--embedding-model", `{"model":"${WIRE_MODEL}","input":"ping"}`
 		if name == "reranking" {
@@ -86,8 +90,11 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 		assert.Equal(t, expected[name], sc.Features, name)
 	}
 	// A cloud declaration exercises the third conversion arm as well.
-	require.NoError(t, cfg.UpdateApp("openai", func(sc *ServiceConfig) error { sc.Features = map[string]Feature{"vision": {}}; return nil }))
-	expected["openai"] = map[string]Feature{"vision": {}}
+	require.NoError(t, cfg.UpdateApp("openai", func(sc *ServiceConfig) error {
+		sc.Features = map[string]Feature{"vision": {}, "tools": {HTTP: &FeatureHTTP{Path: "/props", Field: "chat_template_caps.supports_tools"}, RequiresParameters: []string{"enabled"}}}
+		return nil
+	}))
+	expected["openai"] = map[string]Feature{"vision": {}, "tools": {HTTP: &FeatureHTTP{Path: "/props", Field: "chat_template_caps.supports_tools"}, RequiresParameters: []string{"enabled"}}}
 	for name, want := range expected {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, cfg.UpdateApp(name, func(sc *ServiceConfig) error { sc.Description = "updated"; return nil }))
@@ -196,4 +203,48 @@ func TestFeatureRuntimeUpgradeFromStep2(t *testing.T) {
 
 func mlxFeatureHealth(path, body string) *HealthcheckConfig {
 	return &HealthcheckConfig{Path: "/v1/models", Interval: "30s", Timeout: "5s", Retries: 3, ReadinessProbe: &ProbeConfig{Timeout: "600s", LogPatterns: LogPatternsConfig{Success: []PatternConfig{{Pattern: "Application startup complete"}, {Pattern: "Uvicorn running on"}}, Failure: []PatternConfig{{Pattern: "Traceback (most recent call last)"}}}, Serve: &ServeCheckConfig{Path: path, Method: "POST", Body: body}}}
+}
+
+func TestToolsEvidenceValidation(t *testing.T) {
+	for _, descriptor := range []FeatureHTTP{
+		{Path: "https://elsewhere/props", Field: "caps.tools"},
+		{Path: "//elsewhere/props", Field: "caps.tools"},
+		{Path: "/props?model=x", Field: "caps.tools"},
+		{Path: "/../props", Field: "caps.tools"},
+		{Path: "/props", Field: ""},
+		{Path: "/props", Field: "caps..tools"},
+	} {
+		require.ErrorContains(t, validateFeatures(map[string]Feature{"tools": {HTTP: &descriptor}}), "relative path and dotted boolean field")
+	}
+	require.NoError(t, validateFeatures(map[string]Feature{"tools": {HTTP: &FeatureHTTP{Path: "/props", Field: "caps.tools"}}}))
+}
+
+func TestToolsFeatureReconcile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	cfg, err := LoadAppsConfig(dir)
+	require.NoError(t, err)
+	require.NoError(t, cfg.UpdateApp("vllm", func(sc *ServiceConfig) error {
+		sc.Features = map[string]Feature{"vision": {}}
+		return nil
+	}))
+	require.NoError(t, cfg.SaveToDir(dir))
+	_, err = templates.ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	cfg, err = LoadAppsConfig(dir)
+	require.NoError(t, err)
+	svc, _ := cfg.LookupApp("vllm")
+	assert.Equal(t, []string{"enable-auto-tool-choice", "tool-call-parser"}, svc.Features["tools"].RequiresParameters)
+	require.NoError(t, cfg.UpdateApp("vllm", func(sc *ServiceConfig) error {
+		sc.Features = map[string]Feature{}
+		return nil
+	}))
+	require.NoError(t, cfg.SaveToDir(dir))
+	_, err = templates.ReconcileManagedSpine(dir)
+	require.NoError(t, err)
+	cfg, err = LoadAppsConfig(dir)
+	require.NoError(t, err)
+	svc, _ = cfg.LookupApp("vllm")
+	require.NotNil(t, svc.Features)
+	assert.Empty(t, svc.Features)
 }

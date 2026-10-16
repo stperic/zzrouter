@@ -608,13 +608,15 @@ func newOpenAIModel(id string, created int64, ownedBy string) OpenAIModelObject 
 // instance, and hot/cold is a per-replica property.
 //
 // A group whose replicas are all absent from the catalog degrades to the
-// bare entry it used to be rather than guessing.
+// bare entry it used to be rather than guessing. Missing replicas make tools,
+// vision and context unknown; other capabilities and endpoints intersect known replicas.
 func describeGroup(name string, created int64, replicas []modelgroup.Replica, byID map[string]OpenAIModelObject, localNode string) OpenAIModelObject {
 	entry := newOpenAIModel(name, created, "zzrouter-route")
 
 	var caps *OpenAIModelCapabilities
 	var endpoints []string
 	local := true
+	missing := false
 	for _, rep := range replicas {
 		obj, ok := byID[replicaCatalogID(rep, localNode)]
 		if !ok {
@@ -623,6 +625,7 @@ func describeGroup(name string, created int64, replicas []modelgroup.Replica, by
 			obj, ok = byID[rep.Model]
 		}
 		if !ok || obj.Capabilities == nil {
+			missing = true
 			continue
 		}
 		if caps == nil {
@@ -640,6 +643,11 @@ func describeGroup(name string, created int64, replicas []modelgroup.Replica, by
 		return entry
 	}
 
+	if missing {
+		caps.Tools = false
+		caps.Vision = false
+		caps.MaxContextTokens = 0
+	}
 	entry.Capabilities = caps
 	entry.Endpoints = endpoints
 	entry.ServedBy = servedByCloud

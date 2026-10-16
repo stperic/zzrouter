@@ -433,6 +433,20 @@ func (i *Instance) SetResolved(r Resolved) {
 	i.resolved = r.clone()
 }
 
+// RecordFeature rejects observations from a run whose retirement has begun.
+func (i *Instance) RecordFeature(name, state string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.endingLocked() || i.Status != StatusRunning || i.resolved.Features[name] == state {
+		return false
+	}
+	if i.resolved.Features == nil {
+		i.resolved.Features = make(map[string]string)
+	}
+	i.resolved.Features[name] = state
+	return true
+}
+
 // Resolved returns a copy of what the launch resolved.
 func (i *Instance) Resolved() Resolved {
 	i.mu.RLock()

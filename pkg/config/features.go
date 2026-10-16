@@ -12,18 +12,32 @@ import (
 // Feature declares how a provider supplies a model ability. Empty declarations
 // describe built-in support; files are tried in preference order.
 type Feature struct {
-	HealthCheck       *HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
-	Default           bool               `yaml:"default,omitempty" json:"default,omitempty"`
-	Files             []string           `yaml:"files,omitempty" json:"files,omitempty"`
-	Flag              string             `yaml:"flag,omitempty" json:"flag,omitempty"`
-	When              string             `yaml:"when,omitempty" json:"when,omitempty"`
-	Runtime           string             `yaml:"runtime,omitempty" json:"runtime,omitempty"`
-	Execution         *ExecutionConfig   `yaml:"execution,omitempty" json:"execution,omitempty"`
-	WireEndpoints     []string           `yaml:"wire_endpoints,omitempty" json:"wire_endpoints,omitempty"`
-	ExcludeParameters []string           `yaml:"exclude_parameters,omitempty" json:"exclude_parameters,omitempty"`
+	RequiresParameters []string           `yaml:"requires_parameters,omitempty" json:"requires_parameters,omitempty"`
+	HTTP               *FeatureHTTP       `yaml:"http,omitempty" json:"http,omitempty"`
+	HealthCheck        *HealthcheckConfig `yaml:"health_check,omitempty" json:"health_check,omitempty"`
+	Default            bool               `yaml:"default,omitempty" json:"default,omitempty"`
+	Files              []string           `yaml:"files,omitempty" json:"files,omitempty"`
+	Flag               string             `yaml:"flag,omitempty" json:"flag,omitempty"`
+	When               string             `yaml:"when,omitempty" json:"when,omitempty"`
+	Runtime            string             `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	Execution          *ExecutionConfig   `yaml:"execution,omitempty" json:"execution,omitempty"`
+	WireEndpoints      []string           `yaml:"wire_endpoints,omitempty" json:"wire_endpoints,omitempty"`
+	ExcludeParameters  []string           `yaml:"exclude_parameters,omitempty" json:"exclude_parameters,omitempty"`
 }
 
-var featureEndpoints = map[string]string{"vision": defaultEndpoint, "embeddings": "embeddings", "reranking": "reranking"}
+type FeatureHTTP struct {
+	Path  string `yaml:"path" json:"path"`
+	Field string `yaml:"field" json:"field"`
+}
+
+func (h FeatureHTTP) valid() bool {
+	return validHTTPPath(h.Path) &&
+		!strings.Contains(h.Path, "..") &&
+		!strings.Contains(h.Path, "//") &&
+		!slices.Contains(strings.Split(h.Field, "."), "")
+}
+
+var featureEndpoints = map[string]string{"tools": defaultEndpoint, "vision": defaultEndpoint, "embeddings": "embeddings", "reranking": "reranking"}
 
 // FeatureEndpoint binds each supported ability to its launch endpoint.
 func FeatureEndpoint(name string) string { return featureEndpoints[name] }
@@ -39,6 +53,9 @@ func validateFeatures(features map[string]Feature) error {
 			if f.Runtime == "" || !slices.ContainsFunc(wires, func(w string) bool { return slices.Contains(f.WireEndpoints, w) }) {
 				return fmt.Errorf("feature %q: requires a runtime and wire_endpoints containing %s", name, strings.Join(wires, " or "))
 			}
+		}
+		if f.HTTP != nil && !f.HTTP.valid() {
+			return fmt.Errorf("feature %q: http requires a relative path and dotted boolean field", name)
 		}
 		if len(f.Files) > 0 && f.Runtime != "" {
 			return fmt.Errorf("feature %q: files and runtime are mutually exclusive", name)

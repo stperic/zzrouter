@@ -21,6 +21,11 @@ live only in `runtime.failure_patterns`. HTTP phrase matching for
 keep their upstream status for those phrases. Explicit classified upstream codes
 remain authoritative; startup and process-exit classification are unchanged.
 
+Catalog `details.features.tools` is engine evidence, and `capabilities.tools`
+is true only for present. A false value does not forbid a tool request. Catalog
+evidence and `zz_chat` request-local verification do not replace classified
+refusals or their recovery steps; this evidence adds no error codes.
+
 ## OpenAI surface (`/v1/*`)
 
 | `error.code` | HTTP | Meaning | Recovery |

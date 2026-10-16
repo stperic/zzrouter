@@ -4,6 +4,8 @@ description: "llama.cpp inference engine"
 search:
   registry: huggingface
 features:
+  tools:
+    http: {path: /props, field: chat_template_caps.supports_tools}
   vision:
     default: true
     files: ["mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-*.gguf"]

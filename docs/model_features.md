@@ -1,7 +1,7 @@
 # Model features
 
 A provider declares model abilities in its `config.yaml`. The supported feature
-names are `vision`, `embeddings` and `reranking`. Vision applies to chat runs;
+names are `vision`, `tools`, `embeddings` and `reranking`. Vision and tools apply to chat runs;
 embeddings and reranking each apply only to their matching run endpoint.
 Provisioning has three forms:
 
@@ -92,13 +92,13 @@ needs a deployment, which records one, to establish freshness.
 ## Readiness and inference
 
 The management catalog at `GET /zzrouter/v1/models` reports per-node
-`details.features`, with `vision` and any declared `embeddings`/`reranking` keys:
+`details.features`, with `vision`, `tools` and any declared `embeddings`/`reranking` keys:
 
 | State | Meaning |
 | --- | --- |
 | `present` | Node evidence establishes usable resources for the feature. Endpoint runtime installation establishes present; chat also respects policy and running snapshots. |
 | `available` | Eligibility is known, but files/runtime or a fresh enabled launch are needed. |
-| `unsupported` | The provider declares a `features` block without this feature, or evidence shows the model cannot do it. |
+| `unsupported` | Engine evidence rules the feature out; vision also uses an explicit provider declaration that omits vision. |
 | `unknown` | Evidence is insufficient, including every provider that declares no `features` block. |
 
 Missing projectors alone do not establish `available`: source evidence must show
@@ -109,6 +109,51 @@ existing text process retains its old launch snapshot. A provider with no
 OpenAI-compatible server), stays `unknown` and is never refused. Providers that
 declare features derive `/v1/models` `capabilities.vision` from `present`;
 providers that declare none keep the name-based guess.
+
+### Tools evidence
+
+`details.features.tools` describes engine evidence, not a successful tool call.
+`/v1/models` always emits `capabilities.tools`: only `present` becomes `true`.
+`available`, `unsupported` and `unknown` become `false`, and never prohibit a
+request. Groups intersect every replica, including missing or unknown evidence.
+Cloud and external models without present evidence now report `tools:false`,
+where cloud models previously claimed `tools:true`. False means no evidence,
+not refusal; tool requests still reach the engine.
+
+- Ollama uses the existing authenticated `/api/show` capability list: `tools`
+  means present; an explicit list without it means unsupported; an absent, null,
+  malformed or failed response stays unknown. Vision uses that same fetch.
+- llama.cpp stays unknown until a running chat process reports the boolean
+  `chat_template_caps.supports_tools` at `/props`. True means present, false
+  means unsupported; missing, malformed, oversized or failed metadata stays
+  unknown without changing readiness. Cold GGUFs stay unknown. The pinned
+  engine enables Jinja by default.
+  This evidence is read once after readiness, with its own timeout independent
+  of the context-length read. If unavailable then, it stays unknown until the
+  run restarts; health recovery does not retry it.
+- A running vLLM chat process launched with both `enable-auto-tool-choice` and
+  `tool-call-parser` set reports present; missing or disabled switches mean
+  available. Cold models stay unknown. `reasoning-parser` is independent.
+- MLX stays unknown under both mlx-lm and mlx-vlm, regardless of installation,
+  vision eligibility or template presence.
+
+The provider tree declares these mechanisms without engine names in Go:
+`tools: {}` consumes source booleans, `requires_parameters` names launch
+requirements, and `http: {path: /props, field: chat_template_caps.supports_tools}`
+selects an engine boolean. HTTP paths are relative to the run's endpoint; fields
+are dotted object paths. A required parameter missing from the endpoint schema
+makes that feature unknown and logs one warning per provider, feature and key;
+it never aborts launch.
+Tools declarations provision no files or runtime. Template bytes and names are
+never parsed, and no parser registry or probe verdict is stored.
+
+The serving chat snapshot takes precedence over desired configuration. Parameter
+patches and asset replacement take effect after restart; shared variants use
+the same canonical chat run. Embedding and reranking runs cannot replace chat
+evidence. Workers report their states and the coordinator preserves them.
+Verify actual behavior with `zz_chat` using `probe: tools`; its automatic-choice
+result and diagnostics are request-local. Catalog evidence does not replace
+classified engine refusals or their repair instructions.
 
 Stopping or restarting a run answers, and a run's job completes, only after the
 catalog is published on the serving node and acknowledged by the coordinator; a
