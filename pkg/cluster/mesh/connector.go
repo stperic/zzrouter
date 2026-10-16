@@ -131,21 +131,7 @@ func NewConnector(cfg ConnectorConfig) *Connector {
 	netClassify := retry.ClassifyNetwork()
 	client := cfg.HTTPClient
 	if client == nil {
-		dialer := &net.Dialer{
-			Timeout:   connectorDialTimeout,
-			KeepAlive: connectorDialKeepAlive,
-		}
-		client = &http.Client{
-			Transport: &http.Transport{
-				DialContext:           dialer.DialContext,
-				MaxIdleConns:          connectorMaxIdleConns,
-				MaxIdleConnsPerHost:   connectorMaxIdleConnsPerHost,
-				IdleConnTimeout:       connectorIdleConnTimeout,
-				TLSHandshakeTimeout:   connectorTLSHandshakeTimeout,
-				ResponseHeaderTimeout: connectorResponseHeaderTimeout,
-				ExpectContinueTimeout: connectorExpectContinueTimeout,
-			},
-		}
+		client = &http.Client{Transport: newConnectorTransport()}
 	}
 	return &Connector{
 		backoff: retry.Backoff{
@@ -167,6 +153,23 @@ func NewConnector(cfg ConnectorConfig) *Connector {
 		versionDiscovery: version.NewVersionDiscovery(constants.VersionDiscoveryTimeout),
 		httpClient:       client,
 		clusterPort:      cfg.ClusterPort,
+	}
+}
+
+// newConnectorTransport keeps dispatch and probe timeout policy shared.
+func newConnectorTransport() *http.Transport {
+	dialer := &net.Dialer{
+		Timeout:   connectorDialTimeout,
+		KeepAlive: connectorDialKeepAlive,
+	}
+	return &http.Transport{
+		DialContext:           dialer.DialContext,
+		MaxIdleConns:          connectorMaxIdleConns,
+		MaxIdleConnsPerHost:   connectorMaxIdleConnsPerHost,
+		IdleConnTimeout:       connectorIdleConnTimeout,
+		TLSHandshakeTimeout:   connectorTLSHandshakeTimeout,
+		ResponseHeaderTimeout: connectorResponseHeaderTimeout,
+		ExpectContinueTimeout: connectorExpectContinueTimeout,
 	}
 }
 

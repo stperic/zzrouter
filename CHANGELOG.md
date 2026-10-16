@@ -42,6 +42,12 @@
   ```
 
   Use a concrete model ID and real dollar rates per million tokens when billed.
+- Node health combines probe and dispatch evidence across mesh, inference, jobs
+  and provider sync. Three consecutive transport failures fail fast; recovery
+  uses the existing probes after a 30-second cooldown and two full successes.
+  REST and MCP agree, with one missed full probe retaining dispatch grace.
+  Public-only degraded and half-open recovery nodes receive no ordinary traffic.
+  Caller deadlines and errors after response headers leave node health unchanged.
 
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.

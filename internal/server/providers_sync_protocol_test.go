@@ -254,7 +254,7 @@ func TestProviderSyncProtocolMeshIdentityAndWholeBytes(t *testing.T) {
 	cluster, err := mesh.NewCluster(&mesh.Config{}, "http://coordinator.invalid:9090", nil, nil, mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client}))
 	require.NoError(t, err)
 	cluster.Stop() // Fixture dispatches directly, with no health-monitor traffic.
-	ep := &mesh.Endpoint{URL: "http://worker.invalid:9090", ClusterURL: "https://worker.invalid:9091", NodeName: "worker", Status: mesh.StatusDown}
+	ep := &mesh.Endpoint{URL: "http://worker.invalid:9090", ClusterURL: "https://worker.invalid:9091", NodeName: "worker", Status: mesh.StatusUp}
 	require.NoError(t, cluster.RegisterEndpoint(ep))
 	f := newProviderSyncFanOut(store, func() bool { return true }, func() []*mesh.Endpoint { return []*mesh.Endpoint{ep} }, func() *http.Client { return client }, cluster.GetClient)
 	f.fire(store.Config())

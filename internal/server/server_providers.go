@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 
-	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -67,16 +65,7 @@ func (s *Server) subscribeConfigStore() {
 		s.configStore,
 		func() bool { return s.cluster.coordinator != nil && !s.node.IsWorker() },
 		s.GetClusterEndpoints,
-		func() *http.Client {
-			if s.cluster.listener == nil {
-				return nil
-			}
-			client, err := s.cluster.listener.DialClient(clusterid.RoleWorker.OU())
-			if err != nil {
-				return nil
-			}
-			return client
-		},
+		s.coordWorkerMTLSClient,
 		s.getClusterClient,
 	)
 	s.configStore.OnChange("server.providerSyncFanOut", syncFanOut.Listener())

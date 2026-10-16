@@ -40,7 +40,7 @@ func (s *Server) cachedJobsStreamClient() func() (*http.Client, error) {
 // a bounded window, unlike the general DialClient transport which has
 // no header deadline.
 func (s *Server) newJobsStreamClient() (*http.Client, error) {
-	if s.cluster.listener == nil {
+	if s.cluster.listener == nil || s.cluster.coordinator == nil {
 		return nil, errors.New("cluster listener not initialized")
 	}
 	base, err := s.cluster.listener.DialClient(clusterid.RoleWorker.OU())
@@ -61,7 +61,7 @@ func (s *Server) newJobsStreamClient() (*http.Client, error) {
 		MaxIdleConns:          10,
 		IdleConnTimeout:       proxyKeepAlive * 3,
 	}
-	return &http.Client{Transport: tr}, nil
+	return s.cluster.coordinator.GetState().HTTPClient(&http.Client{Transport: tr}), nil
 }
 
 // listJobsPeers returns the names of every non-local cluster peer the
@@ -81,7 +81,7 @@ func (s *Server) listJobsPeers() []string {
 	self := s.node.Name()
 	for _, ep := range endpoints {
 		// A down peer's jobs are unreachable either way; asking it would turn every miss into a 503.
-		if ep == nil || ep.IsLocal || ep.Status == mesh.StatusDown {
+		if ep == nil || ep.IsLocal || !ep.Usable() {
 			continue
 		}
 		if strings.EqualFold(ep.NodeName, self) {

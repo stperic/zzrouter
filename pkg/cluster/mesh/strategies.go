@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -46,26 +47,13 @@ func (h *UnicastHandler) Dispatch(ctx context.Context, endpoints []*Endpoint, re
 
 	endpoint := endpoints[0]
 
-	// Check circuit breaker
-	breaker := h.dispatcher.circuitBreakers.GetBreaker(endpoint.URL)
-
-	result, err := breaker.ExecuteAny(func() (any, error) {
-		// CRITICAL OPTIMIZATION: In-process dispatch for local endpoint
-		if endpoint.IsLocal || endpoint.URL == h.dispatcher.localNodeURL {
-			return h.dispatchLocal(ctx, req)
-		}
-		return h.dispatchRemote(ctx, endpoint, req)
-	})
-
-	if err != nil {
-		return nil, err
+	if endpoint.IsLocal || endpoint.URL == h.dispatcher.localNodeURL {
+		return h.dispatchLocal(ctx, req)
 	}
-
-	resp, ok := result.(*Response)
-	if !ok {
-		return nil, fmt.Errorf("internal: unicast dispatcher returned unexpected type %T", result)
+	if !endpoint.Usable() {
+		return nil, fmt.Errorf("%w: node %s", fallback.ErrUnreachable, endpoint.URL)
 	}
-	return resp, nil
+	return h.dispatchRemote(ctx, endpoint, req)
 }
 
 // dispatchLocal handles local in-process dispatch
@@ -110,7 +98,7 @@ func (h *UnicastHandler) dispatchRemote(ctx context.Context, endpoint *Endpoint,
 	// Copy headers
 	maps.Copy(httpReq.Header, req.Headers)
 
-	resp, err := h.dispatcher.connector.httpClient.Do(httpReq)
+	resp, err := h.dispatcher.client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -145,17 +133,9 @@ func (h *BroadcastHandler) Dispatch(ctx context.Context, endpoints []*Endpoint, 
 		return nil, fmt.Errorf("no endpoints available")
 	}
 
-	// Filter out DOWN endpoints AND local endpoint
-	// Broadcast should ONLY go to remote workers, not local master
-	// Local data is handled separately by the caller
 	activeEndpoints := make([]*Endpoint, 0, len(endpoints))
 	for _, ep := range endpoints {
-		// Skip local endpoint - caller handles local data separately
-		if ep.IsLocal {
-			continue
-		}
-		// Skip DOWN endpoints to avoid timeout delays
-		if ep.Status != StatusDown {
+		if !ep.IsLocal && ep.Usable() {
 			activeEndpoints = append(activeEndpoints, ep)
 		}
 	}
@@ -324,10 +304,10 @@ func (h *RoundRobinHandler) Dispatch(ctx context.Context, endpoints []*Endpoint,
 		return nil, fmt.Errorf("no endpoints available")
 	}
 
-	// Filter to only UP endpoints (skip DOWN to avoid timeout delays)
+	// Shared eligibility keeps grace and recovery consistent across strategies.
 	healthyEndpoints := make([]*Endpoint, 0)
 	for _, ep := range endpoints {
-		if ep.Status == StatusUp {
+		if ep.Usable() {
 			healthyEndpoints = append(healthyEndpoints, ep)
 		}
 	}
@@ -335,7 +315,7 @@ func (h *RoundRobinHandler) Dispatch(ctx context.Context, endpoints []*Endpoint,
 	// Fail fast if no healthy endpoints available
 	// Health monitor will handle reconnection attempts
 	if len(healthyEndpoints) == 0 {
-		return nil, fmt.Errorf("no healthy endpoints available (all marked as DOWN)")
+		return nil, fmt.Errorf("%w: no usable endpoints", fallback.ErrUnreachable)
 	}
 
 	// Round-robin selection from healthy endpoints
@@ -363,12 +343,12 @@ func (h *FailoverHandler) Dispatch(ctx context.Context, endpoints []*Endpoint, r
 		return nil, fmt.Errorf("no endpoints available")
 	}
 
-	var lastErr error
+	lastErr := fallback.ErrUnreachable
 	unicast := NewUnicastHandler(h.dispatcher)
 
-	// Skip DOWN endpoints
+	// Recovery belongs to probes rather than failover traffic.
 	for _, endpoint := range endpoints {
-		if endpoint.Status == StatusDown {
+		if !endpoint.Usable() {
 			continue
 		}
 

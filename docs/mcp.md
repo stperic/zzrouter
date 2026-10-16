@@ -5,6 +5,17 @@ Codex. Tools call the existing REST handlers with your admin key; validation,
 cluster routing, jobs and errors are the REST contract. Workers do not expose
 this endpoint. Both 2026-07-28 and legacy 2025-06-18 clients are supported.
 
+`zz_nodes` list/detail and `zz_overview` render the same effective node health
+as REST. Three consecutive transport failures open the node breaker (`down`);
+HTTP provider errors, caller deadlines and errors after response headers are neutral.
+After a 30-second cooldown, two successful full
+cluster probes recover it without inference. Half-open recovery reports `degraded`
+and admits probes only. One missed full probe retains dispatch grace; public-only
+`degraded`, `unknown`, `down` and half-open nodes cannot receive ordinary traffic.
+Two missed probes or a graceful goodbye mark a node down. `last_seen_at` is the
+latest successful probe, and `last_error` carries sanitized probe/dispatch evidence.
+See [node routing errors](agent_error_codes.md#node-reachability).
+
 ## Connect
 
 Make `ZZROUTER_ADMIN_API_KEY` available to your client through your normal

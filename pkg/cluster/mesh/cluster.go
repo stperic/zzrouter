@@ -41,16 +41,15 @@ func NewCluster(cfg *Config, localNodeURL string, localHandler LocalHandler, rec
 		connector = NewConnector(ConnectorConfig{})
 	}
 	registry := NewEndpointRegistry()
-	circuitBreakers := NewCircuitBreakerManager()
 
 	// Create unified state manager
-	state := NewStateManager(registry, circuitBreakers)
+	state := NewStateManager(registry)
 
 	dispatcher := NewDispatcher(&DispatcherConfig{
-		Connector:       connector,
-		CircuitBreakers: circuitBreakers,
-		LocalHandler:    localHandler,
-		LocalNodeURL:    localNodeURL,
+		Connector:    connector,
+		State:        state,
+		LocalHandler: localHandler,
+		LocalNodeURL: localNodeURL,
 	})
 
 	// Create cluster instance
@@ -70,7 +69,6 @@ func NewCluster(cfg *Config, localNodeURL string, localHandler LocalHandler, rec
 	healthMonitor := NewHealthMonitor(&HealthMonitorConfig{
 		Connector:            connector,
 		Registry:             registry,
-		CircuitBreakers:      circuitBreakers,
 		CheckInterval:        constants.HealthCheckInterval,
 		ReconnectionCallback: reconnectCallback,
 		NameObserver:         cfg.NameObserver,

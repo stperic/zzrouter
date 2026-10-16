@@ -75,7 +75,7 @@ func (s *Server) coordWorkerMTLSClient() *http.Client {
 	if s.clusterMTLSClient != nil {
 		return s.clusterMTLSClient
 	}
-	if s.cluster.listener == nil {
+	if s.cluster.listener == nil || s.cluster.coordinator == nil {
 		return nil
 	}
 	client, err := s.cluster.listener.DialClient(clusterid.RoleWorker.OU())
@@ -83,7 +83,7 @@ func (s *Server) coordWorkerMTLSClient() *http.Client {
 		slog.Warn("coord mTLS client init failed", "error", err)
 		return nil
 	}
-	s.clusterMTLSClient = client
+	s.clusterMTLSClient = s.cluster.coordinator.GetState().HTTPClient(client)
 	return s.clusterMTLSClient
 }
 

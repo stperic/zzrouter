@@ -11657,6 +11657,22 @@ components:
         health_status:
           type: string
           enum: [unknown, healthy, degraded, down]
+          description: |
+            Effective coordinator view shared with MCP. Three consecutive transport
+            failures open the node breaker (down). After a 30-second cooldown, two
+            successful full cluster probes recover it; half-open is degraded and
+            admits probes only. One missed full probe retains dispatch grace;
+            public-only degraded, unknown, down and half-open reject ordinary traffic.
+            HTTP provider errors, caller cancellation/deadlines and errors after
+            response headers do not count as node failures. Two consecutive
+            missed probes mark a node down; a graceful goodbye does so immediately.
+        last_seen_at:
+          type: string
+          format: date-time
+          description: Latest successful health probe, unchanged by ordinary requests or failed probes.
+        last_error:
+          type: string
+          description: Sanitized probe or dispatch transport failure, omitted when absent.
         os:            { type: string }
         version:       { type: string }
         uptime_seconds:
