@@ -354,34 +354,28 @@ func (i *Installer) Preflight(ctx context.Context, reqs *config.AppRequirements)
 }
 
 func (i *Installer) preflight(ctx context.Context, reqs *config.AppRequirements, choice *interpreter.Choice, selectErr error) *preflight.Report {
-	report := &preflight.Report{Provider: i.cfg.Name, AllOK: true}
+	var results []preflight.Result
 	if reqs == nil {
 		reqs = &config.AppRequirements{}
 	}
 
 	// Disk space + write permissions
-	report.Results = append(report.Results, preflight.DiskAndPermissions(i.cfg.Name, reqs.DiskSpace)...)
+	results = append(results, preflight.DiskAndPermissions(i.cfg.Name, reqs.DiskSpace)...)
 
 	// Python interpreter selection — stashed on the installer for InstallPlan.
-	report.Results = append(report.Results, interpreterResult(choice, selectErr, reqs.Python))
+	results = append(results, interpreterResult(choice, selectErr, reqs.Python))
 	if selectErr == nil {
-		report.Results = append(report.Results, preflight.VenvModule(ctx, choice.Path))
+		results = append(results, preflight.VenvModule(ctx, choice.Path))
 	}
 
 	// GPU — policy comes from the provider config. vLLM declares
 	// policy "required" so the check becomes a hard gate; other
 	// python-venv providers can declare "advisory" and still run.
 	if result, ok := preflight.GPU(ctx, reqs.GPU); ok {
-		report.Results = append(report.Results, result)
+		results = append(results, result)
 	}
 
-	for _, r := range report.Results {
-		if !r.Passed {
-			report.AllOK = false
-			break
-		}
-	}
-	return report
+	return preflight.NewReport(i.cfg.Name, results)
 }
 
 // ensureInterpreter resolves the Python interpreter once per installer,
@@ -433,20 +427,8 @@ func interpreterResult(choice *interpreter.Choice, err error, req *config.Python
 	}
 }
 
-func (i *Installer) checkPlatform(current fsroot.Platform) error {
-	if len(i.cfg.Platforms) == 0 {
-		return nil
-	}
-	for _, platform := range i.cfg.Platforms {
-		if platform.OS == current.OS && (platform.Arch == "" || platform.Arch == current.Arch) {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: %s is not supported on %s/%s", install.ErrUnsupportedPlatform, i.cfg.Name, current.OS, current.Arch)
-}
-
 func (i *Installer) InstallPlan(ctx context.Context, version string) (*install.Plan, error) {
-	if err := i.checkPlatform(fsroot.CurrentPlatform()); err != nil {
+	if err := install.CheckPlatform(i.cfg.Name, i.SupportedPlatforms(), fsroot.CurrentPlatform()); err != nil {
 		return nil, err
 	}
 	if i.cfg.Recipe != nil {

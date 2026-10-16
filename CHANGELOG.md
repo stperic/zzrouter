@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Standalone provider install preflight reports unsupported OS or architecture
+  as a failed `platform` check with a remediation hint, before host probes.
+  Reports still return HTTP 200 and use the selected node's installer and requirements.
 - Pinned process runs return after node restarts and self-updates, replaying their
   request overrides with current provider tiers. Stop a run to forget its saved pin.
 - Interrupted registry downloads and peer syncs keep local model copies incomplete

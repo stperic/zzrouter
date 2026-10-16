@@ -4680,16 +4680,20 @@ paths:
       summary: Run preflight checks for an install
       description: |
         Checks the target node's prerequisites before an install is
-        attempted: interpreter, GPU tooling, network reachability, disk. It
-        changes nothing, and it answers synchronously with a report of what
-        passed and what did not.
+        attempted: platform support, interpreter, GPU tooling, network
+        reachability, disk. Installer lookup and requirements belong to the
+        selected node (`?node=<name>`; omitted means local). It changes nothing
+        and answers synchronously with a report of what passed and what did not.
+        An unsupported OS or architecture returns HTTP 200 with `all_ok:false`
+        and a failed `platform` check, message and remediation hint, before
+        host prerequisite probes. Failed checks remain report data.
 
         Run it before `POST /zzrouter/v1/providers/{name}/install`. A failed
         preflight is much cheaper to read than a failed install.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
-        '200': { description: OK }
+        '200': { description: 'Preflight report, including failed checks with all_ok:false.' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: No provider by that name, or the target node is unknown.

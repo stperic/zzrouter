@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 )
 
 // EnsureModelFeatures provisions selected runtime features before deployment
@@ -73,7 +74,7 @@ func (m *ProviderAppManager) ensureFeatureRuntime(ctx context.Context, name stri
 	if installer.IsInstalled() {
 		return nil
 	}
-	report := installer.Preflight(ctx, requirements)
+	report := install.Preflight(ctx, installer, requirements)
 	if !report.AllOK {
 		var failed []string
 		for _, r := range report.Results {

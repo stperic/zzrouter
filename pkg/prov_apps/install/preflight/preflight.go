@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,11 @@ type Report struct {
 	Provider string   `json:"provider"`
 	Results  []Result `json:"results"`
 	AllOK    bool     `json:"all_ok"`
+}
+
+// NewReport derives the summary from the checks so failed diagnostics remain report data.
+func NewReport(provider string, results []Result) *Report {
+	return &Report{Provider: provider, Results: results, AllOK: !slices.ContainsFunc(results, func(r Result) bool { return !r.Passed })}
 }
 
 // VenvModule checks that the given Python interpreter has the `venv`

@@ -335,7 +335,7 @@ func (e *ProvidersExecutor) HandleInternalInstallProvider(c *gin.Context) {
 	// Preflight: check system prerequisites before install
 	if inst, err := e.mgr.Install().Installer(name); err == nil {
 		reqs := e.mgr.ProviderRequirements(name)
-		report := inst.Preflight(ctx, reqs)
+		report := install.Preflight(ctx, inst, reqs)
 		if !report.AllOK {
 			respondPreflightFailed(c, report)
 			return
@@ -422,7 +422,7 @@ func (e *ProvidersExecutor) HandleInternalPreflightInstall(c *gin.Context) {
 	// Get requirements from provider config
 	reqs := e.mgr.ProviderRequirements(name)
 
-	report := inst.Preflight(c.Request.Context(), reqs)
+	report := install.Preflight(c.Request.Context(), inst, reqs)
 	c.JSON(http.StatusOK, report)
 }
 
