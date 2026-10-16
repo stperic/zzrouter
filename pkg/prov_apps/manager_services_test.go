@@ -146,6 +146,13 @@ func TestExplicitUnavailableServiceDoesNotFallBack(t *testing.T) {
 	require.Nil(t, manager)
 }
 
+func TestServiceManagerNoneUsesZZRouterSupervisor(t *testing.T) {
+	cfg := config.ServiceConfig{Service: &config.ServiceManagement{Manager: "none"}}
+	manager, err := serviceManager(context.Background(), "strata", cfg)
+	require.NoError(t, err)
+	require.Nil(t, manager)
+}
+
 func TestManagedServiceConfigRemovalStopsSupervision(t *testing.T) {
 	for _, change := range []string{"provider", "endpoint", "nil"} {
 		t.Run(change, func(t *testing.T) {

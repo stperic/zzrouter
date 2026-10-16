@@ -1,0 +1,41 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Strata inference server"
+protocol: openai
+enabled: false  # Enable after installing Strata
+version_source:
+  type: github_release
+  repo: Niko1221/Strata
+  strip_prefix: "v"
+  # Strata tags have four numeric parts (for example v0.1.44.1).
+  compare: pep440
+requirements:
+  # Upstream setup downloads a 66-120 GB model plus its draft layer and
+  # may prepare an additional streaming copy on Apple Silicon.
+  disk_space: "150GB"
+  # Linux setup builds its private venv from a host Python.
+  python: {min: "3.10"}
+# Setup runs in the controlled install environment. Declare what it needs from
+# the node here, for example STRATA_NVCC to pin a CUDA toolkit or HF_TOKEN and
+# HF_ENDPOINT for the model download:
+# defaults:
+#   environment:
+#     STRATA_NVCC: /usr/local/cuda-13.0/bin/nvcc
+service:
+  # Strata's setup does not register a host service. zzRouter supervises it.
+  manager: none
+capabilities:
+  # Messages compatibility is derived from chat_completions until the native
+  # Strata wire contract has been verified with tool-result images.
+  wire_endpoints: [chat_completions, responses]
+runtime:
+  endpoint: http://127.0.0.1:8080
+  # The caller's zzRouter key never reaches a keyless Strata server.
+  # For a remote server, configure bearer auth with a token reference.
+  api:
+    auth_type: none
+  health_check:
+    path: /health
+    interval: 30s
+    timeout: 5s
+    retries: 3

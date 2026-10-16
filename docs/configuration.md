@@ -25,6 +25,72 @@ Shipped provider files are embedded in the node; initialization
 materializes this tree. The coordinator owns provider writes. Workers receive
 managed copies through peer synchronization.
 
+### Install Strata through zzRouter
+
+The shipped provider targets [Niko1221/Strata](https://github.com/Niko1221/Strata).
+Like the Ollama provider, it starts disabled with a loopback endpoint,
+`http://127.0.0.1:8080`, so each node reads only its own daemon. Enable it on
+the coordinator with `PATCH /zzrouter/v1/providers/strata` and
+`{"enabled": true}`, then install it on a capable node through the ordinary
+provider install flow:
+
+```text
+POST /zzrouter/v1/providers/strata/install/preflight?node=localai
+POST /zzrouter/v1/providers/strata/install/plan?node=localai
+POST /zzrouter/v1/providers/strata/install?node=localai
+GET  /zzrouter/v1/providers/strata/service/status?node=localai
+POST /zzrouter/v1/models/scan?node=localai
+```
+
+Installation fetches an official release and lets upstream setup choose a model
+size for that node. Setup can download more than 100 GB, so follow the returned
+job ID until completion. zzRouter starts the resulting daemon through the
+provider service lifecycle. Uninstall stops and detaches the managed service;
+model data and release files are retained for recovery.
+Setup picks its recommended model family and size, and installs the image
+encoder only when the provider declares the `vision` feature. It runs with the
+controlled environment managed Python installs use plus Strata's provider
+`environment`, never zzRouter's own credentials.
+
+Current upstream Linux releases publish no engine archive, so on NVIDIA nodes
+setup compiles the engine with a CUDA toolkit: 13.0 for compute capability
+12.x, 12.0 otherwise. Setup finds the newest toolkit itself, including
+versioned `/usr/local/cuda-*` installs beside an older default; to pin one,
+set `STRATA_NVCC` to its `nvcc` in Strata's provider `environment`. Install the
+toolkit as the host administrator first. Setup cannot install it from
+zzRouter's unprivileged service, so the job then fails at upstream's engine
+step, before the model download, with upstream's instructions in its log.
+
+Once `/health` reports ready, rescan that node through
+`POST /zzrouter/v1/models/scan?node=localai`. A node without a Strata daemon
+reports the provider's inventory as unavailable, as it does for Ollama. A
+successful `/health` proves connectivity; a listed model may still be
+unloaded. Use `zz_chat` or an inference request to verify it serves. Service
+status, start, stop and restart use the same provider service routes as other
+managed daemons.
+
+### Connect an existing Strata server
+
+Run Strata on the same node, or edit `runtime.endpoint`
+on the coordinator to the root URL of a server this node can reach. Keep the
+`/v1` suffix out of `runtime.endpoint`; zzRouter adds it to API requests.
+
+If Strata requires an API key, set its provider `runtime.api` to bearer auth
+with `auth_header: Authorization`, `auth_prefix: "Bearer "`, and
+`token: "${STRATA_API_KEY}"`. Set that variable in zzRouter's protected
+runtime environment. The Strata key replaces the caller's zzRouter key on
+upstream requests. A remote endpoint is a connection to an operator-owned
+server and is outside zzRouter's local managed install and service controls.
+
+Strata's models use the same catalog identity as every provider: `name@node`
+in `GET /v1/models`, or the bare name when one node holds it. Strata owns its
+model files; zzRouter manages the installed service and relays requests, but
+model detail and per-model deletion are unavailable through zzRouter. The
+shipped Responses endpoint is native; Messages uses the Chat Completions
+translation until Strata's native tool-result image behavior is verified.
+Strata's Responses API is stateless: agents must send the conversation in each
+request and cannot use `previous_response_id`.
+
 ## Provider endpoints
 
 `capabilities.wire_endpoints` declares native APIs such as `chat_completions`,

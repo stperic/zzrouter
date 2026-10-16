@@ -10,11 +10,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
+	sourceopenai "github.com/stperic/zzrouter/pkg/modelregistry/source/openai"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// ListAllModels returns models from ALL sources (Ollama, HuggingFace, standalone files).
+// ListAllModels returns models from all external daemons and local sources.
 //
 // Backed by an EventCache: the underlying scan (Ollama API + filesystem)
 // runs once and its result is reused until InvalidateScanCache is called.
@@ -87,35 +88,35 @@ func (r *Registry) buildModelList(ctx context.Context) ([]*metadata.ModelMetadat
 	var allModels []*metadata.ModelMetadata
 	r.scanFailures = make(map[string]string)
 
-	// 1. Get models from every enabled external provider that speaks the
-	// Ollama protocol. This covers both the managed `ollama` install and
-	// any runtime-added connect instances (`ollama-nas`, `ollama-lab`, …).
-	// Each backend's models are tagged with that provider's key as
-	// AssignedApp, so the routing pipeline can dispatch per-backend without
-	// hardcoded name lookups.
-	//
-	// Ollama models are managed entirely by each daemon — zzRouter stores
-	// nothing locally for them. All state lives behind the /api/tags call.
-	//
-	ollamaCtx, cancel := context.WithTimeout(ctx, ollama.APITimeout)
+	// 1. Read each enabled external daemon through its declared protocol.
+	// Every remote model is assigned to its own provider before catalog
+	// deduplication, so same-name entries on different backends survive.
+	scanCtx, cancel := context.WithTimeout(ctx, ollama.APITimeout)
 	defer cancel()
 	if cfg := r.appsConfigFn(); cfg != nil {
 		resolver := backend.NewResolver(r.appsConfigFn)
 		for name, p := range cfg.ExternalProviders() {
-			if p.Protocol != config.ProtocolOllama {
+			if p.Protocol != config.ProtocolOllama && p.Protocol != config.ProtocolOpenAI {
 				continue
 			}
 			daemon, ok := resolver.Resolve(name)
 			if !ok {
 				continue
 			}
-			models, err := r.ollamaConnector.ListTags(ollamaCtx, daemon, name)
+			var models []*metadata.ModelMetadata
+			var err error
+			switch p.Protocol {
+			case config.ProtocolOllama:
+				models, err = r.ollamaConnector.ListTags(scanCtx, daemon, name)
+			case config.ProtocolOpenAI:
+				models, err = sourceopenai.ListModels(scanCtx, daemon, name)
+			}
 			if err != nil {
-				utils.LogWarnf("Failed to list Ollama models from %s (%s): %v", name, daemon.Endpoint, err)
 				reason := utils.SanitizeErrorMessage(security.RedactSensitive(err.Error()))
 				if len(reason) > 1024 {
 					reason = reason[:1024]
 				}
+				utils.LogWarnf("Failed to list %s models from %s: %s", p.Protocol, name, reason)
 				r.scanFailures[name] = reason
 				continue
 			}

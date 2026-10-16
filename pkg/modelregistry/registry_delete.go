@@ -104,6 +104,9 @@ func (r *Registry) SelectDeletion(model *metadata.ModelMetadata) (DeletionTarget
 		target.Backend = resolved
 		return target, nil
 	}
+	if model.Backend != "" && model.FullPath == "" {
+		return target, httperr.Error{Status: 409, Code: string(httperr.CodeModelNotDeletable), Message: "this external provider owns its model; remove it through the provider"}
+	}
 	target.directory = filepath.Dir(model.FullPath)
 	if info, err := os.Stat(model.FullPath); err == nil && info.IsDir() {
 		target.directory = model.FullPath

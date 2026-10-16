@@ -114,10 +114,11 @@ const (
 
 // Source repository constants.
 const (
-	SourceHuggingFace = "huggingface"
-	SourceOllama      = "ollama"
-	SourceLocal       = "local"
-	SourceUnknown     = "unknown"
+	SourceHuggingFace    = "huggingface"
+	SourceOllama         = "ollama"
+	SourceExternalOpenAI = "external_openai"
+	SourceLocal          = "local"
+	SourceUnknown        = "unknown"
 )
 
 // RepoAppCompatible reports whether an app type can serve models from a
