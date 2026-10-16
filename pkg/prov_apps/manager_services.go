@@ -106,6 +106,9 @@ func (m *ProviderAppManager) serviceConfig(name string) (config.ServiceConfig, e
 func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	if cfg.Service != nil && cfg.Service.Manager == "none" {
+		return nil, nil
+	}
 	if cfg.Service != nil && cfg.Service.Manager != "" && cfg.Service.Manager != "auto" {
 		manager, err := service.Get(cfg.Service.Manager)
 		if err != nil {

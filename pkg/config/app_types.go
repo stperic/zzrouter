@@ -349,7 +349,7 @@ type AppSearchConfig struct {
 type ServiceManagement struct {
 	// Manager specifies the service manager to use for env var persistence and restarts.
 	// "auto" detects: systemd (Linux) → launchd (macOS) → nssm (Windows)
-	// Explicit values: "systemd", "launchd", "nssm"
+	// Explicit values: "systemd", "launchd", "nssm"; "none" uses zzRouter supervision.
 	Manager string `yaml:"manager" json:"manager"`
 }
 
