@@ -157,6 +157,7 @@ func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 // ============================================================================
 
 func TestAccessIntegration_FullAuthAndEnforce_HappyPath(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -192,6 +193,7 @@ func TestAccessIntegration_FullAuthAndEnforce_HappyPath(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_KeyRPMDenial(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -233,6 +235,7 @@ func TestAccessIntegration_KeyRPMDenial(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_TeamBudgetExhaustionBlocksMembers(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{
@@ -270,6 +273,7 @@ func TestAccessIntegration_TeamBudgetExhaustionBlocksMembers(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_TeamModelAccess(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.groups.set("fast-chat", "llama3", "qwen")
@@ -309,6 +313,7 @@ func TestAccessIntegration_TeamModelAccess(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_SuspendedKeyRejectedAtAuth(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -328,6 +333,7 @@ func TestAccessIntegration_SuspendedKeyRejectedAtAuth(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_SuspendedTeamRejectedAtEnforce(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{
@@ -348,6 +354,7 @@ func TestAccessIntegration_SuspendedTeamRejectedAtEnforce(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_ConcurrentRequestsRespectRPMLimit(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -399,6 +406,7 @@ func TestAccessIntegration_ConcurrentRequestsRespectRPMLimit(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_SettlementRoundTrip_KeyAndTeam(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{
@@ -446,6 +454,7 @@ func TestAccessIntegration_SettlementRoundTrip_KeyAndTeam(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_MissingAPIKey(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	c, w := rig.makeRequest("")
@@ -455,6 +464,7 @@ func TestAccessIntegration_MissingAPIKey(t *testing.T) {
 }
 
 func TestAccessIntegration_InvalidAPIKey(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	c, w := rig.makeRequest("zzr_not-a-real-key")
@@ -468,6 +478,7 @@ func TestAccessIntegration_InvalidAPIKey(t *testing.T) {
 // ============================================================================
 
 func TestAccessIntegration_ConcurrencyDenialRollsBackBudgetReservation(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -515,6 +526,7 @@ func TestAccessIntegration_ConcurrencyDenialRollsBackBudgetReservation(t *testin
 // ============================================================================
 
 func TestAccessIntegration_CancelPendingReservationIfUnsettled_ReleasesBudget(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -542,6 +554,7 @@ func TestAccessIntegration_CancelPendingReservationIfUnsettled_ReleasesBudget(t 
 }
 
 func TestAccessIntegration_CancelPendingReservationIfUnsettled_NoopAfterBridgeSettled(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -580,6 +593,7 @@ func TestAccessIntegration_CancelPendingReservationIfUnsettled_NoopAfterBridgeSe
 // ============================================================================
 
 func TestAccessIntegration_RoleHierarchy_UserCannotReachAdminEndpoint(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})
@@ -671,6 +685,7 @@ func TestAccessIntegration_BridgeReleasesReservationOnErrorPath(t *testing.T) {
 // match. Drives the real Server.modelIdentity, which is the function
 // server_factory wires into ModelHooks.
 func TestAccessIntegration_TeamModelAccess_CatalogIDs(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRigWithHooks(t, ModelHooks{Identity: (&Server{}).modelIdentity})
 
 	rig.seedTeam(t, "eng", &teams.Team{
@@ -705,6 +720,7 @@ func TestAccessIntegration_TeamModelAccess_CatalogIDs(t *testing.T) {
 // so the first call on a fresh key reported the full limit as remaining
 // and a client self-throttling on the header overshot by one per window.
 func TestAccessIntegration_RateLimitRemainingCountsThisRequest(t *testing.T) {
+	t.Parallel()
 	rig := newAccessRig(t)
 
 	rig.seedTeam(t, "eng", &teams.Team{Name: "Engineering"})

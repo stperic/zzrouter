@@ -41,6 +41,7 @@ func newGatewayWithEnforcer(t *testing.T) (*AccessControl, *quota.Enforcer) {
 // ============================================================================
 
 func TestAccessControl_GetKeySpend_ReflectsSettledTraffic(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Pre-condition: no traffic yet.
@@ -71,6 +72,7 @@ func TestAccessControl_GetKeySpend_ReflectsSettledTraffic(t *testing.T) {
 }
 
 func TestAccessControl_GetTeamSpend_Independent(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Multi-scope chain: key AND team both reserve.
@@ -113,6 +115,7 @@ func TestAccessControl_GetTeamSpend_Independent(t *testing.T) {
 }
 
 func TestAccessControl_ResetKeySpend_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	chain := []quota.QuotaScope{{
@@ -139,6 +142,7 @@ func TestAccessControl_ResetKeySpend_ZerosLedger(t *testing.T) {
 }
 
 func TestAccessControl_GetAllSpendStates_AllScopes(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// One key-only request, one team-only request, one multi-scope request.
@@ -183,6 +187,7 @@ func TestAccessControl_GetAllSpendStates_AllScopes(t *testing.T) {
 // ============================================================================
 
 func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	// Seed the key store.
@@ -223,6 +228,7 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 }
 
 func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -252,6 +258,7 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 }
 
 func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -295,6 +302,7 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 }
 
 func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -335,6 +343,7 @@ func TestTeamsService_GetTeamUsage_ReturnsLiveSpend(t *testing.T) {
 }
 
 func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
+	t.Parallel()
 	gw, enforcer := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
@@ -363,6 +372,7 @@ func TestTeamsService_ResetTeamUsage_ZerosLedger(t *testing.T) {
 }
 
 func TestTeamsService_GetTeamUsage_NotFound(t *testing.T) {
+	t.Parallel()
 	gw, _ := newGatewayWithEnforcer(t)
 
 	dir := t.TempDir()
