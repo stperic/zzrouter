@@ -218,11 +218,10 @@ func admitFraction(budget schema.MemoryBudget, need Need, parameters map[string]
 		}
 	}
 	if !sized {
+		// The engine's reservation is admitted here, not the model's need, so the
+		// assessment reports no requirement.
 		for _, device := range selected {
 			required := int64(math.Ceil(float64(device.TotalMiB) * fraction))
-			if assessment.CapacityMiB == 0 || device.FreeMiB-required < assessment.CapacityMiB-assessment.RequiredMiB {
-				assessment.RequiredMiB, assessment.CapacityMiB = required, device.FreeMiB
-			}
 			fit := memoryFitError(budget.Parameter, device, required, owners)
 			if required > fit.FreeMiB {
 				return fit
