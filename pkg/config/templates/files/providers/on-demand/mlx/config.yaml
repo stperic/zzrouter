@@ -12,7 +12,9 @@ features:
       command: python3
       args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"]
       wire_model: path
-    wire_endpoints: [chat_completions, responses, messages]
+    # messages is left out so it is translated: native /v1/messages drops a tool_result
+    # image that carries no text, which Claude Code sends after Read.
+    wire_endpoints: [chat_completions, responses]
     exclude_parameters: [chat-template, temperature, top-p]
     health_check:
       path: /v1/models

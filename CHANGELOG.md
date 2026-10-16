@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- llama.cpp and the MLX vision runtime serve Anthropic Messages through the
+  translator instead of their native endpoints, which mishandle images inside
+  `tool_result` blocks (llama.cpp refuses the turn, mlx-vlm drops the image).
+  Existing installs pick this up on reconcile.
 - Standalone provider install preflight reports unsupported OS or architecture
   as a failed `platform` check with a remediation hint, before host probes.
   Reports still return HTTP 200 and use the selected node's installer and requirements.
