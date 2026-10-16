@@ -34,6 +34,11 @@ func startRealtimeBackend(t *testing.T) (*httptest.Server, string) {
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("backend upgrade failed: %v", err)

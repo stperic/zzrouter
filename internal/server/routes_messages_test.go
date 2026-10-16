@@ -137,6 +137,11 @@ func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serv
 			reply = `{"type":"message","model":"` + name + `-model","usage":{"input_tokens":1,"output_tokens":1}}`
 		}
 		engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":[{"id":"` + name + `-model"}]}`))
+				return
+			}
 			body, _ := io.ReadAll(r.Body)
 			b.mu.Lock()
 			b.hits = append(b.hits, recordedRequest{Method: r.Method, Path: r.URL.RequestURI(), Body: body, Headers: r.Header.Clone()})

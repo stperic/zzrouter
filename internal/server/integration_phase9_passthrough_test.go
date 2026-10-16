@@ -37,8 +37,9 @@ type recordedRequest struct {
 	Headers     http.Header
 }
 
-// newBackendRecorder spins up an httptest.Server that records every incoming
-// request and returns the response chosen by the caller. The returned close
+// newBackendRecorder spins up an httptest.Server that records exercise requests
+// and returns the response chosen by the caller. Catalog discovery is answered
+// separately so it does not count as the operation under test. The returned close
 // function must be called on cleanup.
 func newBackendRecorder(t *testing.T, respStatus int, respBody []byte, respContentType string) (*httptest.Server, *[]recordedRequest, *sync.Mutex) {
 	t.Helper()
@@ -46,6 +47,11 @@ func newBackendRecorder(t *testing.T, respStatus int, respBody []byte, respConte
 	var recorded []recordedRequest
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/models" && r.URL.RawQuery == "" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		recorded = append(recorded, recordedRequest{
