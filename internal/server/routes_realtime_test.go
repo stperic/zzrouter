@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/quota"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -270,17 +272,7 @@ func TestRealtime_EnforcesOpaqueAccessBeforeDial(t *testing.T) {
 	zz := httptest.NewServer(s.engine)
 	t.Cleanup(zz.Close)
 	endpoint := "ws" + strings.TrimPrefix(zz.URL, "http") + "/v1/realtime?model=test"
-	createKey := func(body map[string]any) string {
-		resp := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/keys", TestAdminKey, body)
-		require.Equal(t, http.StatusCreated, resp.Code, string(resp.Body))
-		var out struct {
-			Data struct {
-				Key string `json:"key"`
-			} `json:"data"`
-		}
-		require.NoError(t, json.Unmarshal(resp.Body, &out))
-		return out.Data.Key
-	}
+
 	dial := func(key string) (*websocket.Conn, *http.Response, error) {
 		h := http.Header{}
 		if key != "" {
@@ -300,22 +292,22 @@ func TestRealtime_EnforcesOpaqueAccessBeforeDial(t *testing.T) {
 		assert.Equal(t, status, resp.StatusCode)
 		assert.Equal(t, before, dials.Load(), "refused socket must not dial upstream")
 	}
-	refuse(createKey(map[string]any{"id": "spend", "name": "Spend", "spend_limit": 5}), http.StatusForbidden)
-	refuse(createKey(map[string]any{"id": "tokens", "name": "Tokens", "tpm_limit": 1000}), http.StatusForbidden)
+	refuse(loadTestKey(t, s, "spend", keys.VirtualKey{Name: "Spend", QuotaConfig: quota.QuotaConfig{SpendLimit: 5}}), http.StatusForbidden)
+	refuse(loadTestKey(t, s, "tokens", keys.VirtualKey{Name: "Tokens", QuotaConfig: quota.QuotaConfig{TPMLimit: 1000}}), http.StatusForbidden)
 	team := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/teams", TestAdminKey,
 		map[string]any{"id": "restricted", "name": "Restricted", "allowed_models": []string{"test"}})
 	require.Equal(t, http.StatusCreated, team.Code, string(team.Body))
-	refuse(createKey(map[string]any{"id": "member", "name": "Member", "team_id": "restricted"}), http.StatusForbidden)
-	suspended := createKey(map[string]any{"id": "suspended", "name": "Suspended"})
+	refuse(loadTestKey(t, s, "member", keys.VirtualKey{Name: "Member", TeamID: "restricted"}), http.StatusForbidden)
+	suspended := loadTestKey(t, s, "suspended", keys.VirtualKey{Name: "Suspended"})
 	changed := makeAuthRequest(t, s, http.MethodPatch, "/zzrouter/v1/keys/suspended", TestAdminKey, map[string]any{"suspended": true})
 	require.Equal(t, http.StatusOK, changed.Code, string(changed.Body))
 	refuse(suspended, http.StatusUnauthorized)
-	rpm := createKey(map[string]any{"id": "rpm", "name": "RPM", "rpm_limit": 1})
+	rpm := loadTestKey(t, s, "rpm", keys.VirtualKey{Name: "RPM", QuotaConfig: quota.QuotaConfig{RPMLimit: 1}})
 	conn, resp, err := dial(rpm) //nolint:bodyclose // successful WebSocket upgrade has no response body
 	require.NoError(t, err, "response: %v", resp)
 	require.NoError(t, conn.Close())
 	refuse(rpm, http.StatusTooManyRequests)
-	parallel := createKey(map[string]any{"id": "parallel", "name": "Parallel", "max_parallel_requests": 1})
+	parallel := loadTestKey(t, s, "parallel", keys.VirtualKey{Name: "Parallel", QuotaConfig: quota.QuotaConfig{MaxParallelRequests: 1}})
 	first, resp, err := dial(parallel) //nolint:bodyclose // successful WebSocket upgrade has no response body
 	require.NoError(t, err, "response: %v", resp)
 	defer func() { _ = first.Close() }()
