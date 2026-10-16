@@ -84,8 +84,10 @@ func mutationNodes(t *testing.T, location string) (target, reader *Server, dir s
 	if location == "worker" {
 		mode = config.ClusterModeWorker
 	}
-	target = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location, SeedProvidersDir: true})
-	require.NoError(t, target.configStore.SetProviderEnabled("llamacpp", true))
+	target = createSeededTestNode(t, seededTestNodeConfig{
+		TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: mode, NodeName: location},
+		providers:      []string{"llamacpp", "mlx", "ollama", "huggingface"}, enabled: []string{"llamacpp"},
+	})
 	reader = target
 	if location == "worker" {
 		reader = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator"})

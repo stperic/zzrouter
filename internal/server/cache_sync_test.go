@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,33 +17,104 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
-// createSeededTestNode wraps createTestNode with a templates.InstallDefaults
-// so configStore is populated — required for Finalize tests that mutate
-// real providers (e.g. ollama).
-func createSeededTestNode(t *testing.T) *Server {
-	t.Helper()
-	home, err := os.MkdirTemp("", "zzrouter-seed-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("ZZROUTER_TEST_HOME", home)
-	require.NoError(t, templates.InstallDefaults(filepath.Join(home, "providers")))
+// seededProviderFiles publishes immutable bytes from a real installation. Each
+// fixture still loads its own mutable configuration from private files.
+var seededProviderFiles struct {
+	once  sync.Once
+	files map[string][]byte
+}
 
+func seedTestProviders(t *testing.T, dir string, providers, enabled []string) {
+	t.Helper()
+	seededProviderFiles.once.Do(func() {
+		source := t.TempDir()
+		require.NoError(t, templates.InstallDefaults(source))
+		files := make(map[string][]byte)
+		require.NoError(t, filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			rel, err := filepath.Rel(source, path)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			files[filepath.ToSlash(rel)] = data
+			// The receipt is generated; every shipped file must remain byte-identical.
+			if !strings.HasPrefix(rel, ".") {
+				shipped, err := templates.AppsFS.ReadFile("files/providers/" + filepath.ToSlash(rel))
+				require.NoError(t, err)
+				require.Equal(t, shipped, data, rel)
+			}
+			return nil
+		}))
+		seededProviderFiles.files = files
+	})
+	found := make(map[string]bool)
+	for rel, source := range seededProviderFiles.files {
+		parts := strings.Split(rel, "/")
+		if len(parts) > 1 && providers != nil && !slices.Contains(providers, parts[1]) {
+			continue
+		}
+		data := source
+		if len(parts) == 3 && parts[2] == "config.yaml" {
+			found[parts[1]] = true
+			if slices.Contains(enabled, parts[1]) {
+				var doc map[string]any
+				require.NoError(t, yaml.Unmarshal(data, &doc))
+				doc["enabled"] = true
+				var err error
+				data, err = yaml.Marshal(doc)
+				require.NoError(t, err)
+			}
+		}
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+	}
+	for _, name := range append(slices.Clone(providers), enabled...) {
+		require.True(t, found[name], "fixture provider %q was not installed", name)
+	}
+}
+
+type seededTestNodeConfig struct {
+	TestNodeConfig
+	providers []string
+	enabled   []string
+}
+
+// createSeededTestNode owns seeded fixtures without changing BuildTestServer's
+// exported contract. Cleanup drains the server before restoring its home.
+func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server {
+	t.Helper()
+	cfg := seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig()}
+	if len(options) != 0 {
+		cfg = options[0]
+	}
+	home := t.TempDir()
+	t.Setenv("ZZROUTER_TEST_HOME", home)
+	seedTestProviders(t, filepath.Join(home, "providers"), cfg.providers, cfg.enabled)
+	name := cfg.NodeName
+	if name == "" {
+		name = "test-host"
+	}
 	hostCfg := &pkgConfig.NodeConfig{
-		Node: pkgConfig.ServeConfig{
-			Bind: "localhost",
-			Port: getNextTestPort(),
-			Name: "test-host",
-		},
-		Cluster: pkgConfig.ClusterConfig{
-			Mode: pkgConfig.ClusterModeDisabled,
-		},
-		Auth: pkgConfig.AuthConfig{AdminKey: TestAdminKey},
+		Node:    pkgConfig.ServeConfig{Bind: "localhost", Port: getNextTestPort(), Name: name},
+		Cluster: pkgConfig.ClusterConfig{Mode: cfg.ClusterMode},
+		Auth:    pkgConfig.AuthConfig{AdminKey: cfg.AdminKey, UserKey: cfg.UserKey, ClusterNetworkKey: cfg.ClusterKey},
 	}
 	s, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
-	t.Cleanup(func() { cleanupTestNode(s) })
+	t.Cleanup(func() {
+		cleanupTestNode(s)
+		s.model.Downloads.Stop()
+	})
 	return s
 }
 

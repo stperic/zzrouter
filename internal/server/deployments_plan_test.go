@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -96,7 +95,7 @@ func TestDeployChecksSourceAgainstEachTargetsPlan(t *testing.T) {
 func featureTestConfig(t *testing.T) *pkgConfig.AppsConfig {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(dir))
+	seedTestProviders(t, dir, []string{"llamacpp", "mlx", "vllm", "huggingface", "openai"}, nil)
 	cfg, err := pkgConfig.LoadAppsConfig(dir)
 	require.NoError(t, err)
 	return cfg
@@ -248,6 +247,7 @@ func (r *unreachableRouter) Route(ctx context.Context, req *routing.Request) (*r
 // request is a 400, a part of this node not yet available a 503, and a node
 // or registry that did not answer a 502.
 func TestDeployPlanErrorsSayWhose(t *testing.T) {
+	cfg := featureTestConfig(t)
 	listing := func(err error) func(context.Context, string) ([]metadata.TreeFileEntry, error) {
 		return func(context.Context, string) ([]metadata.TreeFileEntry, error) {
 			return []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}, err
@@ -276,7 +276,6 @@ func TestDeployPlanErrorsSayWhose(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := featureTestConfig(t)
 			router := &unreachableRouter{
 				deploymentPlanRouter: deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp"}, "ghost": {"ghost-provider"}}},
 				down:                 "down",

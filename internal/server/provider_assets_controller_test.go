@@ -20,11 +20,10 @@ import (
 // assetTestNode is a coordinator with the shipped providers, whose
 // llamacpp schema declares chat-template-file an asset, plus the
 // operator asset t.jinja.
-func assetTestNode(t *testing.T) (*Server, assets.Dir) {
+func assetTestNode(t *testing.T, enabled ...string) (*Server, assets.Dir) {
 	t.Helper()
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"llamacpp", "vllm", "mlx", "ollama", "huggingface"}, enabled: enabled})
 	_, err := server.configStore.WriteAsset("llamacpp", "t.jinja", []byte("{{ messages }}"))
 	require.NoError(t, err)
 	dir, err := server.configStore.Assets("llamacpp")

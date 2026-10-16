@@ -82,7 +82,7 @@ func detailData(t *testing.T, response *TestResponse) map[string]any {
 }
 
 func TestModelDetailBackendAndCompactContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail-a")
 	detailDaemon(t, s, "ollama-detail-b")
 	listed := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models?model=m", TestAdminKey, nil)
@@ -121,7 +121,7 @@ func TestModelDetailBackendAndCompactContract(t *testing.T) {
 }
 
 func TestModelDetailFailureStatusContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	mode := detailDaemon(t, s, "ollama-detail")
 	for _, tc := range []struct {
 		name string
@@ -150,7 +150,7 @@ func TestModelDetailFailureStatusContract(t *testing.T) {
 }
 
 func TestNativeModelDetailUncatalogedContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	response := makeAuthRequest(t, s, "POST", "/api/show", TestAdminKey, map[string]any{"model": "ollama-detail/hidden", "verbose": true})
 	require.Equal(t, 200, response.Code, string(response.Body))
@@ -210,7 +210,7 @@ func TestModelDetailWorkerContract(t *testing.T) {
 }
 
 func TestNativeModelDetailLocalDoesNotBroadcastContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator}, providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	require.NoError(t, s.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{Name: "other", URL: "http://other.test:9090", ClusterURL: "https://other.test:9091"}))
 	s.clusterMTLSClient = &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -295,7 +295,7 @@ func TestModelDetailPublisherNamespaceContract(t *testing.T) {
 }
 
 func TestNativeModelDetailGroupContract(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig(), providers: []string{"ollama", "huggingface"}})
 	detailDaemon(t, s, "ollama-detail")
 	require.NoError(t, s.model.Groups.Set("group-alias", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: []modelgroup.Replica{{Name: "m", Model: "m", App: "ollama-detail"}}}))
 	response := makeAuthRequest(t, s, "POST", "/api/show", TestAdminKey, map[string]any{"model": "group-alias"})
