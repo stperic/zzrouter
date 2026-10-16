@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -41,7 +40,7 @@ func TestEnvironmentRoutesToWorkerAndResolvesItsNodeTier(t *testing.T) {
 		t.Skip("Unix managed interpreter fixture")
 	}
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"mlx"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	apps := store.Config()
@@ -124,7 +123,7 @@ func TestInstalledVerifySurvivesDesiredConstraintDrift(t *testing.T) {
 		t.Skip("Unix managed interpreter fixture")
 	}
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"mlx"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	apps := store.Config()
@@ -165,7 +164,7 @@ func TestInstalledImportsRequireCurrentAuthority(t *testing.T) {
 		t.Skip("Unix managed interpreter fixture")
 	}
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"mlx"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	apps := store.Config()

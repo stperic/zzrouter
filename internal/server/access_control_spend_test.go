@@ -193,8 +193,7 @@ func TestKeysService_GetKeyUsage_ReturnsLiveSpend(t *testing.T) {
 	// Seed the key store.
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 
 	svc := NewKeysService(keyStore, nil, gw)
 
@@ -233,8 +232,7 @@ func TestKeysService_ResetKeyUsage_ZerosLedger(t *testing.T) {
 
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
 
 	chain := []quota.QuotaScope{{
@@ -263,10 +261,8 @@ func TestKeysService_GetSpendReport_AggregatesKeysOnly(t *testing.T) {
 
 	dir := t.TempDir()
 	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
-	_, err := keyStore.Create("alice", &keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
-	_, err = keyStore.Create("bob", &keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
-	require.NoError(t, err)
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "alice", keys.VirtualKey{Name: "Alice", Role: "user", TeamID: "t", TeamRole: "owner"})
+	seedFileTestKey(t, keyStore, filepath.Join(dir, "keys.yaml"), "bob", keys.VirtualKey{Name: "Bob", Role: "user", TeamID: "t", TeamRole: "owner"})
 	svc := NewKeysService(keyStore, nil, gw)
 
 	// Two key-scope requests + one team-scope request. The report must

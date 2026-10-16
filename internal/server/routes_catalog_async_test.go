@@ -33,7 +33,7 @@ var async202Exempt = map[routeKey]string{
 func TestRouteCatalog_AsyncFlagMatchesTheSpec(t *testing.T) {
 	// Seeded so the config-store-gated routes register; without it the
 	// install family is absent and this passes on a smaller surface.
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 	spec := loadOpenAPI(t)
 
 	var flaggedButSync, docAsyncButUnflagged, staleExempt []string

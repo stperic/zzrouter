@@ -57,20 +57,46 @@ func loadTestKey(t *testing.T, s *Server, id string, key keys.VirtualKey) string
 	if key.Role == "" {
 		key.Role = "user"
 	}
+	key.CreatedBy, key.UpdatedBy = "admin", "admin"
+	rawKey, record := prehashedTestRecord(t, id, key)
+	path := filepath.Join(pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir(), "keys.yaml")
+	loadTestKeyPopulation(t, s.keyStore, path, map[string]*keys.VirtualKey{id: record})
+	return rawKey
+}
+
+// prehashedTestRecord preserves Create's incidental identity/lifecycle setup.
+// Each record is private, while only the generated credential is shared.
+func prehashedTestRecord(t *testing.T, id string, key keys.VirtualKey) (string, *keys.VirtualKey) {
+	t.Helper()
 	rawKey, hash := prehashedTestIdentity(t, id)
-	key.ID, key.UUID, key.HashedKey = id, uuid.NewString(), hash
+	key.ID, key.HashedKey, key.KeyEnv = id, hash, ""
+	if key.UUID == "" {
+		key.UUID = uuid.NewString()
+	}
 	key.CreatedAt = utils.NowUTC()
 	key.UpdatedAt = key.CreatedAt
-	key.CreatedBy, key.UpdatedBy = "admin", "admin"
+	return rawKey, &key
+}
 
+// seedFileTestKey adds an incidental key without dropping any existing keys.
+func seedFileTestKey(t *testing.T, store *keys.FileKeyStore, path, id string, key keys.VirtualKey) string {
+	t.Helper()
+	population := store.List()
+	require.NotContains(t, population, id, "duplicate fixture key")
+	rawKey, record := prehashedTestRecord(t, id, key)
+	population[id] = record
+	loadTestKeyPopulation(t, store, path, population)
+	return rawKey
+}
+
+func loadTestKeyPopulation(t *testing.T, store *keys.FileKeyStore, path string, population map[string]*keys.VirtualKey) {
+	t.Helper()
 	data, err := yaml.Marshal(struct {
 		Version string                      `yaml:"version"`
 		Keys    map[string]*keys.VirtualKey `yaml:"keys"`
-	}{Version: "1.0", Keys: map[string]*keys.VirtualKey{id: &key}})
+	}{Version: "1.0", Keys: population})
 	require.NoError(t, err)
-	path := filepath.Join(pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir(), "keys.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o600))
-	require.NoError(t, s.keyStore.Load())
-	require.Len(t, s.keyStore.List(), 1)
-	return rawKey
+	require.NoError(t, store.Load())
+	require.Len(t, store.List(), len(population))
 }

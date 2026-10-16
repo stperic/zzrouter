@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -44,7 +43,7 @@ func (i *preflightInstaller) Preflight(_ context.Context, reqs *config.AppRequir
 func preflightWorker(t *testing.T) (*featureResolvedRouter, *preflightInstaller, *config.AppRequirements) {
 	t.Helper()
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"vllm"}, nil)
 	store, err := config.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	reqs := &config.AppRequirements{Python: &config.PythonRequirement{Min: "99.1"}, DiskSpace: "987TB"}

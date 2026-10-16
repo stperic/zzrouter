@@ -65,7 +65,7 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"})
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "qwen.gguf"), []byte("GGUF"), 0o600))
-	worker := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true}, root, "worker")
+	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, modelsDir: root})
 	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
 	client := routingCatalog(t, coordinator, []map[string]any{replicaItem("worker", "llamacpp")})
 	routingCatalog(t, worker, []map[string]any{replicaItem("worker", "llamacpp")})
@@ -109,7 +109,7 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 }
 
 func TestReplicaRoutingSelectionAndSurfaceErrors(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
 	require.NoError(t, s.configStore.SetProviderEnabled("ollama", true))
 	for _, tc := range []struct {
 		name                string
@@ -177,7 +177,7 @@ func TestModelInstanceUsesWorkerRunInventory(t *testing.T) {
 }
 
 func TestReplicaRoutingPrefixedCloudRequiresAuthentication(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
 	require.NoError(t, s.appsConfig.AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
 	client := routingCatalog(t, s, nil)
 	for _, name := range []string{"cloud-model", "paid/cloud-model"} {
@@ -248,7 +248,7 @@ func TestReplicaRoutingUnknownNameWithWorkerDown(t *testing.T) {
 }
 
 func TestReplicaRoutingDecoratedCloudGroupRequiresAuthentication(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
 	require.NoError(t, s.appsConfig.AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
 	require.NoError(t, s.model.Groups.Set("cloud-group", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "paid", App: "paid", Model: "cloud-model"}}}))
 	for _, model := range []string{"cloud-group", "cloud-group@worker"} {
@@ -271,7 +271,7 @@ func TestReplicaRoutingKnownStoppedProviderKeepsRecoveryProblem(t *testing.T) {
 func TestModelInstanceProviderMatchIsShared(t *testing.T) {
 	for _, remote := range []bool{false, true} {
 		t.Run(map[bool]string{false: "local", true: "worker"}[remote], func(t *testing.T) {
-			coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+			coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
 			target := coordinator
 			if remote {
 				target = createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"})

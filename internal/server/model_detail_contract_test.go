@@ -204,9 +204,8 @@ func (c *detailWorkerClient) Unicast(ctx context.Context, node, path string, par
 func TestModelDetailWorkerContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/worker", "served", 32768)
-	worker := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker", SeedProvidersDir: true}, root, "worker")
-	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
-	coordinator := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord", SeedProvidersDir: true})
+	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
+	coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}})
 	coordinator.model.Cache = cache.New(cache.Config{Node: coordinator.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *config.AppsConfig { return worker.appsConfig }, ClusterClient: func() mesh.ClusterClient { return deploymentCatalogClient{worker: worker} }, ResolveEndpointToNodename: func(string) string { return "" }})
 	client := &detailWorkerClient{deploymentCatalogClient: deploymentCatalogClient{worker: worker}, t: t, engine: buildInternalEngine(worker)}
 	coordinator.services.Model.router = routing.NewClusterAwareRouterWithClient(coordinator.node.Nodename(), client, "9090", coordinator.ServeLocalRequest, coordinator.httpClient)
@@ -249,8 +248,7 @@ func TestModelDetailSourceIdentityContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "shared", 4096)
 	detailWeights(t, root, "org/b", "shared", 8192)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	for _, tc := range []struct {
 		repo string
 		ctx  int
@@ -270,7 +268,7 @@ func TestModelDetailSourceIdentityContract(t *testing.T) {
 func TestModelDetailVariantAndGroupConstraintContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/base", "base", 16384)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}})
 	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(sc *config.ServiceConfig) error {
 		sc.Enabled = new(bool)
 		*sc.Enabled = true
@@ -293,8 +291,7 @@ func TestModelDetailVariantAndGroupConstraintContract(t *testing.T) {
 func TestModelDetailPublisherNamespaceContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "llamacpp/publisher", "publisher-weight", 65536)
-	s := createTestNodeWithModelsDir(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true}, root, "detail-node")
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", true))
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	response := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models/show?provider=llamacpp&registry=huggingface&model=llamacpp%2Fpublisher&compact=true", TestAdminKey, nil)
 	require.Equal(t, 200, response.Code, string(response.Body))
 	require.EqualValues(t, 65536, detailData(t, response)["model_info"].(map[string]any)["max_position_embeddings"])

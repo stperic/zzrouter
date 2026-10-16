@@ -46,10 +46,7 @@ var shadowExemptPrefixes = map[string]string{
 }
 
 func TestReservedNames_CoverEveryShadowableCollection(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{
-		AdminKey:         TestAdminKey,
-		SeedProvidersDir: true, // registers POST /providers/instances, whose literal must be derivable
-	})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}}) // registers POST /providers/instances, whose literal must be derivable
 
 	type collection struct {
 		params   map[string]bool

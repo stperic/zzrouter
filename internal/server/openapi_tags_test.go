@@ -156,7 +156,7 @@ func TestOpenAPITags_DeclaredMatchesUsed(t *testing.T) {
 // current subset, and it fails the moment a new collection is routed
 // without anyone deciding its group.
 func TestOpenAPITags_TaxonomyCoversTheLiveSurface(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 
 	liveSegs := map[string]bool{}
 	for _, r := range s.engine.Routes() {

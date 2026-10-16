@@ -86,8 +86,7 @@ func TestPreMergeForRequest_ClaimsNothingWithoutATree(t *testing.T) {
 // other test in this package.
 func TestIntegration_PreviewReportsWhereValuesCameFrom(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 
 	// Give the node a provider whose defaults exist, rather than hoping
 	// the shared test config has one: what is under test is the

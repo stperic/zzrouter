@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -50,38 +52,56 @@ func repoRoot(t *testing.T) string {
 	return filepath.Join(wd, "..", "..")
 }
 
+// Both architecture guards inspect the same immutable production source tree.
+// Keep one snapshot, with the original walk scope and ordering, for both scans.
+type architectureSource struct {
+	rel     string
+	content []byte
+}
+
+var architectureSources struct {
+	once  sync.Once
+	files []architectureSource
+	err   error
+}
+
 // scanGo walks the repo root for *.go files (excluding vendor, testdata,
 // _test.go files, and hidden dirs) and yields (relative path, contents).
 func scanGo(t *testing.T, root string, yield func(relPath string, content []byte)) {
 	t.Helper()
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			name := d.Name()
-			if name == "vendor" || name == "testdata" || name == ".git" ||
-				name == "node_modules" || strings.HasPrefix(name, ".") {
-				return filepath.SkipDir
+	architectureSources.once.Do(func() {
+		architectureSources.err = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
+			if d.IsDir() {
+				name := d.Name()
+				if name == "vendor" || name == "testdata" || name == ".git" ||
+					name == "node_modules" || strings.HasPrefix(name, ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return nil
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				return err
+			}
+			architectureSources.files = append(architectureSources.files, architectureSource{filepath.ToSlash(rel), b})
 			return nil
-		}
-		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return err
-		}
-		yield(filepath.ToSlash(rel), b)
-		return nil
+		})
 	})
-	if err != nil {
-		t.Fatalf("walk: %v", err)
+	if architectureSources.err != nil {
+		t.Fatalf("walk: %v", architectureSources.err)
+	}
+	for _, source := range architectureSources.files {
+		yield(source.rel, source.content)
 	}
 }
 
@@ -111,7 +131,7 @@ func TestSetProviderEnabledChokepoint(t *testing.T) {
 
 	var violations []string
 	scanGo(t, repoRoot(t), func(rel string, content []byte) {
-		if _, ok := allow[rel]; ok {
+		if _, ok := allow[rel]; ok || !bytes.Contains(content, []byte("SetProviderEnabled")) {
 			return
 		}
 		for i, line := range strings.Split(string(content), "\n") {
@@ -165,7 +185,7 @@ func TestServiceConfigSetEnabledAnnotated(t *testing.T) {
 
 	var violations []string
 	scanGo(t, repoRoot(t), func(rel string, content []byte) {
-		if implementation[rel] {
+		if implementation[rel] || !bytes.Contains(content, []byte(".SetEnabled(")) {
 			return
 		}
 		lines := strings.Split(string(content), "\n")

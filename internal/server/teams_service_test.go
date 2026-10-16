@@ -18,11 +18,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
-func newTeamsTestHarness(t *testing.T) (*TeamsService, *keys.FileKeyStore, *teams.FileTeamStore, *AccessControl) {
+func newTeamsTestHarness(t *testing.T) (*TeamsService, *keys.FileKeyStore, *teams.FileTeamStore, *AccessControl, string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyPath := filepath.Join(dir, "keys.yaml")
+	keyStore := keys.NewFileKeyStore(keyPath)
 	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
 
 	enforcer := quota.NewEnforcer(
@@ -34,19 +35,18 @@ func newTeamsTestHarness(t *testing.T) (*TeamsService, *keys.FileKeyStore, *team
 	access := NewAccessControl(StaticKeySet{}, keyStore, teamStore, nil, enforcer, nil, ModelHooks{})
 	t.Cleanup(func() { access.Stop(context.Background()) })
 
-	return NewTeamsService(teamStore, keyStore, access), keyStore, teamStore, access
+	return NewTeamsService(teamStore, keyStore, access), keyStore, teamStore, access, keyPath
 }
 
 // seedKeyBound creates a virtual key with the given TeamID/TeamRole.
-func seedKeyBound(t *testing.T, store *keys.FileKeyStore, id, teamID, role string) {
+func seedKeyBound(t *testing.T, store *keys.FileKeyStore, path, id, teamID, role string) {
 	t.Helper()
-	_, err := store.Create(id, &keys.VirtualKey{
+	seedFileTestKey(t, store, path, id, keys.VirtualKey{
 		Name:     id,
 		Role:     "user",
 		TeamID:   teamID,
 		TeamRole: role,
 	})
-	require.NoError(t, err, "seed key %q", id)
 }
 
 // ============================================================================
@@ -54,7 +54,7 @@ func seedKeyBound(t *testing.T, store *keys.FileKeyStore, id, teamID, role strin
 // ============================================================================
 
 func TestTeamsService_CreateTeam_Shared(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	resp, err := svc.CreateTeam(&CreateTeamRequest{
 		ID:            "engineering",
@@ -71,7 +71,7 @@ func TestTeamsService_CreateTeam_Shared(t *testing.T) {
 }
 
 func TestTeamsService_CreateTeam_RejectsPersonalPrefix(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{
 		ID:   "personal-squatter",
@@ -82,7 +82,7 @@ func TestTeamsService_CreateTeam_RejectsPersonalPrefix(t *testing.T) {
 }
 
 func TestTeamsService_CreateTeam_RejectsDuplicate(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
@@ -97,7 +97,7 @@ func TestTeamsService_CreateTeam_RejectsDuplicate(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_UpdateTeam_PatchFields(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{
 		ID: "eng", Name: "Engineering", RPMLimit: 100,
@@ -117,7 +117,7 @@ func TestTeamsService_UpdateTeam_PatchFields(t *testing.T) {
 }
 
 func TestTeamsService_UpdateTeam_RejectsPersonal(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreatePersonalTeam("personal-alice", "alice", "caller")
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestTeamsService_UpdateTeam_RejectsPersonal(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_DeleteTeam_EmptyOK(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
@@ -144,11 +144,11 @@ func TestTeamsService_DeleteTeam_EmptyOK(t *testing.T) {
 }
 
 func TestTeamsService_DeleteTeam_WithMembersRejected(t *testing.T) {
-	svc, keyStore, _, _ := newTeamsTestHarness(t)
+	svc, keyStore, _, _, keyPath := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
-	seedKeyBound(t, keyStore, "alice", "eng", string(teams.RoleMember))
+	seedKeyBound(t, keyStore, keyPath, "alice", "eng", string(teams.RoleMember))
 
 	err = svc.DeleteTeam("eng", "test")
 	require.Error(t, err)
@@ -156,7 +156,7 @@ func TestTeamsService_DeleteTeam_WithMembersRejected(t *testing.T) {
 }
 
 func TestTeamsService_DeleteTeam_RejectsPersonal(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreatePersonalTeam("personal-alice", "alice", "caller")
 	require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestTeamsService_DeleteTeam_RejectsPersonal(t *testing.T) {
 }
 
 func TestTeamsService_DeleteTeam_NotFound(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	err := svc.DeleteTeam("missing", "test")
 	require.Error(t, err)
@@ -179,14 +179,14 @@ func TestTeamsService_DeleteTeam_NotFound(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_GetTeamKeys_FiltersByTeamID(t *testing.T) {
-	svc, keyStore, _, _ := newTeamsTestHarness(t)
+	svc, keyStore, _, _, keyPath := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
 
-	seedKeyBound(t, keyStore, "alice", "eng", string(teams.RoleOwner))
-	seedKeyBound(t, keyStore, "bob", "eng", string(teams.RoleMember))
-	seedKeyBound(t, keyStore, "carol", "other-team", string(teams.RoleMember))
+	seedKeyBound(t, keyStore, keyPath, "alice", "eng", string(teams.RoleOwner))
+	seedKeyBound(t, keyStore, keyPath, "bob", "eng", string(teams.RoleMember))
+	seedKeyBound(t, keyStore, keyPath, "carol", "other-team", string(teams.RoleMember))
 
 	resp, err := svc.GetTeamKeys("eng")
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestTeamsService_GetTeamKeys_FiltersByTeamID(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_CreatePersonalTeam(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	resp, err := svc.CreatePersonalTeam("personal-alice", "alice", "caller")
 	require.NoError(t, err)
@@ -215,7 +215,7 @@ func TestTeamsService_CreatePersonalTeam(t *testing.T) {
 }
 
 func TestTeamsService_DeletePersonalTeam(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreatePersonalTeam("personal-alice", "alice", "caller")
 	require.NoError(t, err)
@@ -226,7 +226,7 @@ func TestTeamsService_DeletePersonalTeam(t *testing.T) {
 }
 
 func TestTeamsService_DeletePersonalTeam_RejectsShared(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
 	require.NoError(t, err)
@@ -243,7 +243,7 @@ func TestTeamsService_DeletePersonalTeam_RejectsShared(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_ReconcilePersonalTeams_ReapsOrphans(t *testing.T) {
-	svc, keyStore, _, _ := newTeamsTestHarness(t)
+	svc, keyStore, _, _, keyPath := newTeamsTestHarness(t)
 
 	// Orphan personal team — no referencing key.
 	_, err := svc.CreatePersonalTeam("personal-orphan", "orphan", "caller")
@@ -252,7 +252,7 @@ func TestTeamsService_ReconcilePersonalTeams_ReapsOrphans(t *testing.T) {
 	// Personal team with its key — should be kept.
 	_, err = svc.CreatePersonalTeam("personal-alice", "alice", "caller")
 	require.NoError(t, err)
-	seedKeyBound(t, keyStore, "alice", "personal-alice", string(teams.RoleOwner))
+	seedKeyBound(t, keyStore, keyPath, "alice", "personal-alice", string(teams.RoleOwner))
 
 	// Shared team with no keys — should be kept (shared teams don't get reaped).
 	_, err = svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "caller")
@@ -276,7 +276,7 @@ func TestTeamsService_ReconcilePersonalTeams_ReapsOrphans(t *testing.T) {
 // ============================================================================
 
 func TestTeamsService_GetTeamUsage_FreshTeamReturnsZeros(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 
 	_, err := svc.CreateTeam(&CreateTeamRequest{
 		ID: "eng", Name: "Engineering", RPMLimit: 100, SpendLimit: 50.0,
@@ -297,7 +297,7 @@ func TestTeamsService_GetTeamUsage_FreshTeamReturnsZeros(t *testing.T) {
 // alternative, so a caller following the documented example lost a
 // rename it never learned had failed.
 func TestUpdateTeam_MembersIsRefusedWithSomewhereToGo(t *testing.T) {
-	svc, _, _, _ := newTeamsTestHarness(t)
+	svc, _, _, _, _ := newTeamsTestHarness(t)
 	_, err := svc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Before"}, "admin")
 	require.NoError(t, err)
 

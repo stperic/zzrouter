@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -85,8 +86,10 @@ func seedTestProviders(t *testing.T, dir string, providers, enabled []string) {
 
 type seededTestNodeConfig struct {
 	TestNodeConfig
-	providers []string
-	enabled   []string
+	providers        []string
+	enabled          []string
+	modelsDir        string
+	prepareProviders func(string)
 }
 
 // createSeededTestNode owns seeded fixtures without changing BuildTestServer's
@@ -97,9 +100,17 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 	if len(options) != 0 {
 		cfg = options[0]
 	}
+	if cfg.modelsDir != "" {
+		modelregistry.SetModelsRootDirOverride(cfg.modelsDir)
+		t.Cleanup(modelregistry.ClearModelsRootDirOverride)
+	}
 	home := t.TempDir()
 	t.Setenv("ZZROUTER_TEST_HOME", home)
-	seedTestProviders(t, filepath.Join(home, "providers"), cfg.providers, cfg.enabled)
+	providersDir := filepath.Join(home, "providers")
+	seedTestProviders(t, providersDir, cfg.providers, cfg.enabled)
+	if cfg.prepareProviders != nil {
+		cfg.prepareProviders(providersDir)
+	}
 	name := cfg.NodeName
 	if name == "" {
 		name = "test-host"
@@ -111,6 +122,7 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 	}
 	s, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
+	require.NotNil(t, s.engine, "test server engine must be constructed")
 	t.Cleanup(func() {
 		cleanupTestNode(s)
 		s.model.Downloads.Stop()

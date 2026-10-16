@@ -122,7 +122,7 @@ func TestKeyCreate_RejectsReservedIDs(t *testing.T) {
 }
 
 func TestProviderInstanceCreate_RejectsReservedNames(t *testing.T) {
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 
 	for name := range reservedProviderNames {
 		resp := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/providers/instances", TestAdminKey,

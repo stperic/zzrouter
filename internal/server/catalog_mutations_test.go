@@ -52,7 +52,7 @@ func TestIncompleteModel_ListRefuseAndDelete(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "m-00001-of-00002.gguf"), []byte("weights"), 0o600))
 		}
 	}
-	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator", SeedProvidersDir: true})
+	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coordinator"}})
 	resp := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/models", TestAdminKey, nil)
 	require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
 	var listed struct {
@@ -601,7 +601,7 @@ func TestCatalogMutationOllamaCommandSelection(t *testing.T) {
 	for _, command := range []string{"create", "copy", "delete", "show", "push"} {
 		t.Run(command, func(t *testing.T) {
 			if command == "delete" {
-				node := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, SeedProvidersDir: true})
+				node := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey}})
 				present, calls, _, _ := deletionDaemon(t, node, "ollama-selection")
 				response := makeAuthRequest(t, node, "DELETE", "/api/delete", TestAdminKey, map[string]any{"model": "ollama-selection/m"})
 				require.Equal(t, 200, response.Code, string(response.Body))

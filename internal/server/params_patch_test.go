@@ -20,8 +20,7 @@ import (
 
 func TestParametersPatch_ToolCallingRemedy(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"vllm", "huggingface"}})
 	_, payload, ok := strings.Cut(httperr.ToolCallingRemedy, " with ")
 	require.True(t, ok)
 	payload, _, ok = strings.Cut(payload, " using ")
@@ -431,8 +430,7 @@ func TestValidateAgainstShape_UnknownKindRefuses(t *testing.T) {
 // the store, whether a named asset exists.
 func TestParametersPatch_ChecksAssetOnCoordinator(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"llamacpp", "huggingface"}})
 
 	providerDir := filepath.Join(server.configStore.DirPath(), "on-demand", "llamacpp")
 	require.NoError(t, os.WriteFile(filepath.Join(providerDir, "schema.yaml"),
@@ -507,8 +505,7 @@ func TestParametersPatch_RefusesDanglingAssetAtEverySite(t *testing.T) {
 // not answered 200 and dropped.
 func TestParametersPatch_KeepsOverlayOnlyTiers(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"llamacpp", "huggingface"}})
 	node := server.node.Nodename()
 	overlay := map[string]any{"endpoints": map[string]any{"embeddings": map[string]any{"parameters": map[string]any{"pooling": "mean"}}}}
 	body := map[string]any{
@@ -528,8 +525,7 @@ func TestParametersPatch_KeepsOverlayOnlyTiers(t *testing.T) {
 // value it does not know is refused before anything is written.
 func TestParametersPatch_ReportsRunsAndChecksRestart(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"llamacpp", "huggingface"}})
 	path := "/zzrouter/v1/providers/llamacpp/parameters"
 	body := map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx-size": 4096}}}
 
@@ -565,8 +561,7 @@ func ptrDefaults(parameters, environment map[string]json.RawMessage) *defaultsPa
 
 func TestParametersPatch_RunSettings(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, providers: []string{"vllm", "huggingface"}})
 	path := "/zzrouter/v1/providers/vllm/parameters"
 	resp := makeAuthRequest(t, server, "PATCH", path, TestAdminKey, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"keep-alive": "2m", "evict-idle-on-memory-pressure": true}}})
 	require.Equal(t, http.StatusOK, resp.Code, "body=%s", resp.Body)

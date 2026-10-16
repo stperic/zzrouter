@@ -11,7 +11,6 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
@@ -56,7 +55,7 @@ func TestLocalizeAssetParams(t *testing.T) {
 // a key declared only in the launch endpoint's overlay.
 func TestAssetParamLocalizer_UsesNodeSchemaAndOverlay(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"llamacpp"}, nil)
 	providerDir := filepath.Join(root, "on-demand", "llamacpp")
 	require.NoError(t, os.WriteFile(filepath.Join(providerDir, "schema.yaml"), []byte(
 		"parameters:\n  chat-template-file: {type: asset}\n"+
@@ -91,8 +90,8 @@ func TestServerManagerLocalizesAssetParams(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "m.gguf"), []byte("GGUF"), 0o600))
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNodeWithModelsDir(t, cfg, root, "test-host")
+	cfg.NodeName = "test-host"
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, modelsDir: root})
 	require.NoError(t, server.configStore.SetProviderEnabled("llamacpp", true))
 
 	_, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{
@@ -107,7 +106,7 @@ func TestServerManagerLocalizesAssetParams(t *testing.T) {
 // operator's template resolves to the file beside the provider's config.
 func TestTemplateParamsResolveToTheAssetFile(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"llamacpp", "vllm"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	_, err = store.WriteAsset("llamacpp", "t.jinja", []byte("{{ messages }}"))
@@ -124,7 +123,7 @@ func TestTemplateParamsResolveToTheAssetFile(t *testing.T) {
 // one, or an asset named like a schema, has no bearing on it.
 func TestLoadProviderSchema_ReadsOnlyThatProvider(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"llamacpp", "vllm"}, nil)
 	write := func(rel, data string) {
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
@@ -149,7 +148,7 @@ func TestLoadProviderSchema_ReadsOnlyThatProvider(t *testing.T) {
 // The locator keeps the reason there is no asset, so an operator sees it.
 func TestProviderAssets_KeepsTheCause(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"llamacpp"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 
@@ -212,7 +211,7 @@ func schemaLaunchManager(t *testing.T, store *pkgConfig.AppsConfigStore, provide
 
 func TestContextAutoSpellsOnlyArgv(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"llamacpp", "vllm"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	for _, tc := range []struct{ provider, key, spelling, served string }{
@@ -257,7 +256,7 @@ func TestLaunchSchemaErrorsRemainHardFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			require.NoError(t, templates.InstallDefaults(root))
+			seedTestProviders(t, root, []string{"vllm"}, nil)
 			store, err := pkgConfig.NewAppsConfigStore(root)
 			require.NoError(t, err)
 			path := filepath.Join(root, "on-demand", "vllm", "schema.yaml")
@@ -279,7 +278,7 @@ func TestLaunchSchemaErrorsRemainHardFailures(t *testing.T) {
 
 func TestLaunchSchemaShapeConflictsKeepValidEntries(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"vllm"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "on-demand", "vllm", "schema.yaml"), []byte(`parameters:
@@ -306,7 +305,7 @@ func TestLaunchSchemaShapeConflictsKeepValidEntries(t *testing.T) {
 
 func TestProviderSchemaInvalidDiagnosticsKeepLongTailShapes(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, templates.InstallDefaults(root))
+	seedTestProviders(t, root, []string{"vllm"}, nil)
 	store, err := pkgConfig.NewAppsConfigStore(root)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "on-demand", "vllm", "schema.yaml"), []byte(`parameters:

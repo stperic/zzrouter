@@ -64,8 +64,7 @@ func TestReportSyncState_SaysWhetherTheWorkersHaveIt(t *testing.T) {
 // from being silently absent.
 func TestIntegration_ParameterWriteReportsPropagation(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
-	cfg.SeedProvidersDir = true
-	server := createTestNode(t, cfg)
+	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
 
 	resp := makeAuthRequest(t, server, "PATCH", "/zzrouter/v1/providers/vllm/parameters", TestAdminKey,
 		map[string]any{"defaults": map[string]any{"parameters": map[string]any{"max-model-len": 4096}}})

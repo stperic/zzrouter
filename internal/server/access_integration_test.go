@@ -54,6 +54,7 @@ func reservationIDFromCtx(c *gin.Context) uint64 {
 type accessRig struct {
 	access   *AccessControl
 	enforcer *quota.Enforcer
+	keyPath  string
 	keys     *keys.FileKeyStore
 	teams    *teams.FileTeamStore
 	groups   *stubGroupReader
@@ -65,9 +66,7 @@ func (r *accessRig) seedKey(t *testing.T, id, teamID, teamRole string, vk *keys.
 	t.Helper()
 	vk.TeamID = teamID
 	vk.TeamRole = teamRole
-	raw, err := r.keys.Create(id, vk)
-	require.NoError(t, err, "seed key %q", id)
-	return raw
+	return seedFileTestKey(t, r.keys, r.keyPath, id, *vk)
 }
 
 // seedTeam creates a shared team in the store.
@@ -130,7 +129,8 @@ func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 	t.Helper()
 
 	dir := t.TempDir()
-	keyStore := keys.NewFileKeyStore(filepath.Join(dir, "keys.yaml"))
+	keyPath := filepath.Join(dir, "keys.yaml")
+	keyStore := keys.NewFileKeyStore(keyPath)
 	teamStore := teams.NewFileTeamStore(filepath.Join(dir, "teams.yaml"))
 	groups := newStubGroupReader()
 
@@ -147,6 +147,7 @@ func newAccessRigWithHooks(t *testing.T, hooks ModelHooks) *accessRig {
 		access:   gw,
 		enforcer: enforcer,
 		keys:     keyStore,
+		keyPath:  keyPath,
 		teams:    teamStore,
 		groups:   groups,
 	}
