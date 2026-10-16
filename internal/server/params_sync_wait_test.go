@@ -98,8 +98,9 @@ func TestProviderSyncFanOut_AwaitQuiesceWaitsForTheRound(t *testing.T) {
 	f.Listener()(store.Config())
 	<-pushed // the round is inside the push and cannot have finished
 
-	early, cancel := context.WithCancel(t.Context())
-	cancel()
+	// Not pre-cancelled: select picks randomly among ready cases and would mask a closed idle.
+	early, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
 	assert.Equal(t, SyncPending, f.AwaitQuiesce(early).State,
 		"quiesced while a push was still blocked in the worker's handler")
 

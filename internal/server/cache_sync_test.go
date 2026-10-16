@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"net/http/httptest"
 	"os"
@@ -26,37 +28,15 @@ import (
 var seededProviderFiles struct {
 	once  sync.Once
 	files map[string][]byte
+	err   error
 }
 
 func seedTestProviders(t *testing.T, dir string, providers, enabled []string) {
 	t.Helper()
 	seededProviderFiles.once.Do(func() {
-		source := t.TempDir()
-		require.NoError(t, templates.InstallDefaults(source))
-		files := make(map[string][]byte)
-		require.NoError(t, filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			rel, err := filepath.Rel(source, path)
-			if err != nil {
-				return err
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-			files[filepath.ToSlash(rel)] = data
-			// The receipt is generated; every shipped file must remain byte-identical.
-			if !strings.HasPrefix(rel, ".") {
-				shipped, err := templates.AppsFS.ReadFile("files/providers/" + filepath.ToSlash(rel))
-				require.NoError(t, err)
-				require.Equal(t, shipped, data, rel)
-			}
-			return nil
-		}))
-		seededProviderFiles.files = files
+		seededProviderFiles.files, seededProviderFiles.err = installedProviderFiles()
 	})
+	require.NoError(t, seededProviderFiles.err)
 	found := make(map[string]bool)
 	for rel, source := range seededProviderFiles.files {
 		parts := strings.Split(rel, "/")
@@ -84,6 +64,47 @@ func seedTestProviders(t *testing.T, dir string, providers, enabled []string) {
 	}
 }
 
+// installedProviderFiles snapshots a real installation without a test's
+// lifetime, so a failure reaches every caller rather than only the first.
+func installedProviderFiles() (map[string][]byte, error) {
+	source, err := os.MkdirTemp("", "zzrouter-providers-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(source) }()
+	if err := templates.InstallDefaults(source); err != nil {
+		return nil, err
+	}
+	files := make(map[string][]byte)
+	return files, filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		files[rel] = data
+		// The receipt is generated; every shipped file must remain byte-identical.
+		if strings.HasPrefix(rel, ".") {
+			return nil
+		}
+		shipped, err := templates.AppsFS.ReadFile("files/providers/" + rel)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(shipped, data) {
+			return fmt.Errorf("installed %s differs from the shipped file", rel)
+		}
+		return nil
+	})
+}
+
 type seededTestNodeConfig struct {
 	TestNodeConfig
 	providers        []string
@@ -104,7 +125,10 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 		modelregistry.SetModelsRootDirOverride(cfg.modelsDir)
 		t.Cleanup(modelregistry.ClearModelsRootDirOverride)
 	}
-	home := t.TempDir()
+	// Best-effort removal like createTestNode: a handle still open on Windows must not fail the test.
+	home, err := os.MkdirTemp("", "zzrouter-seed-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("ZZROUTER_TEST_HOME", home)
 	providersDir := filepath.Join(home, "providers")
 	seedTestProviders(t, providersDir, cfg.providers, cfg.enabled)

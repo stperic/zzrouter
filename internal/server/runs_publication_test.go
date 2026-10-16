@@ -24,7 +24,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -256,7 +255,7 @@ func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 					launch = response.Data
 				}
 				require.NotEmpty(t, launch.JobID)
-				require.NoError(t, gate.SetDeadline(utils.Now().Add(5*time.Second)))
+				require.NoError(t, gate.SetDeadline(time.Now().Add(5*time.Second)))
 				child, err := gate.Accept()
 				require.NoError(t, err)
 				require.NoError(t, child.Close())

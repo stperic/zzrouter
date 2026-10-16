@@ -141,9 +141,6 @@ func TestProviderSyncFanOut_CoalescesBursts(t *testing.T) {
 	require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
 	got := atomic.LoadInt64(&hits)
 	require.EqualValues(t, 2, got, "the mutation burst owes one re-fire")
-	if got < 1 || got > 2 {
-		t.Errorf("coalesce bound violated: hits=%d, want 1 or 2", got)
-	}
 }
 
 func TestProviderSyncFanOut_SkipsCloudProviders(t *testing.T) {
@@ -189,10 +186,9 @@ func TestProviderSyncFanOut_SkipsCloudProviders(t *testing.T) {
 	_ = f.Listener()(store.Config())
 
 	require.Equal(t, SyncComplete, awaitSyncTest(t, f).State)
-	close(recv)
 	var paths []string
-	for r := range recv {
-		paths = append(paths, r.path)
+	for len(recv) > 0 {
+		paths = append(paths, (<-recv).path)
 	}
 
 	if len(paths) != 1 {
