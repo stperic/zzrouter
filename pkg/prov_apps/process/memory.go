@@ -186,7 +186,7 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		}
 		return assessment, nil
 	}
-	err = admitFraction(budget, need, parameters, selected, owners, fraction, auto, sized, &assessment)
+	err = admitFraction(budget, need, parameters, selected, owners, fraction, auto, sized)
 	return assessment, err
 }
 
@@ -209,7 +209,7 @@ func declaredFraction(budget schema.MemoryBudget, parameters map[string]string, 
 	return fraction, false, nil
 }
 
-func admitFraction(budget schema.MemoryBudget, need Need, parameters map[string]string, selected []gpu.MemoryDevice, owners []RunRef, fraction float64, auto, sized bool, assessment *MemoryAssessment) (err error) {
+func admitFraction(budget schema.MemoryBudget, need Need, parameters map[string]string, selected []gpu.MemoryDevice, owners []RunRef, fraction float64, auto, sized bool) (err error) {
 	if auto {
 		if sized && need.ContextMode != "auto" {
 			fraction = needFraction(need, selected)
