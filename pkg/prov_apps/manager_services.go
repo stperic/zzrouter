@@ -118,7 +118,7 @@ func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) 
 		detected := false
 		if probe, ok := manager.(service.Probe); ok {
 			if detected, err = probe.DetectContext(ctx, name); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("cannot tell whether %s supervises %s: %w", manager.Name(), name, err)
 			}
 		}
 		if !detected {
@@ -126,11 +126,21 @@ func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) 
 		}
 		return manager, nil
 	}
-	return service.DetectContext(ctx, name)
+	manager, err := service.DetectContext(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("cannot tell whether a host service manager supervises %s: %w", name, err)
+	}
+	return manager, nil
+}
+
+// resolvedManager returns the supervisor remembered for setting; the caller holds mu.
+func (state *managedService) resolvedManager(setting string) (service.Manager, bool) {
+	return state.manager, (state.manager != nil || state.noOSManager) && state.managerSetting == setting
 }
 
 // Remember the resolved supervisor, including none: stop may unload a
 // service's registration, and re-probing would spawn host commands per read.
+// The probe runs outside mu so a slow host cannot stall status reads.
 func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
 	setting := ""
 	if cfg.Service != nil {
@@ -138,15 +148,22 @@ func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name st
 	}
 	state := m.serviceState(name)
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	if (state.manager != nil || state.noOSManager) && state.managerSetting == setting {
-		return state.manager, nil
+	manager, resolved := state.resolvedManager(setting)
+	state.mu.Unlock()
+	if resolved {
+		return manager, nil
 	}
 	manager, err := serviceManager(ctx, name, cfg)
-	if err == nil {
-		state.manager, state.noOSManager, state.managerSetting = manager, manager == nil, setting
+	if err != nil {
+		return nil, err
 	}
-	return manager, err
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if first, resolved := state.resolvedManager(setting); resolved {
+		return first, nil
+	}
+	state.manager, state.noOSManager, state.managerSetting = manager, manager == nil, setting
+	return manager, nil
 }
 
 // ProviderServiceStatus observes a provider; observation never starts it.

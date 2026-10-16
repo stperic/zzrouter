@@ -37,8 +37,9 @@ func AwaitOwner() {
 	if err != nil {
 		panic(fmt.Sprintf("testproc: %s must name the owning test process: %v", ownerEnv, err))
 	}
+	// Only a definite "gone" ends the helper; a failed lookup is not one.
 	for {
-		if alive, err := process.PidExists(int32(owner)); err != nil || !alive {
+		if alive, err := process.PidExists(int32(owner)); err == nil && !alive {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

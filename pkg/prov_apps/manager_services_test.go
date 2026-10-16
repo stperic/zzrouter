@@ -141,6 +141,42 @@ func TestStalledSupervisorProbeStillStartsManagedDaemon(t *testing.T) {
 	require.Equal(t, string(before), string(after), "a resolved supervisor is not re-probed per status read")
 }
 
+// A stalled host probe must not hold the service lock: status reads, control
+// actions and host listings take it without a deadline.
+func TestStalledSupervisorProbeDoesNotHoldServiceLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process fixture")
+	}
+	dir := t.TempDir()
+	entered, release := filepath.Join(dir, "entered"), filepath.Join(dir, "release")
+	probe := testproc.Script(": > " + entered + "\nwhile kill -0 $test_owner && [ ! -e " + release + " ]; do /bin/sleep 0.01; done\nexit 1\n")
+	for _, name := range []string{"launchctl", "systemctl", "nssm"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(probe), 0o700))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m := newServiceTestManager(t, true, false)
+	// Release before the manager's cleanup stops it, so a failure cannot deadlock.
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
+	cfg, err := m.serviceConfig("generic-daemon")
+	require.NoError(t, err)
+	resolved := make(chan error, 1)
+	go func() {
+		_, err := m.selectedServiceManager(context.Background(), "generic-daemon", cfg)
+		resolved <- err
+	}()
+	require.Eventually(t, func() bool { _, err := os.Stat(entered); return err == nil }, 5*time.Second, 5*time.Millisecond)
+	state := m.serviceState("generic-daemon")
+	require.Eventually(t, func() bool {
+		if !state.mu.TryLock() {
+			return false
+		}
+		state.mu.Unlock()
+		return true
+	}, 2*time.Second, 5*time.Millisecond, "a stalled probe holds the service lock")
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+	require.NoError(t, <-resolved)
+}
+
 func TestManagedServiceCrashRecordsExitAndBacksOff(t *testing.T) {
 	m := newServiceTestManager(t, true, true)
 	m.Start(context.Background())
