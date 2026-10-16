@@ -196,6 +196,12 @@ a smaller quantization or another node. Required MiB rounds up; reachable MiB ro
 `GET /zzrouter/v1/nodes/compatible` reports `fit`, `no_fit` and `unknown` under
 `metadata.assessments`; only confirmed fits enter `data`. `unknown` stays HTTP 200,
 including missing worker replies/fields, and does not prove compatibility.
+Fully sized context requirements can also produce the existing memory refusal
+code. A declared-budget shortfall reports the context requirement and budget;
+stopping holders cannot repair it. Choose a smaller context (vLLM/llama.cpp),
+a larger declared budget, smaller weights or another node. MLX assesses its
+declared minimum; its generation limit is not a context setting.
+
 Run preview exposes the same capacity policy under `data.assessment`. Capacity
 uses totals; launch admission still uses fresh free memory and commitments.
 Downloads can target eligible storage nodes even when capacity is unknown.

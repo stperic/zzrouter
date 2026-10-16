@@ -257,8 +257,10 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	}
 
 	if preview.Assessment == nil {
-		preview.Assessment = &process.MemoryAssessment{Status: "unknown", Reason: "node reported no capacity assessment"}
+		preview.Assessment = &process.MemoryAssessment{ContextMode: "unknown", Status: "unknown", Reason: "node reported no capacity assessment"}
 	}
+
+	preview.Assessment.NormalizeLegacy()
 
 	// The node that rendered this preview received every value as a
 	// request parameter, so the sources it reported read `request` for

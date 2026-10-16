@@ -113,6 +113,20 @@ and optional `provider`/`registry` to read confirmed nodes and all
 `metadata.assessments` unchanged. Missing worker fields or replies are unknown.
 Storage/download eligibility remains independent of capacity uncertainty.
 
+Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
+`affordable_context_tokens` and llama.cpp `placement`. Auto vLLM and MLX assess
+the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use
+`zz_run_preview` numeric context overrides for larger vLLM/llama.cpp workloads.
+MLX always assesses its minimum; `max-tokens` limits generation, not context.
+MLX uses release-owned `memory_usable_fraction` schema metadata (shipped at 0.75),
+alongside the release-owned `auto_min_context_tokens` minimum.
+Auto llama.cpp estimates beyond GPU plus RAM remain unknown and allow launch
+because the engine may adapt; numeric context shortfalls and weight-only
+lower-bound failures refuse launch.
+Affordability never substitutes for served context. Missing geometry, native
+range, devices or context-aware worker evidence is unknown. Fixed-budget
+failures refuse launch without eviction. Auto context keeps greedy allocation.
+
 An exact `zz_models.model` name or source-id filter returning one complete model
 also adds `show` to that entry. Incomplete rows keep their catalog identity without
 a detail request. Case-insensitive exact matches qualify; globs,

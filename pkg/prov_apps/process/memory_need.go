@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/model/gguf"
 	"github.com/stperic/zzrouter/pkg/model/layout"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // DefaultActivationOverheadMiB is the engine's in-budget memory beyond weights and KV (activations, CUDA graphs,
@@ -21,64 +23,119 @@ type Need struct {
 	WeightsMiB, KVMiB, OverheadMiB int64
 	WeightsBytes                   int64 // Exact bytes prevent false refusals at fractional MiB boundaries.
 	Incomplete                     bool
+	ContextMode                    string
+	ContextTokens                  int64
+	nativeContext                  bool
+	geometry                       *attentionConfig
 }
 
 // Total returns the single-device memory need; zero denotes unknown.
 func (n Need) Total() int64 {
-	if n.Incomplete {
+	if n.Incomplete || n.WeightsMiB > math.MaxInt64-n.KVMiB || n.WeightsMiB+n.KVMiB > math.MaxInt64-n.OverheadMiB {
 		return 0
 	}
 	return n.WeightsMiB + n.KVMiB + n.OverheadMiB
 }
 
 type attentionConfig struct {
-	Layers        int64           `json:"num_hidden_layers"`
-	KVHeads       json.RawMessage `json:"num_key_value_heads"`
-	Heads         int64           `json:"num_attention_heads"`
-	HeadDim       json.RawMessage `json:"head_dim"`
-	HiddenSize    int64           `json:"hidden_size"`
-	TorchDtype    string          `json:"torch_dtype"`
-	Dtype         string          `json:"dtype"`
-	LayerTypes    []string        `json:"layer_types"`
-	SlidingWindow *int64          `json:"sliding_window"`
-	UseSliding    *bool           `json:"use_sliding_window"`
-	KVLoRARank    json.RawMessage `json:"kv_lora_rank"`
+	NativeContext  int64           `json:"max_position_embeddings"`
+	RopeScaling    json.RawMessage `json:"rope_scaling"`
+	KeyDim         json.RawMessage
+	ValueDim       json.RawMessage
+	CacheK, CacheV string
+	Layers         int64           `json:"num_hidden_layers"`
+	KVHeads        json.RawMessage `json:"num_key_value_heads"`
+	Heads          int64           `json:"num_attention_heads"`
+	HeadDim        json.RawMessage `json:"head_dim"`
+	HiddenSize     int64           `json:"hidden_size"`
+	TorchDtype     string          `json:"torch_dtype"`
+	Dtype          string          `json:"dtype"`
+	LayerTypes     []string        `json:"layer_types"`
+	SlidingWindow  *int64          `json:"sliding_window"`
+	UseSliding     *bool           `json:"use_sliding_window"`
+	KVLoRARank     json.RawMessage `json:"kv_lora_rank"`
 }
 
 // ModelMemoryNeed retains weight evidence when context or geometry cannot be sized.
-func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string) (Need, bool) {
-	weightBytes, ok := weightsBytes(model.Path, svc)
-	if !ok {
-		return Need{}, false
+func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string, policy schema.AutoContext, shapes map[string]schema.ParamShape) (Need, bool) {
+	weightBytes, header, ok := weightsBytes(model.Path, svc)
+	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, Incomplete: true, ContextMode: "unknown"}
+	value := memoryParameter(svc.GetContextParam(), params)
+	context, parseErr := strconv.ParseInt(value, 10, 64)
+	numeric := parseErr == nil && context > 0
+	if !numeric {
+		context = 0
 	}
-	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, Incomplete: true}
-	context, ok := contextLength(svc, params)
-	if !ok || model.Path == "" {
+	if numeric {
+		partial.ContextMode = "numeric"
+	} else if config.IsAuto(value) || svc.GetContextParam() == "" || (value == "0" && policy.AutoContextSource == "native") {
+		partial.ContextMode = "auto"
+		context = policy.AutoMinContextTokens
+	}
+	cfg, geometry := readAttentionConfig(model.Directory())
+	if header != "" && (!geometry || policy.AutoContextSource == "native") {
+		cfg, geometry = readGGUFConfig(header)
+	}
+	if partial.ContextMode == "auto" && policy.AutoContextSource == "native" {
+		partial.nativeContext = true
+		context = cfg.NativeContext
+	}
+	partial.ContextTokens = context
+	if !ok || !geometry || context <= 0 || (partial.ContextMode == "auto" && (cfg.NativeContext < context || (len(cfg.RopeScaling) > 0 && string(cfg.RopeScaling) != "null"))) {
 		return partial, false
 	}
-	cfg, ok := readAttentionConfig(model.Directory())
-	if !ok {
+	for name, shape := range shapes {
+		value := memoryParameter(name, params)
+		if shape.ContextOverride && value != "" && partial.ContextMode == "auto" {
+			return partial, false
+		}
+		if shape.KVCacheDtype == "k" || shape.KVCacheDtype == "both" {
+			cfg.CacheK = value
+		}
+		if shape.KVCacheDtype == "v" || shape.KVCacheDtype == "both" {
+			cfg.CacheV = value
+		}
+	}
+	partial.geometry = &cfg
+	sized, complete := partial.atContext(context)
+	if !complete {
+		partial.geometry = nil
 		return partial, false
 	}
-	kvBytes, ok := cfg.kvBytes(context)
-	if !ok {
-		return partial, false
-	}
-	return Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, KVMiB: bytesToMiB(kvBytes), OverheadMiB: DefaultActivationOverheadMiB}, true
+	return sized, true
 }
 
-// contextLength reads the provider's context parameter, under either spelling a resolved key may carry.
-func contextLength(svc config.ServiceConfig, params map[string]string) (int64, bool) {
-	key := svc.GetContextParam()
-	if key == "" {
-		return 0, false
+func (n Need) atContext(context int64) (Need, bool) {
+	kv, ok := n.geometry.kvBytes(context)
+	n.KVMiB, n.OverheadMiB, n.Incomplete = bytesToMiB(kv), DefaultActivationOverheadMiB, !ok
+	return n, ok
+}
+
+func readGGUFConfig(path string) (attentionConfig, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return attentionConfig{}, false
 	}
+	defer file.Close()
+	h, err := gguf.Read(file)
+	v := func(key string) int64 { return h.Values[h.Architecture+"."+key] }
+	raw := func(n int64) json.RawMessage {
+		if n == 0 {
+			return nil
+		}
+		return json.RawMessage(strconv.FormatInt(n, 10))
+	}
+	cfg := attentionConfig{Layers: v("block_count"), NativeContext: v("context_length"), Heads: v("attention.head_count"), KVHeads: raw(v("attention.head_count_kv")), HiddenSize: v("embedding_length"), KeyDim: raw(v("attention.key_length")), ValueDim: raw(v("attention.value_length")), Dtype: "float16"}
+	return cfg, err == nil && cfg.Layers > 0 && cfg.Heads > 0 && v("attention.sliding_window") == 0
+}
+
+// memoryParameter reads either spelling accepted by command construction.
+func memoryParameter(key string, params map[string]string) string {
 	value := params[key]
 	if value == "" {
 		value = params[strings.ReplaceAll(key, "-", "_")]
 	}
-	context, err := strconv.ParseInt(value, 10, 64)
-	return context, err == nil && context > 0
+	return value
 }
 
 // readAttentionConfig reads the language model's config.json, nested under text_config in multimodal models.
@@ -127,8 +184,45 @@ func (cfg attentionConfig) kvBytes(context int64) (int64, bool) {
 	if !ok {
 		return 0, false
 	}
-	kv, err := needProduct([]int64{2, layerTokens, heads, dim, dtypeBytes})
-	return kv, err == nil
+	var total int64
+	for _, cache := range []struct {
+		dim   json.RawMessage
+		dtype string
+	}{{cfg.KeyDim, cfg.CacheK}, {cfg.ValueDim, cfg.CacheV}} {
+		dimension, valid := geometryValue(cache.dim, dim)
+		// GGML quantized blocks include their scale bytes; never treat q8 as one byte.
+		block, size := int64(1), dtypeBytes
+		switch cache.dtype {
+		case "", "auto":
+		case "f16", "bf16":
+			size = 2
+		case "f32":
+			size = 4
+		case "fp8", "fp8_e4m3", "fp8_e5m2":
+			size = 1
+		case "q8_0":
+			block, size = 32, 34
+		case "q4_0", "iq4_nl":
+			block, size = 32, 18
+		case "q4_1":
+			block, size = 32, 20
+		case "q5_0":
+			block, size = 32, 22
+		case "q5_1":
+			block, size = 32, 24
+		default:
+			return 0, false
+		}
+		if !valid || dimension%block != 0 {
+			return 0, false
+		}
+		part, err := needProduct([]int64{layerTokens, heads, dimension / block, size})
+		if err != nil || part > math.MaxInt64-total {
+			return 0, false
+		}
+		total += part
+	}
+	return total, true
 }
 
 func (cfg attentionConfig) dtypeBytes() (int64, bool) {
@@ -181,22 +275,26 @@ func (cfg attentionConfig) layerTokens(context int64) (int64, bool) {
 	return total, true
 }
 
-func weightsBytes(modelPath string, svc config.ServiceConfig) (int64, bool) {
+func weightsBytes(modelPath string, svc config.ServiceConfig) (int64, string, bool) {
 	if modelPath == "" {
-		return 0, false
+		return 0, "", false
 	}
 	files, err := layout.Weights(modelPath, featureGlobs(&svc))
 	if err != nil || len(files) == 0 {
-		return 0, false
+		return 0, "", false
 	}
 	var total int64
 	for _, file := range files {
 		if file.Size <= 0 || total > math.MaxInt64-file.Size {
-			return 0, false
+			return 0, "", false
 		}
 		total += file.Size
 	}
-	return total, true
+	header := ""
+	if layout.IsGGUF(modelPath) {
+		header = filepath.Join(filepath.Dir(modelPath), files[0].Path)
+	}
+	return total, header, true
 }
 
 func bytesToMiB(n int64) int64 {

@@ -532,8 +532,8 @@ func TestToolsCatalogRoundTrip(t *testing.T) {
 func TestMCPCompatibilityPreservesAssessment(t *testing.T) {
 	for _, status := range []string{"fit", "no_fit", "unknown"} {
 		t.Run(status, func(t *testing.T) {
-			assessment := map[string]any{"status": status, "reason": "evidence for " + status, "budget_kind": "fraction_total", "required_mib": float64(17), "capacity_mib": float64(19)}
-			nodeAssessment := map[string]any{"node": "worker", "provider": "vllm", "status": status, "reason": "evidence for " + status}
+			assessment := map[string]any{"status": status, "reason": "evidence for " + status, "context_mode": "auto", "context_tokens": float64(4096), "affordable_context_tokens": float64(8192), "placement": "offload", "budget_kind": "fraction_total", "required_mib": float64(17), "capacity_mib": float64(19)}
+			nodeAssessment := map[string]any{"node": "worker", "provider": "vllm", "status": status, "reason": "evidence for " + status, "context_mode": "auto", "context_tokens": float64(4096), "affordable_context_tokens": float64(8192), "placement": "offload"}
 			rest := map[string]any{"data": []any{}, "total": float64(0), "metadata": map[string]any{"assessments": []any{nodeAssessment}}}
 			calls := 0
 			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {

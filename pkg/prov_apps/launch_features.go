@@ -208,6 +208,7 @@ func wireEndpoints(svc config.ServiceConfig) []string {
 // LaunchParameters is the node's effective launch configuration before argv
 // construction. Preview and live preparation share this resolution.
 type LaunchParameters struct {
+	parameterShapes      map[string]schema.ParamShape
 	declared             *schema.ProviderSchema
 	Commitments          map[string]int64
 	model                process.ResolvedModel
@@ -295,7 +296,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		}
 	}
 	freezeFeaturePaths(svc, params)
-	return LaunchParameters{declared: declared, Commitments: commitments, model: model, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+	return LaunchParameters{parameterShapes: declared.ForEndpoint(endpoint), declared: declared, Commitments: commitments, model: model, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
 }
 
 // disposableLaunch binds a launch to a disposable plan's venv once the plan

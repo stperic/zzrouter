@@ -2461,14 +2461,17 @@ paths:
         If node inventory cannot be read, collected results are retained and an
         unknown assessment with an empty node reports unknown coverage.
 
-        Only a fully sized model with an auto fraction budget establishes fit.
-        Numeric budgets, layers/offload, unified memory, external scheduling and
-        incomplete evidence stay unknown above the weight lower bound. Weights
-        exceeding reachable memory establish no_fit: selected GPU totals times
+        Supported geometry establishes fit for auto or numeric fraction budgets,
+        layers/offload and unified memory at the assessed context. External
+        scheduling and incomplete evidence stay unknown above the weight lower bound.
+        Weights exceeding reachable memory establish no_fit: selected GPU totals times
         the numeric budget fraction (full totals for auto), GPU plus system RAM
         for layers (all visible GPUs unless the schema declares a device count),
         or the single shared pool for unified memory. Local selected
         weights are required; published file size alone cannot establish fit.
+        Under auto llama.cpp, a native-context estimate exceeding GPU plus RAM
+        stays unknown and allows launch because the engine may adapt. Numeric
+        context shortfalls and weight-only lower-bound failures refuse launch.
         Hosts without GPU observation, including CPU-only llama.cpp, skip the
         weight lower bound and report unknown; their existing launch path is preserved.
       parameters:
@@ -11960,10 +11963,30 @@ components:
         budget_kind: { type: string }
         required_mib: { type: integer, format: int64 }
         capacity_mib: { type: integer, format: int64 }
+        context_mode: { type: string, enum: [auto, numeric, unknown] }
+        context_tokens: { type: integer, format: int64 }
+        affordable_context_tokens: { type: integer, format: int64 }
+        placement: { type: string, enum: [gpu, offload] }
       description: |
+        Supported geometry establishes fit at the assessed context: the declared
+        minimum for auto vLLM and MLX (shipped as 4096), native GGUF context for
+        auto llama.cpp, or the requested numeric context for vLLM/llama.cpp.
+        MLX has no context parameter; max-tokens limits generation only.
+        affordable_context_tokens is an estimate within the recognized native range,
+        not served context. The engine's profiler remains authoritative.
+        llama.cpp placement is gpu or offload into system RAM. Native auto context
+        beyond GPU plus RAM stays unknown and allows launch because the engine
+        may adapt; numeric context shortfalls and weight-only failures refuse.
+        MLX uses memory_usable_fraction (shipped as 0.75), release-owned schema
+        metadata alongside auto_min_context_tokens.
+        Missing or unsupported geometry, context range or devices remains unknown;
+        older replies lacking context_mode degrade to unknown.
+        Numeric context overrides assess workload requirements. Fully evidenced
+        failures refuse launch; fixed budget shortfalls do not evict holders.
         Budget admission alone is not proof of model fit. Amounts are optional,
-        in MiB: the limiting selected device's budget plus safety margin and
-        capacity, or aggregate reachable memory for a weight lower-bound refusal.
+        in MiB: the limiting selected device's sized requirement (including an
+        auto-only margin) and available memory, or aggregate amounts for layers,
+        unified memory and weight lower-bound refusals.
         Capacity reads use totals; launch failures retain fresh free memory and holders.
 
     PreviewRunResponse:

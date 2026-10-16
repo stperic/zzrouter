@@ -82,12 +82,12 @@ func TestContextAutoUsesFreeMemoryMinusMargin(t *testing.T) {
 	}
 	req := EnsureRequest{Provider: "vllm", Model: "vendor/model"}
 	model := process.ResolveModel(svc, req.Model)
-	need, known := process.ModelMemoryNeed(model, svc, svc.Defaults.Parameters)
+	need, known := process.ModelMemoryNeed(model, svc, svc.Defaults.Parameters, schema.AutoContext{}, nil)
 	assert.False(t, known)
 	assert.Zero(t, need.Total())
 	numeric := maps.Clone(svc.Defaults.Parameters)
 	numeric["max-model-len"] = "2048"
-	_, known = process.ModelMemoryNeed(model, svc, numeric)
+	_, known = process.ModelMemoryNeed(model, svc, numeric, schema.AutoContext{}, nil)
 	require.True(t, known, "the dense fixture must be sizeable with a numeric context")
 	run := instance.NewInstance("auto-context", "vllm", req.Model, 8100, 0, 0)
 	defer run.Cancel()
