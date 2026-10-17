@@ -2,16 +2,21 @@ package templates_test
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/config/schema"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	pschema "github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -22,6 +27,122 @@ import (
 func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 	_, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
 	assert.Empty(t, errs, "schema.yaml ↔ Go spine drift: %v", errs)
+}
+
+// launchedProviders loads the shipped tree as a node does and keeps the
+// providers zzRouter starts as a process; a served daemon takes no flags.
+func launchedProviders(t *testing.T) map[string]config.ServiceConfig {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	launched := map[string]config.ServiceConfig{}
+	apps.RangeApps(func(name string, svc config.ServiceConfig) bool {
+		if svc.Runtime != nil && len(svc.Runtime.Execution.Args) > 0 {
+			launched[name] = svc
+		}
+		return true
+	})
+	require.GreaterOrEqual(t, len(launched), 4, "expected the on-demand providers")
+	return launched
+}
+
+// A parameter is appended after the runtime's own argv; one that renders a
+// flag the runtime already passes would fight the value zzRouter owns.
+func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	weights := filepath.Join(t.TempDir(), "weights")
+	require.NoError(t, os.WriteFile(weights, nil, 0o600))
+	model := process.ResolvedModel{Name: "model", Path: weights}
+
+	for name, svc := range launchedProviders(t) {
+		declared := maps.Clone(schemas[name].Parameters)
+		for _, endpoint := range schemas[name].Endpoints {
+			maps.Copy(declared, endpoint.Parameters)
+		}
+		executions := map[string]config.ExecutionConfig{"runtime.execution": svc.Runtime.Execution}
+		for feature, f := range svc.Features {
+			if f.Execution != nil {
+				executions["features."+feature+".execution"] = *f.Execution
+			}
+		}
+		for where, execution := range executions {
+			launch := svc
+			runtime := *svc.Runtime
+			runtime.Execution = execution
+			launch.Runtime = &runtime
+			builder := process.NewCommandBuilder(&launch)
+			base, err := builder.Build(model, 1, nil)
+			require.NoError(t, err, "%s: %s", name, where)
+			passed := map[string]bool{}
+			for _, arg := range base.Args {
+				if strings.HasPrefix(arg, "--") {
+					passed[arg] = true
+				}
+			}
+			for key := range declared {
+				if runsettings.IsParameter(key) {
+					continue // run settings never reach argv
+				}
+				built, err := builder.Build(model, 1, map[string]string{key: "true"})
+				require.NoError(t, err, "%s: %s", name, key)
+				flag := built.Args[len(base.Args)]
+				assert.False(t, passed[flag], "%s: parameter %q renders %s, which %s already passes", name, key, flag, where)
+			}
+		}
+	}
+}
+
+// A fresh install must never refuse its own config: every parameter a
+// launched provider's shipped config sets in a tier, or names in a feature
+// or as its context parameter, is declared for that endpoint.
+func TestShippedConfigNamesOnlyDeclaredParameters(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+
+	for name, svc := range launchedProviders(t) {
+		declared := schemas[name]
+		requireDeclared := func(where, endpoint string, keys []string) {
+			shapes := declared.ForEndpoint(endpoint)
+			for _, key := range keys {
+				_, ok := shapes[key]
+				assert.True(t, ok, "%s: %s names undeclared parameter %q", name, where, key)
+			}
+		}
+		type cell struct {
+			parameters map[string]string
+			endpoints  map[string]config.EndpointOverlay
+		}
+		cells := map[string]cell{}
+		if d := svc.Defaults; d != nil {
+			cells["defaults"] = cell{d.Parameters, d.Endpoints}
+			if d.Metadata != nil && d.Metadata.ContextParam != "" {
+				requireDeclared("defaults.metadata.context_param", "", []string{d.Metadata.ContextParam})
+			}
+		}
+		for model, spec := range svc.Models {
+			cells["models."+model] = cell{spec.Parameters, spec.Endpoints}
+		}
+		for node, spec := range svc.Nodes {
+			cells["nodes."+node] = cell{spec.Parameters, spec.Endpoints}
+			for model, nodeModel := range spec.Models {
+				cells["nodes."+node+".models."+model] = cell{nodeModel.Parameters, nodeModel.Endpoints}
+			}
+		}
+		for where, c := range cells {
+			requireDeclared(where, "", slices.Collect(maps.Keys(c.parameters)))
+			for endpoint, overlay := range c.endpoints {
+				requireDeclared(where+".endpoints."+endpoint, endpoint, slices.Collect(maps.Keys(overlay.Parameters)))
+			}
+		}
+		for feature, f := range svc.Features {
+			endpoint := config.FeatureEndpoint(feature)
+			requireDeclared("features."+feature+".requires_parameters", endpoint, f.RequiresParameters)
+			requireDeclared("features."+feature+".exclude_parameters", endpoint, f.ExcludeParameters)
+		}
+	}
 }
 
 func TestAppsFS_DeclaresRecurrentAllocationRows(t *testing.T) {

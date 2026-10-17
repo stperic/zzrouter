@@ -69,7 +69,7 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 		{EndpointReranking, "--reranker-model", "rerank"},
 	} {
 		t.Run(string(tc.endpoint), func(t *testing.T) {
-			req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: tc.endpoint, Parameters: map[string]string{"chat-template": "x", "temperature": "0.5", "top-p": "0.9", "max-tokens": "10"}}
+			req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: tc.endpoint, Parameters: map[string]string{"chat-template": "x", "temp": "0.5", "top-p": "0.9", "max-tokens": "10"}}
 			prepared, err := m.prepareStart(t.Context(), req)
 			require.NoError(t, err)
 			require.Equal(t, tc.endpoint, prepared.req.Endpoint)
@@ -127,7 +127,7 @@ func TestMLXVisionReadinessOverlay(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
 	selected, _, excluded, err := m.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
 	require.NoError(t, err)
-	require.Contains(t, excluded, "temperature")
+	require.Contains(t, excluded, "temp")
 	require.Contains(t, excluded, "top-p")
 	req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: EndpointChat}
 	selection, err := m.resolveLaunch(&req)
