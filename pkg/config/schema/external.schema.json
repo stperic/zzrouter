@@ -385,6 +385,7 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "enabled": { "type": "boolean" },
           "parameters": { "type": "object", "additionalProperties": { "type": "string" } },
           "environment": { "type": "object", "additionalProperties": { "type": "string" } },
           "models": {

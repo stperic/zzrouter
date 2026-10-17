@@ -31,12 +31,19 @@ func NewRegistry(cfg *config.AppsConfig, httpClient *http.Client) *Registry {
 		return reg
 	}
 	for key, p := range cfg.AllProviders() {
-		if p.IsExplicitlyDisabled() || !modelProvider(p) {
+		if !registered(cfg, key, p) {
 			continue
 		}
 		reg.providers[key] = reg.createProvider(key, p)
 	}
 	return reg
+}
+
+// registered reports whether the registry holds p: a model provider this
+// node has not turned off.
+func registered(cfg *config.AppsConfig, key string, p config.Provider) bool {
+	sc, _ := cfg.LookupApp(key)
+	return !sc.IsExplicitlyDisabled() && modelProvider(p)
 }
 
 // Get returns a provider by config key.
@@ -133,7 +140,7 @@ func (r *Registry) Sync(cfg *config.AppsConfig) {
 	all := cfg.AllProviders()
 	wanted := make(map[string]bool, len(all))
 	for name, p := range all {
-		if p.IsExplicitlyDisabled() || !modelProvider(p) {
+		if !registered(cfg, name, p) {
 			continue
 		}
 		wanted[name] = true

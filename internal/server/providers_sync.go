@@ -346,6 +346,40 @@ func (f *providerSyncFanOut) AwaitQuiesce(ctx context.Context) SyncReport {
 	}
 }
 
+// AwaitWorker reports whether worker node got the caller's writes, without waiting on other workers.
+func (f *providerSyncFanOut) AwaitWorker(ctx context.Context, node string) bool {
+	if f == nil {
+		return false
+	}
+	f.mu.Lock()
+	want := f.writes
+	f.mu.Unlock()
+	for {
+		f.mu.Lock()
+		idle, current := f.idle, f.current
+		f.mu.Unlock()
+		if current == nil {
+			return false
+		}
+		// Taken before reading the tally, so no answer slips between.
+		progressed := current.next()
+		if current.carries >= want && slices.Contains(current.landed(), node) {
+			return true
+		}
+		select {
+		case <-idle:
+			return false // the last round is over without node
+		default:
+		}
+		select {
+		case <-progressed:
+		case <-idle:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 // run pushes the tree, then pushes it again for any mutation that
 // arrived while the last push was in flight, until nothing is owed.
 func (f *providerSyncFanOut) run(cfg *pkgConfig.AppsConfig) {
@@ -355,6 +389,7 @@ func (f *providerSyncFanOut) run(cfg *pkgConfig.AppsConfig) {
 		f.mu.Unlock()
 		round := f.push(cfg, progress)
 
+		// Waiters wake after the next round, or quiescence, is in place.
 		f.mu.Lock()
 		f.last = round
 		if !f.repeatPend {
@@ -363,11 +398,13 @@ func (f *providerSyncFanOut) run(cfg *pkgConfig.AppsConfig) {
 			f.inFlight = false
 			close(f.idle)
 			f.mu.Unlock()
+			progress.end()
 			return
 		}
 		f.repeatPend = false
 		f.current = &roundProgress{carries: f.writes}
 		f.mu.Unlock()
+		progress.end()
 
 		if latest := f.store.Config(); latest != nil {
 			cfg = latest
@@ -395,6 +432,9 @@ type roundProgress struct {
 	// failedAll is a failure no worker escapes, such as an unreadable
 	// provider config.
 	failedAll bool
+	// progressed wakes per-worker waiters at each answer and at the end.
+	progressed chan struct{}
+	over       bool
 }
 
 // begin records the targets and how many pushes each is owed.
@@ -413,12 +453,43 @@ func (p *roundProgress) took(url string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.owed[url]--
+	p.answered()
 }
 
 func (p *roundProgress) miss(url string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.missed[url] = true
+	p.answered()
+}
+
+// answered wakes the waiters of the progress so far. Called with mu held.
+func (p *roundProgress) answered() {
+	if p.progressed != nil {
+		close(p.progressed)
+		p.progressed = nil
+	}
+}
+
+// next is closed at the next answered push, or already when the round is over.
+func (p *roundProgress) next() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.progressed == nil {
+		p.progressed = make(chan struct{})
+		if p.over {
+			close(p.progressed)
+		}
+	}
+	return p.progressed
+}
+
+// end marks the round over and wakes its waiters for good.
+func (p *roundProgress) end() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.over = true
+	p.answered()
 }
 
 func (p *roundProgress) failAll() {
@@ -470,7 +541,7 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 	// external kinds launch on workers.
 	var names []string
 	for _, name := range cfg.AppNames() {
-		if kind := f.store.ProviderKind(name); kind == pkgConfig.KindOnDemand || kind == pkgConfig.KindExternal {
+		if sc, ok := cfg.LookupApp(name); ok && sc.SyncedToWorkers() {
 			names = append(names, name)
 		}
 	}
@@ -501,9 +572,9 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 		})
 	}
 
-	// M5 — push N providers × M workers in parallel, bounded to
-	// providerSyncConcurrency. Serial loop made sustained-PATCH latency
-	// linear in N*M.
+	// M5 — push N providers × M workers in parallel, at most
+	// providerSyncConcurrency pushes at a time. Serial loop made
+	// sustained-PATCH latency linear in N*M.
 	sem := make(chan struct{}, providerSyncConcurrency)
 	var wg sync.WaitGroup
 	for _, name := range names {
@@ -534,11 +605,17 @@ func (f *providerSyncFanOut) push(cfg *pkgConfig.AppsConfig, p *roundProgress) p
 		}
 		for _, t := range targets {
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(t syncTarget, name string, body []byte) {
 				defer wg.Done()
+				// The protocol probe holds no push slot, so a worker that
+				// hangs delays only its own pushes.
+				if !gates[t.url]() {
+					p.miss(t.url)
+					return
+				}
+				sem <- struct{}{}
 				defer func() { <-sem }()
-				if gates[t.url]() && f.pushOne(client, t.url+"/zzrouter/v1/internal/sync/providers/"+name, name, t.node, body) {
+				if f.pushOne(client, t.url+"/zzrouter/v1/internal/sync/providers/"+name, name, t.node, body) {
 					p.took(t.url)
 				} else {
 					p.miss(t.url)
@@ -624,8 +701,8 @@ func (f *providerSyncFanOut) pushOne(client *http.Client, url, provider, nodeNam
 // best-effort; slow/down workers must not stall the listener chain.
 const providerSyncPushTimeout = 10 * time.Second
 
-// providerSyncConcurrency bounds the per-run fan-out goroutine count so
-// a large cluster × many-providers sweep doesn't spike mTLS connection
+// providerSyncConcurrency bounds the pushes in flight in one run so a
+// large cluster × many-providers sweep doesn't spike mTLS connection
 // counts or starve the worker-side accept queue.
 const providerSyncConcurrency = 8
 

@@ -25,6 +25,12 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 15 raises the minimum from 13 to 15. Provider synchronization carries
+per-node enable choices, `nodes.<node>.enabled`, which older strict loaders
+reject, and a worker records its own choice through a new coordinator route,
+`PUT /zzrouter/v1/internal/providers/{name}/enabled`, that older coordinators
+lack. Upgrade every node together using the maintenance procedure below.
+
 Protocol 14 adds optional `unknown_cause` and `weights_mib` assessment fields and
 independent `capacity_mib` evidence on unknown rows. The minimum advances from
 12 to 13, retaining exactly one previous protocol for rolling upgrades. Upgrade

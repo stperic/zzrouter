@@ -6,7 +6,9 @@ import (
 	"regexp"
 
 	"github.com/gin-gonic/gin"
+	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // ============================================================================
@@ -53,6 +55,12 @@ func extractEnvVar(token string) string {
 func respondFinalizeErr(c *gin.Context, prefix string, err error) {
 	if errors.Is(err, pkgConfig.ErrProviderNotFound) {
 		NotFound(c, fmt.Sprintf("%s: %v", prefix, err))
+		return
+	}
+	// A worker's finalization the coordinator refused keeps that refusal.
+	var refused *clustersignal.StatusError
+	if errors.As(err, &refused) {
+		RespondToError(c, httperr.Error{Status: refused.Status, Code: refused.Code, Message: fmt.Sprintf("%s: %v", prefix, err)})
 		return
 	}
 	InternalNodeError(c, fmt.Sprintf("%s: %v", prefix, err))

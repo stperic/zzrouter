@@ -1,8 +1,9 @@
-// Package signal owns worker→coordinator cross-node notifications.
-// Workers send two kinds of signal: a cache-refresh ping after any
-// config mutation (providers changed, models changed) and a goodbye
-// POST during graceful shutdown so the coord marks the endpoint DOWN
-// without waiting on the liveness hysteresis.
+// Package signal owns worker→coordinator cross-node calls. Workers send
+// a cache-refresh ping after any config mutation (providers changed,
+// models changed), a goodbye POST during graceful shutdown so the coord
+// marks the endpoint DOWN without waiting on the liveness hysteresis,
+// and their own provider enable choices, which only the coordinator's
+// provider tree may hold.
 //
 // Kept separate from pkg/model/cache so the cache stays a data layer
 // (catalog + indexes + lifecycle) and dispatch plumbing lives with
@@ -15,11 +16,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
+
+// StatusError is a coordinator refusal, kept whole so the caller can relay
+// its status and closed code rather than flatten it.
+type StatusError struct {
+	Status int
+	Code   string
+	Detail string
+}
+
+func (e *StatusError) Error() string {
+	if e.Detail == "" {
+		return fmt.Sprintf("coord returned status %d", e.Status)
+	}
+	return fmt.Sprintf("coord returned status %d: %s", e.Status, e.Detail)
+}
 
 // errCoordNotWired means the caller can't reach the coordinator yet —
 // pre-pairing, pre-Start, or mid-demote. NotifyCacheRefresh uses it to
@@ -201,7 +219,21 @@ func (s *Signaler) SendGoodbye(ctx context.Context) {
 	slog.Info("[Worker] Goodbye notify acknowledged")
 }
 
+// RecordProviderEnabled asks the coordinator to record this node's enable
+// choice; nil means the sync carrying it has already reached this node.
+func (s *Signaler) RecordProviderEnabled(ctx context.Context, provider string, enabled bool) error {
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return err
+	}
+	return s.doCoord(ctx, http.MethodPut, "/zzrouter/v1/internal/providers/"+url.PathEscape(provider)+"/enabled", body)
+}
+
 func (s *Signaler) doCoordPost(ctx context.Context, path string, body []byte) error {
+	return s.doCoord(ctx, http.MethodPost, path, body)
+}
+
+func (s *Signaler) doCoord(ctx context.Context, method, path string, body []byte) error {
 	if s.cfg.MTLSClient == nil {
 		return errCoordNotWired
 	}
@@ -216,7 +248,7 @@ func (s *Signaler) doCoordPost(ctx context.Context, path string, body []byte) er
 	if coord == "" {
 		return errCoordNotWired
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", coord+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, coord+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -227,7 +259,12 @@ func (s *Signaler) doCoordPost(ctx context.Context, path string, body []byte) er
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("coord returned status %d", resp.StatusCode)
+		var problem struct {
+			Code   string `json:"code"`
+			Detail string `json:"detail"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&problem)
+		return &StatusError{Status: resp.StatusCode, Code: problem.Code, Detail: problem.Detail}
 	}
 	return nil
 }

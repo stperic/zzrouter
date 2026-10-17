@@ -1628,6 +1628,11 @@ paths:
         Changes provider configuration. Two fields are supported: `enabled`,
         and `pinned_version` (a version to hold, or `""` to release the pin
         and follow the latest release).
+        `enabled` is the selected node's own choice for on-demand and external
+        providers; the coordinator records it and the call answers once that
+        node has it. Without `node`, the request goes to every node and each
+        records its own choice. Sync never carries cloud providers or
+        registries, so each node's copy of those is its own.
         When the shipped template declares a pin, startup reconciliation restores
         that release-owned seed. An explicit install-call version overrides it.
         Pins on providers without a shipped seed remain operator-owned.
@@ -1663,6 +1668,11 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Provider not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: provider_sync_pending, recorded on the coordinator but not yet delivered to the node
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

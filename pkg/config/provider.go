@@ -30,12 +30,11 @@ const (
 // Consumers that don't care about kind-specific fields (most of them —
 // see Appendix A of the refactor plan) use this interface; installers and
 // cloud-search paths type-assert to the concrete kind at the boundary.
+// Whether a provider is enabled depends on the node, so it is read from
+// AppsConfig.LookupApp or RangeApps, never from the typed provider.
 type Provider interface {
 	Kind() Kind
 	GetName() string
 	GetDescription() string
-	IsEnabled() bool
-	IsExplicitlyDisabled() bool
-	IsAutoDiscovery() bool
 	Validate() error
 }

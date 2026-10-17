@@ -211,7 +211,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	}
 
 	// Load apps configuration via centralized store
-	store, err := pkgConfig.NewAppsConfigStoreFromStandardLocations()
+	store, err := pkgConfig.NewAppsConfigStoreFromStandardLocations(s.node.Name())
 	switch {
 	case errors.Is(err, pkgConfig.ErrProvidersDirNotFound):
 		logger.Warn("No provider config found", "error", err)

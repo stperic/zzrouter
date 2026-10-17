@@ -123,8 +123,9 @@ func TestSetProviderEnabledChokepoint(t *testing.T) {
 	// scattered enable path that bypasses the listener chain and must
 	// route through the choke-point instead.
 	allow := map[string]string{
-		"internal/server/server_providers.go": "choke-point: FinalizeOnboarding, FinalizeOffboarding",
-		"pkg/config/apps_config_store.go":     "defines SetProviderEnabled",
+		"internal/server/server_providers.go":         "choke-point: FinalizeOnboarding, FinalizeOffboarding",
+		"pkg/config/apps_config_store.go":             "defines SetProviderEnabled",
+		"internal/cli/servercli/provider_commands.go": "offline CLI: no server runs, so there is no listener chain to route through",
 	}
 
 	re := regexp.MustCompile(`\bSetProviderEnabled\b`)

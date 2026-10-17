@@ -38,6 +38,7 @@ type AppsConfigStore struct {
 	mu        sync.RWMutex
 	config    *AppsConfig
 	dirPath   string
+	node      string
 	listeners []appsListenerEntry
 }
 
@@ -49,23 +50,43 @@ type appsListenerEntry struct {
 }
 
 // NewAppsConfigStore loads the providers/ directory at the given path and
-// returns a store that owns all subsequent reads and writes.
+// returns a store that owns all subsequent reads and writes. It reads
+// provider defaults; a node reads its own view through
+// NewAppsConfigStoreFromStandardLocations.
 func NewAppsConfigStore(dirPath string) (*AppsConfigStore, error) {
-	cfg, err := LoadAppsConfig(dirPath)
+	return newAppsConfigStore(dirPath, "")
+}
+
+func newAppsConfigStore(dirPath, node string) (*AppsConfigStore, error) {
+	s := &AppsConfigStore{dirPath: dirPath, node: node}
+	cfg, err := s.load()
 	if err != nil {
 		return nil, fmt.Errorf("load apps config: %w", err)
 	}
-	return &AppsConfigStore{config: cfg, dirPath: dirPath}, nil
+	s.config = cfg
+	return s, nil
 }
 
 // NewAppsConfigStoreFromStandardLocations finds the providers/ directory
-// via XDG search and returns a store. Primary constructor for server use.
-func NewAppsConfigStoreFromStandardLocations() (*AppsConfigStore, error) {
+// via XDG search and returns the store of node, the local node's name, so
+// its configs resolve that node's entries (see AppsConfig.LookupApp).
+// Primary constructor for server use.
+func NewAppsConfigStoreFromStandardLocations(node string) (*AppsConfigStore, error) {
 	dirPath, err := findAppsConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	return NewAppsConfigStore(dirPath)
+	return newAppsConfigStore(dirPath, node)
+}
+
+// load reads the tree from disk as this store's node runs it.
+func (s *AppsConfigStore) load() (*AppsConfig, error) {
+	cfg, err := LoadAppsConfig(s.dirPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg.node = s.node
+	return cfg, nil
 }
 
 // Config returns the current in-memory config. Callers must NOT mutate
@@ -300,7 +321,7 @@ func (s *AppsConfigStore) WriteProviderFiles(name string, kind Kind, files Provi
 		}
 	}
 
-	cfg, err := LoadAppsConfig(s.dirPath)
+	cfg, err := s.load()
 	if err != nil {
 		// Bytes landed on disk but the reload failed — in-memory config
 		// is now stale. Next push re-runs the reload; meanwhile the
@@ -354,7 +375,7 @@ func (s *AppsConfigStore) OnChange(name string, fn func(*AppsConfig) ReloadDispo
 // ReloadReport so callers can surface per-listener dispositions.
 func (s *AppsConfigStore) Reload() (*ReloadReport, error) {
 	s.mu.Lock()
-	cfg, err := LoadAppsConfig(s.dirPath)
+	cfg, err := s.load()
 	if err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("reload apps config: %w", err)
@@ -472,27 +493,25 @@ func (s *AppsConfigStore) AddProviderInstance(name string, p Provider) error {
 // Provider Enabled State
 // ============================================================================
 
-// SetProviderEnabled sets enabled: true/false for a provider and persists.
+// SetProviderEnabled records node's choice to run a provider or not and
+// persists it (see ServiceConfig.SetEnabledOn). It reports whether it
+// wrote: a choice node already runs with writes nothing and notifies no
+// listener.
 //
 // Returns ErrProviderNotFound (wrapped) if the provider is absent — callers
 // should use errors.Is to map to 404 at the HTTP edge.
-func (s *AppsConfigStore) SetProviderEnabled(name string, enabled bool) error {
-	return s.mutate(func() (bool, error) {
-		svc, exists := s.config.LookupApp(name)
-		if !exists {
+func (s *AppsConfigStore) SetProviderEnabled(name, node string, enabled bool) (changed bool, err error) {
+	err = s.mutate(func() (bool, error) {
+		if s.config.Find(name) == nil {
 			return false, fmt.Errorf("%w: %q", ErrProviderNotFound, name)
 		}
-		if svc.IsEnabled() == enabled {
-			return false, nil
-		}
-		if err := s.config.UpdateApp(name, func(sc *ServiceConfig) error {
-			sc.SetEnabled(enabled)
+		err := s.config.UpdateApp(name, func(sc *ServiceConfig) error {
+			changed = sc.SetEnabledOn(node, enabled)
 			return nil
-		}); err != nil {
-			return false, err
-		}
-		return true, nil
+		})
+		return changed, err
 	})
+	return changed, err
 }
 
 // ============================================================================

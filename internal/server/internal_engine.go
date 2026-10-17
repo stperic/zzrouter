@@ -36,8 +36,8 @@ func buildInternalEngine(s *Server) *gin.Engine {
 
 // buildCoordInternalEngine returns the narrow /zzrouter/v1/internal/*
 // surface served on the coordinator's cluster listener. Only routes a
-// worker legitimately calls on the coord land here — today that is
-// POST /models/refresh (cache-coherency notify). The full inference
+// worker legitimately calls on the coord land here: the cache-coherency
+// notify, the goodbye, and a worker's own provider enable choice. The full inference
 // engine is not reused on coord because workers must not reach
 // coord-side lifecycle handlers (install, PATCH, runs) that were only
 // intended for the coord→worker direction.
@@ -58,5 +58,6 @@ func buildCoordInternalEngine(s *Server) *gin.Engine {
 	)
 	group.POST("/models/refresh", systemExecutor.HandleInternalRefreshCache)
 	group.POST("/goodbye", systemExecutor.HandleInternalGoodbye)
+	group.PUT("/providers/:name/enabled", s.handleNodeProviderEnabled)
 	return engine
 }

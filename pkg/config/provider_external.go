@@ -50,11 +50,6 @@ type ExternalRuntime struct {
 func (p *ExternalProvider) Kind() Kind             { return KindExternal }
 func (p *ExternalProvider) GetName() string        { return p.Name }
 func (p *ExternalProvider) GetDescription() string { return p.Description }
-func (p *ExternalProvider) IsEnabled() bool        { return p.Enabled != nil && *p.Enabled }
-func (p *ExternalProvider) IsExplicitlyDisabled() bool {
-	return p.Enabled != nil && !*p.Enabled
-}
-func (p *ExternalProvider) IsAutoDiscovery() bool { return p.Enabled == nil }
 
 // Validate enforces the subset of ServiceConfig.Validate that applies to
 // external daemons: protocol + endpoint. Credentials are optional (Ollama
@@ -78,7 +73,7 @@ func (p *ExternalProvider) Validate() error {
 	if p.Runtime.Endpoint == "" {
 		return fmt.Errorf("provider '%s': runtime.endpoint is required for external mode", p.Name)
 	}
-	if !p.IsExplicitlyDisabled() {
+	if !disabledEverywhere(p.Enabled, p.Nodes) {
 		if err := p.Capabilities.ValidateWireEndpoints(); err != nil {
 			return fmt.Errorf("provider '%s': %w", p.Name, err)
 		}

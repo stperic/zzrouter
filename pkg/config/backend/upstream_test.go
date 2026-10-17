@@ -30,8 +30,10 @@ func TestResolve_ShippedProviders(t *testing.T) {
 	require.NoError(t, templates.InstallDefaults(dir))
 	store, err := config.NewAppsConfigStore(dir)
 	require.NoError(t, err)
-	require.NoError(t, store.SetProviderEnabled(constants.AppOllama, true))
-	require.NoError(t, store.SetProviderEnabled("openai", true))
+	_, err = store.SetProviderEnabled(constants.AppOllama, "", true)
+	require.NoError(t, err)
+	_, err = store.SetProviderEnabled("openai", "", true)
+	require.NoError(t, err)
 	r := NewResolver(store.Config)
 
 	ollama, ok := r.Resolve(constants.AppOllama)

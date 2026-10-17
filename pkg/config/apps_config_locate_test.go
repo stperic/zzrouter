@@ -17,7 +17,7 @@ func TestStandardLocationsSeparateMissingFromBroken(t *testing.T) {
 
 	_, _, err := LoadAppsConfigFromStandardLocations()
 	require.ErrorIs(t, err, ErrProvidersDirNotFound)
-	_, err = NewAppsConfigStoreFromStandardLocations()
+	_, err = NewAppsConfigStoreFromStandardLocations("node-a")
 	require.ErrorIs(t, err, ErrProvidersDirNotFound)
 
 	dir := filepath.Join(NewPathResolver("zzrouter").GetAppsConfigDir(), "on-demand", "llamacpp")
@@ -27,7 +27,7 @@ func TestStandardLocationsSeparateMissingFromBroken(t *testing.T) {
 	_, _, err = LoadAppsConfigFromStandardLocations()
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrProvidersDirNotFound)
-	_, err = NewAppsConfigStoreFromStandardLocations()
+	_, err = NewAppsConfigStoreFromStandardLocations("node-a")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrProvidersDirNotFound)
 }

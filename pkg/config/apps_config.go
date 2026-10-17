@@ -45,6 +45,9 @@ type AppsConfig struct {
 	// providers is unexported; mutations go through UpdateApp / AddApp,
 	// which validate the post-mutation typed Provider before storing it.
 	providers map[string]Provider
+	// node is the node this tree is read for: LookupApp and RangeApps
+	// resolve its nodes entry over provider defaults. Empty reads defaults.
+	node string
 }
 
 // Fingerprint returns a stable SHA-256 over the material fields of the
@@ -167,7 +170,15 @@ func (c *AppsConfig) LookupApp(name string) (ServiceConfig, bool) {
 	if !ok {
 		return ServiceConfig{}, false
 	}
-	return providerToServiceConfig(p), true
+	return c.view(p), true
+}
+
+// view is p as this tree's node reads it: declared values, with enable
+// questions answered for that node.
+func (c *AppsConfig) view(p Provider) ServiceConfig {
+	sc := providerToServiceConfig(p)
+	sc.node = c.node
+	return sc
 }
 
 // AppNames returns a snapshot of the configured provider names.
@@ -190,7 +201,7 @@ func (c *AppsConfig) RangeApps(fn func(name string, sc ServiceConfig) bool) {
 		return
 	}
 	for name, p := range c.providers {
-		if !fn(name, providerToServiceConfig(p)) {
+		if !fn(name, c.view(p)) {
 			return
 		}
 	}
@@ -678,7 +689,7 @@ func cleanupNodeSpec(sc *ServiceConfig, node string) {
 	if !ok {
 		return
 	}
-	if len(spec.Parameters) == 0 && len(spec.Environment) == 0 && len(spec.Endpoints) == 0 && len(spec.Models) == 0 && spec.Install == nil {
+	if spec.Enabled == nil && len(spec.Parameters) == 0 && len(spec.Environment) == 0 && len(spec.Endpoints) == 0 && len(spec.Models) == 0 && spec.Install == nil {
 		delete(sc.Nodes, node)
 	}
 	if len(sc.Nodes) == 0 {

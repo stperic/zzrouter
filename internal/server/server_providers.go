@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"net/http"
 
+	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -99,7 +103,7 @@ func (s *Server) registerAppsFromConfig(_ *pkgConfig.NodeConfig) {
 //   - Internal PATCH enabled=true       — admin toggle (shares mechanism)
 //
 // Contract: call at the terminal success of your session, ONCE, on the node
-// that owns the work. Never call configStore.SetProviderEnabled(true)
+// that owns the work. Never call configStore.SetProviderEnabled
 // directly — funnel through here so every session type inherits the
 // listener chain and error propagation uniformly.
 //
@@ -119,12 +123,10 @@ func (s *Server) registerAppsFromConfig(_ *pkgConfig.NodeConfig) {
 // Reconciliation (port pools, protocol registry, version cache, local
 // caches) happens automatically via the AppsConfigStore listener chain
 // after a successful SetProviderEnabled — by the time this returns nil,
-// the in-memory state is reconciled.
+// the in-memory state is reconciled. The enable is this node's own (see
+// setProviderEnabled).
 func (s *Server) FinalizeOnboarding(name string) error {
-	if s.configStore == nil {
-		return fmt.Errorf("config store not initialized")
-	}
-	if err := s.configStore.SetProviderEnabled(name, true); err != nil {
+	if err := s.setProviderEnabled(name, true); err != nil {
 		return fmt.Errorf("enable %s: %w", name, err)
 	}
 	slog.Info("Provider onboarding finalized", "name", name)
@@ -133,6 +135,99 @@ func (s *Server) FinalizeOnboarding(name string) error {
 		hook.fn(name)
 	}
 	return nil
+}
+
+// nodeEnableTimeout bounds a worker's enable request: the coordinator's
+// wait for the provider sync, plus one short round trip.
+const nodeEnableTimeout = providerSyncWaitTimeout + constants.HTTPShortTimeout
+
+// setProviderEnabled records this node's choice with the file's owner: a
+// worker's copy of a synced provider is the coordinator's (HandleProviderSync).
+func (s *Server) setProviderEnabled(name string, enabled bool) error {
+	if s.configStore == nil {
+		return fmt.Errorf("config store not initialized")
+	}
+	if sc, ok := s.configStore.Config().LookupApp(name); !ok || !s.node.IsWorker() || !sc.SyncedToWorkers() {
+		_, err := s.configStore.SetProviderEnabled(name, s.node.Name(), enabled)
+		return err
+	}
+	if s.cluster.signaler == nil {
+		return fmt.Errorf("this worker has no coordinator connection to record the change")
+	}
+	ctx, cancel := context.WithTimeout(s.shutdownCtx, nodeEnableTimeout)
+	defer cancel()
+	if err := s.cluster.signaler.RecordProviderEnabled(ctx, name, enabled); err != nil {
+		return fmt.Errorf("record on the coordinator: %w", err)
+	}
+	return nil
+}
+
+// handleNodeProviderEnabled records a worker's own enable choice, named by
+// its certificate, and answers once that worker has it, so the worker's
+// FinalizeOnboarding returns reconciled. PUT /internal/providers/:name/enabled.
+func (s *Server) handleNodeProviderEnabled(c *gin.Context) {
+	if s.configStore == nil {
+		ServiceUnavailable(c, "providers config store not ready")
+		return
+	}
+	node := s.certifiedWorker(peerCertFromRequest(c.Request))
+	if node == "" {
+		Forbidden(c, "the client certificate does not name a worker of this cluster")
+		return
+	}
+	var req struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if !BindJSONStrict(c, &req) {
+		return
+	}
+	if req.Enabled == nil {
+		BadRequest(c, "enabled is required")
+		return
+	}
+	name := c.Param("name")
+	sc, ok := s.configStore.Config().LookupApp(name)
+	if !ok {
+		NotFound(c, fmt.Sprintf("provider %q not found", name))
+		return
+	}
+	// A worker records only its entry in a tree it receives; the rest is the coordinator's own.
+	if !sc.SyncedToWorkers() {
+		Forbidden(c, fmt.Sprintf("provider %q is not synced to workers; a worker enables its own copy", name))
+		return
+	}
+	changed, err := s.configStore.SetProviderEnabled(name, node, *req.Enabled)
+	if err != nil {
+		respondFinalizeErr(c, "record failed", err)
+		return
+	}
+	// A recorded change starts its own sync. A choice the tree already held
+	// starts none, and the worker may be the one an earlier round missed.
+	if !changed {
+		s.reconcileProviderTree("enable choice from " + node)
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), providerSyncWaitTimeout)
+	defer cancel()
+	if !s.providers.syncFanOut.AwaitWorker(ctx, node) {
+		RespondToError(c, httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeProviderSyncPending),
+			Message: fmt.Sprintf("recorded on the coordinator, but the provider sync has not reached %s yet; the next sync delivers it", node)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"name": name, "node": node, "enabled": *req.Enabled})
+}
+
+// certifiedWorker is the endpoint whose name is cert's CN and whose address
+// cert covers, or "" when none is.
+func (s *Server) certifiedWorker(cert *x509.Certificate) string {
+	if cert == nil || cert.Subject.CommonName == "" {
+		return ""
+	}
+	for _, ep := range s.GetClusterEndpoints() {
+		if ep != nil && !ep.IsLocal && ep.NodeName == cert.Subject.CommonName && nodeURLMatchesPeerCert(ep.URL, cert) {
+			return ep.NodeName
+		}
+	}
+	return ""
 }
 
 // SetOnFinalizeCallback registers a hook fired after FinalizeOnboarding
@@ -173,7 +268,7 @@ func (s *Server) FinalizeOffboarding(name string) error {
 		}
 	}
 
-	if err := s.configStore.SetProviderEnabled(name, false); err != nil {
+	if err := s.setProviderEnabled(name, false); err != nil {
 		return fmt.Errorf("disable %s: %w", name, err)
 	}
 	slog.Info("Provider offboarding finalized", "name", name)

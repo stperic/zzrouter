@@ -98,9 +98,10 @@ func TestServerManagerLocalizesAssetParams(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
 	cfg.NodeName = "test-host"
 	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg, modelsDir: root})
-	require.NoError(t, server.configStore.SetProviderEnabled("llamacpp", true))
+	_, err := server.configStore.SetProviderEnabled("llamacpp", "", true)
+	require.NoError(t, err)
 
-	_, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{
+	_, err = server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{
 		Provider: "llamacpp", Model: "m",
 		Parameters: map[string]string{"chat-template-file": "absent.jinja"},
 	})

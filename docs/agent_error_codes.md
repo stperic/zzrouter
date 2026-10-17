@@ -126,6 +126,15 @@ An unsupported OS or architecture yields a failed `platform` check before
 host prerequisite probes. This report is not a `preflight_failed` Problem;
 unknown installers and routing failures retain their ordinary Problem responses.
 
+### Provider enable (`PATCH /providers/:n?node=`, install, uninstall)
+
+A node's enable is its own choice, recorded by the coordinator. A worker's
+request carries the coordinator's answer back unchanged.
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `provider_sync_pending` | 503 | The coordinator recorded the node's choice, but the provider sync has not reached that node yet. An install or uninstall job fails at finalization with this reason. | The next sync delivers it. Check `GET /providers/:n/status?node=` before retrying; a retry pushes the tree again. |
+
 ### Provider parameter validation (`PATCH /providers/:n/parameters`)
 
 Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is

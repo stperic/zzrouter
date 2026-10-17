@@ -54,13 +54,15 @@ func (s *ServiceConfig) GetContextParam() string {
 	return ""
 }
 
-// IsEnabled returns true if the app is explicitly enabled
+// IsEnabled returns true if the app is explicitly enabled on the node
+// this view is read for (see EnabledOn).
 // Three-state logic:
 //   - nil (not set):  Returns false (use for auto-discovery)
 //   - &true:          Returns true (explicitly enabled)
 //   - &false:         Returns false (explicitly disabled)
 func (s *ServiceConfig) IsEnabled() bool {
-	return s.Enabled != nil && *s.Enabled
+	enabled := s.EnabledOn(s.node)
+	return enabled != nil && *enabled
 }
 
 // SetEnabled sets the enabled state explicitly (not nil).
@@ -80,6 +82,54 @@ func (s *ServiceConfig) SetEnabled(enabled bool) {
 	s.Enabled = &enabled
 }
 
+// EnabledOn is the enabled value node runs with: its own nodes entry,
+// else the provider's top-level value. Readers that speak for another
+// node, such as the coordinator's catalog, ask for that node.
+func (s *ServiceConfig) EnabledOn(node string) *bool {
+	if spec, ok := s.Nodes[node]; ok && spec.Enabled != nil {
+		return spec.Enabled
+	}
+	return s.Enabled
+}
+
+// SyncedToWorkers reports whether every worker's copy of the provider is the
+// coordinator's, so a node's enable is its entry there. Cloud providers and
+// registries never sync: each node owns its copy and its top-level enable.
+func (s *ServiceConfig) SyncedToWorkers() bool {
+	return !s.IsCloudProvider() && !s.IsModelHubRegistry()
+}
+
+// SetEnabledOn records node's enable choice and reports whether it
+// changes what node runs with. Without a node tier, or for an empty
+// node, it sets the top-level value. Same caller rule as SetEnabled.
+func (s *ServiceConfig) SetEnabledOn(node string, enabled bool) bool {
+	if current := s.EnabledOn(node); current != nil && *current == enabled {
+		return false
+	}
+	if node == "" || !s.SyncedToWorkers() {
+		s.Enabled = &enabled
+		return true
+	}
+	spec := ensureNodeSpec(s, node)
+	spec.Enabled = &enabled
+	s.Nodes[node] = spec
+	return true
+}
+
+// disabledEverywhere reports whether no node runs the provider: the
+// default is explicitly off and no node entry turns it on.
+func disabledEverywhere(enabled *bool, nodes map[string]NodeSpec) bool {
+	if enabled == nil || *enabled {
+		return false
+	}
+	for _, spec := range nodes {
+		if spec.Enabled != nil && *spec.Enabled {
+			return false
+		}
+	}
+	return true
+}
+
 // IsExplicitlyDisabled returns true only if enabled: false is set
 // Use this to skip apps - allows auto-discovery for nil values
 // Three-state logic:
@@ -87,13 +137,14 @@ func (s *ServiceConfig) SetEnabled(enabled bool) {
 //   - &true:          Returns false (explicitly enabled)
 //   - &false:         Returns true (explicitly disabled - SKIP)
 func (s *ServiceConfig) IsExplicitlyDisabled() bool {
-	return s.Enabled != nil && !*s.Enabled
+	enabled := s.EnabledOn(s.node)
+	return enabled != nil && !*enabled
 }
 
 // IsAutoDiscovery returns true if the app is in auto-discovery mode (enabled: nil)
 // Auto-discovery apps are registered but enabled based on runtime detection
 func (s *ServiceConfig) IsAutoDiscovery() bool {
-	return s.Enabled == nil
+	return s.EnabledOn(s.node) == nil
 }
 
 // ============================================================================

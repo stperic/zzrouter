@@ -250,12 +250,14 @@ func TestCatalogMutationProviderWritesPublish(t *testing.T) {
 				require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
 				body, present = map[string]any{"models": map[string]any{"alias": nil}}, false
 			case "provider-enable", "provider-disable":
-				require.NoError(t, target.configStore.SetProviderEnabled("llamacpp", false))
+				_, err := target.configStore.SetProviderEnabled("llamacpp", "", false)
+				require.NoError(t, err)
 				require.NoError(t, target.publishCatalog())
 				method, path, body = http.MethodPatch, "/zzrouter/v1/providers/llamacpp", map[string]any{"enabled": true}
 				expected = "weights"
 				if operation == "provider-disable" {
-					require.NoError(t, target.configStore.SetProviderEnabled("llamacpp", true))
+					_, err := target.configStore.SetProviderEnabled("llamacpp", "", true)
+					require.NoError(t, err)
 					require.NoError(t, target.publishCatalog())
 					body = map[string]any{"enabled": false}
 				}
