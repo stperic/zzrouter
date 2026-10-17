@@ -129,6 +129,14 @@ func (c *AppsConfig) UpdateApp(name string, mutate func(*ServiceConfig) error) e
 	return nil
 }
 
+// clone copies c with a providers map of its own. The providers are shared:
+// UpdateApp replaces one rather than editing it.
+func (c *AppsConfig) clone() *AppsConfig {
+	cp := *c
+	cp.providers = maps.Clone(c.providers)
+	return &cp
+}
+
 // AddApp inserts a new provider config from a legacy ServiceConfig.
 // Returns an error when a provider already exists under that name, or
 // when sc is invalid (unknown mode, type conversion failure, or per-kind

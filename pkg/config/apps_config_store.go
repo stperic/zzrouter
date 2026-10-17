@@ -390,31 +390,26 @@ func (s *AppsConfigStore) Reload() (*ReloadReport, error) {
 	return s.unlockAndNotify("disk-reload"), nil
 }
 
-// save persists the current in-memory config to disk. Must be called with mu held.
-func (s *AppsConfigStore) save() error {
-	return s.config.SaveToDir(s.dirPath)
-}
-
-// mutate runs the closure under the write lock, persists on success, and
-// notifies listeners after the lock is released. Closures signal whether
-// anything actually changed: changed=false skips save and notification
-// (idempotent no-op). This is the single entry point for all mutation
-// methods; callers must NOT hold the lock when calling this.
-func (s *AppsConfigStore) mutate(fn func() (changed bool, err error)) error {
+// mutate runs the closure on a copy of the config under the write lock,
+// persists the copy, then publishes it and notifies listeners after the
+// lock is released. A config already handed out by Config() never changes,
+// and a write that fails or cannot be saved leaves memory as it was.
+// Closures signal whether anything actually changed: changed=false skips
+// save and notification (idempotent no-op). This is the single entry point
+// for all mutation methods; callers must NOT hold the lock when calling this.
+func (s *AppsConfigStore) mutate(fn func(cfg *AppsConfig) (changed bool, err error)) error {
 	s.mu.Lock()
-	changed, err := fn()
-	if err != nil {
+	next := s.config.clone()
+	changed, err := fn(next)
+	if err != nil || !changed {
 		s.mu.Unlock()
 		return err
 	}
-	if !changed {
-		s.mu.Unlock()
-		return nil
-	}
-	if err := s.save(); err != nil {
+	if err := next.SaveToDir(s.dirPath); err != nil {
 		s.mu.Unlock()
 		return err
 	}
+	s.config = next
 	s.unlockAndNotify("mutation")
 	return nil
 }
@@ -486,9 +481,9 @@ func (s *AppsConfigStore) invokeListener(idx int, l appsListenerEntry, cfg *Apps
 // Listeners fire after the new file is persisted to the providers/
 // directory by SaveToDir.
 func (s *AppsConfigStore) AddProviderInstance(name string, p Provider) error {
-	return s.mutate(func() (bool, error) {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
 		sc := providerToServiceConfig(p)
-		if err := s.config.AddApp(name, sc); err != nil {
+		if err := cfg.AddApp(name, sc); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -507,11 +502,11 @@ func (s *AppsConfigStore) AddProviderInstance(name string, p Provider) error {
 // Returns ErrProviderNotFound (wrapped) if the provider is absent — callers
 // should use errors.Is to map to 404 at the HTTP edge.
 func (s *AppsConfigStore) SetProviderEnabled(name, node string, enabled bool) (changed bool, err error) {
-	err = s.mutate(func() (bool, error) {
-		if s.config.Find(name) == nil {
+	err = s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if cfg.Find(name) == nil {
 			return false, fmt.Errorf("%w: %q", ErrProviderNotFound, name)
 		}
-		err := s.config.UpdateApp(name, func(sc *ServiceConfig) error {
+		err := cfg.UpdateApp(name, func(sc *ServiceConfig) error {
 			changed = sc.SetEnabledOn(node, enabled)
 			return nil
 		})
@@ -534,15 +529,15 @@ func (s *AppsConfigStore) SetProviderEnabled(name, node string, enabled bool) (c
 //
 // Returns ErrProviderNotFound (wrapped) if the provider is absent.
 func (s *AppsConfigStore) SetProviderPinnedVersion(name, version string) error {
-	return s.mutate(func() (bool, error) {
-		svc, exists := s.config.LookupApp(name)
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		svc, exists := cfg.LookupApp(name)
 		if !exists {
 			return false, fmt.Errorf("%w: %q", ErrProviderNotFound, name)
 		}
 		if svc.PinnedVersion == version {
 			return false, nil
 		}
-		if err := s.config.UpdateApp(name, func(sc *ServiceConfig) error {
+		if err := cfg.UpdateApp(name, func(sc *ServiceConfig) error {
 			sc.PinnedVersion = version
 			return nil
 		}); err != nil {
@@ -558,8 +553,8 @@ func (s *AppsConfigStore) SetProviderPinnedVersion(name, version string) error {
 
 // AddCloudModel adds a model ID to a provider's capabilities and persists.
 func (s *AppsConfigStore) AddCloudModel(providerName, modelID string) error {
-	return s.mutate(func() (bool, error) {
-		provider, exists := s.config.LookupApp(providerName)
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		provider, exists := cfg.LookupApp(providerName)
 		if !exists {
 			return false, fmt.Errorf("provider %q not found", providerName)
 		}
@@ -576,7 +571,7 @@ func (s *AppsConfigStore) AddCloudModel(providerName, modelID string) error {
 				}
 			}
 		}
-		if err := s.config.UpdateApp(providerName, func(sc *ServiceConfig) error {
+		if err := cfg.UpdateApp(providerName, func(sc *ServiceConfig) error {
 			if sc.Capabilities == nil {
 				sc.Capabilities = &AppCapabilities{}
 			}
@@ -597,10 +592,10 @@ func (s *AppsConfigStore) RemoveCloudModels(modelsByProvider map[string][]string
 	if len(modelsByProvider) == 0 {
 		return nil
 	}
-	return s.mutate(func() (bool, error) {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
 		changed := false
 		for providerName, modelIDs := range modelsByProvider {
-			provider, exists := s.config.LookupApp(providerName)
+			provider, exists := cfg.LookupApp(providerName)
 			if !exists || provider.Capabilities == nil {
 				continue
 			}
@@ -620,7 +615,7 @@ func (s *AppsConfigStore) RemoveCloudModels(modelsByProvider map[string][]string
 			// `kept` was computed off the synthesized ServiceConfig view; re-apply
 			// it through UpdateApp so the typed Provider in c.providers is the
 			// one that gets the post-removal slice.
-			if err := s.config.UpdateApp(providerName, func(sc *ServiceConfig) error {
+			if err := cfg.UpdateApp(providerName, func(sc *ServiceConfig) error {
 				sc.Capabilities.Models = kept
 				return nil
 			}); err != nil {
@@ -638,8 +633,8 @@ func (s *AppsConfigStore) RemoveCloudModels(modelsByProvider map[string][]string
 
 // ReplaceAppParameters replaces app-level parameters/environment and persists.
 func (s *AppsConfigStore) ReplaceAppParameters(provider string, params, env map[string]string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.ReplaceAppParameters(provider, params, env); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.ReplaceAppParameters(provider, params, env); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -648,8 +643,8 @@ func (s *AppsConfigStore) ReplaceAppParameters(provider string, params, env map[
 
 // SetAppParameter sets a single app-level parameter and persists.
 func (s *AppsConfigStore) SetAppParameter(provider, key, value string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.SetAppParameter(provider, key, value); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.SetAppParameter(provider, key, value); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -658,8 +653,8 @@ func (s *AppsConfigStore) SetAppParameter(provider, key, value string) error {
 
 // DeleteAppParameter removes a single app-level parameter and persists.
 func (s *AppsConfigStore) DeleteAppParameter(provider, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteAppParameter(provider, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteAppParameter(provider, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -668,8 +663,8 @@ func (s *AppsConfigStore) DeleteAppParameter(provider, key string) error {
 
 // SetAppEnvironment sets a single app-level env var and persists.
 func (s *AppsConfigStore) SetAppEnvironment(provider, key, value string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.SetAppEnvironment(provider, key, value); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.SetAppEnvironment(provider, key, value); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -678,8 +673,8 @@ func (s *AppsConfigStore) SetAppEnvironment(provider, key, value string) error {
 
 // DeleteAppEnvironment removes a single app-level env var and persists.
 func (s *AppsConfigStore) DeleteAppEnvironment(provider, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteAppEnvironment(provider, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteAppEnvironment(provider, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -692,8 +687,8 @@ func (s *AppsConfigStore) DeleteAppEnvironment(provider, key string) error {
 
 // ReplaceModelParameters replaces model-level parameters/environment and persists.
 func (s *AppsConfigStore) ReplaceModelParameters(provider, model string, params, env map[string]string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.ReplaceModelParameters(provider, model, params, env); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.ReplaceModelParameters(provider, model, params, env); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -702,8 +697,8 @@ func (s *AppsConfigStore) ReplaceModelParameters(provider, model string, params,
 
 // DeleteModelParameter removes a single model-level parameter and persists.
 func (s *AppsConfigStore) DeleteModelParameter(provider, model, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteModelParameter(provider, model, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteModelParameter(provider, model, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -712,8 +707,8 @@ func (s *AppsConfigStore) DeleteModelParameter(provider, model, key string) erro
 
 // DeleteModelEnvironment removes a single model-level env var and persists.
 func (s *AppsConfigStore) DeleteModelEnvironment(provider, model, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteModelEnvironment(provider, model, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteModelEnvironment(provider, model, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -726,8 +721,8 @@ func (s *AppsConfigStore) DeleteModelEnvironment(provider, model, key string) er
 
 // ReplaceNodeParameters replaces node-level parameters/environment and persists.
 func (s *AppsConfigStore) ReplaceNodeParameters(provider, node string, params, env map[string]string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.ReplaceNodeParameters(provider, node, params, env); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.ReplaceNodeParameters(provider, node, params, env); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -736,8 +731,8 @@ func (s *AppsConfigStore) ReplaceNodeParameters(provider, node string, params, e
 
 // DeleteNodeParameter removes a single node-level parameter and persists.
 func (s *AppsConfigStore) DeleteNodeParameter(provider, node, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteNodeParameter(provider, node, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteNodeParameter(provider, node, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -746,8 +741,8 @@ func (s *AppsConfigStore) DeleteNodeParameter(provider, node, key string) error 
 
 // DeleteNodeEnvironment removes a single node-level env var and persists.
 func (s *AppsConfigStore) DeleteNodeEnvironment(provider, node, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteNodeEnvironment(provider, node, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteNodeEnvironment(provider, node, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -760,11 +755,11 @@ func (s *AppsConfigStore) DeleteNodeEnvironment(provider, node, key string) erro
 // every leaf lands or none do. Returns ErrProviderNotFound when provider
 // is absent.
 func (s *AppsConfigStore) ApplyParameterPatch(provider string, mutate func(*ServiceConfig) error) error {
-	return s.mutate(func() (bool, error) {
-		if _, exists := s.config.LookupApp(provider); !exists {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if _, exists := cfg.LookupApp(provider); !exists {
 			return false, fmt.Errorf("%w: %q", ErrProviderNotFound, provider)
 		}
-		if err := s.config.UpdateApp(provider, mutate); err != nil {
+		if err := cfg.UpdateApp(provider, mutate); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -777,8 +772,8 @@ func (s *AppsConfigStore) ApplyParameterPatch(provider string, mutate func(*Serv
 
 // SetNodeModelParameter sets a single (node, model) parameter and persists.
 func (s *AppsConfigStore) SetNodeModelParameter(provider, node, model, key, value string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.SetNodeModelParameter(provider, node, model, key, value); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.SetNodeModelParameter(provider, node, model, key, value); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -787,8 +782,8 @@ func (s *AppsConfigStore) SetNodeModelParameter(provider, node, model, key, valu
 
 // DeleteNodeModelParameter removes a single (node, model) parameter and persists.
 func (s *AppsConfigStore) DeleteNodeModelParameter(provider, node, model, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteNodeModelParameter(provider, node, model, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteNodeModelParameter(provider, node, model, key); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -797,8 +792,8 @@ func (s *AppsConfigStore) DeleteNodeModelParameter(provider, node, model, key st
 
 // SetNodeModelEnvironment sets a single (node, model) env var and persists.
 func (s *AppsConfigStore) SetNodeModelEnvironment(provider, node, model, key, value string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.SetNodeModelEnvironment(provider, node, model, key, value); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.SetNodeModelEnvironment(provider, node, model, key, value); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -807,8 +802,8 @@ func (s *AppsConfigStore) SetNodeModelEnvironment(provider, node, model, key, va
 
 // DeleteNodeModelEnvironment removes a single (node, model) env var and persists.
 func (s *AppsConfigStore) DeleteNodeModelEnvironment(provider, node, model, key string) error {
-	return s.mutate(func() (bool, error) {
-		if err := s.config.DeleteNodeModelEnvironment(provider, node, model, key); err != nil {
+	return s.mutate(func(cfg *AppsConfig) (bool, error) {
+		if err := cfg.DeleteNodeModelEnvironment(provider, node, model, key); err != nil {
 			return false, err
 		}
 		return true, nil
