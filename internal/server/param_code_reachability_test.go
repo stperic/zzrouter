@@ -57,11 +57,15 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 		httperr.CodeDownloadInProgress:            providerModelParamCodeCase(httperr.CodeDownloadInProgress),
 		httperr.CodeProviderModelStoreUnsupported: providerModelParamCodeCase(httperr.CodeProviderModelStoreUnsupported),
 		httperr.CodeUnknownFlag: {
-			how: "a parameter name the provider schema does not define",
+			how: "a parameter name the provider schema does not define, patched or passed by a launch",
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {
-				return codesFromPatch(t, &paramPatchBody{
+				patched := codesFromPatch(t, &paramPatchBody{
 					Defaults: ptrDefaults(map[string]json.RawMessage{"ghost-flag": raw(1)}, nil),
 				})
+				require.Contains(t, patched, httperr.CodeUnknownFlag, "PATCH")
+				s := variantNode(t)
+				rec := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ghost-flag":1}}`))
+				return codesFromParamErrors(t, rec)
 			},
 		},
 		httperr.CodeUnknownAsset: {

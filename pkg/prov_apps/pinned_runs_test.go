@@ -96,7 +96,7 @@ func TestPinnedRestoreShutdownAndRequestReplay(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(reg.Stop)
 	attempts := make(chan EnsureRequest, 2)
-	m, err := NewProviderAppManager(r.m.appsConfig, WithJobsRegistry(reg), WithStartObserver(func(ctx context.Context, req EnsureRequest) (context.Context, func(EnsureResult, error)) {
+	m, err := NewProviderAppManager(r.m.appsConfig, WithJobsRegistry(reg), declaredSchema(t, "parameters:\n  budget: {}\n"), WithStartObserver(func(ctx context.Context, req EnsureRequest) (context.Context, func(EnsureResult, error)) {
 		attempts <- req
 		return ctx, func(EnsureResult, error) {}
 	}))

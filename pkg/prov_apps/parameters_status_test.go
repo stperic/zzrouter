@@ -44,13 +44,13 @@ func TestParametersStatus_ConfigChangeIsStale(t *testing.T) {
 
 	reloadWith(t, m, func(svc *config.ServiceConfig) {
 		svc.Models["llama3"] = config.ModelSpec{
-			Parameters:  map[string]string{"ctx-size": "changed", "added": "1"},
+			Parameters:  map[string]string{"ctx-size": "changed", "seed": "1"},
 			Environment: map[string]string{"ZZ_ENV": "changed"},
 		}
 	})
 	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, got.State)
-	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.added", "parameters.ctx-size"}, got.Changed)
+	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.ctx-size", "parameters.seed"}, got.Changed)
 }
 
 func TestParametersStatusDataDirChangeAndRestartPreparation(t *testing.T) {

@@ -98,9 +98,6 @@ var Registry = map[string]map[string]ParamShape{
 	"mlx": {
 		"max-tokens": {Kind: ParamInt, Min: fptr(1), Description: "Maximum generation length"},
 	},
-	"ollama": {
-		"num-ctx": {Kind: ParamInt, Min: fptr(1), Description: "Context window size in tokens"},
-	},
 }
 
 // Lookup returns the Go-spine shape for (provider, param), or false.

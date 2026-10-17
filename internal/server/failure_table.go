@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -63,6 +65,7 @@ var failureTable = []failureRow{
 	{sentinel: prov_apps.ErrUnsupportedPlatform, status: http.StatusBadRequest, code: ""},
 	{sentinel: process.ErrMemoryBudgetInvalid, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrModelNotLocal, status: http.StatusNotFound, code: "", resolve: resolveModelNotLocal},
+	{sentinel: prov_apps.ErrParameterValidation, status: http.StatusBadRequest, resolve: resolveParameterIssues, extra: parameterIssuesExtra},
 	{sentinel: prov_apps.ErrParameterValidation, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrPortOutOfRange, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrDangerousEnvVar, status: http.StatusBadRequest, code: ""},
@@ -146,6 +149,34 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 		hint = "Inspect accepted settings with zz_params_get and candidates with zz_models and zz_nodes; use zz_run_preview with a supported budget or numeric context, then zz_run_start."
 	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
+}
+
+// resolveParameterIssues repeats the per-key code when every refused parameter shares it.
+func resolveParameterIssues(err error, wire *httperr.Error) bool {
+	var refused *prov_apps.ParameterError
+	if !errors.As(err, &refused) {
+		return false
+	}
+	wire.Code = sharedParamCode(refused.Issues)
+	return true
+}
+
+func parameterIssuesExtra(err error, _ httperr.Error) map[string]any {
+	var refused *prov_apps.ParameterError
+	if !errors.As(err, &refused) {
+		return nil
+	}
+	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get; fix a request key in zz_run_preview or zz_run_start, a configured one with zz_params_set (null removes it).", refused.Provider)
+	if refused.Served {
+		hint = fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", refused.Provider)
+	} else if refused.ContextParameter != "" {
+		hint += fmt.Sprintf(" Its context length parameter is %s.", refused.ContextParameter)
+	}
+	issues := slices.Clone(refused.Issues)
+	for i := range issues {
+		issues[i].Hint = hint
+	}
+	return map[string]any{"errors": issues}
 }
 
 func resolveAdmission(err error, wire *httperr.Error) bool {

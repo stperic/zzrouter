@@ -26,6 +26,19 @@ import (
 
 const tierTestNode = "worker-a"
 
+// tierParameters declares the keys tierServiceConfig sets, and seed, which
+// only requests set; their values name tiers, so each takes any string.
+const tierParameters = `
+parameters:
+  ctx-size: {}
+  only-default: {}
+  seed: {}
+endpoints:
+  embeddings:
+    parameters:
+      pooling: {}
+`
+
 // tierServiceConfig builds a provider whose every tier sets the same
 // key to a distinguishable value, so a precedence bug names the tier
 // that wrongly won rather than just failing.
@@ -73,7 +86,7 @@ func tierManager(t *testing.T, node string) *ProviderAppManager {
 	t.Helper()
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", tierServiceConfig()))
-	opts := []Option{}
+	opts := []Option{declaredSchema(t, tierParameters)}
 	if node != "" {
 		opts = append(opts, WithNodename(func() string { return node }))
 	}
@@ -95,7 +108,7 @@ func endpointAwareManager(t *testing.T) *ProviderAppManager {
 	}
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg, WithNodename(func() string { return tierTestNode }))
+	m, err := NewProviderAppManager(cfg, WithNodename(func() string { return tierTestNode }), declaredSchema(t, tierParameters))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	return m
@@ -142,7 +155,7 @@ func TestResolveLaunchParams_TierPrecedence(t *testing.T) {
 			svc, ok := m.appsConfig.LookupApp("vllm")
 			require.True(t, ok)
 
-			params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{
+			params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{
 				Provider:   "vllm",
 				Model:      tc.model,
 				Parameters: tc.reqParam,
@@ -161,7 +174,7 @@ func TestResolveLaunchParams_UnknownNodeFallsBackNotSideways(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", params["ctx-size"], "no nodename must not reach tier2/tier3")
 }
 
@@ -172,7 +185,7 @@ func TestResolveLaunchParams_HigherTierDoesNotDropLowerKeys(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier3", params["ctx-size"])
 	assert.Equal(t, "d", params["only-default"], "defaults-only key must survive the overlay")
 }
@@ -182,7 +195,7 @@ func TestResolveLaunchParams_EnvironmentFollowsTheSameWalk(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	_, env, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	_, env, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", env["ZZ_ENV"], "environment must walk the tiers too, not read Defaults only")
 }
 
@@ -213,20 +226,20 @@ func TestResolveLaunchParams_EndpointOverlayAppliesWithinItsTier(t *testing.T) {
 	}
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg, WithNodename(func() string { return tierTestNode }))
+	m, err := NewProviderAppManager(cfg, WithNodename(func() string { return tierTestNode }), declaredSchema(t, tierParameters))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 
 	resolved, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	embed, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
+	embed, _, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
 	assert.Equal(t, "mean", embed["pooling"],
 		"a key only the overlay sets must reach the launch")
 	assert.Equal(t, "tier2", embed["ctx-size"],
 		"the node tier still outranks an overlay declared under defaults")
 
-	chat, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
+	chat, _, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
 	_, leaked := chat["pooling"]
 	assert.False(t, leaked, "chat must not inherit the embeddings overlay")
 }
@@ -293,7 +306,7 @@ func localizerManager(t *testing.T, l ParamLocalizer) (*ProviderAppManager, conf
 	t.Helper()
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", tierServiceConfig()))
-	m, err := NewProviderAppManager(cfg, WithParamLocalizer(l))
+	m, err := NewProviderAppManager(cfg, WithParamLocalizer(l), declaredSchema(t, tierParameters, "parameters:\n  template: {type: asset}\n"))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	svc, ok := cfg.LookupApp("vllm")

@@ -24,7 +24,7 @@ func TestQueuedRunLogsContract(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 	r := newReadinessRig(t, prov_apps.WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
-		return &schema.ProviderSchema{Diagnostics: &schema.Diagnostics{Memory: &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}}}, nil
+		return &schema.ProviderSchema{Parameters: map[string]schema.ParamShape{"budget": {}}, Diagnostics: &schema.Diagnostics{Memory: &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}}}, nil
 	}))
 	svc, ok := r.mgr.AppsConfig().LookupApp("fake")
 	require.True(t, ok)

@@ -317,3 +317,27 @@ func TestFailurePatternsSurviveStoreWrites(t *testing.T) {
 		}))
 	}
 }
+
+// A base runtime names what its engine does not take, as a feature runtime
+// does; the strict load keeps it.
+func TestLoadKeepsBaseRuntimeExclusions(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "on-demand", "engine"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "on-demand", "engine", "config.yaml"), []byte(`
+protocol: openai
+runtime:
+  port_range: [8000, 8009]
+  base_port: 8000
+  execution:
+    type: cli
+    command: engine
+  exclude_parameters: [temp]
+capabilities:
+  wire_endpoints: [chat_completions]
+`), 0600))
+	cfg, err := LoadAppsConfig(dir)
+	require.NoError(t, err)
+	svc, ok := cfg.LookupApp("engine")
+	require.True(t, ok)
+	assert.Equal(t, []string{"temp"}, svc.Runtime.ExcludeParameters)
+}

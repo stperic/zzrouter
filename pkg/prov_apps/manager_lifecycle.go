@@ -82,7 +82,7 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 		return launchSelection{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
 	model := process.ResolveModel(svcCfg, req.Model)
-	svcCfg, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime, string(EndpointOrDefault(req.Endpoint)))
+	svcCfg, selected, err := m.featureRuntime(svcCfg, model, req.Runtime, string(EndpointOrDefault(req.Endpoint)))
 	if err != nil {
 		return launchSelection{}, err
 	}
@@ -188,7 +188,10 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 const keepAliveParameter = config.KeepAliveParameter
 
 func (m *ProviderAppManager) runSettings(svc config.ServiceConfig, req EnsureRequest) (config.RunSettings, error) {
-	params := mergeStringMaps(config.FlattenParameters(svc.ResolveEndpoint(m.localNodename(), req.Model, string(EndpointOrDefault(req.Endpoint))).Parameters), req.Parameters)
+	params, _, _, err := m.resolveRawLaunchParams(svc, req, string(EndpointOrDefault(req.Endpoint)))
+	if err != nil {
+		return config.RunSettings{}, err
+	}
 	settings, err := config.ParseRunSettings(params, m.idleEvictionDefault)
 	if err != nil {
 		return config.RunSettings{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
@@ -1113,18 +1116,41 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 	return req
 }
 
-func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env, sources map[string]string) {
+// resolveRawLaunchParams merges the config tiers under the request, keyed by
+// the flag argv passes; sources names each key's tier.
+func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env, sources map[string]string, err error) {
 	resolved := svcCfg.ResolveEndpoint(m.localNodename(), req.Model, endpoint)
 	env = mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
-	params = mergeStringMaps(config.FlattenParameters(resolved.Parameters), req.Parameters)
-	sources = make(map[string]string, len(params))
-	for name, value := range resolved.Parameters {
-		sources[name] = value.Tier.String()
+	params, sources, err = flagTiers(mergeStringMaps(config.FlattenParameters(resolved.Parameters), req.Parameters), func(name string) config.Tier {
+		if _, requested := req.Parameters[name]; requested {
+			return config.TierRequest
+		}
+		return resolved.Parameters[name].Tier
+	})
+	return params, env, sources, err
+}
+
+// flagTiers keys parameters by the flag argv passes, so a request's ctx_size
+// overrides a configured ctx-size: of two spellings of one flag the higher
+// tier wins, and two in one tier must agree.
+func flagTiers(params map[string]string, tier func(name string) config.Tier) (flags, sources map[string]string, err error) {
+	flags, sources = make(map[string]string, len(params)), make(map[string]string, len(params))
+	tiers := make(map[string]config.Tier, len(params))
+	for name, value := range params {
+		key, at := process.FlagName(name), tier(name)
+		if prior, seen := tiers[key]; seen && prior == at && flags[key] != value {
+			return nil, nil, fmt.Errorf("%w: two spellings of %s at the %s tier differ; keep one", ErrParameterValidation, key, at)
+		} else if seen && prior >= at {
+			continue
+		}
+		flags[key], sources[key], tiers[key] = value, at.String(), at
 	}
-	for name := range req.Parameters {
-		sources[name] = config.TierRequest.String()
-	}
-	return params, env, sources
+	return flags, sources, nil
+}
+
+// requestFlags is flagTiers for a request's own parameters.
+func requestFlags(params map[string]string) (flags, sources map[string]string, err error) {
+	return flagTiers(params, func(string) config.Tier { return config.TierRequest })
 }
 
 // buildLaunch turns resolved parameters into the engine's command: it

@@ -102,8 +102,9 @@ func TestIntegration_PreviewReportsWhereValuesCameFrom(t *testing.T) {
 			BasePort:  8300,
 			Execution: config.ExecutionConfig{Type: "cli", Command: "previewprov"},
 		},
+		// A provider with no schema.yaml declares only the run settings.
 		Defaults: &config.AppDefaultsConfig{
-			Parameters: map[string]string{"gpu-memory-utilization": "0.95"},
+			Parameters: map[string]string{"keep-alive": "10m"},
 		},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))

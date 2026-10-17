@@ -299,6 +299,12 @@ func resolveDirToFile(path, hint string, excluded ...string) string {
 	return filepath.Join(path, filepath.FromSlash(v.Files[0].Path))
 }
 
+// FlagName is how argv spells a parameter key, after "--": parameter_name and
+// parameter-name are one flag.
+func FlagName(key string) string {
+	return strings.ReplaceAll(key, "_", "-")
+}
+
 // buildParameterArgs converts a parameter map to CLI flag arguments.
 // Parameters named in excluded are skipped. Boolean "true" values emit
 // a flag-only argument (--flag), "false" values are omitted entirely.
@@ -324,8 +330,7 @@ func buildParameterArgs(params map[string]string, excluded []string) []string {
 			value = normalizeJSONNumbers(value)
 		}
 
-		// Convert parameter_name to --parameter-name
-		flag := "--" + strings.ReplaceAll(key, "_", "-")
+		flag := "--" + FlagName(key)
 		if value == "" || value == "true" {
 			args = append(args, flag)
 		} else if value == "false" {

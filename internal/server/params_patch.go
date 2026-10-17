@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -273,102 +272,37 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 		}
 		return nil
 	}
-	shape, known := sch[key]
-	if !known {
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag),
-			Message: fmt.Sprintf("unknown parameter %q", key)}
-	}
-	var value string
-	if shape.Auto != "" && json.Unmarshal(raw, &value) == nil && pkgConfig.IsAuto(value) {
-		return nil
-	}
-	if e := validateAgainstShape(key, raw, shape); e != nil {
-		return e
-	}
-	if key == pkgConfig.KeepAliveParameter {
-		var value string
-		_ = json.Unmarshal(raw, &value)
-		if _, err := pkgConfig.ParseRunSettings(map[string]string{key: value}, false); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: err.Error()}
+	if shape, known := sch[key]; known {
+		if e := checkJSONType(key, raw, shape); e != nil {
+			return e
 		}
 	}
-	return nil
+	value, _ := rawToString(raw) // raw is valid non-null JSON: the body decoded
+	return schema.Check(key, value, sch)
 }
 
-func validateAgainstShape(key string, raw json.RawMessage, shape schema.ParamShape) *utils.ParamError {
+// checkJSONType holds a persisted value to its JSON type: a number for int
+// and float, a boolean for bool, otherwise a string. Launch requests carry
+// canonical strings, so this gate is the PATCH's own; the auto keyword is
+// the one string an auto shape takes in a typed slot.
+func checkJSONType(key string, raw json.RawMessage, shape schema.ParamShape) *utils.ParamError {
+	var value any
+	_ = json.Unmarshal(raw, &value)
+	var ok bool
 	switch shape.Kind {
-	case schema.ParamInt:
-		var n float64
-		if err := json.Unmarshal(raw, &n); err != nil || n != float64(int64(n)) {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "int",
-				Message: fmt.Sprintf("%s must be an integer", key)}
-		}
-		if shape.Min != nil && n < *shape.Min {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Min: *shape.Min,
-				Message: fmt.Sprintf("%s=%v below minimum %v", key, n, *shape.Min)}
-		}
-		if shape.Max != nil && n > *shape.Max {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Max: *shape.Max,
-				Message: fmt.Sprintf("%s=%v exceeds maximum %v", key, n, *shape.Max)}
-		}
-	case schema.ParamFloat:
-		var n float64
-		if err := json.Unmarshal(raw, &n); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "float",
-				Message: fmt.Sprintf("%s must be a number", key)}
-		}
-		if shape.Min != nil && n < *shape.Min {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Min: *shape.Min,
-				Message: fmt.Sprintf("%s=%v below minimum %v", key, n, *shape.Min)}
-		}
-		if shape.Max != nil && n > *shape.Max {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Max: *shape.Max,
-				Message: fmt.Sprintf("%s=%v exceeds maximum %v", key, n, *shape.Max)}
-		}
+	case schema.ParamInt, schema.ParamFloat:
+		_, ok = value.(float64)
 	case schema.ParamBool:
-		var b bool
-		if err := json.Unmarshal(raw, &b); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "bool",
-				Message: fmt.Sprintf("%s must be a boolean", key)}
-		}
-	case schema.ParamString, "":
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "string",
-				Message: fmt.Sprintf("%s must be a string", key)}
-		}
-		if len(shape.Enum) > 0 {
-			ok := false
-			for _, allowed := range shape.Enum {
-				if s == allowed {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed),
-					Message: fmt.Sprintf("%s=%q not in allowed set %v", key, s, shape.Enum)}
-			}
-		}
-	case schema.ParamAsset:
-		var name string
-		if err := json.Unmarshal(raw, &name); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "string",
-				Message: fmt.Sprintf("%s must be an asset name", key)}
-		}
-		// Existence is checked when the patch is applied, under the lock
-		// asset writes take, so a concurrent delete cannot slip between.
-		if err := assets.ValidateName(name); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeInvalidValue), Want: "asset name",
-				Message: fmt.Sprintf("%s: %v", key, err)}
-		}
+		_, ok = value.(bool)
+	case schema.ParamString, "", schema.ParamAsset:
+		_, ok = value.(string)
 	default:
-		// The kinds are a closed set; one this switch does not know would
-		// otherwise pass any value unchecked.
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType),
-			Message: fmt.Sprintf("%s has schema type %q, which this server cannot validate", key, shape.Kind)}
+		return nil // schema.Check refuses a kind it cannot validate
 	}
-	return nil
+	if s, isString := value.(string); ok || (isString && shape.Auto != "" && pkgConfig.IsAuto(s)) {
+		return nil
+	}
+	return schema.WrongType(key, shape.Kind)
 }
 
 // isJSONNull reports whether a RawMessage is literally `null`.

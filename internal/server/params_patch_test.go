@@ -420,8 +420,8 @@ func TestValidatePatch_AssetParameter(t *testing.T) {
 // A kind the validator does not handle must refuse, not wave the value
 // through: that is how an asset-typed key would pass unchecked had its
 // case been forgotten.
-func TestValidateAgainstShape_UnknownKindRefuses(t *testing.T) {
-	e := validateAgainstShape("k", raw("anything"), schema.ParamShape{Kind: "mystery"})
+func TestValidateLeaf_UnknownKindRefuses(t *testing.T) {
+	e := validateLeaf("k", raw("anything"), false, map[string]schema.ParamShape{"k": {Kind: "mystery"}})
 	require.NotNil(t, e)
 	assert.Equal(t, string(httperr.CodeWrongType), e.Code)
 }

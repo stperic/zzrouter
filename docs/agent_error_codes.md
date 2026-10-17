@@ -144,14 +144,26 @@ and the provider sync carries to every node.
 |---|---|---|---|
 | `pin_is_cluster_wide` | 400 | The pin was sent with `node` for a provider the sync carries, so it cannot be one node's. Nothing was written. | Send the same body without `node`; the pin then applies to every node. |
 
-### Provider parameter validation (`PATCH /providers/:n/parameters`)
+### Provider parameter validation (`PATCH /providers/:n/parameters` and launches)
 
-Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is
-`{"errors":[{"key","code","got","want","min","max","message"}, ...]}`.
+Closed-enum `code` values from `pkg/httperr.ParamErrorCode`, one Problem
+`errors[]` entry per key: `{"key","code","got","want","min","max","message","hint"}`.
+
+A launch (`POST /runs`, `/runs/preview`, `/runs/load`, a restart or a pinned
+restore) checks every parameter it would pass, from every tier, with the same
+rules and answers 400 before any process starts. Keys are flag names, so
+`ctx_size` and `ctx-size` are one parameter; a refused request key is reported
+as sent. Each entry's `message` names the tier that set the key and the runtime
+that refused it; its `hint` names `zz_params_get` and the provider's context
+parameter when it declares one (llama.cpp `ctx-size`, vLLM `max-model-len`). A
+key the selected runtime excludes is `unknown_flag` when the request sent it and
+dropped when a configured tier did. A served provider (Ollama) passes its daemon
+only the run settings, so any other request parameter is `unknown_flag`. A file
+feature's flag (llama.cpp `mmproj`) takes only `auto` or `false`, never a path.
 
 | `code` | Meaning | Recovery |
 |---|---|---|
-| `unknown_flag` | The patched key isn't in the provider's schema. | Read `/zzrouter/v1/providers/:n/schema` for the valid key set. |
+| `unknown_flag` | The key isn't in the provider's schema for that endpoint, whether patched or passed by a launch. | Read `/zzrouter/v1/providers/:n/schema` (`zz_params_get` accepts) for the valid key set; a launch takes the provider's own spelling. |
 | `wrong_type` | Value type mismatch (e.g. string into int). | Coerce to the type indicated by `want`. |
 | `out_of_range` | Numeric value outside `min`/`max`. | Clamp into `[min,max]`. |
 | `unknown_node` | Tier 3 cell references a node not in the cluster. | List `/zzrouter/v1/nodes`. |

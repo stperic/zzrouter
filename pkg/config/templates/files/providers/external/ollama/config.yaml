@@ -129,14 +129,6 @@ discovery:
 defaults:
   parameters:
     keep-alive: "5m"
-    num-ctx: "2048"
-    num-gpu: "-1"
-    temperature: "0.8"
-    top-k: "40"
-    top-p: "0.9"
-    min-p: "0"
-    num-predict: "-1"
-    repeat-penalty: "1.1"
   environment:
     # Server-level settings (require Ollama restart to take effect)
     # zzRouter applies these via the detected service manager (systemd/launchd/nssm)

@@ -160,6 +160,13 @@
           "description": "Slot wait duration; absent uses 30s, 0s fails fast, caller waits until the caller context ends.",
           "type": "string"
         },
+        "exclude_parameters": {
+          "description": "Parameters the execution's engine does not take: a configured one is dropped, a request's is refused.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "execution": {
           "type": "object",
           "required": [

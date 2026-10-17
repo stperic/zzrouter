@@ -894,7 +894,11 @@ paths:
           description: >
             Invalid request fields, an endpoint the provider does not serve, a required
             endpoint runtime that is not installed, a parameter the provider's schema rejects,
-            or a port outside the configured range. Retrying the same body cannot succeed.
+            or a port outside the configured range. Every parameter the launch would pass,
+            from the request or a configured tier, is checked against the provider's schema
+            for the endpoint: errors[] holds one entry per key (unknown_flag, wrong_type,
+            out_of_range, coercion_failed, invalid_value) whose message names the tier.
+            Retrying the same body cannot succeed.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1301,8 +1305,9 @@ paths:
           description: |
             `provider` missing, or a provider that is not configured or
             not enabled on this cluster; an endpoint the provider does not serve;
-            or a required endpoint runtime that is not installed. Endpoint refusals
-            name the provider and endpoint; missing runtimes include the install call.
+            a required endpoint runtime that is not installed; or a parameter the
+            provider's schema refuses, with the same errors[] as POST /runs. Endpoint
+            refusals name the provider and endpoint; missing runtimes include the install call.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -12964,7 +12969,7 @@ components:
       example:
         defaults:
           parameters:
-            num-ctx: 4096
+            ctx-size: 4096
         nodes:
           worker-1:
             parameters:
@@ -13076,7 +13081,7 @@ components:
           description: |
             The winning value. Under `parameters` and `environment` it is
             always a string: the tier maps that feed the resolver are
-            string-keyed, so `num-ctx` comes back as `"2048"` even though
+            string-keyed, so `ctx-size` comes back as `"4096"` even though
             its schema types it `int`, and `""` is a real value, distinct
             from an absent key. The accepted type of each key is in
             `GET /providers/{name}/schema`. Under `request` it keeps its

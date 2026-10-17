@@ -53,6 +53,7 @@ type OnDemandRuntime struct {
 	MaxConcurrentRequests int                `yaml:"max_concurrent_requests,omitempty" json:"max_concurrent_requests,omitempty"`
 	QueueTimeout          string             `yaml:"queue_timeout,omitempty" json:"queue_timeout,omitempty"`
 	Execution             ExecutionConfig    `yaml:"execution" json:"execution"`
+	ExcludeParameters     []string           `yaml:"exclude_parameters,omitempty" json:"exclude_parameters,omitempty"`
 	HealthCheck           HealthcheckConfig  `yaml:"health_check,omitempty" json:"health_check,omitempty"`
 	Container             *ContainerConfig   `yaml:"container,omitempty" json:"container,omitempty"`
 	Resources             *ResourcesConfig   `yaml:"resources,omitempty" json:"resources,omitempty"`

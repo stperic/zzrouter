@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/gguf"
@@ -70,7 +69,7 @@ type attentionConfig struct {
 func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[string]string, policy schema.AutoContext, shapes map[string]schema.ParamShape) (Need, bool) {
 	weightBytes, header, ok := weightsBytes(model.Path, svc)
 	partial := Need{WeightsMiB: bytesToMiB(weightBytes), WeightsBytes: weightBytes, UnknownCause: WeightsUnavailable, ContextMode: "unknown"}
-	value := memoryParameter(svc.GetContextParam(), params)
+	value := params[svc.GetContextParam()]
 	context, parseErr := strconv.ParseInt(value, 10, 64)
 	numeric := parseErr == nil && context > 0
 	if !numeric {
@@ -128,7 +127,7 @@ func ModelMemoryNeed(model ResolvedModel, svc config.ServiceConfig, params map[s
 // applyCacheParameters interprets sizing roles after ordinary parameter resolution.
 func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shapes map[string]schema.ParamShape, auto bool) UnknownCause {
 	for name, shape := range shapes {
-		value := memoryParameter(name, params)
+		value := params[name]
 		if shape.SequenceSlots && shape.RecurrentStateRows != nil {
 			cfg.stateRows = *shape.RecurrentStateRows
 			if value != "" {
@@ -197,15 +196,6 @@ func readGGUFConfig(path string) (attentionConfig, UnknownCause) {
 		return cfg, ModelUnmodelled
 	}
 	return cfg, ""
-}
-
-// memoryParameter reads either spelling accepted by command construction.
-func memoryParameter(key string, params map[string]string) string {
-	value := params[key]
-	if value == "" {
-		value = params[strings.ReplaceAll(key, "-", "_")]
-	}
-	return value
 }
 
 // readAttentionConfig reads the language model's config.json, nested under text_config in multimodal models.

@@ -15,6 +15,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
@@ -24,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func featureLaunchFixture(t *testing.T) (*ProviderAppManager, config.ServiceConfig, string) {
+func featureLaunchFixture(t *testing.T, declared ...string) (*ProviderAppManager, config.ServiceConfig, string) {
 	t.Helper()
 	root := t.TempDir()
 	root, err := filepath.EvalSymlinks(root)
@@ -42,7 +43,8 @@ func featureLaunchFixture(t *testing.T) (*ProviderAppManager, config.ServiceConf
 	svc.Models = map[string]config.ModelSpec{"variant": {From: "vendor/model"}}
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg)
+	// The vision flag takes the opt-out the server's schema builder declares for it.
+	m, err := NewProviderAppManager(cfg, declaredSchema(t, append([]string{tierParameters, "parameters:\n  mmproj: {type: string, enum: [auto, \"false\"]}\n"}, declared...)...))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, m.Stop(context.Background())) })
 	return m, svc, dir
@@ -55,7 +57,7 @@ func landProjector(t *testing.T, dir, digest string) {
 }
 
 func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
-	for _, scenario := range []string{"missing projector", "missing sibling", "vision enabled", "vision opted out", "enabled projector removed during preparation", "explicit missing projector", "symlink weights outside"} {
+	for _, scenario := range []string{"missing projector", "missing sibling", "vision enabled", "vision opted out", "enabled projector removed during preparation", "explicit projector path", "symlink weights outside"} {
 		t.Run(scenario, func(t *testing.T) {
 			m, svc, dir := featureLaunchFixture(t)
 			landProjector(t, dir, "digest")
@@ -70,13 +72,13 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 				require.NoError(t, os.Remove(filepath.Join(dir, "weights.gguf")))
 				require.NoError(t, os.Symlink(outside, filepath.Join(dir, "weights.gguf")))
 			}
-			if scenario == "missing projector" || scenario == "vision opted out" || scenario == "explicit missing projector" {
+			if scenario == "missing projector" || scenario == "vision opted out" {
 				require.NoError(t, os.Remove(filepath.Join(dir, "a-projector.gguf")))
 			}
 			if scenario == "vision opted out" {
 				req.Parameters = map[string]string{"mmproj": "false"}
 			}
-			if scenario == "explicit missing projector" {
+			if scenario == "explicit projector path" {
 				req.Parameters = map[string]string{"mmproj": filepath.Join(dir, "a-projector.gguf")}
 			}
 			if scenario == "missing sibling" {
@@ -95,7 +97,11 @@ func TestPrepareRunVerifiesSelectedFiles(t *testing.T) {
 				require.Error(t, err, "launch verification must retain the selected source's manifest")
 				return
 			}
-			if scenario == "enabled projector removed during preparation" || scenario == "explicit missing projector" {
+			if scenario == "explicit projector path" {
+				requireRefused(t, err, "mmproj", httperr.CodeCoercionFailed) // the flag takes an opt-out, never a path
+				return
+			}
+			if scenario == "enabled projector removed during preparation" {
 				require.ErrorIs(t, err, process.ErrModelIncomplete)
 				return
 			}
@@ -133,43 +139,31 @@ func TestDeletionFeatureOriginContract(t *testing.T) {
 	require.Equal(t, filepath.Join(dir, "a-projector.gguf"), localized.Params["mmproj"], "feature files belong to the selected repository")
 }
 
+// The projector a launch selects belongs to its run: argv and preview name
+// the same file, and deleting it is refused while the run holds it.
 func TestDeletionSelectedFeatureReservationContract(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
-	first, second := filepath.Join(t.TempDir(), "first.gguf"), filepath.Join(t.TempDir(), "second.gguf")
-	for _, file := range []string{first, second} {
-		require.NoError(t, os.WriteFile(file, []byte("projector"), 0600))
-	}
-	alias := filepath.Join(dir, "a-projector.gguf")
-	require.NoError(t, os.Symlink(first, alias))
-	req := EnsureRequest{Provider: "vllm", Model: "vendor/model#weights.gguf", Parameters: map[string]string{"mmproj": alias}}
+	landProjector(t, dir, "digest")
+	projector := filepath.Join(dir, "a-projector.gguf")
+	req := EnsureRequest{Provider: "vllm", Model: "vendor/model#weights.gguf"}
 	selected := process.ResolveModel(svc, req.Model)
 	inst := instance.NewInstance("feature-owner", "vllm", req.Model, 8100, 0, 0)
 	inst.Endpoint = "chat"
-	inst.Config = instance.Config{Provider: req.Provider, Model: req.Model, Port: 8100, Parameters: req.Parameters}
+	inst.Config = instance.Config{Provider: req.Provider, Model: req.Model, Port: 8100}
 	inst.SetWeights(instance.Weights{Model: "vendor/model", Paths: selected.WeightPaths()})
+	require.NoError(t, integrity.RecordFiles(dir, "vendor/model", "", integrity.FileChecksum{RelativePath: "weights.gguf", Size: 7}))
 	run, err := m.prepareRun(t.Context(), inst, req, launchSelection{key: "vllm", config: svc, model: selected}, requireLaunchSchema(t, m, "vllm"))
 	require.NoError(t, err)
-	physical, err := filepath.EvalSymlinks(first)
-	require.NoError(t, err)
-	require.Contains(t, run.args, physical, "argv must use the same frozen feature identity as deletion ownership")
+	require.Contains(t, run.args, projector, "argv must use the same feature identity as deletion ownership")
 	require.Equal(t, instance.ParametersCurrent, m.ParametersStatus(t.Context(), inst).State, "unchanged configuration must remain current")
 	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 	require.NoError(t, err)
-	require.Contains(t, preview.Args, physical, "preview and live launch must use the same feature preparation")
-	cfg := copyReservationConfig(t, m.AppsConfig())
-	require.NoError(t, cfg.UpdateApp("vllm", func(sc *config.ServiceConfig) error {
-		sc.Defaults.Parameters["mmproj"] = alias
-		return nil
-	}))
-	m.ReloadConfig(cfg)
-	require.NotContains(t, m.ParametersStatus(t.Context(), inst).Overridden, "parameters.mmproj", "an identical config/request alias is not an override")
+	require.Contains(t, preview.Args, projector, "preview and live launch must use the same feature preparation")
 	inst.MarkRunning(false, nil)
 	require.NoError(t, m.instances.Register(inst))
 	t.Cleanup(func() { _ = m.instances.Remove(inst.ID) })
-	require.NoError(t, os.Remove(alias))
-	require.NoError(t, os.Symlink(second, alias))
 	require.Error(t, m.WithModelDeletion(t.Context(), func(ctx context.Context) error {
-		return m.CheckModelDeletion(ctx, instance.Weights{Model: "projector", Paths: []string{first}})
+		return m.CheckModelDeletion(ctx, instance.Weights{Model: "projector", Paths: []string{projector}})
 	}))
 }
 
@@ -199,7 +193,7 @@ func TestFeatureLaunchPresenceDigestVariantAndStaleness(t *testing.T) {
 func TestFeatureLaunchExplicitOptOut(t *testing.T) {
 	m, svc, dir := featureLaunchFixture(t)
 	landProjector(t, dir, "digest")
-	for _, value := range []string{"auto", "false", "operator-path"} {
+	for _, value := range []string{"auto", "false"} {
 		t.Run(value, func(t *testing.T) {
 			for _, tier := range []string{"config", "node", "endpoint", "request"} {
 				t.Run(tier, func(t *testing.T) {
@@ -219,11 +213,7 @@ func TestFeatureLaunchExplicitOptOut(t *testing.T) {
 					require.NoError(t, err)
 					assert.NotContains(t, p.launch.Args, filepath.Join(dir, "a-projector.gguf"))
 					assert.NotContains(t, p.resolved.Files, "mmproj")
-					if value == "auto" || value == "false" {
-						assert.NotContains(t, p.launch.Args, "--mmproj")
-					} else {
-						assert.Contains(t, p.launch.Args, "operator-path")
-					}
+					assert.NotContains(t, p.launch.Args, "--mmproj")
 				})
 			}
 		})
@@ -245,15 +235,16 @@ func TestFeatureLaunchLegacyAndMissingFiles(t *testing.T) {
 }
 
 func TestFeatureLaunchRuntimeSelectionAndStaleness(t *testing.T) {
-	m, svc, dir := featureLaunchFixture(t)
+	m, svc, dir := featureLaunchFixture(t, "parameters:\n  chat-template: {}\n")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
 	svc.Features = map[string]config.Feature{"vision": {Runtime: "test-runtime", When: "vision_config", Execution: &config.ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "vision.server", "--model", "${MODEL_PATH}"}, WireModel: config.WireModelPath}, WireEndpoints: []string{"chat_completions", "responses", "messages"}, ExcludeParameters: []string{"chat-template"}}}
+	svc.Defaults.Parameters["chat-template"] = "named-asset"
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	m.ReloadConfig(cfg)
 	fake := newFakeInstaller("test-runtime")
 	m.installs.dispatcher.Register("test-runtime", fake)
-	req := EnsureRequest{Provider: "vllm", Model: "variant", Parameters: map[string]string{"chat-template": "named-asset"}}
+	req := EnsureRequest{Provider: "vllm", Model: "variant"}
 	before, err := processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, before.launch.Args, "vision.server")

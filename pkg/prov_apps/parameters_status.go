@@ -59,7 +59,7 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 	slices.Sort(changed)
 
 	// Raw tiers still name held keys when config-only preparation is invalid.
-	fromConfig, fromConfigEnv, _ := m.resolveRawLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
+	fromConfig, fromConfigEnv, _, _ := m.resolveRawLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
 	declared := next.parameters.declared
 	if declared == nil {
 		declared, err = m.launchSchema(configKey)
@@ -69,8 +69,9 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 			fromConfig, fromConfigEnv = configured.Params, configured.Environment
 		}
 	}
-	freezeFeaturePaths(svcCfg, req.Parameters)
-	overridden := heldKeys(parametersPath, req.Parameters, fromConfig)
+	explicit, _, _ := requestFlags(req.Parameters) // prepare refused the request were they ambiguous
+	freezeFeaturePaths(svcCfg, explicit)
+	overridden := heldKeys(parametersPath, explicit, fromConfig)
 	overridden = append(overridden, heldKeys(environmentPath, req.EnvVars, fromConfigEnv)...)
 
 	status := &instance.ParametersStatus{Provider: configKey, State: instance.ParametersCurrent, Changed: changed, Overridden: overridden}

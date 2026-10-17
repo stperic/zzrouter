@@ -248,8 +248,20 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 	return loader.UnloadModel(ctx, protocol.TargetOf(resolved), run.WireModel)
 }
 
-// prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent.
-func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
+// prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent,
+// so a request may carry only the run settings. Configured tiers are the operator's and never reach the daemon.
+func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, _ int) (preparedLaunch, error) {
+	declared, err := e.m.launchSchema(configKey)
+	if err != nil {
+		return preparedLaunch{}, err
+	}
+	requested, sources, err := requestFlags(req.Parameters)
+	if err != nil {
+		return preparedLaunch{}, err
+	}
+	if err := checkLaunchParameters(svc, svc.Name, declared.ForEndpoint(string(EndpointOrDefault(req.Endpoint))), requested, sources, req.Parameters); err != nil {
+		return preparedLaunch{}, err
+	}
 	settings, err := e.m.runSettings(svc, req)
 	if err != nil {
 		return preparedLaunch{}, err

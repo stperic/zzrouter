@@ -25,9 +25,9 @@ func toolsLaunchFixture(t *testing.T) (*ProviderAppManager, config.ServiceConfig
 	t.Helper()
 	m, svc, dir := featureLaunchFixture(t)
 	svc.Features["tools"] = config.Feature{RequiresParameters: []string{"enable-auto-tool-choice", "tool-call-parser"}}
-	declared, errs := schema.Merge("vllm", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{
-		"enable-auto-tool-choice": {Type: "bool"}, "tool-call-parser": {Type: "string"}, "chat-template": {Type: "string"},
-	}})
+	tools, err := declaredFragments(tierParameters, "parameters:\n  enable-auto-tool-choice: {type: bool}\n  tool-call-parser: {type: string}\n  chat-template: {type: string}\n")
+	require.NoError(t, err)
+	declared, errs := schema.Merge("vllm", tools)
 	require.Empty(t, errs)
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return declared, nil }
 	return m, svc, dir
@@ -247,12 +247,13 @@ func TestToolsMetadataDescriptorSnapshot(t *testing.T) {
 func TestToolsLaunchRuntimeExclusions(t *testing.T) {
 	m, svc, dir := toolsLaunchFixture(t)
 	svc.Features["vision"] = config.Feature{Runtime: "test-runtime", When: "vision_config", Execution: &config.ExecutionConfig{Type: "python", Command: "python3"}, WireEndpoints: []string{"chat_completions"}, ExcludeParameters: []string{"tool-call-parser"}, Default: true}
+	svc.Defaults.Parameters["tool-call-parser"] = "chosen" // configured, so the runtime drops it
 	reloadToolsConfig(t, m, svc)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
 	fake := newFakeInstaller("test-runtime")
 	fake.installed.Store(true)
 	m.installs.dispatcher.Register("test-runtime", fake)
-	prepared, err := processEngine{m}.prepare(t.Context(), svc, "vllm", EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"enable-auto-tool-choice": "true", "tool-call-parser": "chosen"}}, 8100)
+	prepared, err := processEngine{m}.prepare(t.Context(), svc, "vllm", EnsureRequest{Provider: "vllm", Model: "vendor/model", Parameters: map[string]string{"enable-auto-tool-choice": "true"}}, 8100)
 	require.NoError(t, err)
 	assert.Equal(t, "test-runtime", prepared.resolved.Runtime)
 	assert.Equal(t, "available", prepared.resolved.Features["tools"])

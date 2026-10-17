@@ -19,6 +19,11 @@ import (
 
 const tierVariant = "llama3+long"
 
+// variantSchema declares tierParameters and the variant's own key.
+func variantSchema(t *testing.T) Option {
+	return declaredSchema(t, tierParameters, "parameters:\n  only-variant: {}\n")
+}
+
 func withVariant(svc *config.ServiceConfig) {
 	svc.Models[tierVariant] = config.ModelSpec{From: "llama3", Parameters: map[string]string{"only-variant": "v"}}
 }
@@ -30,7 +35,7 @@ func TestLaunch_VariantIsItsOwnRun(t *testing.T) {
 	svc := tierServiceConfig()
 	withVariant(&svc)
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg)
+	m, err := NewProviderAppManager(cfg, variantSchema(t))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 
@@ -72,7 +77,7 @@ func TestLaunch_RecordsTheWeightsSource(t *testing.T) {
 	withVariant(&svc)
 	require.NoError(t, cfg.AddApp("vllm", svc))
 	var asked []string
-	m, err := NewProviderAppManager(cfg, WithModelSource(func(_ context.Context, model string) string {
+	m, err := NewProviderAppManager(cfg, variantSchema(t), WithModelSource(func(_ context.Context, model string) string {
 		asked = append(asked, model)
 		return "huggingface"
 	}))
@@ -100,7 +105,7 @@ func TestLaunch_ColdVariantConflictBeforeCanonicalization(t *testing.T) {
 	svc := tierServiceConfig()
 	withVariant(&svc)
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg, WithModelCanonicalizer(func(string) string { return "llama3" }))
+	m, err := NewProviderAppManager(cfg, variantSchema(t), WithModelCanonicalizer(func(string) string { return "llama3" }))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	require.NoError(t, os.WriteFile(filepath.Join(root, strings.ToUpper(tierVariant)+".gguf"), []byte("GGUF"), 0o600))
@@ -123,7 +128,7 @@ func TestValidateModel_NoFilesystemAdmission(t *testing.T) {
 	svc := tierServiceConfig()
 	withVariant(&svc)
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg)
+	m, err := NewProviderAppManager(cfg, variantSchema(t))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	require.NoError(t, os.WriteFile(filepath.Join(root, tierVariant+".gguf"), []byte("GGUF"), 0o600))
@@ -142,7 +147,7 @@ func TestLocalModelAdmission_ReusesOnlyTheCheckedOperation(t *testing.T) {
 	svc := tierServiceConfig()
 	withVariant(&svc)
 	require.NoError(t, cfg.AddApp("vllm", svc))
-	m, err := NewProviderAppManager(cfg)
+	m, err := NewProviderAppManager(cfg, variantSchema(t))
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	admitted, err := m.AdmitLocalModel(t.Context(), tierVariant)

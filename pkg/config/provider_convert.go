@@ -107,6 +107,7 @@ func runtimeToOnDemand(rt *AppRuntimeConfig) OnDemandRuntime {
 		MaxConcurrentRequests: rt.MaxConcurrentRequests,
 		QueueTimeout:          rt.QueueTimeout,
 		Execution:             rt.Execution,
+		ExcludeParameters:     rt.ExcludeParameters,
 		FailurePatterns:       rt.FailurePatterns,
 		HealthCheck:           rt.HealthCheck,
 		Container:             rt.Container,

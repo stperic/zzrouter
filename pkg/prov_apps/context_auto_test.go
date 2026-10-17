@@ -127,18 +127,16 @@ func TestFilterLaunchAutoUsesEndpointShape(t *testing.T) {
 		return declared, nil
 	}
 	input := map[string]string{"context": "auto", "budget": "auto"}
-	chat, err := filterLaunchAuto(requireLaunchSchema(t, m, "vllm"), "chat", input)
-	require.NoError(t, err)
+	chat := filterLaunchAuto(requireLaunchSchema(t, m, "vllm"), "chat", input)
 	assert.Equal(t, map[string]string{"budget": "auto"}, chat)
-	embed, err := filterLaunchAuto(requireLaunchSchema(t, m, "vllm"), "embeddings", input)
-	require.NoError(t, err)
+	embed := filterLaunchAuto(requireLaunchSchema(t, m, "vllm"), "embeddings", input)
 	assert.Equal(t, map[string]string{"context": "auto", "budget": "auto"}, embed)
 	assert.Equal(t, map[string]string{"context": "auto", "budget": "auto"}, input)
 }
 
 func TestLaunchPreparationResolvesSchemaOnce(t *testing.T) {
 	var calls atomic.Int32
-	declared, errs := schema.Merge("generic", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"context": {Type: "int", Auto: "0"}}})
+	declared, errs := schema.Merge("generic", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"context": {Type: "int", Auto: "0"}, "budget": {}}})
 	require.Empty(t, errs)
 	r := newContractRig(t, true, WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
 		calls.Add(1)

@@ -17,13 +17,25 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
-func memoryBudgetSchema(resolve func(string) (*schema.MemoryBudget, error)) func(string) (*schema.ProviderSchema, error) {
+// memoryBudgetSchema declares resolve's budget, its parameters, what the
+// shared fixtures set (tierParameters, budget) and any further fragments.
+func memoryBudgetSchema(resolve func(string) (*schema.MemoryBudget, error), fragments ...string) func(string) (*schema.ProviderSchema, error) {
 	return func(provider string) (*schema.ProviderSchema, error) {
 		budget, err := resolve(provider)
-		declared, errs := schema.Merge(provider, &schema.YAMLSchema{Diagnostics: &schema.Diagnostics{
-			Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: budget,
-		}})
-		return declared, errors.Join(append(errs, err)...)
+		declared, parseErr := declaredFragments(append([]string{tierParameters, "parameters:\n  budget: {}\n"}, fragments...)...)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		declared.Diagnostics = &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: budget}
+		if budget != nil {
+			for _, name := range []string{budget.Parameter, budget.DeviceCountParameter, budget.ComplementParameter} {
+				if name != "" {
+					declared.Parameters[name] = schema.YAMLParam{}
+				}
+			}
+		}
+		merged, errs := schema.Merge(provider, declared)
+		return merged, errors.Join(append(errs, err)...)
 	}
 }
 
@@ -50,7 +62,7 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	require.NoError(t, cfg.AddApp("generic", svc))
 	mgr, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "memory-fraction", DeviceCountParameter: "tensor-parallel-size", AutoSafetyMarginMiB: 1000}, nil
-	})))
+	}, "parameters:\n  dtype: {}\n")))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
 	preview, err := processEngine{mgr}.prepare(t.Context(), svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
@@ -94,36 +106,6 @@ func TestAutoMemoryIntentPreservesParameterStatusWithoutDiscovery(t *testing.T) 
 	numerical.Parameters["memory-fraction"] = "0.5"
 	run.SetResolved(numerical)
 	assert.Contains(t, mgr.ParametersStatus(t.Context(), run).Changed, "parameters.memory-fraction", "numeric-to-auto must remain visible")
-}
-
-func TestAutoMemoryRejectsAmbiguousSpellingsAndNormalizesDeviceCount(t *testing.T) {
-	mgr := &ProviderAppManager{providerSchema: memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
-		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "memory-fraction", DeviceCountParameter: "tensor-parallel-size"}, nil
-	})}
-	for _, params := range []map[string]string{
-		{"memory-fraction": "auto", "memory_fraction": "0.9"},
-		{"memory-fraction": "0.9", "memory_fraction": "auto"},
-		{"memory-fraction": "auto", "tensor-parallel-size": "1", "tensor_parallel_size": "2"},
-	} {
-		_, err := filterLaunchAuto(requireLaunchSchema(t, mgr, "generic"), "chat", params)
-		require.ErrorContains(t, err, "ambiguous")
-		require.ErrorIs(t, err, process.ErrMemoryBudgetInvalid)
-	}
-	params, err := filterLaunchAuto(requireLaunchSchema(t, mgr, "generic"), "chat", map[string]string{"memory-fraction": "auto", "tensor_parallel_size": "2"})
-	require.NoError(t, err)
-	assert.Equal(t, "2", params["tensor-parallel-size"])
-	assert.NotContains(t, params, "tensor_parallel_size")
-}
-
-func TestAutoMemoryNumericAliasesRemainUnchanged(t *testing.T) {
-	mgr := &ProviderAppManager{providerSchema: memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
-		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "gpu-memory-utilization", DeviceCountParameter: "tensor-parallel-size"}, nil
-	})}
-	original := map[string]string{"gpu_memory_utilization": "0.7", "tensor_parallel_size": "2"}
-	params, err := filterLaunchAuto(requireLaunchSchema(t, mgr, "generic"), "chat", original)
-	require.NoError(t, err)
-	assert.Equal(t, original, params)
-	assert.NotContains(t, params, "gpu-memory-utilization")
 }
 
 func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {

@@ -24,6 +24,7 @@ runtime:
     command: engine
     args: ["--model", "${MODEL_PATH}"]
     wire_model: path
+  exclude_parameters: [chat-template]
   health_check:
     path: /v1/models
 `
@@ -54,6 +55,7 @@ runtime:
 		exec := runtime["execution"].(map[string]any)
 		assert.Equal(t, []any{"--model", "${MODEL_PATH}"}, exec["args"], "launch args come from the template")
 		assert.Equal(t, "path", exec["wire_model"])
+		assert.Equal(t, []any{"chat-template"}, runtime["exclude_parameters"], "what the engine does not take comes from the template")
 		assert.Equal(t, "/v1/models", runtime["health_check"].(map[string]any)["path"])
 
 		assert.Equal(t, true, doc["enabled"], "operator state survives")

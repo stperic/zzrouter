@@ -12,6 +12,9 @@ const (
 	EvictIdleParameter = "evict-idle-on-memory-pressure"
 )
 
+// Auto is the reserved value asking zzRouter to choose a parameter's value.
+const Auto = "auto"
+
 // Settings is one launch's idle and memory-pressure policy.
 type Settings struct {
 	KeepAlive         time.Duration

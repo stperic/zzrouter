@@ -11,6 +11,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 )
 
 // defaultEndpoint mirrors prov_apps.EndpointChat; can't import the typed
@@ -203,4 +205,4 @@ func matchSpec[T any](specs map[string]T, model string) (string, T, bool) {
 }
 
 // IsAuto identifies the user-facing request for provider-selected behavior.
-func IsAuto(v string) bool { return v == "auto" }
+func IsAuto(v string) bool { return v == runsettings.Auto }

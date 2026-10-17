@@ -414,7 +414,7 @@ func TestSmokeFrozenFeatureSelectionRefusesPredicateDrift(t *testing.T) {
 	fake.installed.Store(true)
 	mgr.installs.dispatcher.Register("test-runtime", fake)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
-	_, selected, _, err := mgr.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
+	_, selected, err := mgr.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
 	require.NoError(t, err)
 	require.Equal(t, "test-runtime", selected)
 	// Simulate the predicate disappearing while the launch waits on the selected gate.

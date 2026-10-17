@@ -22,7 +22,7 @@ import (
 func servedContextRig(t *testing.T, field string, transport http.RoundTripper, opts ...Option) *contractRig {
 	t.Helper()
 	r := newContractRig(t, true, append([]Option{WithHTTPClient(&http.Client{Transport: transport}), WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
-		return &schema.ProviderSchema{Parameters: map[string]schema.ParamShape{"context": {Served: field}}}, nil
+		return &schema.ProviderSchema{Parameters: map[string]schema.ParamShape{"context": {Served: field}, "budget": {}}}, nil
 	})}, opts...)...)
 	svc, _ := r.m.AppsConfig().LookupApp("generic")
 	svc.Defaults.Metadata = &config.AppMetadata{ContextParam: "context"}
