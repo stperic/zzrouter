@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
@@ -203,8 +202,21 @@ func TestWorkerEnableLandsWhileOtherWorkersHang(t *testing.T) {
 		require.NoError(t, c.coord.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: url, ClusterURL: url, NodeName: name, Status: mesh.StatusUp}))
 	}
 
-	started := time.Now()
 	require.NoError(t, c.worker.FinalizeOnboarding("vllm"))
-	require.Less(t, time.Since(started), providerSyncPushTimeout/2, "no wait on the sleepers")
+	require.True(t, roundOpen(c.coord.providers.syncFanOut), "the enable waited for the round to give up on the sleepers")
 	require.True(t, runsProvider(t, c.worker, "vllm"))
+}
+
+// roundOpen reports whether f still has a push round running; the
+// sleepers keep one open until their pushes time out.
+func roundOpen(f *providerSyncFanOut) bool {
+	f.mu.Lock()
+	idle := f.idle
+	f.mu.Unlock()
+	select {
+	case <-idle:
+		return false
+	default:
+		return true
+	}
 }
