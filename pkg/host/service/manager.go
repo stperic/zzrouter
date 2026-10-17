@@ -8,7 +8,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -39,9 +41,6 @@ type Manager interface {
 	// Name returns the service manager identifier (systemd, launchd, nssm).
 	Name() string
 
-	// Detect returns true if this service manager controls the named service.
-	Detect(serviceName string) bool
-
 	// ApplyEnv writes environment variables and restarts the service.
 	// On permission failure, returns an ApplyResult with Instructions instead of error.
 	ApplyEnv(serviceName string, env map[string]string) *ApplyResult
@@ -58,7 +57,9 @@ type Manager interface {
 
 // Probe performs bounded service-manager observations.
 type Probe interface {
-	DetectContext(context.Context, string) bool
+	// DetectContext reports whether this manager owns the service; an error
+	// means it could not tell, never that the service is absent.
+	DetectContext(context.Context, string) (bool, error)
 	StatusContext(context.Context, string) ServiceStatus
 }
 
@@ -68,13 +69,35 @@ type EnvironmentController interface {
 }
 
 // DetectContext detects existing ownership without creating host services.
-func DetectContext(ctx context.Context, serviceName string) Manager {
+// A nil Manager with a nil error means no host service manager owns it.
+func DetectContext(ctx context.Context, serviceName string) (Manager, error) {
 	for _, m := range platformManagers() {
-		if probe, ok := m.(Probe); ok && probe.DetectContext(ctx, serviceName) {
-			return m
+		probe, ok := m.(Probe)
+		if !ok {
+			continue
+		}
+		detected, err := probe.DetectContext(ctx, serviceName)
+		if err != nil {
+			return nil, err
+		}
+		if detected {
+			return m, nil
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// probeErr is nil when a probe command's failure is its answer (it ran and
+// said no, or the manager is not installed), else why it could not tell.
+func probeErr(ctx context.Context, command string, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", command, ctx.Err())
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) || errors.Is(err, exec.ErrNotFound) {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", command, err)
 }
 
 // Get returns a specific service manager by name.

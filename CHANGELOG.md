@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A managed provider daemon now starts at boot when the host service-manager
+  probe (nssm, systemd, launchd) answers slowly: the probe uses the provider's
+  reconcile budget instead of failing after 3 s and waiting for the next 10 s
+  services tick. A probe that cannot answer is an error naming the probe, never
+  an absent service, and the resolved supervisor, including zzRouter itself, is
+  remembered, so status reads no longer re-run host commands.
 - Add a disabled, zzRouter-installable provider for Niko1221/Strata with
   managed service controls. Enabled external OpenAI-compatible providers now
   publish their `/v1/models` inventory in the catalog the way external Ollama

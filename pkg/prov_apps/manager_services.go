@@ -73,6 +73,7 @@ type managedService struct {
 	done            chan struct{}
 	manualStop      bool
 	manager         service.Manager
+	noOSManager     bool // resolved: no host service manager owns it, so zzRouter supervises
 	managerSetting  string
 	status          ProviderServiceStatus
 	observedRunning *bool
@@ -103,9 +104,9 @@ func (m *ProviderAppManager) serviceConfig(name string) (config.ServiceConfig, e
 	return config.ServiceConfig{}, fmt.Errorf("provider %q is not configured", name)
 }
 
+// serviceManager resolves the host supervisor within the caller's budget; a
+// probe that cannot answer is an error, never a missing service.
 func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
 	if cfg.Service != nil && cfg.Service.Manager == "none" {
 		return nil, nil
 	}
@@ -114,21 +115,32 @@ func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) 
 		if err != nil {
 			return nil, err
 		}
-		probe, ok := manager.(service.Probe)
-		detected := ok && probe.DetectContext(ctx, name)
-		if err := ctx.Err(); err != nil {
-			return nil, err
+		detected := false
+		if probe, ok := manager.(service.Probe); ok {
+			if detected, err = probe.DetectContext(ctx, name); err != nil {
+				return nil, fmt.Errorf("cannot tell whether %s supervises %s: %w", manager.Name(), name, err)
+			}
 		}
 		if !detected {
 			return nil, fmt.Errorf("configured %s service is unavailable for %s; host owner must restore it", manager.Name(), name)
 		}
 		return manager, nil
 	}
-	manager := service.DetectContext(ctx, name)
-	return manager, ctx.Err()
+	manager, err := service.DetectContext(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("cannot tell whether a host service manager supervises %s: %w", name, err)
+	}
+	return manager, nil
 }
 
-// Remember detected ownership when stop unloads a service's registration.
+// resolvedManager returns the supervisor remembered for setting; the caller holds mu.
+func (state *managedService) resolvedManager(setting string) (service.Manager, bool) {
+	return state.manager, (state.manager != nil || state.noOSManager) && state.managerSetting == setting
+}
+
+// Remember the resolved supervisor, including none: stop may unload a
+// service's registration, and re-probing would spawn host commands per read.
+// The probe runs outside mu so a slow host cannot stall status reads.
 func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
 	setting := ""
 	if cfg.Service != nil {
@@ -136,15 +148,22 @@ func (m *ProviderAppManager) selectedServiceManager(ctx context.Context, name st
 	}
 	state := m.serviceState(name)
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.manager != nil && state.managerSetting == setting {
-		return state.manager, nil
+	manager, resolved := state.resolvedManager(setting)
+	state.mu.Unlock()
+	if resolved {
+		return manager, nil
 	}
 	manager, err := serviceManager(ctx, name, cfg)
-	if err == nil {
-		state.manager, state.managerSetting = manager, setting
+	if err != nil {
+		return nil, err
 	}
-	return manager, err
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if first, resolved := state.resolvedManager(setting); resolved {
+		return first, nil
+	}
+	state.manager, state.noOSManager, state.managerSetting = manager, manager == nil, setting
+	return manager, nil
 }
 
 // ProviderServiceStatus observes a provider; observation never starts it.

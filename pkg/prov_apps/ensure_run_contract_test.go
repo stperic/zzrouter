@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -48,13 +49,14 @@ const contractWait = 10 * time.Second
 
 // contractEngine prints READY once $0.ready exists, then serves until
 // stopped, recording each graceful stop in $0.terms (the launcher
-// forwards INT when its stdin closes, TERM when signalled).
-const contractEngine = `#!/bin/sh
-trap 'echo "$$" >> "$0.terms"; kill $! 2>/dev/null; exit 0' TERM INT
-while [ ! -e "$0.ready" ]; do /bin/sleep 0.01; done
+// forwards INT when its stdin closes, TERM when signalled). It ends with
+// its test process (testproc).
+var contractEngine = testproc.Script(`trap 'echo "$$" >> "$0.terms"; kill $! 2>/dev/null; exit 0' TERM INT
+while kill -0 $test_owner && [ ! -e "$0.ready" ]; do /bin/sleep 0.01; done
+kill -0 $test_owner || exit 0
 printf 'READY\n'
-while :; do /bin/sleep 1 & wait $!; done
-`
+while kill -0 $test_owner; do /bin/sleep 1 & wait $!; done
+`)
 
 type contractRig struct {
 	m        *ProviderAppManager

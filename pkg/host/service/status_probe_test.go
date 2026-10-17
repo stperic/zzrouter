@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -46,6 +47,43 @@ func TestServiceProbeCanPositivelyObserveStoppedState(t *testing.T) {
 			status := tc.probe(t.Context(), "generic")
 			require.NoError(t, status.ObservationError)
 			require.False(t, status.Running)
+		})
+	}
+}
+
+// An unanswered probe is an error; only a probe that answered may report absence.
+func TestServiceDetectSeparatesAbsentFromUnanswered(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		probe   func(context.Context, string) (bool, error)
+	}{
+		{"systemctl", (&Systemd{}).DetectContext},
+		{"nssm", (&NSSM{}).DetectContext},
+		{"launchctl", (&Launchd{}).DetectContext},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			detected, err := tc.probe(t.Context(), "generic")
+			require.NoError(t, err, "a manager that is not installed does not own the service")
+			require.False(t, detected)
+
+			command := filepath.Join(dir, tc.command)
+			require.NoError(t, os.WriteFile(command, []byte("#!/nonexistent/sh\n"), 0700))
+			_, err = tc.probe(t.Context(), "generic")
+			require.Error(t, err, "a probe that cannot run cannot tell")
+
+			require.NoError(t, os.WriteFile(command, []byte("#!/bin/sh\n[ -e \"$0.hang\" ] && exec /bin/sleep 5\nexit 1\n"), 0700))
+			detected, err = tc.probe(t.Context(), "generic")
+			require.NoError(t, err)
+			require.False(t, detected)
+
+			require.NoError(t, os.WriteFile(command+".hang", nil, 0600))
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			detected, err = tc.probe(ctx, "generic")
+			require.ErrorIs(t, err, context.DeadlineExceeded)
+			require.False(t, detected)
 		})
 	}
 }

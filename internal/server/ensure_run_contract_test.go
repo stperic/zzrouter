@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -46,18 +47,19 @@ const (
 )
 
 // crashingEngine stays loading until $0.crash exists, then exits; every
-// later launch of it becomes ready.
-const crashingEngine = `#!/bin/sh
-trap 'kill $! 2>/dev/null; exit 0' TERM INT
+// later launch of it becomes ready. It ends with its test process (testproc).
+var crashingEngine = testproc.Script(`trap 'kill $! 2>/dev/null; exit 0' TERM INT
 if [ -e "$0.crashed" ]; then
   printf 'READY\n'
-  while :; do /bin/sleep 1 & wait $!; done
+  while kill -0 $test_owner; do /bin/sleep 1 & wait $!; done
+  exit 0
 fi
-while [ ! -e "$0.crash" ]; do /bin/sleep 0.01; done
+while kill -0 $test_owner && [ ! -e "$0.crash" ]; do /bin/sleep 0.01; done
+kill -0 $test_owner || exit 0
 touch "$0.crashed"
 echo 'engine crashed while loading' >&2
 exit 3
-`
+`)
 
 type readinessRig struct {
 	s      *Server

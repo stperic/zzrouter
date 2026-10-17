@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stretchr/testify/assert"
@@ -59,8 +60,8 @@ func TestLauncherStartupShutdown(t *testing.T) {
 			if tc.ignore {
 				script = "trap '' TERM INT\n"
 			}
-			script += "printf '%s' \"$$\" > \"$1\"\nwhile :; do :; done\n"
-			require.NoError(t, os.WriteFile(engine, []byte(script), 0o600))
+			script += "printf '%s' \"$$\" > \"$1\"\nwhile kill -0 $test_owner; do :; done\n"
+			require.NoError(t, os.WriteFile(engine, []byte(testproc.Script(script)), 0o600))
 			cmd := host.Command(binary, "--instance-id=fixture", "--provider=fixture", "--pid-dir", dir,
 				"--", "/bin/sh", engine, childPIDFile, trapFile)
 			var output bytes.Buffer

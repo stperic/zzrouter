@@ -7,11 +7,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
@@ -49,7 +52,7 @@ func TestProviderDaemonHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "RuntimeError: managed daemon failed; token=sk-123456789012345678901234567890123456")
 		os.Exit(17)
 	}
-	select {}
+	testproc.AwaitOwner()
 }
 
 func newServiceTestManager(t *testing.T, managed, crash bool) *ProviderAppManager {
@@ -59,7 +62,8 @@ func newServiceTestManager(t *testing.T, managed, crash bool) *ProviderAppManage
 	cfg := testAppsConfig()
 	svc, _ := cfg.LookupApp("ollama")
 	svc.Service = nil
-	svc.Defaults = &config.AppDefaultsConfig{Environment: map[string]string{"PROVIDER_DAEMON_HELPER": "1"}}
+	owner, pid := testproc.OwnerEnv()
+	svc.Defaults = &config.AppDefaultsConfig{Environment: map[string]string{"PROVIDER_DAEMON_HELPER": "1", owner: pid}}
 	if crash {
 		svc.Defaults.Environment["PROVIDER_DAEMON_CRASH"] = "1"
 	}
@@ -107,6 +111,70 @@ func TestManagedServiceBootStopRestartAndShutdown(t *testing.T) {
 	require.NotEqual(t, first.PID, serviceStatus(t, m).PID)
 	require.NoError(t, m.Stop(context.Background()))
 	require.False(t, serviceStatus(t, m).Running)
+}
+
+// A host supervisor probe that stalls past the old 3 s cut (as on a loaded
+// Windows runner) still lets boot start the daemon, and a resolved "no OS
+// supervisor" is not re-probed by later status reads.
+func TestStalledSupervisorProbeStillStartsManagedDaemon(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process fixture")
+	}
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	probe := "#!/bin/sh\necho \"$*\" >> " + calls + "\n" +
+		"if [ ! -e " + dir + "/stalled ]; then : > " + dir + "/stalled; /bin/sleep 3.5; fi\nexit 1\n"
+	for _, name := range []string{"launchctl", "systemctl", "nssm"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(probe), 0o700))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m := newServiceTestManager(t, true, false)
+	m.Start(context.Background())
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	before, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	for range 20 {
+		serviceStatus(t, m)
+	}
+	after, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after), "a resolved supervisor is not re-probed per status read")
+}
+
+// A stalled host probe must not hold the service lock: status reads, control
+// actions and host listings take it without a deadline.
+func TestStalledSupervisorProbeDoesNotHoldServiceLock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix process fixture")
+	}
+	dir := t.TempDir()
+	entered, release := filepath.Join(dir, "entered"), filepath.Join(dir, "release")
+	probe := testproc.Script(": > " + entered + "\nwhile kill -0 $test_owner && [ ! -e " + release + " ]; do /bin/sleep 0.01; done\nexit 1\n")
+	for _, name := range []string{"launchctl", "systemctl", "nssm"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(probe), 0o700))
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m := newServiceTestManager(t, true, false)
+	// Release before the manager's cleanup stops it, so a failure cannot deadlock.
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
+	cfg, err := m.serviceConfig("generic-daemon")
+	require.NoError(t, err)
+	resolved := make(chan error, 1)
+	go func() {
+		_, err := m.selectedServiceManager(context.Background(), "generic-daemon", cfg)
+		resolved <- err
+	}()
+	require.Eventually(t, func() bool { _, err := os.Stat(entered); return err == nil }, 5*time.Second, 5*time.Millisecond)
+	state := m.serviceState("generic-daemon")
+	require.Eventually(t, func() bool {
+		if !state.mu.TryLock() {
+			return false
+		}
+		state.mu.Unlock()
+		return true
+	}, 2*time.Second, 5*time.Millisecond, "a stalled probe holds the service lock")
+	require.NoError(t, os.WriteFile(release, nil, 0o600))
+	require.NoError(t, <-resolved)
 }
 
 func TestManagedServiceCrashRecordsExitAndBacksOff(t *testing.T) {
@@ -353,7 +421,8 @@ func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := host.CommandContext(ctx, binary, args...)
-	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1"}
+	owner, pid := testproc.OwnerEnv()
+	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1", owner + "=" + pid}
 	started := make(chan int, 1)
 	done := make(chan error, 1)
 	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()
@@ -451,7 +520,7 @@ type blockedOSProbe struct {
 	entered chan struct{}
 }
 
-func (s *blockedOSProbe) DetectContext(context.Context, string) bool { return true }
+func (s *blockedOSProbe) DetectContext(context.Context, string) (bool, error) { return true, nil }
 func (s *blockedOSProbe) StatusContext(ctx context.Context, _ string) service.ServiceStatus {
 	close(s.entered)
 	<-ctx.Done()
