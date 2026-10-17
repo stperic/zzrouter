@@ -211,7 +211,7 @@ func TestVariants_PatchRequiresCatalogEvidence(t *testing.T) {
 	httperr.AttachResponder(s.responders.problem)(c)
 	e.HandleParametersPatch(c)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code, w.Body.String())
-	cfg, ok := s.appsConfig.LookupApp("llamacpp")
+	cfg, ok := s.appsConfig().LookupApp("llamacpp")
 	require.True(t, ok)
 	_, _, variant := cfg.Variant("fast")
 	require.False(t, variant, "an unavailable catalog cannot authorize reserving a weights name")
@@ -220,14 +220,14 @@ func TestVariants_PatchRequiresCatalogEvidence(t *testing.T) {
 func TestVariants_ConflictFilteringPrecedesWireEndpointPreference(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	cfg, ok := s.appsConfig.LookupApp("llamacpp")
+	cfg, ok := s.appsConfig().LookupApp("llamacpp")
 	require.True(t, ok)
 	cfg.Capabilities.WireEndpoints = []string{"chat_completions", "messages", "responses"}
-	require.NoError(t, s.appsConfig.UpdateApp("llamacpp", func(service *config.ServiceConfig) error {
+	require.NoError(t, s.appsConfig().UpdateApp("llamacpp", func(service *config.ServiceConfig) error {
 		service.Capabilities.WireEndpoints = cfg.Capabilities.WireEndpoints
 		return nil
 	}))
-	require.NoError(t, s.appsConfig.AddApp("safe", config.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("safe", config.ServiceConfig{
 		Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: "https://example.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}},
 		Capabilities: &config.AppCapabilities{Models: []string{"safe-model"}, WireEndpoints: []string{"chat_completions", "messages_compat", "responses_compat"}},
@@ -320,7 +320,7 @@ func TestVariants_ResponsesAffinityCannotBypassConflict(t *testing.T) {
 	s.backend = backend.NewResolver(func() *config.AppsConfig { return endpoints })
 	_, resolvable := s.backend.Resolve("llamacpp")
 	require.True(t, resolvable)
-	require.NoError(t, s.appsConfig.UpdateApp("llamacpp", func(sc *config.ServiceConfig) error {
+	require.NoError(t, s.appsConfig().UpdateApp("llamacpp", func(sc *config.ServiceConfig) error {
 		sc.Capabilities.WireEndpoints = []string{"responses"}
 		return nil
 	}))
@@ -461,7 +461,7 @@ func TestVariants_ColdAndForcedSourceAliasUseCanonicalMetadata(t *testing.T) {
 func TestVariants_CatalogFailureKeepsManagementStatuses(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	manager, err := prov_apps.NewProviderAppManager(s.appsConfig, prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }))
+	manager, err := prov_apps.NewProviderAppManager(s.appsConfig(), prov_apps.WithModelValidator(func(context.Context, string) error { return errors.New("catalog unavailable") }))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = manager.Stop(t.Context()) })
 	old := s.providers.appMgr

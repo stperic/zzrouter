@@ -50,7 +50,7 @@ func tierProbeNode(t *testing.T, cfg *pkgConfig.AppsConfig, name string) *Server
 	t.Helper()
 	nc := &pkgConfig.NodeConfig{}
 	nc.Node.Name = name
-	return &Server{node: NewNodeIdentity(nc), appsConfig: cfg}
+	return &Server{node: NewNodeIdentity(nc), configStore: pkgConfig.NewMemoryAppsConfigStore(cfg)}
 }
 
 // tierProbeService builds a LoadService whose cache reports `model` as
@@ -242,7 +242,7 @@ func TestLoadService_ResolvesNothingForAnExplicitStar(t *testing.T) {
 func launchParameters(t *testing.T, s *Server, model, provider, endpoint string, parameters, environment map[string]string) (prov_apps.LaunchParameters, error) {
 	t.Helper()
 	if s.providers.appMgr == nil {
-		manager, err := prov_apps.NewProviderAppManager(s.appsConfig, prov_apps.WithNodename(s.node.Nodename))
+		manager, err := prov_apps.NewProviderAppManager(s.appsConfig(), prov_apps.WithNodename(s.node.Nodename))
 		require.NoError(t, err)
 		s.providers.appMgr = manager
 		t.Cleanup(func() { _ = manager.Stop(context.Background()) })

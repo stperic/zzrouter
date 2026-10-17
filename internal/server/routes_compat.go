@@ -21,7 +21,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -59,7 +58,7 @@ func (s *Server) registerCompatibilityRoutes() {
 func (s *Server) bindCompatServices(routingRouter routing.Router) {
 	if s.services.Model == nil {
 		s.services.Model = NewModelService(s, s, s, s, routingRouter,
-			func() *pkgConfig.AppsConfig { return s.appsConfig })
+			s.appsConfig)
 	}
 	if s.services.Ollama == nil {
 		s.services.Ollama = s.newOllamaService()

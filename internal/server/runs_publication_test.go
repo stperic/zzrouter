@@ -209,12 +209,12 @@ func TestRunLaunchAndRestartJobsPublishFailure(t *testing.T) {
 				t.Cleanup(func() { _ = gate.Close() })
 				binary, err := os.Executable()
 				require.NoError(t, err)
-				require.NoError(t, target.appsConfig.UpdateApp("llamacpp", func(s *config.ServiceConfig) error {
+				require.NoError(t, target.appsConfig().UpdateApp("llamacpp", func(s *config.ServiceConfig) error {
 					// Keep acceptance and the terminal mutation separate.
 					s.Runtime.Execution = config.ExecutionConfig{Type: "cli", Command: binary, Args: []string{"-test.run=TestCrashingEngineHelper", crashingEngineArg, gate.Addr().String()}}
 					return nil
 				}))
-				target.providers.appMgr.ReloadConfig(target.appsConfig)
+				target.providers.appMgr.ReloadConfig(target.appsConfig())
 				require.NoError(t, os.WriteFile(filepath.Join(dir, "mmproj-F16.gguf"), []byte("projector"), 0600))
 				path, pattern := "/runs", "/runs"
 				var body any = map[string]string{"model_name": "weights", "provider": "llamacpp", "launch_mode": "native"}

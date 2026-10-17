@@ -37,7 +37,7 @@ func TestEnsureRun_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 
 	const provider = "tierprov"
 	enabled := true
-	require.NoError(t, server.appsConfig.AddApp(provider, pkgConfig.ServiceConfig{
+	require.NoError(t, server.appsConfig().AddApp(provider, pkgConfig.ServiceConfig{
 		Enabled:  &enabled,
 		Name:     "Tier Provider",
 		Protocol: pkgConfig.ProtocolOpenAI,
@@ -52,7 +52,7 @@ func TestEnsureRun_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
 
-	server.providers.appMgr.ReloadConfig(server.appsConfig)
+	server.providers.appMgr.ReloadConfig(server.appsConfig())
 	res, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: "tier-model", Provider: provider, Parameters: map[string]string{"seed": "42"}})
 	require.NoError(t, err)
 

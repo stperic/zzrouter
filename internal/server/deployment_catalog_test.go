@@ -68,7 +68,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 					reader.model.Cache = cache.New(cache.Config{
 						Node:                      reader.node,
 						Registry:                  func() *modelregistry.Registry { return nil },
-						AppsConfig:                func() *config.AppsConfig { return target.appsConfig },
+						AppsConfig:                target.appsConfig,
 						ClusterClient:             func() mesh.ClusterClient { return deploymentCatalogClient{worker: target} },
 						ResolveEndpointToNodename: func(string) string { return "" },
 					})

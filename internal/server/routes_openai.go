@@ -21,7 +21,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -48,7 +47,7 @@ func (s *Server) registerOpenAIRoutes() int {
 
 	// Model catalog handlers — late-bound: modelService is set by bindOpenAIModelService
 	// after RegisterPublicAPIRoutes populates s.services.Model.
-	appsConfigFn := func() *pkgConfig.AppsConfig { return s.appsConfig }
+	appsConfigFn := s.appsConfig
 	mh := &OpenAIModelHandlers{
 		appsConfig:      appsConfigFn,
 		groups:          s.model.Groups,

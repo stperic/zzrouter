@@ -18,15 +18,15 @@ import (
 func warmWireNode(t *testing.T, engine *httptest.Server) (*Server, *instance.Instance) {
 	t.Helper()
 	s := createTestNodeWithDefaults(t)
-	s.appsConfig = &config.AppsConfig{}
+	s.configStore = config.NewMemoryAppsConfigStore(&config.AppsConfig{})
 	for _, provider := range []string{"mlx", "other"} {
-		require.NoError(t, s.appsConfig.AddApp(provider, config.ServiceConfig{
+		require.NoError(t, s.appsConfig().AddApp(provider, config.ServiceConfig{
 			Enabled: new(true), Mode: "external", Protocol: config.ProtocolOpenAI,
 			Runtime:      &config.AppRuntimeConfig{Endpoint: engine.URL},
 			Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 		}))
 	}
-	s.providers.appMgr.ReloadConfig(s.appsConfig)
+	s.providers.appMgr.ReloadConfig(s.appsConfig())
 	run := instanceFor(t, engine, "warm-model", "/weights/warm-model")
 	run.Endpoint = "chat"
 	require.NoError(t, s.providers.appMgr.Instances().Register(run))
@@ -45,6 +45,11 @@ func TestWarmWireContractInvalidCatalog(t *testing.T) {
 				}
 				requests := make(chan recordedRequest, 2)
 				engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+						// A catalog probe, not the request under test.
+						_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+						return
+					}
 					body, _ := io.ReadAll(r.Body)
 					requests <- recordedRequest{Path: r.URL.Path, Body: body}
 					w.Header().Set("Content-Type", "application/json")
@@ -136,7 +141,7 @@ func TestWarmWireContractProviderDisplayAlias(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("llamacpp", config.ServiceConfig{Enabled: new(true), Mode: "external", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: engine.URL}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
-	s.appsConfig = cfg
+	s.configStore = config.NewMemoryAppsConfigStore(cfg)
 	s.providers.appMgr.ReloadConfig(cfg)
 	run := instanceFor(t, engine, "alias-model", "alias-model")
 	run.Provider, run.Endpoint = "llama.cpp", "chat"

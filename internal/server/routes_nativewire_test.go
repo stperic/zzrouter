@@ -75,12 +75,12 @@ func createNativeWireTestNode(t *testing.T, backends map[string]string) *Server 
 
 	server, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err, "failed to create native-wire test server")
-	server.appsConfig = &pkgConfig.AppsConfig{
+	server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
+	})
 	for name, sc := range apps {
-		require.NoError(t, server.appsConfig.AddApp(name, sc))
+		require.NoError(t, server.appsConfig().AddApp(name, sc))
 	}
 
 	t.Cleanup(func() { cleanupTestNode(server) })

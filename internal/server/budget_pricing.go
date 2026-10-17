@@ -16,8 +16,8 @@ func (s *Server) quoteTargets(c *gin.Context, target *resolver.Resolved) {
 	}
 	quote := func(provider, model string) pricing.Quote {
 		local := false
-		if s.appsConfig != nil {
-			if svc, ok := s.appsConfig.LookupApp(provider); ok {
+		if apps := s.appsConfig(); apps != nil {
+			if svc, ok := apps.LookupApp(provider); ok {
 				local = prov_apps.Lifecycle(svc) != prov_apps.LifecycleNone
 			}
 		}

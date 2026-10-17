@@ -33,7 +33,6 @@ import (
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -124,7 +123,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// ========================================================================
 	providersExec := NewProvidersExecutor(
 		s.providers.appMgr, s.node.Name(), s.GetLocalAppsInfo,
-		func() *pkgConfig.AppsConfig { return s.appsConfig }, s.configStore,
+		s.appsConfig, s.configStore,
 		s.FinalizeOnboarding, s.FinalizeOffboarding, s.publishSelfSnapshot,
 	)
 	providersExec.publishCatalog = s.publishCatalog
@@ -285,7 +284,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	if oh == nil {
 		oh = &OllamaHandlers{
 			appMgr:     s.providers.appMgr,
-			appsConfig: func() *pkgConfig.AppsConfig { return s.appsConfig },
+			appsConfig: s.appsConfig,
 			nodeName:   s.node.Nodename,
 		}
 	}

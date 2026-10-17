@@ -12,7 +12,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/observability/llm"
@@ -27,7 +26,7 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 		services = s.providers.appMgr
 	}
 	executor := NewParamsExecutor(
-		func() *pkgConfig.AppsConfig { return s.appsConfig },
+		s.appsConfig,
 		s.configStore,
 		s.node.Nodename,
 		s.knownClusterNodes,
@@ -103,7 +102,7 @@ func (s *Server) newRunsExecutor() *RunsExecutor {
 	e := NewRunsExecutor(
 		s.providers.appMgr,
 		s.node.Nodename,
-		func() *pkgConfig.AppsConfig { return s.appsConfig },
+		s.appsConfig,
 		s.logsHandlers.streamInstanceLogs,
 		s.logsHandlers.getInstanceLogLines,
 		s.refreshResourceMetrics(),
@@ -132,7 +131,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 	executor := NewInternalExecutor(
 		s.model.Registry,
 		s.node.Nodename,
-		func() *pkgConfig.AppsConfig { return s.appsConfig },
+		s.appsConfig,
 		s.httpClient,
 		func() *huggingface.Connector {
 			if s.model.Registry == nil {
@@ -140,7 +139,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 			}
 			return s.model.Registry.GetHuggingFaceConnector()
 		},
-		func(app string) bool { return isCloudProvider(s.appsConfig, app) },
+		func(app string) bool { return isCloudProvider(s.appsConfig(), app) },
 		s.configStore,
 		func(ctx context.Context) error { _, err := s.RescanLocal(ctx); return err },
 		getResourceMetrics,
@@ -193,13 +192,13 @@ func (s *Server) newDeploymentsExecutor() *DeploymentsExecutor {
 	}
 	e := NewDeploymentsExecutor(
 		s.node.Nodename,
-		func(app string) bool { return isCloudProvider(s.appsConfig, app) },
+		func(app string) bool { return isCloudProvider(s.appsConfig(), app) },
 		s.isLocalNodeCompatible,
 		s.buildIncompatibleDeployError,
 		s.model.Downloads,
 		s.model.Registry,
 		s.ollamaDaemon,
-		func() *pkgConfig.AppsConfig { return s.appsConfig },
+		s.appsConfig,
 		s.configStore,
 		s.publishCatalog,
 		s.jobs,

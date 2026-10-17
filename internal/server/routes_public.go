@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/logging"
@@ -31,17 +30,17 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// a subset of these and are registered on their own engine on a worker,
 	// so that subset is built by a function both roles call.
 	s.bindCompatServices(routingRouter)
-	s.services.Search = NewModelSearchService(func() *pkgConfig.AppsConfig { return s.appsConfig }, s.model.Pricing)
+	s.services.Search = NewModelSearchService(s.appsConfig, s.model.Pricing)
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
 	s.services.Load = NewLoadService(s, routingRouter).
-		WithTierResolution(func() *pkgConfig.AppsConfig { return s.appsConfig })
+		WithTierResolution(s.appsConfig)
 	if s.jobsProxy == nil && s.cluster.listener != nil && s.cluster.coordinator != nil {
 		s.jobsProxy = &JobsProxy{StreamClient: s.cachedJobsStreamClient(), ResolveEndpoint: s.resolveJobsEndpoint, ListPeers: s.listJobsPeers, ClusterPort: s.config.Cluster.BindPort}
 	}
 	if s.services.Deployments != nil {
 		s.services.Deployments.Stop(context.Background())
 	}
-	s.services.Deployments = NewDeploymentsService(routingRouter, s.node, func() *pkgConfig.AppsConfig { return s.appsConfig }).
+	s.services.Deployments = NewDeploymentsService(routingRouter, s.node, s.appsConfig).
 		WithNodeURLResolver(s.resolveNodePublicURL)
 	s.services.Deployments.jobs = s.jobAccess()
 	s.services.Deployments.shutdown = func() context.Context { return s.shutdownCtx }
@@ -56,7 +55,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 			func(name string) bool {
 				return s.model.Cache.HasModelExact(context.Background(), name)
 			},
-			func() *pkgConfig.AppsConfig { return s.appsConfig },
+			s.appsConfig,
 			s.jobs,
 		)
 	}
@@ -71,7 +70,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// Initialize controllers
 	nodeValidator := &MeshAwareNodeValidator{NodeIdentity: s.node, EndpointsFn: s.GetClusterEndpoints}
 	s.controllers.Models = NewModelsController(s.services.Model, s.services.Search, nodeValidator)
-	appsConfigFn := func() *pkgConfig.AppsConfig { return s.appsConfig }
+	appsConfigFn := s.appsConfig
 	s.services.RunsUtility = NewRunsUtilityService(s.providers.appMgr, appsConfigFn)
 	s.controllers.Runs = NewRunsController(
 		s.services.Runs, s.services.Load, s.services.RunsUtility,
@@ -117,7 +116,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.controllers.Deployments.RegisterPublicRoutes(router, s.idempotent)
 
 	// Registries: agent-friendly pre-pull discovery (e.g., GGUF variants in a HF repo).
-	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }, func() *pkgConfig.AppsConfig { return s.appsConfig }).RegisterPublicRoutes(router)
+	NewRegistriesController(func() *modelregistry.Registry { return s.model.Registry }, s.appsConfig).RegisterPublicRoutes(router)
 
 	// Discovery: Discover resources across cluster
 	s.controllers.Discovery.RegisterPublicRoutes(router)
@@ -142,7 +141,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	}
 
 	// Provider Status: Provider-level health/cooldown and rate limit status
-	s.controllers.ProviderStatus = NewProviderStatusController(func() *pkgConfig.AppsConfig { return s.appsConfig }, s.providers.cooldowns.Providers(), s.providers.rateTracker)
+	s.controllers.ProviderStatus = NewProviderStatusController(s.appsConfig, s.providers.cooldowns.Providers(), s.providers.rateTracker)
 	s.controllers.ProviderStatus.RegisterPublicRoutes(router)
 
 	// Teams and Keys controllers are constructed here (the general public
@@ -194,7 +193,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		if s.providers.appMgr != nil {
 			provSvc = NewProvidersService(s.cluster.router)
 		}
-		appsConfigFn := func() *pkgConfig.AppsConfig { return s.appsConfig }
+		appsConfigFn := s.appsConfig
 
 		// Upstream release checks are coordinator-side: one outbound call per
 		// provider for the whole cluster rather than one per worker. Gate on
@@ -202,7 +201,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		// harnesses that are nonetheless coordinators.
 		var versionsSvc *ProviderVersionsService
 		if s.IsCoordinator() {
-			ttl := upstreamCheckInterval(s.appsConfig)
+			ttl := upstreamCheckInterval(s.appsConfig())
 			versionsSvc = NewProviderVersionsService(appsConfigFn, upstream.NewCache(ttl, 0))
 		}
 

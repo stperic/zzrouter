@@ -230,7 +230,7 @@ func parseModelIdentifier(input string) (*modelregistry.Identifier, error) {
 // Uses AppsConfig so cloud model IDs (which reuse @ and : with different
 // semantics) stay opaque.
 func (s *Server) splitModelRef(modelName string) (identity, provider, node string) {
-	id, err := modelregistry.Parse(modelName, modelregistry.ParseOpts{Config: s.appsConfig})
+	id, err := modelregistry.Parse(modelName, modelregistry.ParseOpts{Config: s.appsConfig()})
 	if err != nil || id == nil {
 		return modelName, "", ""
 	}

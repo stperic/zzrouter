@@ -95,7 +95,7 @@ func mutationNodes(t *testing.T, location string) (target, reader *Server, dir s
 		reader.model.Cache = cache.New(cache.Config{
 			Node:                      reader.node,
 			Registry:                  func() *modelregistry.Registry { return nil },
-			AppsConfig:                func() *config.AppsConfig { return target.appsConfig },
+			AppsConfig:                target.appsConfig,
 			ClusterClient:             func() mesh.ClusterClient { return deploymentCatalogClient{worker: target} },
 			ResolveEndpointToNodename: func(string) string { return "" },
 		})
@@ -284,7 +284,7 @@ func TestCatalogMutationProviderWritesPublish(t *testing.T) {
 					require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 					return httptest.NewRecorder().Result(), nil
 				})}
-				verifyController = NewProvidersController(nil, nil, func() *config.AppsConfig { return target.appsConfig }, target.configStore, target, nil, nil, client)
+				verifyController = NewProvidersController(nil, nil, target.appsConfig, target.configStore, target, nil, nil, client)
 				verifyController.publishCatalog = target.publishCatalog
 				method, path, body = http.MethodPost, "/zzrouter/v1/providers/cloud-test/verify", nil
 				expected = "cloud-new"
@@ -364,7 +364,7 @@ func TestCatalogMutationLifecyclePublishesBeforeJobDone(t *testing.T) {
 	for _, operation := range []string{"install", "upgrade", "uninstall", "execute-step"} {
 		t.Run(operation, func(t *testing.T) {
 			target, reader, dir := mutationNodes(t, "worker")
-			e := NewProvidersExecutor(target.providers.appMgr, "worker", target.GetLocalAppsInfo, func() *config.AppsConfig { return target.appsConfig }, target.configStore, target.FinalizeOnboarding, target.FinalizeOffboarding, target.publishSelfSnapshot)
+			e := NewProvidersExecutor(target.providers.appMgr, "worker", target.GetLocalAppsInfo, target.appsConfig, target.configStore, target.FinalizeOnboarding, target.FinalizeOffboarding, target.publishSelfSnapshot)
 			e.publishCatalog = target.publishCatalog
 			h, err := target.jobs.StartDetached(jobs.KindInstall, "llamacpp", nil)
 			require.NoError(t, err)
@@ -492,7 +492,7 @@ func TestCatalogMutationRoutedDeleteAndScansKeepPublication(t *testing.T) {
 			e := target.newInternalExecutor()
 			engine.DELETE("/zzrouter/v1/internal/models", e.HandleInternalDeleteModels)
 			engine.POST("/zzrouter/v1/internal/models/rescan", e.HandleInternalRescanModels)
-			svc := NewModelService(reader, reader, reader, reader, mutationRouter{engine: engine}, func() *config.AppsConfig { return target.appsConfig })
+			svc := NewModelService(reader, reader, reader, reader, mutationRouter{engine: engine}, target.appsConfig)
 			if strings.Contains(operation, "delete") {
 				req := &DeleteModelsRequest{Node: "worker", Paths: []string{filepath.Join(dir, "weights.gguf")}}
 				if operation == "multi-delete" {
@@ -526,7 +526,7 @@ func TestCatalogMutationRoutedDeleteReportsPublicationFailure(t *testing.T) {
 			e := target.newInternalExecutor()
 			e.publishCatalog = func(context.Context) error { return errors.New("publication refused") }
 			engine.DELETE("/zzrouter/v1/internal/models", e.HandleInternalDeleteModels)
-			svc := NewModelService(target, target, target, target, mutationRouter{engine: engine}, func() *config.AppsConfig { return target.appsConfig })
+			svc := NewModelService(target, target, target, target, mutationRouter{engine: engine}, target.appsConfig)
 			req := &DeleteModelsRequest{Paths: []string{filepath.Join(dir, "weights.gguf")}}
 			if multi {
 				req = &DeleteModelsRequest{Models: []ModelToDelete{{Name: "weights", Registry: "huggingface"}}}

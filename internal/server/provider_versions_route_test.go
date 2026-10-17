@@ -36,15 +36,15 @@ func getJSON(t *testing.T, base, path string) (int, map[string]any) {
 }
 
 // seedTrackedProvider installs a provider carrying a version_source into the
-// server's live config. The route closure reads s.appsConfig on every request,
+// server's live config. The route closure reads s.appsConfig() on every request,
 // so seeding after construction is enough.
 func seedTrackedProvider(t *testing.T, s *Server) {
 	t.Helper()
 
-	cfg := s.appsConfig
+	cfg := s.appsConfig()
 	if cfg == nil {
 		cfg = &pkgConfig.AppsConfig{}
-		s.appsConfig = cfg
+		s.configStore = pkgConfig.NewMemoryAppsConfigStore(cfg)
 	}
 	require.NoError(t, cfg.AddApp("llamacpp", pkgConfig.ServiceConfig{
 		Protocol:      pkgConfig.ProtocolOpenAI,

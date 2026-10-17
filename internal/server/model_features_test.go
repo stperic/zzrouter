@@ -28,7 +28,7 @@ func featureRoutingServer(t *testing.T) *Server {
 	}
 	nc := &pkgConfig.NodeConfig{}
 	nc.Node.Name = "worker"
-	s := &Server{node: NewNodeIdentity(nc), appsConfig: cfg, model: &model.Subsystem{}}
+	s := &Server{node: NewNodeIdentity(nc), configStore: pkgConfig.NewMemoryAppsConfigStore(cfg), model: &model.Subsystem{}}
 	s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: nc, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *pkgConfig.AppsConfig { return cfg }, ClusterClient: s.getClusterClient, ModelDetails: func(provider, model string, d map[string]any) map[string]any {
 		state := "unknown"
 		eps := []string{"messages"}
@@ -98,12 +98,12 @@ func TestResponsesAdmissionOnceForNativeTranslationAndAffinity(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			s := createTestNodeWithDefaults(t)
-			s.appsConfig = &pkgConfig.AppsConfig{}
+			s.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{})
 			eps := []string{"chat_completions", "responses"}
 			if mode == "translated" {
 				eps = []string{"chat_completions", "responses_compat"}
 			}
-			require.NoError(t, s.appsConfig.AddApp("gateway", pkgConfig.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: upstream.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}}, Capabilities: &pkgConfig.AppCapabilities{Models: []string{"test-model"}, WireEndpoints: eps}}))
+			require.NoError(t, s.appsConfig().AddApp("gateway", pkgConfig.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: upstream.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}}, Capabilities: &pkgConfig.AppCapabilities{Models: []string{"test-model"}, WireEndpoints: eps}}))
 			s.model.Cache.Invalidate()
 			s.model.Resolver = staticModelResolver{provider: "gateway"}
 			s.access, _ = newGatewayWithEnforcer(t)
@@ -148,7 +148,7 @@ func TestNarrowToWireEndpoint_DerivedShimsAndNative(t *testing.T) {
 	} {
 		require.NoError(t, cfg.AddApp(name, pkgConfig.ServiceConfig{Enabled: new(true), Mode: "external", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: "http://example.test"}, Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: eps}}))
 	}
-	s := &Server{appsConfig: cfg}
+	s := &Server{configStore: pkgConfig.NewMemoryAppsConfigStore(cfg)}
 	for _, endpoint := range []string{"messages", "responses"} {
 		t.Run(endpoint, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())

@@ -27,13 +27,13 @@ func postReplayProxy(t *testing.T, client *http.Client, endpoint string) (*chain
 	t.Helper()
 	s, _ := instanceStreamTestServer()
 	s.model = &model.Subsystem{}
-	s.appsConfig = &config.AppsConfig{}
-	require.NoError(t, s.appsConfig.AddApp("engine", config.ServiceConfig{
+	s.configStore = config.NewMemoryAppsConfigStore(&config.AppsConfig{})
+	require.NoError(t, s.appsConfig().AddApp("engine", config.ServiceConfig{
 		Enabled: new(true), Mode: "service", Protocol: config.ProtocolOpenAI,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: endpoint},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
-	s.backend = backend.NewResolver(func() *config.AppsConfig { return s.appsConfig })
+	s.backend = backend.NewResolver(s.appsConfig)
 	s.proxy = NewProxyClient(client, nil, s.inference.normalizers, nil, nil, nil, nil)
 	strategies := fallback.NewStrategyRegistry()
 	strategies.Register(&fallback.PriorityStrategy{})
@@ -135,15 +135,15 @@ func TestPostRefusedDialMovesToNextReplica(t *testing.T) {
 
 	s, _ := instanceStreamTestServer()
 	s.model = &model.Subsystem{}
-	s.appsConfig = &config.AppsConfig{}
+	s.configStore = config.NewMemoryAppsConfigStore(&config.AppsConfig{})
 	for name, endpoint := range map[string]string{"down": closed, "up": live.URL} {
-		require.NoError(t, s.appsConfig.AddApp(name, config.ServiceConfig{
+		require.NoError(t, s.appsConfig().AddApp(name, config.ServiceConfig{
 			Enabled: new(true), Mode: "service", Protocol: config.ProtocolOpenAI,
 			Runtime:      &config.AppRuntimeConfig{Endpoint: endpoint},
 			Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 		}))
 	}
-	s.backend = backend.NewResolver(func() *config.AppsConfig { return s.appsConfig })
+	s.backend = backend.NewResolver(s.appsConfig)
 	s.proxy = NewProxyClient(&http.Client{}, nil, s.inference.normalizers, nil, nil, nil, nil)
 	strategies := fallback.NewStrategyRegistry()
 	strategies.Register(&fallback.PriorityStrategy{})

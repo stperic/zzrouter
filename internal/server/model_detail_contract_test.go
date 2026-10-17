@@ -206,7 +206,7 @@ func TestModelDetailWorkerContract(t *testing.T) {
 	detailWeights(t, root, "org/worker", "served", 32768)
 	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	coordinator := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}})
-	coordinator.model.Cache = cache.New(cache.Config{Node: coordinator.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *config.AppsConfig { return worker.appsConfig }, ClusterClient: func() mesh.ClusterClient { return deploymentCatalogClient{worker: worker} }, ResolveEndpointToNodename: func(string) string { return "" }})
+	coordinator.model.Cache = cache.New(cache.Config{Node: coordinator.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: worker.appsConfig, ClusterClient: func() mesh.ClusterClient { return deploymentCatalogClient{worker: worker} }, ResolveEndpointToNodename: func(string) string { return "" }})
 	client := &detailWorkerClient{deploymentCatalogClient: deploymentCatalogClient{worker: worker}, t: t, engine: buildInternalEngine(worker)}
 	coordinator.services.Model.router = routing.NewClusterAwareRouterWithClient(coordinator.node.Nodename(), client, "9090", coordinator.ServeLocalRequest, coordinator.httpClient)
 

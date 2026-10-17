@@ -107,7 +107,6 @@ type Server struct {
 	nodeConfigStore     *pkgConfig.NodeConfigStore // Single owner of node.yaml I/O
 	config              *pkgConfig.NodeConfig      // Cached pointer (same object as nodeConfigStore.Config())
 	configStore         *pkgConfig.AppsConfigStore // Single owner of provider config I/O
-	appsConfig          *pkgConfig.AppsConfig      // Cached pointer (same object as configStore.Config())
 	engine              *gin.Engine
 	httpServer          *http.Server
 	httpClient          *http.Client                    // Configured HTTP client for outbound requests
@@ -239,12 +238,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.engine.ServeHTTP(w, r)
 }
 
+// appsConfig is the provider config the store holds now; nil without a
+// providers/ tree. Read it per use: a mutation replaces it.
+func (s *Server) appsConfig() *pkgConfig.AppsConfig {
+	if s.configStore == nil {
+		return nil
+	}
+	return s.configStore.Config()
+}
+
 // IsAppEnabled checks if a provider is enabled in the configuration
 func (s *Server) IsAppEnabled(providerType string) bool {
-	if s.appsConfig == nil {
+	apps := s.appsConfig()
+	if apps == nil {
 		return true
 	}
-	if svc, exists := s.appsConfig.LookupApp(providerType); exists {
+	if svc, exists := apps.LookupApp(providerType); exists {
 		return svc.IsEnabled()
 	}
 	return true

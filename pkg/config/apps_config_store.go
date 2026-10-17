@@ -79,6 +79,12 @@ func NewAppsConfigStoreFromStandardLocations(node string) (*AppsConfigStore, err
 	return newAppsConfigStore(dirPath, node)
 }
 
+// NewMemoryAppsConfigStore serves cfg with no providers/ directory behind
+// it, so its writes fail. For code that builds a config instead of loading one.
+func NewMemoryAppsConfigStore(cfg *AppsConfig) *AppsConfigStore {
+	return &AppsConfigStore{config: cfg}
+}
+
 // load reads the tree from disk as this store's node runs it.
 func (s *AppsConfigStore) load() (*AppsConfig, error) {
 	cfg, err := LoadAppsConfig(s.dirPath)

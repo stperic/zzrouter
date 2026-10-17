@@ -23,6 +23,11 @@ func TestColdWireContractInvalidCatalog(t *testing.T) {
 				}
 				requests := make(chan recordedRequest, 2)
 				engine := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
+						// A catalog probe, not the request under test.
+						_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+						return
+					}
 					body, _ := io.ReadAll(r.Body)
 					requests <- recordedRequest{Path: r.URL.Path, Body: body}
 					w.Header().Set("Content-Type", "application/json")
@@ -45,7 +50,7 @@ func TestColdWireContractInvalidCatalog(t *testing.T) {
 					Runtime:      &config.AppRuntimeConfig{Endpoint: engine.URL, API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "synthetic-cold-wire-test-token"}},
 					Capabilities: &config.AppCapabilities{Models: []string{"cold-model"}, WireEndpoints: eps},
 				}))
-				s.appsConfig = cfg
+				s.configStore = config.NewMemoryAppsConfigStore(cfg)
 				s.providers.appMgr.ReloadConfig(cfg)
 				s.model.Cache.Invalidate()
 				require.Empty(t, s.providers.appMgr.Instances().List())
