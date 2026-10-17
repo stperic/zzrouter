@@ -158,10 +158,10 @@ func TestDeploymentHealthTarget_NeverGuessesARemoteNode(t *testing.T) {
 // on another node is probed at that node, which is sent none.
 func TestDeploymentHealthTarget_CarriesTheDeclaredCredential(t *testing.T) {
 	s := createTestNodeWithDefaults(t)
-	s.appsConfig = &config.AppsConfig{Version: "1.0", Name: "test"}
+	s.configStore = config.NewMemoryAppsConfigStore(&config.AppsConfig{Version: "1.0", Name: "test"})
 	enabled := true
 	nas := config.NewOllamaConnectProvider("ollama-nas", "http://nas.lan:11434", "nas-token")
-	require.NoError(t, s.appsConfig.AddApp("ollama-nas", config.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("ollama-nas", config.ServiceConfig{
 		Enabled: &enabled, Name: "ollama-nas", Mode: "external", Protocol: nas.Protocol,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: nas.Runtime.Endpoint, API: nas.Runtime.API},
 		Capabilities: nas.Capabilities,

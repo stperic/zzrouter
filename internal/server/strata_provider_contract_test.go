@@ -56,13 +56,13 @@ func TestExternalOpenAICatalogServesThroughSharedRoutes(t *testing.T) {
 	}))
 	t.Cleanup(engine.Close)
 	s := createTestNodeWithDefaults(t)
-	s.appsConfig = &config.AppsConfig{}
-	require.NoError(t, s.appsConfig.AddApp("strata", config.ServiceConfig{
+	s.configStore = config.NewMemoryAppsConfigStore(&config.AppsConfig{})
+	require.NoError(t, s.appsConfig().AddApp("strata", config.ServiceConfig{
 		Name: "strata", Enabled: new(true), Mode: "external", Protocol: config.ProtocolOpenAI,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: engine.URL, API: &config.APIConfig{AuthType: config.AuthTypeBearer, AuthHeader: "Authorization", AuthPrefix: "Bearer ", Token: "provider-token"}},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions", "responses", "messages_compat"}},
 	}))
-	s.providers.appMgr.ReloadConfig(s.appsConfig)
+	s.providers.appMgr.ReloadConfig(s.appsConfig())
 	s.Invalidate()
 
 	list := makeAuthRequest(t, s, http.MethodGet, "/v1/models", TestAdminKey, nil)

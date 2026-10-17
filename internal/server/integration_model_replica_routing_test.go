@@ -52,7 +52,7 @@ func routingCatalog(t *testing.T, s *Server, models []map[string]any) *replicaWi
 	t.Helper()
 	client := &replicaWireClient{models: models}
 	s.model.Cache = cache.New(cache.Config{
-		Node: s.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *config.AppsConfig { return s.appsConfig },
+		Node: s.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: s.appsConfig,
 		ClusterClient: func() mesh.ClusterClient { return client }, ResolveEndpointToNodename: func(string) string { return "" },
 	})
 	return client
@@ -180,7 +180,7 @@ func TestModelInstanceUsesWorkerRunInventory(t *testing.T) {
 
 func TestReplicaRoutingPrefixedCloudRequiresAuthentication(t *testing.T) {
 	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
-	require.NoError(t, s.appsConfig.AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
+	require.NoError(t, s.appsConfig().AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
 	client := routingCatalog(t, s, nil)
 	for _, name := range []string{"cloud-model", "paid/cloud-model"} {
 		resolved, err := s.ResolveModel(t.Context(), resolver.Reference{Model: name})
@@ -251,7 +251,7 @@ func TestReplicaRoutingUnknownNameWithWorkerDown(t *testing.T) {
 
 func TestReplicaRoutingDecoratedCloudGroupRequiresAuthentication(t *testing.T) {
 	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
-	require.NoError(t, s.appsConfig.AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
+	require.NoError(t, s.appsConfig().AddApp("paid", config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{Endpoint: "https://paid.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}}, Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}}}))
 	require.NoError(t, s.model.Groups.Set("cloud-group", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "paid", App: "paid", Model: "cloud-model"}}}))
 	for _, model := range []string{"cloud-group", "cloud-group@worker"} {
 		response := makeAuthRequest(t, s, http.MethodPost, "/v1/chat/completions", "", map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
@@ -320,7 +320,7 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 			require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 			router := &launchBroadcastRouter{}
 			s.cluster.router = router
-			svc := NewLoadService(s, router).WithTierResolution(func() *config.AppsConfig { return s.appsConfig })
+			svc := NewLoadService(s, router).WithTierResolution(s.appsConfig)
 			for _, name := range []string{"unknown", "qwen"} {
 				wantError := name == "qwen" && !unscoped
 				resolved, inferenceErr := s.ResolveModel(t.Context(), resolver.Reference{Model: name})

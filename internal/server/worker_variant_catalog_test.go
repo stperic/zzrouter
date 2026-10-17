@@ -82,12 +82,12 @@ func TestWorkerLaunchPreservesVariantCatalog(t *testing.T) {
 
 func TestWorkerCatalogPreservesInternalModelsWireBody(t *testing.T) {
 	s, _ := workerVariantCatalog(t)
-	require.NoError(t, s.appsConfig.AddApp("unreadable", config.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("unreadable", config.ServiceConfig{
 		Enabled: new(true), Mode: "external", Protocol: config.ProtocolOllama,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: "invalid://inventory"},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
-	require.NoError(t, s.appsConfig.AddApp("cloud", config.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("cloud", config.ServiceConfig{
 		Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI,
 		Runtime:      &config.AppRuntimeConfig{Endpoint: "https://example.test", API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "test-token"}},
 		Capabilities: &config.AppCapabilities{Models: []string{"cloud-model"}, WireEndpoints: []string{"chat_completions"}},

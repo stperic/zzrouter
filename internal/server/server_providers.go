@@ -31,13 +31,6 @@ func (s *Server) subscribeConfigStore() {
 	if s.configStore == nil {
 		return
 	}
-	// appsConfig pointer sync runs first so downstream listeners that
-	// read s.appsConfig (rather than the cfg arg) observe the new value.
-	// Reports Ignored — it's a pointer swap, not state reconciliation.
-	s.configStore.OnChange("server.appsConfig", func(cfg *pkgConfig.AppsConfig) pkgConfig.ReloadDisposition {
-		s.appsConfig = cfg
-		return pkgConfig.DispositionIgnored
-	})
 	if s.providers.appMgr != nil {
 		s.configStore.OnChange("providerAppManager", s.providers.appMgr.ReloadConfig)
 	}

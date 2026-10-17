@@ -338,7 +338,7 @@ func newServedServerRig(t *testing.T) *servedServerRig {
 	})
 	nc := &config.NodeConfig{}
 	nc.Node.Name = "node-a"
-	s := &Server{node: NewNodeIdentity(nc), config: nc, appsConfig: r.cfg, backend: resolver, httpStreamingClient: client, model: &model.Subsystem{}}
+	s := &Server{node: NewNodeIdentity(nc), config: nc, configStore: config.NewMemoryAppsConfigStore(r.cfg), backend: resolver, httpStreamingClient: client, model: &model.Subsystem{}}
 	s.inference.normalizers = NewResponseNormalizers()
 	s.proxy = NewProxyClient(client, nil, s.inference.normalizers, nil, nil, nil, nil)
 	s.providers.appMgr = mgr

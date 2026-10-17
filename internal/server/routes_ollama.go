@@ -10,7 +10,6 @@
 package server
 
 import (
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -25,7 +24,7 @@ func (s *Server) registerOllamaRoutes() {
 		proxyToOllamaProvider: s.proxyToOllamaProvider,
 		handleRoute:           s.HandleRoute,
 		appMgr:                s.providers.appMgr,
-		appsConfig:            func() *pkgConfig.AppsConfig { return s.appsConfig },
+		appsConfig:            s.appsConfig,
 		adapter:               NewOllamaAdapter(),
 		groups:                s.model.Groups,
 		nodeName:              s.node.Nodename,

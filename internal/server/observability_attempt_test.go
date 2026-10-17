@@ -216,8 +216,8 @@ func TestTraceRealtimeHandshakeStatusAndPropagation(t *testing.T) {
 			copied := *server.config
 			copied.OpenAICompat.RealtimeBackend = "realtime-fixture"
 			server.config = &copied
-			server.appsConfig = &pkgConfig.AppsConfig{Version: "1.0", Name: "realtime-test"}
-			require.NoError(t, server.appsConfig.AddApp("realtime-fixture", pkgConfig.ServiceConfig{
+			server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{Version: "1.0", Name: "realtime-test"})
+			require.NoError(t, server.appsConfig().AddApp("realtime-fixture", pkgConfig.ServiceConfig{
 				Enabled: new(true), Name: "realtime-fixture", Mode: "service", Protocol: pkgConfig.ProtocolOpenAI,
 				Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: upstream.URL},
 				Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},

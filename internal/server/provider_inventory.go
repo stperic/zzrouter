@@ -25,8 +25,8 @@ func (s *Server) providerInventoryStatus(ctx context.Context, failures map[strin
 		reasons = make(map[string]string)
 	}
 	statuses := make(map[string]prov_apps.ProviderServiceStatus)
-	if s.appsConfig != nil && s.providers.appMgr != nil {
-		s.appsConfig.RangeApps(func(name string, cfg config.ServiceConfig) bool {
+	if apps := s.appsConfig(); apps != nil && s.providers.appMgr != nil {
+		apps.RangeApps(func(name string, cfg config.ServiceConfig) bool {
 			if !cfg.IsEnabled() || !cfg.HasEndpoint() || cfg.IsCloudProvider() {
 				return true
 			}

@@ -95,12 +95,12 @@ func startRealtimeZZRouter(t *testing.T, backendURL string) string {
 
 	server, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
-	server.appsConfig = &pkgConfig.AppsConfig{
+	server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
+	})
 	for name, sc := range apps {
-		require.NoError(t, server.appsConfig.AddApp(name, sc))
+		require.NoError(t, server.appsConfig().AddApp(name, sc))
 	}
 
 	// Serve the gin engine on a real httptest.Server so the gorilla
@@ -267,9 +267,9 @@ func TestRealtime_EnforcesOpaqueAccessBeforeDial(t *testing.T) {
 	t.Cleanup(backend.Close)
 	s := createTestNodeWithDefaults(t)
 	s.config.OpenAICompat.RealtimeBackend = "realtime-test"
-	s.appsConfig = &pkgConfig.AppsConfig{Version: "1.0", Name: "test"}
+	s.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{Version: "1.0", Name: "test"})
 	enabled := true
-	require.NoError(t, s.appsConfig.AddApp("realtime-test", pkgConfig.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("realtime-test", pkgConfig.ServiceConfig{
 		Enabled: &enabled, Name: "realtime-test", Mode: "external", Protocol: pkgConfig.ProtocolOpenAI,
 		Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: backend.URL},
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
@@ -333,7 +333,7 @@ func TestRealtime_EnforcesOpaqueAccessBeforeDial(t *testing.T) {
 	changed = makeAuthRequest(t, s, http.MethodPatch, "/zzrouter/v1/teams/restricted", TestAdminKey, map[string]any{"allowed_models": []string{}})
 	require.Equal(t, http.StatusOK, changed.Code, string(changed.Body))
 	// An anonymous caller must not spend this node's cloud credential.
-	require.NoError(t, s.appsConfig.AddApp("cloud-realtime", pkgConfig.ServiceConfig{
+	require.NoError(t, s.appsConfig().AddApp("cloud-realtime", pkgConfig.ServiceConfig{
 		Enabled: &enabled, Name: "cloud-realtime", Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI,
 		Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: backend.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-cloud-token"}},
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},

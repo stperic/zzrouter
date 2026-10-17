@@ -124,7 +124,7 @@ func (b *serviceBackend) requests() []recordedRequest {
 func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serviceBackend) *Server {
 	t.Helper()
 	s := createTestNodeWithDefaults(t)
-	s.appsConfig = &pkgConfig.AppsConfig{Version: "1.0", Name: "test"}
+	s.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{Version: "1.0", Name: "test"})
 	enabled := true
 	var replicas []modelgroup.Replica
 	for i, name := range order {
@@ -151,14 +151,14 @@ func newServiceGroupNode(t *testing.T, order []string, backends map[string]*serv
 			_, _ = w.Write([]byte(reply))
 		}))
 		t.Cleanup(engine.Close)
-		require.NoError(t, s.appsConfig.AddApp(name, pkgConfig.ServiceConfig{
+		require.NoError(t, s.appsConfig().AddApp(name, pkgConfig.ServiceConfig{
 			Enabled: &enabled, Name: name, Mode: "service", Protocol: pkgConfig.ProtocolOpenAI,
 			Runtime:      &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL, FailurePatterns: b.failures},
 			Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: b.wire},
 		}))
 		replicas = append(replicas, modelgroup.Replica{Name: name, App: name, Model: name + "-model", Priority: i + 1})
 	}
-	s.providers.appMgr.ReloadConfig(s.appsConfig)
+	s.providers.appMgr.ReloadConfig(s.appsConfig())
 	require.NoError(t, s.model.Groups.Set("claude", modelgroup.ModelGroup{Strategy: modelgroup.StrategyPriority, Replicas: replicas}))
 	return s
 }

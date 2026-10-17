@@ -92,7 +92,7 @@ func TestIntegration_PreviewReportsWhereValuesCameFrom(t *testing.T) {
 	// the shared test config has one: what is under test is the
 	// reporting, and a skipped test reports nothing.
 	const provider = "previewprov"
-	require.NoError(t, server.appsConfig.AddApp(provider, config.ServiceConfig{
+	require.NoError(t, server.appsConfig().AddApp(provider, config.ServiceConfig{
 		Enabled:  new(true),
 		Name:     "Preview Provider",
 		Protocol: config.ProtocolOpenAI,

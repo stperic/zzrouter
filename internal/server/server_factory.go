@@ -128,7 +128,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.role = roleMgr
 	normalizers.CleanChatUsage = func() bool { return !s.IsWorker() }
 
-	s.backend = backend.NewResolver(func() *pkgConfig.AppsConfig { return s.appsConfig })
+	s.backend = backend.NewResolver(s.appsConfig)
 	s.inference.normalizers = normalizers
 	s.proxy = NewProxyClient(s.httpStreamingClient, s.coordWorkerMTLSClient, normalizers, s.trackProviderRateLimit,
 		func() bool { return s.config.Coordinator.Routing.InjectUsageMetadata },
@@ -222,15 +222,14 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// TODO: restore connection-marker overlay hook (install.ApplyConnectionOverlay
 		// + AppsConfigStore.SetPreNotifyHook) — the supporting code is missing from
 		// origin/main at merge time.
-		s.appsConfig = store.Config()
 	}
 
 	// Register cloud search providers from config (OpenAI-compatible /v1/models)
-	search.RegisterCloudProvidersFromConfig(func() *pkgConfig.AppsConfig { return s.appsConfig })
+	search.RegisterCloudProvidersFromConfig(s.appsConfig)
 
 	// Initialize ProviderAppManager (prov_apps — unified lifecycle for providers)
 	providerAppMgr, err := prov_apps.NewProviderAppManager(
-		s.appsConfig,
+		s.appsConfig(),
 		prov_apps.WithHTTPClient(s.httpClient),
 		prov_apps.WithJobsRegistry(s.jobs),
 		prov_apps.WithCatalogPublication(s.publishCatalog),
@@ -291,7 +290,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// AppsConfig via ReloadConfig — the same hook subscribeConfigStore
 	// wires up for runtime changes, so initial boot and post-install
 	// reloads share a single code path.
-	modelRegistry, err := modelregistry.NewRegistry(func() *pkgConfig.AppsConfig { return s.appsConfig })
+	modelRegistry, err := modelregistry.NewRegistry(s.appsConfig)
 	if err != nil {
 		logger.Warn("Failed to create model registry", "error", err)
 	} else {
@@ -355,7 +354,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// Load model groups and virtual keys from their respective config files.
 	s.model.Groups = modelgroup.NewGroupStore()
 	s.model.Groups.SetCloudAppChecker(func(app string) bool {
-		return s.appsConfig.GetCloud(app) != nil
+		return s.appsConfig().GetCloud(app) != nil
 	})
 	{
 		cm := pkgConfig.NewConfigManager("zzrouter")
@@ -387,7 +386,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			},
 			Node:                      s.node,
 			Registry:                  func() *modelregistry.Registry { return s.model.Registry },
-			AppsConfig:                func() *pkgConfig.AppsConfig { return s.appsConfig },
+			AppsConfig:                s.appsConfig,
 			ClusterClient:             s.getClusterClient,
 			NodeCache:                 s.model.NodeCache,
 			Resources:                 s.cluster.resources,

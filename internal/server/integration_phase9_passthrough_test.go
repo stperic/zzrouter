@@ -91,11 +91,11 @@ func configureBackend(t *testing.T, s *Server, key, url string) {
 			WireEndpoints: []string{"chat_completions", "responses"},
 		},
 	}
-	s.appsConfig = &pkgConfig.AppsConfig{
+	s.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
-	if err := s.appsConfig.AddApp(key, svc); err != nil {
+	})
+	if err := s.appsConfig().AddApp(key, svc); err != nil {
 		t.Fatalf("AddApp(%q): %v", key, err)
 	}
 	s.config.OpenAICompat.DefaultBackend = key

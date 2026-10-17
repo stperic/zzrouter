@@ -79,7 +79,7 @@ func groupHasCloudReplica(groups modelgroup.GroupReader, name string, isCloud fu
 
 // providerIsCloud reports whether a provider key names a cloud provider.
 func (s *Server) providerIsCloud(provider string) bool {
-	cfg := s.appsConfig
+	cfg := s.appsConfig()
 	if cfg == nil || provider == "" {
 		return false
 	}

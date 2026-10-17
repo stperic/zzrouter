@@ -35,9 +35,9 @@ func imageAdmissionNode(t *testing.T, state string) (*Server, *atomic.Int32) {
 	}))
 	t.Cleanup(engine.Close)
 	s := createTestNodeWithDefaults(t)
-	s.appsConfig = &pkgConfig.AppsConfig{}
-	require.NoError(t, s.appsConfig.AddApp("ollama", pkgConfig.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}}, Capabilities: &pkgConfig.AppCapabilities{Models: []string{"same-model"}, WireEndpoints: []string{"chat_completions", "messages", "responses"}}}))
-	s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: &pkgConfig.NodeConfig{}, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *pkgConfig.AppsConfig { return s.appsConfig }, ClusterClient: s.getClusterClient, ModelDetails: func(_, _ string, _ map[string]any) map[string]any {
+	s.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{})
+	require.NoError(t, s.appsConfig().AddApp("ollama", pkgConfig.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: pkgConfig.ProtocolOpenAI, Runtime: &pkgConfig.AppRuntimeConfig{Endpoint: engine.URL, API: &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}}, Capabilities: &pkgConfig.AppCapabilities{Models: []string{"same-model"}, WireEndpoints: []string{"chat_completions", "messages", "responses"}}}))
+	s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: &pkgConfig.NodeConfig{}, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: s.appsConfig, ClusterClient: s.getClusterClient, ModelDetails: func(_, _ string, _ map[string]any) map[string]any {
 		return map[string]any{"features": map[string]string{"vision": state}}
 	}})
 	require.NoError(t, s.model.Cache.RefreshCacheSync(context.Background()))
@@ -164,14 +164,14 @@ func TestImageGroupSelectsVisionBeforeProtocol(t *testing.T) {
 			}
 			s := newServiceGroupNode(t, []string{"text", "vision"}, backends)
 			for _, name := range []string{"text", "vision"} {
-				require.NoError(t, s.appsConfig.UpdateApp(name, func(cfg *pkgConfig.ServiceConfig) error {
+				require.NoError(t, s.appsConfig().UpdateApp(name, func(cfg *pkgConfig.ServiceConfig) error {
 					cfg.Mode = "cloud"
 					cfg.Capabilities.Models = []string{name + "-model"}
 					cfg.Runtime.API = &pkgConfig.APIConfig{AuthType: pkgConfig.AuthTypeBearer, Token: "test-token"}
 					return nil
 				}))
 			}
-			s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: &pkgConfig.NodeConfig{}, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *pkgConfig.AppsConfig { return s.appsConfig }, ClusterClient: s.getClusterClient, ModelDetails: func(provider, _ string, _ map[string]any) map[string]any {
+			s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: &pkgConfig.NodeConfig{}, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: s.appsConfig, ClusterClient: s.getClusterClient, ModelDetails: func(provider, _ string, _ map[string]any) map[string]any {
 				value := "unsupported"
 				if provider == "vision" {
 					value = state

@@ -153,10 +153,11 @@ const (
 
 // providerWireMode is the fallback for targets without node-reported endpoints.
 func (s *Server) providerWireMode(provider, native, compat string) wireEndpointMode {
-	if s.appsConfig == nil {
+	apps := s.appsConfig()
+	if apps == nil {
 		return wireModeUnknown
 	}
-	svc, ok := s.appsConfig.LookupApp(provider)
+	svc, ok := apps.LookupApp(provider)
 	if !ok {
 		return wireModeUnknown
 	}

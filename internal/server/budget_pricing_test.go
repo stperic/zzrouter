@@ -83,7 +83,7 @@ func TestPricingExplicitZero(t *testing.T) {
 	store := pricing.NewStore(&pkgConfig.PricingConfig{Enabled: &disabled}, t.TempDir())
 	require.NoError(t, store.SetOverride(pricing.Override{Provider: "cloud", Model: "zero"}))
 	assert.NotNil(t, pricing.Resolve(store, "cloud", []string{"zero"}, false).Rates)
-	s := &Server{model: &model.Subsystem{Pricing: store}, appsConfig: &pkgConfig.AppsConfig{}}
+	s := &Server{model: &model.Subsystem{Pricing: store}, configStore: pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{})}
 	enabled := true
 	for _, tc := range []struct {
 		name, mode string
@@ -97,7 +97,7 @@ func TestPricingExplicitZero(t *testing.T) {
 		{"external", "service", pkgConfig.ProtocolOpenAI, &pkgConfig.AppRuntimeConfig{Endpoint: "http://unused.invalid"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, s.appsConfig.AddApp(tc.name, pkgConfig.ServiceConfig{Name: tc.name, Mode: tc.mode, Protocol: tc.protocol, Enabled: &enabled, Runtime: tc.runtime, Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+			require.NoError(t, s.appsConfig().AddApp(tc.name, pkgConfig.ServiceConfig{Name: tc.name, Mode: tc.mode, Protocol: tc.protocol, Enabled: &enabled, Runtime: tc.runtime, Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			target := &resolver.Resolved{Provider: tc.name, ModelName: "model"}
 			s.quoteTargets(c, target)

@@ -71,12 +71,12 @@ func TestResponseAffinity_RecordsOnCreate_UsesOnRetrieve(t *testing.T) {
 	}
 	server, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
-	server.appsConfig = &pkgConfig.AppsConfig{
+	server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
+	})
 	for name, sc := range apps {
-		require.NoError(t, server.appsConfig.AddApp(name, sc))
+		require.NoError(t, server.appsConfig().AddApp(name, sc))
 	}
 	t.Cleanup(func() { cleanupTestNode(server) })
 
@@ -150,12 +150,12 @@ func TestResponseAffinity_Miss_FallsThroughToDefault(t *testing.T) {
 	}
 	server, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
-	server.appsConfig = &pkgConfig.AppsConfig{
+	server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
+	})
 	for name, sc := range apps {
-		require.NoError(t, server.appsConfig.AddApp(name, sc))
+		require.NoError(t, server.appsConfig().AddApp(name, sc))
 	}
 	t.Cleanup(func() { cleanupTestNode(server) })
 
@@ -209,12 +209,12 @@ func TestResponseAffinity_DeleteFlushesEntry(t *testing.T) {
 	}
 	server, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
-	server.appsConfig = &pkgConfig.AppsConfig{
+	server.configStore = pkgConfig.NewMemoryAppsConfigStore(&pkgConfig.AppsConfig{
 		Version: "1.0",
 		Name:    "test",
-	}
+	})
 	for name, sc := range apps {
-		require.NoError(t, server.appsConfig.AddApp(name, sc))
+		require.NoError(t, server.appsConfig().AddApp(name, sc))
 	}
 	t.Cleanup(func() { cleanupTestNode(server) })
 
