@@ -334,15 +334,11 @@ func (c *Client) UpgradeProvider(name, version, node string) (*InstallAcceptedRe
 
 // SetProviderPinnedVersion durably pins a provider to an install version.
 // An empty version clears the pin, restoring "resolve latest upstream".
-// The coordinator persists the pin and fans the new config out to workers.
-// PATCH /zzrouter/v1/providers/:name.
-func (c *Client) SetProviderPinnedVersion(name, version, node string) error {
-	path := apipath.Provider(name)
-	if node != "" {
-		path += "?node=" + url.QueryEscape(node)
-	}
+// The coordinator holds one pin for every node and the provider sync
+// carries it. PATCH /zzrouter/v1/providers/:name.
+func (c *Client) SetProviderPinnedVersion(name, version string) error {
 	body := map[string]any{"pinned_version": version}
-	return c.doJSON("PATCH", path, body, nil, "set provider version pin")
+	return c.doJSON("PATCH", apipath.Provider(name), body, nil, "set provider version pin")
 }
 
 // AddProviderInstanceRequest is the body of POST /zzrouter/v1/providers/instances.

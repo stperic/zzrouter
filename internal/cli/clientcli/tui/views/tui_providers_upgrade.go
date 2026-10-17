@@ -137,7 +137,7 @@ func (m *ProvidersViewModel) updateUpgrade(msg tea.Msg) tea.Cmd {
 		// this provider starts on, so persisting it before the upgrade
 		// keeps the two consistent even if the upgrade later fails.
 		if pin {
-			if err := client.SetProviderPinnedVersion(name, version, ""); err != nil {
+			if err := client.SetProviderPinnedVersion(name, version); err != nil {
 				return func() tea.Msg {
 					return providersActionMsg{action: "upgrade", name: name, err: err}
 				}

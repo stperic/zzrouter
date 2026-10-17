@@ -62,7 +62,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.services.Runs.WithModelResolver(func(ctx context.Context, name string) (*resolver.Resolved, error) {
 		return s.ResolveModel(ctx, resolver.Reference{Model: name})
 	})
-	s.services.Apps = NewAppsService(s, routingRouter)
+	s.services.Apps = NewAppsService(s, routingRouter, s.appsConfig)
 	s.services.Nodes = NewNodesService(s, routingRouter, func(address string) string {
 		return s.config.Cluster.Endpoints.NameFor(address)
 	})

@@ -820,7 +820,7 @@ func TestAppsService_ListApps(t *testing.T) {
 				{Key: "ollama", Name: "Ollama", Type: "ollama", Node: "node1", State: prov_apps.StateLive},
 			},
 		}
-		svc := NewAppsService(provider, &mockRouter{})
+		svc := NewAppsService(provider, &mockRouter{}, noAppsConfig)
 
 		resp, err := svc.ListApps(context.Background(), &ListAppsRequest{})
 		if err != nil {
@@ -851,7 +851,7 @@ func TestAppsService_ListApps(t *testing.T) {
 				},
 			},
 		}
-		svc := NewAppsService(provider, &mockRouter{})
+		svc := NewAppsService(provider, &mockRouter{}, noAppsConfig)
 		resp, err := svc.ListApps(context.Background(), &ListAppsRequest{})
 		if err != nil {
 			t.Fatalf("ListApps() error = %v", err)
@@ -868,7 +868,7 @@ func TestAppsService_ListApps(t *testing.T) {
 	})
 
 	t.Run("nil provider returns empty", func(t *testing.T) {
-		svc := NewAppsService(nil, &mockRouter{})
+		svc := NewAppsService(nil, &mockRouter{}, noAppsConfig)
 
 		resp, err := svc.ListApps(context.Background(), &ListAppsRequest{})
 		if err != nil {
@@ -886,7 +886,7 @@ func TestAppsService_ListApps(t *testing.T) {
 				{Key: "vllm", Name: "vLLM", Type: "vllm", Node: "node1", State: prov_apps.StateLive},
 			},
 		}
-		svc := NewAppsService(provider, &mockRouter{})
+		svc := NewAppsService(provider, &mockRouter{}, noAppsConfig)
 
 		req := &ListAppsRequest{App: "ollama"}
 		resp, err := svc.ListApps(context.Background(), req)
@@ -907,7 +907,7 @@ func TestAppsService_GetApp(t *testing.T) {
 				Body:       []byte(`{"name":"Ollama","type":"ollama"}`),
 			},
 		}
-		svc := NewAppsService(nil, router)
+		svc := NewAppsService(nil, router, noAppsConfig)
 
 		resp, err := svc.GetApp(context.Background(), &GetAppRequest{Name: "ollama"})
 		if err != nil {
@@ -922,7 +922,7 @@ func TestAppsService_GetApp(t *testing.T) {
 		router := &mockRouter{
 			err: fmt.Errorf("not found"),
 		}
-		svc := NewAppsService(nil, router)
+		svc := NewAppsService(nil, router, noAppsConfig)
 
 		_, err := svc.GetApp(context.Background(), &GetAppRequest{Name: "nonexistent"})
 		if err == nil {
@@ -939,7 +939,7 @@ func TestAppsService_UpdateApp(t *testing.T) {
 				Body:       []byte(`{"name":"ollama","enabled":true,"message":"updated"}`),
 			},
 		}
-		svc := NewAppsService(nil, router)
+		svc := NewAppsService(nil, router, noAppsConfig)
 
 		enabled := true
 		resp, err := svc.UpdateApp(context.Background(), &UpdateAppRequest{
@@ -958,7 +958,7 @@ func TestAppsService_UpdateApp(t *testing.T) {
 		router := &mockRouter{
 			err: fmt.Errorf("update failed"),
 		}
-		svc := NewAppsService(nil, router)
+		svc := NewAppsService(nil, router, noAppsConfig)
 
 		enabled := false
 		_, err := svc.UpdateApp(context.Background(), &UpdateAppRequest{

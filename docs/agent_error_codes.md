@@ -135,6 +135,15 @@ request carries the coordinator's answer back unchanged.
 |---|---|---|---|
 | `provider_sync_pending` | 503 | The coordinator recorded the node's choice, but the provider sync has not reached that node yet. An install or uninstall job fails at finalization with this reason. | The next sync delivers it. Check `GET /providers/:n/status?node=` before retrying; a retry pushes the tree again. |
 
+### Provider pin (`PATCH /providers/:n` with `pinned_version`)
+
+An on-demand or external provider has one pin, which the coordinator records
+and the provider sync carries to every node.
+
+| `code` | HTTP | Meaning | Recovery |
+|---|---|---|---|
+| `pin_is_cluster_wide` | 400 | The pin was sent with `node` for a provider the sync carries, so it cannot be one node's. Nothing was written. | Send the same body without `node`; the pin then applies to every node. |
+
 ### Provider parameter validation (`PATCH /providers/:n/parameters`)
 
 Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is
