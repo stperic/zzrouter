@@ -1160,7 +1160,7 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 			params[key] = shape.Auto
 		}
 	}
-	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params)
+	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params, shapes)
 	if err != nil {
 		return process.Launch{}, nil, fmt.Errorf("failed to build command: %w", err)
 	}

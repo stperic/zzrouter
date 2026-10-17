@@ -382,6 +382,8 @@ type schemaParamDTO struct {
 	Pass   string `json:"pass,omitempty"`
 	Auto   string `json:"auto,omitempty"`
 	Served string `json:"served,omitempty"`
+	// Negatable says false passes --no-<flag> rather than leaving it unset.
+	Negatable bool `json:"negatable,omitempty"`
 }
 
 type endpointSchemaDTO struct {
@@ -446,6 +448,7 @@ func paramShapeMapToDTO(m map[string]schema.ParamShape) map[string]schemaParamDT
 			Pass:        string(shape.Pass),
 			Auto:        shape.Auto,
 			Served:      shape.Served,
+			Negatable:   shape.Negatable,
 		}
 	}
 	return out

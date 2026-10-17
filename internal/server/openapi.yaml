@@ -13835,7 +13835,14 @@ components:
         description: { type: string }
         enum:
           type: array
+          description: The values accepted, whatever the `type`.
           items: { type: string }
+        negatable:
+          type: boolean
+          description: |
+            For `type: bool` only: `false` passes `--no-<flag>`, so it also
+            turns off a setting the engine enables by default. Without it,
+            `false` leaves the flag unset. The `no-` spelling is not a key.
         pass:
           type: string
           enum: [path, content]

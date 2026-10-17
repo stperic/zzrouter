@@ -44,6 +44,8 @@ type YAMLParam struct {
 	ContextOverride bool              `yaml:"context_override,omitempty"`
 	SequenceSlots   bool              `yaml:"sequence_slots,omitempty"`
 	PlacementLog    map[string]string `yaml:"placement_log,omitempty"`
+	// Negatable marks a bool the engine also spells --no-<flag>.
+	Negatable bool `yaml:"negatable,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -209,6 +211,9 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 	if out.Served == "" {
 		out.Served = yp.Served
+	}
+	if out.Negatable = out.Negatable || yp.Negatable; out.Negatable && out.Kind != ParamBool {
+		return ParamShape{}, fmt.Errorf("%s.%s: negatable applies only to type bool, not %q", provider, qualifiedName, out.Kind)
 	}
 	if err := out.mergeSizing(yp); err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)

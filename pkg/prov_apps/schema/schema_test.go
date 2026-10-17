@@ -225,3 +225,25 @@ func TestForEndpoint(t *testing.T) {
 		t.Error("ForEndpoint must not mutate the flat set")
 	}
 }
+
+// negatable is a bool's attribute; on any other type it would make false
+// render a flag the engine does not have.
+func TestMerge_Negatable(t *testing.T) {
+	merged, errs := Merge("llamacpp", &YAMLSchema{Parameters: map[string]YAMLParam{
+		"mmap":    {Type: "bool", Negatable: true},
+		"cpu-moe": {Type: "bool"},
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", errs)
+	}
+	if !merged.Parameters["mmap"].Negatable || merged.Parameters["cpu-moe"].Negatable {
+		t.Errorf("negatable did not merge as declared: %+v", merged.Parameters)
+	}
+	y, err := LoadYAMLSchema([]byte("parameters:\n  threads: {type: int, negatable: true}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, errs := Merge("llamacpp", y); len(errs) == 0 {
+		t.Error("negatable on an int must be refused")
+	}
+}

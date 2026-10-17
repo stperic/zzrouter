@@ -10,6 +10,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // withModelsRoot points the resolver at a temp models root holding the
@@ -40,7 +41,7 @@ func TestDeletionLaunchFreezesSymlinkContract(t *testing.T) {
 	require.Len(t, held, 1)
 	require.NoError(t, os.Remove(alias))
 	require.NoError(t, os.Symlink(b, alias))
-	launch, err := NewCommandBuilder(&cfg).Build(selected, 8080, nil)
+	launch, err := NewCommandBuilder(&cfg).Build(selected, 8080, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, held[0], launch.ModelPath, "argv must use the physical path held by the reservation")
 	require.Equal(t, held[0], launch.Args[0])
@@ -74,7 +75,7 @@ func TestBuild_ModelPlaceholderStripsVariantSuffix(t *testing.T) {
 			},
 		},
 	}
-	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen/Qwen2.5#qwen2.5-q4.gguf"), 8080, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen/Qwen2.5#qwen2.5-q4.gguf"), 8080, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Qwen/Qwen2.5", argAfter(t, launch.Args, "--alias"),
 		"${MODEL} must strip the #variant suffix")
@@ -96,7 +97,7 @@ func TestBuild_PointsEngineAtLocalWeights(t *testing.T) {
 			},
 		},
 	}
-	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "mlx-community/Qwen3-4bit"), 8090, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "mlx-community/Qwen3-4bit"), 8090, nil, nil)
 	require.NoError(t, err)
 
 	want := filepath.Join(root, "mlx-community", "Qwen3-4bit")
@@ -119,7 +120,7 @@ func TestBuild_MissingWeightsFailsLaunch(t *testing.T) {
 			},
 		},
 	}
-	_, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/never-downloaded"), 8000, nil)
+	_, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/never-downloaded"), 8000, nil, nil)
 	require.ErrorIs(t, err, ErrModelNotLocal)
 }
 
@@ -144,21 +145,21 @@ func TestBuild_WireModel(t *testing.T) {
 
 	t.Run("name engines keep the canonical name", func(t *testing.T) {
 		cfg := newCfg(config.WireModelName)
-		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "org/model", launch.WireModel)
 	})
 
 	t.Run("unset defaults to name", func(t *testing.T) {
 		cfg := newCfg("")
-		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, "org/model", launch.WireModel)
 	})
 
 	t.Run("path engines are addressed by path", func(t *testing.T) {
 		cfg := newCfg(config.WireModelPath)
-		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil)
+		launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "org/model"), 8000, nil, nil)
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(root, "org", "model"), launch.WireModel)
 	})
@@ -170,7 +171,7 @@ func TestBuildParameterArgs(t *testing.T) {
 			"max_model_len": "4096",
 			"gpu_memory":    "0.9",
 		}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Contains(t, args, "--max-model-len")
 		assert.Contains(t, args, "4096")
 		assert.Contains(t, args, "--gpu-memory")
@@ -179,20 +180,20 @@ func TestBuildParameterArgs(t *testing.T) {
 
 	t.Run("boolean true", func(t *testing.T) {
 		params := map[string]string{"trust_remote_code": "true"}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Contains(t, args, "--trust-remote-code")
 		assert.Len(t, args, 1) // no value for boolean true
 	})
 
 	t.Run("boolean false", func(t *testing.T) {
 		params := map[string]string{"trust_remote_code": "false"}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Empty(t, args) // false flags are skipped
 	})
 
 	t.Run("empty value", func(t *testing.T) {
 		params := map[string]string{"verbose": ""}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Contains(t, args, "--verbose")
 		assert.Len(t, args, 1)
 	})
@@ -202,18 +203,18 @@ func TestBuildParameterArgs(t *testing.T) {
 			"keep": "yes",
 			"skip": "no",
 		}
-		args := buildParameterArgs(params, []string{"skip"})
+		args := buildParameterArgs(params, nil, []string{"skip"})
 		assert.Contains(t, args, "--keep")
 		assert.NotContains(t, args, "--skip")
 	})
 
 	t.Run("nil params", func(t *testing.T) {
-		args := buildParameterArgs(nil, nil)
+		args := buildParameterArgs(nil, nil, nil)
 		assert.Nil(t, args)
 	})
 
 	t.Run("empty params", func(t *testing.T) {
-		args := buildParameterArgs(map[string]string{}, nil)
+		args := buildParameterArgs(map[string]string{}, nil, nil)
 		assert.Nil(t, args)
 	})
 
@@ -221,7 +222,7 @@ func TestBuildParameterArgs(t *testing.T) {
 		params := map[string]string{
 			"config": `{"num_workers":"4","rate":"1.5"}`,
 		}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Contains(t, args, "--config")
 		// Numeric strings should be converted to numbers
 		assert.Contains(t, args, `{"num_workers":4,"rate":1.5}`)
@@ -229,9 +230,44 @@ func TestBuildParameterArgs(t *testing.T) {
 
 	t.Run("non-json value unchanged", func(t *testing.T) {
 		params := map[string]string{"model": "llama3-8b"}
-		args := buildParameterArgs(params, nil)
+		args := buildParameterArgs(params, nil, nil)
 		assert.Contains(t, args, "llama3-8b")
 	})
+}
+
+// One key carries a negatable bool both ways; a plain bool's false stays
+// unset, since the engine has no spelling for it.
+func TestBuildParameterArgsNegatableBools(t *testing.T) {
+	shapes := map[string]schema.ParamShape{
+		"mmap":     {Kind: schema.ParamBool, Negatable: true},
+		"cpu-moe":  {Kind: schema.ParamBool},
+		"ctx-size": {Kind: schema.ParamInt},
+	}
+	for _, tc := range []struct {
+		name   string
+		params map[string]string
+		want   []string
+	}{
+		{"true", map[string]string{"mmap": "true"}, []string{"--mmap"}},
+		{"false", map[string]string{"mmap": "false"}, []string{"--no-mmap"}},
+		{"absent", map[string]string{"ctx-size": "4096"}, []string{"--ctx-size", "4096"}},
+		{"plain false", map[string]string{"cpu-moe": "false"}, []string{}},
+		{"spelled with underscores", map[string]string{"mmap": "false", "cpu_moe": "true"}, []string{"--cpu-moe", "--no-mmap"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, buildParameterArgs(tc.params, shapes, nil))
+		})
+	}
+}
+
+// argv lists parameters in key order, so one launch renders one command.
+func TestBuildParameterArgsSorted(t *testing.T) {
+	params := map[string]string{"threads": "8", "batch-size": "512", "mmap": "false", "ctx-size": "4096", "jinja": "true"}
+	shapes := map[string]schema.ParamShape{"mmap": {Kind: schema.ParamBool, Negatable: true}}
+	want := []string{"--batch-size", "512", "--ctx-size", "4096", "--jinja", "--no-mmap", "--threads", "8"}
+	for range 20 {
+		require.Equal(t, want, buildParameterArgs(params, shapes, nil))
+	}
 }
 
 // A variant's process loads its base's weights and answers in the
@@ -250,7 +286,7 @@ func TestBuild_VariantRunsItsBasesWeights(t *testing.T) {
 		},
 		Models: map[string]config.ModelSpec{"Qwen3.8-27B-Q8_0+agent": {From: "Qwen3.8-27B-Q8_0"}},
 	}
-	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen3.8-27B-Q8_0+agent"), 8080, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolveModel(*cfg, "Qwen3.8-27B-Q8_0+agent"), 8080, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(root, "Qwen3.8-27B-Q8_0"), argAfter(t, launch.Args, "--model"))
 	assert.Equal(t, "Qwen3.8-27B-Q8_0+agent", argAfter(t, launch.Args, "--alias"))

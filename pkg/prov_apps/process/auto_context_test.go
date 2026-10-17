@@ -244,6 +244,13 @@ func TestKVCacheDtypeRoles(t *testing.T) {
 	}
 	_, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, auto, map[string]string{"budget": "0.6"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil, 0)
 	require.Error(t, err, "auto KV exceeds the same numeric budget")
+	// vLLM spells the 16-bit cache dtypes in full.
+	for _, dtype := range []string{"float16", "bfloat16"} {
+		params["cache-encoding"] = dtype
+		n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, shapes)
+		require.True(t, ok, dtype)
+		assert.Equal(t, auto.KVMiB, n.KVMiB, dtype)
+	}
 }
 func TestLlamaPlacementBoundaries(t *testing.T) {
 	// (16 weights + 4096 KV + 4096 overhead) * 1.1, rounded up.

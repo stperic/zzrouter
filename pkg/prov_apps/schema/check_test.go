@@ -58,3 +58,34 @@ func TestCheckCanonicalStrings(t *testing.T) {
 		}
 	}
 }
+
+// A negatable bool has one key: its --no- spelling is unknown, and the
+// refusal names the key and value that pass it.
+func TestCheckPointsANegatedKeyAtItsBool(t *testing.T) {
+	shapes := map[string]ParamShape{
+		"mmap":    {Kind: ParamBool, Negatable: true},
+		"cpu-moe": {Kind: ParamBool},
+		"no-host": {Kind: ParamBool},
+	}
+	issue := Check("no-mmap", "true", shapes)
+	if assert.NotNil(t, issue) {
+		assert.Equal(t, string(httperr.CodeUnknownFlag), issue.Code)
+		assert.Contains(t, issue.Message, "set mmap: false")
+	}
+	issue = Check("no-cpu-moe", "true", shapes)
+	if assert.NotNil(t, issue) {
+		assert.NotContains(t, issue.Message, "set cpu-moe", "a plain bool has no --no- spelling")
+	}
+	assert.Nil(t, Check("no-host", "true", shapes), "a flag spelled only --no-x is its own bool")
+	assert.Nil(t, Check("mmap", "false", shapes))
+}
+
+// An enum bounds a value of any type, as vLLM's max-lora-rank set does.
+func TestCheckEnumBoundsNumbers(t *testing.T) {
+	shapes := map[string]ParamShape{"rank": {Kind: ParamInt, Enum: []string{"8", "16"}}}
+	assert.Nil(t, Check("rank", "16", shapes))
+	issue := Check("rank", "12", shapes)
+	if assert.NotNil(t, issue) {
+		assert.Equal(t, string(httperr.CodeCoercionFailed), issue.Code)
+	}
+}

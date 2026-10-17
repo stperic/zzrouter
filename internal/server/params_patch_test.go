@@ -38,7 +38,7 @@ func TestParametersPatch_ToolCallingRemedy(t *testing.T) {
 	runtime := *svc.Runtime
 	runtime.Execution.Args = []string{"serve", "${MODEL}"}
 	svc.Runtime = &runtime
-	launch, err := process.NewCommandBuilder(&svc).Build(process.ResolvedModel{Name: "probe-model"}, 1234, params)
+	launch, err := process.NewCommandBuilder(&svc).Build(process.ResolvedModel{Name: "probe-model"}, 1234, params, nil)
 	require.NoError(t, err)
 	assert.Contains(t, launch.Args, "--enable-auto-tool-choice")
 	assert.NotContains(t, launch.Args, "true", "a true bool renders as a bare flag")

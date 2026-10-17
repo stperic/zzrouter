@@ -58,6 +58,9 @@ type ParamShape struct {
 	ContextOverride bool
 	SequenceSlots   bool
 	PlacementLog    map[string]*regexp.Regexp
+	// Negatable marks a bool the engine also takes as --no-<flag>, so false
+	// passes that spelling instead of omitting the flag.
+	Negatable bool
 }
 
 // AutoContext declares context and recurrent-state allocation evidence for sizing.

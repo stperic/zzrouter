@@ -94,7 +94,7 @@ func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
 			runtime.Execution = execution
 			launch.Runtime = &runtime
 			builder := process.NewCommandBuilder(&launch)
-			base, err := builder.Build(model, 1, nil)
+			base, err := builder.Build(model, 1, nil, declared)
 			require.NoError(t, err, "%s: %s", name, where)
 			passed := map[string]bool{}
 			for _, arg := range base.Args {
@@ -102,14 +102,20 @@ func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
 					passed[arg] = true
 				}
 			}
-			for key := range declared {
+			for key, shape := range declared {
 				if runsettings.IsParameter(key) {
 					continue // run settings never reach argv
 				}
-				built, err := builder.Build(model, 1, map[string]string{key: "true"})
-				require.NoError(t, err, "%s: %s", name, key)
-				flag := built.Args[len(base.Args)]
-				assert.False(t, passed[flag], "%s: parameter %q renders %s, which %s already passes", name, key, flag, where)
+				values := []string{"true"}
+				if shape.Negatable {
+					values = append(values, "false")
+				}
+				for _, value := range values {
+					built, err := builder.Build(model, 1, map[string]string{key: value}, declared)
+					require.NoError(t, err, "%s: %s", name, key)
+					flag := built.Args[len(base.Args)]
+					assert.False(t, passed[flag], "%s: parameter %q=%s renders %s, which %s already passes", name, key, value, flag, where)
+				}
 			}
 		}
 	}

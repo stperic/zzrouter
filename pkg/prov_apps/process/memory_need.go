@@ -130,7 +130,8 @@ func (cfg *attentionConfig) applyCacheParameters(params map[string]string, shape
 		value := params[name]
 		if shape.SequenceSlots && shape.RecurrentStateRows != nil {
 			cfg.stateRows = *shape.RecurrentStateRows
-			if value != "" {
+			// auto leaves the slot count to the engine, which the declared default rows describe.
+			if value != "" && !config.IsAuto(value) {
 				// An unparsable count leaves zero rows, which only a recurrent layer refuses to size.
 				cfg.stateRows, _ = strconv.ParseInt(value, 10, 64)
 			}
@@ -262,7 +263,7 @@ func (cfg attentionConfig) kvBytes(context int64) (int64, UnknownCause) {
 		block, size := int64(1), dtypeBytes
 		switch cache.dtype {
 		case "", "auto":
-		case "f16", "bf16":
+		case "f16", "bf16", "float16", "bfloat16":
 			size = 2
 		case "f32":
 			size = 4

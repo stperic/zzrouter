@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config/assets"
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
@@ -19,10 +20,17 @@ import (
 func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	shape, known := shapes[key]
 	if !known {
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag), Message: fmt.Sprintf("unknown parameter %q", key)}
+		message := fmt.Sprintf("unknown parameter %q", key)
+		if positive, negated := strings.CutPrefix(key, "no-"); negated && shapes[positive].Negatable {
+			message += fmt.Sprintf("; set %s: false, which passes --%s", positive, key)
+		}
+		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag), Message: message}
 	}
 	if shape.Auto != "" && value == runsettings.Auto {
 		return nil
+	}
+	if len(shape.Enum) > 0 && !slices.Contains(shape.Enum, value) {
+		return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: fmt.Sprintf("%s=%q not in allowed set %v", key, value, shape.Enum)}
 	}
 	switch shape.Kind {
 	case ParamInt:
@@ -42,9 +50,6 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 			return WrongType(key, shape.Kind)
 		}
 	case ParamString, "":
-		if len(shape.Enum) > 0 && !slices.Contains(shape.Enum, value) {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: fmt.Sprintf("%s=%q not in allowed set %v", key, value, shape.Enum)}
-		}
 		if key == runsettings.KeepAliveParameter {
 			if _, err := runsettings.Duration(value); err != nil {
 				return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: err.Error()}

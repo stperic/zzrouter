@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 // ErrModelNotLocal is returned when a provider must be pointed at local
@@ -103,11 +106,12 @@ func (m ResolvedModel) Directory() string {
 }
 
 // Build resolves an admitted model into an argv, expanding the launch placeholders (see
-// config.PlaceholderModelPath and friends) and appending runtime parameters as CLI flags.
+// config.PlaceholderModelPath and friends) and appending runtime parameters as CLI flags
+// spelled by their declared shapes.
 //
 // An engine that references ${MODEL_PATH} must be pointed at weights that exist: a missing path is a
 // launch failure here rather than an opaque "no such file" from the engine several seconds later.
-func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string) (Launch, error) {
+func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string]string, shapes map[string]schema.ParamShape) (Launch, error) {
 	if cb.serviceConfig == nil || cb.serviceConfig.Runtime == nil {
 		return Launch{}, fmt.Errorf("no runtime execution config")
 	}
@@ -144,7 +148,7 @@ func (cb *CommandBuilder) Build(model ResolvedModel, port int, params map[string
 	}
 
 	if len(params) > 0 {
-		args = append(args, buildParameterArgs(params, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
+		args = append(args, buildParameterArgs(params, shapes, []string{config.KeepAliveParameter, config.EvictIdleParameter})...)
 	}
 
 	wireModel := modelClean
@@ -299,11 +303,12 @@ func resolveDirToFile(path, hint string, excluded ...string) string {
 	return filepath.Join(path, filepath.FromSlash(v.Files[0].Path))
 }
 
-// buildParameterArgs converts a parameter map to CLI flag arguments.
-// Parameters named in excluded are skipped. Boolean "true" values emit
-// a flag-only argument (--flag), "false" values are omitted entirely.
-// JSON string values are normalized (numeric strings → numbers).
-func buildParameterArgs(params map[string]string, excluded []string) []string {
+// buildParameterArgs converts a parameter map to CLI flag arguments in key
+// order. Parameters named in excluded are skipped. Boolean "true" values emit
+// a flag-only argument (--flag); "false" emits --no-flag for a negatable
+// shape and is omitted otherwise. JSON string values are normalized (numeric
+// strings → numbers).
+func buildParameterArgs(params map[string]string, shapes map[string]schema.ParamShape, excluded []string) []string {
 	if len(params) == 0 {
 		return nil
 	}
@@ -314,23 +319,27 @@ func buildParameterArgs(params map[string]string, excluded []string) []string {
 	}
 
 	args := make([]string, 0, len(params)*2)
-	for key, value := range params {
+	for _, key := range slices.Sorted(maps.Keys(params)) {
 		if excludedSet[key] {
 			continue
 		}
+		value := params[key]
 
 		// Normalize JSON string values to proper types
 		if looksLikeJSON(value) {
 			value = normalizeJSONNumbers(value)
 		}
 
-		flag := "--" + config.FlagName(key)
-		if value == "" || value == "true" {
-			args = append(args, flag)
-		} else if value == "false" {
-			continue // skip boolean false flags
-		} else {
-			args = append(args, flag, value)
+		name := config.FlagName(key)
+		switch {
+		case value == "" || value == "true":
+			args = append(args, "--"+name)
+		case value == "false" && shapes[name].Negatable:
+			args = append(args, "--no-"+name)
+		case value == "false":
+			// Without a --no- spelling, false leaves the flag unset.
+		default:
+			args = append(args, "--"+name, value)
 		}
 	}
 	return args
