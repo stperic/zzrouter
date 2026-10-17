@@ -407,7 +407,8 @@ func TestModelCacheHearsProviderConfigChanges(t *testing.T) {
 	_, err := s.LookupModel(context.Background(), variantAgent)
 	require.NoError(t, err)
 
-	require.NoError(t, s.configStore.SetProviderEnabled("llamacpp", false))
+	_, err = s.configStore.SetProviderEnabled("llamacpp", "", false)
+	require.NoError(t, err)
 	_, err = s.LookupModel(context.Background(), variantAgent)
 	assert.Error(t, err, "a disabled provider's variants leave the catalog")
 }

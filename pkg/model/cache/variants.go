@@ -18,8 +18,8 @@ import (
 //
 // A name the catalog already holds on a node keeps that entry, so a
 // variant never shadows real weights. Admission rejects conflicting names
-// until the operator disambiguates them. Variants of an explicitly disabled
-// provider are not listed, since nothing would launch them.
+// until the operator disambiguates them. A variant is not listed on a node
+// that has its provider explicitly disabled, since nothing would launch it.
 func expandVariants(models []*CachedModel, cfg *pkgConfig.AppsConfig) []*CachedModel {
 	if cfg == nil {
 		return nil
@@ -32,7 +32,7 @@ func expandVariants(models []*CachedModel, cfg *pkgConfig.AppsConfig) []*CachedM
 	}
 	var out []*CachedModel
 	cfg.RangeApps(func(app string, sc pkgConfig.ServiceConfig) bool {
-		if sc.Mode != constants.AppModeOnDemand || sc.IsExplicitlyDisabled() {
+		if sc.Mode != constants.AppModeOnDemand {
 			return true
 		}
 		variants := sc.Variants()
@@ -46,6 +46,9 @@ func expandVariants(models []*CachedModel, cfg *pkgConfig.AppsConfig) []*CachedM
 				}
 				if m.Provider != "" && m.Provider != app {
 					continue // the weights belong to another engine
+				}
+				if enabled := sc.EnabledOn(m.Node); enabled != nil && !*enabled {
+					continue
 				}
 				at := placed{strings.ToLower(name), m.Node}
 				if have[at] {

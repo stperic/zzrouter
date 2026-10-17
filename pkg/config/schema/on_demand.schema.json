@@ -741,6 +741,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {

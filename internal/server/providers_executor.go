@@ -208,8 +208,8 @@ func (e *ProvidersExecutor) HandleInternalUpdateProvider(c *gin.Context) {
 	if e.configStore != nil {
 		cfg = e.configStore.Config()
 	}
-	svc := cfg.Find(name)
-	if svc == nil {
+	svc, found := cfg.LookupApp(name)
+	if !found {
 		NotFound(c, fmt.Sprintf("provider %q not found", name))
 		return
 	}

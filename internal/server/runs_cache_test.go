@@ -7,7 +7,6 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/routing"
-	"github.com/stperic/zzrouter/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,15 +40,13 @@ func TestRunCacheSurvivesRESTAndMCP(t *testing.T) {
 						args["run_id"] = "fixture"
 					}
 					if location == "worker" {
-						// Protocol-13-shaped fixture deliberately lacks cache. Decode through
-						// the same typed worker reply path as newer observations.
+						// A worker reply without cache (an engine that reported none) decodes
+						// through the same typed path as one with observations.
 						wire := `{"id":"fixture","provider":"llamacpp","model":"model","node":"worker","status":"running","port":8080,"health_url":"","context_length":32768,"processor":"100% GPU"}`
 						var row map[string]any
 						require.NoError(t, json.Unmarshal([]byte(wire), &row))
 						if want != nil {
 							row["cache"] = want
-						} else {
-							require.NoError(t, version.LocalProtocolWindow().Check(13))
 						}
 						expected = row
 						var payload any = row

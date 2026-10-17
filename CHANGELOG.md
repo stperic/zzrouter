@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- A provider enabled on a worker, by install, uninstall or
+  `PATCH /zzrouter/v1/providers/{name}?node=...`, stays enabled: the
+  coordinator's next provider sync used to put its own value back. The choice
+  is now the node's, recorded by the coordinator as `nodes.<node>.enabled` over
+  the provider's top-level `enabled`, which remains the default for nodes that
+  have not chosen. Every enable through the API or `zzrouter-node providers
+  enable` is now the node's own, including on the coordinator and standalone
+  nodes, so a coordinator install no longer enables the provider on workers;
+  on a worker the CLI refuses and names the coordinator request. Cloud
+  providers and registries, which sync never carries, stay each node's own. A
+  choice recorded but not yet delivered answers 503 `provider_sync_pending`; a
+  worker relays the coordinator's status and code instead of a 500. A worker's
+  finalization succeeds once the sync carrying its choice has reached it, and
+  no longer waits behind another worker that is slow to answer: the provider
+  sync's protocol probe no longer holds a push slot. Ollama auto-enable on a
+  worker cannot record its choice at boot, before the worker reaches its
+  coordinator; install it or enable it with `?node=`. Cluster protocol
+  advances from 14/minimum 13 to 15/minimum 15: upgrade every node together.
+  See `docs/protocol_versioning.md`.
 - Retain engine-reported cache observations on REST runs and both `zz_runs` modes:
   per-pool KV tokens, optional pool count, slots, context, explicit sharing and
   fractional concurrency. Capture provider-declared startup summaries without

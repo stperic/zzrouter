@@ -121,7 +121,8 @@ func TestShippedStrataTemplateNamesTheIntendedProject(t *testing.T) {
 	require.Equal(t, repository, provider.VersionSource.Repo)
 	require.Equal(t, config.VersionSourceGitHubRelease, provider.VersionSource.Type)
 	require.Equal(t, config.ComparePEP440, provider.VersionSource.Compare)
-	require.False(t, provider.IsEnabled())
+	require.NotNil(t, provider.Enabled)
+	require.False(t, *provider.Enabled, "the template ships disabled")
 	require.True(t, strings.HasPrefix(provider.Runtime.Endpoint, "http://127.0.0.1:"))
 }
 

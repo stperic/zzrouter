@@ -120,7 +120,8 @@ func TestVariants_LateConflictBlocksColdAndWarmPaths(t *testing.T) {
 func TestVariants_ConflictIsConsistentAcrossInferenceAndManagement(t *testing.T) {
 	s := variantNode(t)
 	defineVariants(t, s)
-	require.NoError(t, s.configStore.SetProviderEnabled("ollama", true))
+	_, err := s.configStore.SetProviderEnabled("ollama", "", true)
+	require.NoError(t, err)
 	calls := conflictRun(t, s, qwenModel)
 	addConflictingWeights(t, s, variantChat)
 	for _, route := range []string{"/v1/completions", "/v1/embeddings", "/v1/responses", "/v1/messages", "/v1/messages/count_tokens", "/api/chat", "/api/generate", "/api/embed", "/api/embeddings"} {
@@ -136,7 +137,7 @@ func TestVariants_ConflictIsConsistentAcrossInferenceAndManagement(t *testing.T)
 	require.Equal(t, http.StatusConflict, ensure.Code, string(ensure.Body))
 	launch := makeAuthRequest(t, s, "POST", "/zzrouter/v1/runs", TestAdminKey, map[string]any{"provider": "llamacpp", "model": variantChat, "auto_deploy": true, "launch_mode": "native"})
 	require.Equal(t, http.StatusConflict, launch.Code, string(launch.Body))
-	_, err := s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: variantChat, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat})
+	_, err = s.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: variantChat, Provider: "llamacpp", Endpoint: prov_apps.EndpointChat})
 	require.ErrorIs(t, err, config.ErrModelNameConflict)
 	require.Zero(t, calls.Load())
 

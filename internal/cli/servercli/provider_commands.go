@@ -1,11 +1,9 @@
 package servercli
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/stperic/zzrouter/internal/cli/servercli/confighelpers"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 )
 
@@ -65,11 +63,22 @@ func newProviderListCmd() *cobra.Command {
 	}
 }
 
-// toggleApp enables or disables an app (uses DRY helper)
+// toggleApp records this node's choice to run a provider, through the
+// store write the server's finalization uses. A worker's copy of a synced
+// provider is the coordinator's, so there it refuses and names the request.
 func toggleApp(appName string, enable bool) error {
-	// Use shared helper function with context
-	ctx := context.Background()
-	if err := confighelpers.ToggleProviderEnabled(ctx, appName, enable); err != nil {
+	node, err := pkgConfig.NewConfigManager("zzrouter").LoadNodeConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load node config: %w", err)
+	}
+	store, err := pkgConfig.NewAppsConfigStoreFromStandardLocations(node.Node.Name)
+	if err != nil {
+		return fmt.Errorf("failed to load providers config: %w", err)
+	}
+	if sc, ok := store.Config().LookupApp(appName); ok && sc.SyncedToWorkers() && node.Cluster.Mode == pkgConfig.ClusterModeWorker {
+		return fmt.Errorf("this worker's copy of %s is the coordinator's: send PATCH /zzrouter/v1/providers/%s?node=%s with {\"enabled\": %t} to the coordinator", appName, appName, node.Node.Name, enable)
+	}
+	if _, err := store.SetProviderEnabled(appName, node.Node.Name, enable); err != nil {
 		return err
 	}
 
@@ -84,16 +93,17 @@ func toggleApp(appName string, enable bool) error {
 	return nil
 }
 
-// listApps displays all configured inference providers and their status.
+// listApps displays all configured inference providers and their status
+// on this node.
 func listApps() error {
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	appsDir := cm.GetAppsConfigDir()
-
-	appsConfig, err := pkgConfig.LoadAppsConfig(appsDir)
+	node, err := pkgConfig.NewConfigManager("zzrouter").LoadNodeConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load node config: %w", err)
+	}
+	store, err := pkgConfig.NewAppsConfigStoreFromStandardLocations(node.Node.Name)
 	if err != nil {
 		return fmt.Errorf("failed to load apps config: %w", err)
 	}
-
-	ShowProvidersTable(appsConfig)
+	ShowProvidersTable(store.Config())
 	return nil
 }

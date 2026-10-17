@@ -279,20 +279,18 @@ func TestToolsProtocolCutover(t *testing.T) {
 	}
 }
 
-func TestContextAssessmentRollingProtocol(t *testing.T) {
+// Protocol 15 closes the 13-14 rolling window: a protocol 14 strict loader
+// rejects a node's enable choice, so every peer upgrades together.
+func TestPerNodeEnableProtocolCutover(t *testing.T) {
 	window := LocalProtocolWindow()
-	if window.Max != window.Min+1 {
-		t.Fatalf("context evidence must retain one previous protocol for rolling upgrades: %+v", window)
+	if window.Min < 15 {
+		t.Fatalf("per-node enable choices require the protocol 15 cutover, got %+v", window)
 	}
-	for _, peer := range []int{window.Min, window.Max} {
-		if err := window.Check(peer); err != nil {
-			t.Fatal(err)
-		}
+	if err := window.Check(14); err == nil {
+		t.Fatal("protocol 14 strict loader must not receive per-node enable choices")
 	}
-	for _, peer := range []int{window.Min - 1, window.Max + 1} {
-		if err := window.Check(peer); err == nil {
-			t.Fatalf("admitted out-of-window protocol %d", peer)
-		}
+	if err := window.Check(window.Min); err != nil {
+		t.Fatal(err)
 	}
 }
 

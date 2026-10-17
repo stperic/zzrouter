@@ -16,12 +16,15 @@ import (
 // configStore.SetProviderEnabled call in internal/server/ production code
 // bypasses FinalizeOnboarding/FinalizeOffboarding and leaves the post-
 // finalize hook (worker → coord notify) silent. The only allowed callers
-// are the two funnel methods themselves.
+// are the funnel itself: the two methods, the write they share, and the
+// coordinator's end of a worker's finalization.
 func TestArchGuard_SetProviderEnabled_FunneledThroughFinalize(t *testing.T) {
 	const allowedFile = "server_providers.go"
 	allowedFuncs := map[string]bool{
-		"FinalizeOnboarding":  true,
-		"FinalizeOffboarding": true,
+		"FinalizeOnboarding":        true,
+		"FinalizeOffboarding":       true,
+		"setProviderEnabled":        true,
+		"handleNodeProviderEnabled": true,
 	}
 
 	dir := "."

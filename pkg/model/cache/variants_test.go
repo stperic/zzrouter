@@ -66,6 +66,20 @@ func TestExpandVariants_ListsAVariantWhereverItsBaseIs(t *testing.T) {
 	assert.Empty(t, expandVariants(models, nil))
 }
 
+// The coordinator lists a variant where the node holding the weights runs
+// its provider, whatever its own choice or the default.
+func TestExpandVariants_FollowsTheNodeHoldingTheWeights(t *testing.T) {
+	cfg := variantApps(t, false, map[string]pkgConfig.ModelSpec{"base+agent": {From: "base"}})
+	on := true
+	require.NoError(t, cfg.UpdateApp("llamacpp", func(sc *pkgConfig.ServiceConfig) error {
+		sc.Nodes = map[string]pkgConfig.NodeSpec{"worker-1": {Enabled: &on}}
+		return nil
+	}))
+	got := expandVariants([]*CachedModel{{Name: "base", Node: "worker-1"}, {Name: "base", Node: "mac"}}, cfg)
+	require.Len(t, got, 1)
+	assert.Equal(t, "worker-1", got[0].Node)
+}
+
 // The cache indexes variants like any model, so a lookup by the
 // variant's name finds it.
 func TestCache_IndexesVariants(t *testing.T) {

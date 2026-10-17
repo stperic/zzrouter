@@ -66,7 +66,8 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "qwen.gguf"), []byte("GGUF"), 0o600))
 	worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, modelsDir: root})
-	require.NoError(t, worker.configStore.SetProviderEnabled("llamacpp", true))
+	_, err := worker.configStore.SetProviderEnabled("llamacpp", "", true)
+	require.NoError(t, err)
 	client := routingCatalog(t, coordinator, []map[string]any{replicaItem("worker", "llamacpp")})
 	routingCatalog(t, worker, []map[string]any{replicaItem("worker", "llamacpp")})
 	inst := instance.NewInstance("worker-run", "llamacpp", "qwen", 8100, 0, 0)
@@ -110,7 +111,8 @@ func TestReplicaRoutingInvalidatedWorkerChat(t *testing.T) {
 
 func TestReplicaRoutingSelectionAndSurfaceErrors(t *testing.T) {
 	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeCoordinator, NodeName: "coord"}})
-	require.NoError(t, s.configStore.SetProviderEnabled("ollama", true))
+	_, err := s.configStore.SetProviderEnabled("ollama", "", true)
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name                string
 		models              []map[string]any

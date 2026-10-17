@@ -26,5 +26,6 @@ func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 		"CodeUpstreamCanceled":          "upstream_canceled",
 		"CodeUpstreamShape":             "upstream_shape",
 		"CodeUpstreamStreamInterrupted": "upstream_stream_interrupted",
+		"CodeProviderSyncPending":       "provider_sync_pending",
 	}, declaredErrorCodes(t, "route_code.go", "RouteErrorCode"))
 }

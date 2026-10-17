@@ -245,7 +245,7 @@ func (m *ProviderAppManager) lifecycleFor(key string, p config.Provider) (Lifecy
 	if od, ok := p.(*config.OnDemandProvider); ok {
 		nodeScoped = od.RunScope == config.RunScopeNode
 	}
-	if p.IsEnabled() && (routable == nil || nodeScoped) && installed {
+	if svc.IsEnabled() && (routable == nil || nodeScoped) && installed {
 		return StateLive, managed
 	}
 	if installed {

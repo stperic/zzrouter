@@ -63,11 +63,6 @@ type OnDemandRuntime struct {
 func (p *OnDemandProvider) Kind() Kind             { return KindOnDemand }
 func (p *OnDemandProvider) GetName() string        { return p.Name }
 func (p *OnDemandProvider) GetDescription() string { return p.Description }
-func (p *OnDemandProvider) IsEnabled() bool        { return p.Enabled != nil && *p.Enabled }
-func (p *OnDemandProvider) IsExplicitlyDisabled() bool {
-	return p.Enabled != nil && !*p.Enabled
-}
-func (p *OnDemandProvider) IsAutoDiscovery() bool { return p.Enabled == nil }
 
 // Validate enforces the invariants from the old ServiceConfig.Validate
 // that are specific to on-demand providers: protocol, a non-empty port
@@ -125,7 +120,7 @@ func (p *OnDemandProvider) Validate() error {
 			}
 		}
 	}
-	if p.RunScope != RunScopeNode && !p.IsExplicitlyDisabled() {
+	if p.RunScope != RunScopeNode && !disabledEverywhere(p.Enabled, p.Nodes) {
 		if err := p.Capabilities.ValidateWireEndpoints(); err != nil {
 			return fmt.Errorf("provider '%s': %w", p.Name, err)
 		}

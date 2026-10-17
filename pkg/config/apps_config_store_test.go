@@ -154,7 +154,8 @@ func TestListenerPanicDoesNotBreakChain(t *testing.T) {
 	// Trigger a real mutation via a known-enabled provider from the
 	// shipped templates. SetProviderEnabled is idempotent; if the
 	// provider starts disabled we still force a change by flipping on.
-	require.NoError(t, store.SetProviderEnabled("vllm", true),
+	_, err = store.SetProviderEnabled("vllm", "", true)
+	require.NoError(t, err,
 		"mutation must return nil even when a listener panics")
 
 	assert.True(t, firstRan, "first (panicking) listener was called")

@@ -53,4 +53,8 @@ const (
 	CodeUpstreamShape RouteErrorCode = "upstream_shape"
 
 	CodeUpstreamStreamInterrupted RouteErrorCode = "upstream_stream_interrupted"
+
+	// CodeProviderSyncPending is a node's enable the coordinator recorded
+	// but the provider sync has not delivered to that node yet.
+	CodeProviderSyncPending RouteErrorCode = "provider_sync_pending"
 )

@@ -38,9 +38,11 @@ package version
 // node and preview capacity assessments.
 // Protocol 13 adds context-aware memory evidence; legacy assessments degrade to unknown.
 // Protocol 14 adds typed unknown causes and local weight evidence.
+// Protocol 15 adds per-node provider enable choices, which older provider schemas reject,
+// and the worker route that records them on the coordinator.
 const (
-	ClusterProtocolVersion    = 14
-	MinClusterProtocolVersion = 13
+	ClusterProtocolVersion    = 15
+	MinClusterProtocolVersion = 15
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

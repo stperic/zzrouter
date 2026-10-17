@@ -33,6 +33,9 @@ const (
 // ServiceConfig represents a single app's configuration (synthesized
 // view of a typed Provider in the providers/ directory tree)
 type ServiceConfig struct {
+	// node is the node this view is read for: IsEnabled and its siblings
+	// resolve that node's choice. AppsConfig.LookupApp and RangeApps set it.
+	node     string
 	RunScope string             `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
 	Install  *InstallConfig     `yaml:"install,omitempty" json:"install,omitempty"`
 	Features map[string]Feature `yaml:"features,omitempty" json:"features,omitempty"`
@@ -451,6 +454,9 @@ type NodeModelSpec struct {
 
 // NodeSpec is the Tier 2 per-node cell, with an embedded Tier 3 map.
 type NodeSpec struct {
+	// Enabled is this node's own choice, over the provider's top-level
+	// enabled; absent leaves the node on that default.
+	Enabled     *bool                      `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Install     *InstallConfig             `yaml:"install,omitempty" json:"install,omitempty"`
 	Parameters  map[string]string          `yaml:"parameters,omitempty" json:"parameters,omitempty"`
 	Environment map[string]string          `yaml:"environment,omitempty" json:"environment,omitempty"`

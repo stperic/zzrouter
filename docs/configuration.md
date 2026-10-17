@@ -25,14 +25,23 @@ Shipped provider files are embedded in the node; initialization
 materializes this tree. The coordinator owns provider writes. Workers receive
 managed copies through peer synchronization.
 
+Whether a node runs an on-demand or external provider is that node's choice:
+`nodes.<node>.enabled` in the provider's `config.yaml`, over the top-level
+`enabled`, which is the default for nodes that have not chosen. Installing,
+uninstalling, or `PATCH /zzrouter/v1/providers/{name}?node=<node>` with
+`enabled` records the choice for that node. Without `node`, the request goes to
+every node and each records its own choice. A worker asks the coordinator to
+write it, and the change is in effect once the provider sync reaches the
+worker. Sync never carries cloud providers or registries, so each node keeps
+its own copy of those and its top-level `enabled`.
+
 ### Install Strata through zzRouter
 
 The shipped provider targets [Niko1221/Strata](https://github.com/Niko1221/Strata).
 Like the Ollama provider, it starts disabled with a loopback endpoint,
-`http://127.0.0.1:8080`, so each node reads only its own daemon. Enable it on
-the coordinator with `PATCH /zzrouter/v1/providers/strata` and
-`{"enabled": true}`, then install it on a capable node through the ordinary
-provider install flow:
+`http://127.0.0.1:8080`, so each node reads only its own daemon. Install it on
+a capable node through the ordinary provider install flow; a successful install
+enables it on that node:
 
 ```text
 POST /zzrouter/v1/providers/strata/install/preflight?node=localai
