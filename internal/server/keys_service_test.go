@@ -114,31 +114,43 @@ func TestKeysService_DeleteKey_SharedTeamNotCascaded(t *testing.T) {
 }
 
 // ============================================================================
-// CreateKey rollback on store failure (architect-flagged test gap)
+// CreateKey refusals write nothing
 // ============================================================================
 
-func TestKeysService_CreateKey_RollsBackPersonalTeamOnDuplicate(t *testing.T) {
+// A duplicate id is the caller's conflict, refused before a personal team
+// is written, so the first key's team is untouched and nothing is orphaned.
+func TestKeysService_CreateKey_DuplicateIDIsConflict(t *testing.T) {
 	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
 
-	// First create succeeds — personal team exists.
 	_, err := svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice"}, "admin")
 	require.NoError(t, err)
 
-	// Second create with the same key id fails in keyStore.Create. The
-	// rollback path should delete the second attempt's auto-created
-	// personal team so it doesn't linger as an orphan.
 	_, err = svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice Again"}, "admin")
-	require.Error(t, err, "duplicate key id should fail")
+	require.Error(t, err)
+	assert.True(t, isConflict(err), "a duplicate key id reported as: %v", err)
 
-	// The first key's personal team still exists (it's the successful one).
-	_, err = teamsSvc.GetTeam("personal-alice")
+	team, err := teamsSvc.GetTeam("personal-alice")
 	require.NoError(t, err)
+	assert.Equal(t, "Personal: Alice", team.Name)
+	assert.Equal(t, 0, teamsSvc.ReconcilePersonalTeams())
+}
 
-	// Reconciliation finds no orphans — the rollback already cleaned up.
-	reaped := teamsSvc.ReconcilePersonalTeams()
-	assert.Equal(t, 0, reaped,
-		"rollback should have deleted the failed create's personal team inline, "+
-			"so reconciliation finds nothing to sweep")
+// An invalid expires_at is refused before the personal team is written, so
+// a corrected retry with the same id succeeds.
+func TestKeysService_CreateKey_InvalidExpiryLeavesNoTeam(t *testing.T) {
+	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+
+	bad := "2027-01-01"
+	_, err := svc.CreateKey("ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &bad}, "admin")
+	require.Error(t, err)
+	assert.True(t, isInvalidInput(err), "an invalid expiry reported as: %v", err)
+	_, err = teamsSvc.GetTeam("personal-ci")
+	assert.ErrorIs(t, err, teams.ErrTeamNotFound)
+
+	good := "2027-01-01T00:00:00Z"
+	resp, err := svc.CreateKey("ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &good}, "admin")
+	require.NoError(t, err)
+	assert.Equal(t, "personal-ci", resp.TeamID)
 }
 
 // ============================================================================
