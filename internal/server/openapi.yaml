@@ -1633,6 +1633,11 @@ paths:
         node has it. Without `node`, the request goes to every node and each
         records its own choice. Sync never carries cloud providers or
         registries, so each node's copy of those is its own.
+        `pinned_version` on an on-demand or external provider is one pin for
+        every node: the coordinator records it and the provider sync carries
+        it, so it takes no `node`, and a pin sent with `node` answers 400
+        `pin_is_cluster_wide`. A cloud provider's or registry's pin is the
+        selected node's own.
         When the shipped template declares a pin, startup reconciliation restores
         that release-owned seed. An explicit install-call version overrides it.
         Pins on providers without a shipped seed remain operator-owned.
@@ -1665,6 +1670,11 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/Provider' }
+        '400':
+          description: Nothing to update, or pin_is_cluster_wide, a pin sent with node for a provider the sync carries
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Provider not found

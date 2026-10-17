@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `pinned_version` on an on-demand or external provider is one pin for every
+  node. A pin sent with `?node=` to a worker used to land in that worker's copy
+  of the coordinator's provider tree and be put back by the next sync. The
+  coordinator now records the pin and the sync carries it; a pin sent with
+  `node` answers 400 `pin_is_cluster_wide` and writes nothing. A body that
+  also sets `enabled` still applies the enable to each node it names. Cloud
+  providers and registries keep a pin per node.
 - `service/start`, `service/restart` and a restarting `service/apply` answer
   202 with a `svc_` readiness job instead of waiting up to 30 s for the
   endpoint. Through the coordinator that wait always lost the 30 s forward

@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"runtime"
 	"sort"
 	"strings"
 
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
@@ -86,15 +89,17 @@ type AppInfo struct {
 
 // AppsService handles app-related business logic
 type AppsService struct {
-	router   routing.Router
-	provider ClusterState // Same interface as NodesService — reads from cached registry
+	router     routing.Router
+	provider   ClusterState // Same interface as NodesService — reads from cached registry
+	appsConfig func() *pkgConfig.AppsConfig
 }
 
 // NewAppsService creates a new apps service
-func NewAppsService(provider ClusterState, router routing.Router) *AppsService {
+func NewAppsService(provider ClusterState, router routing.Router, appsConfig func() *pkgConfig.AppsConfig) *AppsService {
 	return &AppsService{
-		router:   router,
-		provider: provider,
+		router:     router,
+		provider:   provider,
+		appsConfig: appsConfig,
 	}
 }
 
@@ -307,25 +312,47 @@ type UpdateAppResponse struct {
 	Message       string `json:"message"`
 }
 
-// UpdateApp updates an app's configuration
+// UpdateApp updates an app's configuration. The enable is each node's own,
+// but a synced provider's pin is the coordinator's single one: it is written
+// here and the provider sync carries it to every node.
 func (s *AppsService) UpdateApp(ctx context.Context, req *UpdateAppRequest) (*UpdateAppResponse, error) {
 	slog.Info("[AppsService] UpdateApp", "name", req.Name, "enabled", req.Enabled)
 
 	ctx, cancel := ensureTimeout(ctx, constants.ClusterActionTimeout)
 	defer cancel()
 
-	// Create routing request
+	if svc, ok := s.appsConfig().LookupApp(req.Name); req.PinnedVersion == nil || !ok || !svc.SyncedToWorkers() {
+		return s.routeUpdate(ctx, req)
+	}
+	if req.Node != "" {
+		return nil, newRouteProblemError(http.StatusBadRequest, "Bad Request",
+			fmt.Sprintf("provider %q has one pin for every node; send pinned_version without node", req.Name),
+			httperr.CodePinIsClusterWide, req.Node)
+	}
+	pinned, err := s.routeUpdate(ctx, &UpdateAppRequest{Name: req.Name, Node: constants.Localhost, PinnedVersion: req.PinnedVersion})
+	if err != nil || req.Enabled == nil {
+		return pinned, err
+	}
+	resp, err := s.routeUpdate(ctx, &UpdateAppRequest{Name: req.Name, Enabled: req.Enabled})
+	if err != nil {
+		return nil, err
+	}
+	resp.PinnedVersion = pinned.PinnedVersion
+	resp.Message = pinned.Message + "; " + resp.Message
+	return resp, nil
+}
+
+// routeUpdate sends req to its node, or to every node when it names none.
+func (s *AppsService) routeUpdate(ctx context.Context, req *UpdateAppRequest) (*UpdateAppResponse, error) {
 	requestBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-
 	updateResp, err := routeAndParse[UpdateAppResponse](ctx, s.router, "PATCH",
 		fmt.Sprintf("/zzrouter/v1/internal/providers/%s", req.Name), req.Node, requestBody)
 	if err != nil {
 		return nil, err
 	}
-
 	slog.Info("[AppsService] App  updated successfully", "name", req.Name)
 	return updateResp, nil
 }

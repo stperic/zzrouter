@@ -57,4 +57,8 @@ const (
 	// CodeProviderSyncPending is a node's enable the coordinator recorded
 	// but the provider sync has not delivered to that node yet.
 	CodeProviderSyncPending RouteErrorCode = "provider_sync_pending"
+
+	// CodePinIsClusterWide refuses a node-addressed pin for a provider the
+	// sync carries: the coordinator holds its one pin for every node.
+	CodePinIsClusterWide RouteErrorCode = "pin_is_cluster_wide"
 )
