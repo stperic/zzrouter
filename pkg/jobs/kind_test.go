@@ -9,6 +9,7 @@ func TestKindPrefix(t *testing.T) {
 		KindUpdate:       "upd_",
 		KindSync:         "sync_",
 		KindInferenceLog: "inflog_",
+		KindService:      "svc_",
 		Kind("unknown"):  "job_",
 	}
 	for k, want := range cases {

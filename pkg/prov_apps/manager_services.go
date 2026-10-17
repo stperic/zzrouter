@@ -20,6 +20,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
@@ -40,6 +41,7 @@ type ProviderServiceStatus struct {
 	PID        int                  `json:"pid,omitempty"`
 	Backoff    string               `json:"backoff,omitempty"`
 	LastExit   *ProviderServiceExit `json:"last_exit,omitempty"`
+	JobID      string               `json:"job_id,omitempty"` // the readiness job while it waits on the endpoint
 }
 
 // ProviderServiceExit retains bounded diagnostics for the last unexpected exit.
@@ -77,8 +79,22 @@ type managedService struct {
 	managerSetting  string
 	status          ProviderServiceStatus
 	observedRunning *bool
-	unreconciled    bool // the last reconcile failed; the services ticker retries it
+	unreconciled    bool        // the last reconcile failed; the services ticker retries it
+	controls        uint64      // bumped as each host supervisor control begins and ends
+	controlling     bool        // a host supervisor control is in flight
+	ready           jobs.Handle // the live readiness job, nil once it ends; status reads name it
+	readySince      time.Time   // an exit before it belongs to an earlier start
 }
+
+const (
+	// serviceReadyPoll spaces a readiness job's endpoint probes.
+	serviceReadyPoll = 2 * time.Second
+	// endpointProbeTimeout bounds one probe of a provider's endpoint.
+	endpointProbeTimeout = 3 * time.Second
+)
+
+// errReadyStopped ends a readiness job whose service a stop took down.
+var errReadyStopped = errors.New("stopped before its endpoint answered")
 
 func (m *ProviderAppManager) serviceState(name string) *managedService {
 	m.servicesMu.Lock()
@@ -192,6 +208,10 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 		return result, err
 	}
 	if manager != nil {
+		state := m.serviceState(name)
+		state.mu.Lock()
+		controls, settled := state.controls, !state.controlling
+		state.mu.Unlock()
 		var status service.ServiceStatus
 		if probe, ok := manager.(service.Probe); ok {
 			status = probe.StatusContext(ctx, name)
@@ -205,14 +225,16 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 			return result, fmt.Errorf("%s service state is unknown: %w", manager.Name(), status.ObservationError)
 		}
 		result.Supervisor, result.Running, result.PID = manager.Name(), status.Running, status.PID
-		state := m.serviceState(name)
 		state.mu.Lock()
-		changed := state.observedRunning != nil && *state.observedRunning != status.Running
-		state.observedRunning = new(status.Running)
+		changed := false
+		if settled && controls == state.controls { // a read overlapping a control saw the commanded transition
+			changed = state.observedRunning != nil && *state.observedRunning != status.Running
+			state.observedRunning = new(status.Running)
+		}
 		if changed && !status.Running {
 			state.status.LastExit = &ProviderServiceExit{At: utils.NowUTC(), Reason: manager.Name() + " reported that the provider stopped; exit details are unavailable"}
 		}
-		result.Desired = state.status.Desired
+		result.Desired, result.JobID = state.status.Desired, state.readyID()
 		result.LastExit = state.status.Clone().LastExit
 		state.mu.Unlock()
 		if changed {
@@ -227,7 +249,7 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 	state := m.serviceState(name)
 	state.mu.Lock()
 	result = state.status.Clone()
-	result.Enabled, result.Managed = cfg.IsEnabled(), true
+	result.Enabled, result.Managed, result.JobID = cfg.IsEnabled(), true, state.readyID()
 	owned := state.cancel != nil
 	state.mu.Unlock()
 	if !owned {
@@ -244,6 +266,8 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 }
 
 // ControlProviderService serializes API actions with installation and activation.
+// A start or restart returns once the control does; status.JobID names the
+// readiness job it opened or reused, "" when none could be opened.
 func (m *ProviderAppManager) ControlProviderService(ctx context.Context, name, action string) (ProviderServiceStatus, error) {
 	if action != "start" && action != "stop" && action != "restart" {
 		return ProviderServiceStatus{}, fmt.Errorf("unsupported service action %q", action)
@@ -253,60 +277,236 @@ func (m *ProviderAppManager) ControlProviderService(ctx context.Context, name, a
 		return ProviderServiceStatus{}, err
 	}
 	defer unlock()
+	since := utils.NowUTC() // exits count from before the control: its own transitions record none
 	if err := m.controlProviderService(ctx, name, action, false); err != nil {
 		return ProviderServiceStatus{}, err
 	}
+	jobID := ""
+	if action != "stop" {
+		jobID = m.awaitReady(name, since)
+	}
 	m.serviceCatalogChanged()
-	return m.ProviderServiceStatus(ctx, name)
+	status, err := m.ProviderServiceStatus(ctx, name)
+	status.JobID = jobID // the watcher may already have ended it
+	return status, err
 }
 
 // ApplyProviderService uses the same ownership gate as lifecycle controls.
-func (m *ProviderAppManager) ApplyProviderService(ctx context.Context, name string) (*service.ApplyResult, error) {
+// After a restart it also names the readiness job, "" when none could be opened.
+func (m *ProviderAppManager) ApplyProviderService(ctx context.Context, name string) (*service.ApplyResult, string, error) {
 	unlock, err := m.installs.acquireProvider(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer unlock()
 	if m.stopping.Load() {
-		return nil, ErrShutdown
+		return nil, "", ErrShutdown
 	}
 	cfg, err := m.serviceConfig(name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if m.ProviderManagedBinary(name) == "" || !cfg.HasEndpoint() {
-		return nil, ErrExternalService
+		return nil, "", ErrExternalService
 	}
 	if !cfg.IsEnabled() {
-		return nil, ErrServiceDisabled
+		return nil, "", ErrServiceDisabled
 	}
 	env := m.providerServiceEnv(name)
 	if _, err := process.ChildEnvironment(env); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	manager, err := m.selectedServiceManager(ctx, name, cfg)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	since := utils.NowUTC() // exits count from before the control: its own transitions record none
 	if manager != nil {
 		controller, ok := manager.(service.EnvironmentController)
 		if !ok {
-			return nil, fmt.Errorf("%s has no runtime environment controller", manager.Name())
+			return nil, "", fmt.Errorf("%s has no runtime environment controller", manager.Name())
 		}
+		state := m.serviceState(name)
+		state.beginControl()
+		defer state.endControl(false)
 		result := controller.ApplyEnvContext(ctx, name, env)
+		jobID := ""
 		if result.Restarted {
 			m.daemonRestarted(name)
+			jobID = m.awaitReady(name, since)
 		}
 		if result.Applied || result.Restarted {
 			m.serviceCatalogChanged()
 		}
-		return result, nil
+		return result, jobID, nil
 	}
 	if err := m.controlProviderService(ctx, name, "restart", false); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	jobID := m.awaitReady(name, since)
 	m.serviceCatalogChanged()
-	return &service.ApplyResult{Manager: "zzRouter", Applied: true, Restarted: true, EnvVarsCount: len(env)}, nil
+	return &service.ApplyResult{Manager: "zzRouter", Applied: true, Restarted: true, EnvVarsCount: len(env)}, jobID, nil
+}
+
+// ProviderEndpointHealthy reports whether name's own endpoint answers 200 to the credential it declares.
+func (m *ProviderAppManager) ProviderEndpointHealthy(ctx context.Context, name string) bool {
+	cfg, err := m.serviceConfig(name)
+	if err != nil {
+		return false
+	}
+	target, ok := backend.Target(&cfg)
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, endpointProbeTimeout)
+	defer cancel()
+	req, err := target.NewRequest(ctx, http.MethodGet, "", nil)
+	if err != nil {
+		return false
+	}
+	response, err := m.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	_ = response.Body.Close()
+	return response.StatusCode == http.StatusOK
+}
+
+// awaitReady opens name's readiness job after a start or restart, or reuses the
+// live one, counting exits from since; "" when none can be opened.
+func (m *ProviderAppManager) awaitReady(name string, since time.Time) string {
+	state := m.serviceState(name)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if m.jobsRegistry == nil || m.stopping.Load() {
+		return "" // once Stop begins, stopServices may already have waited on the watchers
+	}
+	state.readySince = since
+	if id := state.readyID(); id != "" {
+		return id
+	}
+	h, err := m.jobsRegistry.StartDetached(jobs.KindService, "", jobs.Meta{"provider": name})
+	if err != nil {
+		slog.Warn("Failed to open a service readiness job", "provider", name, "error", err)
+		return ""
+	}
+	state.ready = h
+	m.serviceWatchers.Go(func() { m.watchServiceReady(name, state, h) })
+	return h.ID()
+}
+
+// watchServiceReady ends h: done on the endpoint's first 200; failed on an exit
+// after readySince, or on a cancel, which stops the service as a run job's cancel
+// stops its run. A stop, a disable or shutdown ends h where it happens. It sets no deadline.
+func (m *ProviderAppManager) watchServiceReady(name string, state *managedService, h jobs.Handle) {
+	defer utils.RecoverAndLog("prov_apps.watchServiceReady")
+	started := utils.Now()
+	h.Progress(0, "waiting-for-health", jobs.Bytes{})
+	poll := time.NewTicker(serviceReadyPoll)
+	defer poll.Stop()
+	heartbeat := time.NewTicker(watcherHeartbeatInterval)
+	defer heartbeat.Stop()
+	for {
+		if m.ProviderEndpointHealthy(h.Context(), name) {
+			state.releaseReady(h)
+			h.Done()
+			return
+		}
+		if exit := state.exitSinceReady(); exit != nil {
+			state.releaseReady(h)
+			h.Meta(jobs.Meta{"last_exit": exit})
+			h.Fail(fmt.Errorf("provider exited before its endpoint answered: %s", exit.Reason))
+			return
+		}
+		select {
+		case <-h.Context().Done():
+			if state.releaseReady(h) && errors.Is(context.Cause(h.Context()), jobs.ErrCanceled) {
+				h.Fail(m.cancelServiceReady(name))
+			}
+			return
+		case <-heartbeat.C:
+			meta := jobs.Meta{"elapsed_ms": utils.Now().Sub(started).Milliseconds()}
+			if status, err := m.ProviderServiceStatus(h.Context(), name); err == nil {
+				meta["running"], meta["pid"] = status.Running, status.PID
+			}
+			h.Meta(meta)
+			h.Progress(0, "waiting-for-health", jobs.Bytes{})
+		case <-poll.C:
+		}
+	}
+}
+
+// cancelServiceReady stops a service whose readiness job was cancelled.
+func (m *ProviderAppManager) cancelServiceReady(name string) error {
+	ctx, cancel := context.WithTimeout(m.shutdownCtx, m.stopBudget(name))
+	defer cancel()
+	if _, err := m.ControlProviderService(ctx, name, "stop"); err != nil {
+		return fmt.Errorf("cancelled; stopping the service failed: %w", err)
+	}
+	return errors.New("cancelled")
+}
+
+// releaseReady detaches h while it is the live readiness job; false means another path ended it.
+func (state *managedService) releaseReady(h jobs.Handle) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.ready != h {
+		return false
+	}
+	state.ready = nil
+	return true
+}
+
+// endReady fails the live readiness job, if any, for the stop that made it moot.
+func (state *managedService) endReady(why error) {
+	state.mu.Lock()
+	h := state.ready
+	state.ready = nil
+	state.mu.Unlock()
+	if h != nil {
+		h.Fail(why)
+	}
+}
+
+// readyID names the live readiness job, "" when none; the caller holds mu.
+func (state *managedService) readyID() string {
+	if state.ready == nil {
+		return ""
+	}
+	return state.ready.ID()
+}
+
+// beginControl marks a host supervisor control in flight; until endControl, an
+// observation attributes no transition.
+func (state *managedService) beginControl() {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.controls++
+	state.controlling = true
+}
+
+// endControl ends it. A stop that took effect leaves the baseline stopped; after
+// any other control the state is unknown until an observation sees it.
+// Cost: an OS-managed service that dies before any observation saw it running records no exit, and its job keeps waiting while showing running:false.
+func (state *managedService) endControl(stopped bool) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.controls++
+	state.controlling = false
+	state.observedRunning = nil
+	if stopped {
+		state.observedRunning = new(false)
+	}
+}
+
+// exitSinceReady is the exit recorded after the readiness window opened, if any.
+func (state *managedService) exitSinceReady() *ProviderServiceExit {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if exit := state.status.LastExit; exit == nil || !exit.At.After(state.readySince) {
+		return nil
+	}
+	return state.status.Clone().LastExit
 }
 
 func (m *ProviderAppManager) controlProviderService(ctx context.Context, name, action string, installing bool) error {
@@ -336,10 +536,14 @@ func (m *ProviderAppManager) controlProviderService(ctx context.Context, name, a
 		if !ok {
 			return fmt.Errorf("%s has no lifecycle controller", manager.Name())
 		}
+		state := m.serviceState(name)
+		state.beginControl()
+		stopped := false // set once the stop took effect
+		defer func() { state.endControl(stopped) }()
 		if err := controller.Control(ctx, name, action); err != nil {
 			return err
 		}
-		state := m.serviceState(name)
+		stopped = action == "stop"
 		state.mu.Lock()
 		state.manualStop = action == "stop" && !installing
 		state.status.Desired = action != "stop"
@@ -348,6 +552,9 @@ func (m *ProviderAppManager) controlProviderService(ctx context.Context, name, a
 		return ErrExternalService
 	} else if err := m.controlDaemon(ctx, name, action, cfg, daemon, installing); err != nil {
 		return err
+	}
+	if action == "stop" {
+		m.serviceState(name).endReady(errReadyStopped)
 	}
 	if action != "start" {
 		m.daemonRestarted(name)
@@ -630,6 +837,7 @@ func (m *ProviderAppManager) reconcileService(ctx context.Context, name string) 
 	cfg, cfgErr := m.serviceConfig(name)
 	inst, _ := m.installs.Dispatcher().Get(name)
 	if cfgErr != nil || !cfg.IsEnabled() || !cfg.HasEndpoint() || inst == nil || managedBinaryOf(inst) == "" {
+		defer state.endReady(errReadyStopped)
 		return state.stop(ctx, false)
 	}
 	state.mu.Lock()
@@ -655,12 +863,22 @@ func (m *ProviderAppManager) stopServices(ctx context.Context) error {
 	var result error
 	for _, state := range states {
 		result = errors.Join(result, state.stop(ctx, false))
+		state.endReady(errors.New("manager shutdown"))
 	}
+	watched := make(chan struct{})
+	go func() {
+		m.serviceWatchers.Wait()
+		close(watched)
+	}()
+	waits := []<-chan struct{}{watched}
 	if m.servicesStarted.Load() && m.servicesObserved != nil {
+		waits = append(waits, m.servicesObserved)
+	}
+	for _, done := range waits {
 		select {
-		case <-m.servicesObserved:
+		case <-done:
 		case <-ctx.Done():
-			result = errors.Join(result, ctx.Err())
+			return errors.Join(result, ctx.Err())
 		}
 	}
 	return result

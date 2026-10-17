@@ -173,7 +173,7 @@ func describeProviderDiagnostics(s *Server) string {
 	if s.config != nil && s.config.Cluster.IsWorker() {
 		return "Query provider diagnostics through the coordinator with ?node=<name>."
 	}
-	return "GET /providers/{name}/environment?node=<name> observes managed packages, runtime, cached driver information and the selected host toolkit. POST /providers/{name}/install/verify returns prerequisite checks. GET /providers/{name}/service/status?node=<name> reports supervision and the last exit. Admin POST service/start, service/stop and service/restart control managed daemons only; external daemons are read-only. Stopped managed providers return provider_not_running with supervision and the service/start route; unavailable inventories report uncertainty. Host findings contain human remediation; API workarounds use PATCH /providers/{name}/parameters. Host changes are never applied."
+	return "GET /providers/{name}/environment?node=<name> observes managed packages, runtime, cached driver information and the selected host toolkit. POST /providers/{name}/install/verify returns prerequisite checks. GET /providers/{name}/service/status?node=<name> reports supervision and the last exit. Admin POST service/start, service/stop and service/restart control managed daemons only; external daemons are read-only. Start and restart answer 202 with a job_id to wait on with zz_job until the endpoint answers. Stopped managed providers return provider_not_running with supervision and the service/start route; unavailable inventories report uncertainty. Host findings contain human remediation; API workarounds use PATCH /providers/{name}/parameters. Host changes are never applied."
 }
 
 // describeAuthentication reports the accepted credential schemes and

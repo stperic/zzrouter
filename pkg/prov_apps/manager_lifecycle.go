@@ -1236,6 +1236,15 @@ func mergeStringMaps(defaults, overrides map[string]string) map[string]string {
 	return result
 }
 
+// stopEpilogue covers a stop's work after the process exits: goroutine wait,
+// registry removal and port release.
+const stopEpilogue = 5 * time.Second
+
+// stopBudget bounds a stop of provider's process: its graceful timeout plus the epilogue.
+func (m *ProviderAppManager) stopBudget(provider string) time.Duration {
+	return m.resolveShutdownTimeout(provider) + stopEpilogue
+}
+
 // resolveShutdownTimeout returns the graceful shutdown timeout for a provider.
 // Reads shutdown_timeout from provider config defaults. Supports:
 //   - "gpu" → 30s (GPU providers need time to flush memory)

@@ -246,28 +246,6 @@ func (c *Client) DeleteModelEnvironment(provider, model, key string) error {
 	return c.patchParameters(provider, tierDelete("models", model, sectionEnvironment, key), "delete model environment")
 }
 
-// GetServiceStatus returns the service management status for a provider.
-// Includes: detected manager, running state, pending restart flag, running models.
-func (c *Client) GetServiceStatus(provider string) (map[string]any, error) {
-	endpoint := apipath.ProviderServiceStatus(provider)
-	var result map[string]any
-	if err := c.doJSON("GET", endpoint, nil, &result, "get service status"); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-// ApplyServiceConfig applies env vars via the detected service manager and restarts.
-// Returns the result including manual instructions on permission failure.
-func (c *Client) ApplyServiceConfig(provider string) (map[string]any, error) {
-	endpoint := apipath.ProviderServiceApply(provider)
-	var result map[string]any
-	if err := c.doJSON("POST", endpoint, nil, &result, "apply service config"); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
 // ----------------------------------------------------------------------------
 // Merge-Patch plumbing
 // ----------------------------------------------------------------------------

@@ -77,7 +77,7 @@ func (s *Server) providerInventoryFailure(node, provider string, missing bool) *
 			message = fmt.Sprintf("Provider %q is not running on node %q (supervisor=%s, desired_running=%t).", failure.Provider, failure.Node, failure.Service.Supervisor, failure.Service.Desired)
 			route := "/zzrouter/v1/providers/" + url.PathEscape(failure.Provider) + "/service/start?node=" + url.QueryEscape(failure.Node)
 			extra["start_route"] = route
-			message += " Recover with POST " + route + "."
+			message += " Recover with POST " + route + "; it answers 202 with a job_id to wait on with zz_job until the endpoint answers."
 		}
 		if missing {
 			message += " Model existence cannot be established while this inventory is unavailable."

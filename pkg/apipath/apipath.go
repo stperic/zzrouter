@@ -145,17 +145,15 @@ const clusterEndpoints = Base + "/cluster/endpoints"
 func ClusterEndpoint(address string) string { return join(clusterEndpoints, address) }
 
 // Provider lifecycle.
-func ProviderVersionsFor(n string) string   { return join(Providers, n, "versions") }
-func ProviderSchema(n string) string        { return join(Providers, n, "schema") }
-func ProviderResolved(n string) string      { return join(Providers, n, "resolved") }
-func ProviderAssets(n string) string        { return join(Providers, n, "assets") }
-func ProviderAsset(n, a string) string      { return join(Providers, n, "assets", a) }
-func ProviderServiceStatus(n string) string { return join(Providers, n, "service", "status") }
-func ProviderServiceApply(n string) string  { return join(Providers, n, "service", "apply") }
-func ProviderUpgrade(n string) string       { return join(Providers, n, "upgrade") }
-func ProviderVerify(n string) string        { return join(Providers, n, "verify") }
-func ProviderInstall(n string) string       { return join(Providers, n, "install") }
-func ProviderInstallPlan(n string) string   { return join(Providers, n, "install", "plan") }
+func ProviderVersionsFor(n string) string { return join(Providers, n, "versions") }
+func ProviderSchema(n string) string      { return join(Providers, n, "schema") }
+func ProviderResolved(n string) string    { return join(Providers, n, "resolved") }
+func ProviderAssets(n string) string      { return join(Providers, n, "assets") }
+func ProviderAsset(n, a string) string    { return join(Providers, n, "assets", a) }
+func ProviderUpgrade(n string) string     { return join(Providers, n, "upgrade") }
+func ProviderVerify(n string) string      { return join(Providers, n, "verify") }
+func ProviderInstall(n string) string     { return join(Providers, n, "install") }
+func ProviderInstallPlan(n string) string { return join(Providers, n, "install", "plan") }
 func ProviderInstallPreflight(n string) string {
 	return join(Providers, n, "install", "preflight")
 }

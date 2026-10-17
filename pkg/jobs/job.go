@@ -30,7 +30,7 @@ type job struct {
 	subBuffer     int
 	clk           clock.Clock
 	ctx           context.Context
-	cancel        context.CancelFunc
+	cancel        context.CancelCauseFunc
 
 	// Guarded by mu.
 	mu             sync.Mutex
@@ -52,7 +52,8 @@ func (j *job) ID() string { return j.id }
 // Epoch reports the per-job nonce.
 func (j *job) Epoch() string { return j.epoch }
 
-// Context carries shutdown, Cancel, parent cancellation and terminal transitions to the producer.
+// Context carries shutdown, Cancel, parent cancellation and terminal transitions to
+// the producer; context.Cause is ErrCanceled only for Cancel.
 func (j *job) Context() context.Context { return j.ctx }
 
 // Progress emits a running-phase event. No-op after terminal. Percent
@@ -183,7 +184,7 @@ func (j *job) emit(phase Phase, percent int, step string, bytes *Bytes, errMsg s
 	}
 
 	if phase.IsTerminal() {
-		j.cancel()
+		j.cancel(nil)
 		for _, s := range j.subs {
 			s.close()
 		}
@@ -228,7 +229,7 @@ func (j *job) phaseAndTimestamps() (Phase, time.Time, time.Time) {
 // not emit a terminal event — the registry is going away, so subscribers
 // should reconnect rather than treat this as a job outcome.
 func (j *job) evict() {
-	j.cancel()
+	j.cancel(nil)
 	j.mu.Lock()
 	j.evicted = true
 	toClose := j.subs

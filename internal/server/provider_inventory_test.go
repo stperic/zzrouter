@@ -68,6 +68,7 @@ func TestMissingModelOnStoppedNodeReportsRecoveryWithoutClaimingIdentity(t *test
 	require.Contains(t, response.Body.String(), "provider_not_running")
 	require.Contains(t, response.Body.String(), "zzRouter")
 	require.Contains(t, response.Body.String(), "/service/start?node=worker")
+	require.Contains(t, response.Body.String(), "wait on with zz_job")
 	require.Contains(t, response.Body.String(), "Model existence cannot be established")
 	require.NotContains(t, response.Body.String(), "deployments")
 }

@@ -13,6 +13,7 @@ const (
 	KindSync         Kind = "sync"
 	KindInferenceLog Kind = "inference_log"
 	KindRun          Kind = "run"
+	KindService      Kind = "service"
 )
 
 // RingMode selects the event-retention strategy for a kind.
@@ -59,6 +60,8 @@ func (k Kind) idPrefix() string {
 		return "inflog_"
 	case KindRun:
 		return "run_"
+	case KindService:
+		return "svc_"
 	}
 	return "job_"
 }

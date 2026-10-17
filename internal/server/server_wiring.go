@@ -33,7 +33,6 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 		s.knownClusterNodes,
 		s.cluster.router,
 		services,
-		s.httpClient,
 		s.node.IsWorker,
 		func() string {
 			if s.cluster.listener == nil {

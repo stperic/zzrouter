@@ -19,4 +19,8 @@ var (
 	// restarted or the job was re-created under the same ID. Client
 	// must resnapshot.
 	ErrEpochMismatch = errors.New("jobs: epoch mismatch")
+
+	// ErrCanceled is the cause of a job context Registry.Cancel ended; a
+	// terminal transition, reap or registry stop ends it with another cause.
+	ErrCanceled = errors.New("jobs: canceled")
 )
