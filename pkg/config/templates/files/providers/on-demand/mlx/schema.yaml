@@ -18,9 +18,11 @@ parameters:
     # argument verbatim, so it takes the template's text, not a path.
     pass: content
     description: Jinja chat template overriding the model's own, by asset name
-  # Both engines' flags, each marked with the engine that reads it: mlx_lm.server
-  # 0.31.3 runs text models, mlx_vlm.server the runtime features, whose
-  # exclude_parameters in config.yaml drop the mlx_lm-only flags.
+  # Both engines' flags an operator may set, each marked with the engine that
+  # reads it: mlx_lm.server 0.31.3 runs text models, mlx_vlm.server the runtime
+  # features; runtime and feature exclude_parameters drop the other engine's.
+  # Engine tuning and running code from the model repo are the operator's
+  # choice; paths, URLs, downloads, adapters, auth and logging stay out.
   temp: {type: float, description: "Default sampling temperature (mlx_lm)"}
   top-k: {type: int, description: "Default top-k, 0 disables (mlx_lm)"}
   min-p: {type: float, description: "Default min-p, 0.0 disables (mlx_lm)"}

@@ -205,6 +205,12 @@ runtime:
     # to --model. So it must be addressed by path on the wire; zzRouter
     # restores the client-facing name on the way out.
     wire_model: path
+  # mlx_lm.server 0.31.3 has none of the flags only mlx_vlm.server reads.
+  exclude_parameters: [vision-cache-size, enable-thinking, thinking-budget,
+    thinking-start-token, thinking-end-token, kv-bits, kv-key-bits, kv-value-bits,
+    kv-key-scheme, kv-value-scheme, kv-quant-scheme, kv-group-size, max-kv-size,
+    quantized-kv-start, expert-cache-gb, draft-kind, draft-block-size, max-num-seqs,
+    top-logprobs-k]
 
   health_check:
     path: /v1/models

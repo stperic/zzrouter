@@ -166,7 +166,7 @@ takes only `auto` or `false`, never a path.
 
 | `code` | Meaning | Recovery |
 |---|---|---|
-| `unknown_flag` | The key isn't in the provider's schema for that endpoint, whether patched or passed by a launch. | Read `/zzrouter/v1/providers/:n/schema` (`zz_params_get` accepts) for the valid key set; a launch takes the provider's own spelling. |
+| `unknown_flag` | The key isn't in the provider's schema for that endpoint, whether patched or passed by a launch. | Read `/zzrouter/v1/providers/:n/schema` (`zz_params_get` accepts) for the valid key set; a launch takes the provider's own spelling. For `no-<flag>` where `<flag>` is `negatable`, set `<flag>: false`; the message says so. |
 | `wrong_type` | Value type mismatch (e.g. string into int). | Coerce to the type indicated by `want`. |
 | `out_of_range` | Numeric value outside `min`/`max`. | Clamp into `[min,max]`. |
 | `unknown_node` | Tier 3 cell references a node not in the cluster. | List `/zzrouter/v1/nodes`. |

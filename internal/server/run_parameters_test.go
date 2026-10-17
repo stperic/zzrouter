@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
@@ -256,4 +257,42 @@ func TestFeatureFlagTakesOnlyAnOptOut(t *testing.T) {
 	declared := filepath.Join(s.configStore.DirPath(), "on-demand", "llamacpp", "schema.yaml")
 	require.NoError(t, os.WriteFile(declared, []byte("provider: llamacpp\nparameters:\n  mmproj: {type: string, description: declared}\n"), 0o600))
 	assert.Equal(t, "declared", loadProviderSchema(s.configStore, "llamacpp").Parameters["mmproj"].Description, "a schema that declares the flag keeps its declaration")
+}
+
+// A bool llama.cpp also spells --no-<flag> is one key: the schema says so,
+// false passes the --no- form, and the --no- key is refused with the key
+// and value that pass it.
+func TestNegatableBoolIsOneKey(t *testing.T) {
+	s := variantNode(t)
+	w := assetRequest(t, s, http.MethodGet, "/zzrouter/v1/providers/llamacpp/schema", nil)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var doc struct {
+		Parameters map[string]map[string]any `json:"parameters"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &doc))
+	assert.Equal(t, true, doc.Parameters["mmap"]["negatable"])
+	assert.NotContains(t, doc.Parameters["no-host"], "negatable", "llama.cpp spells it only --no-host")
+	assert.NotContains(t, doc.Parameters, "no-mmap")
+
+	for value, flag := range map[string]string{"true": "--mmap", "false": "--no-mmap"} {
+		w := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"mmap":`+value+`}}`))
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		var preview struct {
+			Data struct {
+				FullCommand string `json:"full_command"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &preview))
+		assert.Contains(t, strings.Fields(preview.Data.FullCommand), flag, value)
+	}
+
+	w = assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"no-mmap":true}}`))
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	problem := runParameterProblem(t, w.Body.Bytes())
+	require.Len(t, problem.Errors, 1)
+	assert.Equal(t, string(httperr.CodeUnknownFlag), problem.Errors[0].Code)
+	assert.Contains(t, problem.Errors[0].Message, "set mmap: false")
+	code, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"no-mmap": true}}})
+	require.Equal(t, http.StatusBadRequest, code, body)
+	assert.Contains(t, body, "set mmap: false")
 }

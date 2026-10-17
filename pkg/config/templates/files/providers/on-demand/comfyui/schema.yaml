@@ -7,13 +7,13 @@ parameters:
   reserve-vram:
     type: float
     min: 0
-    description: Exact allocator complement derived from device total and reservation in GiB
+    description: Allocator complement in GiB, from device total and reservation
   listen:
     type: string
     description: ComfyUI bind address, use 127.0.0.1 for single-host access
-  # Every other flag ComfyUI 0.40.0 accepts that an operator may set. Flags the
-  # runtime passes, paths, downloads, custom-node installs, TLS, CORS and logging
-  # stay out.
+  # Every other ComfyUI 0.40.0 flag an operator may set. Engine tuning is the
+  # operator's choice; flags the runtime passes, paths, URLs, downloads,
+  # custom-node installs, TLS, CORS and logging stay out.
   max-upload-size: {type: float, description: "Maximum upload size in MB"}
   disable-auto-launch: {type: bool, description: "Never open a browser at startup"}
   cuda-device: {type: string, description: "CUDA device ids to use, comma-separated, or all"}
@@ -74,7 +74,7 @@ parameters:
   default-hashing-function: {type: string, enum: [md5, sha1, sha256, sha512], description: "Hash for duplicate file comparison"}
   disable-smart-memory: {type: bool, description: "Offload models to RAM aggressively"}
   deterministic: {type: bool, description: "Prefer deterministic PyTorch algorithms"}
-  fast: {type: string, description: "One experimental optimization, or true for all"}
+  fast: {type: string, enum: ["true", "false", fp16_accumulation, fp8_matrix_mult, cublas_ops, autotune], description: "One experimental optimization, true for all"}
   debug-hang: {type: bool, description: "Dump stack traces on Ctrl-C"}
   disable-pinned-memory: {type: bool, description: "Disable pinned memory"}
   mmap-torch-files: {type: bool, description: "Use mmap for ckpt/pt files"}

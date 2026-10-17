@@ -163,11 +163,118 @@ func TestShippedConfigNamesOnlyDeclaredParameters(t *testing.T) {
 				requireDeclared(where+".endpoints."+endpoint, endpoint, slices.Collect(maps.Keys(overlay.Parameters)))
 			}
 		}
+		requireDeclared("runtime.exclude_parameters", "", svc.Runtime.ExcludeParameters)
 		for feature, f := range svc.Features {
 			endpoint := config.FeatureEndpoint(feature)
 			requireDeclared("features."+feature+".requires_parameters", endpoint, f.RequiresParameters)
 			requireDeclared("features."+feature+".exclude_parameters", endpoint, f.ExcludeParameters)
 		}
+	}
+}
+
+// A bool the engine also spells --no-<flag> is one negatable key, so no
+// shipped schema declares that spelling beside it as a second key.
+func TestShippedNegatableBoolsHaveOneKey(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	negatable := 0
+	for name, declared := range schemas {
+		endpoints := []string{""}
+		for endpoint := range declared.Endpoints {
+			endpoints = append(endpoints, endpoint)
+		}
+		for _, endpoint := range endpoints {
+			shapes := declared.ForEndpoint(endpoint)
+			for key, shape := range shapes {
+				if !shape.Negatable {
+					continue
+				}
+				negatable++
+				_, twin := shapes["no-"+key]
+				assert.False(t, twin, "%s: no-%s is %s: false", name, key, key)
+			}
+		}
+	}
+	assert.NotZero(t, negatable, "the shipped engines declare negatable bools")
+}
+
+// mlx_lm.server 0.31.3 and mlx_vlm.server 0.7.6 crash on a flag their
+// argparse does not define, so each MLX runtime passes only its engine's.
+func TestMLXRuntimesPassOnlyTheirEnginesFlags(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	svc := launchedProviders(t)["mlx"]
+	// Each engine's argparse flags, less the ones its runtime passes itself.
+	mlxLM := []string{"adapter-path", "allowed-origins", "draft-model", "num-draft-tokens", "trust-remote-code",
+		"log-level", "chat-template", "use-default-chat-template", "temp", "top-p", "top-k", "min-p", "max-tokens",
+		"chat-template-args", "decode-concurrency", "prompt-concurrency", "prefill-step-size", "prompt-cache-size",
+		"prompt-cache-bytes", "pipeline"}
+	mlxVLM := []string{"trust-remote-code", "adapter-path", "vision-cache-size", "prefill-step-size",
+		"log-progress-interval", "max-tokens", "enable-thinking", "thinking-budget", "thinking-start-token",
+		"thinking-end-token", "kv-bits", "kv-key-bits", "kv-value-bits", "kv-key-scheme", "kv-value-scheme",
+		"kv-quant-scheme", "kv-group-size", "max-kv-size", "quantized-kv-start", "expert-cache-gb", "draft-model",
+		"draft-kind", "draft-block-size", "max-num-seqs", "top-logprobs-k", "api-key", "reload", "log-level"}
+	runtimes := map[string]struct {
+		exclude []string
+		engine  []string
+	}{"runtime": {svc.Runtime.ExcludeParameters, mlxLM}}
+	for feature, f := range svc.Features {
+		if f.Runtime != "" {
+			runtimes["features."+feature] = struct {
+				exclude []string
+				engine  []string
+			}{f.ExcludeParameters, mlxVLM}
+		}
+	}
+	require.Len(t, runtimes, 4, "the base runtime and three mlx_vlm features")
+	for where, runtime := range runtimes {
+		for key := range schemas["mlx"].Parameters {
+			if runsettings.IsParameter(key) || slices.Contains(runtime.exclude, key) {
+				continue
+			}
+			assert.Contains(t, runtime.engine, key, "%s passes %s, which its engine does not define", where, key)
+		}
+	}
+}
+
+// Shipped shapes take what each pinned engine takes and refuse what it
+// refuses, at the boundaries a schema can state.
+func TestShippedShapesMatchTheirEngines(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	for _, tc := range []struct {
+		provider, key, value string
+		ok                   bool
+	}{
+		// llama.cpp b10549 common/arg.cpp
+		{"llamacpp", "n-gpu-layers", "auto", true},
+		{"llamacpp", "n-gpu-layers", "-1", true},
+		{"llamacpp", "n-gpu-layers", "-2", true},
+		{"llamacpp", "n-gpu-layers", "all", false}, // spelled -2: an int takes one keyword, auto
+		{"llamacpp", "spec-draft-ngl", "auto", true},
+		{"llamacpp", "parallel", "auto", true},
+		{"llamacpp", "parallel", "0", false},
+		{"llamacpp", "sleep-idle-seconds", "0", false},
+		{"llamacpp", "sleep-idle-seconds", "60", true},
+		{"llamacpp", "cache-type-k", "q8_0", true},
+		{"llamacpp", "cache-type-v", "q8", false},
+		{"llamacpp", "spec-draft-type-k", "iq4_nl", true},
+		{"llamacpp", "repeat-last-n", "-1", false},
+		// vLLM 0.29.0 config dataclasses
+		{"vllm", "dtype", "half", true},
+		{"vllm", "dtype", "bf16", false},
+		{"vllm", "kv-cache-dtype", "fp8_e4m3", true},
+		{"vllm", "kv-cache-dtype", "int8", false},
+		{"vllm", "max-lora-rank", "320", true},
+		{"vllm", "max-lora-rank", "100", false},
+		{"vllm", "max-logprobs", "-1", true},
+		{"vllm", "max-num-batched-tokens", "0", false},
+		// ComfyUI comfy/cli_args.py PerformanceFeature
+		{"comfyui", "fast", "fp16_accumulation", true},
+		{"comfyui", "fast", "all", false},
+	} {
+		issue := pschema.Check(tc.key, tc.value, schemas[tc.provider].Parameters)
+		assert.Equal(t, tc.ok, issue == nil, "%s %s=%s: %v", tc.provider, tc.key, tc.value, issue)
 	}
 }
 
