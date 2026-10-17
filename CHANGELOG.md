@@ -76,6 +76,10 @@
   vLLM hybrid models stay unknown (vLLM sizes its state pool by max-num-seqs).
 - Share unified-memory detection across local inventory and legacy peer snapshots;
   remove the unused mesh HTTP adapter and broadcast serialization.
+- `POST /zzrouter/v1/keys` checks the whole request before writing anything. A
+  bad `expires_at` used to leave the key's personal team behind until the next
+  restart, so a corrected retry with the same id answered 500 "team already
+  exists"; a duplicate key id answered the same 500 and now answers 409.
 
 ## 0.2.3 (2026-10-16)
 

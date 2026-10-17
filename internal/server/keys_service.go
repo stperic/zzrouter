@@ -153,8 +153,9 @@ type KeyResponse struct {
 // "member"). Personal teams can never be joined by a second key — attempting
 // to pass a personal team's ID here is rejected by TeamsService.
 //
-// Write order: team first, then key. Crash window: personal team exists with
-// no key → orphan, swept by ReconcilePersonalTeams on next startup.
+// Every refusal comes before the first write. Write order: team first, then
+// key. Crash window: personal team exists with no key → orphan, swept by
+// ReconcilePersonalTeams on next startup.
 func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy string) (*CreateKeyResponse, error) {
 	if req.Name == "" {
 		return nil, invalidInputf("name is required")
@@ -168,9 +169,22 @@ func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy stri
 	if reservedKeyIDs[id] {
 		return nil, invalidInputf("%s", reservedNameMessage("key id", id, "/zzrouter/v1/keys/", reservedKeyIDs))
 	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if err != nil {
+			return nil, invalidInputf("invalid expires_at: %w", err)
+		}
+		expiresAt = &t
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// The id's personal team belongs to the existing key.
+	if s.store.Get(id) != nil {
+		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyExists)
+	}
 
 	role := req.Role
 	if role == "" {
@@ -240,14 +254,7 @@ func (s *KeysService) CreateKey(id string, req *CreateKeyRequest, createdBy stri
 	vk.SpendLimit = req.SpendLimit
 	vk.ResetPeriod = req.ResetPeriod
 	vk.DefaultMaxTokens = req.DefaultMaxTokens
-
-	if req.ExpiresAt != nil {
-		t, err := time.Parse(time.RFC3339, *req.ExpiresAt)
-		if err != nil {
-			return nil, invalidInputf("invalid expires_at: %w", err)
-		}
-		vk.ExpiresAt = &t
-	}
+	vk.ExpiresAt = expiresAt
 
 	rawKey, err := s.store.Create(id, vk)
 	if err != nil {
