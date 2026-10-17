@@ -381,3 +381,43 @@ func TestUpdateApp_RefusedMutationLeavesNoTrace(t *testing.T) {
 	assert.Equal(t, ctxSize, after.Defaults.Parameters["ctx-size"])
 	assert.NotContains(t, after.Models, "ghost")
 }
+
+// vllmParam reads one vllm default parameter from cfg.
+func vllmParam(t *testing.T, cfg *AppsConfig, key string) string {
+	t.Helper()
+	sc, ok := cfg.LookupApp("vllm")
+	require.True(t, ok)
+	if sc.Defaults == nil {
+		return ""
+	}
+	return sc.Defaults.Parameters[key]
+}
+
+// A write publishes a new config: one a reader already holds stays as it
+// read it, so a handler never sees the providers map change under it.
+func TestStoreWriteLeavesHeldConfigUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	store, err := NewAppsConfigStore(dir)
+	require.NoError(t, err)
+
+	held := store.Config()
+	before := vllmParam(t, held, "max-model-len")
+	require.NoError(t, store.SetAppParameter("vllm", "max-model-len", "4321"))
+
+	assert.Equal(t, before, vllmParam(t, held, "max-model-len"), "held config changed in place")
+	assert.Equal(t, "4321", vllmParam(t, store.Config(), "max-model-len"))
+}
+
+// A write that cannot be saved leaves memory as it was, matching disk.
+func TestStoreUnsavedWriteChangesNothing(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	loaded, err := NewAppsConfigStore(dir)
+	require.NoError(t, err)
+	store := NewMemoryAppsConfigStore(loaded.Config())
+	before := vllmParam(t, store.Config(), "max-model-len")
+
+	require.Error(t, store.SetAppParameter("vllm", "max-model-len", "4321"))
+	assert.Equal(t, before, vllmParam(t, store.Config(), "max-model-len"))
+}
