@@ -27,7 +27,7 @@ Usage: ZZR_CAMPAIGN_KEY=<admin key> campaign.py --lab lab.json  (copy lab.exampl
 Needs claude and codex on PATH. Writes report.md and confusion.md under
 $TMPDIR/zzr-campaign/<time>/ unless --out says otherwise.
 """
-import argparse, base64, json, os, re, shlex, shutil, subprocess, sys, threading, time, uuid
+import argparse, base64, json, math, os, re, shlex, shutil, subprocess, sys, threading, time, uuid
 import http.server as httpserver, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
@@ -591,13 +591,17 @@ def call_evidence(fields):
     if not isinstance(fields, dict):
         return {}
     evidence = {k: fields[k] for k in ("probe", "verdict", "tool_call", "dimensions", "node", "total", "has_more", "model", "deleted", "errors", "job_id", "state", "run_id", "status", "code", "detail", "deployment_id", "accepted", "provider", "context_length", "error_message", "failure", "assessment", "parameters", "parameter_sources") if k in fields}
+    if isinstance(fields.get("cache"), dict):
+        evidence["cache"] = {k: fields["cache"][k] for k in
+                             ("kv_tokens", "kv_pools", "sequence_slots", "context_tokens", "sharing", "max_concurrency")
+                             if k in fields["cache"]}
     if isinstance(fields.get("runs"), list):
         evidence["runs"] = [call_evidence(row) for row in fields["runs"][:16]]
         if len(fields["runs"]) > 16:
             evidence["capture_overflow"] = True
     if isinstance(fields.get("lines"), list):
         evidence["lines"] = [line[:1000] for line in fields["lines"] if isinstance(line, str)
-                             and re.search(r"Maximum concurrency|GPU KV cache size|Mamba cache|at most", line)][:40]
+                             and re.search(r"Maximum concurrency|GPU KV cache size|llama_kv_cache:|n_slots =|max_num_seqs|Mamba cache|at most", line)][:40]
     if isinstance(fields.get("jobs"), list):
         evidence["jobs"] = [{k: row[k] for k in ("job_id", "node", "kind", "state") if k in row} for row in fields["jobs"][:2] if isinstance(row, dict)]
     if "nodes" in fields:
@@ -1229,23 +1233,54 @@ def check_explainable_fit(ctx):
     runs_seen = [row for c in calls if c["tool"] == "zz_runs" and c.get("is_error") is False
                  for row in (c["evidence"].get("runs") or [c["evidence"]])
                  if row.get("run_id") == result.get("run_id") and row.get("node") == result.get("node")]
-    reports = [(float(n), int(tokens.replace(",", ""))) for c in calls if c["tool"] == "zz_logs" and c.get("is_error") is False
-               and (c.get("args") or {}).get("run_id") == result.get("run_id")
-               and (c.get("args") or {}).get("node") in (None, result.get("node")) for line in c["evidence"].get("lines", [])
-               for tokens, n in re.findall(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x", line)]
+    current = runs_seen[-1] if runs_seen else {}
+    log_reads = [c for c in calls if c["tool"] == "zz_logs" and c.get("is_error") is False
+                 and (c.get("args") or {}).get("run_id") == result.get("run_id")
+                 and (c.get("args") or {}).get("node") in (None, result.get("node"))
+                 and c["evidence"].get("lines")]
+    reports = [(float(n), int(tokens.replace(",", ""))) for c in log_reads for line in c["evidence"]["lines"]
+               for tokens, n in re.findall(r"Maximum concurrency for ([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+) tokens per request: ([0-9]+(?:\.[0-9]+)?)x", line)]
+    # Keep source attribution mechanical, including log reads even when fields suffice.
+    caches = [r["cache"] for r in runs_seen if isinstance(r.get("cache"), dict) and r["cache"]]
+    source = "both" if caches and log_reads else "run_fields" if caches else "logs" if log_reads else "absent"
+    positive = lambda n: (type(n) is int and n > 0) or (type(n) is float and math.isfinite(n) and n > 0)
+    claim, context = result.get("reported_concurrency"), result.get("concurrency_context")
+    pair = (claim, context)
+    cache = current.get("cache") or {}
+    engine = positive(claim) and positive(context) and (pair in reports or (
+        positive(cache.get("max_concurrency")) and positive(cache.get("context_tokens"))
+        and pair == (cache["max_concurrency"], cache["context_tokens"])))
+    layout = (positive(claim) and claim == int(claim) and positive(context) and result.get("capacity_basis") == "reported_layout"
+              and cache.get("sharing") == "partitioned" and cache.get("context_tokens") == context
+              and all(type(cache.get(f)) is int and cache[f] >= floor for f, floor in
+                      (("kv_tokens", context), ("kv_pools", claim), ("sequence_slots", claim))))
+    scheduler = [cache["sequence_slots"]] if positive(cache.get("sequence_slots")) else []
+    scheduler += [int(n) for c in log_reads for line in c["evidence"]["lines"]
+                  for n in re.findall(r"max_num_seqs[ =:]+(\d+)", line)]
+    bounded = not positive(claim) or all(n >= claim for n in scheduler)
+    context_matches = (context == result.get("served_context") and current.get("context_length") == context
+                       and cache.get("context_tokens", context) == context and current.get("status") in (None, "running"))
+    grounded = bool((engine or layout) and bounded and context_matches)
+    basis = "engine_concurrency" if engine else "reported_layout" if layout else "absent"
     complete = chosen and (not chosen["evidence"].get("job_id") or any(
         c["tool"] == "zz_job" and c.get("is_error") is False and c["evidence"].get("state") == "done"
         and c["evidence"].get("job_id") == chosen["evidence"].get("job_id") for c in calls))
+    confirmed = bool(complete) and chosen["evidence"].get("job_id") not in failed and grounded and context >= 32768 and claim >= 4
+    ctx["capacity"] = {"capacity_evidence_source": source, "capacity_basis": basis,
+                       "capacity_log_reads": len(log_reads), "requirements_confirmed": bool(confirmed)}
     return [("task tools only", not any(c["tool"] in ESCAPE_HATCH for c in calls), ""),
             ("no predictable refusal or unchanged failed retry", safe, ""),
             ("chosen identity and completed launch evidenced", bool(complete) and chosen["evidence"].get("job_id") not in failed
              and all(result.get(k) for k in ("model", "node", "provider", "run_id")), result),
             ("cause matches selected preview", assessment is not None and "unknown_cause" in result
              and result["unknown_cause"] == assessment.get("unknown_cause"), assessment),
-            ("served context matches run", result.get("served_context") is None or any(
-                r.get("context_length") == result["served_context"] for r in runs_seen), runs_seen),
-            ("concurrency matches reported context", (result.get("reported_concurrency"), result.get("concurrency_context")) == (None, None)
-             or (result.get("reported_concurrency"), result.get("concurrency_context")) in reports, reports)]
+            ("served context matches run", result.get("served_context") is None
+             or current.get("context_length") == result["served_context"], runs_seen),
+            ("concurrency matches reported context", pair == (None, None) or grounded, ctx["capacity"]),
+            ("capacity basis matches evidence", "capacity_basis" not in result
+             or (result["capacity_basis"] or "absent") == basis, basis),
+            ("requirements claim matches evidence", "requirements_confirmed" not in result
+             or result["requirements_confirmed"] is bool(confirmed), ctx["capacity"])]
 
 
 def cleanup_fit_runs(calls, before):
@@ -1347,6 +1382,11 @@ def run_scenario(R, node, label, sc, agents, only, out):
                   "; ".join(f"{c['kind']}:{c['tool']}:{c['msg'][:80]}" for c in conf))
             for name, ok, detail in sc["check"](ctx):
                 R.add("mcp", node, f"{label}.{agent}", name, ok, detail)
+            if "capacity" in ctx:
+                with open(os.path.join(wd, "capacity.json"), "w") as stream:
+                    json.dump(ctx["capacity"], stream, indent=2)
+                for key, value in ctx["capacity"].items():
+                    R.add("mcp", node, f"{label}.{agent}", key, None, json.dumps(value))
             R.add("mcp", node, f"{label}.{agent}", "node still healthy", node_healthy(node), "")
         finally:
             if fit_nodes:
@@ -1367,7 +1407,8 @@ def track_mcp(R, node, cells, agents, only, out):
                       "from what the cluster reports that it actually meets both requirements; if it cannot, say what is missing. "
                       "Use only the zzrouter tools. Finish with exactly one line: RESULT: <compact JSON>. Keys: model, node, provider, "
                       "unknown_cause (the cause code zzRouter reported for your choice, or null), run_id, served_context, reported_concurrency, "
-                      "concurrency_context (the context size that concurrency figure is for; null when not reported).",
+                      "concurrency_context (the context size that concurrency figure is for; null when not reported), "
+                      "capacity_basis (engine_concurrency, reported_layout or null), requirements_confirmed (boolean).",
             "check": check_explainable_fit}, agents, only, out)
     run_scenario(R, node, "inventory", {
         "prompt": f"Report node {node}'s operating system, GPU and free GPU memory, and its local providers ({', '.join(LAB[node]['providers'])}) "

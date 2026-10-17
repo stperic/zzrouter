@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"path"
 	"regexp"
@@ -23,6 +24,7 @@ type YAMLSchema struct {
 	Parameters           map[string]YAMLParam    `yaml:"parameters,omitempty"`
 	Endpoints            map[string]YAMLEndpoint `yaml:"endpoints,omitempty"`
 	Diagnostics          *Diagnostics            `yaml:"diagnostics,omitempty"`
+	CacheLog             map[string]string       `yaml:"cache_log,omitempty"`
 }
 
 // YAMLParam mirrors ParamShape on disk. Kind is a string so yaml.v3 decodes
@@ -59,6 +61,7 @@ type ProviderSchema struct {
 	Parameters           map[string]ParamShape
 	Endpoints            map[string]EndpointSchema
 	Diagnostics          *Diagnostics
+	CacheLog             map[string]*regexp.Regexp
 }
 
 // EndpointSchema is the merged shape for one endpoint overlay's params.
@@ -109,6 +112,11 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	var errs []error
 	if y == nil {
 		return out, nil
+	}
+	var err error
+	out.CacheLog, err = compileLogPatterns("cache_log", y.CacheLog, map[string]int{"tokens": 1, "concurrency": 2, "pools": 2, "slots": 3, "sequence_slots": 1})
+	if err != nil {
+		slog.Warn("provider cache_log dropped", "provider", provider, "error", err)
 	}
 	out.AutoContext = y.AutoContext
 	if err := y.AutoContext.validate(); err != nil {
@@ -207,18 +215,26 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	}
 
 	if yp.PlacementLog != nil {
-		out.PlacementLog = make(map[string]*regexp.Regexp, len(yp.PlacementLog))
-		for name, raw := range yp.PlacementLog {
-			groups, ok := map[string]int{"layers": 2, "cpu_overrides": 0, "weights": 2}[name]
-			if !ok {
-				return ParamShape{}, fmt.Errorf("%s.%s: unknown placement_log.%s", provider, qualifiedName, name)
-			}
-			pattern, err := regexp.Compile(raw)
-			if err != nil || pattern.NumSubexp() != groups {
-				return ParamShape{}, fmt.Errorf("%s.%s: placement_log.%s requires a valid regex with exactly %d capture groups", provider, qualifiedName, name, groups)
-			}
-			out.PlacementLog[name] = pattern
+		out.PlacementLog, err = compileLogPatterns("placement_log", yp.PlacementLog, map[string]int{"layers": 2, "cpu_overrides": 0, "weights": 2})
+		if err != nil {
+			return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 		}
+	}
+	return out, nil
+}
+
+func compileLogPatterns(scope string, declarations map[string]string, roles map[string]int) (map[string]*regexp.Regexp, error) {
+	out := make(map[string]*regexp.Regexp, len(declarations))
+	for name, raw := range declarations {
+		groups, ok := roles[name]
+		if !ok {
+			return nil, fmt.Errorf("unknown %s.%s", scope, name)
+		}
+		pattern, err := regexp.Compile(raw)
+		if err != nil || pattern.NumSubexp() != groups {
+			return nil, fmt.Errorf("%s.%s requires a valid regex with exactly %d capture groups", scope, name, groups)
+		}
+		out[name] = pattern
 	}
 	return out, nil
 }

@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -257,6 +260,29 @@ func TestHandleProviderSync_WritesAndReloads(t *testing.T) {
 	}
 	if !bytes.Equal(decoded.ConfigYAML, body.ConfigYAML) {
 		t.Error("round-trip config bytes mismatch")
+	}
+}
+
+func TestHandleProviderSyncIgnoresInvalidCacheDeclarations(t *testing.T) {
+	for _, declaration := range []string{"future_role: '(value)'", "tokens: '('", "tokens: '(x)(y)'"} {
+		t.Run(declaration, func(t *testing.T) {
+			worker := createTestNode(t, TestNodeConfig{ClusterMode: pkgConfig.ClusterModeWorker, SeedProvidersDir: true})
+			store := worker.configStore
+			config, err := store.ReadProviderConfigBytes("ollama")
+			require.NoError(t, err)
+			body := ProviderSyncBody{Kind: pkgConfig.KindExternal, ConfigYAML: config,
+				SchemaYAML: []byte("parameters:\n  long-tail: {type: int}\ncache_log:\n  concurrency: 'Maximum concurrency for ([0-9]+) tokens per request: ([0-9.]+)x'\n  " + declaration + "\n")}
+			c, response := mutationContext(t, http.MethodPost, "/zzrouter/v1/internal/sync/providers/ollama", body)
+			c.Params = gin.Params{{Key: "name", Value: "ollama"}}
+			assertCacheWarning(t, "ollama", func() { worker.HandleProviderSync(c) })
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			assertCacheWarning(t, "ollama", func() {
+				merged, err := providerSchema(store)("ollama")
+				require.NoError(t, err)
+				assert.Nil(t, merged.CacheLog)
+				assert.Equal(t, schema.ParamInt, merged.Parameters["long-tail"].Kind)
+			})
+		})
 	}
 }
 

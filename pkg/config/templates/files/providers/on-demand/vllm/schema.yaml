@@ -2,6 +2,9 @@
 # carries launcher-load-bearing shape (max-model-len, gpu-memory-utilization,
 # tensor-parallel-size, dtype). Everything here augments it.
 provider: vllm
+cache_log:
+  tokens: 'GPU KV cache size: ([0-9][0-9,]*) tokens'
+  concurrency: 'Maximum concurrency for ([0-9][0-9,]*) tokens per request: ([0-9]+(?:\.[0-9]+)?)x'
 parameters:
   max-model-len:
     auto: "auto"

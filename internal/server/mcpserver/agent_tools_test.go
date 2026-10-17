@@ -579,3 +579,68 @@ func TestMCPModels_IncompleteExactResultNeedsNoDetail(t *testing.T) {
 	models := fields["models"].([]any)
 	require.Equal(t, true, models[0].(map[string]any)["incomplete"])
 }
+
+func TestRunCachePreservesReportedCapacity(t *testing.T) {
+	for _, single := range []bool{false, true} {
+		d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+			row := `{"id":"r","cache":{"kv_tokens":814421,"context_tokens":32768,"max_concurrency":24.85}}`
+			if single {
+				writeFixture(t, w, []byte(`{"data":`+row+`}`))
+			} else {
+				writeFixture(t, w, []byte(`{"data":[`+row+`],"total":1}`))
+			}
+		})
+		input := runsInput{}
+		if single {
+			input.RunID = "r"
+		}
+		out, err := d.runs(t.Context(), input)
+		require.NoError(t, err)
+		row := out.fields
+		if !single {
+			row = row["runs"].([]map[string]any)[0]
+		}
+		raw, err := json.Marshal(row["cache"])
+		require.NoError(t, err)
+		args := map[string]any{}
+		if single {
+			args["run_id"] = "r"
+		}
+		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name": "zz_runs", "arguments": args, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}},
+		}})
+		require.NoError(t, err)
+		request := httptest.NewRequest("POST", "http://coordinator/zzrouter/v1/mcp", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+		request.Header.Set("Mcp-Method", "tools/call")
+		request.Header.Set("Mcp-Name", "zz_runs")
+		request.Header.Set("X-API-Key", testKey)
+		response := httptest.NewRecorder()
+		New(d.cfg).ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		var envelope struct {
+			Result struct {
+				StructuredContent json.RawMessage `json:"structuredContent"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(envelope.Result.StructuredContent, &fields))
+		if !single {
+			var rows []map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(fields["runs"], &rows))
+			require.Len(t, rows, 1)
+			fields = rows[0]
+		}
+		require.JSONEq(t, string(raw), string(fields["cache"]))
+		raw = fields["cache"]
+		require.JSONEq(t, `{"kv_tokens":814421,"context_tokens":32768,"max_concurrency":24.85}`, string(raw))
+		var cache map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(raw, &cache))
+		require.Equal(t, "814421", string(cache["kv_tokens"]))
+		require.Equal(t, "32768", string(cache["context_tokens"]))
+		require.NotContains(t, cache, "kv_pools")
+	}
+}

@@ -61,6 +61,11 @@ Change `ClusterProtocolVersion` in [protocol.go](../pkg/version/protocol.go)
 when the wire contract changes. Raise both it and `MinClusterProtocolVersion`
 when old peers would reject, misread or mis-handle the new bytes. Optional fields
 that old peers safely ignore may keep the previous minimum for one release.
+An optional observation field in a worker reply needs no bump when its absence
+already means the engine reported no captured evidence: an older peer's omission
+is read correctly. This narrow exception applies to run `cache` observations,
+which preserve maximum 14 / minimum 13. Fields whose absence would be misread,
+or that change a decision, still require a bump under the policy above.
 A bug fix without a wire change does not require a bump.
 
 The ownership receipt and fresh provider-sync evidence gate do not change the

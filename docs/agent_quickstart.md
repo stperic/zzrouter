@@ -39,7 +39,7 @@ rows. Neither weight size nor a capacity amount proves runtime fit. The closed
 - `weights_unavailable` or `metadata_invalid`: inspect `zz_models`, repair with
   `zz_model_download`, follow `zz_job`, then `zz_run_preview`, or select another build.
 - `model_unmodelled`: use `zz_run_start`, follow `zz_job`, then inspect `zz_runs`
-  and `zz_logs` for measured evidence, or select another build/provider.
+  for `context_length` and `cache` engine observations, or select another build/provider.
 - `kv_dtype_unsupported`, `context_unresolved` or `context_below_minimum`: inspect
   accepted parameter names with `zz_params_get` and preview a supported KV dtype
   or numeric context; a below-minimum model may need a different build.
@@ -55,10 +55,21 @@ rows. Neither weight size nor a capacity amount proves runtime fit. The closed
   the model with `zz_models`, or choose another node.
 
 Estimates never establish concurrency or served context. Follow launch jobs to
-their terminal state. Use `zz_runs` for served context and `zz_logs` with
-`grep: "GPU KV cache size"` or `grep: "Maximum concurrency"` for engine reports.
-Concurrency at 4096 tokens cannot establish concurrency at 32768 tokens. A
-Mamba-cache startup refusal retains both block counts and its logged upper bound
+their terminal state. Inspect `zz_runs.context_length` and optional `zz_runs.cache`.
+`cache.kv_tokens` counts tokens/cells per pool; `kv_pools` counts independent pools
+only when reported, with no computed aggregate. An absent pool count means the
+engine reported no count, as with vLLM's aggregate pool size. Conflicting pool
+reports omit both KV fields for the run. `sequence_slots` is the reported
+slot or scheduler limit; `sharing` is explicitly reported `shared` or `partitioned`.
+Four slots sharing one 32768-cell pool do not establish four full 32768-token
+requests. A partitioned layout must report enough independent pools, tokens per
+pool and slots at the requested `context_tokens` to support that reading.
+`max_concurrency` is the engine's cache multiplier at `context_tokens`, separate
+from scheduler limits and performance. Concurrency at 4096 tokens cannot establish
+concurrency at 32768 tokens; conflicting API and cache contexts remain distinct.
+Omitted fields mean no captured evidence and establish no capacity conclusion.
+Older workers, MLX and current Ollama replies may omit `cache` entirely. Use
+`zz_logs` for failures. A Mamba-cache startup refusal retains both block counts and its logged upper bound
 for `max-num-seqs`; inspect `zz_params_get` and preview a supported change before
 another start. An unchanged retry supplies no new evidence.
 

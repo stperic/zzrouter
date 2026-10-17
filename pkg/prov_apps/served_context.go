@@ -3,7 +3,9 @@ package prov_apps
 import (
 	"context"
 	"math"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -65,9 +67,52 @@ const (
 	placementLayers = iota
 	placementCPUOverrides
 	placementWeights
+	cacheTokens
+	cacheConcurrency
+	cachePools
+	cacheSlots
+	cacheSequenceSlots
 )
 
-func recordPlacement(run *instance.Instance, index int, values []string) {
+var cacheNumber = regexp.MustCompile(`^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)$`)
+
+// Each role owns its fields; providers must not report a field from different sources across roles.
+var cacheRoles = map[int]struct {
+	integers     int
+	trailingBool bool
+}{
+	cacheTokens:        {1, false},
+	cacheConcurrency:   {1, false},
+	cachePools:         {2, false},
+	cacheSlots:         {2, true},
+	cacheSequenceSlots: {1, false},
+}
+
+func cacheCount(value string) int64 {
+	n, err := strconv.ParseInt(strings.ReplaceAll(value, ",", ""), 10, 64)
+	if !cacheNumber.MatchString(value) || err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+func recordObservation(run *instance.Instance, index int, values []string) {
+	var counts [2]int64
+	var sharing string
+	if role, ok := cacheRoles[index]; ok {
+		for i, value := range values[:role.integers] {
+			counts[i] = cacheCount(value)
+			if counts[i] == 0 {
+				return
+			}
+		}
+		if role.trailingBool {
+			sharing = map[string]string{"true": "shared", "false": "partitioned"}[values[role.integers]]
+			if sharing == "" {
+				return
+			}
+		}
+	}
 	run.UpdateLoaded(func(loaded *instance.Loaded) {
 		switch index {
 		case placementLayers:
@@ -90,6 +135,25 @@ func recordPlacement(run *instance.Instance, index int, values []string) {
 			} else {
 				loaded.GPUWeights += int64(bytes)
 			}
+		case cacheTokens:
+			loaded.Cache.KVTokens = counts[0]
+		case cachePools:
+			pools := [2]int64{loaded.Cache.KVTokens, loaded.Cache.KVPools}
+			if loaded.CachePoolsAmbiguous || (loaded.Cache.KVPools != 0 && pools != counts) {
+				loaded.CachePoolsAmbiguous = true
+				loaded.Cache.KVTokens, loaded.Cache.KVPools = 0, 0
+			} else {
+				loaded.Cache.KVTokens, loaded.Cache.KVPools = counts[0], counts[1]
+			}
+		case cacheSequenceSlots:
+			loaded.Cache.SequenceSlots = counts[0]
+		case cacheConcurrency:
+			n, err := strconv.ParseFloat(values[1], 64)
+			if err == nil && n > 0 && n <= math.MaxFloat64 {
+				loaded.Cache.ContextTokens, loaded.Cache.MaxConcurrency = counts[0], n
+			}
+		case cacheSlots:
+			loaded.Cache.SequenceSlots, loaded.Cache.ContextTokens, loaded.Cache.Sharing = counts[0], counts[1], sharing
 		}
 	})
 }

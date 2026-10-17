@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Retain engine-reported cache observations on REST runs and both `zz_runs` modes:
+  per-pool KV tokens, optional pool count, slots, context, explicit sharing and
+  fractional concurrency. Capture provider-declared startup summaries without
+  changing readiness or launch decisions; omit absent or ambiguous KV evidence.
+  Invalid optional cache-log declarations warn without blocking launches or
+  provider synchronization. Extend the agent campaign's grounding and source
+  attribution, including shared-slot overclaims
+  and scheduler caps. Optional observations keep cluster protocol 14/minimum 13;
+  older peers omit them correctly (see `docs/protocol_versioning.md`).
 - A managed provider daemon now starts at boot when the host service-manager
   probe (nssm, systemd, launchd) answers slowly: the probe uses the provider's
   reconcile budget instead of failing after 3 s and waiting for the next 10 s

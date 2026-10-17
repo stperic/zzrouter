@@ -11530,6 +11530,48 @@ components:
         context_length:
           type: integer
           description: Context length in tokens reported by the serving engine. Omitted when unknown.
+        cache:
+          type: object
+          description: |
+            Optional engine-reported observations captured in the existing startup window.
+            All fields are optional; absence establishes no capacity conclusion, including
+            on older workers. Independent of API context_length and launch decisions.
+            Slots sharing a pool do not establish that many full-context requests.
+            Conflicting pool reports omit both kv_tokens and kv_pools for the run.
+            An absent kv_pools means the engine reported no pool count, for example
+            vLLM reports an aggregate pool size without a count.
+            Scheduler limits are separate; cache capacity promises no throughput or latency.
+          additionalProperties: false
+          properties:
+            kv_tokens:
+              type: integer
+              format: int64
+              minimum: 1
+              description: Tokens/cells in ONE KV pool, exactly as reported; never an inferred aggregate.
+            kv_pools:
+              type: integer
+              format: int64
+              minimum: 1
+              description: Independent KV pools, only when the engine reports their count; absent means no reported count, as with vLLM's aggregate pool size. Conflicting pool reports omit both KV fields.
+            sequence_slots:
+              type: integer
+              format: int64
+              minimum: 1
+              description: Reported server slots or scheduler sequence limit; shared slots alone establish no concurrency.
+            context_tokens:
+              type: integer
+              format: int64
+              minimum: 1
+              description: Per-request context for the reported layout or multiplier, independent of context_length.
+            sharing:
+              type: string
+              enum: [shared, partitioned]
+              description: Present only when the engine explicitly reports cache sharing.
+            max_concurrency:
+              type: number
+              minimum: 0
+              exclusiveMinimum: true
+              description: Engine-reported cache concurrency multiplier at context_tokens, preserving fractions; scheduler limits apply separately.
         base_url: { type: string, format: uri, description: Direct engine URL using the node advertised address; no zzRouter authentication or proxy. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }

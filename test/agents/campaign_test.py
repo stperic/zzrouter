@@ -498,3 +498,123 @@ class ExplainableFitTest(unittest.TestCase):
             c.run_scenario(SimpleNamespace(add=lambda *a: None), "n", "explainable-fit", scenario, ["codex"], "", str(Path(out)))
             stop.assert_not_called()
             self.assertIn('"mac": ["existing"]', drive.call_args.args[1])
+
+class RunCapacityTest(unittest.TestCase):
+    setUp = ExplainableFitTest.setUp
+    def fields(self, cache, list_mode=True):
+        ctx = copy.deepcopy(self.ctx)
+        ctx['calls'].pop()
+        row = {'run_id': 'r', 'node': 'n', 'context_length': 32768, 'cache': cache}
+        ctx['calls'][-1]['evidence'] = c.call_evidence({'runs': [row]} if list_mode else row)
+        return ctx
+
+    def test_structured_only_and_both_sources(self):
+        cache = {'kv_tokens': 814421, 'context_tokens': 32768, 'max_concurrency': 4.5}
+        for list_mode in (False, True):
+            ctx = self.fields(cache, list_mode)
+            self.assertTrue(passed(c.check_explainable_fit(ctx)))
+            self.assertEqual(ctx['capacity'], {'capacity_evidence_source': 'run_fields', 'capacity_basis': 'engine_concurrency',
+                                              'capacity_log_reads': 0, 'requirements_confirmed': True})
+            ctx['calls'].append(self.ctx['calls'][-1])
+            self.assertTrue(passed(c.check_explainable_fit(ctx)))
+            self.assertEqual(ctx['capacity']['capacity_evidence_source'], 'both')
+            self.assertEqual(ctx['capacity']['capacity_log_reads'], 1)
+
+    def test_log_only_attribution_and_honest_missing(self):
+        self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
+        self.assertEqual(self.ctx['capacity'], {'capacity_evidence_source': 'logs', 'capacity_basis': 'engine_concurrency',
+                                              'capacity_log_reads': 1, 'requirements_confirmed': True})
+        self.ctx['calls'].pop()
+        self.ctx['rj'].update(reported_concurrency=None, concurrency_context=None, requirements_confirmed=False)
+        self.assertTrue(passed(c.check_explainable_fit(self.ctx)))
+        self.assertEqual(self.ctx['capacity'], {'capacity_evidence_source': 'absent', 'capacity_basis': 'absent',
+                                              'capacity_log_reads': 0, 'requirements_confirmed': False})
+        self.ctx['rj']['requirements_confirmed'] = True
+        self.assertFalse(passed(c.check_explainable_fit(self.ctx)))
+
+    def test_layout_requires_all_reported_units_and_documented_basis(self):
+        cache = {'kv_tokens': 32768, 'kv_pools': 4, 'sequence_slots': 4, 'context_tokens': 32768, 'sharing': 'partitioned'}
+        ctx = self.fields(cache)
+        ctx['rj'].update(reported_concurrency=4, capacity_basis='reported_layout', requirements_confirmed=True)
+        self.assertTrue(passed(c.check_explainable_fit(ctx)))
+        self.assertEqual(ctx['capacity']['capacity_basis'], 'reported_layout')
+        for key, value in [('sharing', 'shared'), ('kv_tokens', 8192), ('kv_pools', 1), ('sequence_slots', 3), ('context_tokens', 4096)]:
+            bad = copy.deepcopy(ctx)
+            bad['calls'][-1]['evidence']['runs'][0]['cache'][key] = value
+            self.assertFalse(passed(c.check_explainable_fit(bad)), key)
+        for key in cache:
+            bad = copy.deepcopy(ctx)
+            del bad['calls'][-1]['evidence']['runs'][0]['cache'][key]
+            self.assertFalse(passed(c.check_explainable_fit(bad)), key)
+        del ctx['rj']['capacity_basis']
+        self.assertFalse(passed(c.check_explainable_fit(ctx)))
+
+    def test_structured_identity_context_and_scheduler_are_binding(self):
+        ctx = self.fields({'max_concurrency': 4.5, 'context_tokens': 32768, 'sequence_slots': 8})
+        for key, value in [('run_id', 'wrong'), ('node', 'wrong'), ('context_length', 4096)]:
+            bad = copy.deepcopy(ctx)
+            bad['calls'][-1]['evidence']['runs'][0][key] = value
+            self.assertFalse(passed(c.check_explainable_fit(bad)), key)
+        for key, value in [('context_tokens', 4096), ('max_concurrency', 9), ('max_concurrency', float('inf')),
+                           ('sequence_slots', 4)]:
+            bad = copy.deepcopy(ctx)
+            bad['calls'][-1]['evidence']['runs'][0]['cache'][key] = value
+            self.assertFalse(passed(c.check_explainable_fit(bad)), key)
+        bad = copy.deepcopy(ctx)
+        bad['calls'].append(call('zz_logs', {'run_id': 'r', 'node': 'n'}, c.call_evidence({'lines': ['max_num_seqs=3']})))
+        self.assertFalse(passed(c.check_explainable_fit(bad)))
+        self.assertEqual(bad['capacity']['capacity_evidence_source'], 'both')
+
+    def test_capacity_capture_is_bounded_and_preserves_layout_logs(self):
+        cache = {'kv_tokens': 32768, 'kv_pools': 4, 'sequence_slots': 4, 'context_tokens': 32768,
+                 'sharing': 'partitioned', 'max_concurrency': 4, 'unbounded': 'x' * 40000}
+        evidence = c.call_evidence({'cache': cache, 'lines': ['llama_kv_cache: size = 8192.00 MiB', 'n_slots = 4']})
+        self.assertNotIn('unbounded', evidence['cache'])
+        self.assertEqual(len(evidence['cache']), 6)
+        self.assertEqual(len(evidence['lines']), 2)
+        self.assertTrue(c.call_evidence({'cache': {'sharing': 'x' * 40000}})['capture_overflow'])
+
+    def test_scenario_records_capacity_fields_in_results(self):
+        from unittest.mock import patch
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        rows = []
+        scenario = {'owned_nodes': ['n'], 'prompt': 'task', 'check': c.check_explainable_fit}
+        ctx = self.fields({'context_tokens': 32768, 'max_concurrency': 4.5})
+        result = 'RESULT: ' + json.dumps(ctx['rj'])
+        with TemporaryDirectory() as out, patch.object(c, 'runs', return_value=[]), \
+                patch.object(c, 'calls_for', return_value=ctx['calls']), patch.object(c, 'node_healthy', return_value=True), \
+                patch.object(c.time, 'sleep'), patch.object(c, 'run_codex_mcp', return_value=(result, {}, 0)):
+            c.run_scenario(SimpleNamespace(add=lambda *args: rows.append(args)), 'n', 'explainable-fit', scenario, ['codex'], '', out)
+            capacity = json.loads((Path(out) / 'mcp/n.explainable-fit.codex/capacity.json').read_text())
+            self.assertEqual(capacity, {'capacity_evidence_source': 'run_fields', 'capacity_basis': 'engine_concurrency',
+                                        'capacity_log_reads': 0, 'requirements_confirmed': True})
+            self.assertTrue(all(any(row[3] == key for row in rows) for key in capacity))
+
+    def test_malformed_log_numbers_do_not_confirm_capacity(self):
+        for line in ('Maximum concurrency for 32,,768 tokens per request: 4.50x',
+                     'Maximum concurrency for 32,768 tokens per request: 4..50x'):
+            ctx=copy.deepcopy(self.ctx)
+            ctx['calls'][-1]['evidence']['lines']=[line]
+            self.assertFalse(passed(c.check_explainable_fit(ctx)))
+            self.assertFalse(ctx['capacity']['requirements_confirmed'])
+
+    def test_fabricated_capacity_basis_is_rejected(self):
+        self.ctx['rj']['capacity_basis']='reported_layout'
+        self.assertFalse(passed(c.check_explainable_fit(self.ctx)))
+
+    def test_latest_run_snapshot_controls_capacity_and_failures(self):
+        ctx=self.fields({'context_tokens': 4096, 'max_concurrency': 36})
+        final={'run_id':'r','node':'n','status':'running','context_length':32768,
+               'cache':{'context_tokens':32768,'max_concurrency':4.5}}
+        ctx['calls'].append(call('zz_runs', {'run_id':'r','node':'n'}, c.call_evidence(final)))
+        self.assertTrue(passed(c.check_explainable_fit(ctx)))
+        for status in ('failed','starting','stopping'):
+            bad=copy.deepcopy(ctx)
+            bad['calls'][-1]['evidence']['status']=status
+            self.assertFalse(passed(c.check_explainable_fit(bad)),status)
+            self.assertFalse(bad['capacity']['requirements_confirmed'])
+        ctx['calls'][-1]['evidence']['context_length']=4096
+        self.assertFalse(passed(c.check_explainable_fit(ctx)))

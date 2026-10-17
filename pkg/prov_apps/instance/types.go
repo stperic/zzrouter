@@ -90,6 +90,7 @@ type InstanceInfo struct {
 	SizeBytes             int64             `json:"size_bytes,omitempty"`
 	Processor             string            `json:"processor,omitempty"`
 	ContextLength         int               `json:"context_length,omitempty"`
+	Cache                 *CacheCapacity    `json:"cache,omitempty"`
 	ExpiresAt             string            `json:"expires_at,omitempty"` // when the daemon serving the run unloads it idle
 	ProcessID             int               `json:"process_id,omitempty"`
 	Port                  int               `json:"port"`
@@ -119,6 +120,16 @@ type InstanceInfo struct {
 	// config (an external daemon's model) or the node predates the field;
 	// either way it reads as unknown.
 	ParametersStatus *ParametersStatus `json:"parameters_status,omitempty"`
+}
+
+// CacheCapacity holds engine reports only; tokens are per pool, never an inferred aggregate.
+type CacheCapacity struct {
+	KVTokens       int64   `json:"kv_tokens,omitempty"`
+	KVPools        int64   `json:"kv_pools,omitempty"`
+	SequenceSlots  int64   `json:"sequence_slots,omitempty"`
+	ContextTokens  int64   `json:"context_tokens,omitempty"`
+	Sharing        string  `json:"sharing,omitempty"`
+	MaxConcurrency float64 `json:"max_concurrency,omitempty"`
 }
 
 // EvictedRun is an idle run a launch stopped to fit its GPU memory budget.
