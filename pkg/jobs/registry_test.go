@@ -225,6 +225,41 @@ func TestCancelFiresHandleContext(t *testing.T) {
 	}
 }
 
+// Only Registry.Cancel names ErrCanceled as the cause, so a producer that acts
+// on a cancel (stopping its run or service) does not act on any other end.
+func TestCancelCauseIsErrCanceledOnlyForCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		end      func(*Registry, *clocktest.FakeClock, Handle)
+		canceled bool
+	}{
+		{"cancel", func(r *Registry, _ *clocktest.FakeClock, h Handle) { _ = r.Cancel(h.ID()) }, true},
+		{"done", func(_ *Registry, _ *clocktest.FakeClock, h Handle) { h.Done() }, false},
+		{"fail", func(_ *Registry, _ *clocktest.FakeClock, h Handle) { h.Fail(errors.New("failed")) }, false},
+		{"reap", func(r *Registry, fc *clocktest.FakeClock, _ Handle) { fc.Advance(time.Hour); r.sweep() }, false},
+		{"registry stop", func(r *Registry, _ *clocktest.FakeClock, _ Handle) { r.Stop() }, false},
+		{"cancel after done", func(r *Registry, _ *clocktest.FakeClock, h Handle) { h.Done(); _ = r.Cancel(h.ID()) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, fc := newTestRegistry(t)
+			h, err := r.StartDetached(KindService, "admin", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.Progress(0, "waiting", Bytes{})
+			tc.end(r, fc, h)
+			select {
+			case <-h.Context().Done():
+			case <-time.After(time.Second):
+				t.Fatal("the job context did not end")
+			}
+			if got := errors.Is(context.Cause(h.Context()), ErrCanceled); got != tc.canceled {
+				t.Fatalf("cause %v: ErrCanceled = %v, want %v", context.Cause(h.Context()), got, tc.canceled)
+			}
+		})
+	}
+}
+
 // TestStart_CallerCtxCancelPropagates pins the existing Start contract:
 // a sync caller's ctx cancel must cancel Handle.Context(). This is the
 // load-bearing semantic for pkg/update/scheduler.ApplyNow and any future

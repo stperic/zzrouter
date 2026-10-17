@@ -105,8 +105,6 @@ func apipathSamples() map[string]string {
 		"ProviderResolved":           apipath.ProviderResolved(name),
 		"ProviderAssets":             apipath.ProviderAssets(name),
 		"ProviderAsset":              apipath.ProviderAsset(name, "sample.jinja"),
-		"ProviderServiceStatus":      apipath.ProviderServiceStatus(name),
-		"ProviderServiceApply":       apipath.ProviderServiceApply(name),
 		"ProviderUpgrade":            apipath.ProviderUpgrade(name),
 		"ProviderVerify":             apipath.ProviderVerify(name),
 		"ProviderInstall":            apipath.ProviderInstall(name),

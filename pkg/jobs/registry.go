@@ -306,9 +306,9 @@ func (r *Registry) Subscribe(id string, opts SubscribeOptions) (*Subscriber, err
 	return j.subscribe(opts)
 }
 
-// Cancel fires the job's context. The producer observes this via
-// Handle.Context().Done() and is expected to wind down promptly.
-// Idempotent. Returns ErrNotFound if the ID is unknown.
+// Cancel fires the job's context with cause ErrCanceled. The producer
+// observes this via Handle.Context().Done() and is expected to wind down
+// promptly. Idempotent. Returns ErrNotFound if the ID is unknown.
 func (r *Registry) Cancel(id string) error {
 	r.mu.Lock()
 	j, ok := r.jobs[id]
@@ -316,7 +316,7 @@ func (r *Registry) Cancel(id string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	j.cancel()
+	j.cancel(ErrCanceled)
 	return nil
 }
 
@@ -398,11 +398,11 @@ func cloneMeta(m Meta) Meta {
 // Equivalent to Go 1.26's context.AfterFunc composition but inlined to
 // avoid a goroutine per job when only one parent can cancel (the common
 // case: caller passes context.Background()).
-func mergeCancel(parent1, parent2 context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent2)
-	stop := context.AfterFunc(parent1, cancel)
-	return ctx, func() {
+func mergeCancel(parent1, parent2 context.Context) (context.Context, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(parent2)
+	stop := context.AfterFunc(parent1, func() { cancel(nil) })
+	return ctx, func(cause error) {
 		stop()
-		cancel()
+		cancel(cause)
 	}
 }

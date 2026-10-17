@@ -167,6 +167,7 @@ type ProviderAppManager struct {
 	services         map[string]*managedService
 	servicesStarted  atomic.Bool
 	servicesObserved chan struct{}
+	serviceWatchers  sync.WaitGroup // readiness job watchers; stopServices waits for them
 	// sightings holds, per served provider, the models its daemon reported with no run on the last reconcile.
 	sightingsMu sync.Mutex
 	sightings   map[string]map[string]bool

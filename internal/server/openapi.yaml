@@ -4608,11 +4608,17 @@ paths:
       operationId: createProviderServiceStart
       summary: Start an enabled managed daemon
       description: |
-        Starts the managed daemon on its owning node. Requires an enabled provider and managed installation evidence. Waits up to 30 seconds for endpoint readiness; inspect running and healthy separately.
+        Starts the managed daemon on its owning node. Requires an enabled provider and managed installation evidence. Answers once the start is issued, with a readiness job to wait on with zz_job. The job has no deadline: it ends done on the endpoint's first 200, or failed when the daemon exits (`last_exit` in its meta), when the service is stopped or the provider disabled, when the job is cancelled (which stops the service), or on node shutdown. Its heartbeat carries `elapsed_ms`, `running` and `pid`. A start while a readiness job is live returns that job.
+        Refusals (403, 404, 409, 503) answer at once and open no job.
         Worker execution uses the existing cluster mTLS route. Admin key required.
       responses:
+        '202':
+          description: Start issued; watch `job_id` for endpoint readiness.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AcceptedJob' }
         '200':
-          description: Current supervision and readiness state.
+          description: Start issued, but the node could open no readiness job; the observed supervision and endpoint state.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderServiceStatus' }
@@ -4633,7 +4639,7 @@ paths:
       operationId: createProviderServiceStop
       summary: Stop a managed daemon and suppress automatic restart
       description: |
-        Stops the managed daemon. A manual stop suppresses zzRouter restarts for this node lifetime; start or restart resumes supervision. Host service ownership is preserved.
+        Stops the managed daemon. A manual stop suppresses zzRouter restarts for this node lifetime; start or restart resumes supervision. Host service ownership is preserved. A live readiness job fails with "stopped before its endpoint answered".
         Worker execution uses the existing cluster mTLS route. Admin key required.
       responses:
         '200':
@@ -4658,11 +4664,16 @@ paths:
       operationId: createProviderServiceRestart
       summary: Restart a managed daemon
       description: |
-        Restarts the managed daemon through its selected supervisor. Existing detached processes are only terminated when their executable and fixed daemon arguments match the managed installation.
+        Restarts the managed daemon through its selected supervisor. Existing detached processes are only terminated when their executable and fixed daemon arguments match the managed installation. Answers with the same readiness job as service/start, reusing a live one; the restart's own stop does not fail it.
         Worker execution uses the existing cluster mTLS route. Admin key required.
       responses:
+        '202':
+          description: Restart issued; watch `job_id` for endpoint readiness.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AcceptedJob' }
         '200':
-          description: Current supervision and readiness state.
+          description: Restart issued, but the node could open no readiness job; the observed supervision and endpoint state.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProviderServiceStatus' }
@@ -4683,11 +4694,16 @@ paths:
       operationId: createProviderServiceApply
       summary: Apply configured environment through the managed lifecycle owner
       description: |
-        Applies the resolved node environment through the same managed ownership gate, restarting when needed. Connected external daemons cannot be changed.
+        Applies the resolved node environment through the same managed ownership gate, restarting when needed. Connected external daemons cannot be changed. A restart answers 202 with the apply result and the readiness job service/start describes.
         Worker execution uses the existing cluster mTLS route. Admin key required.
       responses:
         '200':
-          description: Environment apply result (applied, restarted, healthy, env_vars_applied).
+          description: Environment applied without a restart, or restarted when the node could open no readiness job (applied, restarted, env_vars_applied, manual_instructions, warning).
+        '202':
+          description: Environment applied and the daemon restarted; the apply result rides beside `job_id`, which reports endpoint readiness.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AcceptedJob' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '403': { description: External provider lifecycle cannot be changed. }
         '404': { description: Provider is not configured. }
@@ -10527,6 +10543,7 @@ components:
         pid: { type: integer }
         backoff: { type: string }
         env_state: { type: string }
+        job_id: { type: string, description: 'Readiness job opened by service/start, service/restart or a restarting service/apply; present until it ends. It has no deadline: it ends on the endpoint''s first 200, an exit, a stop, a cancel or shutdown.' }
         last_exit:
           type: object
           properties:
@@ -10760,7 +10777,7 @@ components:
         node:    { type: string }
         kind:
           type: string
-          description: What produced the job (install, upgrade, download, run, inference_log, ...).
+          description: What produced the job (install, upgrade, download, run, service, inference_log, ...).
         phase:   { $ref: '#/components/schemas/JobPhase' }
         percent:
           type: integer

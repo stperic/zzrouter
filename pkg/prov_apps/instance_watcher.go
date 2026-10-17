@@ -14,9 +14,7 @@ import (
 
 // detachedStop invokes StopInstance on a background goroutine so callers
 // who themselves hold an inst.TrackGoroutine slot (the watcher) don't
-// deadlock on inst.WaitForGoroutines. The +5s padding covers the
-// StopInstance epilogue (wg-wait, registry remove, port release) that
-// runs after SIGTERM completes.
+// deadlock on inst.WaitForGoroutines.
 //
 // Untracked by design: this goroutine is NOT added to manager.wg. A
 // server shutdown that races with a cancel-job can therefore return
@@ -25,7 +23,7 @@ import (
 // process.CleanupOrphans on next server start. Tracking on manager.wg
 // would require restructuring Stop — not worth it for this edge case.
 func (m *ProviderAppManager) detachedStop(instID, provider string) {
-	ctx, cancel := context.WithTimeout(context.Background(), m.resolveShutdownTimeout(provider)+5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), m.stopBudget(provider))
 	defer cancel()
 	if err := m.StopInstance(ctx, instID); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 		slog.Warn("detachedStop failed",
@@ -52,11 +50,12 @@ const watcherHeartbeatInterval = 30 * time.Second
 // terminal event. Post-readiness the instance lifecycle is observed via
 // /runs/:id and /runs/:id/health; the launch job is done.
 //
-// Cancel semantics: DELETE /jobs/:id fires h.Context().Done(). This
-// watcher then calls m.StopInstance(inst.ID) so the running process is
-// actually terminated — otherwise cancel would be cosmetic. Agents
-// post-readiness should use DELETE /runs/:id directly; DELETE /jobs/:id
-// on a terminal handle is a no-op (clean by pkg/jobs semantics).
+// Cancel semantics: DELETE /jobs/:id ends h.Context() with cause
+// jobs.ErrCanceled, and this watcher then calls m.StopInstance(inst.ID) so
+// the running process is actually terminated — otherwise cancel would be
+// cosmetic. Any other end of the job (a reap, a registry stop) leaves the
+// run alone. Agents post-readiness should use DELETE /runs/:id directly;
+// DELETE /jobs/:id on a terminal handle is a no-op (clean by pkg/jobs semantics).
 func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h jobs.Handle) {
 	result := errors.New("instance readiness interrupted")
 	defer func() {
@@ -100,6 +99,9 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 	for {
 		select {
 		case <-h.Context().Done():
+			if !errors.Is(context.Cause(h.Context()), jobs.ErrCanceled) {
+				return // ended by a reap or registry stop, not by the caller
+			}
 			// Cancel via DELETE /jobs/:id — kill the instance so cancel
 			// is meaningful (not cosmetic). We cannot call StopInstance
 			// synchronously here because it invokes inst.WaitForGoroutines

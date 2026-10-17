@@ -228,6 +228,32 @@ func TestWatcher_CancelViaHandleCtx_StopsInstance(t *testing.T) {
 		"watcher must have called StopInstance on cancel (via detachedStop)")
 }
 
+// A job that ends by any path but a cancel, a reap for one, leaves its run alone.
+func TestWatcher_EndedJobLeavesTheRun(t *testing.T) {
+	m, reg := newWatcherTestMgr(t)
+
+	inst := instance.NewInstance("inst-reaped", "vllm", "m", 8106, time.Minute, 0)
+	require.NoError(t, m.instances.Register(inst))
+	h, err := reg.StartDetached(jobs.KindRun, "", nil)
+	require.NoError(t, err)
+
+	watched := make(chan struct{})
+	inst.TrackGoroutine()
+	go func() {
+		defer inst.GoroutineDone()
+		defer close(watched)
+		m.watchInstanceReadiness(inst, h)
+	}()
+	h.Fail(errors.New("job reaped: inactivity timeout exceeded"))
+	select {
+	case <-watched:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the watcher kept watching an ended job")
+	}
+	require.Never(t, func() bool { return inst.GetStatus() != instance.StatusStarting }, 500*time.Millisecond, 20*time.Millisecond,
+		"an ended job does not stop its run")
+}
+
 // TestWatcher_HeartbeatKeepsJobAlive — while pending, the 30s heartbeat
 // emits Progress events. We can't wait 30s in a unit test, but we can
 // verify the initial "launching" Progress event fires immediately so

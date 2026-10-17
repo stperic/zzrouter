@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,9 +19,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -71,7 +75,10 @@ func newServiceTestManager(t *testing.T, managed, crash bool) *ProviderAppManage
 	client := &http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("test endpoint is not listening")
 	})}
-	m, err := NewProviderAppManager(cfg, WithHTTPClient(client))
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop) // after the manager's cleanup below, as the server orders them
+	m, err := NewProviderAppManager(cfg, WithHTTPClient(client), WithJobsRegistry(registry))
 	require.NoError(t, err)
 	binary, err := os.Executable()
 	require.NoError(t, err)
@@ -199,8 +206,9 @@ func TestExternalServiceNeverStartsOrStops(t *testing.T) {
 		_, err := m.ControlProviderService(context.Background(), "generic-daemon", action)
 		require.ErrorIs(t, err, ErrExternalService)
 	}
-	_, err := m.ApplyProviderService(context.Background(), "generic-daemon")
+	_, _, err := m.ApplyProviderService(context.Background(), "generic-daemon")
 	require.ErrorIs(t, err, ErrExternalService)
+	require.Empty(t, m.jobsRegistry.List(jobs.KindService), "a refusal opens no readiness job")
 	status := serviceStatus(t, m)
 	require.Equal(t, "external", status.Supervisor)
 	require.False(t, status.Managed)
@@ -476,10 +484,11 @@ func TestOSServiceApplyInvalidatesCatalog(t *testing.T) {
 	m.serviceState("generic-daemon").manager = &testOSService{name: "systemd", running: true}
 	calls := 0
 	m.catalogChanged = func() { calls++ }
-	result, err := m.ApplyProviderService(context.Background(), "generic-daemon")
+	result, jobID, err := m.ApplyProviderService(context.Background(), "generic-daemon")
 	require.NoError(t, err)
 	require.True(t, result.Restarted)
 	require.Equal(t, 1, calls)
+	require.Equal(t, jobID, serviceStatus(t, m).JobID, "a restarting apply answers with the readiness job")
 }
 
 func TestOSObservationPublishesStopAndRecoveryWithoutLifecycleActions(t *testing.T) {
@@ -553,6 +562,7 @@ type atomicOSService struct {
 	testOSService
 	active   atomic.Bool
 	controls atomic.Int32
+	midway   func() // observes halfway through a restart, as the services ticker can
 }
 
 func (s *atomicOSService) Status(string) service.ServiceStatus {
@@ -561,6 +571,10 @@ func (s *atomicOSService) Status(string) service.ServiceStatus {
 
 func (s *atomicOSService) Control(_ context.Context, _, action string) error {
 	s.controls.Add(1)
+	if action == "restart" && s.midway != nil {
+		s.active.Store(false)
+		s.midway()
+	}
 	s.active.Store(action != "stop")
 	return nil
 }
@@ -635,4 +649,338 @@ func TestInstallGatePreventsCrashRestartDuringActivation(t *testing.T) {
 	require.Never(t, func() bool { return serviceStatus(t, m).LastExit.At != prior }, 1200*time.Millisecond, 10*time.Millisecond)
 	unlocked()
 	require.Eventually(t, func() bool { return serviceStatus(t, m).LastExit.At != prior }, 5*time.Second, 10*time.Millisecond)
+}
+
+// serviceJobEnd waits for readiness job id to end and returns its final event.
+func serviceJobEnd(t *testing.T, m *ProviderAppManager, id string) jobs.Event {
+	t.Helper()
+	var end jobs.Event
+	require.Eventually(t, func() bool {
+		var err error
+		end, err = m.jobsRegistry.Get(id)
+		return err == nil && end.Phase.IsTerminal()
+	}, 10*time.Second, 10*time.Millisecond)
+	return end
+}
+
+// answerProbes makes the endpoint answer 200 once the returned flag is set.
+func answerProbes(m *ProviderAppManager) *atomic.Bool {
+	ready := new(atomic.Bool)
+	m.httpClient = &http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
+		if !ready.Load() {
+			return nil, errors.New("test endpoint is not listening")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ready"))}, nil
+	})}
+	return ready
+}
+
+func TestServiceStartReadinessJobEndsOnTheEndpointsFirstAnswer(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	ready := answerProbes(m)
+	m.serviceState("generic-daemon").status.LastExit = &ProviderServiceExit{At: utils.NowUTC().Add(-time.Minute), Reason: "an earlier start's exit"}
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(status.JobID, "svc_"), status.JobID)
+	require.Never(t, func() bool {
+		event, err := m.jobsRegistry.Get(status.JobID)
+		return err != nil || event.Phase.IsTerminal()
+	}, serviceReadyPoll+500*time.Millisecond, 50*time.Millisecond, "the job waits while the endpoint is silent, and an earlier exit is not this start's")
+	require.Equal(t, status.JobID, serviceStatus(t, m).JobID, "status names the job to wait on")
+	ready.Store(true)
+	require.Equal(t, jobs.PhaseDone, serviceJobEnd(t, m, status.JobID).Phase)
+	require.Empty(t, serviceStatus(t, m).JobID)
+}
+
+func TestServiceReadinessJobFailsWithTheDaemonsExit(t *testing.T) {
+	m := newServiceTestManager(t, true, true)
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	end := serviceJobEnd(t, m, status.JobID)
+	require.Equal(t, jobs.PhaseFailed, end.Phase)
+	require.Contains(t, end.Err, "managed daemon failed")
+	exit, ok := end.Meta["last_exit"].(*ProviderServiceExit)
+	require.True(t, ok, "the job carries the exit evidence")
+	require.Equal(t, 17, *exit.Detail.ExitCode)
+}
+
+// A stop ends the job itself; the job never stops the service a second time.
+func TestServiceStopEndsTheReadinessJob(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	var published atomic.Int32 // every API control publishes once, so a second stop shows here
+	m.catalogChanged = func() { published.Add(1) }
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	_, err = m.ControlProviderService(t.Context(), "generic-daemon", "stop")
+	require.NoError(t, err)
+	end := serviceJobEnd(t, m, status.JobID)
+	require.Equal(t, jobs.PhaseFailed, end.Phase)
+	require.Equal(t, errReadyStopped.Error(), end.Err)
+	stopped := serviceStatus(t, m)
+	require.False(t, stopped.Desired)
+	require.Zero(t, stopped.PID)
+	after := published.Load()
+	require.Never(t, func() bool { return published.Load() != after }, time.Second, 10*time.Millisecond,
+		"the job does not stop the service again")
+}
+
+// A start or restart while a job is live reuses it, and the restart's own stop is
+// not the provider exiting, whichever supervisor runs it.
+func TestServiceRestartReusesTheJobAndItsStopIsNoExit(t *testing.T) {
+	for _, supervisor := range []string{"zzRouter", "systemd"} {
+		t.Run(supervisor, func(t *testing.T) {
+			m := newServiceTestManager(t, true, false)
+			state := m.serviceState("generic-daemon")
+			if supervisor == "systemd" {
+				manager := &atomicOSService{testOSService: testOSService{name: "systemd"}}
+				manager.midway = func() {
+					_, err := m.ProviderServiceStatus(context.Background(), "generic-daemon")
+					require.NoError(t, err)
+				}
+				state.manager = manager
+			}
+			first, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+			require.NoError(t, err)
+			require.Eventually(t, func() bool { return serviceStatus(t, m).Running }, 5*time.Second, 10*time.Millisecond)
+			for _, action := range []string{"start", "restart"} {
+				again, err := m.ControlProviderService(t.Context(), "generic-daemon", action)
+				require.NoError(t, err)
+				require.Equal(t, first.JobID, again.JobID, action)
+			}
+			require.Never(t, func() bool {
+				event, err := m.jobsRegistry.Get(first.JobID)
+				return err != nil || event.Phase.IsTerminal()
+			}, serviceReadyPoll+500*time.Millisecond, 50*time.Millisecond, "the job outlives the restart")
+			require.Nil(t, serviceStatus(t, m).LastExit)
+			require.Len(t, m.jobsRegistry.List(jobs.KindService), 1)
+		})
+	}
+}
+
+// A stop through the API is not the provider exiting; an exit after a start still is.
+func TestOSServiceAPIStopRecordsNoExitButACrashDoes(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	manager := &atomicOSService{testOSService: testOSService{name: "systemd"}}
+	m.serviceState("generic-daemon").manager = manager
+	_, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	_, err = m.ControlProviderService(t.Context(), "generic-daemon", "stop")
+	require.NoError(t, err)
+	require.Nil(t, serviceStatus(t, m).LastExit)
+	_, err = m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	manager.active.Store(false)
+	require.Contains(t, serviceStatus(t, m).LastExit.Reason, "systemd reported that the provider stopped")
+}
+
+// A stop leaves the service known stopped even when nothing reads it after, as an
+// install step's stop does, so a start from outside zzRouter republishes the catalog.
+func TestStopBaselineMakesAnOutsideStartAChange(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	manager := &atomicOSService{testOSService: testOSService{name: "systemd"}}
+	manager.active.Store(true)
+	m.serviceState("generic-daemon").manager = manager
+	require.True(t, serviceStatus(t, m).Running)
+	require.NoError(t, m.controlInstallService(t.Context(), "generic-daemon", install.ServiceStop))
+	var published atomic.Int32
+	m.catalogChanged = func() { published.Add(1) }
+	manager.active.Store(true)
+	require.True(t, serviceStatus(t, m).Running)
+	require.Equal(t, int32(1), published.Load())
+}
+
+// lateSpawnOSService spawns after its start returns, as launchd can: the first
+// read after a start finds no process.
+type lateSpawnOSService struct {
+	atomicOSService
+	spawning atomic.Bool
+}
+
+func (s *lateSpawnOSService) Control(ctx context.Context, name, action string) error {
+	s.spawning.Store(action != "stop")
+	return s.atomicOSService.Control(ctx, name, action)
+}
+
+func (s *lateSpawnOSService) Status(name string) service.ServiceStatus {
+	if s.spawning.CompareAndSwap(true, false) {
+		return service.ServiceStatus{Manager: s.name}
+	}
+	return s.atomicOSService.Status(name)
+}
+
+// After a start zzRouter does not know the state until something observes it, so
+// a process not spawned yet is no exit and the job keeps waiting.
+func TestNotYetSpawnedServiceIsNoExit(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	manager := &lateSpawnOSService{atomicOSService: atomicOSService{testOSService: testOSService{name: "launchd"}}}
+	m.serviceState("generic-daemon").manager = manager
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.False(t, status.Running, "the start's own read found no process yet")
+	require.True(t, serviceStatus(t, m).Running)
+	require.Never(t, func() bool {
+		event, err := m.jobsRegistry.Get(status.JobID)
+		return err != nil || event.Phase.IsTerminal()
+	}, serviceReadyPoll+500*time.Millisecond, 50*time.Millisecond, "a late spawn does not fail the job")
+	require.Nil(t, serviceStatus(t, m).LastExit)
+}
+
+// The window opens when the control begins, so an exit recorded before the job
+// exists, as a daemon that dies at spawn can be, fails it.
+func TestReadinessWindowCountsExitsBeforeTheJobOpens(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	since := utils.NowUTC().Add(-time.Second)
+	state := m.serviceState("generic-daemon")
+	state.mu.Lock()
+	state.status.LastExit = &ProviderServiceExit{At: utils.NowUTC(), Reason: "exited at spawn"}
+	state.mu.Unlock()
+	end := serviceJobEnd(t, m, m.awaitReady("generic-daemon", since))
+	require.Equal(t, jobs.PhaseFailed, end.Phase)
+	require.Contains(t, end.Err, "exited at spawn")
+}
+
+// An endpoint that already answers ends the job at once; the start still names it.
+func TestFastReadyStartStillNamesItsJob(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	m.serviceState("generic-daemon").manager = &atomicOSService{testOSService: testOSService{name: "systemd"}}
+	answerProbes(m).Store(true)
+	m.catalogChanged = func() { // the start's status read follows the job's end
+		require.Eventually(t, func() bool {
+			listed := m.jobsRegistry.List(jobs.KindService)
+			return len(listed) == 1 && listed[0].Phase.IsTerminal()
+		}, 5*time.Second, 10*time.Millisecond)
+	}
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.NotEmpty(t, status.JobID)
+	require.Equal(t, jobs.PhaseDone, serviceJobEnd(t, m, status.JobID).Phase)
+}
+
+// A job that ends by any path but a cancel, a reap for one, leaves the service running.
+func TestEndedReadinessJobLeavesTheServiceRunning(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	var published atomic.Int32
+	m.catalogChanged = func() { published.Add(1) }
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	state := m.serviceState("generic-daemon")
+	state.mu.Lock()
+	h := state.ready
+	state.mu.Unlock()
+	after := published.Load()
+	h.Fail(errors.New("job reaped: inactivity timeout exceeded"))
+	require.Eventually(t, func() bool { return serviceStatus(t, m).JobID == "" }, 5*time.Second, 10*time.Millisecond,
+		"an ended job is no longer the one to wait on")
+	require.Never(t, func() bool { return published.Load() != after }, time.Second, 10*time.Millisecond,
+		"the service is not stopped")
+	running := serviceStatus(t, m)
+	require.True(t, running.Desired)
+	require.NotZero(t, running.PID)
+	require.Equal(t, "job reaped: inactivity timeout exceeded", serviceJobEnd(t, m, status.JobID).Err)
+}
+
+// Shutdown ends a live job and waits for its watcher, so nothing reports after Stop.
+func TestStopEndsReadinessJobsAndWaitsForTheirWatchers(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	m.serviceState("generic-daemon").manager = &atomicOSService{testOSService: testOSService{name: "systemd"}}
+	probing, release := make(chan struct{}, 1), make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	m.httpClient = &http.Client{Transport: serviceProbeTransport(func(*http.Request) (*http.Response, error) {
+		select {
+		case probing <- struct{}{}:
+		default:
+		}
+		<-release // a probe that ignores its deadline holds the watcher
+		return nil, errors.New("test endpoint is not listening")
+	})}
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	select {
+	case <-probing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watcher never probed")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- m.Stop(context.Background()) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while the watcher was still running")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-stopped:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop did not return once the watcher could")
+	}
+	end, err := m.jobsRegistry.Get(status.JobID)
+	require.NoError(t, err)
+	require.Equal(t, "manager shutdown", end.Err)
+}
+
+// Cancelling the job stops the service, as a run job's cancel stops its run.
+func TestServiceReadinessJobCancelStopsTheService(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return serviceStatus(t, m).PID > 0 }, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, m.jobsRegistry.Cancel(status.JobID))
+	end := serviceJobEnd(t, m, status.JobID)
+	require.Equal(t, "cancelled", end.Err)
+	stopped := serviceStatus(t, m)
+	require.False(t, stopped.Desired)
+	require.Zero(t, stopped.PID)
+	require.Empty(t, stopped.JobID)
+}
+
+// Disabling a provider stops its daemon, so the wait it leaves behind ends too;
+// a disabled provider refuses a start without opening another job.
+func TestDisabledProviderEndsAndRefusesReadinessJobs(t *testing.T) {
+	m := newServiceTestManager(t, true, false)
+	m.Start(t.Context())
+	status, err := m.ControlProviderService(t.Context(), "generic-daemon", "start")
+	require.NoError(t, err)
+	cfg := testAppsConfig()
+	svc, _ := cfg.LookupApp("ollama")
+	svc.Service, svc.Enabled = nil, new(false)
+	require.NoError(t, cfg.AddApp("generic-daemon", svc))
+	m.ReloadConfig(cfg)
+	require.Equal(t, errReadyStopped.Error(), serviceJobEnd(t, m, status.JobID).Err)
+	for _, action := range []string{"start", "restart"} {
+		_, err := m.ControlProviderService(t.Context(), "generic-daemon", action)
+		require.ErrorIs(t, err, ErrServiceDisabled)
+	}
+	_, _, err = m.ApplyProviderService(t.Context(), "generic-daemon")
+	require.ErrorIs(t, err, ErrServiceDisabled)
+	require.Len(t, m.jobsRegistry.List(jobs.KindService), 1, "a refusal opens no readiness job")
+}
+
+// The probe reaches the provider's own endpoint, so it carries the credential the provider declares.
+func TestProviderEndpointProbeSendsTheDeclaredCredential(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer nas-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer daemon.Close()
+	nas := config.NewOllamaConnectProvider("ollama-nas", daemon.URL, "nas-token")
+	cfg := testAppsConfig()
+	require.NoError(t, cfg.AddApp("ollama-nas", config.ServiceConfig{
+		Enabled: new(true), Name: "ollama-nas", Mode: "external", Protocol: nas.Protocol,
+		Runtime:      &config.AppRuntimeConfig{Endpoint: daemon.URL, API: nas.Runtime.API},
+		Capabilities: nas.Capabilities,
+	}))
+	m, err := NewProviderAppManager(cfg, WithHTTPClient(daemon.Client()))
+	require.NoError(t, err)
+	cleanupProviderManager(t, m)
+	require.True(t, m.ProviderEndpointHealthy(t.Context(), "ollama-nas"))
 }

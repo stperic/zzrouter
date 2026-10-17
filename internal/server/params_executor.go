@@ -16,14 +16,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/gin-gonic/gin"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	configschema "github.com/stperic/zzrouter/pkg/config/schema"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -108,7 +106,6 @@ type ParamsExecutor struct {
 	knownNodes       func() map[string]bool
 	router           routing.Router
 	services         providerServices
-	httpClient       *http.Client
 	isWorker         func() bool   // nil on standalone
 	coordURL         func() string // coordinator base URL on workers; "" when unknown
 
@@ -135,14 +132,9 @@ func NewParamsExecutor(
 	knownNodes func() map[string]bool,
 	router routing.Router,
 	services providerServices,
-	httpClient *http.Client,
 	isWorker func() bool,
 	coordURL func() string,
 ) *ParamsExecutor {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: constants.HTTPDefaultTimeout}
-	}
-
 	return &ParamsExecutor{
 		appsConfig:  appsConfig,
 		configStore: configStore,
@@ -150,7 +142,6 @@ func NewParamsExecutor(
 		knownNodes:  knownNodes,
 		router:      router,
 		services:    services,
-		httpClient:  httpClient,
 		isWorker:    isWorker,
 		coordURL:    coordURL,
 	}
@@ -944,46 +935,4 @@ func (e *ParamsExecutor) RetiredHandler(c *gin.Context) {
 	}
 	c.Header("Content-Type", "application/problem+json")
 	c.JSON(http.StatusGone, problem)
-}
-
-// checkHealth probes the provider's own endpoint, sending the credential
-// it declares.
-func (e *ParamsExecutor) checkHealth(ctx context.Context, cfg *pkgConfig.ServiceConfig) bool {
-	target, ok := backend.Target(cfg)
-	if !ok {
-		return false
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	req, err := target.NewRequest(checkCtx, http.MethodGet, "", nil)
-	if err != nil {
-		return false
-	}
-	resp, err := e.httpClient.Do(req)
-	if err != nil {
-		return false
-	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-func (e *ParamsExecutor) waitForHealth(ctx context.Context, cfg *pkgConfig.ServiceConfig, timeout time.Duration) bool {
-	if _, ok := backend.Target(cfg); !ok {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	for ctx.Err() == nil {
-		if e.checkHealth(ctx, cfg) {
-			return true
-		}
-		timer := time.NewTimer(2 * time.Second)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return false
-		case <-timer.C:
-		}
-	}
-	return false
 }

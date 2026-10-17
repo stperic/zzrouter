@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -179,23 +178,6 @@ func TestDeploymentHealthTarget_CarriesTheDeclaredCredential(t *testing.T) {
 	base, header = s.deploymentHealthTarget("ollama-nas", "worker-1")
 	assert.Equal(t, "http://10.9.9.9:9090", base)
 	assert.Empty(t, header, "a remote node's health route is sent no provider credential")
-}
-
-// The provider status and env-apply probes reach the provider's own
-// endpoint, so they carry the credential it declares.
-func TestParamsHealthProbe_SendsTheDeclaredCredential(t *testing.T) {
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer nas-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-		}
-	}))
-	defer daemon.Close()
-
-	nas := config.NewOllamaConnectProvider("ollama-nas", daemon.URL, "nas-token")
-	cfg := &config.ServiceConfig{Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: daemon.URL, API: nas.Runtime.API}}
-	e := &ParamsExecutor{httpClient: daemon.Client()}
-	assert.True(t, e.checkHealth(t.Context(), cfg))
-	assert.True(t, e.waitForHealth(t.Context(), cfg, time.Second))
 }
 
 func TestPublicEntryDropsCoordinatorProviderHint(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -18,7 +17,8 @@ import (
 type providerServices interface {
 	ProviderServiceStatus(context.Context, string) (prov_apps.ProviderServiceStatus, error)
 	ControlProviderService(context.Context, string, string) (prov_apps.ProviderServiceStatus, error)
-	ApplyProviderService(context.Context, string) (*service.ApplyResult, error)
+	ApplyProviderService(context.Context, string) (*service.ApplyResult, string, error)
+	ProviderEndpointHealthy(context.Context, string) bool
 	ProviderManagedBinary(string) string
 	RunningModels(string) []string
 }
@@ -43,7 +43,7 @@ func (e *ParamsExecutor) HandleInternalGetServiceStatus(c *gin.Context) {
 		e.serviceError(c, err)
 		return
 	}
-	e.writeServiceStatus(c, cfg, status, e.checkHealth(c.Request.Context(), cfg))
+	e.writeServiceStatus(c, cfg, status, e.services.ProviderEndpointHealthy(c.Request.Context(), c.Param("name")))
 }
 
 func (e *ParamsExecutor) writeServiceStatus(c *gin.Context, cfg *pkgConfig.ServiceConfig, status prov_apps.ProviderServiceStatus, healthy bool) {
@@ -82,7 +82,9 @@ func (e *ParamsExecutor) HandleServiceControl(action string) gin.HandlerFunc {
 	return func(c *gin.Context) { e.relayToNode(c, http.MethodPost, "service/"+action, nil) }
 }
 
-// HandleInternalServiceControl executes a fixed action on this node only.
+// HandleInternalServiceControl executes a fixed action on this node only. A
+// start or restart answers 202 with the readiness job instead of waiting on it;
+// a stop, or a start no job could watch, answers 200 with what is observed.
 func (e *ParamsExecutor) HandleInternalServiceControl(action string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cfg, err := getAppConfig(e.appsConfig(), c.Param("name"))
@@ -99,16 +101,11 @@ func (e *ParamsExecutor) HandleInternalServiceControl(action string) gin.Handler
 			e.serviceError(c, err)
 			return
 		}
-		healthy := false
-		if action != "stop" {
-			healthy = e.waitForHealth(c.Request.Context(), cfg, 30*time.Second)
-			status, err = e.services.ProviderServiceStatus(c.Request.Context(), c.Param("name"))
-			if err != nil {
-				e.serviceError(c, err)
-				return
-			}
+		if status.JobID == "" {
+			e.writeServiceStatus(c, cfg, status, e.services.ProviderEndpointHealthy(c.Request.Context(), c.Param("name")))
+			return
 		}
-		e.writeServiceStatus(c, cfg, status, healthy)
+		c.JSON(http.StatusAccepted, acceptedJob(status.JobID, status.Provider, e.nodename(), nil))
 	}
 }
 
@@ -117,10 +114,10 @@ func (e *ParamsExecutor) HandleApplyService(c *gin.Context) {
 	e.relayToNode(c, http.MethodPost, "service/apply", nil)
 }
 
-// HandleInternalApplyService delegates to the same managed ownership gate as controls.
+// HandleInternalApplyService delegates to the same managed ownership gate as
+// controls; a restart answers 202 with the readiness job.
 func (e *ParamsExecutor) HandleInternalApplyService(c *gin.Context) {
-	cfg, err := getAppConfig(e.appsConfig(), c.Param("name"))
-	if err != nil {
+	if _, err := getAppConfig(e.appsConfig(), c.Param("name")); err != nil {
 		NotFound(c, err.Error())
 		return
 	}
@@ -129,24 +126,24 @@ func (e *ParamsExecutor) HandleInternalApplyService(c *gin.Context) {
 		return
 	}
 	runningModels := e.services.RunningModels(c.Param("name"))
-	result, err := e.services.ApplyProviderService(c.Request.Context(), c.Param("name"))
+	result, jobID, err := e.services.ApplyProviderService(c.Request.Context(), c.Param("name"))
 	if err != nil {
-		e.serviceError(c, err)
-		return
-	}
-	healthy := result.Restarted && e.waitForHealth(c.Request.Context(), cfg, 30*time.Second)
-	if err := c.Request.Context().Err(); err != nil {
 		e.serviceError(c, err)
 		return
 	}
 	if result.Restarted && len(runningModels) > 0 && result.Warning == "" {
 		result.Warning = "Restart interrupted loaded models; they reload on the next request."
 	}
-	c.JSON(http.StatusOK, gin.H{"provider": c.Param("name"), "node": e.nodename(), "manager": result.Manager,
-		"applied": result.Applied, "restarted": result.Restarted, "healthy": healthy,
+	body := gin.H{"provider": c.Param("name"), "node": e.nodename(), "manager": result.Manager,
+		"applied": result.Applied, "restarted": result.Restarted,
 		"env_vars_applied": result.EnvVarsCount, "error": result.Error,
 		"running_models_before_restart": runningModels,
-		"manual_instructions":           result.Instructions, "warning": result.Warning})
+		"manual_instructions":           result.Instructions, "warning": result.Warning}
+	if jobID != "" {
+		c.JSON(http.StatusAccepted, acceptedJob(jobID, c.Param("name"), e.nodename(), body))
+		return
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // serviceError answers a provider service action; one nothing names means
