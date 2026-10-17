@@ -32,8 +32,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	s.bindCompatServices(routingRouter)
 	s.services.Search = NewModelSearchService(s.appsConfig, s.model.Pricing)
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
-	s.services.Load = NewLoadService(s, routingRouter).
-		WithTierResolution(s.appsConfig)
+	s.services.Load = NewLoadService(s, routingRouter).WithAppsConfig(s.appsConfig)
 	if s.jobsProxy == nil && s.cluster.listener != nil && s.cluster.coordinator != nil {
 		s.jobsProxy = &JobsProxy{StreamClient: s.cachedJobsStreamClient(), ResolveEndpoint: s.resolveJobsEndpoint, ListPeers: s.listJobsPeers, ClusterPort: s.config.Cluster.BindPort}
 	}

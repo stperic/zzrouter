@@ -2,7 +2,6 @@ package runsettings
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -23,13 +22,9 @@ type Settings struct {
 	EvictIdleExplicit bool
 }
 
-// Parse validates reserved parameters, with the legacy node eviction option as fallback.
+// Parse validates reserved parameters keyed by flag name, with the legacy
+// node eviction option as fallback.
 func Parse(params map[string]string, evictDefault bool) (Settings, error) {
-	for key := range params {
-		if IsParameter(key) && key != KeepAliveParameter && key != EvictIdleParameter {
-			return Settings{}, fmt.Errorf("use canonical run parameter spelling for %q", key)
-		}
-	}
 	raw, explicit := params[KeepAliveParameter]
 	duration, err := Duration(raw)
 	if err != nil {
@@ -62,8 +57,7 @@ func Duration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// IsParameter recognizes reserved names, including underscore aliases engines normalize to flags.
+// IsParameter recognizes a reserved name, keyed by flag name.
 func IsParameter(key string) bool {
-	key = strings.ReplaceAll(key, "_", "-")
 	return key == KeepAliveParameter || key == EvictIdleParameter
 }

@@ -1,14 +1,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/apipath"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
@@ -168,6 +171,67 @@ func TestRunParametersCheckEveryTier(t *testing.T) {
 	require.Len(t, configured.Errors, 1)
 	assert.Equal(t, "context-length", configured.Errors[0].Key)
 	assert.Contains(t, configured.Errors[0].Message, "model tier")
+
+	// The refusal names the key as stored, the one the hint's null removes.
+	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(svc *config.ServiceConfig) error {
+		svc.Models[qwenModel] = config.ModelSpec{Parameters: map[string]string{"context_length": "8192"}}
+		return nil
+	}))
+	stored := preview(`{}`)
+	require.Len(t, stored.Errors, 1)
+	assert.Equal(t, "context_length", stored.Errors[0].Key)
+	assert.Contains(t, stored.Errors[0].Hint, "null removes it")
+	assert.Contains(t, resolvedFor(t, s, "llamacpp", qwenModel).Parameters, "context_length", "the resolved view lists it as stored too")
+	code, body := patchParams(t, s, map[string]any{"models": map[string]any{qwenModel: map[string]any{"parameters": map[string]any{"context_length": nil}}}})
+	require.Equal(t, http.StatusOK, code, body)
+	w := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp"}`))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+// An integral JSON number is an integer wherever JSON becomes a parameter's
+// string: a PATCH stores 32768.0 as 32768 and a request's 1e6 reaches argv
+// as 1000000, while a numeric string an int parser rejects is wrong_type.
+func TestIntegralNumbersBecomeIntegerLiterals(t *testing.T) {
+	s := variantNode(t)
+	resp := makeAuthRequest(t, s, http.MethodPatch, apipath.ProviderParameters("llamacpp"), TestAdminKey, json.RawMessage(`{"defaults":{"parameters":{"ctx-size":32768.0}}}`))
+	require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
+	svc, _ := s.appsConfig().LookupApp("llamacpp")
+	assert.Equal(t, "32768", svc.Defaults.Parameters["ctx-size"])
+	code, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx-size": "3.2768e+04"}}})
+	require.Equal(t, http.StatusBadRequest, code, body)
+	assert.Contains(t, body, string(httperr.CodeWrongType))
+
+	w := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx-size":1e6}}`))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var preview struct {
+		Data PreviewRunResponse `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &preview))
+	assert.Contains(t, preview.Data.FullCommand, "--ctx-size 1000000")
+	w = assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx-size":"3.2768e+04"}}`))
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Equal(t, string(httperr.CodeWrongType), runParameterProblem(t, w.Body.Bytes()).Code)
+}
+
+// A served daemon owning its model settings is the remedy for a key it
+// cannot be passed, not for a run setting refused for its value.
+func TestServedRefusalHintsOnlyUnknownFlags(t *testing.T) {
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("ollama", config.ServiceConfig{Enabled: new(true), Name: "ollama", Protocol: config.ProtocolOllama, Mode: "external", Runtime: &config.AppRuntimeConfig{Endpoint: "http://backend:11434"}, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}}))
+	mgr, err := prov_apps.NewProviderAppManager(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
+	_, err = NewLoadExecutor(mgr, emptyModelStore{}, func() string { return "node" }).PreviewLocalRun(t.Context(), &PreviewRunRequest{ModelName: "local", Provider: "ollama", Parameters: map[string]string{"keep-alive": "soon", "temperature": "0.7"}})
+	c, rec := testGinContext(http.MethodPost, "/zzrouter/v1/runs/preview")
+	RespondToError(c, err)
+	hints := map[string]string{}
+	for _, issue := range runParameterProblem(t, rec.Body.Bytes()).Errors {
+		hints[issue.Key] = issue.Hint
+	}
+	require.Len(t, hints, 2, rec.Body.String())
+	assert.Contains(t, hints["temperature"], "daemon owns its model settings")
+	assert.Contains(t, hints["keep-alive"], "zz_params_get")
+	assert.NotContains(t, hints["keep-alive"], "daemon owns")
 }
 
 // A file feature's flag is declared by the schema builder both PATCH and

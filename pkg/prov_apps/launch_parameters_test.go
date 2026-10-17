@@ -68,7 +68,10 @@ func checkedEngine(t *testing.T, exclude ...string) *ProviderAppManager {
 			Metadata:   &config.AppMetadata{ContextParam: "ctx-size"},
 			Endpoints:  map[string]config.EndpointOverlay{string(EndpointEmbeddings): {Parameters: map[string]string{"embeddings": "true"}}},
 		},
-		Models:       map[string]config.ModelSpec{"configured": {Parameters: map[string]string{"context-length": "8192"}}},
+		Models: map[string]config.ModelSpec{
+			"configured": {Parameters: map[string]string{"context-length": "8192"}},
+			"stored":     {Parameters: map[string]string{"context_length": "8192"}},
+		},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions", "embeddings"}},
 	}))
 	m, err := NewProviderAppManager(cfg, declaredSchema(t, `
@@ -107,9 +110,11 @@ func TestLaunchChecksEveryParameterItPasses(t *testing.T) {
 	requireRefused(t, resolve("m", EndpointChat, map[string]string{"embeddings": "true"}), "embeddings", httperr.CodeUnknownFlag)
 	configured := requireRefused(t, resolve("configured", EndpointChat, nil), "context-length", httperr.CodeUnknownFlag)
 	assert.Contains(t, configured.Issues[0].Message, "model tier")
+	requireRefused(t, resolve("stored", EndpointChat, nil), "context_length", httperr.CodeUnknownFlag)
 
 	require.NoError(t, resolve("m", EndpointEmbeddings, nil), "the embeddings overlay declares its own flag")
 	require.NoError(t, resolve("m", EndpointChat, map[string]string{"ctx-size": "auto"}), "auto leaves a declared key to the engine, so it is not passed")
+	requireRefused(t, resolve("m", EndpointChat, map[string]string{"context_length": "auto"}), "context_length", httperr.CodeUnknownFlag)
 }
 
 // ctx_size and ctx-size are one flag: a request's overrides the configured
@@ -131,22 +136,25 @@ func TestLaunchKeysParametersByFlag(t *testing.T) {
 
 	refused := requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"context_length": "32768"}), "context_length", httperr.CodeUnknownFlag)
 	assert.Contains(t, refused.Issues[0].Message, "request tier")
-	err = resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "1", "ctx-size": "2"})
-	require.ErrorIs(t, err, ErrParameterValidation)
-	assert.ErrorContains(t, err, "two spellings of ctx-size")
+	for range 50 {
+		refused = requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "1", "ctx-size": "2"}), "ctx-size", httperr.CodeDuplicateFlag)
+		assert.Contains(t, refused.Issues[0].Message, "ctx-size and ctx_size")
+		assert.Contains(t, refused.Issues[0].Message, "request tier")
+	}
 	require.NoError(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "2", "ctx-size": "2"}))
 }
 
 // A runtime takes none of what it excludes: a configured value is policy
-// across engines and is dropped, a request's would not take effect and is
-// refused, naming the runtime.
+// across engines and is dropped, sources and all; a request's would not
+// take effect and is refused with its own code, naming the runtime.
 func TestBaseRuntimeExclusions(t *testing.T) {
 	m := checkedEngine(t, "flash-attn")
 	preview, err := m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "engine", Model: "m"}, 8100)
 	require.NoError(t, err)
 	assert.NotContains(t, preview.Args, "--flash-attn")
 	assert.NotContains(t, preview.Params, "flash-attn")
-	refused := requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"flash_attn": "true"}), "flash_attn", httperr.CodeUnknownFlag)
+	assert.NotContains(t, preview.Sources, "flash-attn", "a dropped key claims no tier")
+	refused := requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"flash_attn": "true"}), "flash_attn", httperr.CodeExcludedByRuntime)
 	assert.Contains(t, refused.Issues[0].Message, "runtime engine")
 }
 
@@ -177,7 +185,7 @@ func TestFeatureRuntimeExclusions(t *testing.T) {
 	assert.NotContains(t, prepared.launch.Args, "--chat-template")
 	req.Parameters = map[string]string{"chat-template": "requested"}
 	_, err = processEngine{m}.prepare(t.Context(), svc, "vllm", req, 8100)
-	refused := requireRefused(t, err, "chat-template", httperr.CodeUnknownFlag)
+	refused := requireRefused(t, err, "chat-template", httperr.CodeExcludedByRuntime)
 	assert.Contains(t, refused.Issues[0].Message, "runtime test-runtime")
 }
 

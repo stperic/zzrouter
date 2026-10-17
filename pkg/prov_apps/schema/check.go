@@ -26,11 +26,11 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	}
 	switch shape.Kind {
 	case ParamInt:
-		n, err := strconv.ParseFloat(value, 64)
-		if err != nil || n != float64(int64(n)) {
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
 			return WrongType(key, shape.Kind)
 		}
-		return checkRange(key, n, shape)
+		return checkRange(key, float64(n), shape)
 	case ParamFloat:
 		n, err := strconv.ParseFloat(value, 64)
 		if err != nil || math.IsInf(n, 0) || math.IsNaN(n) {

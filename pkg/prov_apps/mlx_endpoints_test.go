@@ -13,6 +13,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -20,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func mlxEndpointFixture(t *testing.T, installed bool) (*ProviderAppManager, config.ServiceConfig, string) {
+func mlxEndpointFixture(t *testing.T, installed bool, declared ...string) (*ProviderAppManager, config.ServiceConfig, string) {
 	t.Helper()
-	m, _, dir := featureLaunchFixture(t)
+	m, _, dir := featureLaunchFixture(t, declared...)
 	isolateProviderRoot(t)
 	providers := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(providers))
@@ -128,6 +129,24 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 		})
 	}
 	require.NoError(t, m.EnsureModelFeatures(context.Background(), "mlx", dir, []string{"embeddings", "reranking"}, nil, nil))
+}
+
+// zz_params_get lists temp for MLX, which mlx_lm takes and mlx_vlm, serving
+// a vision model, does not: a request's temp is refused naming that runtime,
+// while auto asks for nothing and passes. An undeclared key's auto is still
+// refused, so a misspelling is never accepted.
+func TestMLXVisionRefusesWhatItsRuntimeLacks(t *testing.T) {
+	m, _, dir := mlxEndpointFixture(t, true, "parameters:\n  temp: {type: float}\n")
+	preview := func(params map[string]string) error {
+		_, err := m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "mlx", Model: "vendor/model", Parameters: params}, 8090)
+		return err
+	}
+	require.NoError(t, preview(map[string]string{"temp": "0.5"}), "the base runtime takes temp")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
+	refused := requireRefused(t, preview(map[string]string{"temp": "0.5"}), "temp", httperr.CodeExcludedByRuntime)
+	require.Contains(t, refused.Issues[0].Message, "runtime mlx-vlm")
+	require.NoError(t, preview(map[string]string{"temp": "auto"}))
+	requireRefused(t, preview(map[string]string{"context_length": "auto"}), "context_length", httperr.CodeUnknownFlag)
 }
 
 func TestMLXVisionReadinessOverlay(t *testing.T) {

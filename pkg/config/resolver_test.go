@@ -62,11 +62,39 @@ func TestResolveEndpoint_AllTiersOverlay(t *testing.T) {
 		{"k_nm_ov", "nm_ov", TierNodeModel, "embeddings"},
 	}
 	for _, tc := range cases {
-		rv, ok := got.Parameters[tc.key]
+		rv, ok := got.Parameters[FlagName(tc.key)]
 		assert.True(t, ok, "missing key %q", tc.key)
+		assert.Equal(t, tc.key, rv.Key, "a resolved value keeps the key as stored")
 		assert.Equal(t, tc.want, rv.Value, "value for %q", tc.key)
 		assert.Equal(t, tc.wantTier, rv.Tier, "tier for %q", tc.key)
 		assert.Equal(t, tc.wantOver, rv.Endpoint, "endpoint for %q", tc.key)
+	}
+}
+
+// Spellings of one flag resolve by the walk, not by map order or by tier:
+// an endpoint overlay and a variant share their tier with what they
+// override, and still win. Two spellings in one map that disagree are kept
+// as a conflict on the value, which a later map's value clears.
+func TestResolveEndpoint_SpellingsFollowTheWalk(t *testing.T) {
+	sc := ServiceConfig{
+		Defaults: &AppDefaultsConfig{
+			Parameters: map[string]string{"ctx_size": "1", "batch-size": "1", "batch_size": "1", "a_b-c": "1", "a-b_c": "3"},
+			Endpoints:  map[string]EndpointOverlay{"embeddings": {Parameters: map[string]string{"ctx-size": "2"}}},
+		},
+		Models: map[string]ModelSpec{
+			"base":   {Parameters: map[string]string{"threads": "3"}},
+			"base+v": {From: "base", Parameters: map[string]string{"threads": "4", "top_k": "5", "top-k": "6"}},
+		},
+		Nodes: map[string]NodeSpec{"n1": {Parameters: map[string]string{"a-b-c": "2"}}},
+	}
+	for range 100 {
+		got := sc.ResolveEndpoint("n1", "base+v", "embeddings").Parameters
+		assert.Equal(t, ResolvedValue{Value: "2", Tier: TierDefault, Key: "ctx-size", Endpoint: "embeddings"}, got["ctx-size"], "the overlay is later in the walk")
+		assert.Equal(t, ResolvedValue{Value: "4", Tier: TierModel, Model: "base+v", Key: "threads"}, got["threads"], "the variant's cell is later than its base's")
+		assert.Equal(t, ResolvedValue{Value: "1", Tier: TierDefault, Key: "batch-size"}, got["batch-size"], "agreeing spellings are one value")
+		assert.Equal(t, ResolvedValue{Value: "2", Tier: TierNode, Node: "n1", Key: "a-b-c"}, got["a-b-c"], "a later tier clears a lower map's conflict")
+		assert.Equal(t, ResolvedValue{Value: "6", Tier: TierModel, Model: "base+v", Key: "top-k", Conflicts: []string{"top_k"}}, got["top-k"])
+		assert.NotContains(t, got, "ctx_size")
 	}
 }
 

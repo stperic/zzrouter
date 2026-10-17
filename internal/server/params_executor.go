@@ -288,10 +288,11 @@ func (e *ParamsExecutor) resolvedView(provider string, r pkgConfig.ResolvedParam
 		return out
 	}
 	shapes := loadProviderSchema(e.configStore, provider).Parameters
-	for key, v := range out.Parameters {
-		if name, ok := v.Value.(string); ok && shapes[key].Kind == schema.ParamAsset {
-			v.SHA256 = digests[name]
-			out.Parameters[key] = v
+	for flag, v := range r.Parameters {
+		if name, ok := v.Value.(string); ok && shapes[flag].Kind == schema.ParamAsset {
+			dto := out.Parameters[v.Key]
+			dto.SHA256 = digests[name]
+			out.Parameters[v.Key] = dto
 		}
 	}
 	return out
@@ -320,17 +321,18 @@ func (e *ParamsExecutor) assetDigests(provider string) map[string]string {
 	return digests
 }
 
-// resolvedToDTO converts an internal ResolvedParams into the wire shape.
+// resolvedToDTO converts an internal ResolvedParams into the wire shape,
+// keyed as stored so a key it lists is one PATCH can address.
 func resolvedToDTO(r pkgConfig.ResolvedParams) resolvedResponse {
 	out := resolvedResponse{
 		Parameters:  make(map[string]resolvedValueDTO, len(r.Parameters)),
 		Environment: make(map[string]resolvedValueDTO, len(r.Environment)),
 	}
-	for k, v := range r.Parameters {
-		out.Parameters[k] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
+	for _, v := range r.Parameters {
+		out.Parameters[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
 	}
-	for k, v := range r.Environment {
-		out.Environment[k] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
+	for _, v := range r.Environment {
+		out.Environment[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
 	}
 	if len(r.Request) > 0 {
 		out.Request = make(map[string]resolvedValueDTO, len(r.Request))
@@ -850,9 +852,9 @@ func applyLeafPatch(params, env *map[string]string, p *specPatch) error {
 				}
 				continue
 			}
-			s, err := rawToString(raw)
-			if err != nil {
-				return fmt.Errorf("coerce %q: %w", k, err)
+			s, ok := schema.Canonical(raw)
+			if !ok {
+				return fmt.Errorf("coerce %q: not a JSON scalar", k)
 			}
 			_ = isEnv // env validation ran in validatePatch (H4 — pre-apply).
 			if *dst == nil {

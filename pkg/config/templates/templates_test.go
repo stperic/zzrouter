@@ -29,6 +29,26 @@ func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 	assert.Empty(t, errs, "schema.yaml ↔ Go spine drift: %v", errs)
 }
 
+// Tiers merge by flag name, so a key declared in another spelling could
+// never be set: the Go spine and every shipped schema.yaml, which LoadFromFS
+// merges per provider, declare flag names, overlays included.
+func TestDeclaredParametersAreFlagNames(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	require.Subset(t, slices.Collect(maps.Keys(schemas)), slices.Collect(maps.Keys(pschema.Registry)))
+	for provider, declared := range schemas {
+		sites := map[string]map[string]pschema.ParamShape{"parameters": declared.Parameters}
+		for endpoint, overlay := range declared.Endpoints {
+			sites["endpoints."+endpoint+".parameters"] = overlay.Parameters
+		}
+		for site, shapes := range sites {
+			for key := range shapes {
+				assert.Equal(t, config.FlagName(key), key, "%s %s declares %q", provider, site, key)
+			}
+		}
+	}
+}
+
 // launchedProviders loads the shipped tree as a node does and keeps the
 // providers zzRouter starts as a process; a served daemon takes no flags.
 func launchedProviders(t *testing.T) map[string]config.ServiceConfig {

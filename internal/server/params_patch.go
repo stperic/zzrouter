@@ -277,7 +277,7 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 			return e
 		}
 	}
-	value, _ := rawToString(raw) // raw is valid non-null JSON: the body decoded
+	value, _ := schema.Canonical(raw) // a non-scalar failed checkJSONType, or is undeclared and Check refuses it
 	return schema.Check(key, value, sch)
 }
 
@@ -319,25 +319,6 @@ func isJSONNull(raw json.RawMessage) bool {
 		j--
 	}
 	return j-i == 4 && string(raw[i:j]) == "null"
-}
-
-// rawToString coerces a validated non-null RawMessage to its string form
-// for persistence. Numbers and bools are stringified so the existing
-// map[string]string on-disk shape holds.
-func rawToString(raw json.RawMessage) (string, error) {
-	if isJSONNull(raw) {
-		return "", fmt.Errorf("null cannot be coerced to string")
-	}
-	// String: decode to strip quotes.
-	if len(raw) > 0 && raw[0] == '"' {
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return "", err
-		}
-		return s, nil
-	}
-	// Numbers/bools/other: raw JSON text is the canonical string.
-	return string(raw), nil
 }
 
 // decodePatchBody decodes a merge-patch body, rejecting any field the

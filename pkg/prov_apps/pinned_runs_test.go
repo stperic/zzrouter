@@ -163,7 +163,7 @@ func TestPinnedRestoreTierUnpins(t *testing.T) {
 }
 
 func TestPinnedRestoreFailureContinues(t *testing.T) {
-	for _, failure := range []string{"removed provider", "disabled provider", "missing model", "before registration", "after registration"} {
+	for _, failure := range []string{"removed provider", "disabled provider", "missing model", "after registration"} {
 		t.Run(failure, func(t *testing.T) {
 			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 			bad, good := pinRequest("bad"), pinRequest("good")
@@ -182,10 +182,6 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 			switch failure {
 			case "disabled provider":
 				require.NoError(t, r.m.appsConfig.UpdateApp("other", func(svc *config.ServiceConfig) error { svc.Enabled = new(false); return nil }))
-			case "before registration":
-				bad.Endpoint = EndpointReranking
-				seedPins(t, bad, good)
-				r.m.loadPinnedRuns()
 			case "after registration":
 				bad.EnvVars = map[string]string{"LD_PRELOAD": "/refused"}
 				seedPins(t, bad, good)
@@ -206,6 +202,40 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 				wantAttempts++
 			}
 			assert.Equal(t, wantAttempts, r.attempts.Load(), "failed entries are attempted at most once")
+		})
+	}
+}
+
+// A pin refused for its parameters, an endpoint the provider stopped
+// serving or a key its schema no longer declares, is a config an operator
+// can fix: the record stays for the next restore and the refusal is
+// logged at error, while the restore goes on to the next pin.
+func TestPinnedRestoreKeepsAPinRefusedForItsParameters(t *testing.T) {
+	for _, refusal := range []string{"endpoint", "parameter"} {
+		t.Run(refusal, func(t *testing.T) {
+			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+			bad, good := pinRequest("bad"), pinRequest("good")
+			if refusal == "endpoint" {
+				bad.Endpoint = EndpointReranking
+			} else {
+				bad.Parameters["ghost-flag"] = "1"
+			}
+			seedPins(t, bad, good)
+			log := capturePinLog(t)
+			r := newContractRig(t, false)
+			r.m.Start(t.Context())
+			r.m.RestorePinnedRuns()
+			r.m.onDemandStarts.Wait()
+			run, exists := r.m.instances.GetByKey(good.Key())
+			require.True(t, exists)
+			awaitRunning(t, run)
+			_, restored := r.m.instances.GetByKey(bad.Key())
+			assert.False(t, restored)
+			pins := readPins(t)
+			require.Len(t, pins, 2)
+			assert.Equal(t, bad, pins[0], "the refused pin keeps its record and its place")
+			assert.Equal(t, "good", pins[1].Model)
+			assert.True(t, log.containsAt(slog.LevelError, "Pinned run refused at restore; its pin is kept"))
 		})
 	}
 }
@@ -267,11 +297,12 @@ func (l *pinLog) Handle(_ context.Context, record slog.Record) error {
 }
 func (l *pinLog) WithAttrs([]slog.Attr) slog.Handler { return l }
 func (l *pinLog) WithGroup(string) slog.Handler      { return l }
-func (l *pinLog) contains(message string) bool {
+func (l *pinLog) contains(message string) bool       { return l.containsAt(slog.LevelWarn, message) }
+func (l *pinLog) containsAt(level slog.Level, message string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.records {
-		if r.Message == message && r.Level == slog.LevelWarn {
+		if r.Message == message && r.Level == level {
 			return true
 		}
 	}

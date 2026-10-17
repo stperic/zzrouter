@@ -255,11 +255,7 @@ func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, con
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	requested, sources, err := requestFlags(req.Parameters)
-	if err != nil {
-		return preparedLaunch{}, err
-	}
-	if err := checkLaunchParameters(svc, svc.Name, declared.ForEndpoint(string(EndpointOrDefault(req.Endpoint))), requested, sources, req.Parameters); err != nil {
+	if err := checkLaunchParameters(svc, svc.Name, declared.ForEndpoint(string(EndpointOrDefault(req.Endpoint))), nil, requestParameters(req.Parameters)); err != nil {
 		return preparedLaunch{}, err
 	}
 	settings, err := e.m.runSettings(svc, req)

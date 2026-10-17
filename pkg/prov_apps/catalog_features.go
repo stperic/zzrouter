@@ -33,7 +33,8 @@ func (m *ProviderAppManager) ModelFeatureDetails(provider, model string, details
 	}
 
 	// Apply the same tier opt-outs as launch.
-	params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: provider, Model: model}, string(EndpointChat))
+	resolved, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: provider, Model: model}, string(EndpointChat))
+	params := config.FlattenParameters(resolved)
 	for name, f := range svc.Features {
 		if value, set := params[f.Flag]; len(f.Files) > 0 && states[name] == "present" && set && (value == "" || config.IsAuto(value) || value == "false") {
 			states[name] = "available"

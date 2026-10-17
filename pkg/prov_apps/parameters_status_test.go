@@ -105,6 +105,20 @@ func TestParametersStatus_RequestTierHoldsItsKeys(t *testing.T) {
 	assert.Equal(t, []string{"parameters.ctx-size"}, got.Overridden)
 }
 
+// A spelling is not a change: a run asked for ctx_size over a configured
+// only_default is current, and its request key holds the configured flag.
+func TestParametersStatus_SpellingIsNotAChange(t *testing.T) {
+	m := tierManager(t, "")
+	reloadWith(t, m, func(svc *config.ServiceConfig) { svc.Defaults.Parameters = map[string]string{"only_default": "d"} })
+	inst := launchLlama(t, m, map[string]string{"ctx_size": "mine"})
+	require.Equal(t, map[string]string{"ctx-size": "mine", "only-default": "d"}, inst.Resolved().Parameters)
+
+	got := m.ParametersStatus(t.Context(), inst)
+	assert.Equal(t, instance.ParametersCurrent, got.State)
+	assert.Empty(t, got.Changed)
+	assert.Equal(t, []string{"parameters.ctx-size"}, got.Overridden)
+}
+
 // A file a parameter names is read by the engine, so new content under
 // the same name is a change, though no parameter value moved.
 func TestParametersStatus_FileContentChangeIsStale(t *testing.T) {

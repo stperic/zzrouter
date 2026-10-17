@@ -147,8 +147,8 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 		saved := restartRequest(inst)
 		saved.keyEndpoint = Endpoint(inst.Endpoint)
 		// Every transition passes setStatusLocked; the store writes only when a pin is added or dropped.
-		inst.CommitStatus = func(status instance.Status, pinned bool) {
-			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() {
+		inst.CommitStatus = func(status instance.Status, pinned bool, cause error) {
+			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() && !keepsPin(cause) {
 				m.pins.update(saved, status == instance.StatusRunning && pinned)
 			}
 		}
@@ -188,11 +188,8 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 const keepAliveParameter = config.KeepAliveParameter
 
 func (m *ProviderAppManager) runSettings(svc config.ServiceConfig, req EnsureRequest) (config.RunSettings, error) {
-	params, _, _, err := m.resolveRawLaunchParams(svc, req, string(EndpointOrDefault(req.Endpoint)))
-	if err != nil {
-		return config.RunSettings{}, err
-	}
-	settings, err := config.ParseRunSettings(params, m.idleEvictionDefault)
+	params, _ := m.resolveRawLaunchParams(svc, req, string(EndpointOrDefault(req.Endpoint)))
+	settings, err := config.ParseRunSettings(config.FlattenParameters(params), m.idleEvictionDefault)
 	if err != nil {
 		return config.RunSettings{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
@@ -1116,41 +1113,20 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 	return req
 }
 
-// resolveRawLaunchParams merges the config tiers under the request, keyed by
-// the flag argv passes; sources names each key's tier.
-func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env, sources map[string]string, err error) {
+// resolveRawLaunchParams lays the request over the config tiers' walk, the
+// last tier, so each parameter is keyed by flag name with its tier and the
+// key as stored or sent.
+func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params map[string]config.ResolvedValue, env map[string]string) {
 	resolved := svcCfg.ResolveEndpoint(m.localNodename(), req.Model, endpoint)
-	env = mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
-	params, sources, err = flagTiers(mergeStringMaps(config.FlattenParameters(resolved.Parameters), req.Parameters), func(name string) config.Tier {
-		if _, requested := req.Parameters[name]; requested {
-			return config.TierRequest
-		}
-		return resolved.Parameters[name].Tier
-	})
-	return params, env, sources, err
+	config.LayParameters(resolved.Parameters, req.Parameters, config.ResolvedValue{Tier: config.TierRequest})
+	return resolved.Parameters, mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
 }
 
-// flagTiers keys parameters by the flag argv passes, so a request's ctx_size
-// overrides a configured ctx-size: of two spellings of one flag the higher
-// tier wins, and two in one tier must agree.
-func flagTiers(params map[string]string, tier func(name string) config.Tier) (flags, sources map[string]string, err error) {
-	flags, sources = make(map[string]string, len(params)), make(map[string]string, len(params))
-	tiers := make(map[string]config.Tier, len(params))
-	for name, value := range params {
-		key, at := process.FlagName(name), tier(name)
-		if prior, seen := tiers[key]; seen && prior == at && flags[key] != value {
-			return nil, nil, fmt.Errorf("%w: two spellings of %s at the %s tier differ; keep one", ErrParameterValidation, key, at)
-		} else if seen && prior >= at {
-			continue
-		}
-		flags[key], sources[key], tiers[key] = value, at.String(), at
-	}
-	return flags, sources, nil
-}
-
-// requestFlags is flagTiers for a request's own parameters.
-func requestFlags(params map[string]string) (flags, sources map[string]string, err error) {
-	return flagTiers(params, func(string) config.Tier { return config.TierRequest })
+// requestParameters is a request's own parameters, keyed as the launch merge keys them.
+func requestParameters(params map[string]string) map[string]config.ResolvedValue {
+	out := make(map[string]config.ResolvedValue, len(params))
+	config.LayParameters(out, params, config.ResolvedValue{Tier: config.TierRequest})
+	return out
 }
 
 // buildLaunch turns resolved parameters into the engine's command: it

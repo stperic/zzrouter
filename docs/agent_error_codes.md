@@ -152,14 +152,17 @@ Closed-enum `code` values from `pkg/httperr.ParamErrorCode`, one Problem
 A launch (`POST /runs`, `/runs/preview`, `/runs/load`, a restart or a pinned
 restore) checks every parameter it would pass, from every tier, with the same
 rules and answers 400 before any process starts. Keys are flag names, so
-`ctx_size` and `ctx-size` are one parameter; a refused request key is reported
-as sent. Each entry's `message` names the tier that set the key and the runtime
-that refused it; its `hint` names `zz_params_get` and the provider's context
-parameter when it declares one (llama.cpp `ctx-size`, vLLM `max-model-len`). A
-key the selected runtime excludes is `unknown_flag` when the request sent it and
-dropped when a configured tier did. A served provider (Ollama) passes its daemon
-only the run settings, so any other request parameter is `unknown_flag`. A file
-feature's flag (llama.cpp `mmproj`) takes only `auto` or `false`, never a path.
+`ctx_size` and `ctx-size` are one parameter and the later one in the tier walk
+wins whatever either spelled; a refused key is reported as stored or sent. An integral JSON
+number is passed as an integer literal (`1e6` as `1000000`). Each entry's
+`message` names the tier that set the key and the runtime that refused it; its
+`hint` names `zz_params_get` and the provider's context parameter when it
+declares one (llama.cpp `ctx-size`, vLLM `max-model-len`). A declared key the
+selected runtime excludes is `excluded_by_runtime` when the request sent it and
+dropped when a configured tier did; `auto` on it asks for nothing and passes. A
+served provider (Ollama) passes its daemon only the run settings, so any other
+request parameter is `unknown_flag`. A file feature's flag (llama.cpp `mmproj`)
+takes only `auto` or `false`, never a path.
 
 | `code` | Meaning | Recovery |
 |---|---|---|
@@ -170,6 +173,8 @@ feature's flag (llama.cpp `mmproj`) takes only `auto` or `false`, never a path.
 | `unknown_model` | Tier 2/3 cell references a model not in the catalog. | List `/v1/models`. |
 | `coercion_failed` | Value couldn't be converted to schema type. | Send the value as the declared type. |
 | `retired` | Key was removed from the schema. | Remove from your patch. |
+| `duplicate_flag` | Two spellings of one flag (`ctx_size`, `ctx-size`) with different values in one map: a tier's or the request's. | Keep one: drop it from the request, or `null` the other with `zz_params_set`. |
+| `excluded_by_runtime` | The provider declares the key, but the runtime selected for this model (named in `message`) does not take it. | Drop the key, or send `auto`; `zz_params_get` lists what the provider's runtimes take. |
 | `unknown_asset` | An asset-typed key names a file the provider does not have. | List `GET /zzrouter/v1/providers/:n/assets`, or upload the file with `PUT .../assets/:asset` first. |
 
 ### Provider assets (`/zzrouter/v1/providers/:n/assets/:asset`)

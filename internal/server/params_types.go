@@ -83,9 +83,9 @@ func buildLegacyModelResponse(provider, model string, r pkgConfig.ResolvedParams
 // The release's defaults are not overrides.
 func entriesFromResolved(rv map[string]pkgConfig.ResolvedValue) []ParameterEntry {
 	var out []ParameterEntry
-	for k, v := range rv {
+	for _, v := range rv {
 		out = append(out, ParameterEntry{
-			Key:        k,
+			Key:        v.Key,
 			Value:      coerce(v.Value),
 			Source:     v.Tier.String(),
 			IsOverride: v.Tier > pkgConfig.TierDefault,

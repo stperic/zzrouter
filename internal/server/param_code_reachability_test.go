@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -65,6 +66,27 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 				require.Contains(t, patched, httperr.CodeUnknownFlag, "PATCH")
 				s := variantNode(t)
 				rec := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ghost-flag":1}}`))
+				return codesFromParamErrors(t, rec)
+			},
+		},
+		httperr.CodeDuplicateFlag: {
+			how: "two spellings of one flag with different values in a launch request",
+			provoke: func(t *testing.T) []httperr.ParamErrorCode {
+				rec := assetRequest(t, variantNode(t), http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx_size":1024,"ctx-size":2048}}`))
+				return codesFromParamErrors(t, rec)
+			},
+		},
+		httperr.CodeExcludedByRuntime: {
+			how: "a request parameter the provider declares that its selected runtime does not take",
+			provoke: func(t *testing.T) []httperr.ParamErrorCode {
+				s := variantNode(t)
+				require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(svc *pkgConfig.ServiceConfig) error {
+					runtime := *svc.Runtime
+					runtime.ExcludeParameters = []string{"n-gpu-layers"}
+					svc.Runtime = &runtime
+					return nil
+				}))
+				rec := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"n-gpu-layers":10}}`))
 				return codesFromParamErrors(t, rec)
 			},
 		},

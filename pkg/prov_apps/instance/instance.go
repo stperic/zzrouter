@@ -71,23 +71,23 @@ type Instance struct {
 	// weights path for engines that load by whatever the request carries.
 	// The proxy uses it to speak the engine's dialect without leaking it
 	// to clients.
-	WireModel       string             `json:"wire_model,omitempty"`
-	SizeBytes       int64              `json:"size_bytes,omitempty"`
-	Processor       string             `json:"processor,omitempty"`
-	ContextLength   int                `json:"context_length,omitempty"`
-	ProcessID       int                `json:"process_id,omitempty"`
-	ProcessGroupID  int                `json:"process_group_id,omitempty"`
-	Port            int                `json:"port"`
-	Status          Status             `json:"status"`
-	HealthURL       string             `json:"health_url"`
-	Config          Config             `json:"config"`
-	CommitStatus    func(Status, bool) `json:"-"` // Set before Register; runs under i.mu, so it must not reenter the instance or registry.
-	StartedAt       time.Time          `json:"started_at"`
-	FailedAt        time.Time          `json:"failed_at"`
-	LastHealthCheck time.Time          `json:"last_health_check"`
-	LastHealthy     time.Time          `json:"last_healthy"`
-	LastActivity    time.Time          `json:"last_activity"`
-	ErrorMessage    string             `json:"error_message,omitempty"`
+	WireModel       string                    `json:"wire_model,omitempty"`
+	SizeBytes       int64                     `json:"size_bytes,omitempty"`
+	Processor       string                    `json:"processor,omitempty"`
+	ContextLength   int                       `json:"context_length,omitempty"`
+	ProcessID       int                       `json:"process_id,omitempty"`
+	ProcessGroupID  int                       `json:"process_group_id,omitempty"`
+	Port            int                       `json:"port"`
+	Status          Status                    `json:"status"`
+	HealthURL       string                    `json:"health_url"`
+	Config          Config                    `json:"config"`
+	CommitStatus    func(Status, bool, error) `json:"-"` // Set before Register; runs under i.mu with the pin and failure cause, so it must not reenter the instance or registry.
+	StartedAt       time.Time                 `json:"started_at"`
+	FailedAt        time.Time                 `json:"failed_at"`
+	LastHealthCheck time.Time                 `json:"last_health_check"`
+	LastHealthy     time.Time                 `json:"last_healthy"`
+	LastActivity    time.Time                 `json:"last_activity"`
+	ErrorMessage    string                    `json:"error_message,omitempty"`
 	loaded          Loaded
 	failure         *FailureInfo
 	// StreamJobID is the pkg/jobs handle ID used by clients to watch
@@ -283,7 +283,7 @@ func (i *Instance) IsRunning() bool {
 // setStatusLocked is the only writer of Status; callers hold i.mu.
 func (i *Instance) setStatusLocked(status Status) {
 	if i.CommitStatus != nil {
-		i.CommitStatus(status, i.pinned)
+		i.CommitStatus(status, i.pinned, i.failureCause)
 	}
 	if i.Status == StatusStarting && status != StatusStarting && i.leftStarting != nil {
 		select {

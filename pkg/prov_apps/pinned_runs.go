@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,6 +71,10 @@ func (s *pinnedRuns) update(req EnsureRequest, pinned bool) {
 	}
 }
 
+// keepsPin reports whether a run refused with err keeps its pin record: a
+// refusal for its parameters is a config an operator can fix.
+func keepsPin(err error) bool { return errors.Is(err, ErrParameterValidation) }
+
 // RestorePinnedRuns replays each recorded request once within the manager's start drain.
 func (m *ProviderAppManager) RestorePinnedRuns() {
 	m.mu.Lock()
@@ -90,6 +95,11 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 				_, err := m.EnsureRun(ctx, req)
 				if ctx.Err() != nil {
 					return
+				}
+				if keepsPin(err) {
+					// Nothing but this log reports the refusal; the record waits for the config fix.
+					slog.Error("Pinned run refused at restore; its pin is kept", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
+					continue
 				}
 				if err != nil {
 					slog.Warn("Cannot restore pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)

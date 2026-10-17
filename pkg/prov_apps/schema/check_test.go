@@ -10,7 +10,8 @@ import (
 )
 
 // Check reads the canonical string a launch passes: a JSON number or
-// boolean arrives as its literal, a string as itself.
+// boolean arrives as its literal (an integral number as an integer
+// literal), a string as itself. An int is only an integer literal.
 func TestCheckCanonicalStrings(t *testing.T) {
 	shapes := map[string]ParamShape{
 		"ctx":                          {Kind: ParamInt, Min: fptr(1), Auto: "0"},
@@ -26,8 +27,8 @@ func TestCheckCanonicalStrings(t *testing.T) {
 		code       httperr.ParamErrorCode
 	}{
 		{"ctx", "32768", ""},
-		{"ctx", "32768.0", ""},
-		{"ctx", "3.2e4", ""},
+		{"ctx", "32768.0", httperr.CodeWrongType},
+		{"ctx", "3.2768e+04", httperr.CodeWrongType},
 		{"ctx", "auto", ""},
 		{"ctx", "0", httperr.CodeOutOfRange},
 		{"ctx", "1.5", httperr.CodeWrongType},

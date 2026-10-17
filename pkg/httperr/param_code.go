@@ -18,6 +18,12 @@ const (
 	CodeUnknownModel   ParamErrorCode = "unknown_model"
 	CodeCoercionFailed ParamErrorCode = "coercion_failed"
 	CodeRetired        ParamErrorCode = "retired"
+	// CodeDuplicateFlag is two spellings of one flag (ctx_size, ctx-size)
+	// with different values in one map: a tier's or the request's.
+	CodeDuplicateFlag ParamErrorCode = "duplicate_flag"
+	// CodeExcludedByRuntime is a request parameter the provider declares
+	// that the runtime selected for this model does not take.
+	CodeExcludedByRuntime ParamErrorCode = "excluded_by_runtime"
 
 	// Routes / model-groups (routes-agent-control-api).
 	CodeRouteUnknown       ParamErrorCode = "route_unknown"
@@ -93,6 +99,8 @@ func AllParamErrorCodes() []ParamErrorCode {
 		CodeUnknownModel,
 		CodeCoercionFailed,
 		CodeRetired,
+		CodeDuplicateFlag,
+		CodeExcludedByRuntime,
 		CodeRouteUnknown,
 		CodeReplicaUnknown,
 		CodeReplicaLastInGroup,

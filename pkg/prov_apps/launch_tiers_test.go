@@ -155,15 +155,21 @@ func TestResolveLaunchParams_TierPrecedence(t *testing.T) {
 			svc, ok := m.appsConfig.LookupApp("vllm")
 			require.True(t, ok)
 
-			params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{
+			params := rawLaunchParams(m, svc, EnsureRequest{
 				Provider:   "vllm",
 				Model:      tc.model,
 				Parameters: tc.reqParam,
-			}, string(EndpointChat))
+			}, EndpointChat)
 
 			assert.Equal(t, tc.want, params["ctx-size"])
 		})
 	}
+}
+
+// rawLaunchParams is resolveRawLaunchParams flattened to the values a launch passes.
+func rawLaunchParams(m *ProviderAppManager, svc config.ServiceConfig, req EnsureRequest, endpoint Endpoint) map[string]string {
+	params, _ := m.resolveRawLaunchParams(svc, req, string(endpoint))
+	return config.FlattenParameters(params)
 }
 
 // A node-tier value is only reachable if the manager knows which node
@@ -174,7 +180,7 @@ func TestResolveLaunchParams_UnknownNodeFallsBackNotSideways(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params := rawLaunchParams(m, svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, EndpointChat)
 	assert.Equal(t, "tier1", params["ctx-size"], "no nodename must not reach tier2/tier3")
 }
 
@@ -185,7 +191,7 @@ func TestResolveLaunchParams_HigherTierDoesNotDropLowerKeys(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	params, _, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	params := rawLaunchParams(m, svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, EndpointChat)
 	assert.Equal(t, "tier3", params["ctx-size"])
 	assert.Equal(t, "d", params["only-default"], "defaults-only key must survive the overlay")
 }
@@ -195,7 +201,7 @@ func TestResolveLaunchParams_EnvironmentFollowsTheSameWalk(t *testing.T) {
 	svc, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	_, env, _, _ := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
+	_, env := m.resolveRawLaunchParams(svc, EnsureRequest{Provider: "vllm", Model: "llama3"}, string(EndpointChat))
 	assert.Equal(t, "tier1", env["ZZ_ENV"], "environment must walk the tiers too, not read Defaults only")
 }
 
@@ -233,13 +239,13 @@ func TestResolveLaunchParams_EndpointOverlayAppliesWithinItsTier(t *testing.T) {
 	resolved, ok := m.appsConfig.LookupApp("vllm")
 	require.True(t, ok)
 
-	embed, _, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointEmbeddings))
+	embed := rawLaunchParams(m, resolved, EnsureRequest{Provider: "vllm", Model: "other"}, EndpointEmbeddings)
 	assert.Equal(t, "mean", embed["pooling"],
 		"a key only the overlay sets must reach the launch")
 	assert.Equal(t, "tier2", embed["ctx-size"],
 		"the node tier still outranks an overlay declared under defaults")
 
-	chat, _, _, _ := m.resolveRawLaunchParams(resolved, EnsureRequest{Provider: "vllm", Model: "other"}, string(EndpointChat))
+	chat := rawLaunchParams(m, resolved, EnsureRequest{Provider: "vllm", Model: "other"}, EndpointChat)
 	_, leaked := chat["pooling"]
 	assert.False(t, leaked, "chat must not inherit the embeddings overlay")
 }
