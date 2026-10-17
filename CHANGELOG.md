@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `service/start`, `service/restart` and a restarting `service/apply` answer
+  202 with a `svc_` readiness job instead of waiting up to 30 s for the
+  endpoint. Through the coordinator that wait always lost the 30 s forward
+  deadline, so a start that succeeded answered 502 and a retried restart killed
+  the warming daemon. The job ends done on the endpoint's first 200, or failed
+  on an exit after the start, on `service/stop` or disable, on cancel (which
+  stops the service) or on shutdown; it sets no deadline and its heartbeat
+  reports `running` and `pid`. `service/status` names a live job in `job_id`,
+  and a start or restart while one is live returns it. Refusals stay
+  immediate; stop, and an apply without a restart, still answer 200, and the
+  apply body drops `healthy`. A stop or restart zzRouter commands through
+  systemd, launchd or NSSM is no longer recorded as an unexpected `last_exit`.
+  Only `DELETE /jobs/{id}` stops a run or service now: a job reaped for
+  inactivity no longer stops the run it was watching. The coordinator relays
+  either answer, so the cluster protocol is unchanged.
 - A provider enabled on a worker, by install, uninstall or
   `PATCH /zzrouter/v1/providers/{name}?node=...`, stays enabled: the
   coordinator's next provider sync used to put its own value back. The choice
