@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
@@ -142,9 +143,13 @@ type installInput struct {
 	Runtime       string `json:"runtime,omitempty" jsonschema:"Optional runtime name declared by the provider; omit for its default."`
 }
 type paramsInput struct {
-	Provider string `json:"provider" jsonschema:"Provider whose parameters to read or change. zz_params_get lists every parameter it accepts, with type and description, under accepts."`
+	Provider string `json:"provider" jsonschema:"Provider whose parameters to read or change. zz_params_get describes set parameters under accepts; pass grep to zz_params_get to find more accepted names and descriptions."`
 	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Model    string `json:"model,omitempty" jsonschema:"Optional model name for model-tier resolution."`
+}
+type paramsGetInput struct {
+	paramsInput
+	Grep string `json:"grep,omitempty" jsonschema:"Literal text matched case-insensitively in accepted parameter names and descriptions, for example context, kv or thread. Adds matches to the set parameters in accepts."`
 }
 type patchInput struct {
 	paramsInput
@@ -193,7 +198,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_files", Description: "Choose a GGUF file from a HuggingFace model found by zz_model_search. Returns filenames, quantizations, byte sizes and recommendations; pass the exact file to zz_model_download.", Annotations: read}, []string{"listRegistriesHuggingfaceVariants"}, dispatcher.files)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_model_download", OutputSchema: objectSchema[downloadOutput]{}, Description: "Download a registry model before previewing or starting it. Returns deployment_id, registry model, file and per-node job_id values; follow with zz_job, then zz_models on that node for the exact local model name to pass to preview/start. Cancel an individual download with zz_job_cancel and job_id; use deployment_id to cancel all deployment nodes.", Annotations: write}, []string{"createDeployment"}, dispatcher.download)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_runs", Description: "List runs or inspect one run_id. Returns model, provider, node, port, base_url, engine_busy, pinned (true protects against router idle expiry and pressure reclaim), status, processor, context_length and optional cache (engine-reported kv_tokens per pool, kv_pools, sequence_slots, context_tokens, sharing and max_concurrency at that context; absent fields mean no captured evidence; absent kv_pools means the engine reported no pool count, as with vLLM's aggregate pool size; conflicting pool reports omit both KV fields; shared slots alone cannot establish concurrency, and scheduler limits are separate). A CPU share serves far slower; free GPU memory or use a smaller context or quant. Returns started_by (api: a run start; request: a chat or other inference to a model with no run started it), errors and evicted_runs, unpinned idle runs its launch reclaimed or models its daemon displaced; use zz_logs to diagnose or zz_chat to smoke test a ready model. A failed pin keeps its failure and supports zz_logs and zz_run_restart. A record_only pin is stopped with parameters and last_refusal: fix config with zz_params_set, replay with zz_run_start or zz_run_restart, or forget with zz_run_stop; it has no run log.", Annotations: read}, []string{"listRuns", "getRun"}, dispatcher.runs)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_preview", Description: "Check zz_models first and select its exact local name. Only if absent, use zz_model_search, zz_model_download and zz_job, then check zz_models again. Preview with an enabled provider; returns full_command, parameters, sources and capacity assessment with context_mode, context_tokens, estimated affordable_context_tokens, optional placement, unknown_cause and known weights_mib/capacity_mib. Follow the cause and reason with zz_params_get or measured zz_run_start, zz_job and zz_runs context_length/cache evidence; zz_logs diagnoses failures. For larger vLLM/llama.cpp workloads pass a number for the provider's context parameter (llama.cpp ctx-size, vLLM max-model-len); parameters take only the names zz_params_get lists in accepts, others answer unknown_flag. MLX always assesses its declared minimum. unknown is not confirmed fit; current load can still prevent launch.", Annotations: read}, []string{"previewRuns"}, dispatcher.preview)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_preview", Description: "Check zz_models first and select its exact local name. Only if absent, use zz_model_search, zz_model_download and zz_job, then check zz_models again. Preview with an enabled provider; returns full_command, parameters, sources and capacity assessment with context_mode, context_tokens, estimated affordable_context_tokens, optional placement, unknown_cause and known weights_mib/capacity_mib. Follow the cause and reason with zz_params_get or measured zz_run_start, zz_job and zz_runs context_length/cache evidence; zz_logs diagnoses failures. For larger vLLM/llama.cpp workloads pass a number for the provider's context parameter (llama.cpp ctx-size, vLLM max-model-len); parameters take only declared names, others answer unknown_flag. Use zz_params_get with grep to find accepted names and descriptions. MLX always assesses its declared minimum. unknown is not confirmed fit; current load can still prevent launch.", Annotations: read}, []string{"previewRuns"}, dispatcher.preview)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_start", OutputSchema: objectSchema[runOutput]{}, Description: "Check zz_models first; search and download only if absent. Make its exact catalog name ready with an enabled provider. Choose chat, embeddings or reranking; an endpoint whose runtime is missing is refused with the runtime to install through zz_provider_install. For a node-scoped provider, omit model and endpoint; use the reported base_url directly. Process launches return run_id for zz_runs, zz_logs, zz_run_restart and zz_run_stop, and job_id for zz_job. With no parameters or env_vars, a start replays the pin. Env alone states a whole request tier; parameters replace the pin whole, so restate every override to keep. External and cloud models can return ready without a run or job. Follow any job, then smoke test with zz_chat.", Annotations: write}, []string{"createRun"}, dispatcher.start)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_restart", OutputSchema: objectSchema[runOutput]{}, Description: "Relaunch a run_id with its saved request overrides. Returns a new run_id and job_id; pass job_id to zz_job and use the new run_id with run tools afterward.", Annotations: write}, []string{"restartRun"}, dispatcher.restart)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_run_stop", Description: "Stop a run_id and interrupt its inference. The reply with run_id and stopped status confirms the stop. The run and its pin are forgotten. A record_only entry can also be forgotten; if a replay holds its key, use the live run_id named in the refusal.", Annotations: destructive}, []string{"deleteRun"}, dispatcher.stop)
@@ -202,7 +207,7 @@ func registerAgentTools(s *mcp.Server, cfg Config, bindings map[string][]string)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job_cancel", Description: "Cancel work, including an individual download, using job_id; use deployment_id to cancel all deployment nodes. Returns cancellation acknowledgement; follow with zz_job to verify terminal state. A cancelled download reports failed with meta.transfer_status cancelled.", Annotations: destructive}, []string{"deleteJob", "deleteDeployment"}, dispatcher.cancelJob)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_providers", Description: "List inference provider inventory across the cluster or a selected node, including disabled providers; registries are excluded. Returns kind, enabled, installed, managed and version; managed means an installed copy owned by zzRouter, on-demand means a process launched per model, and runtime names a declared install recipe. For an absent copy use zz_provider_install; for an existing copy use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query.", Annotations: read}, []string{"listProviders", "getProviderStatus"}, dispatcher.providers)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_provider_install", Description: "Check prerequisites with preflight_only=true, then install with false; managed=false means no zzRouter-owned copy is installed and does not forbid installing. Successful installation enables the provider during finalization, before the job completes. Follow with zz_job, then zz_providers. If installation is not needed, use zz_api to PATCH /zzrouter/v1/providers/{name} with enabled=true and the node query; cloud setup uses POST /zzrouter/v1/providers/{name}/verify after credentials are configured.", Annotations: write}, []string{"createProviderInstallPreflight", "createProviderInstall"}, dispatcher.install)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters and environment for a node or model, and in accepts every parameter it takes with type and description. Returns each value and its tier; use zz_params_set with a tiered merge-patch to change it.", Annotations: read}, []string{"getProviderResolvedParameters", "getProviderSchema"}, dispatcher.params)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_get", Description: "Read a provider's resolved parameters, environment, request and from for a node or model. Returns values and tiers; accepts gives type, range and description for every set parameter. Pass grep (literal text matched case-insensitively in names and descriptions, e.g. context, kv, thread) to add matches. accepts_total counts all parameters. Change values with zz_params_set.", Annotations: read}, []string{"getProviderResolvedParameters", "getProviderSchema"}, dispatcher.params)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_params_set", Description: "Apply a tiered merge-patch to provider parameters or environment. Create a single-level logical variant with patch.models.<new-name>.from set to a physical base, plus optional parameters, environment or request defaults. Returns resolved values and affected runs; restart_affected starts needed restarts. Follow with zz_job for runs.restart_job_id, then zz_params_get.", Annotations: write}, []string{"patchProviderParameters"}, dispatcher.patch)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_status", Description: "Read update status for selected nodes. Returns availability, version, progress and errors; call zz_update_check to refresh availability, then zz_update_apply when an update is wanted.", Annotations: read}, []string{"getUpdateStatus"}, dispatcher.updateStatus)
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_update_check", Description: "Check for a newer release on the coordinator. Returns availability, release and skipped reason; read zz_update_status or use zz_update_apply when an update is wanted.", Annotations: &mcp.ToolAnnotations{DestructiveHint: new(bool), IdempotentHint: true}}, []string{"createUpdateCheck"}, dispatcher.updateCheck)
@@ -512,18 +517,36 @@ func (d dispatcher) install(ctx context.Context, in installInput) (agentOutput, 
 	return d.childObject(ctx, request{method: http.MethodPost, jsonBody: in, omit: []string{"provider", "node", "preflight_only", "idempotency_key"}, contentType: "application/json", idempotencyKey: in.IdempotencyKey}, providersRoute, in.Provider, suffix, in.Node, "accepted job_id provider node runtime results all_ok", summary)
 }
 
-func (d dispatcher) params(ctx context.Context, in paramsInput) (agentOutput, error) {
-	out, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; accepts lists every parameter the provider takes. Use a tiered merge-patch to change them.")
+func (d dispatcher) params(ctx context.Context, in paramsGetInput) (agentOutput, error) {
+	out, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use zz_params_set to change them.")
 	if err != nil {
 		return out, err
 	}
-	// What is set and what can be set answer one question: how to change a launch.
-	// The schema is the coordinator's: config is identical on every node.
+	// Config is identical on every node, so the coordinator owns the dictionary.
 	schema, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, providersRoute, in.Provider, "/schema", "", "parameters", "")
 	if err != nil {
 		return out, err
 	}
-	out.fields["accepts"] = schema.fields["parameters"]
+	all, _ := schema.fields["parameters"].(map[string]any)
+	set, _ := out.fields["parameters"].(map[string]any)
+	accepts := map[string]any{}
+	for key := range set {
+		if name := runsettings.FlagName(key); all[name] != nil {
+			accepts[name] = all[name]
+		}
+	}
+	grep := strings.ToLower(in.Grep)
+	for name, entry := range all {
+		shape, _ := entry.(map[string]any)
+		description, _ := shape["description"].(string)
+		if grep != "" && (strings.Contains(strings.ToLower(name), runsettings.FlagName(grep)) || strings.Contains(strings.ToLower(description), grep)) {
+			accepts[name] = entry
+		}
+	}
+	out.fields["accepts"], out.fields["accepts_total"] = accepts, len(all)
+	if len(accepts) < len(all) {
+		out.text += " Pass grep to zz_params_get to find more accepted parameter names and descriptions."
+	}
 	return out, nil
 }
 

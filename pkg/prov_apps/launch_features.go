@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
@@ -336,7 +337,7 @@ func (e *ParameterError) ParamIssues() []utils.ParamError {
 
 func (e *ParameterError) hint(code string, requested bool) string {
 	if e.Served && code == string(httperr.CodeUnknownFlag) {
-		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", e.Provider)
+		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only %s and %s.", e.Provider, runsettings.KeepAliveParameter, runsettings.EvictIdleParameter)
 	}
 	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
 	if requested {

@@ -171,8 +171,9 @@ Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
 the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use
 `zz_run_preview` with a number for the provider's context parameter (llama.cpp
 `ctx-size`, vLLM `max-model-len`) for larger workloads; a launch takes only the
-parameters `zz_params_get` lists in accepts and refuses others with `unknown_flag`,
-or `excluded_by_runtime` for a listed key the model's selected runtime lacks.
+declared parameters and refuses others with `unknown_flag`, or
+`excluded_by_runtime` for a declared key the model's selected runtime lacks.
+Use `zz_params_get` with `grep` to find accepted names and descriptions.
 MLX always assesses its minimum; `max-tokens` limits generation, not context.
 MLX uses release-owned `memory_usable_fraction` schema metadata (shipped at 0.75),
 alongside the release-owned `auto_min_context_tokens` minimum.
@@ -307,7 +308,12 @@ Create a logical variant with `zz_params_set` using the existing merge patch:
 Use a physical base name from `zz_models`; variants cannot point to another
 variant. Optional `parameters`, `environment` and `request` settings belong
 beside `from`. Remove your variant with `{"models":{"my-variant":null}}` in
-`patch`. `zz_params_get` lists accepted provider parameters and their types.
+`patch`. `zz_params_get` returns resolved `parameters`, `environment`, `request`
+and `from`. Its `accepts` describes every set parameter with type, range and
+description. Pass `grep` to add literal, case-insensitive matches in parameter
+names and descriptions, for example `context`, `kv` or `thread`. Underscores in a
+name query match hyphens. `accepts_total` counts the full dictionary, which remains
+available through REST `/schema` and the TUI editor.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
