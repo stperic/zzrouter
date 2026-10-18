@@ -1,22 +1,19 @@
 package update
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/stperic/zzinstall/artifact"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
 )
@@ -32,7 +29,7 @@ var ErrNoBackupsAvailable = errors.New("no backups available for rollback")
 // errBinaryNotInArchive reports that a release archive carries no member
 // for the requested binary. Fatal for the binary being updated; for the
 // launcher it just means the release predates shipping one.
-var errBinaryNotInArchive = errors.New("binary not found in archive")
+var errBinaryNotInArchive = artifact.ErrNotFound
 
 // Binary names as they appear on disk, without the platform suffix a
 // release archive adds to its members.
@@ -213,153 +210,21 @@ func (i *Installer) extractLauncher(archivePath, launcherTarget string) (string,
 	return extracted, nil
 }
 
-// extractBinary extracts the binary from an archive (tar.gz or zip)
+// extractBinary retains router member naming while shared code stages the bytes.
 func (i *Installer) extractBinary(archivePath, targetName string) (string, error) {
-	// Determine archive type by extension
-	lowerPath := strings.ToLower(archivePath)
-	if strings.HasSuffix(lowerPath, ".zip") {
-		return i.extractBinaryFromZip(archivePath, targetName)
+	name := filepath.Base(targetName)
+	if runtime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") {
+		name += ".exe"
 	}
-	return i.extractBinaryFromTarGz(archivePath, targetName)
-}
-
-// extractBinaryFromTarGz extracts the binary from a tar.gz archive
-func (i *Installer) extractBinaryFromTarGz(archivePath, targetName string) (string, error) {
-	file, err := os.Open(archivePath)
+	dest := filepath.Join(filepath.Dir(archivePath), "new-"+name)
+	err := artifact.ExtractBinary(archivePath, dest, artifact.ExtractOptions{
+		Match:       func(entry string) bool { return i.isBinaryMatch(entry, name) },
+		MaxFileSize: maxBinarySize, MaxTotalSize: 4 * maxBinarySize,
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to open archive: %w", err)
+		return "", err
 	}
-	defer func() { _ = file.Close() }()
-
-	gzReader, err := gzip.NewReader(file)
-	if err != nil {
-		return "", fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer func() { _ = gzReader.Close() }()
-
-	tarReader := tar.NewReader(gzReader)
-
-	// Determine what binary name we're looking for
-	binaryName := filepath.Base(targetName)
-	if runtime.GOOS == "windows" && !strings.HasSuffix(binaryName, ".exe") {
-		binaryName += ".exe"
-	}
-
-	tempDir := filepath.Dir(archivePath)
-
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", fmt.Errorf("failed to read tar entry: %w", err)
-		}
-
-		// Only process regular files - skip directories, symlinks, hardlinks, etc.
-		// This prevents symlink attacks where a malicious archive could contain
-		// symlinks pointing to sensitive system files
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-
-		// Validate file size to prevent decompression bombs
-		if header.Size > maxBinarySize {
-			return "", fmt.Errorf("file %s exceeds maximum allowed size (%d bytes)", header.Name, maxBinarySize)
-		}
-
-		// Use path.Base for tar entries (always uses forward slashes)
-		// This prevents path traversal attacks like "../../etc/passwd"
-		entryName := path.Base(header.Name)
-
-		// Validate entry name has no path traversal
-		if strings.Contains(entryName, "..") || strings.ContainsAny(entryName, `/\`) {
-			continue
-		}
-
-		// Check if this is the binary we want
-		if !i.isBinaryMatch(entryName, binaryName) {
-			continue
-		}
-
-		// Extract the binary with size limit
-		extractedPath := filepath.Join(tempDir, "new-"+binaryName)
-		limitedReader := io.LimitReader(tarReader, maxBinarySize)
-		if err := i.extractToFile(extractedPath, limitedReader, header.FileInfo().Mode()); err != nil {
-			return "", err
-		}
-
-		return extractedPath, nil
-	}
-
-	return "", errBinaryNotInArchive
-}
-
-// extractBinaryFromZip extracts the binary from a zip archive (Windows)
-func (i *Installer) extractBinaryFromZip(archivePath, targetName string) (string, error) {
-	reader, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to open zip archive: %w", err)
-	}
-	defer func() { _ = reader.Close() }()
-
-	// Determine what binary name we're looking for
-	binaryName := filepath.Base(targetName)
-	if runtime.GOOS == "windows" && !strings.HasSuffix(binaryName, ".exe") {
-		binaryName += ".exe"
-	}
-
-	tempDir := filepath.Dir(archivePath)
-
-	for _, file := range reader.File {
-		// Skip directories and check for regular files only
-		if file.FileInfo().IsDir() {
-			continue
-		}
-
-		// Skip symbolic links (zip files can contain symlinks via mode bits)
-		if file.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-
-		// Validate file size to prevent decompression bombs
-		if file.UncompressedSize64 > maxBinarySize {
-			return "", fmt.Errorf("file %s exceeds maximum allowed size (%d bytes)", file.Name, maxBinarySize)
-		}
-
-		// Use path.Base for zip entries (always uses forward slashes)
-		// This prevents path traversal attacks like "../../etc/passwd"
-		entryName := path.Base(file.Name)
-
-		// Validate entry name has no path traversal
-		if strings.Contains(entryName, "..") || strings.ContainsAny(entryName, `/\`) {
-			continue
-		}
-
-		// Check if this is the binary we want
-		if !i.isBinaryMatch(entryName, binaryName) {
-			continue
-		}
-
-		// Open the file in the archive
-		rc, err := file.Open()
-		if err != nil {
-			return "", fmt.Errorf("failed to open file in zip: %w", err)
-		}
-
-		// Extract the binary with size limit
-		extractedPath := filepath.Join(tempDir, "new-"+binaryName)
-		limitedReader := io.LimitReader(rc, maxBinarySize)
-		if err := i.extractToFile(extractedPath, limitedReader, file.Mode()); err != nil {
-			_ = rc.Close()
-			return "", err
-		}
-		_ = rc.Close()
-
-		return extractedPath, nil
-	}
-
-	return "", fmt.Errorf("%w: zip", errBinaryNotInArchive)
+	return dest, nil
 }
 
 // isBinaryMatch checks if the entry name matches the expected binary.
@@ -414,31 +279,6 @@ func launcherSibling(currentExe string) string {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(currentExe), launcher)
-}
-
-// extractToFile extracts content from a reader to a file
-func (i *Installer) extractToFile(destPath string, reader io.Reader, mode os.FileMode) error {
-	// Ensure mode is executable
-	if mode == 0 {
-		mode = 0750
-	}
-
-	outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return fmt.Errorf("failed to create output file: %w", err)
-	}
-
-	_, err = io.Copy(outFile, reader)
-	closeErr := outFile.Close()
-
-	if err != nil {
-		return fmt.Errorf("failed to extract binary: %w", err)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("failed to close extracted file: %w", closeErr)
-	}
-
-	return nil
 }
 
 // backupStampLayout is the suffix createBackupAt appends to a binary name;

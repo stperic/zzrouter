@@ -2,7 +2,6 @@ package update
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/stperic/zzinstall/install"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/version"
 )
@@ -285,8 +285,7 @@ func (l *layout) activate(ver string) error {
 		return err
 	}
 
-	type linkChange struct{ link, target, previous string }
-	var changes []linkChange
+	var changes []install.Link
 	for _, name := range managedBinaryNames {
 		target := filepath.Join(l.versionBinDir(ver), name)
 		info, err := os.Stat(target)
@@ -318,29 +317,9 @@ func (l *layout) activate(ver string) error {
 		// another machine) does not break the link.
 		rel := filepath.Join("..", layoutVersionsDirName, ver, layoutBinDirName, name)
 		link := filepath.Join(l.binDir(), name)
-		previous, err := os.Readlink(link)
-		if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("read %s: %w", link, err)
-		}
-		changes = append(changes, linkChange{link, rel, previous})
+		changes = append(changes, install.Link{Path: link, Target: rel})
 	}
-	for n, change := range changes {
-		if err := replaceSymlink(change.target, change.link); err != nil {
-			for _, changed := range slices.Backward(changes[:n]) {
-				var restoreErr error
-				if changed.previous == "" {
-					restoreErr = os.Remove(changed.link)
-				} else {
-					restoreErr = replaceSymlink(changed.previous, changed.link)
-				}
-				if restoreErr != nil {
-					err = errors.Join(err, fmt.Errorf("restore %s: %w", changed.link, restoreErr))
-				}
-			}
-			return err
-		}
-	}
-	return nil
+	return install.ReplaceLinks(changes)
 }
 
 // managedBinaryNames puts companions first; the node link decides the active version.
@@ -369,20 +348,6 @@ func (l *layout) linkedVersions() map[string]bool {
 		}
 	}
 	return linked
-}
-
-// replaceSymlink atomically makes link point at target.
-func replaceSymlink(target, link string) error {
-	tmp := link + ".tmp"
-	_ = os.Remove(tmp)
-	if err := os.Symlink(target, tmp); err != nil {
-		return fmt.Errorf("create symlink %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, link); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("move symlink into place at %s: %w", link, err)
-	}
-	return nil
 }
 
 // prune removes version directories that are neither active nor

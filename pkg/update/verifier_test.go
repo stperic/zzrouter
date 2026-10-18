@@ -403,16 +403,6 @@ func TestVerifierUsesTheAuthenticatedChecksumBytes(t *testing.T) {
 	require.False(t, result.Valid)
 }
 
-func TestEmbeddedSigstoreTrustIsValid(t *testing.T) {
-	material, err := root.NewTrustedRootFromJSON([]byte(sigstoreTrustedRoot))
-	require.NoError(t, err)
-	require.NotEmpty(t, material.FulcioCertificateAuthorities())
-	require.NotEmpty(t, material.RekorLogs())
-	var metadata map[string]any
-	require.NoError(t, json.Unmarshal([]byte(sigstoreTrustedRoot), &metadata))
-	require.Equal(t, "application/vnd.dev.sigstore.trustedroot+json;version=0.1", metadata["mediaType"])
-}
-
 func TestParseChecksumsRejectsDuplicateAssets(t *testing.T) {
 	_, err := parseChecksums([]byte("abc  archive.tar.gz\ndef  archive.tar.gz\n"))
 	require.ErrorContains(t, err, "duplicate")

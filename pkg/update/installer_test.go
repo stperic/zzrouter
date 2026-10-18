@@ -5,7 +5,6 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,74 +64,6 @@ func TestInstaller_isBinaryMatch(t *testing.T) {
 	}
 }
 
-func TestInstaller_extractToFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	i := NewInstaller(tmpDir, 3)
-
-	content := []byte("test binary content")
-	destPath := filepath.Join(tmpDir, "extracted")
-
-	reader := &mockReader{data: content}
-	err := i.extractToFile(destPath, reader, 0750)
-	require.NoError(t, err)
-
-	// Verify content
-	actual, err := os.ReadFile(destPath)
-	require.NoError(t, err)
-	assert.Equal(t, content, actual)
-
-	// Verify permissions
-	info, err := os.Stat(destPath)
-	require.NoError(t, err)
-	if runtime.GOOS != "windows" {
-		assert.Equal(t, os.FileMode(0750), info.Mode().Perm())
-	} else {
-		// Windows has no POSIX executable bits; extraction must leave a regular writable file.
-		assert.True(t, info.Mode().IsRegular())
-		assert.NotZero(t, info.Mode().Perm()&0200)
-	}
-}
-
-func TestInstaller_extractToFile_DefaultMode(t *testing.T) {
-	tmpDir := t.TempDir()
-	i := NewInstaller(tmpDir, 3)
-
-	destPath := filepath.Join(tmpDir, "extracted")
-	reader := &mockReader{data: []byte("content")}
-
-	// Mode 0 should default to 0750
-	err := i.extractToFile(destPath, reader, 0)
-	require.NoError(t, err)
-
-	info, err := os.Stat(destPath)
-	require.NoError(t, err)
-	if runtime.GOOS != "windows" {
-		assert.Equal(t, os.FileMode(0750), info.Mode().Perm())
-	} else {
-		// Windows has no POSIX executable bits; extraction must leave a regular writable file.
-		assert.True(t, info.Mode().IsRegular())
-		assert.NotZero(t, info.Mode().Perm()&0200)
-	}
-}
-
-// mockReader implements io.Reader for testing
-type mockReader struct {
-	data []byte
-	pos  int
-}
-
-func (m *mockReader) Read(p []byte) (n int, err error) {
-	if m.pos >= len(m.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, m.data[m.pos:])
-	m.pos += n
-	if m.pos >= len(m.data) {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
 func TestInstaller_extractBinaryFromTarGz(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -144,7 +75,7 @@ func TestInstaller_extractBinaryFromTarGz(t *testing.T) {
 
 	i := NewInstaller(tmpDir, 3)
 
-	extractedPath, err := i.extractBinaryFromTarGz(archivePath, filepath.Join(tmpDir, "zzrouter"))
+	extractedPath, err := i.extractBinary(archivePath, filepath.Join(tmpDir, "zzrouter"))
 	require.NoError(t, err)
 	assert.NotEmpty(t, extractedPath)
 
@@ -165,7 +96,7 @@ func TestInstaller_extractBinaryFromTarGz_NotFound(t *testing.T) {
 
 	i := NewInstaller(tmpDir, 3)
 
-	_, err := i.extractBinaryFromTarGz(archivePath, filepath.Join(tmpDir, "zzrouter"))
+	_, err := i.extractBinary(archivePath, filepath.Join(tmpDir, "zzrouter"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "binary not found")
 }
@@ -181,7 +112,7 @@ func TestInstaller_extractBinaryFromZip(t *testing.T) {
 
 	i := NewInstaller(tmpDir, 3)
 
-	extractedPath, err := i.extractBinaryFromZip(archivePath, filepath.Join(tmpDir, "zzrouter.exe"))
+	extractedPath, err := i.extractBinary(archivePath, filepath.Join(tmpDir, "zzrouter.exe"))
 	require.NoError(t, err)
 	assert.NotEmpty(t, extractedPath)
 
@@ -202,7 +133,7 @@ func TestInstaller_extractBinaryFromZip_NotFound(t *testing.T) {
 
 	i := NewInstaller(tmpDir, 3)
 
-	_, err := i.extractBinaryFromZip(archivePath, filepath.Join(tmpDir, "zzrouter.exe"))
+	_, err := i.extractBinary(archivePath, filepath.Join(tmpDir, "zzrouter.exe"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "binary not found")
 }

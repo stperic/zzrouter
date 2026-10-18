@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/download"
+	"github.com/stperic/zzinstall/artifact"
+	"github.com/stperic/zzinstall/download"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -125,18 +126,7 @@ func (d *Downloader) DownloadChecksums(ctx context.Context, asset *ReleaseAsset)
 }
 
 func parseChecksums(content []byte) (map[string]string, error) {
-	checksums := make(map[string]string)
-	for _, line := range splitLines(string(content)) {
-		parts := splitChecksumLine(line)
-		if len(parts) < 2 {
-			continue
-		}
-		if _, exists := checksums[parts[1]]; exists {
-			return nil, fmt.Errorf("duplicate checksum for %s", parts[1])
-		}
-		checksums[parts[1]] = parts[0]
-	}
-	return checksums, nil
+	return artifact.ParseChecksums(content)
 }
 
 // DownloadBundle downloads bounded Sigstore verification metadata.
@@ -216,61 +206,4 @@ func (d *Downloader) validateURL(downloadURL string) error {
 // Cleanup removes downloaded files
 func (d *Downloader) Cleanup() error {
 	return os.RemoveAll(d.tempDir)
-}
-
-// splitLines splits a string into lines, handling both Unix and Windows line endings
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			line := s[start:i]
-			// Remove trailing \r if present
-			if len(line) > 0 && line[len(line)-1] == '\r' {
-				line = line[:len(line)-1]
-			}
-			if line != "" {
-				lines = append(lines, line)
-			}
-			start = i + 1
-		}
-	}
-	// Handle last line without newline
-	if start < len(s) {
-		line := s[start:]
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines
-}
-
-// splitChecksumLine splits a checksum line (format: "hash  filename" or "hash filename")
-func splitChecksumLine(line string) []string {
-	var parts []string
-	inWord := false
-	start := 0
-
-	for i := 0; i < len(line); i++ {
-		if line[i] == ' ' || line[i] == '\t' {
-			if inWord {
-				parts = append(parts, line[start:i])
-				inWord = false
-			}
-		} else {
-			if !inWord {
-				start = i
-				inWord = true
-			}
-		}
-	}
-
-	if inWord {
-		parts = append(parts, line[start:])
-	}
-
-	return parts
 }

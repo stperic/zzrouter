@@ -20,8 +20,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzinstall/retry"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
-	"github.com/stperic/zzrouter/pkg/retry"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 

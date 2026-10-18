@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Share artifact delivery, verification, extraction, link activation and release
+  packaging through `zzinstall`. Keep service privileges, launcher pairing and
+  rollback history in zzRouter. Local integration requires the sibling module
+  until its immutable published dependency is available.
+
 - `pinned_version` on an on-demand or external provider is one pin for every
   node. A pin sent with `?node=` to a worker used to land in that worker's copy
   of the coordinator's provider tree and be put back by the next sync. The

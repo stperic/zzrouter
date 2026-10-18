@@ -36,7 +36,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/download"
+	"github.com/stperic/zzinstall/download"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 

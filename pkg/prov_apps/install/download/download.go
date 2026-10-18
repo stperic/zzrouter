@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
-	filedownload "github.com/stperic/zzrouter/pkg/download"
+	filedownload "github.com/stperic/zzinstall/download"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 

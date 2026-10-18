@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/stperic/zzinstall/install"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/version"
@@ -198,7 +199,7 @@ func (l *layout) linkOriginals(originalBinDir string) error {
 		if original == target {
 			continue
 		}
-		if err := replaceSymlink(target, original); err != nil {
+		if err := install.ReplaceSymlink(target, original); err != nil {
 			return err
 		}
 	}

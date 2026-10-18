@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzinstall/retry"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
-	"github.com/stperic/zzrouter/pkg/retry"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
 )
