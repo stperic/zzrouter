@@ -8,15 +8,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 )
 
-// NodeResourceCache is an EventCache: no TTL, no independent
-// invalidation entry point. It is refreshed atomically with the
-// cluster-join model cache — worker resource metrics piggyback on
-// the model-list broadcast, so the same Cache.Invalidate →
-// RefreshCacheSync path that rebuilds the model index also replaces
-// NodeResourceCache's contents.
-//
-// There is therefore no NodeResourceCache.Invalidate method by
-// design: callers invalidate Cache, and node resources follow.
+// NodeResourceCache follows accepted catalog publications without independent invalidation.
 type NodeResourceCache struct {
 	mu        sync.RWMutex
 	resources map[string]*mesh.ResourceMetrics // nodeName → metrics
@@ -34,6 +26,17 @@ func (c *NodeResourceCache) Get(nodeName string) *mesh.ResourceMetrics {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.resources[nodeName]
+}
+
+// Put replaces one worker's metrics without discarding other nodes.
+func (c *NodeResourceCache) Put(node string, metrics *mesh.ResourceMetrics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if metrics == nil {
+		delete(c.resources, node)
+	} else {
+		c.resources[node] = metrics
+	}
 }
 
 // Update replaces all cached metrics with local + worker data.

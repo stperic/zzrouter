@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,11 +13,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/version"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +31,10 @@ import (
 func peerCertHandler(cert *x509.Certificate, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if cert != nil {
-			state := *r.TLS
+			state := tls.ConnectionState{}
+			if r.TLS != nil {
+				state = *r.TLS
+			}
 			state.PeerCertificates = []*x509.Certificate{cert}
 			state.VerifiedChains = [][]*x509.Certificate{{cert}}
 			r.TLS = &state
@@ -43,6 +52,22 @@ type enableCluster struct {
 	workerSrv     *httptest.Server
 }
 
+// testWorkerInternalHandler changes only the version: plain test builds advertise
+// 0.0.0-dev, which Connector.attemptConnection's CheckCompatibility rejects below 0.1.0.
+func testWorkerInternalHandler(t *testing.T, worker *Server) http.Handler {
+	t.Helper()
+	engine := buildInternalEngine(worker)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/zzrouter/v1/internal/version" {
+			info := version.GetCurrentVersionInfo(version.ServiceTypeHost, version.ServerCapabilities)
+			info.Version = version.ClusterCompatibility.MinSupportedVersion
+			require.NoError(t, json.NewEncoder(w).Encode(info))
+			return
+		}
+		engine.ServeHTTP(w, r)
+	})
+}
+
 // newEnableCluster wires a coordinator and a worker the way the cluster
 // listener does: the coordinator pushes the provider tree to the worker's
 // internal engine, and the worker reaches the coordinator's worker-facing
@@ -50,23 +75,33 @@ type enableCluster struct {
 func newEnableCluster(t *testing.T, cert *x509.Certificate) enableCluster {
 	t.Helper()
 	worker := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, NodeName: "worker", ClusterMode: pkgConfig.ClusterModeWorker, SeedProvidersDir: true})
-	workerSrv := httptest.NewTLSServer(buildInternalEngine(worker))
+	workerSrv := httptest.NewTLSServer(testWorkerInternalHandler(t, worker))
 	t.Cleanup(workerSrv.Close)
+	workerPort := workerSrv.Listener.Addr().(*net.TCPAddr).Port
 
 	coord := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, NodeName: "coord", ClusterMode: pkgConfig.ClusterModeCoordinator, SeedProvidersDir: true})
-	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coord"}, "http://coord.invalid", coord, nil, mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: workerSrv.Client()}))
+	// A running node has already persisted its normalized provider tree.
+	require.NoError(t, coord.appsConfig().SaveToDir(coord.configStore.DirPath()))
+	require.NoError(t, worker.appsConfig().SaveToDir(worker.configStore.DirPath()))
+	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: "coord"}, "http://coord.invalid", coord, nil, mesh.NewConnector(mesh.ConnectorConfig{
+		HTTPClient: workerSrv.Client(), ClusterPort: workerPort,
+	}))
 	require.NoError(t, err)
 	coord.cluster.coordinator = cluster
+	t.Cleanup(cluster.Stop)
 	coord.clusterMTLSClient = workerSrv.Client()
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerSrv.URL, ClusterURL: workerSrv.URL, NodeName: "worker", Status: mesh.StatusUp}))
 
 	coordSrv := httptest.NewTLSServer(peerCertHandler(cert, buildCoordInternalEngine(coord)))
 	t.Cleanup(coordSrv.Close)
 	worker.cluster.signaler = clustersignal.New(clustersignal.Config{
-		IsWorker:       func() bool { return true },
-		MTLSClient:     coordSrv.Client,
-		CoordinatorURL: func() string { return coordSrv.URL },
+		IsWorker:        func() bool { return true },
+		MTLSClient:      coordSrv.Client,
+		CoordinatorURL:  func() string { return coordSrv.URL },
+		WorkerPublicURL: func() string { return workerSrv.URL },
 	})
+	worker.cluster.signaler.Start(t.Context())
+	t.Cleanup(func() { worker.cluster.signaler.Stop(context.Background()) })
 	return enableCluster{coord: coord, worker: worker, workerSrv: workerSrv}
 }
 
@@ -179,10 +214,7 @@ func TestWorkerOwnsProvidersTheCoordinatorDoesNotSync(t *testing.T) {
 	require.Equal(t, before, providerFile(t, c.coord, "cloud", "openai"))
 }
 
-// Sleeping workers accept connections and never answer, and a round
-// stays open until they time out. The worker asking for its own choice
-// still gets it at once: two of them hold more goroutines than the round
-// has push slots, so their protocol probes must not hold one.
+// Sleeping workers accept TCP connections without answering; their protocol probes must not hold push slots.
 func TestWorkerEnableLandsWhileOtherWorkersHang(t *testing.T) {
 	c := newEnableCluster(t, workerCert("worker"))
 	hung, err := net.Listen("tcp", "127.0.0.1:0")
@@ -197,6 +229,7 @@ func TestWorkerEnableLandsWhileOtherWorkersHang(t *testing.T) {
 			t.Cleanup(func() { _ = conn.Close() })
 		}
 	}()
+
 	for _, name := range []string{"sleeper-1", "sleeper-2"} {
 		url := "https://" + hung.Addr().String() + "/" + name
 		require.NoError(t, c.coord.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: url, ClusterURL: url, NodeName: name, Status: mesh.StatusUp}))
@@ -205,6 +238,11 @@ func TestWorkerEnableLandsWhileOtherWorkersHang(t *testing.T) {
 	require.NoError(t, c.worker.FinalizeOnboarding("vllm"))
 	require.True(t, roundOpen(c.coord.providers.syncFanOut), "the enable waited for the round to give up on the sleepers")
 	require.True(t, runsProvider(t, c.worker, "vllm"))
+	for _, ep := range c.coord.GetClusterEndpoints() {
+		if ep.NodeName == "worker" {
+			require.Equal(t, mesh.StatusUp, ep.Status, "the narrowed re-probe must keep the worker reachable")
+		}
+	}
 }
 
 // roundOpen reports whether f still has a push round running; the
@@ -219,4 +257,41 @@ func roundOpen(f *providerSyncFanOut) bool {
 	default:
 		return true
 	}
+}
+
+func TestWorkerEnableDeadlineIncludesConfigMutation(t *testing.T) {
+	s := createTestNode(t, TestNodeConfig{NodeName: "coord", ClusterMode: pkgConfig.ClusterModeCoordinator, SeedProvidersDir: true})
+	store, err := pkgConfig.NewAppsConfigStore(s.configStore.DirPath())
+	require.NoError(t, err)
+	s.configStore = store
+	require.NoError(t, s.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: "https://127.0.0.1:9443", NodeName: "worker", Status: mesh.StatusUp}))
+	synctest.Test(t, func(t *testing.T) {
+		mutated, returned, idle := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		// AwaitWorker relies on writes == current.carries, no landed worker, and an open idle channel.
+		s.providers.syncFanOut = &providerSyncFanOut{writes: 1, current: &roundProgress{carries: 1}, idle: idle}
+		store.OnChange("slow mutation", func(*pkgConfig.AppsConfig) pkgConfig.ReloadDisposition {
+			time.Sleep(providerSyncWaitTimeout)
+			close(mutated)
+			return pkgConfig.DispositionApplied
+		})
+		c, rec := mutationContext(t, http.MethodPut, "/zzrouter/v1/internal/providers/vllm/enabled", map[string]bool{"enabled": true})
+		c.Params = gin.Params{{Key: "name", Value: "vllm"}}
+		cert := workerCert("worker")
+		c.Request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
+		go func() { s.handleNodeProviderEnabled(c); close(returned) }()
+		t.Cleanup(func() { close(idle); <-returned })
+		<-mutated
+		synctest.Wait()
+		select {
+		case <-returned:
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+		default:
+			t.Fatal("enable started a new wait window after the mutation consumed its deadline")
+		}
+		select {
+		case <-idle:
+			t.Fatal("the sync round must still be pending when the deadline answers")
+		default:
+		}
+	})
 }

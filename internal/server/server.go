@@ -132,12 +132,9 @@ type Server struct {
 	// completes its first handshake. Safe to wait on for worker→coord
 	// outbound signaling; NOT safe to wait on for any path that expects
 	// the coord can immediately dial this worker's inbound TLS listener.
-	listenerReady  chan struct{}
-	draining       atomic.Bool    // Readiness probes return "not_ready" when true
-	refreshWG      sync.WaitGroup // Drained in Stop
-	refreshMu      sync.Mutex     // Guards refreshRunning/refreshQueued
-	refreshRunning bool           // Coalescer: a refresh goroutine is live
-	refreshQueued  bool           // Coalescer: another refresh was requested while one was running
+	listenerReady chan struct{}
+	draining      atomic.Bool    // Readiness probes return "not_ready" when true
+	refreshWG     sync.WaitGroup // Drained in Stop
 
 	// Grouped service/controller/responder components
 	services            Services

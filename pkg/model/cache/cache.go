@@ -126,11 +126,9 @@ type Config struct {
 	Registry func() *modelregistry.Registry
 	// AppsConfig returns the current providers config (lazy).
 	AppsConfig func() *pkgConfig.AppsConfig
-	// ClusterClient returns the cluster client used for worker broadcasts
-	// (lazy; may return nil when no cluster is configured).
+	// ClusterClient lazily supplies worker inventory reads; nil means no cluster.
 	ClusterClient func() mesh.ClusterClient
-	// NodeCache receives per-node resource metrics piggybacked on the
-	// worker model-list broadcast.
+	// NodeCache receives metrics from the same accepted catalog publication.
 	NodeCache *NodeResourceCache
 	// Resources is the local node's resource tracker. Its metrics are
 	// written into NodeCache under the local hostname on each refresh.
@@ -380,8 +378,7 @@ func (mc *Cache) updateModelCacheLocked(models []*CachedModel) {
 //     next RefreshCacheSync re-scans fresh.
 //   - Cache itself: indexes cleared, valid flag flipped; last models retained as failure evidence.
 //
-// NodeResourceCache has no separate invalidation — it is refreshed in
-// lockstep with the model cache inside RefreshCacheSync.
+// NodeResourceCache follows accepted catalog publications without separate invalidation.
 //
 // Registry.InvalidateScanCache is called outside mc.mu to preserve the
 // lock order: RefreshCacheSync calls Registry.ListAllModels without
@@ -638,54 +635,63 @@ func (mc *Cache) RefreshAsync() {
 // ctx bounds the worker broadcast: the hot read path passes the request ctx, background callers
 // (RefreshAsync, Start) the lifecycle ctx so Stop cancels them.
 func (mc *Cache) RefreshCacheSync(ctx context.Context) error {
+	return mc.refresh(ctx, "")
+}
+
+// RefreshNode publishes only the notifying worker without waiting for other nodes.
+func (mc *Cache) RefreshNode(ctx context.Context, node string) error {
+	mc.mu.Lock()
+	mc.generation++
+	mc.mu.Unlock()
+	return mc.refresh(ctx, node)
+}
+
+func (mc *Cache) refresh(ctx context.Context, node string) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if published, err := mc.refreshOnce(ctx); err != nil || published {
+		if published, err := mc.refreshOnce(ctx, node); err != nil || published {
 			return err
 		}
 	}
 }
 
-// refreshOnce builds the catalog from the local registry and cluster workers and publishes it unless
-// an invalidation overtook the build.
-func (mc *Cache) refreshOnce(ctx context.Context) (bool, error) {
-	mc.mu.RLock()
-	generation := mc.generation
-	mc.mu.RUnlock()
-	localItems, local, err := mc.buildLocalAndCloudItems(ctx)
-	if err != nil {
-		return false, err
+func (mc *Cache) refreshOnce(ctx context.Context, node string) (bool, error) {
+	mc.mu.Lock()
+	if node != "" && !mc.valid {
+		mc.invalidateLocked()
+		mc.mu.Unlock()
+		return true, nil
 	}
-
-	workerItems, workerResources, workerUnavailable := mc.fetchWorkerData(ctx)
-	for _, item := range workerItems {
-		if host, ok := item["node"].(string); ok && host != "" && host != constants.Localhost {
-			if hostname := mc.resolveEndpointToNodename(host); hostname != "" {
-				item["node"] = hostname
-				item["ip_address"] = host
-			}
+	generation := mc.generation
+	mc.mu.Unlock()
+	var localItems []map[string]any
+	var local localModelSnapshot
+	if node == "" {
+		var err error
+		localItems, local, err = mc.buildLocalAndCloudItems(ctx)
+		if err != nil {
+			return false, err
 		}
 	}
-
-	if mc.nodeCache != nil {
-		mc.nodeCache.Update(mc.resources, mc.node.Nodename(), workerResources)
-	}
-
+	workerItems, workerResources, workerUnavailable := mc.fetchWorkerData(ctx, node)
 	allItems := make([]map[string]any, 0, len(localItems)+len(workerItems))
 	allItems = append(allItems, localItems...)
 	allItems = append(allItems, workerItems...)
-
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local) {
+	if !mc.publishModelItems(allItems, generation, append(local.unavailable, workerUnavailable...), local, node, workerResources) {
 		return false, nil
 	}
-
 	if mc.autoRoute != nil {
 		mc.autoRoute.SyncAllFromCache()
+	}
+	for _, failure := range workerUnavailable {
+		if node != "" && failure.Provider == "" {
+			return true, fmt.Errorf("%s: %s", node, failure.Reason)
+		}
 	}
 	return true, nil
 }
@@ -699,7 +705,7 @@ func (mc *Cache) warmLocalCache() {
 		slog.Warn("Cache warm failed", "error", err)
 		return
 	}
-	if !mc.publishModelItems(localItems, generation, local.unavailable, local) {
+	if !mc.publishModelItems(localItems, generation, local.unavailable, local, "", nil) {
 		return
 	}
 	slog.Info("Local model cache warmed (worker models loading async)", "local_models", len(localItems))
@@ -764,34 +770,58 @@ func (mc *Cache) getCloudAppModels() []map[string]any {
 	return items
 }
 
-func (mc *Cache) fetchWorkerData(parent context.Context) ([]map[string]any, map[string]*mesh.ResourceMetrics, []InventoryUnavailable) {
+// placeItem names a worker item's node: a scoped read is keyed by the node it asked, a full read by the resolved endpoint.
+func (mc *Cache) placeItem(item map[string]any, node string) {
+	host := extractStringField(item, "node")
+	address := host != "" && host != constants.Localhost
+	switch {
+	case node != "":
+		if address && !strings.EqualFold(host, node) {
+			item["ip_address"] = host
+		}
+		item["node"] = node
+	case address && mc.resolveEndpointToNodename != nil:
+		if hostname := mc.resolveEndpointToNodename(host); hostname != "" {
+			item["node"], item["ip_address"] = hostname, host
+		}
+	}
+}
+
+func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[string]any, map[string]*mesh.ResourceMetrics, []InventoryUnavailable) {
+	workerResources := make(map[string]*mesh.ResourceMetrics)
 	cc := mc.clusterClient()
 	if cc == nil {
-		return nil, nil, nil
+		return nil, workerResources, nil
 	}
 
 	ctx, cancel := context.WithTimeout(parent, constants.ClusterQueryTimeout)
 	defer cancel()
 
-	broadcastResp, err := cc.Broadcast(ctx, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
-	if err != nil {
-		slog.Warn("[Cache] Failed to fetch worker data", "error", err)
-	}
-	if broadcastResp == nil {
-		// A top-level broadcast failure identifies no node; unknown names remain fail-open.
-		return nil, nil, []InventoryUnavailable{{Reason: "cluster model inventory could not be read"}}
+	var responses []*mesh.NodeResponse
+	if node != "" {
+		resp, err := cc.Unicast(ctx, node, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
+		responses = []*mesh.NodeResponse{{NodeName: node, Response: resp, Error: err}}
+	} else {
+		broadcastResp, err := cc.Broadcast(ctx, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
+		if err != nil {
+			slog.Warn("[Cache] Failed to fetch worker data", "error", err)
+		}
+		if broadcastResp == nil {
+			// A top-level broadcast failure identifies no node; unknown names remain fail-open.
+			return nil, workerResources, []InventoryUnavailable{{Reason: "cluster model inventory could not be read"}}
+		}
+		responses = broadcastResp.Responses
 	}
 
 	var allModels []map[string]any
 	var unavailable []InventoryUnavailable
-	workerResources := make(map[string]*mesh.ResourceMetrics)
 
-	for _, nodeResp := range broadcastResp.Responses {
+	for _, nodeResp := range responses {
 		nodeName := nodeResp.NodeName
 		if nodeName == "" {
 			nodeName = nodeResp.Node
 		}
-		if mc.resolveEndpointToNodename != nil {
+		if node == "" && mc.resolveEndpointToNodename != nil {
 			if resolved := mc.resolveEndpointToNodename(nodeName); resolved != "" {
 				nodeName = resolved
 			}
@@ -813,8 +843,15 @@ func (mc *Cache) fetchWorkerData(parent context.Context) ([]map[string]any, map[
 			failure.Node = nodeName
 			unavailable = append(unavailable, failure)
 		}
+		for _, item := range body.Models {
+			mc.placeItem(item, node)
+		}
 		allModels = append(allModels, body.Models...)
 		if body.Resources != nil {
+			if node != "" {
+				workerResources[node] = body.Resources
+				continue
+			}
 			nodeName := body.Resources.NodeName
 			if nodeName == "" {
 				nodeName = nodeResp.NodeName
@@ -822,8 +859,10 @@ func (mc *Cache) fetchWorkerData(parent context.Context) ([]map[string]any, map[
 			if nodeName == "" {
 				nodeName = nodeResp.Node
 			}
-			if resolved := mc.resolveEndpointToNodename(nodeName); resolved != "" {
-				nodeName = resolved
+			if mc.resolveEndpointToNodename != nil {
+				if resolved := mc.resolveEndpointToNodename(nodeName); resolved != "" {
+					nodeName = resolved
+				}
 			}
 			if nodeName != "" {
 				workerResources[nodeName] = body.Resources
@@ -879,22 +918,34 @@ func (mc *Cache) populateModelCacheFromItems(items []map[string]any) {
 	mc.updateModelCache(mc.modelItems(items))
 }
 
-func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable, local localModelSnapshot) bool {
+func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable, local localModelSnapshot, node string, resources map[string]*mesh.ResourceMetrics) bool {
 	models := mc.modelItems(items)
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if generation != mc.generation {
 		return false
 	}
+	if node != "" {
+		for _, failure := range mc.inventoryUnavailable {
+			if !strings.EqualFold(failure.Node, node) {
+				unavailable = append(unavailable, failure)
+			}
+		}
+	}
 	known := make(map[modelTarget]bool, len(models))
 	for _, current := range models {
 		known[modelTarget{strings.ToLower(current.Name), current.Provider, current.Node}] = true
 	}
+	var retained []*CachedModel
 	for _, previous := range mc.models {
 		if known[modelTarget{strings.ToLower(previous.Name), previous.Provider, previous.Node}] {
 			continue
 		}
 		if previous.VariantOf != "" {
+			continue
+		}
+		if node != "" && !strings.EqualFold(previous.Node, node) {
+			retained = append(retained, previous)
 			continue
 		}
 		for _, failure := range unavailable {
@@ -904,11 +955,26 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 			}
 		}
 	}
-	mc.updateModelCacheLocked(models)
-	mc.localSnapshot = local
+	lastAttempt, populateErr := mc.lastAttempt, mc.populateErr
+	mc.updateModelCacheLocked(append(retained, models...))
+	if node == "" {
+		mc.localSnapshot = local
+	} else {
+		mc.lastAttempt, mc.populateErr = lastAttempt, populateErr
+	}
+	if mc.nodeCache != nil {
+		if node == "" && resources != nil {
+			mc.nodeCache.Update(mc.resources, mc.node.Nodename(), resources)
+		} else if node != "" {
+			mc.nodeCache.Put(node, resources[node])
+		}
+	}
 	mc.inventoryUnavailable = make(map[providerNode]InventoryUnavailable, len(unavailable))
 	for _, failure := range unavailable {
 		mc.inventoryUnavailable[providerNode{failure.Node, failure.Provider}] = cloneInventory(failure)
+		if node != "" && strings.EqualFold(failure.Node, node) {
+			mc.lastAttempt = mc.lastUpdated
+		}
 	}
 	return true
 }

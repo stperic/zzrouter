@@ -1109,7 +1109,10 @@ func TestEnsureRunContractServed(t *testing.T) {
 				}
 				failureHeld.reached(t)
 				failureHeld.open()
-				awaitLeft(t, run)
+				// The run fails before it leaves the registry; the load ends after both.
+				ctx, cancel := context.WithTimeout(t.Context(), contractWait)
+				defer cancel()
+				require.NoError(t, run.WaitForGoroutines(ctx))
 				require.Error(t, run.FailureCause(), "every holder reads the load's cause")
 				assert.Equal(t, instance.StatusFailed, run.GetStatus())
 				assert.Empty(t, r.m.instances.List(), "a failed load leaves no run")

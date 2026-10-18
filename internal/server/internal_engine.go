@@ -52,11 +52,9 @@ func buildCoordInternalEngine(s *Server) *gin.Engine {
 	systemExecutor := NewSystemExecutor(
 		s.node, s.role, s.providers.appMgr, s.model.Registry,
 		s.GetSystemInfo, s.GetConnectionPoolStats,
-		s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync,
-		s.RefreshClusterEndpoint,
 		s.MarkClusterEndpointDown,
 	)
-	group.POST("/models/refresh", systemExecutor.HandleInternalRefreshCache)
+	group.POST("/models/refresh", s.handleInternalRefreshCache)
 	group.POST("/goodbye", systemExecutor.HandleInternalGoodbye)
 	group.PUT("/providers/:name/enabled", s.handleNodeProviderEnabled)
 	return engine

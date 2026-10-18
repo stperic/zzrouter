@@ -29,7 +29,7 @@ type deploymentCatalogClient struct {
 	worker *Server
 }
 
-func (c deploymentCatalogClient) Broadcast(ctx context.Context, path string, _ *mesh.QueryParams) (*mesh.BroadcastResponse, error) {
+func (c deploymentCatalogClient) Unicast(ctx context.Context, _, _ string, _ *mesh.QueryParams) (*mesh.Response, error) {
 	models, _, err := c.worker.newInternalExecutor().localModelSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,35 @@ func (c deploymentCatalogClient) Broadcast(ctx context.Context, path string, _ *
 	if err != nil {
 		return nil, err
 	}
-	return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: c.worker.node.Nodename(), Response: &mesh.Response{StatusCode: http.StatusOK, Body: body}}}}, nil
+	return &mesh.Response{StatusCode: http.StatusOK, Body: body}, nil
+}
+
+func (c deploymentCatalogClient) Broadcast(ctx context.Context, path string, params *mesh.QueryParams) (*mesh.BroadcastResponse, error) {
+	resp, err := c.Unicast(ctx, c.worker.node.Name(), path, params)
+	if err != nil {
+		return nil, err
+	}
+	return &mesh.BroadcastResponse{Responses: []*mesh.NodeResponse{{NodeName: c.worker.node.Nodename(), Response: resp}}}, nil
+}
+
+func catalogNoticeEngine(t *testing.T, reader, worker *Server) http.Handler {
+	t.Helper()
+	if reader.cluster.coordinator != nil {
+		reader.cluster.coordinator.Stop()
+	}
+	handler := testWorkerInternalHandler(t, worker)
+	client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, r)
+		return rec.Result(), nil
+	})}
+	cluster, err := mesh.NewCluster(&mesh.Config{NodeName: reader.node.Name()}, "http://coord.invalid", reader, nil,
+		mesh.NewConnector(mesh.ConnectorConfig{HTTPClient: client, ClusterPort: 1}))
+	require.NoError(t, err)
+	reader.cluster.coordinator = cluster
+	t.Cleanup(cluster.Stop)
+	require.NoError(t, reader.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: "http://127.0.0.1:1", NodeName: worker.node.Name(), Status: mesh.StatusUp}))
+	return peerCertHandler(workerCert(worker.node.Name()), buildCoordInternalEngine(reader))
 }
 
 func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
@@ -72,7 +100,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 						ClusterClient:             func() mesh.ClusterClient { return deploymentCatalogClient{worker: target} },
 						ResolveEndpointToNodename: func(string) string { return "" },
 					})
-					engine := buildCoordInternalEngine(reader)
+					engine := catalogNoticeEngine(t, reader, target)
 					client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 						rec := httptest.NewRecorder()
 						engine.ServeHTTP(rec, r)
