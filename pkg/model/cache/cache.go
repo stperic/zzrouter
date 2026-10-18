@@ -770,6 +770,23 @@ func (mc *Cache) getCloudAppModels() []map[string]any {
 	return items
 }
 
+// placeItem names a worker item's node: a scoped read is keyed by the node it asked, a full read by the resolved endpoint.
+func (mc *Cache) placeItem(item map[string]any, node string) {
+	host := extractStringField(item, "node")
+	address := host != "" && host != constants.Localhost
+	switch {
+	case node != "":
+		if address && !strings.EqualFold(host, node) {
+			item["ip_address"] = host
+		}
+		item["node"] = node
+	case address && mc.resolveEndpointToNodename != nil:
+		if hostname := mc.resolveEndpointToNodename(host); hostname != "" {
+			item["node"], item["ip_address"] = hostname, host
+		}
+	}
+}
+
 func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[string]any, map[string]*mesh.ResourceMetrics, []InventoryUnavailable) {
 	workerResources := make(map[string]*mesh.ResourceMetrics)
 	cc := mc.clusterClient()
@@ -827,17 +844,7 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 			unavailable = append(unavailable, failure)
 		}
 		for _, item := range body.Models {
-			if node != "" {
-				if host := extractStringField(item, "node"); host != "" && host != constants.Localhost && !strings.EqualFold(host, node) {
-					item["ip_address"] = host
-				}
-				item["node"] = node
-			} else if host := extractStringField(item, "node"); host != "" && host != constants.Localhost && mc.resolveEndpointToNodename != nil {
-				if hostname := mc.resolveEndpointToNodename(host); hostname != "" {
-					item["node"] = hostname
-					item["ip_address"] = host
-				}
-			}
+			mc.placeItem(item, node)
 		}
 		allModels = append(allModels, body.Models...)
 		if body.Resources != nil {
