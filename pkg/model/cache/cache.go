@@ -828,7 +828,10 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 		}
 		for _, item := range body.Models {
 			if node != "" {
-				item["node"], item["ip_address"] = node, extractStringField(item, "node")
+				if host := extractStringField(item, "node"); host != "" && host != constants.Localhost && !strings.EqualFold(host, node) {
+					item["ip_address"] = host
+				}
+				item["node"] = node
 			} else if host := extractStringField(item, "node"); host != "" && host != constants.Localhost && mc.resolveEndpointToNodename != nil {
 				if hostname := mc.resolveEndpointToNodename(host); hostname != "" {
 					item["node"] = hostname
