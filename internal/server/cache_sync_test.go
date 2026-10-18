@@ -3,8 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -13,11 +17,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -231,108 +237,163 @@ func TestFinalize_LastMutationTimestamp(t *testing.T) {
 	}
 }
 
-// TestCoalescer_DrainsCleanly fires N parallel Async calls and asserts
-// the coalescer drains without hanging and without deadlock. The exact
-// "runs count" is not directly observable through the public API — a
-// stronger test requires injecting a counter into RefreshClusterEndpoints.
-func TestCoalescer_DrainsCleanly(t *testing.T) {
-	s := createSeededTestNode(t)
-
-	const callers = 20
-	var wg sync.WaitGroup
-	wg.Add(callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			defer wg.Done()
-			s.RefreshClusterEndpointsAsync()
-		}()
-	}
-	wg.Wait()
-
-	drained := make(chan struct{})
-	go func() {
-		s.refreshWG.Wait()
-		close(drained)
-	}()
-	select {
-	case <-drained:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("refreshWG never drained — coalescer is stuck")
-	}
-
-	// Fire a second wave after drain to verify running/queued flags reset cleanly.
-	wg.Add(callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			defer wg.Done()
-			s.RefreshClusterEndpointsAsync()
-		}()
-	}
-	wg.Wait()
-
-	drained2 := make(chan struct{})
-	go func() {
-		s.refreshWG.Wait()
-		close(drained2)
-	}()
-	select {
-	case <-drained2:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("second wave stuck — flags didn't reset")
-	}
-}
-
-// TestCoalescer_DrainingShortCircuits asserts RefreshClusterEndpointsAsync
-// is a no-op once draining is set — no goroutine spawn, no wg entry.
-func TestCoalescer_DrainingShortCircuits(t *testing.T) {
-	s := createSeededTestNode(t)
-	s.draining.Store(true)
-
-	// Before: ensure wg is at zero.
-	s.refreshWG.Wait()
-
-	s.RefreshClusterEndpointsAsync()
-
-	// Wait returns immediately iff no Add was called.
-	done := make(chan struct{})
-	go func() {
-		s.refreshWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		t.Fatalf("refreshWG.Add was called despite draining")
-	}
-}
-
-// TestHandleInternalRefreshCache_FansOutBothCaches asserts the
-// coord-side notify handler invokes BOTH the cache-C invalidator and
-// the cache-B refresh (the unit fan-out contract from the doc).
-func TestHandleInternalRefreshCache_FansOutBothCaches(t *testing.T) {
-	var invalidated, refreshed, published atomic.Int32
-	node := NewNodeIdentity(&pkgConfig.NodeConfig{
-		Cluster: pkgConfig.ClusterConfig{Mode: pkgConfig.ClusterModeCoordinator},
+func notificationCounter(t *testing.T, s *Server) *atomic.Int32 {
+	t.Helper()
+	calls := new(atomic.Int32)
+	client := &http.Client{Transport: mcpRoundTripper(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return httptest.NewRecorder().Result(), nil
+	})}
+	s.cluster.signaler = clustersignal.New(clustersignal.Config{
+		IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { return client },
+		CoordinatorURL: func() string { return "https://coordinator.test" },
 	})
-	exec := &SystemExecutor{
-		node:             node,
-		invalidateCache:  func() { invalidated.Add(1) },
-		refreshCacheSync: func(context.Context) error { published.Add(1); return nil },
-		refreshEndpoints: func() { refreshed.Add(1) },
-	}
+	s.cluster.signaler.Start(t.Context())
+	t.Cleanup(func() { s.cluster.signaler.Stop(context.Background()) })
+	return calls
+}
 
-	gin.SetMode(gin.TestMode)
-	rec := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(rec)
-	c.Request = httptest.NewRequest("POST", "/zzrouter/v1/internal/models/refresh", nil)
-	exec.HandleInternalRefreshCache(c)
+func TestCatalogNotificationsDrainCleanly(t *testing.T) {
+	s := createSeededTestNode(t)
+	calls := notificationCounter(t, s)
+	for wave := 1; wave <= 2; wave++ {
+		var wg sync.WaitGroup
+		for range 20 {
+			wg.Go(s.notifyCoordinatorAsync)
+		}
+		wg.Wait()
+		s.refreshWG.Wait()
+		require.EqualValues(t, wave*20, calls.Load(), "each wave drains before another starts")
+	}
+}
 
-	if got := invalidated.Load(); got != 1 {
-		t.Errorf("invalidateCache invocations = %d, want 1", got)
+func TestCatalogNotificationsDrainingShortCircuits(t *testing.T) {
+	s := createSeededTestNode(t)
+	calls := notificationCounter(t, s)
+	s.draining.Store(true)
+	s.notifyCoordinatorAsync()
+	s.refreshWG.Wait()
+	require.Zero(t, calls.Load(), "draining must not start a notification")
+}
+
+type noticeInventoryClient struct {
+	mesh.ClusterClient
+	reads      atomic.Int32
+	broadcast  atomic.Int32
+	fail       bool
+	beforeRead func()
+}
+
+func (c *noticeInventoryClient) Unicast(_ context.Context, node, path string, params *mesh.QueryParams) (*mesh.Response, error) {
+	if c.beforeRead != nil {
+		c.beforeRead()
 	}
-	if got := refreshed.Load(); got != 1 {
-		t.Errorf("refreshEndpoints invocations = %d, want 1", got)
+	c.reads.Add(1)
+	if node != "worker" || path != "/zzrouter/v1/internal/models" || params.Method != http.MethodGet {
+		return nil, errors.New("unexpected inventory request")
 	}
-	require.EqualValues(t, 1, published.Load())
-	require.Equal(t, 200, rec.Code)
+	if c.fail {
+		return nil, errors.New("worker unreachable")
+	}
+	return &mesh.Response{StatusCode: http.StatusOK, Body: []byte(`{"models":[{"name":"fresh","node":"worker"}]}`)}, nil
+}
+
+func (c *noticeInventoryClient) Broadcast(context.Context, string, *mesh.QueryParams) (*mesh.BroadcastResponse, error) {
+	c.broadcast.Add(1)
+	return &mesh.BroadcastResponse{}, nil
+}
+
+func TestHandleInternalRefreshCacheCertifiedScope(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		fail bool
+		want int
+		body string
+	}{
+		{"certified empty body", workerCert("worker"), false, http.StatusOK, `{}`},
+		{"body cannot aim re-probe", workerCert("worker"), false, http.StatusOK, `{"node_url":"https://elsewhere.invalid"}`},
+		{"body is not parsed", workerCert("worker"), false, http.StatusOK, `{`},
+		{"no certificate", nil, false, http.StatusForbidden, `{}`},
+		{"unknown worker", workerCert("other"), false, http.StatusForbidden, `{}`},
+		{"unreachable worker", workerCert("worker"), true, http.StatusServiceUnavailable, `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, coord, _ := mutationNodes(t, "worker")
+			client := &noticeInventoryClient{fail: tc.fail}
+			coord.model.Cache = cache.New(cache.Config{
+				Node: coord.node, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: coord.appsConfig,
+				ClusterClient: func() mesh.ClusterClient { return client },
+			})
+			require.NoError(t, coord.model.Cache.RefreshCacheSync(t.Context()))
+			client.broadcast.Store(0)
+			_ = catalogNoticeEngine(t, coord, worker)
+			certified := coord.certifiedWorker(workerCert("worker"))
+			require.NotNil(t, certified)
+			for _, host := range []string{"127.0.0.1", "127.0.0.1:1"} {
+				require.Equal(t, certified.NodeName, coord.resolveEndpointToNodename(host), "the full-read resolver agrees with the certificate for a matching endpoint host")
+			}
+			coord.MarkClusterEndpointDown("http://127.0.0.1:1")
+			client.beforeRead = func() {
+				ep := coord.certifiedWorker(workerCert("worker"))
+				require.NotNil(t, ep)
+				require.Equal(t, mesh.StatusUp, ep.Status, "a DOWN worker must be re-probed before its inventory read")
+			}
+			req := httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/models/refresh", strings.NewReader(tc.body))
+			if tc.cert != nil {
+				req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{tc.cert}, VerifiedChains: [][]*x509.Certificate{{tc.cert}}}
+			}
+			rec := httptest.NewRecorder()
+			buildCoordInternalEngine(coord).ServeHTTP(rec, req)
+			require.Equal(t, tc.want, rec.Code, rec.Body.String())
+			require.Zero(t, client.broadcast.Load())
+			if tc.want == http.StatusForbidden {
+				require.Zero(t, client.reads.Load(), "an unidentified notice refreshes nothing")
+				require.Equal(t, mesh.StatusDown, coord.certifiedWorker(workerCert("worker")).Status, "an unidentified notice probes nothing")
+				require.Equal(t, true, coord.model.Cache.GetCacheStats()["valid"], "an unidentified notice cannot invalidate")
+			} else {
+				require.EqualValues(t, 1, client.reads.Load())
+			}
+			if tc.want == http.StatusOK {
+				require.True(t, coord.model.Cache.HasModel("fresh"), "acknowledgement follows publication")
+			}
+			if tc.fail {
+				require.Len(t, coord.model.Cache.UnavailableInventories("worker", ""), 1)
+			}
+		})
+	}
+}
+
+func TestProviderSyncNotifiesOnlyForChangedPush(t *testing.T) {
+	worker, coord, dir := mutationNodes(t, "worker")
+	var notices atomic.Int32
+	worker.cluster.signaler.Stop(context.Background())
+	engine := catalogNoticeEngine(t, coord, worker)
+	client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
+		notices.Add(1)
+		require.True(t, worker.model.Cache.HasModel("fresh"), "a changed push publishes locally before notifying")
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, r)
+		return rec.Result(), nil
+	})}
+	worker.cluster.signaler = clustersignal.New(clustersignal.Config{
+		IsWorker: worker.node.IsWorker, MTLSClient: func() *http.Client { return client },
+		CoordinatorURL: func() string { return "https://coordinator.test" },
+	})
+	worker.cluster.signaler.Start(t.Context())
+	configBytes, err := worker.configStore.ReadProviderConfigBytes("llamacpp")
+	require.NoError(t, err)
+	push := func(config []byte, changed bool) {
+		c, rec := mutationContext(t, http.MethodPost, "/zzrouter/v1/internal/sync/providers/llamacpp", ProviderSyncBody{Kind: "on-demand", ConfigYAML: config})
+		c.Params = gin.Params{{Key: "name", Value: "llamacpp"}}
+		worker.HandleProviderSync(c)
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), `"changed":`+map[bool]string{true: "true", false: "false"}[changed])
+	}
+	push(configBytes, false)
+	require.Zero(t, notices.Load(), "an in-step push has no mutation to publish")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fresh.gguf"), []byte("GGUF"), 0600))
+	push(append(configBytes, '\n'), true)
+	require.EqualValues(t, 1, notices.Load())
+	require.True(t, coord.model.Cache.HasModel("fresh"), "a changed push answers after coordinator publication")
 }

@@ -196,11 +196,8 @@ func TestSignaler_Goodbye_SkipWhenWorkerURLEmpty(t *testing.T) {
 	}
 }
 
-// TestSignaler_Notify_IncludesWorkerURL — the notify body carries
-// node_url so the coord can narrow its refresh to just this sender
-// instead of broadcasting. Empty body (older workers) is accepted but
-// this worker advertises its URL when WorkerPublicURL is non-empty.
-func TestSignaler_Notify_IncludesWorkerURL(t *testing.T) {
+// The coordinator identifies refresh notices by certificate; only goodbye needs the worker URL.
+func TestSignaler_Notify_OmitsWorkerURL(t *testing.T) {
 	const workerURL = "http://192.0.2.10:9090"
 
 	bodies := make(chan string, 1)
@@ -224,7 +221,7 @@ func TestSignaler_Notify_IncludesWorkerURL(t *testing.T) {
 
 	select {
 	case got := <-bodies:
-		want := `{"node_url":"` + workerURL + `"}`
+		want := `{}`
 		if got != want {
 			t.Errorf("notify body = %q, want %q", got, want)
 		}

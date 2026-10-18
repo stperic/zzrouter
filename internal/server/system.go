@@ -97,22 +97,18 @@ func (s *SystemService) GetSystemInfo(ctx context.Context, req *GetSystemInfoReq
 
 // SystemExecutor handles direct local system operations
 type SystemExecutor struct {
-	node                 *NodeIdentity
-	role                 *role.Manager
-	appMgr               *prov_apps.ProviderAppManager
-	registry             *modelregistry.Registry
-	getSystemInfo        func() map[string]any
-	getPoolStats         func() *connectivity.ConnectionPoolStats
-	invalidateCache      func()
-	refreshCacheSync     func(context.Context) error
-	refreshEndpoints     func()           // Coord-side broadcast re-probe; nil on workers
-	refreshEndpointByURL func(url string) // Coord-side narrowed re-probe; nil on workers
-	markEndpointDown     func(url string) // Coord-side force DOWN; nil on workers
+	node             *NodeIdentity
+	role             *role.Manager
+	appMgr           *prov_apps.ProviderAppManager
+	registry         *modelregistry.Registry
+	getSystemInfo    func() map[string]any
+	getPoolStats     func() *connectivity.ConnectionPoolStats
+	markEndpointDown func(url string) // Coord-side force DOWN; nil on workers
 }
 
 // NewSystemExecutor creates a new system executor
-func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats, invalidateCache func(), refreshCacheSync func(context.Context) error, refreshEndpoints func(), refreshEndpointByURL func(string), markEndpointDown func(url string)) *SystemExecutor {
-	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats, invalidateCache: invalidateCache, refreshCacheSync: refreshCacheSync, refreshEndpoints: refreshEndpoints, refreshEndpointByURL: refreshEndpointByURL, markEndpointDown: markEndpointDown}
+func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats, markEndpointDown func(url string)) *SystemExecutor {
+	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats, markEndpointDown: markEndpointDown}
 }
 
 // HandleInternalGetSystemInfo handles GET /zzrouter/internal/system (internal API)
@@ -153,54 +149,6 @@ func (e *SystemExecutor) HandleInternalGoodbye(c *gin.Context) {
 		e.markEndpointDown(req.NodeURL)
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "success"})
-}
-
-// HandleInternalRefreshCache handles POST /zzrouter/v1/internal/models/refresh.
-// Called by worker nodes to notify coordinator when downloads/deletions complete.
-//
-// Narrowing: the body may carry {"node_url": "..."}; when non-empty AND
-// the URL's host matches a SAN on the peer's client cert, the coord
-// re-probes just that endpoint instead of broadcasting. Empty body,
-// missing peer cert, or SAN mismatch falls back to broadcast — keeps
-// the notify useful even if a worker hands up a malformed URL, while
-// preventing a malicious authenticated worker from forcing re-probes
-// of peers it doesn't own.
-func (e *SystemExecutor) HandleInternalRefreshCache(c *gin.Context) {
-	if e.node.IsWorker() {
-		BadRequest(c, "workers don't have cache to refresh")
-		return
-	}
-
-	var req struct {
-		NodeURL string `json:"node_url"`
-	}
-	// Empty body is legal — older workers send {} for broadcast refresh.
-	_ = c.ShouldBindJSON(&req)
-
-	narrowOK := false
-	if req.NodeURL != "" && e.refreshEndpointByURL != nil {
-		narrowOK = nodeURLMatchesPeerCert(req.NodeURL, peerCertFromRequest(c.Request))
-	}
-
-	slog.Info("[InternalAPI] Cache refresh requested by worker",
-		"node_url", req.NodeURL,
-		"narrowed", narrowOK)
-	e.invalidateCache()
-
-	if narrowOK {
-		e.refreshEndpointByURL(req.NodeURL)
-	} else if e.refreshEndpoints != nil {
-		e.refreshEndpoints()
-	}
-
-	if err := e.refreshCacheSync(c.Request.Context()); err != nil {
-		ServiceUnavailable(c, err.Error())
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Cache refreshed successfully",
-	})
 }
 
 // peerCertFromRequest returns the client's leaf certificate if the

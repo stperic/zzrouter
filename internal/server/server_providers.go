@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -159,15 +160,18 @@ func (s *Server) setProviderEnabled(name string, enabled bool) error {
 // its certificate, and answers once that worker has it, so the worker's
 // FinalizeOnboarding returns reconciled. PUT /internal/providers/:name/enabled.
 func (s *Server) handleNodeProviderEnabled(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), providerSyncWaitTimeout)
+	defer cancel()
 	if s.configStore == nil {
 		ServiceUnavailable(c, "providers config store not ready")
 		return
 	}
-	node := s.certifiedWorker(peerCertFromRequest(c.Request))
-	if node == "" {
+	ep := s.certifiedWorker(peerCertFromRequest(c.Request))
+	if ep == nil {
 		Forbidden(c, "the client certificate does not name a worker of this cluster")
 		return
 	}
+	node := ep.NodeName
 	var req struct {
 		Enabled *bool `json:"enabled"`
 	}
@@ -199,8 +203,6 @@ func (s *Server) handleNodeProviderEnabled(c *gin.Context) {
 	if !changed {
 		s.reconcileProviderTree("enable choice from " + node)
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), providerSyncWaitTimeout)
-	defer cancel()
 	if !s.providers.syncFanOut.AwaitWorker(ctx, node) {
 		RespondToError(c, httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeProviderSyncPending),
 			Message: fmt.Sprintf("recorded on the coordinator, but the provider sync has not reached %s yet; the next sync delivers it", node)})
@@ -209,18 +211,38 @@ func (s *Server) handleNodeProviderEnabled(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"name": name, "node": node, "enabled": *req.Enabled})
 }
 
+// handleInternalRefreshCache publishes the inventory named by the worker's certificate.
+func (s *Server) handleInternalRefreshCache(c *gin.Context) {
+	if s.node.IsWorker() {
+		BadRequest(c, "workers don't have cache to refresh")
+		return
+	}
+	ep := s.certifiedWorker(peerCertFromRequest(c.Request))
+	if ep == nil {
+		Forbidden(c, "the client certificate does not name a worker of this cluster")
+		return
+	}
+	slog.Info("Received worker cache refresh notice", "node", ep.NodeName)
+	s.RefreshClusterEndpoint(ep.URL)
+	if err := s.model.Cache.RefreshNode(c.Request.Context(), ep.NodeName); err != nil {
+		ServiceUnavailable(c, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Cache refreshed successfully"})
+}
+
 // certifiedWorker is the endpoint whose name is cert's CN and whose address
-// cert covers, or "" when none is.
-func (s *Server) certifiedWorker(cert *x509.Certificate) string {
+// cert covers, or nil when none is.
+func (s *Server) certifiedWorker(cert *x509.Certificate) *mesh.Endpoint {
 	if cert == nil || cert.Subject.CommonName == "" {
-		return ""
+		return nil
 	}
 	for _, ep := range s.GetClusterEndpoints() {
 		if ep != nil && !ep.IsLocal && ep.NodeName == cert.Subject.CommonName && nodeURLMatchesPeerCert(ep.URL, cert) {
-			return ep.NodeName
+			return ep
 		}
 	}
-	return ""
+	return nil
 }
 
 // SetOnFinalizeCallback registers a hook fired after FinalizeOnboarding

@@ -109,7 +109,7 @@ func (s *Server) HandleProviderSync(c *gin.Context) {
 		return
 	}
 	// `changed` keeps scheduled pushes cheap: an in-step worker writes and reloads nothing.
-	if !publishOr503(c, s.publishCatalog) {
+	if changed && !publishOr503(c, s.publishCatalog) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"name": name, "bytes": len(body.ConfigYAML), "changed": changed})

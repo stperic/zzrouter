@@ -100,7 +100,7 @@ func TestInternalAPI(t *testing.T) {
 
 	t.Run("RefreshCache", func(t *testing.T) {
 		resp := internal("POST", "/zzrouter/v1/internal/models/refresh", nil)
-		srv.AssertStatusOneOf(t, resp, []int{http.StatusOK, http.StatusAccepted, http.StatusNoContent})
+		srv.AssertStatusOneOf(t, resp, []int{http.StatusForbidden})
 	})
 
 	// =========================================================================

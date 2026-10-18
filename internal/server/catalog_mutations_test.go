@@ -99,7 +99,7 @@ func mutationNodes(t *testing.T, location string) (target, reader *Server, dir s
 			ClusterClient:             func() mesh.ClusterClient { return deploymentCatalogClient{worker: target} },
 			ResolveEndpointToNodename: func(string) string { return "" },
 		})
-		engine := buildCoordInternalEngine(reader)
+		engine := catalogNoticeEngine(t, reader, target)
 		client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
 			engine.ServeHTTP(rec, r)
@@ -200,7 +200,7 @@ func TestCatalogMutationWorkerWaitsForAcknowledgement(t *testing.T) {
 			target.cluster.signaler.Stop(context.Background())
 		})
 		entered, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
-		engine := buildCoordInternalEngine(reader)
+		engine := catalogNoticeEngine(t, reader, target)
 		client := &http.Client{Transport: mcpRoundTripper(func(r *http.Request) (*http.Response, error) {
 			close(entered)
 			<-release
@@ -356,6 +356,11 @@ func TestCatalogMutationProviderSyncPublishesBeforeResponse(t *testing.T) {
 	target.HandleProviderSync(c)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Contains(t, rec.Body.String(), `"changed":false`)
+	require.False(t, reader.model.Cache.HasModel("fresh"))
+	c, rec = mutationContext(t, http.MethodPost, "/zzrouter/v1/internal/sync/providers/llamacpp", ProviderSyncBody{Kind: config.KindOnDemand, ConfigYAML: append(raw, '\n')})
+	c.Params = gin.Params{{Key: "name", Value: "llamacpp"}}
+	target.HandleProviderSync(c)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.True(t, reader.model.Cache.HasModel("fresh"))
 
 }

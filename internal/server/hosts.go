@@ -738,46 +738,6 @@ func (s *Server) workerPublicURL() string {
 	return scheme + "://" + net.JoinHostPort(s.selfHost(), strconv.Itoa(s.config.Node.Port))
 }
 
-// RefreshClusterEndpointsAsync re-probes all endpoints in a drain-tracked
-// goroutine. Coalesced: concurrent calls collapse to at most 1 in-flight +
-// 1 queued, so install→enable double-notify doesn't fan out twice. No-op
-// while draining.
-func (s *Server) RefreshClusterEndpointsAsync() {
-	if s.draining.Load() {
-		return
-	}
-	s.refreshMu.Lock()
-	if s.refreshRunning {
-		s.refreshQueued = true
-		s.refreshMu.Unlock()
-		return
-	}
-	s.refreshRunning = true
-	s.refreshMu.Unlock()
-	s.refreshWG.Add(1)
-	go s.runRefreshLoop()
-}
-
-// runRefreshLoop is the coalescer body. Runs RefreshClusterEndpoints,
-// then checks whether another request arrived during the run and repeats
-// if so. Does not re-check draining — new Async calls short-circuit at
-// the entrypoint once draining is set, so the loop drains its ≤1 queued
-// iteration then exits.
-func (s *Server) runRefreshLoop() {
-	defer s.refreshWG.Done()
-	for {
-		s.RefreshClusterEndpoints()
-		s.refreshMu.Lock()
-		if !s.refreshQueued {
-			s.refreshRunning = false
-			s.refreshMu.Unlock()
-			return
-		}
-		s.refreshQueued = false
-		s.refreshMu.Unlock()
-	}
-}
-
 // ============================================================================
 // Executor (Internal API)
 // ============================================================================

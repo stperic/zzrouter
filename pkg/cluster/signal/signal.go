@@ -118,10 +118,7 @@ func (s *Signaler) Stop(ctx context.Context) {
 // bounded retries. No-op on coordinator nodes or pre-Start. Tracked
 // via the wait group so Stop blocks until in-flight notifications exit.
 //
-// The body carries {"node_url": workerURL} so the coord can narrow
-// its refresh to just this sender instead of broadcasting to every
-// endpoint. Empty body is still accepted on the coord side for
-// compatibility with pre-narrowing workers.
+// The certificate names both the inventory and the endpoint to re-probe.
 func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
 	if s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
 		return nil
@@ -141,15 +138,6 @@ func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
 	defer stop()
 	if lifeCtx.Err() != nil {
 		cancel()
-	}
-
-	body := []byte("{}")
-	if s.cfg.WorkerPublicURL != nil {
-		if u := s.cfg.WorkerPublicURL(); u != "" {
-			if b, err := json.Marshal(map[string]string{"node_url": u}); err == nil {
-				body = b
-			}
-		}
 	}
 
 	const (
@@ -172,7 +160,7 @@ func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
 			return ctx.Err()
 		}
 		callCtx, cancel := context.WithTimeout(ctx, perAttempt)
-		err = s.doCoordPost(callCtx, "/zzrouter/v1/internal/models/refresh", body)
+		err = s.doCoordPost(callCtx, "/zzrouter/v1/internal/models/refresh", []byte("{}"))
 		cancel()
 		if err == nil {
 			slog.Info("[Worker] Master cache refresh notification sent successfully")

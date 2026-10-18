@@ -67,7 +67,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	}
 
 	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.eligibleDeployProviders, s.providers.appMgr.AssessCapacity)
-	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.model.Cache.Invalidate, s.model.Cache.RefreshCacheSync, s.RefreshClusterEndpointsAsync, s.RefreshClusterEndpoint, s.MarkClusterEndpointDown)
+	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.MarkClusterEndpointDown)
 
 	// ========================================================================
 	// SYSTEM - Health and version for cluster monitoring
@@ -85,8 +85,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	router.GET("/models", modelExecutor.HandleInternalListModels)
 	router.GET("/models/show", modelExecutor.HandleInternalShowModel)
 	router.DELETE("/models", modelExecutor.HandleInternalDeleteModels)
-	router.POST("/models/rescan", modelExecutor.HandleInternalRescanModels)   // Drop local registry scan cache (worker-side)
-	router.POST("/models/refresh", systemExecutor.HandleInternalRefreshCache) // Worker-→-coord notification (coord re-probes peers)
+	router.POST("/models/rescan", modelExecutor.HandleInternalRescanModels) // Drop local registry scan cache (worker-side)
+	router.POST("/models/refresh", s.handleInternalRefreshCache)            // Worker-to-coordinator catalog publication
 
 	// ========================================================================
 	// RUNS - Direct runs manager operations
