@@ -138,14 +138,9 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 			out.MemoryUsableFraction = *f
 		}
 	}
-	for name, yp := range y.Parameters {
-		merged, mErr := mergeOne(provider, name, yp, out.Parameters[name])
-		if mErr != nil {
-			errs = append(errs, mErr)
-			continue
-		}
-		out.Parameters[name] = merged
-	}
+	parameters, paramErrs := mergeParameters(provider, "", y.Parameters, out.Parameters)
+	maps.Copy(out.Parameters, parameters)
+	errs = append(errs, paramErrs...)
 	if out.Diagnostics != nil && out.Diagnostics.Memory != nil && out.Diagnostics.Memory.Kind == MemoryFractionTotal {
 		name := out.Diagnostics.Memory.Parameter
 		shape := out.Parameters[name]
@@ -155,21 +150,32 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	if len(y.Endpoints) > 0 {
 		out.Endpoints = make(map[string]EndpointSchema, len(y.Endpoints))
 		for epName, ep := range y.Endpoints {
-			ps := make(map[string]ParamShape, len(ep.Parameters))
-			for name, yp := range ep.Parameters {
-				// Endpoint params layer on top of the base; if the same name
-				// also exists at flat tier, the Go spine claim still wins on
-				// shape. Otherwise treat as a fresh YAML-only declaration.
-				base := out.Parameters[name]
-				merged, mErr := mergeOne(provider, fmt.Sprintf("endpoints.%s.parameters.%s", epName, name), yp, base)
-				if mErr != nil {
-					errs = append(errs, mErr)
-					continue
-				}
-				ps[name] = merged
-			}
+			ps, epErrs := mergeParameters(provider, "endpoints."+epName+".parameters.", ep.Parameters, out.Parameters)
+			errs = append(errs, epErrs...)
 			out.Endpoints[epName] = EndpointSchema{Parameters: ps}
 		}
+	}
+	return out, errs
+}
+
+func mergeParameters(provider, path string, parameters map[string]YAMLParam, base map[string]ParamShape) (map[string]ParamShape, []error) {
+	out := make(map[string]ParamShape, len(parameters))
+	var errs []error
+	for literal, yp := range parameters {
+		name := runsettings.FlagName(literal)
+		if _, exists := out[name]; exists {
+			errs = append(errs, fmt.Errorf("%s.%s%s: duplicate schema flag %q", provider, path, literal, name))
+			continue
+		}
+		merged, err := mergeOne(provider, path+literal, yp, base[name])
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if name != literal {
+			merged.Flag = literal
+		}
+		out[name] = merged
 	}
 	return out, errs
 }
