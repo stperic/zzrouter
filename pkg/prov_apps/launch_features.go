@@ -310,8 +310,6 @@ type ParameterError struct {
 	ContextParameter string
 	// Served marks a provider whose daemon owns its model settings.
 	Served bool
-	// Kept marks the refusal of a pinned run that keeps its pin, listed failed.
-	Kept   bool
 	Issues []utils.ParamError
 	tiers  []config.Tier // the tier that set each issue's key
 }
@@ -325,8 +323,8 @@ func (e *ParameterError) Error() string {
 }
 
 // ParamIssues is each issue with what to do about it, chosen by the tier
-// that set its key: a request's is fixed in the request, which a restart
-// replays, a configured one with zz_params_set.
+// that set its key: a request's is fixed in the request, a configured one
+// with zz_params_set.
 func (e *ParameterError) ParamIssues() []utils.ParamError {
 	issues := slices.Clone(e.Issues)
 	for i := range issues {
@@ -340,14 +338,9 @@ func (e *ParameterError) hint(code string, requested bool) string {
 		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", e.Provider)
 	}
 	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
-	switch {
-	case requested && e.Kept:
-		hint += "; zz_run_restart would replay this request, so zz_run_start the model with corrected parameters and keep-alive -1 to keep its pin."
-	case requested:
+	if requested {
 		hint += ", and fix the key in zz_run_preview or zz_run_start."
-	case e.Kept:
-		hint += ", fix the key with zz_params_set (null removes it), then zz_run_restart this run to keep its pin."
-	default:
+	} else {
 		hint += ", and fix the key with zz_params_set (null removes it)."
 	}
 	if e.ContextParameter != "" && !e.Served {

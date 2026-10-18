@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,15 +75,21 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	return nil
 }
 
-// beyondInt64 reports a number literal no int64 holds, which at that size is
-// integral: one Canonical left as written past its bound, such as 1e81.
+// beyondInt64 reports an integral number literal no int64 holds, such as
+// 1e81, which Canonical leaves as written past its bound: integral when its
+// exponent covers every significant fraction digit.
 func beyondInt64(value string) bool {
 	var n json.Number
 	if json.Unmarshal([]byte(value), &n) != nil {
 		return false
 	}
-	f, err := n.Float64()
-	return (err == nil || errors.Is(err, strconv.ErrRange)) && math.Abs(f) >= math.MaxInt64
+	if f, err := n.Float64(); err != nil && !errors.Is(err, strconv.ErrRange) || math.Abs(f) < math.MaxInt64 {
+		return false
+	}
+	mantissa, exponent, _ := strings.Cut(strings.ToLower(value), "e")
+	_, fraction, _ := strings.Cut(mantissa, ".")
+	shift, err := strconv.Atoi(cmp.Or(exponent, "0"))
+	return errors.Is(err, strconv.ErrRange) || len(strings.TrimRight(fraction, "0")) <= shift // a tiny value failed above
 }
 
 // Duplicate refuses spellings of one flag that one map gives different

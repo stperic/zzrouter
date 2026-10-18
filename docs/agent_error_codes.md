@@ -163,14 +163,9 @@ selected runtime excludes is `excluded_by_runtime` when the request sent it and
 dropped when a configured tier did; `auto` on it asks for nothing and passes. A
 served provider (Ollama) passes its daemon only the run settings, so any other
 request parameter is `unknown_flag`. A file feature's flag (llama.cpp `mmproj`)
-takes only `auto` or `false`, never a path. A pinned run refused for its
-parameters, at restore or on a restart, stays in `zz_runs` as failed and pinned,
-`failure.errors` holding the refusal with each hint chosen by the tier that set
-the key: a configured key is fixed with `zz_params_set`, then `zz_run_restart`;
-a request key, which a restart replays, with `zz_run_start`, corrected
-parameters and `keep-alive: -1`. An inference request for that model is refused
-with the same failure rather than replacing the run. Only `zz_run_stop` drops a
-pin; a run for its key reaching running rewrites it.
+takes only `auto` or `false`, never a path. Each entry's `hint` follows the
+tier that set the key: a request key is fixed in `zz_run_preview` or
+`zz_run_start`, a configured one with `zz_params_set`.
 
 | `code` | Meaning | Recovery |
 |---|---|---|

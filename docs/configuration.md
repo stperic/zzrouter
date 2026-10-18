@@ -226,12 +226,11 @@ Run reports expose `pinned: true` when pinned. A memory refusal remains 409
 `out_of_range`, with `errors[].got.holders[].reclaim_skipped_reason: "pinned"`
 and the holder's run, model and provider. If unpinned holders cannot cover the
 shortfall, nothing stops. Explicit DELETE, Force replacement and restart may stop
-pinned runs; restart replays request overrides. Stop before uninstalling a provider.
+pins; restart replays request overrides. Stop before uninstalling a provider.
 Pinned process runs are recorded on the launching node in `<data dir>/pinned_runs.json`
 (mode 0600) and relaunched once after a node restart, including a self-update. Restore
-replays request overrides and resolves current tiers. A restore or restart refused for its
-parameters stays listed as failed and pinned; other failed restores are forgotten without
-retry. Only an explicit stop forgets a pin; a run for its key reaching running rewrites it. Served engines, disposable runs and install smokes
+replays request overrides and resolves current tiers; failed restores are forgotten without
+retry. Stop the run to forget its pin. Served engines, disposable runs and install smokes
 are excluded. Surviving daemon models can be re-adopted; daemon unloads are not prevented.
 Upgrade every worker before relying on pins: an older worker keeps `-1` as
 idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.

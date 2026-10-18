@@ -1,3 +1,5 @@
+// Package runsettings owns the run-parameter key vocabulary: how a key is
+// spelled (FlagName), the auto value, and the run settings zzRouter reserves.
 package runsettings
 
 import (

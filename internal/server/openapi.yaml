@@ -11698,14 +11698,6 @@ components:
               description: Last diagnostic error lines, at most 8 KiB in total, redacted before retention; request payload and environment dump lines are excluded.
               items: { type: string }
             truncated: { type: boolean }
-            errors:
-              type: array
-              description: |
-                A run refused for its parameters: the same entries the refused launch
-                answered, each with its closed `code` and a `hint` chosen by the tier
-                that set the key. A pinned run kept this way stays listed failed and
-                pinned until a run for its key reaches running or zz_run_stop ends it.
-              items: { $ref: '#/components/schemas/ParamError' }
 
     Provider:
       type: object

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"strings"
 
-	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -299,7 +298,7 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 		}
 	}
 	if replace := prepared.decision.Replace; replace != "" {
-		if err = m.stopInstance(ctx, replace, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) { // a replacement keeps the key's pin
+		if err = m.StopInstance(ctx, replace); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			return result, err
 		}
 	}

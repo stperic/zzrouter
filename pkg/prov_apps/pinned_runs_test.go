@@ -8,18 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
-	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -185,7 +182,7 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 			switch failure {
 			case "disabled provider":
 				require.NoError(t, r.m.appsConfig.UpdateApp("other", func(svc *config.ServiceConfig) error { svc.Enabled = new(false); return nil }))
-			case "before registration": // an endpoint the provider does not serve; no config fix brings it back
+			case "before registration":
 				bad.Endpoint = EndpointReranking
 				seedPins(t, bad, good)
 				r.m.loadPinnedRuns()
@@ -200,12 +197,8 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 			run, exists := r.m.instances.GetByKey(good.Key())
 			require.True(t, exists, "failed restore must not prevent the next entry")
 			awaitRunning(t, run)
-			kept := 1
-			if failure == "after registration" {
-				kept = 2 // its process failed to launch, as a crash ends it: the pin stays for an operator's stop
-			}
-			require.Eventually(t, func() bool { return len(readPins(t)) == kept }, contractWait, time.Millisecond)
-			assert.Equal(t, "good", readPins(t)[kept-1].Model)
+			require.Eventually(t, func() bool { return len(readPins(t)) == 1 }, contractWait, time.Millisecond)
+			assert.Equal(t, "good", readPins(t)[0].Model)
 			r.m.RestorePinnedRuns()
 			r.m.onDemandStarts.Wait()
 			wantAttempts := int32(1)
@@ -213,139 +206,6 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 				wantAttempts++
 			}
 			assert.Equal(t, wantAttempts, r.attempts.Load(), "failed entries are attempted at most once")
-		})
-	}
-}
-
-// A pin refused for its parameters, a key its schema does not declare, is
-// a config an operator can fix. On the direct and the queued launch path the
-// run stays listed failed and pinned, its failure carrying the refusal with
-// a hint by the key's tier, and the record stays through an inference
-// request (refused with that failure, not a replacement) and a restart the
-// config still refuses. A start that runs rewrites the pin; a stop drops it.
-func TestPinnedRestoreKeepsAPinRefusedForItsParameters(t *testing.T) {
-	for _, tc := range []struct{ path, tier, ending string }{
-		{"direct", "configured", "restart"}, {"direct", "configured", "stop"}, {"direct", "configured", "request"},
-		{"direct", "request", "start"}, {"queued", "configured", "restart"}, {"queued", "configured", "stop"},
-	} {
-		t.Run(tc.path+" "+tc.tier+" "+tc.ending, func(t *testing.T) {
-			t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
-			good, bad := pinRequest("good"), pinRequest("bad")
-			if tc.tier == "request" {
-				bad.Parameters["ghost-flag"] = "1"
-			}
-			seedPins(t, good, bad)
-			var opts []Option
-			if tc.path == "queued" {
-				root := t.TempDir()
-				require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 6000' ;;\nesac\n"), 0o700))
-				t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
-				t.Setenv("CUDA_VISIBLE_DEVICES", "0")
-				opts = append(opts, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
-					return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
-				})))
-			}
-			r := newContractRig(t, tc.path == "queued", opts...) // a held good run makes the bad one queue
-			// configure hands the manager a new tree, as a config write does.
-			configure := func(params map[string]string) {
-				next := &config.AppsConfig{}
-				r.m.AppsConfig().RangeApps(func(name string, svc config.ServiceConfig) bool {
-					if name == "generic" {
-						svc.Models = map[string]config.ModelSpec{"bad": {Parameters: params}}
-					}
-					require.NoError(t, next.AddApp(name, svc))
-					return true
-				})
-				r.m.ReloadConfig(next)
-			}
-			if tc.tier == "configured" {
-				configure(map[string]string{"ghost-flag": "1"})
-			}
-			log := capturePinLog(t)
-			r.m.Start(t.Context())
-			r.m.RestorePinnedRuns()
-			if tc.path == "queued" {
-				require.Eventually(t, func() bool {
-					run, listed := r.m.instances.GetByKey(bad.Key())
-					return listed && run.WaitingOn() != ""
-				}, contractWait, time.Millisecond, "the bad pin queues behind the good one")
-				r.ready(t)
-			}
-			listedFailed := func() *instance.Instance {
-				t.Helper()
-				var failed *instance.Instance
-				require.Eventually(t, func() bool {
-					run, listed := r.m.instances.GetByKey(bad.Key())
-					failed = run
-					return listed && run.GetStatus() == instance.StatusFailed
-				}, contractWait, time.Millisecond, "a refused pinned run stays listed")
-				info := failed.ToInfo("")
-				assert.True(t, info.Pinned)
-				require.NotNil(t, info.Failure)
-				require.Len(t, info.Failure.Errors, 1)
-				issue := info.Failure.Errors[0]
-				assert.Equal(t, "ghost-flag", issue.Key)
-				assert.Equal(t, string(httperr.CodeUnknownFlag), issue.Code)
-				if tc.tier == "request" {
-					assert.Contains(t, issue.Hint, "zz_run_start")
-					assert.Contains(t, issue.Hint, "keep-alive -1")
-				} else {
-					assert.Contains(t, issue.Hint, "zz_params_set")
-					assert.Contains(t, issue.Hint, "zz_run_restart")
-				}
-				return failed
-			}
-			refused := listedFailed()
-			if tc.path == "direct" {
-				require.Eventually(t, func() bool {
-					return log.containsAt(slog.LevelError, "Pinned run refused at restore; it stays listed failed and pinned")
-				}, contractWait, time.Millisecond)
-			}
-			pinned := func() []string {
-				var models []string
-				for _, req := range readPins(t) {
-					models = append(models, req.Model)
-				}
-				return models
-			}
-			assert.Equal(t, []string{"good", "bad"}, pinned())
-
-			switch tc.ending {
-			case "stop":
-				require.NoError(t, r.m.StopInstance(t.Context(), refused.ID))
-				assert.Equal(t, []string{"good"}, pinned(), "stopping a refused pinned run unpins it")
-				return
-			case "request":
-				_, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "bad", Origin: OriginRequest})
-				var cause *ParameterError
-				require.ErrorAs(t, err, &cause, "a request is refused with the run's failure")
-				assert.Same(t, refused, listedFailed(), "not replaced")
-				assert.Equal(t, []string{"good", "bad"}, pinned())
-				return
-			case "start":
-				_, err := r.m.RestartInstance(t.Context(), refused.ID)
-				require.ErrorIs(t, err, ErrParameterValidation, "a restart replays the refused request")
-				listedFailed()
-				assert.Equal(t, []string{"good", "bad"}, pinned(), "a refused restart keeps the pin")
-				started, err := r.m.EnsureRun(t.Context(), pinRequest("bad"))
-				require.NoError(t, err)
-				awaitRunning(t, started.Run)
-				require.Eventually(t, func() bool {
-					pins := readPins(t)
-					return len(pins) == 2 && pins[1].Model == "bad" && pins[1].Parameters["ghost-flag"] == ""
-				}, contractWait, time.Millisecond, "the corrected start rewrites the pin")
-				return
-			}
-			_, err := r.m.RestartInstance(t.Context(), refused.ID)
-			require.ErrorIs(t, err, ErrParameterValidation, "the config still refuses it")
-			listedFailed()
-			assert.Equal(t, []string{"good", "bad"}, pinned(), "a refused restart keeps the pin")
-			configure(nil)
-			restarted, err := r.m.RestartInstance(t.Context(), listedFailed().ID)
-			require.NoError(t, err)
-			awaitRunning(t, restarted)
-			assert.True(t, restarted.IdleSnapshot().Pinned)
-			require.Eventually(t, func() bool { return slices.Equal(pinned(), []string{"good", "bad"}) }, contractWait, time.Millisecond)
 		})
 	}
 }
@@ -407,12 +267,11 @@ func (l *pinLog) Handle(_ context.Context, record slog.Record) error {
 }
 func (l *pinLog) WithAttrs([]slog.Attr) slog.Handler { return l }
 func (l *pinLog) WithGroup(string) slog.Handler      { return l }
-func (l *pinLog) contains(message string) bool       { return l.containsAt(slog.LevelWarn, message) }
-func (l *pinLog) containsAt(level slog.Level, message string) bool {
+func (l *pinLog) contains(message string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, r := range l.records {
-		if r.Message == message && r.Level == level {
+		if r.Message == message && r.Level == slog.LevelWarn {
 			return true
 		}
 	}
@@ -520,8 +379,6 @@ func TestPinnedRestoreOnceAndEarlyRun(t *testing.T) {
 	assert.Empty(t, r.m.instances.List(), "restore after Stop does nothing")
 }
 
-// Only an operator's stop forgets a pin; a run that fails or crashes keeps
-// it for the next restore.
 func TestPinnedRestoreTerminalPaths(t *testing.T) {
 	for _, terminal := range []string{"operator", "process", "health", "readiness", "launch"} {
 		t.Run(terminal, func(t *testing.T) {
@@ -547,11 +404,7 @@ func TestPinnedRestoreTerminalPaths(t *testing.T) {
 			case "launch":
 				run.MarkFailedError(errors.New("launch failed"))
 			}
-			if terminal == "operator" {
-				assert.Empty(t, readPins(t), "an operator's stop forgets the pin")
-				return
-			}
-			assert.Len(t, readPins(t), 1, "only an operator's stop forgets a pin: the next restore brings the run back")
+			assert.Empty(t, readPins(t), "every terminal route must forget the pin")
 		})
 	}
 }

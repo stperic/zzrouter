@@ -1,11 +1,9 @@
 package instance
 
 import (
-	"errors"
 	"io"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 
@@ -28,16 +26,8 @@ type FailureInfo struct {
 	Signal    string   `json:"signal,omitempty"`
 	ErrorTail []string `json:"error_tail,omitempty"`
 	Truncated bool     `json:"truncated"`
-	// Errors are a parameter refusal's issues, as the refused request got them.
-	Errors   []utils.ParamError `json:"errors,omitempty"`
-	cause    *httperr.EngineFailure
-	specific bool
-}
-
-// paramRefusal is a failure cause that refused parameters, one issue per key.
-type paramRefusal interface {
-	error
-	ParamIssues() []utils.ParamError
+	cause     *httperr.EngineFailure
+	specific  bool
 }
 
 // MarkFailedWithExit records process exit details without losing an earlier cause.
@@ -74,9 +64,6 @@ func (i *Instance) markFailedWithExit(reason string, cause error, exitCode *int,
 	i.failure.Truncated = i.failure.Truncated || failure.Truncated
 	if cause != nil && i.failureCause == nil {
 		i.failureCause, i.waitingOn = cause, ""
-	}
-	if refusal, refused := errors.AsType[paramRefusal](cause); refused && i.failure.Errors == nil {
-		i.failure.Errors = refusal.ParamIssues()
 	}
 	i.setStatusLocked(StatusFailed)
 	if i.FailedAt.IsZero() {
@@ -124,7 +111,6 @@ func cloneFailure(f *FailureInfo) *FailureInfo {
 	}
 	copy := *f
 	copy.ErrorTail = append([]string(nil), f.ErrorTail...)
-	copy.Errors = slices.Clone(f.Errors)
 	if f.ExitCode != nil {
 		code := *f.ExitCode
 		copy.ExitCode = &code
