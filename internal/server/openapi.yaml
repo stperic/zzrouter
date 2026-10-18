@@ -13106,6 +13106,13 @@ components:
             For an injected model feature or a key whose schema type is `asset`: the content digest of
             the file the value names, so a caller sees which bytes a launch
             gets. Absent for other keys, missing assets, and legacy feature files without a manifest digest.
+        conflicts:
+          type: array
+          description: |
+            Other spellings of this flag (`ctx_size` beside `ctx-size`) that the
+            same map sets to a different value. A launch refuses them with
+            `duplicate_flag`; a PATCH of the flag replaces every spelling.
+          items: { type: string }
 
     AssetInfo:
       type: object
@@ -13843,6 +13850,15 @@ components:
             For `type: bool` only: `false` passes `--no-<flag>`, so it also
             turns off a setting the engine enables by default. Without it,
             `false` leaves the flag unset. The `no-` spelling is not a key.
+        excluded_by:
+          type: array
+          description: |
+            The runtimes that do not take this parameter: the provider's own
+            name for its base runtime, or a feature's runtime with the feature
+            that selects it, such as `mlx-vlm (vision)`. A request setting it
+            for a model that runtime serves is refused with
+            `excluded_by_runtime`; a configured value is dropped.
+          items: { type: string }
         pass:
           type: string
           enum: [path, content]

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -29,6 +30,8 @@ func TestCheckCanonicalStrings(t *testing.T) {
 		{"ctx", "32768", ""},
 		{"ctx", "32768.0", httperr.CodeWrongType},
 		{"ctx", "3.2768e+04", httperr.CodeWrongType},
+		{"ctx", "10000000000000000000", httperr.CodeOutOfRange},
+		{"ctx", "9223372036854775808", httperr.CodeOutOfRange},
 		{"ctx", "auto", ""},
 		{"ctx", "0", httperr.CodeOutOfRange},
 		{"ctx", "1.5", httperr.CodeWrongType},
@@ -88,4 +91,23 @@ func TestCheckEnumBoundsNumbers(t *testing.T) {
 	if assert.NotNil(t, issue) {
 		assert.Equal(t, string(httperr.CodeCoercionFailed), issue.Code)
 	}
+}
+
+// A numeric enum holds its entries as a value is written, so the 1 a
+// request's 1.0 becomes is one of them; an entry that is no number fails.
+func TestMerge_NumericEnumIsCanonical(t *testing.T) {
+	y, err := LoadYAMLSchema([]byte("provider: x\nparameters:\n  scale: {type: float, enum: [0.5, 1.0, 2e0]}\n  rank: {type: int, enum: [8, 16.0]}\n  mode: {type: string, enum: [\"1.0\"]}\n"))
+	require.NoError(t, err)
+	merged, errs := Merge("x", y)
+	require.Empty(t, errs)
+	assert.Equal(t, []string{"0.5", "1", "2"}, merged.Parameters["scale"].Enum)
+	assert.Equal(t, []string{"8", "16"}, merged.Parameters["rank"].Enum)
+	assert.Equal(t, []string{"1.0"}, merged.Parameters["mode"].Enum, "a string enum is compared as written")
+	assert.Nil(t, Check("scale", "1", merged.Parameters))
+
+	y, err = LoadYAMLSchema([]byte("provider: x\nparameters:\n  scale: {type: float, enum: [low]}\n"))
+	require.NoError(t, err)
+	_, errs = Merge("x", y)
+	require.Len(t, errs, 1)
+	assert.ErrorContains(t, errs[0], `enum entry "low" is not a number`)
 }

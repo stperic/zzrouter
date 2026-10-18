@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -35,6 +36,9 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	switch shape.Kind {
 	case ParamInt:
 		n, err := strconv.ParseInt(value, 10, 64)
+		if errors.Is(err, strconv.ErrRange) {
+			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: value, Message: fmt.Sprintf("%s=%s is outside the integer range", key, value)}
+		}
 		if err != nil {
 			return WrongType(key, shape.Kind)
 		}
@@ -66,6 +70,17 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 		return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Message: fmt.Sprintf("%s has schema type %q, which this server cannot validate", key, shape.Kind)}
 	}
 	return nil
+}
+
+// Duplicate refuses spellings of one flag that one map gives different
+// values, one issue per spelling so each can be removed by its own name.
+func Duplicate(spellings []string) []utils.ParamError {
+	message := fmt.Sprintf("%s spell one flag with different values", strings.Join(spellings, " and "))
+	issues := make([]utils.ParamError, len(spellings))
+	for i, key := range spellings {
+		issues[i] = utils.ParamError{Key: key, Code: string(httperr.CodeDuplicateFlag), Message: message}
+	}
+	return issues
 }
 
 // WrongType refuses a value that is not of kind, in the words a caller of

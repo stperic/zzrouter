@@ -198,9 +198,13 @@ func TestIntegralNumbersBecomeIntegerLiterals(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
 	svc, _ := s.appsConfig().LookupApp("llamacpp")
 	assert.Equal(t, "32768", svc.Defaults.Parameters["ctx-size"])
-	code, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx-size": "3.2768e+04"}}})
-	require.Equal(t, http.StatusBadRequest, code, body)
-	assert.Contains(t, body, string(httperr.CodeWrongType))
+	for value, code := range map[string]httperr.ParamErrorCode{"3.5": httperr.CodeWrongType, "1e19": httperr.CodeOutOfRange} {
+		resp := makeAuthRequest(t, s, http.MethodPatch, apipath.ProviderParameters("llamacpp"), TestAdminKey, json.RawMessage(`{"defaults":{"parameters":{"ctx-size":`+value+`}}}`))
+		require.Equal(t, http.StatusBadRequest, resp.Code, string(resp.Body))
+		problem := runParameterProblem(t, resp.Body)
+		require.Len(t, problem.Errors, 1, value)
+		assert.Equal(t, string(code), problem.Errors[0].Code, "a JSON number the int parser refuses: %s", value)
+	}
 
 	w := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx-size":1e6}}`))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -212,6 +216,73 @@ func TestIntegralNumbersBecomeIntegerLiterals(t *testing.T) {
 	w = assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx-size":"3.2768e+04"}}`))
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	assert.Equal(t, string(httperr.CodeWrongType), runParameterProblem(t, w.Body.Bytes()).Code)
+}
+
+// A PATCH addresses a flag, whatever spelling stored it: it validates
+// ctx_size as ctx-size, stores the flag name in place of every spelling, and
+// a null removes them all, so no write leaves a launch refusing
+// duplicate_flag. Two spellings in one patched map are refused, each by name.
+func TestPatchAddressesTheFlag(t *testing.T) {
+	s := variantNode(t)
+	store := func(params map[string]string) {
+		require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(svc *config.ServiceConfig) error {
+			defaults := *svc.Defaults
+			defaults.Parameters = params
+			svc.Defaults = &defaults
+			return nil
+		}))
+	}
+	stored := func() map[string]string {
+		svc, _ := s.appsConfig().LookupApp("llamacpp")
+		return svc.Defaults.Parameters
+	}
+	preview := func() int {
+		return assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp"}`)).Code
+	}
+
+	store(map[string]string{"ctx_size": "8192"})
+	code, body := patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx_size": 8192}}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, map[string]string{"ctx-size": "8192"}, stored())
+
+	store(map[string]string{"ctx_size": "8192"})
+	code, body = patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx-size": 4096}}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Equal(t, map[string]string{"ctx-size": "4096"}, stored())
+	assert.Equal(t, http.StatusOK, preview())
+
+	store(map[string]string{"ctx_size": "1", "ctx-size": "2"})
+	assert.Equal(t, []string{"ctx_size"}, resolvedFor(t, s, "llamacpp", qwenModel).Parameters["ctx-size"].Conflicts, "the view shows what a launch refuses")
+	assert.Equal(t, http.StatusBadRequest, preview())
+	code, body = patchParams(t, s, map[string]any{"defaults": map[string]any{"parameters": map[string]any{"ctx-size": nil}}})
+	require.Equal(t, http.StatusOK, code, body)
+	assert.Empty(t, stored())
+
+	resp := makeAuthRequest(t, s, http.MethodPatch, apipath.ProviderParameters("llamacpp"), TestAdminKey, json.RawMessage(`{"defaults":{"parameters":{"ctx_size":1024,"ctx-size":2048}}}`))
+	require.Equal(t, http.StatusBadRequest, resp.Code, string(resp.Body))
+	problem := runParameterProblem(t, resp.Body)
+	require.Len(t, problem.Errors, 2)
+	for i, key := range []string{"ctx-size", "ctx_size"} {
+		assert.Equal(t, key, problem.Errors[i].Key)
+		assert.Equal(t, string(httperr.CodeDuplicateFlag), problem.Errors[i].Code)
+	}
+}
+
+// zz_params_get accepts names, on each parameter a runtime lacks, the
+// runtimes that refuse it with excluded_by_runtime and the feature that
+// selects each, as one runtime serves several features.
+func TestSchemaNamesTheRuntimesThatExcludeAParameter(t *testing.T) {
+	s, _ := assetTestNode(t)
+	w := assetRequest(t, s, http.MethodGet, apipath.ProviderSchema("mlx"), nil)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var declared schemaResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &declared))
+	assert.Equal(t, []string{"mlx-vlm (embeddings)", "mlx-vlm (reranking)", "mlx-vlm (vision)"}, declared.Parameters["temp"].ExcludedBy)
+	assert.Equal(t, []string{"mlx-vlm (embeddings)", "mlx-vlm (reranking)"}, declared.Parameters["max-tokens"].ExcludedBy, "mlx_vlm serving a vision model takes max-tokens")
+	svc, _ := s.appsConfig().LookupApp("mlx")
+	assert.Equal(t, []string{svc.Name}, declared.Parameters["kv-bits"].ExcludedBy, "the base runtime by the provider's name")
+	assert.Empty(t, declared.Parameters["trust-remote-code"].ExcludedBy)
+	require.Contains(t, declared.Parameters, "trust-remote-code")
 }
 
 // A served daemon owning its model settings is the remedy for a key it

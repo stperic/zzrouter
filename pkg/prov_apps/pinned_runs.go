@@ -3,6 +3,7 @@ package prov_apps
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -71,9 +72,21 @@ func (s *pinnedRuns) update(req EnsureRequest, pinned bool) {
 	}
 }
 
-// keepsPin reports whether a run refused with err keeps its pin record: a
-// refusal for its parameters is a config an operator can fix.
-func keepsPin(err error) bool { return errors.Is(err, ErrParameterValidation) }
+// keepsPin reports whether a run that failed with cause keeps its pin
+// record: one refused for its parameters, which a config fix resolves.
+func keepsPin(cause error) bool {
+	var refused *ParameterError
+	return errors.As(cause, &refused)
+}
+
+// keptRestore reports whether err refuses restoring req for its parameters:
+// such a run stays listed failed and pinned, and why names the way back.
+func keptRestore(req EnsureRequest, err error) (kept bool, why error) {
+	if req.Origin != OriginRestore || !keepsPin(err) {
+		return false, err
+	}
+	return true, fmt.Errorf("%w; the pin is kept: fix a configured key with zz_params_set, then zz_run_restart this run, or zz_run_start the model with corrected parameters", err)
+}
 
 // RestorePinnedRuns replays each recorded request once within the manager's start drain.
 func (m *ProviderAppManager) RestorePinnedRuns() {
@@ -97,8 +110,7 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 					return
 				}
 				if keepsPin(err) {
-					// Nothing but this log reports the refusal; the record waits for the config fix.
-					slog.Error("Pinned run refused at restore; its pin is kept", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
+					slog.Error("Pinned run refused at restore; it stays listed failed and pinned", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
 					continue
 				}
 				if err != nil {
@@ -106,7 +118,7 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 					m.pins.update(req, false)
 					continue
 				}
-				slog.Info("restored pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "origin", "restore")
+				slog.Info("restoring pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "origin", "restore")
 			}
 		}()
 	})

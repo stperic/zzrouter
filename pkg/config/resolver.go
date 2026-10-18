@@ -160,6 +160,23 @@ func LayParameters(dst map[string]ResolvedValue, params map[string]string, src R
 	}
 }
 
+// SetParameter stores value under key's flag name in params and removes the
+// flag's other spellings, so a write leaves one; it returns params,
+// allocated when nil.
+func SetParameter(params map[string]string, key, value string) map[string]string {
+	DeleteParameter(params, key)
+	if params == nil {
+		params = make(map[string]string, 1)
+	}
+	params[FlagName(key)] = value
+	return params
+}
+
+// DeleteParameter removes every spelling of key's flag from params.
+func DeleteParameter(params map[string]string, key string) {
+	maps.DeleteFunc(params, func(stored, _ string) bool { return FlagName(stored) == FlagName(key) })
+}
+
 // patternIfNot is key unless key is the model's own name, which needs no
 // separate mention in provenance.
 func patternIfNot(key, model string) string {

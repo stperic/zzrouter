@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 )
 
 // ParameterValues accepts JSON scalars at request boundaries and keeps canonical strings.
@@ -43,8 +44,8 @@ func (p *ParameterValues) UnmarshalJSON(data []byte) error {
 
 // Canonical is the string a JSON scalar becomes as a parameter value: a
 // string as itself, a boolean as its literal, a number as written unless it
-// is integral and fits an int64, which becomes an integer literal so 1e6
-// reaches an engine as 1000000. ok is false for null, objects and arrays.
+// is integral, which becomes an integer literal so 1e6 reaches an engine as
+// 1000000. ok is false for null, objects and arrays.
 func Canonical(raw json.RawMessage) (value string, ok bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -58,10 +59,28 @@ func Canonical(raw json.RawMessage) (value string, ok bool) {
 	case bool:
 		return strconv.FormatBool(decoded), true
 	case json.Number:
-		if n, parsed := new(big.Rat).SetString(decoded.String()); parsed && n.IsInt() && n.Num().IsInt64() {
-			return n.Num().String(), true
-		}
-		return decoded.String(), true
+		return integerLiteral(decoded.String()), true
 	}
 	return "", false
+}
+
+// literalBound caps the length and exponent of a number integerLiteral
+// rewrites, which keeps big.Rat off 1e999999; no engine's integer needs more.
+const literalBound = 80
+
+// integerLiteral writes an integral number literal as an integer literal and
+// keeps any other as written.
+func integerLiteral(literal string) string {
+	if !strings.ContainsAny(literal, ".eE") || len(literal) > literalBound {
+		return literal
+	}
+	if _, exponent, found := strings.Cut(strings.ToLower(literal), "e"); found {
+		if e, err := strconv.Atoi(exponent); err != nil || e > literalBound || e < -literalBound {
+			return literal
+		}
+	}
+	if n, parsed := new(big.Rat).SetString(literal); parsed && n.IsInt() {
+		return n.Num().String()
+	}
+	return literal
 }

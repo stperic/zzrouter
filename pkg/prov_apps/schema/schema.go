@@ -1,12 +1,14 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"maps"
 	"path"
 	"regexp"
+	"strconv"
 
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 
@@ -199,6 +201,11 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if len(out.Enum) == 0 {
 		out.Enum = yp.Enum
 	}
+	enum, err := canonicalEnum(out.Kind, out.Enum)
+	if err != nil {
+		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
+	}
+	out.Enum = enum
 	pass, err := parsePass(yp.Pass, out.Kind)
 	if err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
@@ -224,6 +231,23 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 		if err != nil {
 			return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 		}
+	}
+	return out, nil
+}
+
+// canonicalEnum writes a numeric kind's entries as a value is written
+// (Canonical), so a float enum's 1.0 matches the 1 a request's 1.0 becomes.
+func canonicalEnum(kind ParamKind, enum []string) ([]string, error) {
+	if kind != ParamInt && kind != ParamFloat {
+		return enum, nil
+	}
+	out := make([]string, len(enum))
+	for i, entry := range enum {
+		value, ok := Canonical(json.RawMessage(entry))
+		if _, err := strconv.ParseFloat(value, 64); !ok || err != nil {
+			return nil, fmt.Errorf("enum entry %q is not a number", entry)
+		}
+		out[i] = value
 	}
 	return out, nil
 }

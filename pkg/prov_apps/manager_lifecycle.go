@@ -59,6 +59,11 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 		}
 	}
 	run, err := m.admitRun(ctx, inst, req, selection, declared)
+	if kept, why := keptRestore(req, err); kept {
+		inst.MarkFailedError(why) // listed failed and pinned, as a refused queued run is, until restarted or stopped
+		m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, why))
+		return nil, why
+	}
 	if err != nil {
 		m.releaseRun(inst, err)
 		return nil, err
@@ -148,7 +153,7 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 		saved.keyEndpoint = Endpoint(inst.Endpoint)
 		// Every transition passes setStatusLocked; the store writes only when a pin is added or dropped.
 		inst.CommitStatus = func(status instance.Status, pinned bool, cause error) {
-			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() && !keepsPin(cause) {
+			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() && (status != instance.StatusFailed || !keepsPin(cause)) {
 				m.pins.update(saved, status == instance.StatusRunning && pinned)
 			}
 		}
@@ -361,6 +366,7 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req EnsureR
 			}
 			return
 		case err != nil:
+			_, err = keptRestore(req, err)
 			inst.MarkFailedError(err)
 			m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 			return

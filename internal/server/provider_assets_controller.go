@@ -224,7 +224,7 @@ func assetRefs(cfg *pkgConfig.ServiceConfig, sch *schema.ProviderSchema) []asset
 	for _, site := range cfg.ParameterSites() {
 		shapes := sch.ForEndpoint(site.Endpoint)
 		for _, key := range slices.Sorted(maps.Keys(site.Parameters)) {
-			if shapes[key].Kind == schema.ParamAsset && !pkgConfig.IsAuto(site.Parameters[key]) {
+			if shapes[pkgConfig.FlagName(key)].Kind == schema.ParamAsset && !pkgConfig.IsAuto(site.Parameters[key]) {
 				refs = append(refs, assetRef{Path: site.Path + "." + key, Name: site.Parameters[key]})
 			}
 		}

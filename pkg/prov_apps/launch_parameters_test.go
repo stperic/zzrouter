@@ -137,9 +137,14 @@ func TestLaunchKeysParametersByFlag(t *testing.T) {
 	refused := requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"context_length": "32768"}), "context_length", httperr.CodeUnknownFlag)
 	assert.Contains(t, refused.Issues[0].Message, "request tier")
 	for range 50 {
-		refused = requireRefused(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "1", "ctx-size": "2"}), "ctx-size", httperr.CodeDuplicateFlag)
-		assert.Contains(t, refused.Issues[0].Message, "ctx-size and ctx_size")
-		assert.Contains(t, refused.Issues[0].Message, "request tier")
+		require.ErrorAs(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "1", "ctx-size": "2"}), &refused)
+		require.Len(t, refused.Issues, 2, "one entry per spelling, so each can be removed by name")
+		for i, key := range []string{"ctx-size", "ctx_size"} {
+			assert.Equal(t, key, refused.Issues[i].Key)
+			assert.Equal(t, string(httperr.CodeDuplicateFlag), refused.Issues[i].Code)
+			assert.Contains(t, refused.Issues[i].Message, "ctx-size and ctx_size")
+			assert.Contains(t, refused.Issues[i].Message, "request tier")
+		}
 	}
 	require.NoError(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "2", "ctx-size": "2"}))
 }
@@ -229,4 +234,25 @@ func TestServedRunRefusesParametersItCannotPass(t *testing.T) {
 	_, err = r.m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"num-ctx": "4096"}}, 0)
 	requireRefused(t, err, "num-ctx", httperr.CodeUnknownFlag)
 	r.running(t, EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}})
+}
+
+// A served run reads its run settings from the configured tiers, so they
+// meet the launch check there: two spellings of keep-alive that disagree
+// are refused, not settled by sort order.
+func TestServedRunChecksTheRunSettingsItReads(t *testing.T) {
+	r := newServedRig(t)
+	r.edit(t, func(svc *config.ServiceConfig) {
+		svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"keep_alive": "5m", "keep-alive": "10m"}}
+	})
+	_, err := r.m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "ollama", Model: "p"}, 0)
+	var refused *ParameterError
+	require.ErrorAs(t, err, &refused)
+	require.Len(t, refused.Issues, 2)
+	for i, key := range []string{"keep-alive", "keep_alive"} {
+		assert.Equal(t, key, refused.Issues[i].Key)
+		assert.Equal(t, string(httperr.CodeDuplicateFlag), refused.Issues[i].Code)
+		assert.Contains(t, refused.Issues[i].Message, "default tier")
+	}
+	_, err = r.m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "ollama", Model: "p", Parameters: map[string]string{"keep-alive": "-1"}}, 0)
+	require.NoError(t, err, "the request's keep-alive settles it")
 }

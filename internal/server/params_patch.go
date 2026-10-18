@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -118,6 +120,9 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 				errs = append(errs, *e)
 			}
 		}
+		if !isEnv {
+			errs = append(errs, duplicateSpellings(pp)...)
+		}
 	}
 	checkEndpoints := func(eps map[string]*endpointPatch) {
 		// Endpoint overlay parameters look up the per-endpoint schema first
@@ -133,6 +138,7 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 					errs = append(errs, *e)
 				}
 			}
+			errs = append(errs, duplicateSpellings(ep.Parameters)...)
 			for k, raw := range ep.Environment {
 				if e := validateLeaf(k, raw, true, flat); e != nil {
 					errs = append(errs, *e)
@@ -272,13 +278,36 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 		}
 		return nil
 	}
-	if shape, known := sch[key]; known {
+	flag := pkgConfig.FlagName(key) // a write addresses the flag, whatever spelling stored it
+	if shape, known := sch[flag]; known {
 		if e := checkJSONType(key, raw, shape); e != nil {
 			return e
 		}
 	}
 	value, _ := schema.Canonical(raw) // a non-scalar failed checkJSONType, or is undeclared and Check refuses it
-	return schema.Check(key, value, sch)
+	if e := schema.Check(flag, value, sch); e != nil {
+		e.Key = key
+		return e
+	}
+	return nil
+}
+
+// duplicateSpellings refuses two spellings of one flag that one patched map
+// sets to different JSON values: which the write keeps is the caller's to say.
+func duplicateSpellings(pp map[string]json.RawMessage) []utils.ParamError {
+	sent := make(map[string]string, len(pp))
+	for key, raw := range pp {
+		sent[key] = string(raw)
+	}
+	laid := make(map[string]pkgConfig.ResolvedValue, len(sent))
+	pkgConfig.LayParameters(laid, sent, pkgConfig.ResolvedValue{})
+	var errs []utils.ParamError
+	for _, flag := range slices.Sorted(maps.Keys(laid)) {
+		if at := laid[flag]; len(at.Conflicts) > 0 {
+			errs = append(errs, schema.Duplicate(append([]string{at.Key}, at.Conflicts...))...)
+		}
+	}
+	return errs
 }
 
 // checkJSONType holds a persisted value to its JSON type: a number for int

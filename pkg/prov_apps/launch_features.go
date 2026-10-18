@@ -347,21 +347,23 @@ func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[
 	for _, key := range slices.Sorted(maps.Keys(params)) {
 		at := resolved[key]
 		shape, declared := shapes[key]
-		var issue *utils.ParamError
+		var found []utils.ParamError
 		switch {
 		case len(at.Conflicts) > 0:
-			issue = &utils.ParamError{Code: string(httperr.CodeDuplicateFlag), Message: fmt.Sprintf("%s spell one flag with different values", strings.Join(append([]string{at.Key}, at.Conflicts...), " and "))}
+			found = schema.Duplicate(append([]string{at.Key}, at.Conflicts...))
 		case declared && dropsAuto(key, params[key], shape):
 			continue
 		case declared && slices.Contains(excluded, key):
-			issue = &utils.ParamError{Code: string(httperr.CodeExcludedByRuntime), Message: fmt.Sprintf("runtime %s does not take %s", runtime, key)}
+			found = []utils.ParamError{{Key: at.Key, Code: string(httperr.CodeExcludedByRuntime), Message: fmt.Sprintf("runtime %s does not take %s", runtime, key)}}
 		default:
-			issue = schema.Check(key, params[key], shapes)
+			if issue := schema.Check(key, params[key], shapes); issue != nil {
+				issue.Key = at.Key
+				found = []utils.ParamError{*issue}
+			}
 		}
-		if issue != nil {
-			issue.Key = at.Key
+		for _, issue := range found {
 			issue.Message += fmt.Sprintf(" (%s tier, runtime %s)", at.Tier, runtime)
-			issues = append(issues, *issue)
+			issues = append(issues, issue)
 		}
 	}
 	if issues == nil {
