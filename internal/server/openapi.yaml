@@ -11698,6 +11698,14 @@ components:
               description: Last diagnostic error lines, at most 8 KiB in total, redacted before retention; request payload and environment dump lines are excluded.
               items: { type: string }
             truncated: { type: boolean }
+            errors:
+              type: array
+              description: |
+                A run refused for its parameters: the same entries the refused launch
+                answered, each with its closed `code` and a `hint` chosen by the tier
+                that set the key. A pinned run kept this way stays listed failed and
+                pinned until a run for its key reaches running or zz_run_stop ends it.
+              items: { $ref: '#/components/schemas/ParamError' }
 
     Provider:
       type: object
@@ -13853,12 +13861,15 @@ components:
         excluded_by:
           type: array
           description: |
-            The runtimes that do not take this parameter: the provider's own
-            name for its base runtime, or a feature's runtime with the feature
-            that selects it, such as `mlx-vlm (vision)`. A request setting it
+            The runtimes that do not take this parameter. A request setting it
             for a model that runtime serves is refused with
             `excluded_by_runtime`; a configured value is dropped.
-          items: { type: string }
+          items:
+            type: object
+            required: [runtime]
+            properties:
+              runtime: { type: string, description: "The runtime, named as excluded_by_runtime names it: the provider's name for its base runtime." }
+              feature: { type: string, description: The model feature that selects this runtime; absent for the base runtime. }
         pass:
           type: string
           enum: [path, content]

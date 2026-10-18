@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 )
 
 // TestResolveEndpoint covers the 8 merge points: each of the 4 tiers
@@ -62,7 +64,7 @@ func TestResolveEndpoint_AllTiersOverlay(t *testing.T) {
 		{"k_nm_ov", "nm_ov", TierNodeModel, "embeddings"},
 	}
 	for _, tc := range cases {
-		rv, ok := got.Parameters[FlagName(tc.key)]
+		rv, ok := got.Parameters[runsettings.FlagName(tc.key)]
 		assert.True(t, ok, "missing key %q", tc.key)
 		assert.Equal(t, tc.key, rv.Key, "a resolved value keeps the key as stored")
 		assert.Equal(t, tc.want, rv.Value, "value for %q", tc.key)

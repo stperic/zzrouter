@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -139,6 +140,7 @@ func TestLaunchKeysParametersByFlag(t *testing.T) {
 	for range 50 {
 		require.ErrorAs(t, resolveEngine(t, m, "m", EndpointChat, map[string]string{"ctx_size": "1", "ctx-size": "2"}), &refused)
 		require.Len(t, refused.Issues, 2, "one entry per spelling, so each can be removed by name")
+		assert.Equal(t, 1, strings.Count(refused.Error(), "spell one flag"), "the summary states it once")
 		for i, key := range []string{"ctx-size", "ctx_size"} {
 			assert.Equal(t, key, refused.Issues[i].Key)
 			assert.Equal(t, string(httperr.CodeDuplicateFlag), refused.Issues[i].Code)

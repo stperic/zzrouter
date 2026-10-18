@@ -3,7 +3,6 @@ package prov_apps
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -72,20 +72,35 @@ func (s *pinnedRuns) update(req EnsureRequest, pinned bool) {
 	}
 }
 
-// keepsPin reports whether a run that failed with cause keeps its pin
-// record: one refused for its parameters, which a config fix resolves.
-func keepsPin(cause error) bool {
-	var refused *ParameterError
-	return errors.As(cause, &refused)
+// has reports whether a pin is recorded for key.
+func (s *pinnedRuns) has(key instance.Key) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.ContainsFunc(s.Runs, func(r EnsureRequest) bool { return r.Key() == key })
 }
 
-// keptRestore reports whether err refuses restoring req for its parameters:
-// such a run stays listed failed and pinned, and why names the way back.
-func keptRestore(req EnsureRequest, err error) (kept bool, why error) {
-	if req.Origin != OriginRestore || !keepsPin(err) {
-		return false, err
+// pinRecord is what a pin records for inst: its request, keyed as the run is.
+func pinRecord(inst *instance.Instance) EnsureRequest {
+	saved := restartRequest(inst)
+	saved.keyEndpoint = Endpoint(inst.Endpoint)
+	return saved
+}
+
+// markKept marks err kept when it refuses req's parameters while a pin is
+// recorded for its key: the run then stays listed failed and pinned.
+func (m *ProviderAppManager) markKept(req EnsureRequest, err error) bool {
+	var refused *ParameterError
+	if !errors.As(err, &refused) || !m.pins.has(req.Key()) {
+		return false
 	}
-	return true, fmt.Errorf("%w; the pin is kept: fix a configured key with zz_params_set, then zz_run_restart this run, or zz_run_start the model with corrected parameters", err)
+	refused.Kept = true
+	return true
+}
+
+// keptPin reports whether err refused a pinned run that kept its pin.
+func keptPin(err error) bool {
+	var refused *ParameterError
+	return errors.As(err, &refused) && refused.Kept
 }
 
 // RestorePinnedRuns replays each recorded request once within the manager's start drain.
@@ -109,7 +124,7 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 				if ctx.Err() != nil {
 					return
 				}
-				if keepsPin(err) {
+				if keptPin(err) {
 					slog.Error("Pinned run refused at restore; it stays listed failed and pinned", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
 					continue
 				}

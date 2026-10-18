@@ -387,7 +387,14 @@ type schemaParamDTO struct {
 	// Negatable says false passes --no-<flag> rather than leaving it unset.
 	Negatable bool `json:"negatable,omitempty"`
 	// ExcludedBy names the runtimes that do not take the parameter.
-	ExcludedBy []string `json:"excluded_by,omitempty"`
+	ExcludedBy []exclusionDTO `json:"excluded_by,omitempty"`
+}
+
+// exclusionDTO is a runtime that does not take a parameter, with the feature
+// that selects it; the base runtime has none and is named as the provider.
+type exclusionDTO struct {
+	Runtime string `json:"runtime"`
+	Feature string `json:"feature,omitempty"`
 }
 
 type endpointSchemaDTO struct {
@@ -436,20 +443,22 @@ func (e *ParamsExecutor) HandleSchema(c *gin.Context) {
 }
 
 // markExclusions names on each parameter the runtimes that do not take it,
-// as excluded_by_runtime names them: the base runtime by the provider's name,
-// a feature's runtime with the feature that selects it, since one runtime can
-// serve several features with different exclusions.
+// as excluded_by_runtime names them, each with the feature that selects it:
+// one runtime can serve several features with different exclusions.
 func markExclusions(cfg *pkgConfig.ServiceConfig, params map[string]schemaParamDTO) {
-	exclusions := map[string][]string{}
+	exclusions := map[exclusionDTO][]string{}
 	if cfg.Runtime != nil {
-		exclusions[cfg.Name] = cfg.Runtime.ExcludeParameters
+		exclusions[exclusionDTO{Runtime: cfg.Name}] = cfg.Runtime.ExcludeParameters
 	}
 	for name, feature := range cfg.Features {
 		if feature.Runtime != "" {
-			exclusions[feature.Runtime+" ("+name+")"] = feature.ExcludeParameters
+			exclusions[exclusionDTO{Runtime: feature.Runtime, Feature: name}] = feature.ExcludeParameters
 		}
 	}
-	for _, runtime := range slices.Sorted(maps.Keys(exclusions)) {
+	by := slices.SortedFunc(maps.Keys(exclusions), func(a, b exclusionDTO) int {
+		return cmp.Or(cmp.Compare(a.Runtime, b.Runtime), cmp.Compare(a.Feature, b.Feature))
+	})
+	for _, runtime := range by {
 		for _, key := range exclusions[runtime] {
 			if dto, declared := params[key]; declared {
 				dto.ExcludedBy = append(dto.ExcludedBy, runtime)

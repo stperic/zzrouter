@@ -396,7 +396,7 @@ type ResolvedValue struct {
 	// own name: a glob.
 	Pattern  string `json:"pattern,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"` // non-empty when supplied by an endpoints[E] overlay
-	// Key is the name as stored or sent; a parameter is mapped by its FlagName.
+	// Key is the name as stored or sent; a parameter is mapped by its runsettings.FlagName.
 	Key string `json:"-"`
 	// Conflicts are the other spellings of the flag in Key's map, with other values.
 	Conflicts []string `json:"-"`

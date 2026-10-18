@@ -32,6 +32,8 @@ func TestCheckCanonicalStrings(t *testing.T) {
 		{"ctx", "3.2768e+04", httperr.CodeWrongType},
 		{"ctx", "10000000000000000000", httperr.CodeOutOfRange},
 		{"ctx", "9223372036854775808", httperr.CodeOutOfRange},
+		{"ctx", "1e81", httperr.CodeOutOfRange},
+		{"ctx", "-1e999999", httperr.CodeOutOfRange},
 		{"ctx", "auto", ""},
 		{"ctx", "0", httperr.CodeOutOfRange},
 		{"ctx", "1.5", httperr.CodeWrongType},

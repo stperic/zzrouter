@@ -2,6 +2,7 @@ package runsettings
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,12 @@ const (
 
 // Auto is the reserved value asking zzRouter to choose a parameter's value.
 const Auto = "auto"
+
+// FlagName is how argv spells a parameter key, after "--": parameter_name
+// and parameter-name are one flag, which every merge, write and check keys by.
+func FlagName(key string) string {
+	return strings.ReplaceAll(key, "_", "-")
+}
 
 // Settings is one launch's idle and memory-pressure policy.
 type Settings struct {

@@ -116,6 +116,8 @@ func TestRunParametersRefuseUndeclaredContextLength(t *testing.T) {
 			assert.Equal(t, "context_length", issue.Key)
 			assert.Equal(t, string(httperr.CodeUnknownFlag), issue.Code)
 			assert.Contains(t, issue.Message, "request")
+			assert.Contains(t, issue.Message, `"context_length"`, "the message names the key as sent")
+			assert.NotContains(t, problem.Detail, "context-length")
 			assert.Contains(t, issue.Hint, "ctx-size")
 			assert.Contains(t, issue.Hint, "zz_params_get")
 			assert.NotContains(t, w.Body.String(), "--context-length")
@@ -131,6 +133,8 @@ func TestRunParametersRefuseUndeclaredContextLength(t *testing.T) {
 	issue := structured["errors"].([]any)[0].(map[string]any)
 	assert.Equal(t, "context_length", issue["key"])
 	assert.Contains(t, issue["hint"], "ctx-size")
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	assert.Equal(t, 1, strings.Count(text, "Its context length parameter is ctx-size."), "the text carries the hint once: %s", text)
 }
 
 // Values meet the same rules PATCH holds a persisted value to, and a key
@@ -266,6 +270,11 @@ func TestPatchAddressesTheFlag(t *testing.T) {
 		assert.Equal(t, key, problem.Errors[i].Key)
 		assert.Equal(t, string(httperr.CodeDuplicateFlag), problem.Errors[i].Code)
 	}
+	assert.Equal(t, 1, strings.Count(problem.Detail, "spell one flag"), "the detail states it once: %s", problem.Detail)
+
+	resp = makeAuthRequest(t, s, http.MethodPatch, apipath.ProviderParameters("llamacpp"), TestAdminKey, json.RawMessage(`{"defaults":{"parameters":{"ctx_size":1000,"ctx-size":1e3}}}`))
+	require.Equal(t, http.StatusOK, resp.Code, "spellings that store one value agree: %s", resp.Body)
+	assert.Equal(t, map[string]string{"ctx-size": "1000"}, stored())
 }
 
 // zz_params_get accepts names, on each parameter a runtime lacks, the
@@ -277,12 +286,25 @@ func TestSchemaNamesTheRuntimesThatExcludeAParameter(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var declared schemaResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &declared))
-	assert.Equal(t, []string{"mlx-vlm (embeddings)", "mlx-vlm (reranking)", "mlx-vlm (vision)"}, declared.Parameters["temp"].ExcludedBy)
-	assert.Equal(t, []string{"mlx-vlm (embeddings)", "mlx-vlm (reranking)"}, declared.Parameters["max-tokens"].ExcludedBy, "mlx_vlm serving a vision model takes max-tokens")
-	svc, _ := s.appsConfig().LookupApp("mlx")
-	assert.Equal(t, []string{svc.Name}, declared.Parameters["kv-bits"].ExcludedBy, "the base runtime by the provider's name")
+	vlm := func(features ...string) []exclusionDTO {
+		var out []exclusionDTO
+		for _, feature := range features {
+			out = append(out, exclusionDTO{Runtime: "mlx-vlm", Feature: feature})
+		}
+		return out
+	}
+	assert.Equal(t, vlm("embeddings", "reranking", "vision"), declared.Parameters["temp"].ExcludedBy)
+	assert.Equal(t, vlm("embeddings", "reranking"), declared.Parameters["max-tokens"].ExcludedBy, "mlx_vlm serving a vision model takes max-tokens")
 	assert.Empty(t, declared.Parameters["trust-remote-code"].ExcludedBy)
 	require.Contains(t, declared.Parameters, "trust-remote-code")
+	var wire struct {
+		Parameters map[string]struct {
+			ExcludedBy []map[string]string `json:"excluded_by"`
+		} `json:"parameters"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &wire))
+	svc, _ := s.appsConfig().LookupApp("mlx")
+	assert.Equal(t, []map[string]string{{"runtime": svc.Name}}, wire.Parameters["kv-bits"].ExcludedBy, "the base runtime is named as the provider, with no feature")
 }
 
 // A served daemon owning its model settings is the remedy for a key it

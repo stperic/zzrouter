@@ -109,7 +109,7 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {
 				t.Helper()
 				server, _ := assetTestNode(t)
-				require.NoError(t, server.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+				setLlamacppDefault(t, server, "chat-template-file", "t.jinja")
 				c, rec := testGinContext(http.MethodDelete, apipath.ProviderAsset("llamacpp", "t.jinja"))
 				c.Params = gin.Params{{Key: "name", Value: "llamacpp"}, {Key: "asset", Value: "t.jinja"}}
 				NewProviderAssetsController(server.configStore).Delete(c)

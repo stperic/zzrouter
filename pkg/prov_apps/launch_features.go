@@ -310,7 +310,10 @@ type ParameterError struct {
 	ContextParameter string
 	// Served marks a provider whose daemon owns its model settings.
 	Served bool
+	// Kept marks the refusal of a pinned run that keeps its pin, listed failed.
+	Kept   bool
 	Issues []utils.ParamError
+	tiers  []config.Tier // the tier that set each issue's key
 }
 
 func (e *ParameterError) Error() string {
@@ -318,7 +321,39 @@ func (e *ParameterError) Error() string {
 	for i, issue := range e.Issues {
 		messages[i] = issue.Message
 	}
-	return fmt.Sprintf("provider %s refuses %s", e.Provider, strings.Join(messages, "; "))
+	return fmt.Sprintf("provider %s refuses %s", e.Provider, strings.Join(slices.Compact(messages), "; "))
+}
+
+// ParamIssues is each issue with what to do about it, chosen by the tier
+// that set its key: a request's is fixed in the request, which a restart
+// replays, a configured one with zz_params_set.
+func (e *ParameterError) ParamIssues() []utils.ParamError {
+	issues := slices.Clone(e.Issues)
+	for i := range issues {
+		issues[i].Hint = e.hint(issues[i].Code, i < len(e.tiers) && e.tiers[i] == config.TierRequest)
+	}
+	return issues
+}
+
+func (e *ParameterError) hint(code string, requested bool) string {
+	if e.Served && code == string(httperr.CodeUnknownFlag) {
+		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", e.Provider)
+	}
+	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
+	switch {
+	case requested && e.Kept:
+		hint += "; zz_run_restart would replay this request, so zz_run_start the model with corrected parameters and keep-alive -1 to keep its pin."
+	case requested:
+		hint += ", and fix the key in zz_run_preview or zz_run_start."
+	case e.Kept:
+		hint += ", fix the key with zz_params_set (null removes it), then zz_run_restart this run to keep its pin."
+	default:
+		hint += ", and fix the key with zz_params_set (null removes it)."
+	}
+	if e.ContextParameter != "" && !e.Served {
+		hint += fmt.Sprintf(" Its context length parameter is %s.", e.ContextParameter)
+	}
+	return hint
 }
 
 // dropExcluded drops the configured parameters svc's runtime excludes, a
@@ -343,7 +378,7 @@ func dropExcluded(svc config.ServiceConfig, resolved map[string]config.ResolvedV
 // for nothing.
 func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[string]schema.ParamShape, excluded []string, resolved map[string]config.ResolvedValue) error {
 	params := config.FlattenParameters(resolved)
-	var issues []utils.ParamError
+	refused := &ParameterError{Provider: svc.Name, ContextParameter: svc.GetContextParam(), Served: Lifecycle(svc) == LifecycleServed}
 	for _, key := range slices.Sorted(maps.Keys(params)) {
 		at := resolved[key]
 		shape, declared := shapes[key]
@@ -354,22 +389,21 @@ func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[
 		case declared && dropsAuto(key, params[key], shape):
 			continue
 		case declared && slices.Contains(excluded, key):
-			found = []utils.ParamError{{Key: at.Key, Code: string(httperr.CodeExcludedByRuntime), Message: fmt.Sprintf("runtime %s does not take %s", runtime, key)}}
+			found = []utils.ParamError{{Key: at.Key, Code: string(httperr.CodeExcludedByRuntime), Message: fmt.Sprintf("runtime %s does not take %s", runtime, at.Key)}}
 		default:
-			if issue := schema.Check(key, params[key], shapes); issue != nil {
-				issue.Key = at.Key
+			if issue := schema.Check(at.Key, params[key], shapes); issue != nil {
 				found = []utils.ParamError{*issue}
 			}
 		}
 		for _, issue := range found {
 			issue.Message += fmt.Sprintf(" (%s tier, runtime %s)", at.Tier, runtime)
-			issues = append(issues, issue)
+			refused.Issues, refused.tiers = append(refused.Issues, issue), append(refused.tiers, at.Tier)
 		}
 	}
-	if issues == nil {
+	if refused.Issues == nil {
 		return nil
 	}
-	return fmt.Errorf("%w: %w", ErrParameterValidation, &ParameterError{Provider: svc.Name, ContextParameter: svc.GetContextParam(), Served: Lifecycle(svc) == LifecycleServed, Issues: issues})
+	return fmt.Errorf("%w: %w", ErrParameterValidation, refused)
 }
 
 // disposableLaunch binds a launch to a disposable plan's venv once the plan

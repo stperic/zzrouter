@@ -68,8 +68,8 @@ func problemFixture(t *testing.T) (dispatcher, utils.ProblemDetails) {
 	problem := *utils.NewProblemDetails(400, "Bad Request", "Fix provider parameters", "/zzrouter/v1/runs/preview")
 	problem.Code, problem.Node, problem.RequestID = "wrong_type", "worker", "rest-request-123"
 	problem.Errors = []utils.ParamError{
-		{Key: "ctx", Code: "wrong_type", Got: "many", Want: "integer", Message: "expected integer"},
-		{Key: "gpu", Code: "out_of_range", Got: float64(99), Want: "number", Min: float64(0), Max: float64(8), Message: "too large", Hint: "reduce GPU count"},
+		{Key: "ctx", Code: "wrong_type", Got: "many", Want: "integer", Message: "expected integer", Hint: "read zz_params_get"},
+		{Key: "gpu", Code: "out_of_range", Got: float64(99), Want: "number", Min: float64(0), Max: float64(8), Message: "too large", Hint: "read zz_params_get"},
 	}
 	d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
@@ -98,7 +98,7 @@ func TestToolErrorTextBlockPresent(t *testing.T) {
 	require.NotEmpty(t, result.Content)
 	text, ok := result.Content[0].(*mcp.TextContent)
 	require.True(t, ok)
-	require.Equal(t, "HTTP 400 wrong_type: Fix provider parameters\nctx: expected integer\ngpu: too large", text.Text)
+	require.Equal(t, "HTTP 400 wrong_type: Fix provider parameters\nctx: expected integer\ngpu: too large\nread zz_params_get", text.Text, "a hint the issues share is said once")
 }
 
 func TestToolErrorKeepsRequestID(t *testing.T) {

@@ -135,12 +135,6 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 	return out
 }
 
-// FlagName is how argv spells a parameter key, after "--": parameter_name
-// and parameter-name are one flag, which every merge of tiers keys by.
-func FlagName(key string) string {
-	return strings.ReplaceAll(key, "_", "-")
-}
-
 // LayParameters lays one map of parameters over dst by FlagName, stamped with
 // src, so the later map in the walk wins whatever either spelled. Spellings in
 // params apply in sorted order, the flag name first; one whose value differs
@@ -148,7 +142,7 @@ func FlagName(key string) string {
 func LayParameters(dst map[string]ResolvedValue, params map[string]string, src ResolvedValue) {
 	laid := make(map[string]bool, len(params))
 	for _, key := range slices.Sorted(maps.Keys(params)) {
-		flag := FlagName(key)
+		flag := runsettings.FlagName(key)
 		if !laid[flag] {
 			laid[flag] = true
 			src.Key, src.Value = key, params[key]
@@ -168,13 +162,13 @@ func SetParameter(params map[string]string, key, value string) map[string]string
 	if params == nil {
 		params = make(map[string]string, 1)
 	}
-	params[FlagName(key)] = value
+	params[runsettings.FlagName(key)] = value
 	return params
 }
 
 // DeleteParameter removes every spelling of key's flag from params.
 func DeleteParameter(params map[string]string, key string) {
-	maps.DeleteFunc(params, func(stored, _ string) bool { return FlagName(stored) == FlagName(key) })
+	maps.DeleteFunc(params, func(stored, _ string) bool { return runsettings.FlagName(stored) == runsettings.FlagName(key) })
 }
 
 // patternIfNot is key unless key is the model's own name, which needs no

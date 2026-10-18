@@ -59,13 +59,12 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 		}
 	}
 	run, err := m.admitRun(ctx, inst, req, selection, declared)
-	if kept, why := keptRestore(req, err); kept {
-		inst.MarkFailedError(why) // listed failed and pinned, as a refused queued run is, until restarted or stopped
-		m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, why))
-		return nil, why
-	}
 	if err != nil {
-		m.releaseRun(inst, err)
+		if m.markKept(req, err) {
+			m.failRun(inst, err) // listed failed and pinned, as a refused queued run is, until its key runs or it is stopped
+		} else {
+			m.releaseRun(inst, err)
+		}
 		return nil, err
 	}
 	m.watchRun(inst, req)
@@ -149,12 +148,11 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 		Parameters: req.Parameters,
 	}
 	if !m.engine(Lifecycle(svcCfg)).outlivesNode() && req.DisposablePlanID == "" && req.Origin != OriginInstall {
-		saved := restartRequest(inst)
-		saved.keyEndpoint = Endpoint(inst.Endpoint)
-		// Every transition passes setStatusLocked; the store writes only when a pin is added or dropped.
-		inst.CommitStatus = func(status instance.Status, pinned bool, cause error) {
-			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() && (status != instance.StatusFailed || !keepsPin(cause)) {
-				m.pins.update(saved, status == instance.StatusRunning && pinned)
+		saved := pinRecord(inst)
+		// A run reaching running rewrites its key's pin; only an operator's stop (StopInstance) drops one.
+		inst.CommitStatus = func(status instance.Status, pinned bool) {
+			if status == instance.StatusRunning {
+				m.pins.update(saved, pinned)
 			}
 		}
 	}
@@ -199,6 +197,12 @@ func (m *ProviderAppManager) runSettings(svc config.ServiceConfig, req EnsureReq
 		return config.RunSettings{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	return settings, nil
+}
+
+// failRun fails a registered run with err, leaving it listed.
+func (m *ProviderAppManager) failRun(inst *instance.Instance, err error) {
+	inst.MarkFailedError(err)
+	m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
 }
 
 // releaseRun undoes registerRun for a run no process was started for. It
@@ -366,9 +370,8 @@ func (m *ProviderAppManager) awaitAdmission(inst *instance.Instance, req EnsureR
 			}
 			return
 		case err != nil:
-			_, err = keptRestore(req, err)
-			inst.MarkFailedError(err)
-			m.emitEvent(failedEvent(inst, obsruns.FailureLaunchErr, err))
+			m.markKept(req, err)
+			m.failRun(inst, err)
 			return
 		case blocker == nil:
 			started = true
@@ -770,10 +773,19 @@ func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string
 	m.emitEvent(failedEvent(inst, obsruns.FailureReadiness, errors.New(reason)))
 }
 
-// StopInstance gracefully stops an instance and removes it from the registry.
+// StopInstance is an operator's stop: it ends the run, removes it from the
+// registry and drops its key's pin, which no other stop does.
 // Sequence: cancel monitor and keep-alive → terminate process → drain → cleanup.
 func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) error {
-	return m.stopInstance(ctx, id, obsruns.StopReasonUser)
+	inst, ok := m.instances.Get(id)
+	if !ok {
+		return ErrInstanceNotFound
+	}
+	if err := m.stopInstance(ctx, id, obsruns.StopReasonUser); err != nil {
+		return err
+	}
+	m.pins.update(pinRecord(inst), false)
+	return nil
 }
 
 // stopInstance is StopInstance with the reason its stopped event carries.

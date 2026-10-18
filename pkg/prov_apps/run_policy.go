@@ -148,8 +148,8 @@ func Decide(w Want, n Node) Decision {
 func decideExisting(w Want, n Node, smoke bool) Decision {
 	run := n.Existing
 	switch {
-	case n.Joined && run.Status.IsTerminal():
-		return refuse(run.Failure)
+	case run.Status.IsTerminal() && (n.Joined || w.Origin == OriginRequest && keptPin(run.Failure)):
+		return refuse(run.Failure) // a request never replaces a pinned run its parameters refused: an operator restarts it
 	case w.Unload && (run.Status == instance.StatusStopping || run.Provider != w.Provider):
 		return Decision{Act: ActReady} // no run of this want to end: the provider answers for itself
 	case run.Status == instance.StatusStopping:

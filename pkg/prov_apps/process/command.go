@@ -330,7 +330,7 @@ func buildParameterArgs(params map[string]string, shapes map[string]schema.Param
 			value = normalizeJSONNumbers(value)
 		}
 
-		name := config.FlagName(key)
+		name := runsettings.FlagName(key)
 		switch {
 		case value == "" || value == "true":
 			args = append(args, "--"+name)

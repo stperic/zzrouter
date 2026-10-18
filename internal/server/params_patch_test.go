@@ -458,7 +458,7 @@ func TestParametersPatch_ChecksAssetOnCoordinator(t *testing.T) {
 // a new reference dangle is refused.
 func TestParametersPatch_RefusesOnlyNewDanglingRefs(t *testing.T) {
 	server, _ := assetTestNode(t)
-	require.NoError(t, server.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+	setLlamacppDefault(t, server, "chat-template-file", "t.jinja")
 	require.NoError(t, os.Remove(filepath.Join(server.configStore.DirPath(), "on-demand", "llamacpp", "assets", "t.jinja")))
 
 	patch := func(body map[string]any) *TestResponse {

@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,17 +14,17 @@ import (
 // 1e999999 never reaches big.Rat.
 func TestParameterValuesPreservesScalars(t *testing.T) {
 	var params ParameterValues
-	require.NoError(t, json.Unmarshal([]byte(`{"string":"auto","empty":"","escaped":"a\nb","int":16384,"large":9007199254740993,"decimal":0.1234567890123456789,"exponent":1e3,"integral":32768.0,"huge":1e30,"unbounded":1e999999,"negative":-1,"zero":-0,"numeric string":"3.2768e+04","true":true,"false":false}`), &params))
+	require.NoError(t, json.Unmarshal([]byte(`{"string":"auto","empty":"","escaped":"a\nb","int":16384,"large":9007199254740993,"decimal":0.1234567890123456789,"exponent":1e3,"integral":32768.0,"huge":1e30,"bound":1e80,"past bound":1e81,"unbounded":1e999999,"negative":-1,"zero":-0,"zero fraction":-0.0,"numeric string":"3.2768e+04","true":true,"false":false}`), &params))
 	require.Equal(t, ParameterValues{
 		"string": "auto", "empty": "", "escaped": "a\nb", "int": "16384", "large": "9007199254740993",
-		"decimal": "0.1234567890123456789", "exponent": "1000", "integral": "32768", "huge": "1000000000000000000000000000000", "unbounded": "1e999999",
-		"negative": "-1", "zero": "-0", "numeric string": "3.2768e+04", "true": "true", "false": "false",
+		"decimal": "0.1234567890123456789", "exponent": "1000", "integral": "32768", "huge": "1000000000000000000000000000000", "bound": "1" + strings.Repeat("0", 80), "past bound": "1e81", "unbounded": "1e999999",
+		"negative": "-1", "zero": "0", "zero fraction": "0", "numeric string": "3.2768e+04", "true": "true", "false": "false",
 	}, params)
 	encoded, err := json.Marshal(params)
 	require.NoError(t, err)
-	var strings map[string]string
-	require.NoError(t, json.Unmarshal(encoded, &strings))
-	require.Equal(t, map[string]string(params), strings)
+	var decoded map[string]string
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, map[string]string(params), decoded)
 }
 
 func TestParameterValuesRejectsNonScalars(t *testing.T) {

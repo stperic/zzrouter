@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -278,26 +279,26 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 		}
 		return nil
 	}
-	flag := pkgConfig.FlagName(key) // a write addresses the flag, whatever spelling stored it
-	if shape, known := sch[flag]; known {
+	if shape, known := sch[runsettings.FlagName(key)]; known { // a write addresses the flag, whatever spelling stored it
 		if e := checkJSONType(key, raw, shape); e != nil {
 			return e
 		}
 	}
 	value, _ := schema.Canonical(raw) // a non-scalar failed checkJSONType, or is undeclared and Check refuses it
-	if e := schema.Check(flag, value, sch); e != nil {
-		e.Key = key
-		return e
-	}
-	return nil
+	return schema.Check(key, value, sch)
 }
 
 // duplicateSpellings refuses two spellings of one flag that one patched map
-// sets to different JSON values: which the write keeps is the caller's to say.
+// sets to values it would store differently: which the write keeps is the
+// caller's to say.
 func duplicateSpellings(pp map[string]json.RawMessage) []utils.ParamError {
 	sent := make(map[string]string, len(pp))
 	for key, raw := range pp {
-		sent[key] = string(raw)
+		value, scalar := schema.Canonical(raw)
+		if !scalar {
+			value = string(raw) // a null deletes, so it differs from every value
+		}
+		sent[key] = fmt.Sprint(scalar, value)
 	}
 	laid := make(map[string]pkgConfig.ResolvedValue, len(sent))
 	pkgConfig.LayParameters(laid, sent, pkgConfig.ResolvedValue{})

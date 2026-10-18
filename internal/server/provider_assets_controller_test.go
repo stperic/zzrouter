@@ -37,6 +37,15 @@ func assetTestNode(t *testing.T, enabled ...string) (*Server, assets.Dir) {
 	return server, dir
 }
 
+// setLlamacppDefault stores one llamacpp defaults parameter through the store.
+func setLlamacppDefault(t *testing.T, s *Server, key, value string) {
+	t.Helper()
+	require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(svc *pkgConfig.ServiceConfig) error {
+		svc.Defaults.Parameters = pkgConfig.SetParameter(svc.Defaults.Parameters, key, value)
+		return nil
+	}))
+}
+
 func assetRequest(t *testing.T, s *Server, method, path string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
@@ -67,7 +76,7 @@ func TestProviderAssetsAPI_Lifecycle(t *testing.T) {
 	assert.Equal(t, "application/octet-stream", w.Header().Get("Content-Type"))
 	assert.Equal(t, "v2", w.Body.String())
 
-	require.NoError(t, s.configStore.SetAppParameter("llamacpp", "chat-template-file", "mine.jinja"))
+	setLlamacppDefault(t, s, "chat-template-file", "mine.jinja")
 	w = assetRequest(t, s, http.MethodGet, apipath.ProviderAssets("llamacpp"), nil)
 	require.Equal(t, http.StatusOK, w.Code)
 	var list assetListResponse
@@ -85,7 +94,7 @@ func TestProviderAssetsAPI_Lifecycle(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"code":"asset_in_use"`)
 	assert.Contains(t, w.Body.String(), `"key":"defaults.parameters.chat-template-file"`)
 
-	require.NoError(t, s.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+	setLlamacppDefault(t, s, "chat-template-file", "t.jinja")
 	w = assetRequest(t, s, http.MethodDelete, path, nil)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 	_, err := dir.Path("mine.jinja")
@@ -116,7 +125,7 @@ func TestProviderAssetsAPI_Refusals(t *testing.T) {
 // names, and its ETag moves when that content does.
 func TestResolved_ReportsAssetDigest(t *testing.T) {
 	s, _ := assetTestNode(t)
-	require.NoError(t, s.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+	setLlamacppDefault(t, s, "chat-template-file", "t.jinja")
 
 	resolved := func() (resolvedResponse, string) {
 		w := assetRequest(t, s, http.MethodGet, "/zzrouter/v1/providers/llamacpp/resolved", nil)

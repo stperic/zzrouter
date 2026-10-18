@@ -64,13 +64,19 @@ func Canonical(raw json.RawMessage) (value string, ok bool) {
 	return "", false
 }
 
-// literalBound caps the length and exponent of a number integerLiteral
-// rewrites, which keeps big.Rat off 1e999999; no engine's integer needs more.
+// literalBound caps the length and exponent of a literal integerLiteral
+// rewrites through big.Rat: the integer it writes has as many digits as the
+// exponent, and parsing grows with the mantissa (a 1 MiB literal takes about
+// half a second). No engine's integer needs more; a number past the bound
+// stays as written, which Check reads as out of range on an int.
 const literalBound = 80
 
 // integerLiteral writes an integral number literal as an integer literal and
 // keeps any other as written.
 func integerLiteral(literal string) string {
+	if n, err := strconv.ParseInt(literal, 10, 64); err == nil {
+		return strconv.FormatInt(n, 10) // -0 becomes 0, as -0.0 does below
+	}
 	if !strings.ContainsAny(literal, ".eE") || len(literal) > literalBound {
 		return literal
 	}

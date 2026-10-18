@@ -100,7 +100,7 @@ asserts the same outcome.
 
 R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart. The final admitted launch settings fix a pin for the run's lifetime when keep-alive is negative. Inference hints remain last-one-wins for the idle timer and never pin or unpin.
 
-The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends an unpinned run after release, held leases cannot expire, and negative timers never expire idle. Pinned runs never expire or qualify for pressure reclaim, even after positive or zero inference hints. The shared IdleState switch checks lifecycle/claim, pin, activity hold and leases in that order. Served nonzero and adopted timer sentinels mean zzRouter has no idle deadline, independently of pinning. Daemon unloads and displacement remain outside this protection. Explicit stop, Force replacement, restart and shutdown still end pins; restart replays request-tier settings. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
+The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends an unpinned run after release, held leases cannot expire, and negative timers never expire idle. Pinned runs never expire or qualify for pressure reclaim, even after positive or zero inference hints. The shared IdleState switch checks lifecycle/claim, pin, activity hold and leases in that order. Served nonzero and adopted timer sentinels mean zzRouter has no idle deadline, independently of pinning. Daemon unloads and displacement remain outside this protection. Explicit stop, Force replacement, restart and shutdown still end pinned runs, but only an explicit stop forgets the pin record; restart replays request-tier settings. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
 
 R4 routes known run/provider refusals through one ordered wire table, including Retry-After and typed extra fields. Admission and cold-load producers retain typed causes; only the HTTP edge renders them. Memory-fit diagnostics survive cold loading, and generic surface defaults remain distinct. Policy messages carry no route URLs. Typed Ollama load options remain withheld. On the Windows worker with Ollama 0.32.15 (2026-10-12), loading with num_ctx=2048 and keep_alive=-1 did not preserve those settings: a later option-free /v1 request changed the context to 4096 and expiry to five minutes. The prescribed persistence prerequisite failed.
 
@@ -113,8 +113,8 @@ The pinned process runs a node is serving are recorded on that node; when the no
 it relaunches each recorded run once, with the request it was launched with, and the
 record follows the live runs from then on.
 
-The provider manager writes `<data dir>/pinned_runs.json` atomically with mode 0600 at
-readiness and terminal transitions. Only provider, model, endpoint, runtime and request-tier
+The provider manager writes `<data dir>/pinned_runs.json` atomically with mode 0600 when
+a run reaches running (recording or dropping its key's pin) and on an explicit stop. Only provider, model, endpoint, runtime and request-tier
 parameters/environment are saved. Restore re-resolves current provider tiers, paths and ports.
 Served engines, disposable-plan runs and install smokes are excluded. Shutdown preserves the
 record. To forget a saved pin, explicitly stop its run.
@@ -124,8 +124,8 @@ The server calls `RestorePinnedRuns` once immediately after `Cache.Start`. The m
 without Force or detached starts. Existing flights and runs supply deduplication and memory
 admission. Catalog lookup populates synchronously on first use, so restore needs no readiness
 signal or polling. Stop cancels and drains restore through the existing background-start lifetime.
-Failed requests are warned and removed without retry; a run that launches unpinned drops out
-at readiness. Corrupt or unknown-version files are warned and left in place without restoring.
+A request refused for its parameters stays listed failed and pinned; other failed requests
+are warned and removed without retry; a run that launches unpinned drops out at readiness. Corrupt or unknown-version files are warned and left in place without restoring.
 
 ## Deployment outcome ownership
 

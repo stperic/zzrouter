@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -19,11 +20,12 @@ import (
 // the value has the declared type and lies within its range, enum or asset
 // name rules. A shape that declares Auto takes the auto keyword.
 func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
-	shape, known := shapes[key]
+	flag := runsettings.FlagName(key) // the key as stored or sent names its flag, and refusals name the key
+	shape, known := shapes[flag]
 	if !known {
 		message := fmt.Sprintf("unknown parameter %q", key)
-		if positive, negated := strings.CutPrefix(key, "no-"); negated && shapes[positive].Negatable {
-			message += fmt.Sprintf("; set %s: false, which passes --%s", positive, key)
+		if positive, negated := strings.CutPrefix(flag, "no-"); negated && shapes[positive].Negatable {
+			message += fmt.Sprintf("; set %s: false, which passes --%s", positive, flag)
 		}
 		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag), Message: message}
 	}
@@ -36,7 +38,7 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	switch shape.Kind {
 	case ParamInt:
 		n, err := strconv.ParseInt(value, 10, 64)
-		if errors.Is(err, strconv.ErrRange) {
+		if errors.Is(err, strconv.ErrRange) || err != nil && beyondInt64(value) {
 			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: value, Message: fmt.Sprintf("%s=%s is outside the integer range", key, value)}
 		}
 		if err != nil {
@@ -54,7 +56,7 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 			return WrongType(key, shape.Kind)
 		}
 	case ParamString, "":
-		if key == runsettings.KeepAliveParameter {
+		if flag == runsettings.KeepAliveParameter {
 			if _, err := runsettings.Duration(value); err != nil {
 				return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: err.Error()}
 			}
@@ -70,6 +72,17 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 		return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Message: fmt.Sprintf("%s has schema type %q, which this server cannot validate", key, shape.Kind)}
 	}
 	return nil
+}
+
+// beyondInt64 reports a number literal no int64 holds, which at that size is
+// integral: one Canonical left as written past its bound, such as 1e81.
+func beyondInt64(value string) bool {
+	var n json.Number
+	if json.Unmarshal([]byte(value), &n) != nil {
+		return false
+	}
+	f, err := n.Float64()
+	return (err == nil || errors.Is(err, strconv.ErrRange)) && math.Abs(f) >= math.MaxInt64
 }
 
 // Duplicate refuses spellings of one flag that one map gives different

@@ -156,8 +156,7 @@ func TestLoadAppsConfig_ValidConfig(t *testing.T) {
 
 // vllmTestProvider returns a minimal-but-valid on-demand provider that
 // passes per-kind Validate, suitable for fixtures that exercise mutation
-// paths (SaveAppParameters, SaveModelDefaults) without caring about
-// runtime details.
+// paths without caring about runtime details.
 func vllmTestProvider() *OnDemandProvider {
 	return &OnDemandProvider{
 		Name:     "vllm",
@@ -218,114 +217,6 @@ func TestAppsConfig_SaveToDir(t *testing.T) {
 	}
 }
 
-func TestAppsConfig_SaveAppParameters(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
-
-	params := map[string]string{
-		"gpu-memory": "8GB",
-		"max-tokens": "4096",
-	}
-	env := map[string]string{"CUDA_VISIBLE_DEVICES": "0"}
-
-	if err := cfg.SaveAppParameters("vllm", params, env, nil); err != nil {
-		t.Fatalf("SaveAppParameters() error = %v", err)
-	}
-
-	vllmConfig, ok := cfg.LookupApp("vllm")
-	if !ok || vllmConfig.Defaults == nil {
-		t.Fatal("Defaults should not be nil")
-	}
-	if vllmConfig.Defaults.Parameters["gpu-memory"] != "8GB" {
-		t.Errorf("gpu-memory = %q, want %q", vllmConfig.Defaults.Parameters["gpu-memory"], "8GB")
-	}
-	if vllmConfig.Defaults.Environment["CUDA_VISIBLE_DEVICES"] != "0" {
-		t.Errorf("CUDA_VISIBLE_DEVICES = %q, want %q", vllmConfig.Defaults.Environment["CUDA_VISIBLE_DEVICES"], "0")
-	}
-}
-
-func TestAppsConfig_SaveAppParameters_AppNotFound(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{})
-
-	if err := cfg.SaveAppParameters("nonexistent", nil, nil, nil); err == nil {
-		t.Error("SaveAppParameters should return error for non-existent app")
-	}
-}
-
-func TestAppsConfig_SaveAppParameters_EmptyValues(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
-
-	params := map[string]string{
-		"gpu-memory": "",     // Empty - should be skipped
-		"max-tokens": "4096", // Non-empty - should be saved
-	}
-
-	if err := cfg.SaveAppParameters("vllm", params, nil, nil); err != nil {
-		t.Fatalf("SaveAppParameters() error = %v", err)
-	}
-
-	vllmConfig, _ := cfg.LookupApp("vllm")
-	if vllmConfig.Defaults == nil {
-		t.Fatal("Defaults should not be nil")
-	}
-	if _, exists := vllmConfig.Defaults.Parameters["gpu-memory"]; exists {
-		t.Error("Empty gpu-memory should not be saved")
-	}
-	if vllmConfig.Defaults.Parameters["max-tokens"] != "4096" {
-		t.Errorf("max-tokens should be saved")
-	}
-}
-
-func TestAppsConfig_SaveModelDefaults_EmptyApp(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{})
-
-	if err := cfg.SaveModelDefaults("", "model", nil, nil); err == nil {
-		t.Error("SaveModelDefaults should return error for empty app")
-	}
-}
-
-func TestAppsConfig_SaveModelDefaults_EmptyModel(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
-
-	if err := cfg.SaveModelDefaults("vllm", "", nil, nil); err == nil {
-		t.Error("SaveModelDefaults should return error for empty model name")
-	}
-}
-
-func TestAppsConfig_SaveModelDefaults_NilApps(t *testing.T) {
-	cfg := &AppsConfig{}
-
-	if err := cfg.SaveModelDefaults("vllm", "model", nil, nil); err == nil {
-		t.Error("SaveModelDefaults should return error for nil providers")
-	}
-}
-
-func TestAppsConfig_SaveModelDefaults_NewModel(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
-
-	params := map[string]string{
-		"temperature": "0.7",
-		"top-p":       "0.9",
-	}
-
-	if err := cfg.SaveModelDefaults("vllm", "llama2:7b", params, nil); err != nil {
-		t.Fatalf("SaveModelDefaults() error = %v", err)
-	}
-
-	vllmConfig, _ := cfg.LookupApp("vllm")
-	if vllmConfig.Models == nil {
-		t.Fatal("Models should not be nil")
-	}
-	modelConfig, exists := vllmConfig.Models["llama2:7b"]
-	if !exists {
-		t.Fatal("Model 'llama2:7b' should exist in Models")
-	}
-	if modelConfig.Parameters["temperature"] != "0.7" {
-		t.Errorf("temperature = %q, want %q", modelConfig.Parameters["temperature"], "0.7")
-	}
-}
-
-// TestAppsConfig_Resolve_FourTier exercises the full precedence chain:
-// defaults < model < node < node-model. Each tier overrides the previous.
 func TestAppsConfig_Resolve_FourTier(t *testing.T) {
 	sc := ServiceConfig{
 		Defaults: &AppDefaultsConfig{
@@ -375,28 +266,6 @@ func TestAppsConfig_Resolve_FourTier(t *testing.T) {
 	}
 }
 
-// TestAppsConfig_NodeModelCRUD round-trips a Tier 3 write + delete.
-func TestAppsConfig_NodeModelCRUD(t *testing.T) {
-	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
-
-	if err := cfg.SetNodeModelParameter("vllm", "worker-1", "llama-3-70b", "max-model-len", "32768"); err != nil {
-		t.Fatalf("SetNodeModelParameter: %v", err)
-	}
-	sc, _ := cfg.LookupApp("vllm")
-	nm := sc.Nodes["worker-1"].Models["llama-3-70b"]
-	if nm.Parameters["max-model-len"] != "32768" {
-		t.Errorf("NodeModel write lost: %+v", nm)
-	}
-
-	if err := cfg.DeleteNodeModelParameter("vllm", "worker-1", "llama-3-70b", "max-model-len"); err != nil {
-		t.Fatalf("DeleteNodeModelParameter: %v", err)
-	}
-	sc, _ = cfg.LookupApp("vllm")
-	if len(sc.Nodes) != 0 {
-		t.Errorf("empty tree should collapse to nil, got %+v", sc.Nodes)
-	}
-}
-
 // TestAppsConfig_ThreeMeaningRule verifies plan §4.3: empty string survives
 // write→read round-trip as present-with-empty, absent stays absent. `null`
 // never appears on disk — our maps are map[string]string, so yaml.v3 cannot
@@ -404,11 +273,11 @@ func TestAppsConfig_NodeModelCRUD(t *testing.T) {
 func TestAppsConfig_ThreeMeaningRule(t *testing.T) {
 	cfg := providersFixture(map[string]Provider{"vllm": vllmTestProvider()})
 
-	if err := cfg.SetAppEnvironment("vllm", "EMPTY_VAR", ""); err != nil {
-		t.Fatalf("SetAppEnvironment: %v", err)
-	}
-	if err := cfg.SetAppEnvironment("vllm", "SET_VAR", "value"); err != nil {
-		t.Fatalf("SetAppEnvironment: %v", err)
+	if err := cfg.UpdateApp("vllm", func(sc *ServiceConfig) error {
+		sc.Defaults = &AppDefaultsConfig{Environment: map[string]string{"EMPTY_VAR": "", "SET_VAR": "value"}}
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateApp: %v", err)
 	}
 
 	dir := t.TempDir()

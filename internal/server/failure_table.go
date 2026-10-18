@@ -2,9 +2,7 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -166,18 +164,7 @@ func parameterIssuesExtra(err error, _ httperr.Error) map[string]any {
 	if !errors.As(err, &refused) {
 		return nil
 	}
-	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get; fix a request key in zz_run_preview or zz_run_start, a configured one with zz_params_set (null removes it).", refused.Provider)
-	if refused.ContextParameter != "" && !refused.Served {
-		hint += fmt.Sprintf(" Its context length parameter is %s.", refused.ContextParameter)
-	}
-	issues := slices.Clone(refused.Issues)
-	for i := range issues {
-		issues[i].Hint = hint
-		if refused.Served && issues[i].Code == string(httperr.CodeUnknownFlag) {
-			issues[i].Hint = fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", refused.Provider)
-		}
-	}
-	return map[string]any{"errors": issues}
+	return map[string]any{"errors": refused.ParamIssues()}
 }
 
 func resolveAdmission(err error, wire *httperr.Error) bool {

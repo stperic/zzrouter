@@ -43,7 +43,7 @@ func TestDeclaredParametersAreFlagNames(t *testing.T) {
 		}
 		for site, shapes := range sites {
 			for key := range shapes {
-				assert.Equal(t, config.FlagName(key), key, "%s %s declares %q", provider, site, key)
+				assert.Equal(t, runsettings.FlagName(key), key, "%s %s declares %q", provider, site, key)
 			}
 		}
 	}

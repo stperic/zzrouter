@@ -393,6 +393,14 @@ func vllmParam(t *testing.T, cfg *AppsConfig, key string) string {
 	return sc.Defaults.Parameters[key]
 }
 
+// setVLLMDefault writes one vllm defaults parameter through the store.
+func setVLLMDefault(store *AppsConfigStore, key, value string) error {
+	return store.ApplyParameterPatch("vllm", func(sc *ServiceConfig) error {
+		sc.Defaults.Parameters = SetParameter(sc.Defaults.Parameters, key, value)
+		return nil
+	})
+}
+
 // A write publishes a new config: one a reader already holds stays as it
 // read it, so a handler never sees the providers map change under it.
 func TestStoreWriteLeavesHeldConfigUnchanged(t *testing.T) {
@@ -403,7 +411,7 @@ func TestStoreWriteLeavesHeldConfigUnchanged(t *testing.T) {
 
 	held := store.Config()
 	before := vllmParam(t, held, "max-model-len")
-	require.NoError(t, store.SetAppParameter("vllm", "max-model-len", "4321"))
+	require.NoError(t, setVLLMDefault(store, "max-model-len", "4321"))
 
 	assert.Equal(t, before, vllmParam(t, held, "max-model-len"), "held config changed in place")
 	assert.Equal(t, "4321", vllmParam(t, store.Config(), "max-model-len"))
@@ -418,6 +426,6 @@ func TestStoreUnsavedWriteChangesNothing(t *testing.T) {
 	store := NewMemoryAppsConfigStore(loaded.Config())
 	before := vllmParam(t, store.Config(), "max-model-len")
 
-	require.Error(t, store.SetAppParameter("vllm", "max-model-len", "4321"))
+	require.Error(t, setVLLMDefault(store, "max-model-len", "4321"))
 	assert.Equal(t, before, vllmParam(t, store.Config(), "max-model-len"))
 }
