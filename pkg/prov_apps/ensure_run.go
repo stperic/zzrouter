@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -66,27 +67,33 @@ func (p preparedStart) answer() (EnsureResult, error) {
 	return EnsureResult{}, p.decision.Err
 }
 
-func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest) (preparedStart, error) {
-	if m.shuttingDown() {
-		return preparedStart{}, ErrShutdown
-	}
-	if err := m.ValidateModel(ctx, req.Model); err != nil {
-		return preparedStart{}, err
-	}
+func (m *ProviderAppManager) prepareStart(ctx context.Context, req EnsureRequest) (prepared preparedStart, err error) {
+	defer func() { prepared.req = req }()
 	req.requestedModel = req.Model
 	req.Provider = utils.NormalizeAppType(req.Provider)
 	key, cfg, ok := m.resolveConfigKey(req.Provider)
+	req.Model = m.runModel(key, cfg, req.Model)
+	req.keyEndpoint, _ = runEndpoint(cfg, req.Endpoint)
+	lifecycle := LifecycleProcess
+	if ok {
+		lifecycle = Lifecycle(cfg)
+	}
+	req = m.replay(req, lifecycle)
+	if m.shuttingDown() {
+		return preparedStart{}, ErrShutdown
+	}
+	if err := m.ValidateModel(ctx, req.requestedModel); err != nil {
+		return preparedStart{}, err
+	}
 	if !ok {
 		return preparedStart{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
-	if err := cfg.ValidateRunTarget(req.Model, string(req.Endpoint)); err != nil {
+	if err := cfg.ValidateRunTarget(req.requestedModel, string(req.Endpoint)); err != nil {
 		return preparedStart{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
-	req.Model = m.runModel(key, cfg, req.Model)
 	if !cfg.IsEnabled() {
 		return preparedStart{}, ErrServiceDisabled
 	}
-	req.keyEndpoint = runEndpoint(cfg, req.Endpoint)
 	// A launch checks its catalog only when cold; a provider without runs gathers evidence in decide.
 	return preparedStart{req: req, selection: launchSelection{key: key, config: cfg}, lifecycle: Lifecycle(cfg)}, ctx.Err()
 }
@@ -141,8 +148,9 @@ func (m *ProviderAppManager) flying(model string) bool {
 }
 
 // EnsureRun returns a run without waiting for readiness; Detached accepts a background start.
-func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (EnsureResult, error) {
+func (m *ProviderAppManager) EnsureRun(ctx context.Context, req EnsureRequest) (result EnsureResult, err error) {
 	prepared, err := m.prepareStart(ctx, req)
+	defer func() { m.captureRefusal(prepared.req, err) }()
 	if err != nil {
 		return EnsureResult{}, err
 	}
@@ -297,11 +305,28 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 			return result, err
 		}
 	}
+	if _, err = m.engine(prepared.lifecycle).prepare(ctx, prepared.selection.config, prepared.selection.key, req, 0); err != nil {
+		return result, err
+	}
+	if err = ctx.Err(); err != nil {
+		return result, err
+	}
 	if replace := prepared.decision.Replace; replace != "" {
-		if err = m.StopInstance(ctx, replace); err != nil && !errors.Is(err, ErrInstanceNotFound) {
+		if err = m.stopInstance(ctx, replace, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			return result, err
 		}
 	}
 	run, err := m.engine(prepared.lifecycle).up(ctx, req, prepared.selection)
+	if err == nil {
+		cfg := m.AppsConfig()
+		m.pins.mu.Lock()
+		if i := m.pins.index(req.Key(), cfg); i >= 0 {
+			m.pins.Runs[i].refusal = nil
+		}
+		if recordable(req, prepared.lifecycle) && req.Origin != OriginRequest && run.Context().Err() == nil {
+			m.pins.update(req, run.IdleSnapshot().Pinned, cfg)
+		}
+		m.pins.mu.Unlock()
+	}
 	return EnsureResult{Run: run, Started: err == nil}, err
 }

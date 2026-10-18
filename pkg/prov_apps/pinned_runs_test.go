@@ -71,6 +71,8 @@ func TestPinnedRestoreShutdownAndRequestReplay(t *testing.T) {
 	req.EnvVars = map[string]string{"PIN_TEST_TOKEN": "request-token"}
 	run := startPin(t, r.m, req)
 	require.True(t, run.IdleSnapshot().Pinned)
+	req.RunID = readPins(t)[0].RunID
+	require.NotEmpty(t, req.RunID)
 	require.Equal(t, []EnsureRequest{req}, readPins(t))
 	info, err := os.Stat(pinnedPath())
 	require.NoError(t, err)
@@ -83,7 +85,7 @@ func TestPinnedRestoreShutdownAndRequestReplay(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &file))
 	var fields []map[string]any
 	require.NoError(t, json.Unmarshal(file["runs"], &fields))
-	assert.Len(t, fields[0], 5, "empty runtime is omitted; only the request tier persists")
+	assert.Len(t, fields[0], 6, "empty runtime is omitted; only the request tier persists")
 	assert.NotContains(t, string(raw), "TIER_ONLY")
 	assert.NotContains(t, string(raw), r.engine)
 	require.NoError(t, r.m.Stop(t.Context()))
@@ -197,8 +199,15 @@ func TestPinnedRestoreFailureContinues(t *testing.T) {
 			run, exists := r.m.instances.GetByKey(good.Key())
 			require.True(t, exists, "failed restore must not prevent the next entry")
 			awaitRunning(t, run)
-			require.Eventually(t, func() bool { return len(readPins(t)) == 1 }, contractWait, time.Millisecond)
-			assert.Equal(t, "good", readPins(t)[0].Model)
+			require.Len(t, readPins(t), 2)
+			assert.Equal(t, []string{"bad", "good"}, []string{readPins(t)[0].Model, readPins(t)[1].Model})
+			listed := r.m.ListInstances("local")
+			require.Len(t, listed, 2)
+			for _, info := range listed {
+				if info.Model == "bad" && info.RecordOnly {
+					require.Error(t, info.Refusal)
+				}
+			}
 			r.m.RestorePinnedRuns()
 			r.m.onDemandStarts.Wait()
 			wantAttempts := int32(1)
@@ -369,7 +378,9 @@ func TestPinnedRestoreOnceAndEarlyRun(t *testing.T) {
 	r.m.onDemandStarts.Wait()
 	assert.Equal(t, int32(1), r.attempts.Load(), "EnsureRun reuses the early run")
 	require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
-	r.m.pins.update(req, true)
+	r.m.pins.mu.Lock()
+	r.m.pins.update(req, true, r.m.AppsConfig())
+	r.m.pins.mu.Unlock()
 	r.m.RestorePinnedRuns()
 	r.m.onDemandStarts.Wait()
 	assert.Empty(t, r.m.instances.List(), "restore is once per boot even when the file changes")
@@ -404,7 +415,11 @@ func TestPinnedRestoreTerminalPaths(t *testing.T) {
 			case "launch":
 				run.MarkFailedError(errors.New("launch failed"))
 			}
-			assert.Empty(t, readPins(t), "every terminal route must forget the pin")
+			if terminal == "operator" {
+				assert.Empty(t, readPins(t))
+			} else {
+				assert.Len(t, readPins(t), 1, "only an operator stop forgets the request")
+			}
 		})
 	}
 }
@@ -486,20 +501,20 @@ func TestPinnedRestorePolicyMatchesAPI(t *testing.T) {
 	}
 }
 
-func TestPinnedRecoveryKeepsPlaceWithoutRewrite(t *testing.T) {
+func TestPinnedRecordStableHandleAndOrder(t *testing.T) {
 	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
 	s := &pinnedRuns{path: pinnedPath(), Version: 1}
+	cfg := &config.AppsConfig{}
 	first, second := pinRequest("first"), pinRequest("second")
-	s.update(first, true)
-	s.update(second, true)
+	s.update(first, true, cfg)
+	s.update(second, true, cfg)
+	before := readPins(t)
 	require.NoError(t, os.Remove(pinnedPath()))
-	s.update(first, true) // a run back from unhealthy reports running again
-	assert.NoFileExists(t, pinnedPath(), "an unchanged pin is not rewritten")
-	changed := pinRequest("first")
-	changed.Parameters["ctx-size"] = "4096"
-	s.update(changed, true)
+	first.Parameters["budget"] = "0.3"
+	s.update(first, true, cfg)
 	got := readPins(t)
 	require.Len(t, got, 2)
 	assert.Equal(t, []string{"first", "second"}, []string{got[0].Model, got[1].Model})
-	assert.Equal(t, "4096", got[0].Parameters["ctx-size"])
+	assert.Equal(t, before[0].RunID, got[0].RunID)
+	assert.Equal(t, "0.3", got[0].Parameters["budget"])
 }

@@ -128,6 +128,13 @@ type StreamEnder interface {
 	EndStream(w http.ResponseWriter, e Error)
 }
 
+// Refusal is the stable launch failure exposed on a retained run request.
+type Refusal struct {
+	Code    string `json:"code"`
+	Status  int    `json:"status"`
+	Message string `json:"message"`
+}
+
 // Error is one error zzRouter reports in its own voice. Each dialect
 // renders the fields it has a place for.
 type Error struct {

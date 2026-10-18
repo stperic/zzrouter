@@ -28,7 +28,7 @@ import (
 func reservationRig(t *testing.T, eviction bool) *contractRig {
 	t.Helper()
 	r := newContractRig(t, false, WithIdleMemoryEviction(eviction), WithProviderSchema(memoryBudgetSchema(func(provider string) (*schema.MemoryBudget, error) {
-		if provider == "generic" {
+		if provider == "generic" || provider == "comfyui" {
 			return &schema.MemoryBudget{Kind: "reserve_mib", Parameter: "gpu-reserve-mib", ComplementParameter: "reserve-vram"}, nil
 		}
 		return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil

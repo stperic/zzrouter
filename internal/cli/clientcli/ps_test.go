@@ -1,12 +1,15 @@
 package clientcli
 
 import (
+	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	shared "github.com/stperic/zzrouter/internal/cli/clientcli/shared"
+	"github.com/stperic/zzrouter/pkg/httperr"
 
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stretchr/testify/assert"
@@ -19,6 +22,7 @@ func TestPsTableNamesProviderAndModelRuns(t *testing.T) {
 		{ID: "other", Node: "worker", App: "comfyui-operator-provider-with-a-long-name", Status: "running"},
 		{ID: "model", Node: "worker", App: "vllm", Model: "Qwen/Qwen2.5-0.5B-Instruct", SourceRepo: "huggingface", Status: "running"},
 		{ID: "unknown", Node: "worker", Status: "running"},
+		{ID: "pin-id", Node: "worker", Model: "pinned", Status: "stopped", RecordOnly: true, LastRefusal: &httperr.Refusal{Code: "unknown_flag"}},
 	}
 	output, err := os.CreateTemp(t.TempDir(), "ps")
 	require.NoError(t, err)
@@ -30,9 +34,10 @@ func TestPsTableNamesProviderAndModelRuns(t *testing.T) {
 	os.Stdout = stdout
 	data, err := os.ReadFile(output.Name())
 	require.NoError(t, err)
+	assert.Contains(t, string(data), "pin (no run): unknown_flag")
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	require.Len(t, lines, len(instances)+2)
-	for i, name := range []string{"comfyui", "comfyui-operator-provider-with-a-long-name", "huggingface:Qwen2.5-0.5B-Instruct", "(unknown)"} {
+	for i, name := range []string{"comfyui", "comfyui-operator-provider-with-a-long-name", "huggingface:Qwen2.5-0.5B-Instruct", "(unknown)", "pinned"} {
 		columns := strings.Fields(lines[i+2])
 		require.GreaterOrEqual(t, len(columns), 3)
 		require.Equal(t, name, columns[1])
@@ -359,4 +364,22 @@ func TestFilterInstances(t *testing.T) {
 			assert.Equal(t, tt.expected, actualIDs)
 		})
 	}
+}
+
+func TestFindInstanceExcludesRecordOnly(t *testing.T) {
+	instances := []pkgClient.Instance{
+		{ID: "pin-id", Node: "worker", App: "generic", Model: "pinned", Status: "stopped", RecordOnly: true},
+		{ID: "run-id", Node: "worker", App: "generic", Model: "live", Status: "running"},
+	}
+	client := newRunLogsTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": instances}))
+	})
+	for _, spec := range []string{"pin-id", "pin", "pinned"} {
+		_, err := findInstanceByModelOrID(client, "", spec)
+		require.ErrorContains(t, err, "pin with no run has no logs or inspection")
+	}
+	live, err := findInstanceByModelOrID(client, "", "run-id")
+	require.NoError(t, err)
+	assert.Equal(t, "run-id", live.ID)
+	assert.Len(t, FilterInstancesBySpec(instances, "pinned"), 1, "stop still selects pins")
 }

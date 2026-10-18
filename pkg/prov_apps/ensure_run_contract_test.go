@@ -288,13 +288,15 @@ func catalogBarrier(b *barrier) Option {
 
 // failFirstLocalize fails the first launch's parameters after its run registered.
 func failFirstLocalize(cause error) Option {
-	var calls atomic.Int32
-	return WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
-		if calls.Add(1) == 1 {
-			return Localized{}, cause
+	var failed atomic.Bool
+	return func(m *ProviderAppManager) {
+		m.localizeParams = func(provider, endpoint, model string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
+			if _, registered := m.instances.GetByKey(instance.NewKey(provider, model, endpoint)); registered && failed.CompareAndSwap(false, true) {
+				return Localized{}, cause
+			}
+			return Localized{Params: params}, nil
 		}
-		return Localized{Params: params}, nil
-	})
+	}
 }
 
 // errorLog counts error records naming one model.
@@ -371,7 +373,7 @@ func TestEnsureRunContract(t *testing.T) {
 		b := newBarrier()
 		var calls atomic.Int32
 		r := newContractRig(t, false, WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
-			if calls.Add(1) == 1 {
+			if calls.Add(1) == 2 {
 				b.hold() // registered, not launched
 				return Localized{}, errTestStart
 			}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -77,7 +78,7 @@ func (m *ProviderAppManager) smokeInstalledRuntime(ctx context.Context, provider
 		// A timed-out smoke must still stop its own run before rollback.
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopBudget(provider))
 		defer cancel()
-		if err := m.StopInstance(cleanup, run.ID); err != nil && !errors.Is(err, ErrInstanceNotFound) {
+		if err := m.stopInstance(cleanup, run.ID, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			result = errors.Join(result, fmt.Errorf("%w: %v", errSmokeRollbackBlocked, err))
 		}
 	}()

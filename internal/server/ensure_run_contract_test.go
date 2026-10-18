@@ -531,9 +531,12 @@ func TestServedSurfaces(t *testing.T) {
 				Detail string `json:"detail"`
 			}
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-			_, advice, found := strings.Cut(problem.Detail, "its log stays readable at GET ")
+			_, advice, found := strings.Cut(problem.Detail, "zz_logs using run_id ")
 			require.True(t, found, problem.Detail)
-			rec = get(strings.Replace(advice, "<node it ran on>", "node-a", 1))
+			advisedID, _, found := strings.Cut(advice, " and the node it ran on")
+			require.True(t, found, advice)
+			require.Equal(t, run.ID, advisedID)
+			rec = get("/zzrouter/v1/runs/" + advisedID + "/logs?node=node-a")
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 			assert.Contains(t, rec.Body.String(), "dropped by the daemon")
 			require.NoError(t, r.mgr.Stop(context.Background()))

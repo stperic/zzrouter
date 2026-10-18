@@ -157,7 +157,7 @@ func TestLaunchPreparationResolvesSchemaOnce(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Swap(0), "preview shares the schema across all preparation steps")
 	result, err := r.m.EnsureRun(t.Context(), req)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), calls.Swap(0), "live preparation shares the schema across all preparation steps")
+	assert.Equal(t, int32(2), calls.Swap(0), "pre-stop and admission preparation each resolve the schema once")
 	assert.Equal(t, instance.StatusStarting, result.Run.GetStatus())
 	assert.Equal(t, instance.ParametersCurrent, r.m.ParametersStatus(t.Context(), result.Run).State)
 	assert.Equal(t, int32(1), calls.Swap(0), "status shares the schema with the config-only comparison")

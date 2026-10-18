@@ -16,6 +16,8 @@ const (
 
 // EnsureRequest contains the parameters needed to launch a provider instance.
 type EnsureRequest struct {
+	RunID            string `json:"run_id,omitempty"`
+	refusal          error
 	requestedModel   string
 	keyEndpoint      Endpoint // Shared engines keep one key without discarding the requested shape.
 	selectedRuntime  string

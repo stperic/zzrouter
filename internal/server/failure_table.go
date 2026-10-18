@@ -54,6 +54,7 @@ var failureTable = []failureRow{
 	{sentinel: install.ErrStalePlan, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrRunHeldByOtherProvider, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrInstancesRunning, status: http.StatusConflict, code: ""},
+	{sentinel: prov_apps.ErrPinRunActive, status: http.StatusConflict, code: "pin_run_active"},
 	{sentinel: prov_apps.ErrProviderNotManaged, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrProviderAlreadyInstalled, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrInstanceAlreadyExists, status: http.StatusConflict, code: ""},

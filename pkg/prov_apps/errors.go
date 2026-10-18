@@ -67,6 +67,9 @@ var (
 	// ErrInstancesRunning is returned when an upgrade is attempted while instances are active.
 	ErrInstancesRunning = errors.New("instances still running for this provider")
 
+	// ErrPinRunActive refuses forgetting a pin while its key has a live run.
+	ErrPinRunActive = errors.New("pin has an active run")
+
 	// ErrProviderNotManaged is returned when upgrade/uninstall is attempted on a provider
 	// that was not installed by zzRouter (e.g., installed via Homebrew, pip, or system package).
 	ErrProviderNotManaged = errors.New("provider is installed but not managed by zzRouter")

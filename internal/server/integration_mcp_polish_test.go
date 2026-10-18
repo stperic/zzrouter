@@ -31,9 +31,9 @@ func TestMCPStopConfirmsRemovalAndRetainsFailures(t *testing.T) {
 	for _, status := range []string{"", "starting", "running", "unhealthy", "stopping", "failed", "restarting", "stopped", "typo"} {
 		t.Run(status, func(t *testing.T) {
 			resp := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/runs?status="+status, TestAdminKey, nil)
-			if status == "stopped" || status == "typo" {
+			if status == "typo" {
 				require.Equal(t, http.StatusBadRequest, resp.Code)
-				require.Contains(t, string(resp.Body), "stopped runs are removed")
+				require.Contains(t, string(resp.Body), "status must be one of")
 				return
 			}
 			require.Equal(t, http.StatusOK, resp.Code, string(resp.Body))
@@ -96,7 +96,7 @@ func TestRunPolishSpecContract(t *testing.T) {
 		param := value.(map[string]any)
 		if param["name"] == "status" {
 			foundStatus = true
-			require.Equal(t, []any{"starting", "running", "unhealthy", "stopping", "failed", "restarting"}, param["schema"].(map[string]any)["enum"])
+			require.Equal(t, []any{"starting", "running", "unhealthy", "stopping", "failed", "restarting", "stopped"}, param["schema"].(map[string]any)["enum"])
 		}
 	}
 	require.True(t, foundStatus, "status parameter must remain documented")

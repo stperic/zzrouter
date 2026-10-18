@@ -2,6 +2,7 @@ package clientcli
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -132,7 +133,7 @@ func displayPsTable(instances []pkgClient.Instance) {
 		if providerWidth := len(inst.App); providerWidth > maxProviderWidth {
 			maxProviderWidth = providerWidth
 		}
-		statusStr := inst.Status
+		statusStr := inst.DisplayStatus()
 		if statusWidth := len(statusStr); statusWidth > maxStatusWidth {
 			maxStatusWidth = statusWidth
 		}
@@ -171,7 +172,7 @@ func displayPsTable(instances []pkgClient.Instance) {
 		nameDisplay := shared.FormatModelWithRegistry(sourceRepo, formattedModel)
 
 		// Format columns
-		statusStr := inst.Status
+		statusStr := inst.DisplayStatus()
 		untilStr := formatUntilFromKeepAlive(inst.KeepAlive, inst.LastActivity, inst.StartedAt)
 
 		// Truncate instance ID to 12 chars for display (full ID stored internally)
@@ -326,9 +327,10 @@ func findInstanceByModelOrID(client *pkgClient.Client, provider, spec string) (*
 
 	// Then filter by model name or instance ID (DRY utility)
 	filtered := FilterInstancesBySpec(instances, spec)
+	filtered = slices.DeleteFunc(filtered, func(i pkgClient.Instance) bool { return i.RecordOnly })
 
 	if len(filtered) == 0 {
-		return nil, fmt.Errorf("no running instances match the specified criteria")
+		return nil, fmt.Errorf("no runs match the specified criteria; a pin with no run has no logs or inspection")
 	}
 
 	if len(filtered) == 1 {
@@ -340,19 +342,14 @@ func findInstanceByModelOrID(client *pkgClient.Client, provider, spec string) (*
 	displayPsTable(filtered)
 	fmt.Printf("\nTotal: %d instance(s)\n", len(filtered))
 
-	// Find most recent instance (latest StartedAt)
-	// StartedAt is a string, so we compare lexicographically (ISO 8601 format sorts correctly)
-	mostRecent := &filtered[0]
-	for i := 1; i < len(filtered); i++ {
-		if filtered[i].StartedAt > mostRecent.StartedAt {
-			mostRecent = &filtered[i]
-		}
-	}
+	mostRecent := slices.MaxFunc(filtered, func(a, b pkgClient.Instance) int {
+		return strings.Compare(a.StartedAt, b.StartedAt)
+	})
 
 	fmt.Printf("\n📋 Using most recent instance: %s (started %s)\n\n",
 		mostRecent.ID, mostRecent.StartedAt)
 
-	return mostRecent, nil
+	return &mostRecent, nil
 }
 
 // NewPsListCmd creates the ps list subcommand (explicit version of default ps behavior)

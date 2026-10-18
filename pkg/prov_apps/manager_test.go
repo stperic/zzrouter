@@ -41,6 +41,10 @@ func cleanupProviderManager(t *testing.T, m *ProviderAppManager) {
 			assert.NoError(t, inst.WaitForGoroutines(ctx), "instance %s must finish before fixture removal", inst.ID)
 		}
 		assert.Empty(t, m.instances.List(), "cleanup must stop every fixture instance")
+		// Shutdown retains pins, so teardown also removes the fixture's persisted requests.
+		if err := os.Remove(m.pins.path); !os.IsNotExist(err) {
+			assert.NoError(t, err)
+		}
 	})
 }
 
@@ -50,6 +54,7 @@ func TestPackageRuntimePathsAreIsolated(t *testing.T) {
 	operator := t.TempDir()
 	t.Setenv("ZZROUTER_CONFIG_DIR", operator)
 	assert.Equal(t, root, config.Paths().GetConfigDir())
+	assert.Equal(t, root, config.Paths().GetDataDir())
 	assert.Equal(t, filepath.Join(root, "pids"), config.Paths().GetPIDDir())
 	assert.Equal(t, filepath.Join(filepath.Dir(root), "providers"), fsroot.ProviderRootDir())
 	m, err := NewProviderAppManager(nil)

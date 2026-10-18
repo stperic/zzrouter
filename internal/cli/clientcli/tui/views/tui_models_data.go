@@ -366,7 +366,7 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 		}
 		// The run states where its weights came from.
 		sourceRepo := inst.SourceRepo
-		rows = append(rows, modelRow{
+		row := modelRow{
 			Node:         inst.Node,
 			Model:        shared.FormatModelWithRegistry(sourceRepo, name),
 			RawModel:     inst.Model,
@@ -377,7 +377,11 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 			sortPriority: 1,
 			instance:     inst,
 			registry:     reg, // attach registry for metadata in detail view
-		})
+		}
+		if inst.RecordOnly {
+			row.sortPriority = 2
+		}
+		rows = append(rows, row)
 		if inst.Model != "" {
 			covered[coveredKey(inst.Model, inst.Node)] = true
 		}
@@ -445,7 +449,7 @@ func formatDeploymentStatus(p *shared.DeploymentInfo) string {
 
 func formatInstanceStatus(inst *pkgClient.Instance) string {
 	until := formatCompactUntil(inst.KeepAlive, inst.LastActivity, inst.StartedAt)
-	status := inst.Status
+	status := inst.DisplayStatus()
 	if until == "forever" {
 		return status
 	}

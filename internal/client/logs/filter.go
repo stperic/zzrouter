@@ -36,16 +36,7 @@ func (f RunFilter) IsEmpty() bool {
 	return f.RunID == "" && f.Provider == "" && f.Model == "" && f.Node == "" && f.Status == ""
 }
 
-// ResolveRuns fetches all runs from the server and returns those
-// matching the filter, sorted with running runs first and then by
-// StartedAt descending (newest first within each status group).
-//
-// Filters are currently applied client-side because the server does
-// not (yet) accept filter query params on GET /zzrouter/v1/runs. If
-// server support lands later, the filtering can migrate server-side
-// without changing this function's signature.
-//
-// Returns ErrNoMatch when zero runs match.
+// ResolveRuns excludes record-only pins and orders matches by status and start time.
 func ResolveRuns(ctx context.Context, c *utilsclient.Client, f RunFilter) ([]Run, error) {
 	all, err := c.ListInstancesCtx(ctx)
 	if err != nil {
@@ -55,7 +46,7 @@ func ResolveRuns(ctx context.Context, c *utilsclient.Client, f RunFilter) ([]Run
 	matched := make([]Run, 0, len(all))
 	for _, inst := range all {
 		r := runFromInstance(inst)
-		if matchesFilter(r, f) {
+		if !inst.RecordOnly && matchesFilter(r, f) {
 			matched = append(matched, r)
 		}
 	}

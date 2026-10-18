@@ -28,6 +28,7 @@ func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsCo
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process fixture")
 	}
+	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir()) // a pinned run's record is node state that outlives Stop
 	engine := filepath.Join(t.TempDir(), "studio")
 	require.NoError(t, os.WriteFile(engine, []byte(testproc.Script("trap 'kill $! 2>/dev/null; exit 0' TERM INT\nprintf 'READY\\n'\nwhile kill -0 $test_owner; do /bin/sleep 1 & wait $!; done\n")), 0o700))
 	cfg := &config.AppsConfig{}
