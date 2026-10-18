@@ -51,8 +51,7 @@ const (
 	InferenceLogs   = Base + "/inference-logs"
 	UsageModels     = Base + "/usage/models"
 
-	ModelsDefaults = Models + "/defaults"
-	ModelsShow     = Models + "/show"
+	ModelsShow = Models + "/show"
 
 	NodesCompatible = Nodes + "/compatible"
 

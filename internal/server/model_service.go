@@ -413,16 +413,6 @@ func (s *ModelService) deleteModelsStandard(ctx context.Context, req *DeleteMode
 	return s.router.Route(ctx, routingReq)
 }
 
-// handleSaveModelDefaults handles POST /zzrouter/models/defaults.
-// Stub: persistence isn't yet wired through ModelService; returning a
-// 501 in the canonical envelope is more honest than the previous
-// silent 200 with empty body, which made the endpoint look like it
-// succeeded when nothing was stored.
-func (s *ModelService) handleSaveModelDefaults(c *gin.Context) {
-	RespondToError(c, newProblemError(http.StatusNotImplemented, "Not Implemented",
-		"saving model defaults is not yet implemented; track via /zzrouter/v1 API discovery for availability"))
-}
-
 // handleGetModelInstance returns instance info for a loaded model.
 // The route uses a `*model` wildcard so HuggingFace-style names containing
 // slashes (e.g. "mlx-community/SmolLM-135M-Instruct-4bit") match correctly.
