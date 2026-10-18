@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	commonmcp "github.com/stperic/common/mcp"
 	"github.com/stperic/zzrouter/pkg/version"
 )
 
@@ -37,10 +38,9 @@ const (
 )
 
 type outerRequest struct {
-	header                http.Header
-	remoteAddr, requestID string
-	ctx                   context.Context
-	index                 atomic.Uint64
+	requestID string
+	ctx       context.Context
+	index     atomic.Uint64
 }
 
 // IsDispatch identifies inner calls for HTTP accounting only, never auth.
@@ -48,19 +48,17 @@ func IsDispatch(ctx context.Context) bool { return ctx.Value(dispatchKey) == tru
 
 func newDispatcher(ctx context.Context, cfg Config, bindings map[string][]string) (dispatcher, error) {
 	outer, ok := ctx.Value(outerKey).(*outerRequest)
-	if !ok || outer == nil {
+	info, hasHTTP := commonmcp.HTTPRequestFromContext(ctx)
+	if !ok || outer == nil || !hasHTTP {
 		return dispatcher{}, newToolError(http.StatusInternalServerError, codeInternal, "MCP request metadata is unavailable; retry through the public MCP endpoint", nil)
 	}
-	return dispatcher{cfg, outer, bindings}, nil
+	return dispatcher{cfg: cfg, outer: outer, requestInfo: info, bindings: bindings}, nil
 }
 
 func newServer(cfg Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "zzrouter", Version: version.Current.String()}, &mcp.ServerOptions{Instructions: instructions, SetCacheable: func(_ context.Context, req mcp.Request, cache *mcp.Cacheable) {
-		if _, ok := req.(*mcp.ListToolsRequest); ok {
-			cache.TTLMs = int(toolsListTTL.Milliseconds())
-		}
-	}})
-	s.AddReceivingMiddleware(toolErrorMiddleware)
+	s := commonmcp.NewServer(commonmcp.Options{
+		Name: "zzrouter", Version: version.Current.String(), Instructions: instructions, ToolsListTTL: toolsListTTL,
+	})
 	registerTools(s, cfg)
 	return s
 }
@@ -68,12 +66,9 @@ func newServer(cfg Config) *mcp.Server {
 // New builds a stateless handler serving both supported protocol eras.
 func New(cfg Config) http.Handler {
 	s := newServer(cfg)
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, &mcp.StreamableHTTPOptions{
-		Stateless: true, JSONResponse: true, CrossOriginProtection: http.NewCrossOriginProtection(),
-		MaxRequestBodyBytes: MaxRequestBytes, PropagateRequestCancellation: true,
-	})
+	handler := commonmcp.HTTPHandler(s, commonmcp.HTTPOptions{MaxRequestBytes: MaxRequestBytes})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		outer := &outerRequest{header: r.Header.Clone(), remoteAddr: r.RemoteAddr, requestID: w.Header().Get("X-Request-ID"), ctx: r.Context()}
+		outer := &outerRequest{requestID: w.Header().Get("X-Request-ID"), ctx: r.Context()}
 		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), outerKey, outer)))
 	})
 }

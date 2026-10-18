@@ -1,21 +1,48 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSchemaObjectsPreservesBooleanValues(t *testing.T) {
-	input := map[string]any{
-		"type": "object", "additionalProperties": false,
-		"properties": map[string]any{"patch": true, "enabled": map[string]any{"type": "boolean", "default": false, "readOnly": true, "enum": []any{false, true}}},
+func TestRegisteredToolValidatesOutputSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		runID any
+		valid bool
+	}{
+		{"valid", "run-1", true},
+		{"invalid", 42, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDispatcher(func(http.ResponseWriter, *http.Request) { t.Fatal("unexpected REST dispatch") })
+			server := newServer(d.cfg)
+			called := false
+			registerTool(server, d.cfg, map[string][]string{}, &mcp.Tool{
+				Name: "schema_contract", OutputSchema: objectSchema[runOutput]{},
+			}, nil, func(_ dispatcher, _ context.Context, _ struct{}) (agentOutput, error) {
+				called = true
+				return agentOutput{fields: map[string]any{"run_id": tc.runID}}, nil
+			})
+			client, ctx := connectToolClient(t, d, server)
+			result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "schema_contract", Arguments: map[string]any{}})
+			require.True(t, called)
+			if tc.valid {
+				require.NoError(t, err)
+				require.False(t, result.IsError)
+				require.Equal(t, tc.runID, result.StructuredContent.(map[string]any)["run_id"])
+			} else {
+				require.ErrorContains(t, err, "validating tool output")
+				require.Nil(t, result)
+			}
+		})
 	}
-	raw, err := json.Marshal(schemaObjects(input))
-	require.NoError(t, err)
-	require.JSONEq(t, `{"type":"object","additionalProperties":{"not":{}},"properties":{"patch":{},"enabled":{"type":"boolean","default":false,"readOnly":true,"enum":[false,true]}}}`, string(raw))
 }
 
 func TestRunToolParameterInputSchemas(t *testing.T) {

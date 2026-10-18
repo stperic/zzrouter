@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	commonmcp "github.com/stperic/common/mcp"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/observability"
 
@@ -31,8 +32,9 @@ type valueFree struct{ context.Context }
 func (valueFree) Value(any) any { return nil }
 
 type dispatcher struct {
-	cfg   Config
-	outer *outerRequest
+	cfg         Config
+	outer       *outerRequest
+	requestInfo commonmcp.HTTPRequestInfo
 	// bindings is the registered tool-to-operationId map, read only after registration.
 	bindings map[string][]string
 }
@@ -109,10 +111,10 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 		cancel()
 	}
 	req = req.WithContext(context.WithValue(inner, dispatchKey, true)) //nolint:contextcheck // Decision 2 permits only the accounting marker in the value-free context.
-	req.RemoteAddr = d.outer.remoteAddr
+	req.RemoteAddr = d.requestInfo.RemoteAddr
 	observability.InjectTraceContext(d.outer.ctx, req.Header) //nolint:contextcheck // Serialize only the HTTP trace parent into the value-free request.
 	for _, name := range append(append([]string(nil), d.cfg.KeyHeaders...), "X-Forwarded-For", "X-Real-IP") {
-		for _, value := range d.outer.header.Values(name) {
+		for _, value := range d.requestInfo.Header.Values(name) {
 			req.Header.Add(name, value)
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	commonmcp "github.com/stperic/common/mcp"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/observability"
 	"github.com/stretchr/testify/require"
@@ -23,7 +24,7 @@ import (
 const testKey = "mx-zzr-mcp-caller-Kp9vB4xRmT2LqJfNdY"
 
 func testDispatcher(handler http.HandlerFunc) dispatcher {
-	return dispatcher{cfg: Config{Engine: handler, KeyHeaders: []string{"X-API-Key", "Authorization"}, Streaming: func(_, _ string) string { return "" }}, outer: &outerRequest{header: make(http.Header), remoteAddr: "198.51.100.8:47821", requestID: "outer", ctx: context.Background()}}
+	return dispatcher{cfg: Config{Engine: handler, KeyHeaders: []string{"X-API-Key", "Authorization"}, Streaming: func(_, _ string) string { return "" }}, outer: &outerRequest{requestID: "outer", ctx: context.Background()}, requestInfo: commonmcp.HTTPRequestInfo{Header: make(http.Header), RemoteAddr: "198.51.100.8:47821"}}
 }
 
 func TestDispatchContextIsolation(t *testing.T) {
@@ -76,7 +77,7 @@ func TestDispatchHeaderAllowlist(t *testing.T) {
 		require.Equal(t, "outer.1", r.Header.Get("X-Request-ID"))
 		writeFixture(t, w, []byte(`{}`))
 	})
-	d.outer.header = http.Header{"X-Api-Key": {testKey}, "Authorization": {"Bearer " + testKey}, "X-Cluster-Api-Key": {testKey}, "Cookie": {"secret=1"}, "X-Forwarded-For": dHeaderForwarded, "X-Real-Ip": {"203.0.113.2"}, "Content-Type": {"text/plain"}, "Idempotency-Key": {"outer-only"}, "If-Match": {"outer-only"}}
+	d.requestInfo.Header = http.Header{"X-Api-Key": {testKey}, "Authorization": {"Bearer " + testKey}, "X-Cluster-Api-Key": {testKey}, "Cookie": {"secret=1"}, "X-Forwarded-For": dHeaderForwarded, "X-Real-Ip": {"203.0.113.2"}, "Content-Type": {"text/plain"}, "Idempotency-Key": {"outer-only"}, "If-Match": {"outer-only"}}
 	var out any
 	require.NoError(t, d.call(context.Background(), request{method: "PATCH", path: routePrefix("/test").path(), contentType: "application/merge-patch+json", idempotencyKey: "retry-1", ifMatch: "revision-1"}, &out))
 	// Caller headers alone cannot install concurrency or retry conditions.
@@ -296,7 +297,7 @@ func TestDispatchClientIPAndFlush(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{})
 	})
 	d := testDispatcher(nil)
-	d.cfg.Engine, d.outer.header = engine, headers
+	d.cfg.Engine, d.requestInfo.Header = engine, headers
 	var out any
 	require.NoError(t, d.call(context.Background(), request{method: "GET", path: routePrefix("/test").path()}, &out))
 }
@@ -314,7 +315,7 @@ func TestJobFirstPollWaitBound(t *testing.T) {
 }
 
 func TestDispatcherMissingMetadata(t *testing.T) {
-	for _, value := range []any{nil, true, (*outerRequest)(nil)} {
+	for _, value := range []any{nil, true, (*outerRequest)(nil), &outerRequest{ctx: context.Background()}} {
 		ctx := context.Background()
 		if value != nil {
 			ctx = context.WithValue(ctx, outerKey, value)
@@ -372,8 +373,8 @@ func TestDispatchTraceContextWithoutOuterValues(t *testing.T) {
 	d := testDispatcher(nil)
 	d.cfg.Engine = engine
 	d.outer.ctx = outer
-	d.outer.header.Set("Traceparent", "stale")
-	d.outer.header.Set("Baggage", "secret=private-secret")
+	d.requestInfo.Header.Set("Traceparent", "stale")
+	d.requestInfo.Header.Set("Baggage", "secret=private-secret")
 	_, toolSpan := tp.Tracer("test").Start(t.Context(), "tool unrelated")
 	defer toolSpan.End()
 	var out any

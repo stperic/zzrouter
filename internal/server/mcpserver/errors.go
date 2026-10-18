@@ -1,11 +1,9 @@
 package mcpserver
 
 import (
-	"context"
 	"errors"
 	"net/http"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -53,24 +51,13 @@ func newToolError(status int, code toolErrorCode, line string, cause error) *too
 	return &toolError{problem: *p, line: line, cause: cause}
 }
 
-// toolErrorMiddleware copies a toolError's problem into structuredContent; it changes nothing else.
-func toolErrorMiddleware(next mcp.MethodHandler) mcp.MethodHandler {
-	return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-		result, err := next(ctx, method, req)
-		if method == "tools/call" {
-			if call, ok := result.(*mcp.CallToolResult); ok && call != nil && call.IsError {
-				var failure *toolError
-				if errors.As(call.GetError(), &failure) {
-					call.StructuredContent = failure.problem
-					if failure.probe != nil {
-						call.StructuredContent = struct {
-							utils.ProblemDetails
-							*probeOutput
-						}{failure.problem, failure.probe}
-					}
-				}
-			}
-		}
-		return result, err
+// StructuredContent supplies the product's problem and optional probe evidence.
+func (e *toolError) StructuredContent() any {
+	if e.probe != nil {
+		return struct {
+			utils.ProblemDetails
+			*probeOutput
+		}{e.problem, e.probe}
 	}
+	return e.problem
 }

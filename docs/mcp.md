@@ -1,5 +1,10 @@
 # MCP for coding agents
 
+The implementation uses the shared `common/mcp` package for server, schema,
+error and HTTP conventions. Tool registration, REST dispatch and authorization
+stay in zzRouter. The [shared MCP plan](plan_shared-mcp.md) records the preserved
+contracts and local dependency setup.
+
 zzRouter exposes `POST /zzrouter/v1/mcp` on the coordinator for Claude Code and
 Codex. Tools call the existing REST handlers with your admin key; validation,
 cluster routing, jobs and errors are the REST contract. Workers do not expose

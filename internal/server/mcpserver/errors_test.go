@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/httperr"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	commonmcp "github.com/stperic/common/mcp"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -26,15 +28,24 @@ func requireToolError(t *testing.T, err error) *toolError {
 
 func toolClient(t *testing.T, d dispatcher) (*mcp.ClientSession, context.Context) {
 	t.Helper()
+	return connectToolClient(t, d, newServer(d.cfg))
+}
+
+func connectToolClient(t *testing.T, d dispatcher, server *mcp.Server) (*mcp.ClientSession, context.Context) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
-	server := newServer(d.cfg)
-	ct, st := mcp.NewInMemoryTransports()
-	ss, err := server.Connect(context.WithValue(ctx, outerKey, d.outer), st, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, ss.Close()) })
+	handler := commonmcp.HTTPHandler(server, commonmcp.HTTPOptions{MaxRequestBytes: MaxRequestBytes})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for name, values := range d.requestInfo.Header {
+			r.Header[name] = append([]string(nil), values...)
+		}
+		r.RemoteAddr = d.requestInfo.RemoteAddr
+		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), outerKey, d.outer)))
+	}))
+	t.Cleanup(httpServer.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "error-contract-test", Version: "1"}, nil)
-	cs, err := client.Connect(ctx, ct, nil)
+	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: httpServer.URL}, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cs.Close()) })
 	return cs, ctx
@@ -191,7 +202,7 @@ func TestToolErrorMiddlewareIgnoresOtherErrors(t *testing.T) {
 			before, err := json.Marshal(tc.result)
 			require.NoError(t, err)
 			nextErr := errors.New("keep handler error")
-			wrapped := toolErrorMiddleware(func(context.Context, string, mcp.Request) (mcp.Result, error) { return tc.result, nextErr })
+			wrapped := commonmcp.ErrorMiddleware(func(context.Context, string, mcp.Request) (mcp.Result, error) { return tc.result, nextErr })
 			got, err := wrapped(context.Background(), tc.method, nil)
 			require.Same(t, nextErr, err)
 			after, err := json.Marshal(got)
@@ -207,7 +218,7 @@ func TestToolErrorMiddlewareUnwrapsAndOnlySetsStructuredContent(t *testing.T) {
 	call := &mcp.CallToolResult{}
 	call.SetError(err)
 	content := call.Content
-	wrapped := toolErrorMiddleware(func(context.Context, string, mcp.Request) (mcp.Result, error) { return call, nil })
+	wrapped := commonmcp.ErrorMiddleware(func(context.Context, string, mcp.Request) (mcp.Result, error) { return call, nil })
 	got, outerErr := wrapped(context.Background(), "tools/call", nil)
 	require.NoError(t, outerErr)
 	require.Same(t, call, got)

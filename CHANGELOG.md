@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Share MCP server configuration, schemas, errors and HTTP transport through
+  `common/mcp`. Keep tool registration contracts, REST dispatch and authorization
+  in zzRouter.
+
 - Share artifact delivery, verification, extraction, link activation and release
   packaging through `common`. Keep service privileges, launcher pairing and
   rollback history in zzRouter. Local integration requires the sibling module
