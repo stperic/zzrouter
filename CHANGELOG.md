@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Share artifact delivery, verification, extraction, link activation and release
-  packaging through `zzinstall`. Keep service privileges, launcher pairing and
+  packaging through `common`. Keep service privileges, launcher pairing and
   rollback history in zzRouter. Local integration requires the sibling module
   until its immutable published dependency is available.
 

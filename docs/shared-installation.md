@@ -1,10 +1,12 @@
 # Shared installation integration
 
-The `refactor/shared-installation` branch extracts the common implementation into the sibling `zzinstall` Go module. That module is local and unpublished. Do not merge this branch into a published product until its local replacement is removed and an immutable published module version passes clean hosted CI.
+The `refactor/shared-installation` branch extracts the common implementation into the sibling `common` Go module. That module is local and unpublished. Do not merge this branch into a published product until its local replacement is removed and an immutable published module version passes clean hosted CI.
+
+The owner named the shared repository `common` so additional tools and libraries can live alongside its installation packages. The current dependency is `github.com/stperic/common` at local tag `v0.1.1`. The rename changes module and checkout paths; package APIs and product behavior are unchanged.
 
 All download and retry callers import the shared module. `pkg/security` and `pkg/update/Verifier` retain their public contracts through thin adapters. The shared verifier keeps exact workflow/tag identity, bundle v0.3, transparency and observed signing time requirements. Product release lookup, allowed hosts, platform member naming and release manifests remain here.
 
-Archive extraction scans the entire archive, bounds total expanded input, rejects duplicate matched binaries and publishes staged output only after success. The managed layout selects its ordered links and retained companions; `zzinstall/install` performs preflight and reverse restoration. The existing temporary-symlink behavior is retained. Service users, root updater requests, launcher hashes, health confirmation, rollback history and pruning are unchanged.
+Archive extraction scans the entire archive, bounds total expanded input, rejects duplicate matched binaries and publishes staged output only after success. The managed layout selects its ordered links and retained companions; `common/install` performs preflight and reverse restoration. The existing temporary-symlink behavior is retained. Service users, root updater requests, launcher hashes, health confirmation, rollback history and pruning are unchanged.
 
 The release workflow invokes `zzrelease` for deterministic packaging, checksum generation and signing inside its existing job. Build flags, launcher hashing, SBOMs, pinned cosign and the publisher certificate identity remain owned by this repository.
 

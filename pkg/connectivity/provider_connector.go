@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stperic/zzinstall/retry"
+	"github.com/stperic/common/retry"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/utils"

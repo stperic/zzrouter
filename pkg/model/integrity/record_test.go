@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stperic/zzinstall/download"
+	"github.com/stperic/common/download"
 )
 
 // Files recorded one at a time, from concurrent downloads, all land in the

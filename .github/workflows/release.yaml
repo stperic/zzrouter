@@ -129,7 +129,7 @@ jobs:
 
           FORMAT=tar.gz
           if [ "${{ matrix.goos }}" = "windows" ]; then FORMAT=zip; fi
-          go run github.com/stperic/zzinstall/cmd/zzrelease pack \
+          go run github.com/stperic/common/cmd/zzrelease pack \
             --output "dist/zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}.$FORMAT" \
             "zzrouter-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
             "zzrouter-launcher-${{ matrix.goos }}-${{ matrix.goarch }}${EXT}" \
@@ -223,7 +223,7 @@ jobs:
 
       - name: Generate checksums
         run: |
-          go run github.com/stperic/zzinstall/cmd/zzrelease checksums \
+          go run github.com/stperic/common/cmd/zzrelease checksums \
             --output artifacts/checksums.txt \
             artifacts/*.tar.gz artifacts/*.zip artifacts/sbom.*.cyclonedx.json artifacts/release.json
 
@@ -236,7 +236,7 @@ jobs:
         env:
           RELEASE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yaml@${{ github.ref }}
         run: |
-          go run github.com/stperic/zzinstall/cmd/zzrelease sign \
+          go run github.com/stperic/common/cmd/zzrelease sign \
             --identity "$RELEASE_IDENTITY" \
             --issuer https://token.actions.githubusercontent.com artifacts/checksums.txt
 

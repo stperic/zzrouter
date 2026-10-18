@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/stperic/zzinstall/retry"
+	"github.com/stperic/common/retry"
 )
 
 // HTTP timeouts and retry knobs.

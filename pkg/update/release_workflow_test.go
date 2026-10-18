@@ -54,7 +54,7 @@ func TestReleaseWorkflowUsesTagSigning(t *testing.T) {
 	require.Equal(t, 2, strings.Count(s, "run: bash .github/scripts/release-version.sh"))
 	require.Contains(t, s, "prerelease: ${{ steps.version.outputs.is_prerelease }}")
 	require.Contains(t, s, "id-token: write")
-	require.Contains(t, s, "go run github.com/stperic/zzinstall/cmd/zzrelease sign")
+	require.Contains(t, s, "go run github.com/stperic/common/cmd/zzrelease sign")
 	require.Contains(t, s, "--issuer https://token.actions.githubusercontent.com artifacts/checksums.txt")
 	require.Contains(t, s, "/.github/workflows/release.yaml@${{ github.ref }}")
 	require.NotContains(t, s, "workflow_dispatch:")
@@ -72,7 +72,7 @@ func TestReleaseManifestPrecedesSignedChecksums(t *testing.T) {
 	require.Contains(t, s[manifest:checksums], "zzrouter-linux-amd64.tar.gz")
 	require.Contains(t, s[manifest:checksums], "cluster_protocol: .cluster_protocol")
 	require.Contains(t, s[manifest:checksums], "min_cluster_protocol: .min_cluster_protocol")
-	require.Contains(t, s, "go run github.com/stperic/zzinstall/cmd/zzrelease checksums")
+	require.Contains(t, s, "go run github.com/stperic/common/cmd/zzrelease checksums")
 	require.Contains(t, s, "artifacts/*.tar.gz artifacts/*.zip artifacts/sbom.*.cyclonedx.json artifacts/release.json")
 	require.Contains(t, s, "            artifacts/release.json\n")
 }

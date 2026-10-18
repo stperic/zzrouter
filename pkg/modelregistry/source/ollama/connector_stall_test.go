@@ -8,7 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/stperic/zzinstall/download"
+	"github.com/stperic/common/download"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stretchr/testify/require"

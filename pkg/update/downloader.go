@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/stperic/zzinstall/artifact"
-	"github.com/stperic/zzinstall/download"
+	"github.com/stperic/common/artifact"
+	"github.com/stperic/common/download"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"

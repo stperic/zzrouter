@@ -33,7 +33,7 @@ require (
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/stperic/zzinstall v0.1.0
+	github.com/stperic/common v0.1.1
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
@@ -197,4 +197,4 @@ require (
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
 
-replace github.com/stperic/zzinstall => ../zzinstall
+replace github.com/stperic/common => ../common

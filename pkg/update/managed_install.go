@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/stperic/zzinstall/install"
+	"github.com/stperic/common/install"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/version"

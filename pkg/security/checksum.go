@@ -3,7 +3,7 @@ package security
 import (
 	"io"
 
-	"github.com/stperic/zzinstall/artifact"
+	"github.com/stperic/common/artifact"
 )
 
 // ErrChecksumMismatch distinguishes integrity failures from file I/O errors.

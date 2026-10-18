@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
-	"github.com/stperic/zzinstall/artifact"
+	"github.com/stperic/common/artifact"
 	"github.com/stperic/zzrouter/pkg/security"
 )
 

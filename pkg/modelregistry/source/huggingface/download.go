@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stperic/zzinstall/download"
+	"github.com/stperic/common/download"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"

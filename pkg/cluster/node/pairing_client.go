@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stperic/zzinstall/retry"
+	"github.com/stperic/common/retry"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/version"
 )

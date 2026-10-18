@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stperic/zzinstall/artifact"
+	"github.com/stperic/common/artifact"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
 )
