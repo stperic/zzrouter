@@ -166,10 +166,6 @@ func RequestTimeout(c *gin.Context, detail string) {
 	RespondWithProblem(c, http.StatusRequestTimeout, "Request Timeout", detail)
 }
 
-func NotImplemented(c *gin.Context, detail string) {
-	RespondWithProblem(c, http.StatusNotImplemented, "Not Implemented", detail)
-}
-
 func BadGateway(c *gin.Context, detail string) {
 	// SECURITY: Sanitize error messages to prevent information disclosure
 	sanitized := utils.SanitizeErrorMessage(detail)

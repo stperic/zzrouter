@@ -3,12 +3,14 @@ package process
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
@@ -346,4 +348,26 @@ func TestValidateVariantModel_IgnoresDeclaredFeatureWeights(t *testing.T) {
 	}
 	err := ValidateVariantModel(cfg, "mmproj-fast")
 	require.NoError(t, err, "a projector is not conflicting weights")
+}
+
+func TestBuildParameterArgsLiteralFlagSpelling(t *testing.T) {
+	shapes, errs := schema.Merge("custom", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"fp8_e4m3fn-unet": {Type: "bool", Negatable: true}}})
+	require.Empty(t, errs)
+	for _, key := range []string{"fp8_e4m3fn_unet", "fp8-e4m3fn-unet"} {
+		require.Equal(t, []string{"--fp8_e4m3fn-unet"}, buildParameterArgs(map[string]string{key: "true"}, shapes.Parameters, nil))
+		require.Equal(t, []string{"--no-fp8_e4m3fn-unet"}, buildParameterArgs(map[string]string{key: "false"}, shapes.Parameters, nil))
+	}
+}
+
+func TestShippedComfyUIFP8LiteralFlags(t *testing.T) {
+	schemas, errs := schema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	cfg := config.ServiceConfig{Runtime: &config.AppRuntimeConfig{Execution: config.ExecutionConfig{Type: "cli", Command: "comfyui"}}}
+	for _, literal := range []string{"fp8_e4m3fn-unet", "fp8_e5m2-unet", "fp8_e8m0fnu-unet", "fp8_e4m3fn-text-enc", "fp8_e5m2-text-enc"} {
+		name := strings.ReplaceAll(literal, "_", "-")
+		require.Nil(t, schema.Check(name, "true", schemas["comfyui"].Parameters))
+		launch, err := NewCommandBuilder(&cfg).Build(ResolvedModel{}, 1, map[string]string{name: "true"}, schemas["comfyui"].Parameters)
+		require.NoError(t, err)
+		require.Equal(t, []string{"--" + literal}, launch.Args)
+	}
 }

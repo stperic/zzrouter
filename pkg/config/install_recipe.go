@@ -19,6 +19,7 @@ type InstallConfig struct {
 
 // InstallRecipe uses pointers so an omitted field inherits and an empty value replaces.
 type InstallRecipe struct {
+	PinnedVersion     *string                     `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
 	Source            *InstallSource              `yaml:"source,omitempty" json:"source,omitempty"`
 	Package           *string                     `yaml:"package,omitempty" json:"package,omitempty"`
 	VersionConstraint *string                     `yaml:"version_constraint,omitempty" json:"version_constraint,omitempty"`
@@ -107,6 +108,9 @@ func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, er
 	}
 	if err := json.Unmarshal(data, &out.Recipe); err != nil {
 		return out, err
+	}
+	if runtime == s.Name && out.Recipe.PinnedVersion != nil {
+		return out, fmt.Errorf("base runtime %q: use provider-level pinned_version, not recipe pinned_version", runtime)
 	}
 	if err := out.Recipe.Validate(); err != nil {
 		return out, err
@@ -197,27 +201,7 @@ func mergeInstallPatch(dst, src map[string]any) {
 
 // Validate checks a complete resolved recipe without granting execution authority.
 func (r InstallRecipe) Validate() error {
-	if r.Source != nil {
-		if r.Package != nil || r.StartupImport != nil || r.VersionConstraint != nil || r.Toolkit != nil {
-			return fmt.Errorf("source: package, startup_import, version_constraint and toolkit are forbidden")
-		}
-		if err := r.Source.validate(); err != nil {
-			return err
-		}
-	} else {
-		if r.Package == nil || !ValidDistribution(*r.Package) {
-			return fmt.Errorf("package: normalized distribution name required")
-		}
-		if r.StartupImport == nil || !ValidInstallModule(*r.StartupImport) {
-			return fmt.Errorf("startup_import: dotted module required")
-		}
-		if r.VersionConstraint != nil {
-			if err := ValidateSpecifier(*r.VersionConstraint); err != nil {
-				return fmt.Errorf("version_constraint: %w", err)
-			}
-		}
-	}
-	for _, validate := range []func() error{r.validateIndexes, r.validateCompanions, r.validateChecks} {
+	for _, validate := range []func() error{r.validateRuntime, r.validateIndexes, r.validateCompanions, r.validateChecks} {
 		if err := validate(); err != nil {
 			return err
 		}
@@ -240,6 +224,32 @@ func (r InstallRecipe) Validate() error {
 	}
 	if r.Toolkit != nil && *r.Toolkit != "" && !slices.Contains(*r.Verify.Checks, "managed_toolkit") {
 		return fmt.Errorf("verify.checks: managed_toolkit is mandatory for a managed compiler")
+	}
+	return nil
+}
+
+func (r InstallRecipe) validateRuntime() error {
+	if r.Source != nil {
+		if r.PinnedVersion != nil || r.Package != nil || r.StartupImport != nil || r.VersionConstraint != nil || r.Toolkit != nil {
+			return fmt.Errorf("source: pinned_version, package, startup_import, version_constraint and toolkit are forbidden")
+		}
+		return r.Source.validate()
+	}
+	if r.Package == nil || !ValidDistribution(*r.Package) {
+		return fmt.Errorf("package: normalized distribution name required")
+	}
+	if r.StartupImport == nil || !ValidInstallModule(*r.StartupImport) {
+		return fmt.Errorf("startup_import: dotted module required")
+	}
+	if r.PinnedVersion != nil && *r.PinnedVersion != "" {
+		if err := ValidateSpecifier("==" + *r.PinnedVersion); err != nil {
+			return fmt.Errorf("pinned_version: %w", err)
+		}
+	}
+	if r.VersionConstraint != nil {
+		if err := ValidateSpecifier(*r.VersionConstraint); err != nil {
+			return fmt.Errorf("version_constraint: %w", err)
+		}
 	}
 	return nil
 }

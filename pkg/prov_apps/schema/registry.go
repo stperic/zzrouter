@@ -45,6 +45,7 @@ const (
 // applies.
 type ParamShape struct {
 	AutoContext
+	Flag        string // The engine's literal spelling when its canonical name differs.
 	Kind        ParamKind
 	Min         *float64
 	Max         *float64

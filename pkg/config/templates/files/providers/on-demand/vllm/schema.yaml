@@ -47,7 +47,7 @@ parameters:
   chat-template:
     type: asset
     description: Jinja chat template overriding the model's own, by asset name
-  # Every other vllm serve 0.29.0 flag an operator may set. Engine tuning and
+  # Every other vllm serve at the pinned version flag an operator may set. Engine tuning and
   # running code from the model repo (trust-remote-code) are the operator's
   # choice; flags the runtime passes, paths, URLs, downloads, plugins, LoRA
   # adapters, multi-node, auth, TLS, CORS and logging stay out. Every bool vLLM

@@ -34,7 +34,6 @@ func (ctrl *ModelsController) RegisterPublicRoutes(router *gin.RouterGroup, idem
 	idempotent(router, http.MethodDelete, "/models", nil, ctrl.DeleteModels)
 	router.GET("/models/stats", ctrl.GetModelStats)
 	router.POST("/models/scan", ctrl.RescanModels)
-	router.POST("/models/defaults", ctrl.SaveModelDefaults)
 	router.GET("/models/card/:provider/*id", ctrl.GetModelCard)
 	router.GET("/models/instance/*model", ctrl.GetModelInstance)
 
@@ -146,11 +145,6 @@ func (ctrl *ModelsController) GetModelStats(c *gin.Context) {
 // RescanModels handles POST /zzrouter/v1/models/scan
 func (ctrl *ModelsController) RescanModels(c *gin.Context) {
 	ctrl.service.handleRescanModels(c)
-}
-
-// SaveModelDefaults handles POST /zzrouter/models/defaults
-func (ctrl *ModelsController) SaveModelDefaults(c *gin.Context) {
-	ctrl.service.handleSaveModelDefaults(c)
 }
 
 // GetModelCard handles GET /zzrouter/models/card/:provider/*id

@@ -152,3 +152,25 @@ func TestSnapshotEnvironmentRefusesUnsafeInputBeforeProbe(t *testing.T) {
 	assert.NotContains(t, environment, "PIP_INDEX_URL=https://unapproved.invalid/simple")
 	assert.NotContains(t, environment, "PYTHONPATH=/unapproved")
 }
+
+func TestShippedRuntimesHaveDefaultVersions(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	for name := range apps.OnDemandProviders() {
+		sc, ok := apps.LookupApp(name)
+		require.True(t, ok)
+		if sc.Install == nil {
+			require.NotEmpty(t, sc.PinnedVersion, name)
+			continue
+		}
+		for runtime := range sc.Install.Runtimes {
+			t.Run(name+"/"+runtime, func(t *testing.T) {
+				snapshot, err := ResolveRecipe(sc, "worker", runtime, "", nil)
+				require.NoError(t, err)
+				require.NotEmpty(t, snapshot.PinnedVersion)
+			})
+		}
+	}
+}

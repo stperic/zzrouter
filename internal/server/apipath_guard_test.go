@@ -56,7 +56,6 @@ func apipathSamples() map[string]string {
 		"InferenceLogs": apipath.InferenceLogs,
 		"UsageModels":   apipath.UsageModels,
 
-		"ModelsDefaults":                apipath.ModelsDefaults,
 		"ModelsShow":                    apipath.ModelsShow,
 		"NodesCompatible":               apipath.NodesCompatible,
 		"ProvidersCatalog":              apipath.ProvidersCatalog,

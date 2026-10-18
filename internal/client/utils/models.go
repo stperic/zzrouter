@@ -218,24 +218,6 @@ func (c *Client) PreviewRun(node, modelName, provider string, parameters, enviro
 	return &envelope.Data, nil
 }
 
-// SaveModelDefaults saves model parameters and environment as defaults in provider config
-func (c *Client) SaveModelDefaults(node, modelName, provider string, parameters, environment map[string]string) error {
-	req := struct {
-		Node        string            `json:"node,omitempty"`
-		App         string            `json:"provider"`
-		ModelName   string            `json:"model_name"`
-		Parameters  map[string]string `json:"parameters,omitempty"`
-		Environment map[string]string `json:"environment,omitempty"`
-	}{
-		Node:        node,
-		App:         provider,
-		ModelName:   modelName,
-		Parameters:  parameters,
-		Environment: environment,
-	}
-	return c.doJSON("POST", apipath.ModelsDefaults, req, nil, "save model defaults")
-}
-
 // ListInstances lists all running provider instances. Uses
 // context.Background() — prefer ListInstancesCtx in new code so
 // caller cancellation and deadlines propagate.

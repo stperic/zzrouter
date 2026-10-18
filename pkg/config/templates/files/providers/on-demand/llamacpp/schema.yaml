@@ -54,7 +54,7 @@ parameters:
   chat-template-file:
     type: asset
     description: Jinja chat template overriding the model's own, by asset name
-  # Every other llama-server b10549 flag an operator may set. Engine tuning and
+  # Every other llama-server at the pinned version flag an operator may set. Engine tuning and
   # running code from the model repo are the operator's choice; flags the runtime
   # passes, paths, URLs, downloads, plugins, LoRA adapters, auth, TLS, CORS and
   # logging stay out. A bool llama.cpp also spells --no-<flag> is one negatable key.

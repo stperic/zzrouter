@@ -1,6 +1,7 @@
 package process
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -330,11 +331,12 @@ func buildParameterArgs(params map[string]string, shapes map[string]schema.Param
 			value = normalizeJSONNumbers(value)
 		}
 
-		name := runsettings.FlagName(key)
+		shape := shapes[runsettings.FlagName(key)]
+		name := cmp.Or(shape.Flag, runsettings.FlagName(key))
 		switch {
 		case value == "" || value == "true":
 			args = append(args, "--"+name)
-		case value == "false" && shapes[name].Negatable:
+		case value == "false" && shape.Negatable:
 			args = append(args, "--no-"+name)
 		case value == "false":
 			// Without a --no- spelling, false leaves the flag unset.

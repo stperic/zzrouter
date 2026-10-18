@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewRunCmd(t *testing.T) {
@@ -123,4 +124,10 @@ func TestRunCandidatesFiltersByProviderNotRegistry(t *testing.T) {
 	if lister.app != "llamacpp" || lister.repo != "" {
 		t.Errorf("provider sent as app=%q repo=%q, want app=llamacpp and no registry filter", lister.app, lister.repo)
 	}
+}
+
+func TestRunSaveIsUnknownFlag(t *testing.T) {
+	cmd := NewRunCmd()
+	cmd.SetArgs([]string{"model", "--save"})
+	require.ErrorContains(t, cmd.Execute(), "unknown flag: --save")
 }

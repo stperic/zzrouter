@@ -85,6 +85,9 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, in
 		return RecipeSnapshot{}, err
 	}
 	out := RecipeSnapshot{ResolvedInstall: resolved, Provider: sc.Name, Runtime: runtime, Node: node, Requirements: sc.Requirements}
+	if resolved.Recipe.PinnedVersion != nil {
+		out.PinnedVersion = *resolved.Recipe.PinnedVersion
+	}
 	if resolved.Recipe.Source != nil {
 		out.PinnedVersion = resolved.Recipe.Source.Version
 		out.WorkingDir = sc.RuntimeExecution(runtime).WorkingDir
@@ -131,7 +134,7 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, in
 		}
 		out.Authority = "operator"
 	}
-	out.Fingerprint = Fingerprint(resolved.Recipe)
+	out.Fingerprint = RecipeFingerprint(resolved.Recipe)
 	if err := out.bindPolicy(policyPath, installed); err != nil {
 		return out, err
 	}
@@ -216,6 +219,12 @@ func validateServingImport(sc config.ServiceConfig, runtime, module string) erro
 		}
 	}
 	return fmt.Errorf("python runtime must declare its serving module with -m")
+}
+
+// RecipeFingerprint excludes the fresh-install seed, which does not change an installed runtime.
+func RecipeFingerprint(recipe config.InstallRecipe) string {
+	recipe.PinnedVersion = nil
+	return Fingerprint(recipe)
 }
 
 // Fingerprint hashes a canonical JSON value without retaining its raw data.

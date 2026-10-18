@@ -53,6 +53,15 @@ func TestInstallRecipeOverrideRoundTrip(t *testing.T) {
 }
 
 func TestInstallSpecifierSyntax(t *testing.T) {
+	for _, seed := range []string{"", "1.2.3", "invalid", ">=1"} {
+		r := recipeFixture()
+		r.PinnedVersion = &seed
+		if seed == "" || seed == "1.2.3" {
+			require.NoError(t, r.Validate())
+		} else {
+			require.Error(t, r.Validate())
+		}
+	}
 	for _, value := range []string{"", "~=1.4.5rc1", ">=1!2.0,!=1!2.1.*", "==2.10+cu130", "==1.0+abc_01", " >= v1.0RC1 "} {
 		assert.NoError(t, ValidateSpecifier(value), value)
 	}
@@ -92,6 +101,30 @@ func TestInstallURLPathsCannotExpandShellCommands(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestBaseRuntimeRecipePinRefused(t *testing.T) {
+	for _, tier := range []string{"release", "defaults", "node"} {
+		for _, seed := range []string{"", "1.2.3"} {
+			t.Run(tier+"/"+seed, func(t *testing.T) {
+				sc := ServiceConfig{Name: "engine", PinnedVersion: "2.0.0", Install: &InstallConfig{Runtimes: map[string]InstallRecipe{"engine": recipeFixture()}}}
+				override := &InstallConfig{Runtimes: map[string]InstallRecipe{"engine": {PinnedVersion: &seed}}}
+				switch tier {
+				case "release":
+					recipe := recipeFixture()
+					recipe.PinnedVersion = &seed
+					sc.Install.Runtimes["engine"] = recipe
+				case "defaults":
+					sc.Defaults = &AppDefaultsConfig{Install: override}
+				case "node":
+					sc.Nodes = map[string]NodeSpec{"worker": {Install: override}}
+				}
+				_, err := sc.ResolveInstall("worker", "engine")
+				require.ErrorContains(t, err, `base runtime "engine": use provider-level pinned_version`)
+				require.ErrorContains(t, sc.ValidateInstall(), "provider-level pinned_version")
+			})
+		}
+	}
+}
 
 func TestInstallOverridesSurviveUpdateSaveReconcileReload(t *testing.T) {
 	dir := t.TempDir()

@@ -734,29 +734,6 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
-  /zzrouter/v1/models/defaults:
-    post:
-      tags: [Models]
-      operationId: createModelsDefault
-      summary: "Not implemented: save per-model parameter overrides"
-      description: |
-        Mounted but unimplemented: every call answers `501`. Documented
-        so the spec and the route catalog agree about what the surface
-        contains, not because there is anything to call. It answers in
-        the Problem envelope rather than the silent `200` it used to
-        return while storing nothing.
-
-        Per-model parameters are written with
-        `PATCH /zzrouter/v1/providers/{name}/parameters`, whose model
-        tier is the same setting this route was meant to hold.
-      responses:
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '501':
-          description: Not implemented. The route exists; the operation does not.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
   /zzrouter/v1/runs:
     get:
       tags: [Runs]
@@ -3919,22 +3896,6 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '503':
           description: The run manager is not initialized on this node.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-    patch:
-      tags: [Runs]
-      operationId: updateRunsConfig
-      summary: "Not implemented: update run configuration"
-      description: |
-        Mounted but unimplemented: every call answers `501`. It is
-        described here so the route catalog and this spec agree about
-        what the surface contains, not because there is anything to
-        call. Change run-manager settings in `node.yaml` and restart.
-      responses:
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '501':
-          description: Not implemented. The route exists; the operation does not.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -10650,6 +10611,7 @@ components:
       description: Typed merge-patch leaves; null deletes an override. Mandatory effective fields and serving checks cannot be removed.
       properties:
         package: { type: string, maxLength: 128 }
+        pinned_version: { type: string, description: Fresh-install seed; upgrades resolve latest. }
         version_constraint: { type: string, maxLength: 256 }
         startup_import: { type: string, maxLength: 128 }
         only_binary: { type: boolean }

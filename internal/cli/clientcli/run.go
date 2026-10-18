@@ -52,7 +52,6 @@ Examples:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
-			save, _ := cmd.Flags().GetBool("save")
 			stream, _ := cmd.Flags().GetBool("stream")
 			watch, _ := cmd.Flags().GetBool("watch")
 			provider, _ := cmd.Flags().GetString("provider")
@@ -78,14 +77,11 @@ Examples:
 			}
 
 			// Validate that model is specified
-			if model == "" && save {
-				return fmt.Errorf("--save requires a model; set node provider defaults through providers parameters")
-			}
 			if model == "" && provider == "" {
 				return fmt.Errorf("specify a model or a node-scoped --provider")
 			}
 
-			return runRun(nil, provider, node, model, force, dryRun, save, stream, watch, params, envVars) // clientConfig not needed since EnsureConnected handles it
+			return runRun(nil, provider, node, model, force, dryRun, stream, watch, params, envVars) // clientConfig not needed since EnsureConnected handles it
 		},
 	}
 
@@ -104,7 +100,6 @@ Examples:
 	// Control Flags
 	cmd.Flags().BoolP("force", "f", false, "Force loading without confirmation")
 	cmd.Flags().Bool("dry-run", false, "Preview configuration without running model")
-	cmd.Flags().Bool("save", false, "Save parameters as defaults for this model")
 	cmd.Flags().Bool("stream", false, "Stream logs after running model (like 'ps stream')")
 	cmd.Flags().BoolP("watch", "w", false, "Stream launch progress until the instance reports ready")
 
@@ -185,7 +180,7 @@ func parseEnvironmentFlags(cmd *cobra.Command) (map[string]string, error) {
 	return result, nil
 }
 
-func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryRun, save, stream, watch bool, params, envVars map[string]string) error {
+func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryRun, stream, watch bool, params, envVars map[string]string) error {
 	// Use centralized sign-in logic
 	client, err := EnsureConnected()
 	if err != nil {
@@ -260,18 +255,6 @@ func runRun(_ *pkgConfig.ClientConfig, provider, node, model string, force, dryR
 			if err := RenderJobProgress(context.Background(), client, loadResp.JobID, loadResp.Node, label); err != nil {
 				return err
 			}
-		}
-	}
-
-	// Save parameters if --save flag is set
-	if save && modelID != "" && (len(params) > 0 || len(envVars) > 0) {
-		fmt.Printf("\n💾 Saving parameters to provider config...\n")
-		err = client.SaveModelDefaults(selectedModel.Node, modelID, selectedModel.Provider, params, envVars)
-		if err != nil {
-			fmt.Printf("%s Warning: Failed to save parameters: %v\n", ui.GetWarningEmoji(), err)
-		} else {
-			fmt.Printf("%s Parameters saved for model '%s'\n", ui.GetSuccessEmoji(), modelID)
-			fmt.Printf("   Future runs will use these defaults automatically\n")
 		}
 	}
 

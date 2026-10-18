@@ -19,7 +19,7 @@ parameters:
     pass: content
     description: Jinja chat template overriding the model's own, by asset name
   # Both engines' flags an operator may set, each marked with the engine that
-  # reads it: mlx_lm.server 0.31.3 runs text models, mlx_vlm.server the runtime
+  # reads it: mlx_lm.server at the pinned version runs text models, mlx_vlm.server the runtime
   # features; runtime and feature exclude_parameters drop the other engine's.
   # Engine tuning and running code from the model repo are the operator's
   # choice; paths, URLs, downloads, adapters, auth and logging stay out.
