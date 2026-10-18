@@ -198,8 +198,7 @@ func TestShippedNegatableBoolsHaveOneKey(t *testing.T) {
 	assert.NotZero(t, negatable, "the shipped engines declare negatable bools")
 }
 
-// mlx_lm.server 0.31.3 and mlx_vlm.server 0.7.6 crash on a flag their
-// argparse does not define, so each MLX runtime passes only its engine's.
+// Each MLX runtime passes only flags its engine defines at the pinned version.
 func TestMLXRuntimesPassOnlyTheirEnginesFlags(t *testing.T) {
 	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
 	require.Empty(t, errs)

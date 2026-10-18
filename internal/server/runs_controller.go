@@ -68,7 +68,6 @@ func (ctrl *RunsController) RegisterPublicRoutes(router *gin.RouterGroup, idempo
 	router.GET("/runs/examples/file-mounts", ctrl.GetFileMountExamples)
 	router.GET("/runs/metrics", ctrl.GetMetrics)
 	router.GET("/runs/config", ctrl.GetConfig)
-	router.PATCH("/runs/config", ctrl.UpdateConfig)
 	router.GET("/runs/ports", ctrl.ListAllocatedPorts)
 	router.POST("/runs/batch", ctrl.BatchLaunch)
 	router.POST("/runs/validate/config", ctrl.ValidateConfig)
@@ -369,11 +368,6 @@ func (ctrl *RunsController) GetConfig(c *gin.Context) {
 		return
 	}
 	respondSuccess(c, "Runs config retrieved", data)
-}
-
-// UpdateConfig handles PATCH /zzrouter/runs/config.
-func (ctrl *RunsController) UpdateConfig(c *gin.Context) {
-	NotImplemented(c, "runs config update is not yet implemented")
 }
 
 // ListAllocatedPorts handles GET /zzrouter/runs/ports.

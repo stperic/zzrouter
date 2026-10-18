@@ -3,6 +3,8 @@ package schema
 import (
 	"testing"
 	"testing/fstest"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLookup(t *testing.T) {
@@ -246,4 +248,46 @@ func TestMerge_Negatable(t *testing.T) {
 	if _, errs := Merge("llamacpp", y); len(errs) == 0 {
 		t.Error("negatable on an int must be refused")
 	}
+}
+
+func TestMergeLiteralFlagSpelling(t *testing.T) {
+	for _, endpoint := range []string{"", "embeddings"} {
+		t.Run(endpoint, func(t *testing.T) {
+			parameters := map[string]YAMLParam{"fp8_e4m3fn-unet": {Type: "bool", Negatable: true}}
+			y := &YAMLSchema{Parameters: parameters}
+			if endpoint != "" {
+				y = &YAMLSchema{Endpoints: map[string]YAMLEndpoint{endpoint: {Parameters: parameters}}}
+			}
+			merged, errs := Merge("custom", y)
+			require.Empty(t, errs)
+			shapes := merged.ForEndpoint(endpoint)
+			require.NotContains(t, shapes, "fp8_e4m3fn-unet")
+			require.Equal(t, "fp8_e4m3fn-unet", shapes["fp8-e4m3fn-unet"].Flag)
+			require.Nil(t, Check("fp8_e4m3fn_unet", "true", shapes))
+			parameters["fp8-e4m3fn-unet"] = YAMLParam{Type: "bool"}
+			_, errs = Merge("custom", y)
+			require.NotEmpty(t, errs)
+		})
+	}
+}
+
+func TestEndpointOverlayKeepsBaseLiteralFlag(t *testing.T) {
+	merged, errs := Merge("custom", &YAMLSchema{
+		Parameters: map[string]YAMLParam{"fp8_e4m3fn-unet": {Type: "bool", Negatable: true}},
+		Endpoints: map[string]YAMLEndpoint{"embeddings": {Parameters: map[string]YAMLParam{
+			"fp8-e4m3fn-unet": {Type: "bool"},
+		}}},
+	})
+	require.Empty(t, errs)
+	shape := merged.ForEndpoint("embeddings")["fp8-e4m3fn-unet"]
+	require.Equal(t, "fp8_e4m3fn-unet", shape.Flag)
+	require.True(t, shape.Negatable)
+}
+
+func TestEndpointOverlayErrorPath(t *testing.T) {
+	_, errs := Merge("llamacpp", &YAMLSchema{Endpoints: map[string]YAMLEndpoint{
+		"embeddings": {Parameters: map[string]YAMLParam{"ctx-size": {Type: "string"}}},
+	}})
+	require.Len(t, errs, 1)
+	require.EqualError(t, errs[0], `llamacpp.endpoints.embeddings.parameters.ctx-size: schema.yaml type "string" conflicts with Go spine kind "int"`)
 }

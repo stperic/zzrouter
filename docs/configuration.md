@@ -209,6 +209,12 @@ PATCH and every launch take only the parameters
 `false` passes `--no-<flag>`, and a `no-<flag>` key is refused with
 `unknown_flag`. Another bool's `false` leaves its flag unset.
 
+A `schema.yaml` key is the engine's literal flag spelling. API names canonicalize
+underscores to hyphens, while launch argv and `full_command` retain the declared
+spelling: ComfyUI's `fp8-e4m3fn-unet` renders `--fp8_e4m3fn-unet`. PATCH accepts
+either spelling and stores one key; conflicting values for two spellings are
+`duplicate_flag`. A schema cannot declare two spellings of the same flag.
+
 Set `keep-alive: "-1"` (or another negative duration) in the provider tier tree
 or run-start `parameters` to pin a run against zzRouter idle expiry and pressure
 reclaim. For example, PATCH `/zzrouter/v1/providers/vllm/parameters` with

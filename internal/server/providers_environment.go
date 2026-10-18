@@ -45,7 +45,7 @@ func (r *providerEnvironment) recordInstall(manifest *fsroot.InstallManifest) {
 	if r.InstallAuthority != nil && r.InstallAuthority.Grant != nil {
 		additions = r.InstallAuthority.Grant.AdditionalPackages
 	}
-	r.RecipeDrift = manifest.RecipeFingerprint != install.Fingerprint(r.DesiredInstall.Recipe) || !maps.Equal(manifest.AdditionalPackages, additions)
+	r.RecipeDrift = manifest.RecipeFingerprint != install.RecipeFingerprint(r.DesiredInstall.Recipe) || !maps.Equal(manifest.AdditionalPackages, additions)
 }
 
 type environmentWorkaround struct {

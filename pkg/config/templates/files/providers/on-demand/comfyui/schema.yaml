@@ -11,7 +11,7 @@ parameters:
   listen:
     type: string
     description: ComfyUI bind address, use 127.0.0.1 for single-host access
-  # Every other ComfyUI 0.40.0 flag an operator may set. Engine tuning is the
+  # Every other ComfyUI at the pinned version flag an operator may set. Engine tuning is the
   # operator's choice; flags the runtime passes, paths, URLs, downloads,
   # custom-node installs, TLS, CORS and logging stay out.
   max-upload-size: {type: float, description: "Maximum upload size in MB"}
@@ -25,6 +25,11 @@ parameters:
   fp32-unet: {type: bool, description: "Run the diffusion model in fp32"}
   fp64-unet: {type: bool, description: "Run the diffusion model in fp64"}
   bf16-unet: {type: bool, description: "Run the diffusion model in bf16"}
+  fp8_e4m3fn-unet: {type: bool, description: "Store diffusion model weights in fp8 e4m3fn"}
+  fp8_e5m2-unet: {type: bool, description: "Store diffusion model weights in fp8 e5m2"}
+  fp8_e8m0fnu-unet: {type: bool, description: "Store diffusion model weights in fp8 e8m0fnu"}
+  fp8_e4m3fn-text-enc: {type: bool, description: "Store text encoder weights in fp8 e4m3fn"}
+  fp8_e5m2-text-enc: {type: bool, description: "Store text encoder weights in fp8 e5m2"}
   fp16-unet: {type: bool, description: "Run the diffusion model in fp16"}
   fp16-vae: {type: bool, description: "Run the VAE in fp16"}
   fp32-vae: {type: bool, description: "Run the VAE in fp32"}

@@ -408,6 +408,7 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 			require.NotEmpty(t, schema.Description, tool.Name+"."+field)
 		}
 		if tool.Name == "zz_params_set" {
+			assert.NotContains(t, tool.InputSchema.Properties, "grep")
 			assert.Contains(t, tool.InputSchema.Properties["patch"].Description, "models.<new-name>.from")
 		}
 	}
@@ -468,30 +469,47 @@ func TestModelProjectionKeepsMissingEvidenceMissing(t *testing.T) {
 	require.JSONEq(t, `[{"name":"embedding-looking-name"},{"name":"other","details":{}}]`, string(raw))
 }
 
-// zz_params_get answers what is set and what can be set, so an agent never
-// searches the spec for a parameter name.
 func TestParamsGetIncludesAccepts(t *testing.T) {
-	var paths []string
-	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		switch r.URL.Path {
-		case "/zzrouter/v1/providers/llamacpp/resolved":
-			require.Equal(t, "worker", r.URL.Query().Get("node"))
-			require.Equal(t, "org/model", r.URL.Query().Get("model"))
-			writeFixture(t, w, []byte(`{"parameters":{"ctx-size":{"value":"4096","tier":"default"}},"install":{"drop":"huge"}}`))
-		case "/zzrouter/v1/providers/llamacpp/schema":
-			require.Empty(t, r.URL.RawQuery, "the schema route takes no selector")
-			writeFixture(t, w, []byte(`{"data":{"parameters":{"n-gpu-layers":{"type":"int","description":"Number of layers to offload to GPU"}},"diagnostics":{"drop":1}}}`))
-		default:
-			t.Fatalf("unexpected %s", r.URL.Path)
-		}
-	})
-	result := callAgentTool(t, d, "zz_params_get", map[string]any{"provider": "llamacpp", "node": "worker", "model": "org/model"})
-	require.NotEqual(t, true, result["isError"], result)
-	require.Equal(t, []string{"/zzrouter/v1/providers/llamacpp/resolved", "/zzrouter/v1/providers/llamacpp/schema"}, paths)
-	data, err := json.Marshal(result["structuredContent"])
-	require.NoError(t, err)
-	require.JSONEq(t, `{"parameters":{"ctx-size":{"value":"4096","tier":"default"}},"accepts":{"n-gpu-layers":{"type":"int","description":"Number of layers to offload to GPU"}}}`, string(data))
+	for _, tc := range []struct {
+		grep string
+		keys []string
+	}{
+		{"", []string{"ctx-size"}},
+		{"GPU", []string{"ctx-size", "n-gpu-layers", "offload"}},
+		{"n_gpu", []string{"ctx-size", "n-gpu-layers"}},
+		{"no match", []string{"ctx-size"}},
+	} {
+		t.Run(tc.grep, func(t *testing.T) {
+			var paths []string
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				switch r.URL.Path {
+				case "/zzrouter/v1/providers/llamacpp/resolved":
+					require.Equal(t, "worker", r.URL.Query().Get("node"))
+					require.Equal(t, "org/model", r.URL.Query().Get("model"))
+					writeFixture(t, w, []byte(`{"parameters":{"ctx_size":{"value":"4096","tier":"default"}},"install":{"drop":"huge"}}`))
+				case "/zzrouter/v1/providers/llamacpp/schema":
+					require.Empty(t, r.URL.RawQuery)
+					writeFixture(t, w, []byte(`{"data":{"parameters":{"ctx-size":{"type":"int","description":"Context length"},"n-gpu-layers":{"type":"int","description":"Layers"},"offload":{"type":"int","description":"Work assigned to GPU"},"threads":{"type":"int"}},"diagnostics":{"drop":1}}}`))
+				default:
+					t.Fatalf("unexpected %s", r.URL.Path)
+				}
+			})
+			result := callAgentTool(t, d, "zz_params_get", map[string]any{"provider": "llamacpp", "node": "worker", "model": "org/model", "grep": tc.grep})
+			require.NotEqual(t, true, result["isError"], result)
+			require.Equal(t, []string{"/zzrouter/v1/providers/llamacpp/resolved", "/zzrouter/v1/providers/llamacpp/schema"}, paths)
+			fields := result["structuredContent"].(map[string]any)
+			accepts := fields["accepts"].(map[string]any)
+			require.Len(t, accepts, len(tc.keys))
+			for _, key := range tc.keys {
+				require.Contains(t, accepts, key)
+			}
+			require.EqualValues(t, 4, fields["accepts_total"])
+			require.NotContains(t, fields, "install")
+			require.NotEmpty(t, fields["parameters"])
+			require.Contains(t, fmt.Sprint(result["content"]), "grep")
+		})
+	}
 }
 
 func TestExactModelMetadataGuidanceContract(t *testing.T) {

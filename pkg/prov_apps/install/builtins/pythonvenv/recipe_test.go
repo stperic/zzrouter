@@ -325,3 +325,33 @@ func TestManagedCleanupDoesNotFollowSymlinkAndUnlocksHardenedTree(t *testing.T) 
 		assert.Zero(t, info.Mode().Perm()&0200)
 	}
 }
+
+func TestFeatureRecipeSeedAndUnversionedUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	sc, ok := apps.LookupApp("mlx")
+	require.True(t, ok)
+	snapshot, err := install.ResolveRecipe(sc, "worker", "mlx-vlm", "", nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, snapshot.PinnedVersion)
+	snapshot.Requirements = nil
+	installer := New(Config{Name: "mlx-vlm", SchemaProvider: "mlx", Recipe: func(string, string) (install.RecipeSnapshot, error) { return snapshot, nil }})
+	plan, err := installer.InstallPlan(t.Context(), "")
+	require.NoError(t, err)
+	require.Equal(t, snapshot.PinnedVersion, plan.Version)
+	latestCalls := 0
+	latest := func(context.Context, string, string) (upstream.Release, error) {
+		latestCalls++
+		return upstream.Release{Tag: "99.0.0"}, nil
+	}
+	version, err := resolveRecipeVersion(t.Context(), snapshot, "", "install", latest)
+	require.NoError(t, err)
+	require.Equal(t, snapshot.PinnedVersion, version)
+	require.Zero(t, latestCalls)
+	version, err = resolveRecipeVersion(t.Context(), snapshot, "", "upgrade", latest)
+	require.NoError(t, err)
+	require.Equal(t, "99.0.0", version)
+	require.Equal(t, 1, latestCalls)
+}
