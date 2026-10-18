@@ -642,7 +642,8 @@ func TestInstallServiceStepOwnsDaemonBeforeOwnershipMarker(t *testing.T) {
 func TestInstallGatePreventsCrashRestartDuringActivation(t *testing.T) {
 	m := newServiceTestManager(t, true, true)
 	m.Start(context.Background())
-	require.Eventually(t, func() bool { return serviceStatus(t, m).LastExit != nil }, 5*time.Second, 10*time.Millisecond)
+	// The same bound as the OS-supervised exit test: a slow Windows runner took over 5 s to observe the crash.
+	require.Eventually(t, func() bool { return serviceStatus(t, m).LastExit != nil }, 15*time.Second, 10*time.Millisecond)
 	unlocked, err := m.installs.acquireProvider(context.Background(), "generic-daemon")
 	require.NoError(t, err)
 	prior := serviceStatus(t, m).LastExit.At

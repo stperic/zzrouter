@@ -77,8 +77,9 @@ func TestJobs_Wait_Done(t *testing.T) {
 	if len(out.Events) != 2 {
 		t.Errorf("events: %d", len(out.Events))
 	}
-	if out.Duration <= 0 {
-		t.Errorf("duration not measured: %v", out.Duration)
+	// A wait shorter than one Windows clock tick measures 0, so only a negative duration is wrong.
+	if out.Duration < 0 {
+		t.Errorf("negative duration: %v", out.Duration)
 	}
 }
 
