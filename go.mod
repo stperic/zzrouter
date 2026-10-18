@@ -33,7 +33,7 @@ require (
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/stperic/common v0.2.0
+	github.com/stperic/common v0.3.1
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0
@@ -196,5 +196,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
-
-replace github.com/stperic/common => ../common

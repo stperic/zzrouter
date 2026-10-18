@@ -44,7 +44,7 @@ For Windows checksum verification and supervised installations, see
 
 ## Quick start
 
-For an evaluation install, build from source with the Go version in `go.mod` or newer:
+For an evaluation install, build from source with the Go version in `go.mod` or newer. Source builds require authorized access to the private [common module](docs/shared-installation.md#private-module-access):
 
 ```sh
 make build

@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOPRIVATE: github.com/stperic/common
+
 concurrency:
   group: vuln-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -25,7 +28,18 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
+      - name: Load read-only common credential
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.COMMON_READ_KEY }}
+          log-public-key: false
+      - name: Configure private module transport
+        shell: bash
+        run: |
+          printf '%s\n' 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts
+          git config --global url.'ssh://git@github.com/stperic/common'.insteadOf https://github.com/stperic/common
+          printf '%s\n' 'GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519' >> "$GITHUB_ENV"
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
       # Fails only on vulnerabilities the code can reach, standard library included.
       - run: govulncheck ./...

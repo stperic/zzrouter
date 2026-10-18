@@ -8,8 +8,9 @@
 
 - Share artifact delivery, verification, extraction, link activation and release
   packaging through `common`. Keep service privileges, launcher pairing and
-  rollback history in zzRouter. Local integration requires the sibling module
-  until its immutable published dependency is available.
+  rollback history in zzRouter. Pin the private Apache-2.0 `common v0.3.1`
+  release without a sibling checkout. Source builds require authorized Git
+  access; CI uses a read-only repository key and does not publish module caches.
 
 - `pinned_version` on an on-demand or external provider is one pin for every
   node. A pin sent with `?node=` to a worker used to land in that worker's copy
