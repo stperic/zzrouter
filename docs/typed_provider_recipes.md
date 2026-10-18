@@ -10,9 +10,15 @@ mode, a bounded timeout and a release-owned toolkit layout. They contain no
 commands, hooks, URLs to scripts, host package actions or executable paths.
 
 The shipped vLLM, MLX and MLX vision recipes all use the same Python installer.
-Base installs use the provider pin when no version is supplied. Upgrades and
-unversioned feature installs select the latest package version satisfying both
-recipe and operator constraints. Feature selection is `runtime:"mlx-vlm"` on
+Base installs use the provider pin when no version is supplied. Other pip runtimes
+use their recipe's `pinned_version` as the fresh-install seed. Upgrades without a
+version select the latest package version satisfying recipe and operator
+constraints, past either seed. Reconciliation updates recipes without changing an
+installed runtime; a plain install refuses an already installed copy. The recipe
+seed appears in the environment report but is excluded from `recipe_drift`:
+changing a fresh-install default does not change an installed runtime's recipe.
+For the base runtime, set only the provider-level `pinned_version`.
+Feature selection is `runtime:"mlx-vlm"` on
 MLX's existing install, upgrade, plan and verify routes; it uses the feature's
 own package and never MLX's parent pin.
 

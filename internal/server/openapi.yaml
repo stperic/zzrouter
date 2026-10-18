@@ -10650,6 +10650,7 @@ components:
       description: Typed merge-patch leaves; null deletes an override. Mandatory effective fields and serving checks cannot be removed.
       properties:
         package: { type: string, maxLength: 128 }
+        pinned_version: { type: string, description: Fresh-install seed; upgrades resolve latest. }
         version_constraint: { type: string, maxLength: 256 }
         startup_import: { type: string, maxLength: 128 }
         only_binary: { type: boolean }

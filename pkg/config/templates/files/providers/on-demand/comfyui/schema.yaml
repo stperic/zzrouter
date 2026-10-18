@@ -11,7 +11,7 @@ parameters:
   listen:
     type: string
     description: ComfyUI bind address, use 127.0.0.1 for single-host access
-  # Every other ComfyUI 0.40.0 flag an operator may set. Engine tuning is the
+  # Every other ComfyUI at the pinned version flag an operator may set. Engine tuning is the
   # operator's choice; flags the runtime passes, paths, URLs, downloads,
   # custom-node installs, TLS, CORS and logging stay out.
   max-upload-size: {type: float, description: "Maximum upload size in MB"}

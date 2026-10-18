@@ -109,6 +109,7 @@ install:
       timeout: 30m
       toolkit: ""
     mlx-vlm:
+      pinned_version: "0.7.6"
       package: mlx-vlm
       startup_import: mlx_vlm.server
       version_constraint: ""
@@ -205,7 +206,7 @@ runtime:
     # to --model. So it must be addressed by path on the wire; zzRouter
     # restores the client-facing name on the way out.
     wire_model: path
-  # mlx_lm.server 0.31.3 has none of the flags only mlx_vlm.server reads.
+  # mlx_lm.server at the pinned version has none of the flags only mlx_vlm.server reads.
   exclude_parameters: [vision-cache-size, enable-thinking, thinking-budget,
     thinking-start-token, thinking-end-token, kv-bits, kv-key-bits, kv-value-bits,
     kv-key-scheme, kv-value-scheme, kv-quant-scheme, kv-group-size, max-kv-size,
