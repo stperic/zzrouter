@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -126,12 +127,12 @@ func (e *RunsExecutor) GetLocalRuns(ctx context.Context, withStatus bool) ([]ins
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
 	hostname := e.getNodename()
-	if !withStatus {
-		return e.appMgr.ListInstances(hostname), nil
-	}
-	var result []instance.InstanceInfo
-	for _, inst := range e.appMgr.Instances().List() {
-		result = append(result, e.appMgr.InstanceInfo(ctx, inst, hostname))
+	result := e.appMgr.ListInstances(hostname)
+	for i := range result {
+		if inst, ok := e.appMgr.GetInstance(result[i].ID); withStatus && ok {
+			result[i] = e.appMgr.InstanceInfo(ctx, inst, hostname)
+		}
+		classifyRunInfo(&result[i])
 	}
 	return result, nil
 }
@@ -142,13 +143,16 @@ func (e *RunsExecutor) GetLocalRun(ctx context.Context, runID string) (*instance
 		return nil, fmt.Errorf("provider app manager not initialized")
 	}
 
-	inst, exists := e.appMgr.GetInstance(runID)
-	if !exists {
-		return nil, fmt.Errorf("instance not found: %s", runID)
-	}
+	info, err := e.appMgr.RunInfo(ctx, runID, e.getNodename())
+	classifyRunInfo(&info)
+	return &info, err
+}
 
-	info := e.appMgr.InstanceInfo(ctx, inst, e.getNodename())
-	return &info, nil
+func classifyRunInfo(info *instance.InstanceInfo) {
+	if info.Refusal != nil {
+		wire := failureWire(info.Refusal, http.StatusInternalServerError)
+		info.LastRefusal = &httperr.Refusal{Code: wire.Code, Status: wire.Status, Message: wire.Message}
+	}
 }
 
 // HandleInternalListRuns handles GET /zzrouter/internal/runs (internal API)
@@ -195,11 +199,6 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 		return
 	}
 
-	inst, exists := e.appMgr.GetInstance(runID)
-	if !exists {
-		NotFound(c, fmt.Sprintf("instance '%s' not found", runID))
-		return
-	}
 	err := e.appMgr.StopInstance(c.Request.Context(), runID)
 	if !publishOr503(c, e.publishCatalog) {
 		return
@@ -208,19 +207,16 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 		RespondToError(c, fmt.Errorf("stop run %s: %w", runID, err))
 		return
 	}
-	utils.LogDebugf("[RunsExecutor] Stopped instance '%s' (model: %s)", runID, inst.Model)
+	utils.LogDebugf("[RunsExecutor] Stopped instance '%s'", runID)
 	e.triggerResourceRefresh()
 	c.JSON(http.StatusOK, gin.H{
-		"id":      inst.ID,
+		"id":      runID,
 		"status":  "stopped",
 		"message": "Instance stopped successfully",
 	})
 }
 
-// HandleInternalRestartRun handles POST /zzrouter/internal/runs/:id/restart (internal API).
-// Restart = stop + relaunch with the same provider/model/parameters/env. The
-// new instance gets a fresh port and a new ID. There is a brief window during
-// which the model is not addressable.
+// HandleInternalRestartRun replays a live run or retained pin.
 func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 	if !e.requireProviderAppMgr(c) {
 		return
@@ -354,10 +350,7 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		message = "Run already exists; reused"
 	}
 
-	// Return 202 Accepted with instance details + job_id so agents can
-	// subscribe to launch progress via /jobs/:id/stream?node=<node>.
-	// Use req.Files/req.Parameters instead of instance.Config to avoid
-	// a race with the launch goroutine that mutates instance.Config.
+	cfg := inst.SnapshotConfig()
 	c.JSON(http.StatusAccepted, gin.H{
 		"accepted":           true,
 		"id":                 inst.ID,
@@ -371,7 +364,9 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		"started_at":         inst.GetStartedAt().Format(time.RFC3339),
 		"message":            message,
 		"files_mounted":      len(req.Files),
-		"parameters_applied": len(req.Parameters),
+		"parameters_applied": len(cfg.Parameters),
+		"parameters":         cfg.Parameters,
+		"pinned":             inst.IdleSnapshot().Pinned,
 		"node":               hostname,
 	})
 }

@@ -78,16 +78,16 @@ func (m *ProviderAppManager) RequestModel(run *instance.Instance, model string) 
 	return run.WireModel
 }
 
-// runEndpoint is a run's key endpoint: a shared engine folds the endpoints it serves into chat,
-// so an unserved endpoint keys a run no launch admits and never finds a shared run.
-func runEndpoint(svc config.ServiceConfig, endpoint Endpoint) Endpoint {
+// runEndpoint preserves the requested preparation shape while shared engines fold their registry identity.
+func runEndpoint(svc config.ServiceConfig, endpoint Endpoint) (key Endpoint, preparation string) {
 	if svc.RunScope == config.RunScopeNode {
-		return ""
+		return "", ""
 	}
+	endpoint = EndpointOrDefault(endpoint)
 	if (!svc.IsEndpointAware() || Lifecycle(svc) == LifecycleServed) && svc.ServesEndpoint(string(endpoint)) == nil {
-		return EndpointChat
+		return EndpointChat, string(endpoint)
 	}
-	return EndpointOrDefault(endpoint)
+	return endpoint, string(endpoint)
 }
 
 // processEngine launches a process per run.
@@ -107,7 +107,7 @@ func (e processEngine) down(ctx context.Context, run *instance.Instance) error {
 
 // prepare is what launching req on port would give the engine; a launch and a parameters-status check share it.
 func (e processEngine) prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, port int) (preparedLaunch, error) {
-	endpoint := string(EndpointOrDefault(req.Endpoint))
+	_, endpoint := runEndpoint(svc, req.Endpoint)
 	declared, err := e.m.launchSchema(configKey)
 	if err != nil {
 		return preparedLaunch{}, err
@@ -263,7 +263,7 @@ func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, con
 	maps.DeleteFunc(read, func(key string, at config.ResolvedValue) bool {
 		return at.Tier != config.TierRequest && !runsettings.IsParameter(key)
 	})
-	if err := checkLaunchParameters(svc, svc.Name, declared.ForEndpoint(endpoint), nil, read); err != nil {
+	if err := e.m.checkLaunchParameters(req, svc, svc.Name, declared.ForEndpoint(endpoint), nil, read); err != nil {
 		return preparedLaunch{}, err
 	}
 	settings, err := e.m.runSettings(svc, req)

@@ -767,7 +767,7 @@ paths:
         this is a broadcast: the coordinator asks each peer and merges
         the answers, so a slow or unreachable node shows up as missing
         rows rather than as an error. Name a `node` to ask exactly one.
-        Stopped runs are removed after stop completes; they are not history rows.
+        Stopped live runs leave the registry. Retained pins without a run are listed stopped and pinned, with record_only, parameters and last_refusal; these are requests to replay, not history rows.
 
         An unknown `node` is a 404 that names the nodes that do exist,
         which is usually faster than a separate lookup.
@@ -775,8 +775,8 @@ paths:
         - $ref: '#/components/parameters/NodeParam'
         - in: query
           name: status
-          description: Filter retained instance states; stopped runs are removed.
-          schema: { type: string, enum: [starting, running, unhealthy, stopping, failed, restarting] }
+          description: Filter retained run states, including stopped pin records.
+          schema: { type: string, enum: [starting, running, unhealthy, stopping, failed, restarting, stopped] }
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/OffsetParam'
       responses:
@@ -793,7 +793,7 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/Run' }
         '400':
-          description: Unsupported status filter, including stopped.
+          description: Unsupported status filter.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -888,6 +888,8 @@ paths:
                           provider: { type: string }
                           status:   { type: string }
                           port:     { type: integer }
+                          parameters: { type: object, additionalProperties: { type: string }, description: The accepted or reused run's own request overrides, including a replayed pin. }
+                          pinned: { type: boolean, description: The run's resolved pin setting. }
                           health_url: { type: string, description: "Node-local probe URL; may use the serving node's loopback and is not reachable from the coordinator." }
                           node:     { type: string }
         '400':
@@ -981,9 +983,9 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: |
-            No node lists the run. A stopped run is removed, so `detail` says
-            where its log stays readable, and names the run that evicted it
-            and that run's node while that run is still live.
+            No node lists this run ID. Retained pin handles remain listed without
+            a run. Detail names zz_logs for an ended run's log and zz_runs and
+            zz_run_start for pins, plus a live evicting run and its node when known.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -11550,6 +11552,16 @@ components:
         json_mode:          { type: boolean }
         max_context_tokens: { type: integer, minimum: 1 }
 
+    RunRefusal:
+      type: object
+      description: Last refusal for this request, classified with the launch failure table; cleared by an accepted start.
+      additionalProperties: false
+      required: [code, status, message]
+      properties:
+        code: { type: string }
+        status: { type: integer, minimum: 100, maximum: 599 }
+        message: { type: string }
+
     Run:
       type: object
       properties:
@@ -11565,6 +11577,8 @@ components:
             resolves the caller's name to. A run started under an alias
             is listed under this name and not the one it was requested
             with, so match rows on it rather than on what you sent.
+        record_only: { type: boolean, description: Retained pinned request without a registered run; stopped and pinned, with a stable pin handle and no run log. }
+        last_refusal: { $ref: '#/components/schemas/RunRefusal' }
         status:   { type: string }
         port:     { type: integer }
         processor:

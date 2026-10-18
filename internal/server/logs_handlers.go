@@ -473,7 +473,7 @@ func (l *LogsHandlers) findInstanceOnCluster(instanceID string) map[string]any {
 	}
 
 	for _, inst := range instances {
-		if id, ok := inst["id"].(string); ok && id == instanceID {
+		if id, ok := inst["id"].(string); ok && id == instanceID && inst["record_only"] != true {
 			return inst
 		}
 	}

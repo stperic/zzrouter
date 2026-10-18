@@ -254,7 +254,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		return LaunchParameters{}, fmt.Errorf("source recipes do not support disposable launches")
 	}
 	excluded := dropExcluded(svc, resolved)
-	if err := checkLaunchParameters(svc, runtime, declared.ForEndpoint(endpoint), excluded, resolved); err != nil {
+	if err := m.checkLaunchParameters(req, svc, runtime, declared.ForEndpoint(endpoint), excluded, resolved); err != nil {
 		return LaunchParameters{}, err
 	}
 	params, sources := config.FlattenParameters(resolved), make(map[string]string, len(resolved))
@@ -305,6 +305,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 // ParameterError is a launch refused for parameters its provider's schema
 // does not accept, one issue per parameter.
 type ParameterError struct {
+	Recorded bool // Recorded marks a key with a pin whose whole request tier a start replaces.
 	Provider string
 	// ContextParameter is the provider's context length parameter, when it declares one.
 	ContextParameter string
@@ -340,6 +341,9 @@ func (e *ParameterError) hint(code string, requested bool) string {
 	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
 	if requested {
 		hint += ", and fix the key in zz_run_preview or zz_run_start."
+		if e.Recorded {
+			hint += " A start replaces the pin's whole request tier, so restate the other overrides to keep."
+		}
 	} else {
 		hint += ", and fix the key with zz_params_set (null removes it)."
 	}
@@ -369,7 +373,7 @@ func dropExcluded(svc config.ServiceConfig, resolved map[string]config.ResolvedV
 // sent and the tier that set it. A declared key the launch drops as auto is
 // not passed, so not checked: even one the runtime lacks, since auto asks
 // for nothing.
-func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[string]schema.ParamShape, excluded []string, resolved map[string]config.ResolvedValue) error {
+func (m *ProviderAppManager) checkLaunchParameters(req EnsureRequest, svc config.ServiceConfig, runtime string, shapes map[string]schema.ParamShape, excluded []string, resolved map[string]config.ResolvedValue) error {
 	params := config.FlattenParameters(resolved)
 	refused := &ParameterError{Provider: svc.Name, ContextParameter: svc.GetContextParam(), Served: Lifecycle(svc) == LifecycleServed}
 	for _, key := range slices.Sorted(maps.Keys(params)) {
@@ -396,6 +400,10 @@ func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[
 	if refused.Issues == nil {
 		return nil
 	}
+	cfg := m.AppsConfig()
+	m.pins.mu.Lock()
+	refused.Recorded = m.pins.index(pinKey(req, cfg), cfg) >= 0
+	m.pins.mu.Unlock()
 	return fmt.Errorf("%w: %w", ErrParameterValidation, refused)
 }
 

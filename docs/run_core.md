@@ -100,7 +100,7 @@ asserts the same outcome.
 
 R3 resolves `keep-alive` and `evict-idle-on-memory-pressure` through the existing parameter tier tree. Nonempty `runtime.keep_alive` supplies the default tier; explicit tree settings and request overrides take precedence. The old node GPU eviction option is only an absent-value fallback. Settings stay in resolved snapshots and parameter status, and never enter engine argv. Changed lifecycle settings intentionally distinguish variant runs. Settings changes apply on restart. The final admitted launch settings fix a pin for the run's lifetime when keep-alive is negative. Inference hints remain last-one-wins for the idle timer and never pin or unpin.
 
-The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends an unpinned run after release, held leases cannot expire, and negative timers never expire idle. Pinned runs never expire or qualify for pressure reclaim, even after positive or zero inference hints. The shared IdleState switch checks lifecycle/claim, pin, activity hold and leases in that order. Served nonzero and adopted timer sentinels mean zzRouter has no idle deadline, independently of pinning. Daemon unloads and displacement remain outside this protection. Explicit stop, Force replacement, restart and shutdown still end pins; restart replays request-tier settings. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
+The registry coalesces membership, status, activity and ownership changes. One reaper owns a deadline heap and timer, revalidates pure `Expired` and an atomic idle-stop claim before stopping. Zero keep-alive ends an unpinned run after release, held leases cannot expire, and negative timers never expire idle. Pinned runs never expire or qualify for pressure reclaim, even after positive or zero inference hints. The shared IdleState switch checks lifecycle/claim, pin, activity hold and leases in that order. Served nonzero and adopted timer sentinels mean zzRouter has no idle deadline, independently of pinning. Daemon unloads and displacement remain outside this protection. Explicit stop, Force replacement, restart and shutdown still end runs; restart replays request-tier settings. Stop cancels and drains the reaper before draining runs. Idle stops report `idle_timeout`.
 
 R4 routes known run/provider refusals through one ordered wire table, including Retry-After and typed extra fields. Admission and cold-load producers retain typed causes; only the HTTP edge renders them. Memory-fit diagnostics survive cold loading, and generic surface defaults remain distinct. Policy messages carry no route URLs. Typed Ollama load options remain withheld. On the Windows worker with Ollama 0.32.15 (2026-10-12), loading with num_ctx=2048 and keep_alive=-1 did not preserve those settings: a later option-free /v1 request changed the context to 4096 and expiry to five minutes. The prescribed persistence prerequisite failed.
 
@@ -109,23 +109,47 @@ Memory-fit holders record `reclaim_skipped_reason` from the actual selection or 
 
 ## Pins across node restarts
 
-The pinned process runs a node is serving are recorded on that node; when the node starts,
-it relaunches each recorded run once, with the request it was launched with, and the
-record follows the live runs from then on.
+The launching node records a plan-less process start by an operator when its resolved
+settings pin it. Acceptance writes the request, before readiness; crashes, health failures,
+idle stops, reclaim and shutdown retain it. Inference never writes a record, including when
+config pins its run. Served engines, disposable-plan runs and install smokes never record
+or replay a pin. A negative served timer alone is not a pin.
 
-The provider manager writes `<data dir>/pinned_runs.json` atomically with mode 0600 at
-readiness and terminal transitions. Only provider, model, endpoint, runtime and request-tier
-parameters/environment are saved. Restore re-resolves current provider tiers, paths and ports.
-Served engines, disposable-plan runs and install smokes are excluded. Shutdown preserves the
-record. To forget a saved pin, explicitly stop its run.
+The manager atomically writes `<data dir>/pinned_runs.json` with mode 0600, version 1.
+It contains only provider, canonical model, requested endpoint, request-tier parameters and
+environment, and a stable `run_id` belonging to the record. Legacy records acquire that
+handle at load and persist it. Replays and restarts retain the handle; live runs have their
+own IDs. Current provider tiers, paths and ports resolve again on each launch.
 
-The server calls `RestorePinnedRuns` once immediately after `Cache.Start`. The manager uses
-`EnsureRun` with restore origin (the same policy as API origin), sequentially in recorded order,
-without Force or detached starts. Existing flights and runs supply deduplication and memory
-admission. Catalog lookup populates synchronously on first use, so restore needs no readiness
-signal or polling. Stop cancels and drains restore through the existing background-start lifetime.
-Failed requests are warned and removed without retry; a run that launches unpinned drops out
-at readiness. Corrupt or unknown-version files are warned and left in place without restoring.
+A start or preview with no parameters and no environment replays the matching provider's
+record. Stating either uses that whole request tier: no merge with the saved request.
+For example, only `keep-alive: -1` replaces the saved overrides with just that setting.
+An accepted operator start rewrites the record when pinned, or removes it when unpinned.
+A live run is reused even if a start states different parameters; Force applies changes.
+
+Only an operator stop forgets a record after successfully ending its run. This includes
+`zz_run_stop` and CLI `zzrouter stop <model>`. A stop by a record handle refuses while
+another run holds the key, naming its run ID. A concurrent new start's record survives the
+old run's stop. Deleting weights or disabling/uninstalling a provider does not forget pins.
+
+`RestorePinnedRuns` replays records sequentially once after `Cache.Start`, through
+`EnsureRun` with `OriginRestore`, without Force or detached starts. Existing flights and
+runs deduplicate it with inference. Shutdown drains these starts and retains every record.
+Refusals are kept without retries. A failed registered run remains failed and pinned with
+its failure; after it leaves the registry, `zz_runs` lists the record in `instances` as
+stopped, pinned and `record_only`, with parameters and its in-memory `last_refusal` closed
+code. Use `zz_run_start` or `zz_run_restart` to replay, `zz_params_set` to fix config,
+and `zz_run_stop` to forget. A record-only entry has no run log. Corrupt or unknown-version
+files are set aside as `.corrupt` evidence and are not restored.
+
+Every start prepares before queue acceptance or replacement stop: schema, platform/GPU,
+features, toolkit, assets and argv. Preparation shares preview and parameter-status logic.
+As required by `docs/agent-memory.md`, slow per-model conversion/packing never runs in
+prepare or command building, including while an old run still serves. A preparation
+refusal leaves that run and record intact. Memory admission, weight verification and process
+start remain after the stop: a memory-refused replacement leaves no live run, keeping the
+old record. Preparation runs twice per start, before the stop and again in up; a config change
+between those checks can also leave nothing running. Admitting a replacement before stopping is deferred.
 
 ## Deployment outcome ownership
 

@@ -143,16 +143,6 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 		EnvVars:    req.EnvVars,
 		Parameters: req.Parameters,
 	}
-	if !m.engine(Lifecycle(svcCfg)).outlivesNode() && req.DisposablePlanID == "" && req.Origin != OriginInstall {
-		saved := restartRequest(inst)
-		saved.keyEndpoint = Endpoint(inst.Endpoint)
-		// Every transition passes setStatusLocked; the store writes only when a pin is added or dropped.
-		inst.CommitStatus = func(status instance.Status, pinned bool) {
-			if status == instance.StatusRunning || status.IsTerminal() && !m.stopping.Load() {
-				m.pins.update(saved, status == instance.StatusRunning && pinned)
-			}
-		}
-	}
 
 	// Set HealthURL from provider config (not hardcoded /health)
 	if port > 0 {
@@ -255,7 +245,7 @@ func (m *ProviderAppManager) admitRun(ctx context.Context, inst *instance.Instan
 
 // prepareRun resolves a run's parameters, checks its memory fit and builds argv.
 func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Instance, req EnsureRequest, selection launchSelection, declared *schema.ProviderSchema) (admittedRun, error) {
-	endpoint := inst.Endpoint
+	_, endpoint := runEndpoint(selection.config, req.Endpoint)
 	features, err := m.modelLaunchParameters(ctx, selection.config, selection.model, req, endpoint, declared)
 	if err != nil {
 		return admittedRun{}, err
@@ -764,10 +754,29 @@ func (m *ProviderAppManager) failNotReady(inst *instance.Instance, reason string
 	m.emitEvent(failedEvent(inst, obsruns.FailureReadiness, errors.New(reason)))
 }
 
-// StopInstance gracefully stops an instance and removes it from the registry.
-// Sequence: cancel monitor and keep-alive → terminate process → drain → cleanup.
+// StopInstance forgets a pin only after its run has ended successfully.
 func (m *ProviderAppManager) StopInstance(ctx context.Context, id string) error {
-	return m.stopInstance(ctx, id, obsruns.StopReasonUser)
+	inst, req, err := m.runOrRecord(id)
+	if err != nil {
+		return err
+	}
+	if inst != nil {
+		if err := m.stopInstance(ctx, id, obsruns.StopReasonUser); err != nil {
+			return err
+		}
+		if m.seams.ended != nil {
+			m.seams.ended()
+		}
+	}
+	cfg := m.AppsConfig()
+	m.pins.mu.Lock()
+	defer m.pins.mu.Unlock()
+	if live, ok := m.instances.GetByKey(pinKey(req, cfg)); ok && inst == nil {
+		return fmt.Errorf("%w: key is held by run %s; use zz_run_stop with run_id %s", ErrPinRunActive, live.ID, live.ID)
+	} else if !ok {
+		m.pins.update(req, false, cfg)
+	}
+	return nil
 }
 
 // stopInstance is StopInstance with the reason its stopped event carries.
@@ -848,25 +857,15 @@ func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instanc
 	return process.Terminate(ctx, req)
 }
 
-// RestartInstance stops a running instance and launches a new one with the
-// same provider, model, parameters, and environment. The port is intentionally
-// not preserved — the new instance receives a freshly allocated port — and
-// the new instance ID is different from the old one. Returns the new
-// instance, or an error if either the stop or the relaunch fails.
+// RestartInstance replays a run or pin after preparing its replacement.
 func (m *ProviderAppManager) RestartInstance(ctx context.Context, id string) (*instance.Instance, error) {
 	if m.shutdown.Load() {
 		return nil, ErrShutdown
 	}
-
-	inst, ok := m.instances.Get(id)
-	if !ok {
-		return nil, ErrInstanceNotFound
+	_, req, err := m.runOrRecord(id)
+	if err != nil {
+		return nil, err
 	}
-
-	// Snapshot launch parameters under the instance lock before stopping —
-	// SnapshotConfig clones the maps, so the relaunch is unaffected if the
-	// stop path mutates or clears the source instance's Config.
-	req := restartRequest(inst)
 	if req.Provider == "" {
 		return nil, fmt.Errorf("instance %q has incomplete launch config (provider=%q model=%q); cannot restart", id, req.Provider, req.Model)
 	}
@@ -1193,7 +1192,8 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	if err := svc.ValidateRunTarget(req.Model, string(req.Endpoint)); err != nil {
 		return LaunchPreview{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
-	req.Model = m.runModel(key, svc, req.Model)
+	req.Provider, req.Model = key, m.runModel(key, svc, req.Model)
+	req = m.replay(req, Lifecycle(svc))
 	prepared, err := m.engine(Lifecycle(svc)).prepare(ctx, svc, key, req, port)
 	preview := LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}
 	if err == nil {

@@ -45,12 +45,12 @@ func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
 		Detail string `json:"detail"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-	assert.Equal(t, "run not found: qwen was stopped on node localai to free 2048 MiB of GPU memory for run gemma (gemma-4-E2B-it). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
+	assert.Equal(t, "run not found: qwen was stopped on node localai to free 2048 MiB of GPU memory for run gemma (gemma-4-E2B-it). A pin without a run remains in zz_runs; use zz_run_start to replay it. Read the ended run's log with zz_logs using run_id qwen and node localai", problem.Detail)
 
 	rec = get("typo")
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-	assert.Equal(t, "run not found: typo. A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/typo/logs?node=<node it ran on>", problem.Detail)
+	assert.Equal(t, "run not found: typo. A pin without a run remains in zz_runs; use zz_run_start to replay it. Read the ended run's log with zz_logs using run_id typo and the node it ran on", problem.Detail)
 
 	rec = get("gemma")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
@@ -65,5 +65,5 @@ func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
 	rec = get("qwen")
 	require.Equal(t, http.StatusNotFound, rec.Code)
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
-	assert.Equal(t, "run not found: qwen was stopped on node localai to free 50994 MiB of GPU memory for run 812d79ffcba5 (comfyui). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/qwen/logs?node=localai", problem.Detail)
+	assert.Equal(t, "run not found: qwen was stopped on node localai to free 50994 MiB of GPU memory for run 812d79ffcba5 (comfyui). A pin without a run remains in zz_runs; use zz_run_start to replay it. Read the ended run's log with zz_logs using run_id qwen and node localai", problem.Detail)
 }

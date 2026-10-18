@@ -227,11 +227,27 @@ Run reports expose `pinned: true` when pinned. A memory refusal remains 409
 and the holder's run, model and provider. If unpinned holders cannot cover the
 shortfall, nothing stops. Explicit DELETE, Force replacement and restart may stop
 pins; restart replays request overrides. Stop before uninstalling a provider.
-Pinned process runs are recorded on the launching node in `<data dir>/pinned_runs.json`
-(mode 0600) and relaunched once after a node restart, including a self-update. Restore
-replays request overrides and resolves current tiers; failed restores are forgotten without
-retry. Stop the run to forget its pin. Served engines, disposable runs and install smokes
-are excluded. Surviving daemon models can be re-adopted; daemon unloads are not prevented.
+Operator-started pinned processes are recorded on the launching node in
+`<data dir>/pinned_runs.json` (mode 0600, version 1) at acceptance and replayed once on
+node boot. Records retain request-tier parameters/environment and a stable pin handle;
+crashes, refused restores and node shutdown keep them. Inference can replay a pin but
+never records a new one, even when config pins its run. Served engines, disposable plans
+and install smokes never record or replay pins.
+
+A start or preview with neither parameters nor environment replays the record. Stating
+either replaces the whole request tier: restate every override to retain. A start with
+only `keep-alive: -1` saves only that setting. A live run is reused silently; Force applies
+changed parameters. An accepted unpinned operator start removes the record.
+
+`zz_runs` lists a retained pin without a registered run as stopped, pinned, `record_only`,
+with parameters and its last refusal code. Use `zz_params_set` to fix config, then
+`zz_run_start` or `zz_run_restart` to replay; `zz_run_stop` forgets it. It has no run log.
+Explicit stop, including CLI `zzrouter stop <model>`, forgets matching pins only after a
+successful stop. Model deletion and provider disable/uninstall retain the record.
+Restarts prepare before stopping the old run, so preparation refusals keep it serving.
+Memory admission and process start still follow the stop: a memory refusal leaves the
+record, with no live run. Surviving daemon models can be re-adopted; daemon unloads are
+not prevented.
 Upgrade every worker before relying on pins: an older worker keeps `-1` as
 idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -173,9 +174,9 @@ type ProviderAppManager struct {
 	sightings   map[string]map[string]bool
 	// seams pause the start path where tests must interleave; nil in production.
 	seams struct {
-		beforeLaunch, flightRemoved, admitted func()
-		processStarted                        func(*process.LaunchResult)
-		inspector                             process.Inspector
+		beforeLaunch, flightRemoved, admitted, ended func()
+		processStarted                               func(*process.LaunchResult)
+		inspector                                    process.Inspector
 	}
 }
 
@@ -959,7 +960,8 @@ func (m *ProviderAppManager) GetInstanceByModel(provider, model string, endpoint
 // GetInstanceByCanonicalModel reads a resolved run key without alias or catalog resolution.
 func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string, endpoint Endpoint) (*instance.Instance, bool) {
 	if key, svc, ok := m.resolveConfigKey(provider); ok {
-		run, found := m.instances.GetByKey(instance.NewKey(key, m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint))))
+		keyEndpoint, _ := runEndpoint(svc, endpoint)
+		run, found := m.instances.GetByKey(instance.NewKey(key, m.daemonName(key, svc, model), string(keyEndpoint)))
 		if found {
 			runKey, _, known := m.resolveConfigKey(run.Provider)
 			found = known && runKey == key
@@ -977,7 +979,8 @@ func (m *ProviderAppManager) GetInstanceByCanonicalModel(provider, model string,
 	found := false
 	m.AppsConfig().RangeApps(func(key string, svc config.ServiceConfig) bool {
 		if Lifecycle(svc) == LifecycleServed {
-			run, found = m.instances.GetByKey(instance.NewKey("", m.daemonName(key, svc, model), string(runEndpoint(svc, endpoint))))
+			keyEndpoint, _ := runEndpoint(svc, endpoint)
+			run, found = m.instances.GetByKey(instance.NewKey("", m.daemonName(key, svc, model), string(keyEndpoint)))
 		}
 		return !found
 	})
@@ -1006,7 +1009,30 @@ func (m *ProviderAppManager) ListInstances(hostname string) []instance.InstanceI
 	for _, inst := range all {
 		infos = append(infos, inst.ToInfo(hostname))
 	}
+	cfg := m.AppsConfig()
+	m.pins.mu.Lock()
+	defer m.pins.mu.Unlock()
+	for _, req := range m.pins.Runs {
+		if _, ok := m.instances.GetByKey(pinKey(req, cfg)); !ok {
+			infos = append(infos, pinInfo(req, hostname))
+		}
+	}
 	return infos
+}
+
+// RunInfo reads a live run or its retained pin through the same lookup as stop and restart.
+func (m *ProviderAppManager) RunInfo(ctx context.Context, id, hostname string) (instance.InstanceInfo, error) {
+	inst, req, err := m.runOrRecord(id)
+	if inst != nil {
+		return m.InstanceInfo(ctx, inst, hostname), nil
+	}
+	return pinInfo(req, hostname), err
+}
+
+func pinInfo(req EnsureRequest, hostname string) instance.InstanceInfo {
+	return instance.InstanceInfo{ID: req.RunID, Provider: req.Provider, Model: req.Model, Endpoint: string(req.Endpoint),
+		Node: hostname, Status: instance.StatusStopped, Pinned: true, RecordOnly: true,
+		Parameters: maps.Clone(req.Parameters), Environment: maps.Clone(req.EnvVars), Refusal: req.refusal}
 }
 
 // resolveConfigKey maps a provider name (e.g., "llama.cpp") to its provider config

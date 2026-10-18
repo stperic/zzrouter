@@ -110,6 +110,8 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_run_preview", "POST", "/zzrouter/v1/runs/preview", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, "", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, `{"data":{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"},"working_dir":"drop"}}`, `{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"}}`},
 		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"}}`, `{"data":{"id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
 		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_run_id":"r","job_id":"j","node":"worker"}`},
+		{"zz_runs", "GET", "/zzrouter/v1/runs/pin", `{"run_id":"pin"}`, "limit=50&offset=0&node=&status=", "", `{"data":{"id":"pin","status":"stopped","pinned":true,"record_only":true,"parameters":{"keep-alive":"-1"},"last_refusal":{"code":"unknown_flag","message":"refused"}}}`, `{"run_id":"pin","status":"stopped","pinned":true,"record_only":true,"parameters":{"keep-alive":"-1"},"last_refusal":{"code":"unknown_flag","message":"refused"}}`},
+		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"generic"}`, "", `{"model":"m","provider":"generic"}`, `{"data":{"id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}}`, `{"run_id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}`},
 		{"zz_run_stop", "DELETE", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "node=worker", "", `{"data":{"id":"r","status":"stopped"}}`, `{"run_id":"r","status":"stopped"}`},
 		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","features":["vision"],"idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":"","features":["vision"]}`, `{"data":{"id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999}]}}`, `{"deployment_id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/jobs/j", `{"job_id":"j","node":"worker"}`, "node=worker", "", `{"accepted":true,"job_id":"j"}`, `{"accepted":true,"job_id":"j"}`},
@@ -417,7 +419,6 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 		require.Contains(t, descriptions["zz_models"], phrase)
 	}
 	require.Contains(t, descriptions["zz_run_stop"], "confirms the stop")
-	require.Contains(t, descriptions["zz_run_stop"], "404 by design")
 	require.Contains(t, descriptions["zz_run_start"], "job_id for zz_job")
 	require.Contains(t, descriptions["zz_job"], "Pass job_id here, not run_id")
 	assert.Contains(t, descriptions["zz_job"], "Omit job_id")

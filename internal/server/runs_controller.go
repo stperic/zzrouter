@@ -86,7 +86,7 @@ func (ctrl *RunsController) ListRuns(c *gin.Context) {
 	}
 
 	if listable := instance.ListableStatuses(); req.Status != "" && !slices.Contains(listable, instance.Status(req.Status)) {
-		BadRequest(c, fmt.Sprintf("status must be one of %v; stopped runs are removed", listable))
+		BadRequest(c, fmt.Sprintf("status must be one of %v", listable))
 		return
 	}
 

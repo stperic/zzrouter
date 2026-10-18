@@ -1,15 +1,19 @@
 package prov_apps
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -41,32 +45,99 @@ func (m *ProviderAppManager) loadPinnedRuns() {
 			}
 		}
 	}
-	for i, req := range s.Runs {
-		_, svc, _ := m.resolveConfigKey(req.Provider)
-		s.Runs[i].keyEndpoint = runEndpoint(svc, req.Endpoint)
+	changed := false
+	for i := range s.Runs {
+		if s.Runs[i].RunID == "" {
+			s.Runs[i].RunID = uuid.NewString()
+			changed = true
+		}
+	}
+	if changed {
+		s.persist()
 	}
 }
 
-func (s *pinnedRuns) update(req EnsureRequest, pinned bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	i := slices.IndexFunc(s.Runs, func(r EnsureRequest) bool { return r.Key() == req.Key() })
-	switch {
-	case pinned && i >= 0:
-		if reflect.DeepEqual(s.Runs[i], req) {
-			return // A recovered run keeps its place in the restore order.
-		}
-		s.Runs[i] = req
-	case pinned:
-		s.Runs = append(s.Runs, req)
-	case i >= 0:
-		s.Runs = slices.Delete(s.Runs, i, i+1)
-	default:
+func recordable(req EnsureRequest, lifecycle RunLifecycle) bool {
+	return lifecycle == LifecycleProcess && req.DisposablePlanID == "" && req.Origin != OriginInstall
+}
+
+func (m *ProviderAppManager) replay(req EnsureRequest, lifecycle RunLifecycle) EnsureRequest {
+	if !recordable(req, lifecycle) || len(req.Parameters) != 0 || len(req.EnvVars) != 0 {
+		return req
+	}
+	cfg := m.AppsConfig()
+	m.pins.mu.Lock()
+	defer m.pins.mu.Unlock()
+	if i := m.pins.index(pinKey(req, cfg), cfg); i >= 0 && m.pins.Runs[i].Provider == req.Provider {
+		req.Parameters, req.EnvVars = maps.Clone(m.pins.Runs[i].Parameters), maps.Clone(m.pins.Runs[i].EnvVars)
+	}
+	return req
+}
+
+func (m *ProviderAppManager) captureRefusal(req EnsureRequest, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrShutdown) || !recordable(req, LifecycleProcess) {
 		return
 	}
-	data, _ := json.Marshal(s) // Only strings and string maps reach the encoder.
+	cfg := m.AppsConfig()
+	m.pins.mu.Lock()
+	defer m.pins.mu.Unlock()
+	if i := m.pins.index(req.Key(), cfg); i >= 0 {
+		record := &m.pins.Runs[i]
+		if record.Provider == req.Provider && maps.Equal(record.Parameters, req.Parameters) && maps.Equal(record.EnvVars, req.EnvVars) {
+			record.refusal = err
+		}
+	}
+}
+
+func (m *ProviderAppManager) runOrRecord(id string) (*instance.Instance, EnsureRequest, error) {
+	if inst, ok := m.instances.Get(id); ok {
+		return inst, restartRequest(inst), nil
+	}
+	m.pins.mu.Lock()
+	defer m.pins.mu.Unlock()
+	if i := slices.IndexFunc(m.pins.Runs, func(req EnsureRequest) bool { return req.RunID == id }); i >= 0 {
+		req := m.pins.Runs[i]
+		req.Parameters, req.EnvVars = maps.Clone(req.Parameters), maps.Clone(req.EnvVars)
+		return nil, req, nil
+	}
+	return nil, EnsureRequest{}, ErrInstanceNotFound
+}
+
+func (s *pinnedRuns) index(key instance.Key, cfg *config.AppsConfig) int {
+	return slices.IndexFunc(s.Runs, func(req EnsureRequest) bool { return pinKey(req, cfg) == key })
+}
+
+func pinKey(req EnsureRequest, cfg *config.AppsConfig) instance.Key {
+	svc, _ := cfg.LookupApp(req.Provider)
+	endpoint, _ := runEndpoint(svc, req.Endpoint)
+	return instance.NewKey(req.Provider, req.Model, string(endpoint))
+}
+
+// update runs under mu so acceptance and forgetting observe the same registry ownership.
+func (s *pinnedRuns) update(req EnsureRequest, pinned bool, cfg *config.AppsConfig) {
+	i := s.index(pinKey(req, cfg), cfg)
+	switch {
+	case !pinned && i < 0:
+		return
+	case !pinned:
+		s.Runs = slices.Delete(s.Runs, i, i+1)
+	default:
+		if i < 0 {
+			s.Runs = append(s.Runs, EnsureRequest{RunID: uuid.NewString()})
+			i = len(s.Runs) - 1
+		}
+		s.Runs[i] = EnsureRequest{
+			RunID: s.Runs[i].RunID, Provider: req.Provider, Model: req.Model, Endpoint: req.Endpoint,
+			Parameters: maps.Clone(req.Parameters), EnvVars: maps.Clone(req.EnvVars),
+		}
+	}
+	s.persist()
+}
+
+func (s *pinnedRuns) persist() {
+	data, _ := json.Marshal(s)
 	if err := utils.AtomicWriteFile(s.path, data, 0o600); err != nil {
-		slog.Warn("Cannot persist pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
+		slog.Warn("Cannot persist pinned run", "path", s.path, "error", err)
 	}
 }
 
@@ -93,7 +164,6 @@ func (m *ProviderAppManager) RestorePinnedRuns() {
 				}
 				if err != nil {
 					slog.Warn("Cannot restore pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "error", err)
-					m.pins.update(req, false)
 					continue
 				}
 				slog.Info("restored pinned run", "provider", req.Provider, "model", req.Model, "endpoint", req.Endpoint, "origin", "restore")

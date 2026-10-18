@@ -114,6 +114,9 @@ func TestLaunchChecksEveryParameterItPasses(t *testing.T) {
 	requireRefused(t, resolve("stored", EndpointChat, nil), "context_length", httperr.CodeUnknownFlag)
 
 	require.NoError(t, resolve("m", EndpointEmbeddings, nil), "the embeddings overlay declares its own flag")
+	preview, err := m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "engine", Model: "m", Endpoint: EndpointEmbeddings}, 8100)
+	require.NoError(t, err)
+	assert.Equal(t, "true", preview.Params["embeddings"])
 	require.NoError(t, resolve("m", EndpointChat, map[string]string{"ctx-size": "auto"}), "auto leaves a declared key to the engine, so it is not passed")
 	requireRefused(t, resolve("m", EndpointChat, map[string]string{"context_length": "auto"}), "context_length", httperr.CodeUnknownFlag)
 }

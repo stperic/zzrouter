@@ -6,6 +6,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 )
 
 // Status represents the lifecycle state of a provider instance.
@@ -36,10 +37,9 @@ func (s Status) IsTerminal() bool {
 	return s == StatusStopped || s == StatusFailed
 }
 
-// ListableStatuses are the states a run can be found in: a stopped run is
-// removed, so StatusStopped is never listed.
+// ListableStatuses includes stopped pins retained without a run.
 func ListableStatuses() []Status {
-	return []Status{StatusStarting, StatusRunning, StatusUnhealthy, StatusStopping, StatusFailed, StatusRestarting}
+	return []Status{StatusStarting, StatusRunning, StatusUnhealthy, StatusStopping, StatusFailed, StatusRestarting, StatusStopped}
 }
 
 // LaunchMode represents how a provider process is launched.
@@ -73,6 +73,9 @@ type Config struct {
 // InstanceInfo is a read-only snapshot of an instance for API responses.
 // Public APIs return this instead of a mutable *Instance pointer.
 type InstanceInfo struct {
+	RecordOnly        bool             `json:"record_only,omitempty"`
+	Refusal           error            `json:"-"`
+	LastRefusal       *httperr.Refusal `json:"last_refusal,omitempty"`
 	BaseURL           string           `json:"base_url,omitempty"`
 	EngineBusy        bool             `json:"engine_busy,omitempty"`
 	MemoryCommitments map[string]int64 `json:"memory_commitments_mib,omitempty"`

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	utilsclient "github.com/stperic/zzrouter/internal/client/utils"
 )
 
@@ -80,4 +82,24 @@ func TestGetRun_ExactMatchBeatsPrefix(t *testing.T) {
 	if got.ID != "r_8" {
 		t.Fatalf("want exact match r_8, got %s", got.ID)
 	}
+}
+
+func TestRunLookupsExcludeRecordOnly(t *testing.T) {
+	c, _ := newTestClient(t, fakeRuns([]utilsclient.Instance{
+		{ID: "pin-id", Model: "pinned", RecordOnly: true, Status: "stopped"},
+		{ID: "run-id", Model: "live", Status: "running"},
+	}))
+	for _, prefix := range []string{"pin-id", "pin"} {
+		_, err := GetRun(t.Context(), c, prefix)
+		require.ErrorIs(t, err, ErrRunNotFound)
+		require.ErrorContains(t, err, "pin with no run has no logs")
+		_, err = ResolveRuns(t.Context(), c, RunFilter{RunID: prefix})
+		require.ErrorIs(t, err, ErrNoMatch)
+	}
+	_, err := ResolveRuns(t.Context(), c, RunFilter{Model: "pinned"})
+	require.ErrorIs(t, err, ErrNoMatch)
+	all, err := ResolveRuns(t.Context(), c, RunFilter{})
+	require.NoError(t, err)
+	require.Len(t, all, 1)
+	require.Equal(t, "run-id", all[0].ID)
 }

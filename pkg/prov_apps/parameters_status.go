@@ -40,7 +40,7 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 	if _, err := m.AdmitLocalModel(ctx, req.Model); err != nil {
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}
 	}
-	endpoint := string(EndpointOrDefault(req.Endpoint))
+	_, endpoint := runEndpoint(svcCfg, req.Endpoint)
 	next, err := m.engine(Lifecycle(svcCfg)).prepare(ctx, svcCfg, configKey, req, inst.SnapshotConfig().Port)
 	if err != nil {
 		return &instance.ParametersStatus{Provider: configKey, State: instance.ParametersUnknown, Error: err.Error()}

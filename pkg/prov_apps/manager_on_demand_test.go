@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -29,9 +30,14 @@ func onDemandTestManager(t *testing.T, source func(context.Context, string) stri
 	second.Runtime.PortRange = []int{8210, 8215}
 	second.Runtime.BasePort = 8210
 	require.NoError(t, cfg.AddApp("other", second))
-	m, err := NewProviderAppManager(cfg, WithModelSource(source), WithParamLocalizer(func(_, _, _ string, _ map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
-		return Localized{}, errTestStart
-	}))
+	m, err := NewProviderAppManager(cfg, WithModelSource(source), func(m *ProviderAppManager) {
+		m.localizeParams = func(provider, endpoint, model string, params map[string]string, _ map[string]schema.ParamShape) (Localized, error) {
+			if _, registered := m.instances.GetByKey(instance.NewKey(provider, model, endpoint)); registered {
+				return Localized{}, errTestStart
+			}
+			return Localized{Params: params}, nil
+		}
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, m.Stop(context.Background())) })
 	return m

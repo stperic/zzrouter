@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/protocol/openai"
 )
 
@@ -74,27 +75,40 @@ type RunPreview struct {
 
 // Instance represents a running app instance
 type Instance struct {
-	BaseURL         string         `json:"base_url,omitempty"`
-	EngineBusy      bool           `json:"engine_busy,omitempty"`
-	ID              string         `json:"id"`
-	Node            string         `json:"node"`
-	App             string         `json:"provider"`
-	LaunchMode      string         `json:"launch_mode"`
-	Model           string         `json:"model"`
-	SourceRepo      string         `json:"source_repo,omitempty"`    // Source repository (huggingface, ollama, etc.)
-	SizeBytes       int64          `json:"size_bytes,omitempty"`     // Model size in bytes
-	Processor       string         `json:"processor,omitempty"`      // CPU/GPU usage
-	ContextLength   int            `json:"context_length,omitempty"` // Context window size
-	Port            int            `json:"port"`
-	Status          string         `json:"status"`
-	HealthURL       string         `json:"health_url"`
-	ContainerID     string         `json:"container_id,omitempty"`
-	ProcessID       int            `json:"process_id,omitempty"`
-	StartedAt       string         `json:"started_at"`
-	LastHealthCheck string         `json:"last_health_check,omitempty"`
-	KeepAlive       string         `json:"keep_alive,omitempty"`     // Keep-alive duration
-	LastActivity    string         `json:"last_activity,omitempty"`  // Last activity time
-	LaunchCommand   *LaunchCommand `json:"launch_command,omitempty"` // Structured launch command
+	LastRefusal     *httperr.Refusal `json:"last_refusal,omitempty"`
+	RecordOnly      bool             `json:"record_only,omitempty"`
+	BaseURL         string           `json:"base_url,omitempty"`
+	EngineBusy      bool             `json:"engine_busy,omitempty"`
+	ID              string           `json:"id"`
+	Node            string           `json:"node"`
+	App             string           `json:"provider"`
+	LaunchMode      string           `json:"launch_mode"`
+	Model           string           `json:"model"`
+	SourceRepo      string           `json:"source_repo,omitempty"`    // Source repository (huggingface, ollama, etc.)
+	SizeBytes       int64            `json:"size_bytes,omitempty"`     // Model size in bytes
+	Processor       string           `json:"processor,omitempty"`      // CPU/GPU usage
+	ContextLength   int              `json:"context_length,omitempty"` // Context window size
+	Port            int              `json:"port"`
+	Status          string           `json:"status"`
+	HealthURL       string           `json:"health_url"`
+	ContainerID     string           `json:"container_id,omitempty"`
+	ProcessID       int              `json:"process_id,omitempty"`
+	StartedAt       string           `json:"started_at"`
+	LastHealthCheck string           `json:"last_health_check,omitempty"`
+	KeepAlive       string           `json:"keep_alive,omitempty"`     // Keep-alive duration
+	LastActivity    string           `json:"last_activity,omitempty"`  // Last activity time
+	LaunchCommand   *LaunchCommand   `json:"launch_command,omitempty"` // Structured launch command
+}
+
+// DisplayStatus distinguishes retained requests from runs.
+func (i Instance) DisplayStatus() string {
+	if i.RecordOnly {
+		i.Status = "pin (no run)"
+	}
+	if i.LastRefusal != nil {
+		return i.Status + ": " + i.LastRefusal.Code
+	}
+	return i.Status
 }
 
 // LaunchCommand represents the structured command used to launch a process

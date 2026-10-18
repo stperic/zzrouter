@@ -63,16 +63,18 @@ func schemaObjects(value any) any {
 }
 
 type runOutput struct {
-	BaseURL     string `json:"base_url,omitempty"`
-	RunID       string `json:"run_id"`
-	OldRunID    string `json:"old_run_id,omitempty"`
-	JobID       string `json:"job_id,omitempty"`
-	DeployJobID string `json:"deploy_job_id,omitempty"`
-	Node        string `json:"node,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Port        int    `json:"port,omitempty"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+	Pinned      bool              `json:"pinned,omitempty"`
+	BaseURL     string            `json:"base_url,omitempty"`
+	RunID       string            `json:"run_id"`
+	OldRunID    string            `json:"old_run_id,omitempty"`
+	JobID       string            `json:"job_id,omitempty"`
+	DeployJobID string            `json:"deploy_job_id,omitempty"`
+	Node        string            `json:"node,omitempty"`
+	Provider    string            `json:"provider,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	Status      string            `json:"status,omitempty"`
+	Port        int               `json:"port,omitempty"`
 }
 type downloadOutput struct {
 	DeploymentID string         `json:"deployment_id"`

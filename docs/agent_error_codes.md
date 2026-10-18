@@ -220,8 +220,17 @@ Errors use Problem Details. A memory refusal keeps HTTP 409 `out_of_range`;
 `errors[].got.holders[]` names each holder's `run`, `model` or `provider`, with
 `reclaim_skipped_reason: "pinned"` for a protected run. List runs to inspect
 `pinned: true`. Explicitly DELETE that run, or change launch `keep-alive` and
-restart it. Inference hints cannot pin or unpin. A refused launch leaves pins
-untouched and excludes them from `evicted_runs`.
+restart it. Inference hints cannot pin or unpin. A refused launch leaves records
+untouched and excludes pins from `evicted_runs`. A preparation-refused restart keeps the
+old run serving; a memory-refused replacement can leave no live run. Failed registered
+pins retain failure details for `zz_logs` and `zz_run_restart`. A retained record with no
+registered run is listed stopped, pinned and `record_only`, with parameters and
+`last_refusal` classified by the same failure table, including `unknown_flag` or
+`model_not_local`. Use `zz_params_set` to repair configured values, `zz_run_start` or
+`zz_run_restart` to replay, or `zz_run_stop` to forget. A record-only entry has no log.
+
+`pin_run_active` (409): a record-only pin has a live run holding its key. Use
+`zz_run_stop` with the live `run_id` named in the refusal to stop and forget it.
 
 The shared weight lower bound also refuses launch with HTTP 409 `out_of_range`
 before starting a process: weights exceed the selected GPU budget, GPU plus RAM

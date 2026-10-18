@@ -24,6 +24,7 @@ import (
 // the guards below can hold failureTable (the decision record) complete
 // against pkg/prov_apps/errors.go. Statuses live only in failureTable.
 var sentinels = map[string]error{
+	"ErrPinRunActive":             prov_apps.ErrPinRunActive,
 	"ErrFeatureEvidence":          prov_apps.ErrFeatureEvidence,
 	"ErrProviderUnavailable":      prov_apps.ErrProviderUnavailable,
 	"ErrModelDropped":             prov_apps.ErrModelDropped,

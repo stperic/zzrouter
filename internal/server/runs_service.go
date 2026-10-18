@@ -227,13 +227,13 @@ func (s *RunsService) MissingRunDetail(ctx context.Context, id, node string) str
 		for _, run := range runs.Data {
 			for _, evicted := range run.EvictedRuns {
 				if evicted.RunID == id {
-					return fmt.Sprintf("run not found: %s was stopped on node %s to free %d MiB of GPU memory for run %s (%s). A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/%s/logs?node=%s",
+					return fmt.Sprintf("run not found: %s was stopped on node %s to free %d MiB of GPU memory for run %s (%s). A pin without a run remains in zz_runs; use zz_run_start to replay it. Read the ended run's log with zz_logs using run_id %s and node %s",
 						id, run.Node, evicted.FreedMiB, run.ID, utils.FormatRunName(run.Model, run.Provider), id, run.Node)
 				}
 			}
 		}
 	}
-	return fmt.Sprintf("run not found: %s. A stopped run is removed; its log stays readable at GET /zzrouter/v1/runs/%s/logs?node=<node it ran on>", id, id)
+	return fmt.Sprintf("run not found: %s. A pin without a run remains in zz_runs; use zz_run_start to replay it. Read the ended run's log with zz_logs using run_id %s and the node it ran on", id, id)
 }
 
 // applyFilters applies filtering to the runs list
@@ -426,21 +426,23 @@ func decodeStrict(data []byte, v any) error {
 
 // LaunchRunResponse represents the response from launching a run
 type LaunchRunResponse struct {
-	BaseURL           string `json:"base_url,omitempty"`
-	Accepted          bool   `json:"accepted"`
-	ID                string `json:"id"`
-	JobID             string `json:"job_id,omitempty"`        // pkg/jobs handle ID for the launch; subscribe via /jobs/:id/stream
-	DeployJobID       string `json:"deploy_job_id,omitempty"` // populated when auto_deploy chains a download; subscribe for pull progress
-	Provider          string `json:"provider"`
-	LaunchMode        string `json:"launch_mode"`
-	Status            string `json:"status"`
-	Port              int    `json:"port"`
-	HealthURL         string `json:"health_url"`
-	StartedAt         string `json:"started_at"`
-	Message           string `json:"message"`
-	FilesMounted      int    `json:"files_mounted"`
-	ParametersApplied int    `json:"parameters_applied"`
-	Node              string `json:"node,omitempty"`
+	BaseURL           string            `json:"base_url,omitempty"`
+	Accepted          bool              `json:"accepted"`
+	ID                string            `json:"id"`
+	JobID             string            `json:"job_id,omitempty"`        // pkg/jobs handle ID for the launch; subscribe via /jobs/:id/stream
+	DeployJobID       string            `json:"deploy_job_id,omitempty"` // populated when auto_deploy chains a download; subscribe for pull progress
+	Provider          string            `json:"provider"`
+	LaunchMode        string            `json:"launch_mode"`
+	Status            string            `json:"status"`
+	Port              int               `json:"port"`
+	HealthURL         string            `json:"health_url"`
+	StartedAt         string            `json:"started_at"`
+	Message           string            `json:"message"`
+	FilesMounted      int               `json:"files_mounted"`
+	ParametersApplied int               `json:"parameters_applied"`
+	Parameters        map[string]string `json:"parameters,omitempty"`
+	Pinned            bool              `json:"pinned,omitempty"`
+	Node              string            `json:"node,omitempty"`
 }
 
 // LaunchRun launches a new provider instance
