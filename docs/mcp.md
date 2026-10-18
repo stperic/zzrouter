@@ -169,7 +169,10 @@ change, then start again; do not repeat unchanged failed settings.
 Use `zz_run_preview` to inspect `context_mode`, `context_tokens`, estimated
 `affordable_context_tokens` and llama.cpp `placement`. Auto vLLM and MLX assess
 the declared 4096 minimum; auto llama.cpp assesses native GGUF context. Use
-`zz_run_preview` numeric context overrides for larger vLLM/llama.cpp workloads.
+`zz_run_preview` with a number for the provider's context parameter (llama.cpp
+`ctx-size`, vLLM `max-model-len`) for larger workloads; a launch takes only the
+parameters `zz_params_get` lists in accepts and refuses others with `unknown_flag`,
+or `excluded_by_runtime` for a listed key the model's selected runtime lacks.
 MLX always assesses its minimum; `max-tokens` limits generation, not context.
 MLX uses release-owned `memory_usable_fraction` schema metadata (shipped at 0.75),
 alongside the release-owned `auto_min_context_tokens` minimum.

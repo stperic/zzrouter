@@ -144,20 +144,40 @@ and the provider sync carries to every node.
 |---|---|---|---|
 | `pin_is_cluster_wide` | 400 | The pin was sent with `node` for a provider the sync carries, so it cannot be one node's. Nothing was written. | Send the same body without `node`; the pin then applies to every node. |
 
-### Provider parameter validation (`PATCH /providers/:n/parameters`)
+### Provider parameter validation (`PATCH /providers/:n/parameters` and launches)
 
-Closed-enum `code` values from `pkg/httperr.ParamErrorCode`. Body is
-`{"errors":[{"key","code","got","want","min","max","message"}, ...]}`.
+Closed-enum `code` values from `pkg/httperr.ParamErrorCode`, one Problem
+`errors[]` entry per key: `{"key","code","got","want","min","max","message","hint"}`.
+
+A launch (`POST /runs`, `/runs/preview`, `/runs/load`, a restart or a pinned
+restore) checks every parameter it would pass, from every tier, with the same
+rules and answers 400 before any process starts. Keys are flag names, so
+`ctx_size` and `ctx-size` are one parameter and the later one in the tier walk
+wins whatever either spelled; a refused key is reported as stored or sent, and a
+PATCH stores the flag name in place of every other spelling. An integral JSON
+number is passed as an integer literal (`1e6` as `1000000`). Each entry's
+`message` names the tier that set the key and the runtime that refused it; its
+`hint` names `zz_params_get` and the provider's context parameter when it
+declares one (llama.cpp `ctx-size`, vLLM `max-model-len`). A declared key the
+selected runtime excludes is `excluded_by_runtime` when the request sent it and
+dropped when a configured tier did; `auto` on it asks for nothing and passes. A
+served provider (Ollama) passes its daemon only the run settings, so any other
+request parameter is `unknown_flag`. A file feature's flag (llama.cpp `mmproj`)
+takes only `auto` or `false`, never a path. Each entry's `hint` follows the
+tier that set the key: a request key is fixed in `zz_run_preview` or
+`zz_run_start`, a configured one with `zz_params_set`.
 
 | `code` | Meaning | Recovery |
 |---|---|---|
-| `unknown_flag` | The patched key isn't in the provider's schema. | Read `/zzrouter/v1/providers/:n/schema` for the valid key set. |
+| `unknown_flag` | The key isn't in the provider's schema for that endpoint, whether patched or passed by a launch. | Read `/zzrouter/v1/providers/:n/schema` (`zz_params_get` accepts) for the valid key set; a launch takes the provider's own spelling. For `no-<flag>` where `<flag>` is `negatable`, set `<flag>: false`; the message says so. |
 | `wrong_type` | Value type mismatch (e.g. string into int). | Coerce to the type indicated by `want`. |
 | `out_of_range` | Numeric value outside `min`/`max`. | Clamp into `[min,max]`. |
 | `unknown_node` | Tier 3 cell references a node not in the cluster. | List `/zzrouter/v1/nodes`. |
 | `unknown_model` | Tier 2/3 cell references a model not in the catalog. | List `/v1/models`. |
 | `coercion_failed` | Value couldn't be converted to schema type. | Send the value as the declared type. |
 | `retired` | Key was removed from the schema. | Remove from your patch. |
+| `duplicate_flag` | Two spellings of one flag (`ctx_size`, `ctx-size`) with different values in one map: a tier's, the request's or a PATCH body's. One entry per spelling. | Keep one: drop it from the request, or set the flag once with `zz_params_set`, which replaces every spelling (a `null` removes them all). |
+| `excluded_by_runtime` | The provider declares the key, but the runtime selected for this model (named in `message`) does not take it. | Drop the key, or send `auto`; in `zz_params_get` accepts, the key's `excluded_by` lists each runtime that does not take it with the feature that selects it (`{"runtime":"mlx-vlm","feature":"vision"}`). |
 | `unknown_asset` | An asset-typed key names a file the provider does not have. | List `GET /zzrouter/v1/providers/:n/assets`, or upload the file with `PUT .../assets/:asset` first. |
 
 ### Provider assets (`/zzrouter/v1/providers/:n/assets/:asset`)

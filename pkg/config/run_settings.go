@@ -23,7 +23,9 @@ func ParseRunSettings(params map[string]string, evictDefault bool) (RunSettings,
 // ValidateRunSettings checks every site, including lower tiers hidden by an override.
 func (s ServiceConfig) ValidateRunSettings() error {
 	for _, site := range s.ParameterSites() {
-		if _, err := ParseRunSettings(site.Parameters, false); err != nil {
+		flags := make(map[string]ResolvedValue, len(site.Parameters))
+		LayParameters(flags, site.Parameters, ResolvedValue{})
+		if _, err := ParseRunSettings(FlattenParameters(flags), false); err != nil {
 			return fmt.Errorf("provider %q %s: %w", s.Name, site.Path, err)
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -64,6 +65,23 @@ type request struct {
 	body                                         []byte
 	jsonBody                                     any
 	omit                                         []string
+}
+
+// problemLine is a Problem as text: its code and detail, each issue, then
+// each distinct hint once, since issues often share one remedy.
+func problemLine(status int, p utils.ProblemDetails) string {
+	line := fmt.Sprintf("HTTP %d %s: %s", status, p.Code, p.Detail)
+	var hints []string
+	for _, item := range p.Errors {
+		line += "\n" + item.Key + ": " + item.Message
+		if item.Hint != "" && !slices.Contains(hints, item.Hint) {
+			hints = append(hints, item.Hint)
+		}
+	}
+	for _, hint := range hints {
+		line += "\n" + hint
+	}
+	return line
 }
 
 func (d dispatcher) call(ctx context.Context, input request, out any) error {
@@ -126,11 +144,7 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 				p.Code = cmp.Or(p.Code, defaults.Code)
 				p.Type = cmp.Or(p.Type, defaults.Type)
 				p.Title = cmp.Or(p.Title, defaults.Title)
-				line := fmt.Sprintf("HTTP %d %s: %s", rec.statusCode(), p.Code, p.Detail)
-				for _, item := range p.Errors {
-					line += "\n" + item.Key + ": " + item.Message
-				}
-				return &toolError{problem: p, line: line}
+				return &toolError{problem: p, line: problemLine(rec.statusCode(), p)}
 			}
 		}
 		var upstream utils.OpenAIError

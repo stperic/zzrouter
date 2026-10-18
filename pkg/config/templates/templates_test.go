@@ -2,16 +2,21 @@ package templates_test
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/config/schema"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	pschema "github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -22,6 +27,255 @@ import (
 func TestAppsFS_SchemaYAMLMatchesGoSpine(t *testing.T) {
 	_, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
 	assert.Empty(t, errs, "schema.yaml ↔ Go spine drift: %v", errs)
+}
+
+// Tiers merge by flag name, so a key declared in another spelling could
+// never be set: the Go spine and every shipped schema.yaml, which LoadFromFS
+// merges per provider, declare flag names, overlays included.
+func TestDeclaredParametersAreFlagNames(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	require.Subset(t, slices.Collect(maps.Keys(schemas)), slices.Collect(maps.Keys(pschema.Registry)))
+	for provider, declared := range schemas {
+		sites := map[string]map[string]pschema.ParamShape{"parameters": declared.Parameters}
+		for endpoint, overlay := range declared.Endpoints {
+			sites["endpoints."+endpoint+".parameters"] = overlay.Parameters
+		}
+		for site, shapes := range sites {
+			for key := range shapes {
+				assert.Equal(t, runsettings.FlagName(key), key, "%s %s declares %q", provider, site, key)
+			}
+		}
+	}
+}
+
+// launchedProviders loads the shipped tree as a node does and keeps the
+// providers zzRouter starts as a process; a served daemon takes no flags.
+func launchedProviders(t *testing.T) map[string]config.ServiceConfig {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(dir))
+	apps, err := config.LoadAppsConfig(dir)
+	require.NoError(t, err)
+	launched := map[string]config.ServiceConfig{}
+	apps.RangeApps(func(name string, svc config.ServiceConfig) bool {
+		if svc.Runtime != nil && len(svc.Runtime.Execution.Args) > 0 {
+			launched[name] = svc
+		}
+		return true
+	})
+	require.GreaterOrEqual(t, len(launched), 4, "expected the on-demand providers")
+	return launched
+}
+
+// A parameter is appended after the runtime's own argv; one that renders a
+// flag the runtime already passes would fight the value zzRouter owns.
+func TestShippedParametersNeverRenderARuntimeFlag(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	weights := filepath.Join(t.TempDir(), "weights")
+	require.NoError(t, os.WriteFile(weights, nil, 0o600))
+	model := process.ResolvedModel{Name: "model", Path: weights}
+
+	for name, svc := range launchedProviders(t) {
+		declared := maps.Clone(schemas[name].Parameters)
+		for _, endpoint := range schemas[name].Endpoints {
+			maps.Copy(declared, endpoint.Parameters)
+		}
+		executions := map[string]config.ExecutionConfig{"runtime.execution": svc.Runtime.Execution}
+		for feature, f := range svc.Features {
+			if f.Execution != nil {
+				executions["features."+feature+".execution"] = *f.Execution
+			}
+		}
+		for where, execution := range executions {
+			launch := svc
+			runtime := *svc.Runtime
+			runtime.Execution = execution
+			launch.Runtime = &runtime
+			builder := process.NewCommandBuilder(&launch)
+			base, err := builder.Build(model, 1, nil, declared)
+			require.NoError(t, err, "%s: %s", name, where)
+			passed := map[string]bool{}
+			for _, arg := range base.Args {
+				if strings.HasPrefix(arg, "--") {
+					passed[arg] = true
+				}
+			}
+			for key, shape := range declared {
+				if runsettings.IsParameter(key) {
+					continue // run settings never reach argv
+				}
+				values := []string{"true"}
+				if shape.Negatable {
+					values = append(values, "false")
+				}
+				for _, value := range values {
+					built, err := builder.Build(model, 1, map[string]string{key: value}, declared)
+					require.NoError(t, err, "%s: %s", name, key)
+					flag := built.Args[len(base.Args)]
+					assert.False(t, passed[flag], "%s: parameter %q=%s renders %s, which %s already passes", name, key, value, flag, where)
+				}
+			}
+		}
+	}
+}
+
+// A fresh install must never refuse its own config: every parameter a
+// launched provider's shipped config sets in a tier, or names in a feature
+// or as its context parameter, is declared for that endpoint.
+func TestShippedConfigNamesOnlyDeclaredParameters(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+
+	for name, svc := range launchedProviders(t) {
+		declared := schemas[name]
+		requireDeclared := func(where, endpoint string, keys []string) {
+			shapes := declared.ForEndpoint(endpoint)
+			for _, key := range keys {
+				_, ok := shapes[key]
+				assert.True(t, ok, "%s: %s names undeclared parameter %q", name, where, key)
+			}
+		}
+		type cell struct {
+			parameters map[string]string
+			endpoints  map[string]config.EndpointOverlay
+		}
+		cells := map[string]cell{}
+		if d := svc.Defaults; d != nil {
+			cells["defaults"] = cell{d.Parameters, d.Endpoints}
+			if d.Metadata != nil && d.Metadata.ContextParam != "" {
+				requireDeclared("defaults.metadata.context_param", "", []string{d.Metadata.ContextParam})
+			}
+		}
+		for model, spec := range svc.Models {
+			cells["models."+model] = cell{spec.Parameters, spec.Endpoints}
+		}
+		for node, spec := range svc.Nodes {
+			cells["nodes."+node] = cell{spec.Parameters, spec.Endpoints}
+			for model, nodeModel := range spec.Models {
+				cells["nodes."+node+".models."+model] = cell{nodeModel.Parameters, nodeModel.Endpoints}
+			}
+		}
+		for where, c := range cells {
+			requireDeclared(where, "", slices.Collect(maps.Keys(c.parameters)))
+			for endpoint, overlay := range c.endpoints {
+				requireDeclared(where+".endpoints."+endpoint, endpoint, slices.Collect(maps.Keys(overlay.Parameters)))
+			}
+		}
+		requireDeclared("runtime.exclude_parameters", "", svc.Runtime.ExcludeParameters)
+		for feature, f := range svc.Features {
+			endpoint := config.FeatureEndpoint(feature)
+			requireDeclared("features."+feature+".requires_parameters", endpoint, f.RequiresParameters)
+			requireDeclared("features."+feature+".exclude_parameters", endpoint, f.ExcludeParameters)
+		}
+	}
+}
+
+// A bool the engine also spells --no-<flag> is one negatable key, so no
+// shipped schema declares that spelling beside it as a second key.
+func TestShippedNegatableBoolsHaveOneKey(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	negatable := 0
+	for name, declared := range schemas {
+		endpoints := []string{""}
+		for endpoint := range declared.Endpoints {
+			endpoints = append(endpoints, endpoint)
+		}
+		for _, endpoint := range endpoints {
+			shapes := declared.ForEndpoint(endpoint)
+			for key, shape := range shapes {
+				if !shape.Negatable {
+					continue
+				}
+				negatable++
+				_, twin := shapes["no-"+key]
+				assert.False(t, twin, "%s: no-%s is %s: false", name, key, key)
+			}
+		}
+	}
+	assert.NotZero(t, negatable, "the shipped engines declare negatable bools")
+}
+
+// mlx_lm.server 0.31.3 and mlx_vlm.server 0.7.6 crash on a flag their
+// argparse does not define, so each MLX runtime passes only its engine's.
+func TestMLXRuntimesPassOnlyTheirEnginesFlags(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	svc := launchedProviders(t)["mlx"]
+	// Each engine's argparse flags, less the ones its runtime passes itself.
+	mlxLM := []string{"adapter-path", "allowed-origins", "draft-model", "num-draft-tokens", "trust-remote-code",
+		"log-level", "chat-template", "use-default-chat-template", "temp", "top-p", "top-k", "min-p", "max-tokens",
+		"chat-template-args", "decode-concurrency", "prompt-concurrency", "prefill-step-size", "prompt-cache-size",
+		"prompt-cache-bytes", "pipeline"}
+	mlxVLM := []string{"trust-remote-code", "adapter-path", "vision-cache-size", "prefill-step-size",
+		"log-progress-interval", "max-tokens", "enable-thinking", "thinking-budget", "thinking-start-token",
+		"thinking-end-token", "kv-bits", "kv-key-bits", "kv-value-bits", "kv-key-scheme", "kv-value-scheme",
+		"kv-quant-scheme", "kv-group-size", "max-kv-size", "quantized-kv-start", "expert-cache-gb", "draft-model",
+		"draft-kind", "draft-block-size", "max-num-seqs", "top-logprobs-k", "api-key", "reload", "log-level"}
+	runtimes := map[string]struct {
+		exclude []string
+		engine  []string
+	}{"runtime": {svc.Runtime.ExcludeParameters, mlxLM}}
+	for feature, f := range svc.Features {
+		if f.Runtime != "" {
+			runtimes["features."+feature] = struct {
+				exclude []string
+				engine  []string
+			}{f.ExcludeParameters, mlxVLM}
+		}
+	}
+	require.Len(t, runtimes, 4, "the base runtime and three mlx_vlm features")
+	for where, runtime := range runtimes {
+		for key := range schemas["mlx"].Parameters {
+			if runsettings.IsParameter(key) || slices.Contains(runtime.exclude, key) {
+				continue
+			}
+			assert.Contains(t, runtime.engine, key, "%s passes %s, which its engine does not define", where, key)
+		}
+	}
+}
+
+// Shipped shapes take what each pinned engine takes and refuse what it
+// refuses, at the boundaries a schema can state.
+func TestShippedShapesMatchTheirEngines(t *testing.T) {
+	schemas, errs := pschema.LoadFromFS(templates.AppsFS, "files/providers")
+	require.Empty(t, errs)
+	for _, tc := range []struct {
+		provider, key, value string
+		ok                   bool
+	}{
+		// llama.cpp b10549 common/arg.cpp
+		{"llamacpp", "n-gpu-layers", "auto", true},
+		{"llamacpp", "n-gpu-layers", "-1", true},
+		{"llamacpp", "n-gpu-layers", "-2", true},
+		{"llamacpp", "n-gpu-layers", "all", false}, // spelled -2: an int takes one keyword, auto
+		{"llamacpp", "spec-draft-ngl", "auto", true},
+		{"llamacpp", "parallel", "auto", true},
+		{"llamacpp", "parallel", "0", false},
+		{"llamacpp", "sleep-idle-seconds", "0", false},
+		{"llamacpp", "sleep-idle-seconds", "60", true},
+		{"llamacpp", "cache-type-k", "q8_0", true},
+		{"llamacpp", "cache-type-v", "q8", false},
+		{"llamacpp", "spec-draft-type-k", "iq4_nl", true},
+		{"llamacpp", "repeat-last-n", "-1", false},
+		// vLLM 0.29.0 config dataclasses
+		{"vllm", "dtype", "half", true},
+		{"vllm", "dtype", "bf16", false},
+		{"vllm", "kv-cache-dtype", "fp8_e4m3", true},
+		{"vllm", "kv-cache-dtype", "int8", false},
+		{"vllm", "max-lora-rank", "320", true},
+		{"vllm", "max-lora-rank", "100", false},
+		{"vllm", "max-logprobs", "-1", true},
+		{"vllm", "max-num-batched-tokens", "0", false},
+		// ComfyUI comfy/cli_args.py PerformanceFeature
+		{"comfyui", "fast", "fp16_accumulation", true},
+		{"comfyui", "fast", "all", false},
+	} {
+		issue := pschema.Check(tc.key, tc.value, schemas[tc.provider].Parameters)
+		assert.Equal(t, tc.ok, issue == nil, "%s %s=%s: %v", tc.provider, tc.key, tc.value, issue)
+	}
 }
 
 func TestAppsFS_DeclaresRecurrentAllocationRows(t *testing.T) {

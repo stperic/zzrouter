@@ -82,7 +82,7 @@ func (m *ProviderAppManager) resolveLaunch(req *EnsureRequest) (launchSelection,
 		return launchSelection{}, fmt.Errorf("%w: %q not found in config", ErrProviderNotFound, req.Provider)
 	}
 	model := process.ResolveModel(svcCfg, req.Model)
-	svcCfg, selected, _, err := m.featureRuntime(svcCfg, model, req.Runtime, string(EndpointOrDefault(req.Endpoint)))
+	svcCfg, selected, err := m.featureRuntime(svcCfg, model, req.Runtime, string(EndpointOrDefault(req.Endpoint)))
 	if err != nil {
 		return launchSelection{}, err
 	}
@@ -188,8 +188,8 @@ func (m *ProviderAppManager) newRun(req EnsureRequest, svcCfg config.ServiceConf
 const keepAliveParameter = config.KeepAliveParameter
 
 func (m *ProviderAppManager) runSettings(svc config.ServiceConfig, req EnsureRequest) (config.RunSettings, error) {
-	params := mergeStringMaps(config.FlattenParameters(svc.ResolveEndpoint(m.localNodename(), req.Model, string(EndpointOrDefault(req.Endpoint))).Parameters), req.Parameters)
-	settings, err := config.ParseRunSettings(params, m.idleEvictionDefault)
+	params, _ := m.resolveRawLaunchParams(svc, req, string(EndpointOrDefault(req.Endpoint)))
+	settings, err := config.ParseRunSettings(config.FlattenParameters(params), m.idleEvictionDefault)
 	if err != nil {
 		return config.RunSettings{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
@@ -1113,18 +1113,20 @@ func restartRequest(inst *instance.Instance) EnsureRequest {
 	return req
 }
 
-func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params, env, sources map[string]string) {
+// resolveRawLaunchParams lays the request over the config tiers' walk, the
+// last tier, so each parameter is keyed by flag name with its tier and the
+// key as stored or sent.
+func (m *ProviderAppManager) resolveRawLaunchParams(svcCfg config.ServiceConfig, req EnsureRequest, endpoint string) (params map[string]config.ResolvedValue, env map[string]string) {
 	resolved := svcCfg.ResolveEndpoint(m.localNodename(), req.Model, endpoint)
-	env = mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
-	params = mergeStringMaps(config.FlattenParameters(resolved.Parameters), req.Parameters)
-	sources = make(map[string]string, len(params))
-	for name, value := range resolved.Parameters {
-		sources[name] = value.Tier.String()
-	}
-	for name := range req.Parameters {
-		sources[name] = config.TierRequest.String()
-	}
-	return params, env, sources
+	config.LayParameters(resolved.Parameters, req.Parameters, config.ResolvedValue{Tier: config.TierRequest})
+	return resolved.Parameters, mergeStringMaps(config.FlattenEnvironment(resolved.Environment), req.EnvVars)
+}
+
+// requestParameters is a request's own parameters, keyed as the launch merge keys them.
+func requestParameters(params map[string]string) map[string]config.ResolvedValue {
+	out := make(map[string]config.ResolvedValue, len(params))
+	config.LayParameters(out, params, config.ResolvedValue{Tier: config.TierRequest})
+	return out
 }
 
 // buildLaunch turns resolved parameters into the engine's command: it
@@ -1158,7 +1160,7 @@ func (m *ProviderAppManager) buildLaunch(svcCfg config.ServiceConfig, provider, 
 			params[key] = shape.Auto
 		}
 	}
-	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params)
+	launch, err := process.NewCommandBuilder(&svcCfg).Build(model, port, params, shapes)
 	if err != nil {
 		return process.Launch{}, nil, fmt.Errorf("failed to build command: %w", err)
 	}

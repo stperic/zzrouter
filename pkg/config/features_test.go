@@ -67,9 +67,11 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 	require.NoError(t, templates.InstallDefaults(dir))
 	cfg, err := LoadAppsConfig(dir)
 	require.NoError(t, err)
+	// mlx_vlm.server lacks these mlx_lm.server flags.
+	lmOnly := []string{"temp", "top-k", "min-p", "num-draft-tokens", "use-default-chat-template", "chat-template-args", "decode-concurrency", "prompt-concurrency", "prompt-cache-size", "prompt-cache-bytes", "pipeline"}
 	expected := map[string]map[string]Feature{
 		"llamacpp": {"vision": {Default: true, Files: []string{"mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-*.gguf"}, Flag: "mmproj"}},
-		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses"}, ExcludeParameters: []string{"chat-template", "temperature", "top-p"}, HealthCheck: mlxFeatureHealth("/v1/chat/completions", `{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)}},
+		"mlx":      {"vision": {Default: true, Runtime: "mlx-vlm", When: "vision_config", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--model", "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{"chat_completions", "responses"}, ExcludeParameters: append([]string{"chat-template", "top-p"}, lmOnly...), HealthCheck: mlxFeatureHealth("/v1/chat/completions", `{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}`)}},
 		"vllm":     {"vision": {}},
 		"ollama":   {"vision": {}},
 	}
@@ -82,7 +84,7 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 		if name == "reranking" {
 			flag, body = "--reranker-model", `{"model":"${WIRE_MODEL}","query":"ping","documents":["ping"]}`
 		}
-		expected["mlx"][name] = Feature{Runtime: "mlx-vlm", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", flag, "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{endpoint}, ExcludeParameters: []string{"chat-template", "temperature", "top-p", "max-tokens"}, HealthCheck: mlxFeatureHealth("/v1/"+endpoint, body)}
+		expected["mlx"][name] = Feature{Runtime: "mlx-vlm", Execution: &ExecutionConfig{Type: "python", Command: "python3", Args: []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", flag, "${MODEL_PATH}"}, WireModel: WireModelPath}, WireEndpoints: []string{endpoint}, ExcludeParameters: append([]string{"chat-template", "top-p", "max-tokens"}, lmOnly...), HealthCheck: mlxFeatureHealth("/v1/"+endpoint, body)}
 	}
 	for name, p := range cfg.providers {
 		require.NoError(t, p.Validate(), name)

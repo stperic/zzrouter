@@ -12,31 +12,25 @@ parameters:
     served: max_model_len
   enable-auto-tool-choice:
     type: bool
+    negatable: true
     description: Enable automatic tool calling
   tool-call-parser:
     type: string
-    description: Tool parser for this model family, from the model publisher's serving instructions
+    description: Tool parser for the model family, per its publisher's serving notes
   reasoning-parser:
     type: string
-    description: Separates thinking text from content independently of tool calling; choose for this model family from the model publisher's serving instructions
+    description: Reasoning parser for the model family, per its publisher
   enable-chunked-prefill:
     type: bool
-    description: Enable chunked prefill for long contexts
-  swap-space:
-    type: int
-    min: 0
-    description: CPU swap space in GiB per GPU (offloads activations)
+    negatable: true
+    description: Chunked prefill for long contexts (default on)
   max-num-seqs:
     type: int
     min: 1
-    description: Maximum concurrent sequences vLLM batches per forward pass; max_num_seqs in engine logs names this parameter. A Mamba-cache refusal reports the supported upper bound as at most N.
+    description: Max sequences per batch; engine logs call it max_num_seqs
   quantization:
     type: string
     description: Quantization scheme (awq | gptq | fp8 | ...)
-  rope-scaling:
-    type: string
-    context_override: true
-    description: RoPE scaling strategy (linear | dynamic | yarn)
   hf-overrides:
     type: string
     context_override: true
@@ -44,7 +38,8 @@ parameters:
   kv-cache-dtype:
     type: string
     kv_cache_dtype: both
-    description: KV cache encoding; sizing supports auto (model dtype), fp8, fp8_e4m3 and fp8_e5m2
+    enum: [auto, float16, bfloat16, fp8, fp8_e4m3, fp8_e5m2, fp8_inc, fp8_ds_mla, turboquant_k8v4, turboquant_4bit_nc, turboquant_k3v4_nc, turboquant_3bit_nc, int4_per_token_head, int8_per_token_head, fp8_per_token_head, nvfp4, nvfp4_4over6]
+    description: KV cache dtype; sizing knows auto, 16-bit and fp8/e4m3/e5m2
   block-size:
     type: int
     min: 1
@@ -52,6 +47,197 @@ parameters:
   chat-template:
     type: asset
     description: Jinja chat template overriding the model's own, by asset name
+  # Every other vllm serve 0.29.0 flag an operator may set. Engine tuning and
+  # running code from the model repo (trust-remote-code) are the operator's
+  # choice; flags the runtime passes, paths, URLs, downloads, plugins, LoRA
+  # adapters, multi-node, auth, TLS, CORS and logging stay out. Every bool vLLM
+  # parses with BooleanOptionalAction is negatable.
+  api-server-count: {type: int, min: 1, description: "API server processes"}
+  chat-template-content-format: {type: string, enum: [auto, openai, string], description: "How message content is rendered for the chat template"}
+  trust-request-chat-template: {type: bool, negatable: true, description: "Accept chat templates supplied in requests"}
+  default-chat-template-kwargs: {type: string, description: "Default chat template parameters as a JSON object"}
+  response-role: {type: string, description: "Role returned when add_generation_prompt is set"}
+  return-tokens-as-token-ids: {type: bool, negatable: true, description: "Return logprob tokens as token_id:N strings"}
+  exclude-tools-when-tool-choice-none: {type: bool, negatable: true, description: "Omit tools from the prompt when tool_choice is none"}
+  enable-prompt-tokens-details: {type: bool, negatable: true, description: "Report prompt token details in usage"}
+  enable-per-request-metrics: {type: bool, negatable: true, description: "Include per-request timing metrics in responses"}
+  enable-server-load-tracking: {type: bool, negatable: true, description: "Track server load metrics"}
+  enable-force-include-usage: {type: bool, negatable: true, description: "Include usage in every response"}
+  sse-keep-alive-interval: {type: int, min: 0, description: "Seconds between SSE keep-alive comments, 0 off"}
+  enable-tokenizer-info-endpoint: {type: bool, negatable: true, description: "Serve the tokenizer info endpoint"}
+  cohere-is-reasoning-model: {type: bool, negatable: true, description: "Cohere chat returns reasoning as thinking (default on)"}
+  cohere-format: {type: string, enum: [cmd3, cmd4], description: "Cohere prompt format for tokenizer-mode cohere"}
+  fingerprint-mode: {type: string, enum: [custom, full, hash, none], description: "Format of the system_fingerprint field"}
+  fingerprint-value: {type: string, description: "system_fingerprint value in custom mode"}
+  enable-request-id-headers: {type: bool, negatable: true, description: "Add X-Request-Id headers to responses"}
+  disable-fastapi-docs: {type: bool, negatable: true, description: "Disable the OpenAPI schema and docs endpoints"}
+  h11-max-incomplete-event-size: {type: int, description: "Max bytes of an incomplete HTTP event"}
+  h11-max-header-count: {type: int, description: "Max HTTP headers per request"}
+  enable-offline-docs: {type: bool, negatable: true, description: "Serve API docs from bundled assets"}
+  enable-flash-late-interaction: {type: bool, negatable: true, description: "Late-interaction scoring on the GPU (default on)"}
+  runner: {type: string, enum: [auto, draft, generate, pooling], description: "Model runner type"}
+  convert: {type: string, enum: [auto, classify, embed, none], description: "Adapt the model to another task"}
+  tokenizer-mode: {type: string, description: "Tokenizer mode, e.g. auto, hf, slow, mistral"}
+  trust-remote-code: {type: bool, negatable: true, description: "Run custom modeling code shipped with the model"}
+  seed: {type: int, description: "Random seed"}
+  quantization-config: {type: string, description: "Per-layer quantization config as JSON"}
+  allow-deprecated-quantization: {type: bool, negatable: true, description: "Allow deprecated quantization methods"}
+  enforce-eager: {type: bool, negatable: true, description: "Disable CUDA graphs and always run eagerly"}
+  enable-return-routed-experts: {type: bool, negatable: true, description: "Return routed experts"}
+  return-sampling-mask: {type: bool, negatable: true, description: "Return the post-processing token support"}
+  max-logprobs: {type: int, min: -1, description: "Max logprobs returned per token, -1 unlimited"}
+  logprobs-mode: {type: string, enum: [processed_logits, processed_logprobs, raw_logits, raw_logprobs], description: "Content of returned logprobs"}
+  use-fp64-gumbel: {type: bool, negatable: true, description: "Use FP64 noise for Gumbel sampling"}
+  enable-trace-replay: {type: bool, negatable: true, description: "Allow requests to replay a token trace"}
+  disable-sliding-window: {type: bool, negatable: true, description: "Disable sliding window attention"}
+  disable-cascade-attn: {type: bool, negatable: true, description: "Disable cascade attention (default on)"}
+  skip-tokenizer-init: {type: bool, negatable: true, description: "Skip tokenizer init; requests carry token ids"}
+  enable-prompt-embeds: {type: bool, negatable: true, description: "Accept prompt embeddings as input"}
+  config-format: {type: string, enum: [auto, hf, mistral], description: "Format of the model config"}
+  pooler-config: {type: string, description: "Pooling model output config as JSON"}
+  generation-config: {type: string, enum: [auto, vllm], description: "auto reads the model's generation config, vllm ignores it"}
+  override-generation-config: {type: string, description: "Generation config overrides as JSON"}
+  enable-sleep-mode: {type: bool, negatable: true, description: "Enable engine sleep mode"}
+  enable-cumem-allocator: {type: bool, negatable: true, description: "Use the cumem GPU allocator"}
+  model-impl: {type: string, enum: [auto, terratorch, transformers, vllm], description: "Model implementation"}
+  renderer-num-workers: {type: int, min: 1, description: "Renderer worker threads"}
+  load-format: {type: string, description: "Weight format to load, e.g. auto, safetensors, pt"}
+  safetensors-load-strategy: {type: string, enum: [eager, lazy, prefetch, torchao], description: "Safetensors loading strategy"}
+  safetensors-prefetch-num-threads: {type: int, min: 1, description: "Threads prefetching safetensors files"}
+  safetensors-prefetch-block-size: {type: int, min: 1, description: "Safetensors prefetch read size in bytes"}
+  pt-load-map-location: {type: string, description: "Map location for PyTorch checkpoints"}
+  attention-backend: {type: string, description: "Attention backend, auto selects"}
+  mamba-backend: {type: string, description: "Mamba SSU backend"}
+  mamba-ssu-algorithm: {type: string, enum: [auto, horizontal, simple, vertical], description: "FlashInfer selective state update algorithm"}
+  enable-mamba-cache-stochastic-rounding: {type: bool, negatable: true, description: "Stochastic rounding for fp16 SSM state"}
+  mamba-cache-philox-rounds: {type: int, min: 0, description: "Philox rounds for stochastic rounding"}
+  distributed-executor-backend: {type: string, enum: [external_launcher, mp, ray, uni], description: "Backend for distributed workers"}
+  pipeline-parallel-size: {type: int, min: 1, description: "Pipeline parallel groups"}
+  distributed-timeout-seconds: {type: int, description: "Timeout for distributed operations"}
+  cpu-distributed-timeout-seconds: {type: int, description: "Timeout for CPU communication groups"}
+  numa-bind: {type: bool, negatable: true, description: "Bind GPU workers to NUMA-local CPUs and memory"}
+  device-ids: {type: string, description: "Comma-separated GPU ids or UUIDs to use"}
+  decode-context-parallel-size: {type: int, min: 1, description: "Ranks sharding the decode KV cache"}
+  dcp-comm-backend: {type: string, enum: [a2a, ag_rs], description: "Decode context parallel communication backend"}
+  dcp-q-replicate: {type: bool, negatable: true, description: "Replicate the MLA query projection per DCP group"}
+  dcp-kv-cache-interleave-size: {type: int, description: "Deprecated: use cp-kv-cache-interleave-size"}
+  cp-kv-cache-interleave-size: {type: int, description: "KV cache interleave size across context parallel ranks"}
+  prefill-context-parallel-size: {type: int, min: 1, description: "Ranks splitting prefill computation"}
+  data-parallel-size: {type: int, min: 1, description: "Data parallel groups"}
+  data-parallel-backend: {type: string, enum: [mp, ray], description: "Data parallel backend"}
+  enable-expert-parallel: {type: bool, negatable: true, description: "Use expert parallelism for MoE layers"}
+  enable-batch-sharded-sampling: {type: bool, negatable: true, description: "Shard sampling across tensor parallel ranks"}
+  enable-ep-weight-filter: {type: bool, negatable: true, description: "Load only local expert weights"}
+  all2all-backend: {type: string, description: "All2All backend for expert parallel communication"}
+  enable-dbo: {type: bool, negatable: true, description: "Enable dual batch overlap"}
+  ubatch-size: {type: int, min: 0, description: "Micro-batch size"}
+  enable-elastic-ep: {type: bool, negatable: true, description: "Enable elastic expert parallelism"}
+  dbo-decode-token-threshold: {type: int, min: 0, description: "Dual batch overlap threshold for decode batches"}
+  dbo-prefill-token-threshold: {type: int, min: 0, description: "Dual batch overlap threshold for prefill batches"}
+  disable-nccl-for-dp-synchronization: {type: bool, negatable: true, description: "Gloo, not NCCL, for data parallel sync"}
+  enable-eplb: {type: bool, negatable: true, description: "Enable expert parallelism load balancing"}
+  eplb-config: {type: string, description: "Expert parallelism load balancing config as JSON"}
+  expert-placement-strategy: {type: string, enum: [linear, round_robin], description: "MoE expert placement strategy"}
+  max-parallel-loading-workers: {type: int, min: 1, description: "Max parallel model loading workers"}
+  ray-workers-use-nsight: {type: bool, negatable: true, description: "Profile Ray workers with nsight"}
+  disable-custom-all-reduce: {type: bool, negatable: true, description: "Use NCCL instead of the custom all-reduce"}
+  enable-fault-tolerance: {type: bool, negatable: true, description: "Enable engine fault tolerance"}
+  fault-tolerance-config: {type: string, description: "Fault tolerance config as JSON"}
+  kv-cache-memory-bytes: {type: int, description: "KV cache size per GPU in bytes, overrides utilization"}
+  num-gpu-blocks-override: {type: int, description: "Override the profiled number of GPU blocks"}
+  enable-prefix-caching: {type: bool, negatable: true, description: "Prefix caching; unset lets vLLM decide"}
+  prefix-caching-hash-algo: {type: string, enum: [sha256, sha256_cbor, xxhash, xxhash_cbor], description: "Prefix caching hash algorithm"}
+  prefix-cache-retention-interval: {type: int, min: 0, description: "Tokens between retained prefix-cache checkpoints"}
+  kv-sharing-fast-prefill: {type: bool, negatable: true, description: "Skip prefill tokens in eligible KV sharing layers"}
+  mamba-cache-dtype: {type: string, enum: [auto, bfloat16, float16, float32], description: "Mamba cache dtype"}
+  mamba-ssm-cache-dtype: {type: string, enum: [auto, bfloat16, float16, float32], description: "Mamba SSM state cache dtype"}
+  mamba-block-size: {type: int, min: 1, description: "Mamba cache block size in tokens"}
+  prefix-match-unit: {type: int, min: 1, description: "Finest token boundary for prefix-cache hits"}
+  mamba-cache-mode: {type: string, enum: [align, all, none], description: "Mamba prefix cache strategy"}
+  replayssm-buffer-len: {type: int, min: 1, description: "ReplaySSM history buffer length"}
+  use-replayssm: {type: bool, negatable: true, description: "Use the ReplaySSM Mamba2 decode kernel"}
+  kv-offloading-size: {type: float, description: "KV cache CPU offload buffer in GiB"}
+  kv-offloading-backend: {type: string, enum: [lmcache, native], description: "KV cache offloading backend"}
+  offload-backend: {type: string, enum: [auto, prefetch, uva], description: "Weight offloading backend"}
+  cpu-offload-gb: {type: float, min: 0, description: "Weights offloaded to CPU per GPU in GiB"}
+  offload-group-size: {type: int, min: 0, description: "Layers per prefetch offload group, 0 off"}
+  offload-num-in-group: {type: int, min: 1, description: "Layers offloaded per group"}
+  offload-prefetch-step: {type: int, min: 0, description: "Layers prefetched ahead"}
+  language-model-only: {type: bool, negatable: true, description: "Disable all multimodal inputs"}
+  limit-mm-per-prompt: {type: string, description: "Max multimodal items per prompt as JSON"}
+  enable-mm-embeds: {type: bool, negatable: true, description: "Accept multimodal embeddings as input"}
+  media-io-kwargs: {type: string, description: "Media processing arguments per modality as JSON"}
+  mm-processor-kwargs: {type: string, description: "Multimodal processor overrides as JSON"}
+  mm-processor-cache-gb: {type: float, min: 0, description: "Multimodal processor cache in GiB, 0 off"}
+  mm-processor-cache-type: {type: string, enum: [lru, shm], description: "Multimodal processor cache type"}
+  mm-hasher-algorithm: {type: string, enum: [blake3, sha256, sha512], description: "Multimodal input cache hash"}
+  mm-shm-cache-max-object-size-mb: {type: int, min: 0, description: "Max object size in the shm cache in MiB"}
+  mm-encoder-only: {type: bool, negatable: true, description: "Skip the language component"}
+  mm-encoder-tp-mode: {type: string, enum: [data, weights], description: "Encoder tensor parallel mode"}
+  mm-encoder-attn-backend: {type: string, description: "Vision encoder attention backend"}
+  mm-encoder-attn-dtype: {type: string, enum: [fp8], description: "Vision encoder attention dtype"}
+  mm-encoder-fp8-scale-save-margin: {type: float, description: "Margin applied to auto-saved FP8 scales"}
+  interleave-mm-strings: {type: bool, negatable: true, description: "Interleave multimodal prompts in string format"}
+  skip-mm-profiling: {type: bool, negatable: true, description: "Skip multimodal memory profiling"}
+  video-pruning-rate: {type: float, min: 0, max: 1, description: "Fraction of video tokens pruned, below 1"}
+  video-pruning-method: {type: string, enum: [evs, vidcom2], description: "Video token pruning algorithm"}
+  mm-tensor-ipc: {type: string, enum: [direct_rpc, torch_shm], description: "IPC method for multimodal tensors"}
+  mm-processor-device: {type: string, enum: [auto, cpu, cuda], description: "Device for the HF multimodal processor"}
+  mm-ipc-gpu-memory-gb: {type: float, min: 0, description: "GPU memory for frontend multimodal work in GiB"}
+  mm-device-do-normalize: {type: bool, negatable: true, description: "Normalize multimodal inputs on the device"}
+  enable-lora: {type: bool, negatable: true, description: "Enable LoRA adapter handling"}
+  max-loras: {type: int, min: 1, description: "Max LoRAs in a batch"}
+  max-lora-rank: {type: int, enum: ["1", "8", "16", "32", "64", "128", "256", "320", "512"], description: "Max LoRA rank"}
+  lora-dtype: {type: string, enum: [auto, bfloat16, float16], description: "LoRA dtype"}
+  enable-tower-connector-lora: {type: bool, negatable: true, description: "LoRA for the vision tower and connector"}
+  max-cpu-loras: {type: int, description: "Max LoRAs kept in CPU memory"}
+  fully-sharded-loras: {type: bool, negatable: true, description: "Fully shard LoRA layers across tensor parallel"}
+  specialize-active-lora: {type: bool, negatable: true, description: "Capture CUDA graphs per active LoRA count"}
+  enable-mixed-moe-lora-format: {type: bool, negatable: true, description: "Serve 2D and 3D MoE LoRA formats together"}
+  enable-moe-shared-loras: {type: bool, negatable: true, description: "Load MoE expert adapters in shared-outer layout"}
+  show-hidden-metrics-for-version: {type: string, description: "Show metrics hidden since this version"}
+  per-request-spec-decode-metrics: {type: string, enum: [detailed, none, summary], description: "Speculative decoding metrics in responses"}
+  kv-cache-metrics: {type: bool, negatable: true, description: "Enable KV cache residency metrics"}
+  kv-cache-metrics-sample: {type: float, min: 0, max: 1, description: "Sampling rate for KV cache metrics"}
+  cudagraph-metrics: {type: bool, negatable: true, description: "Enable CUDA graph metrics"}
+  enable-layerwise-nvtx-tracing: {type: bool, negatable: true, description: "Enable layerwise NVTX tracing"}
+  enable-mfu-metrics: {type: bool, negatable: true, description: "Enable model FLOPs utilization metrics"}
+  jit-monitor-mode: {type: string, enum: [error, warn], description: "Handling of post-warmup JIT compilation"}
+  max-num-batched-tokens: {type: int, min: 1, description: "Max tokens processed per iteration"}
+  max-num-scheduled-tokens: {type: int, min: 0, description: "Max tokens scheduled per iteration"}
+  max-num-queued-reqs: {type: int, min: 0, description: "Max in-flight requests before 503"}
+  max-num-queued-tokens: {type: int, min: 0, description: "Max prompt tokens in prefill before 503"}
+  long-prefill-token-threshold: {type: int, min: 0, description: "Prompt length counted as a long prefill, 0 off"}
+  scheduling-policy: {type: string, enum: [fcfs, priority], description: "Scheduling policy"}
+  disable-chunked-mm-input: {type: bool, negatable: true, description: "Do not split multimodal items across steps"}
+  scheduler-reserve-full-isl: {type: bool, negatable: true, description: "Admit a request only when its full prompt fits (default on)"}
+  watermark: {type: float, min: 0, max: 1, description: "Fraction of KV blocks kept free on admission, below 1"}
+  prefill-schedule-interval: {type: int, min: 1, description: "Engine steps between prefill admissions"}
+  disable-hybrid-kv-cache-manager: {type: bool, negatable: true, description: "Same KV cache size for all layers; unset lets vLLM decide"}
+  async-scheduling: {type: bool, negatable: true, description: "Async scheduling; unset lets vLLM decide"}
+  stream-interval: {type: int, min: 1, description: "Tokens buffered per streamed chunk"}
+  max-cudagraph-capture-size: {type: int, description: "Max CUDA graph capture size"}
+  ir-op-priority: {type: string, description: "IR op dispatch priority as JSON"}
+  enable-flashinfer-autotune: {type: bool, negatable: true, description: "Run FlashInfer autotuning during warmup"}
+  enable-bf16x3-router-gemm: {type: bool, negatable: true, description: "Use the experimental SM100 BF16x3 router GEMM"}
+  moe-backend: {type: string, description: "MoE expert kernel backend"}
+  linear-backend: {type: string, description: "Linear layer GEMM backend"}
+  optimization-level: {type: int, min: 0, max: 3, description: "Startup time versus performance, 0 to 3"}
+  performance-mode: {type: string, enum: [balanced, interactivity, throughput], description: "Runtime performance mode"}
+  attention-config: {type: string, description: "Attention config as JSON"}
+  compilation-config: {type: string, description: "torch.compile and CUDA graph config as JSON"}
+  structured-outputs-config: {type: string, description: "Structured outputs config as JSON"}
+  disable-log-stats: {type: bool, description: "Stop periodic engine statistics"}
+  kernel-config: {type: string, description: "Kernel config as JSON"}
+  additional-config: {type: string, description: "Platform-specific config as JSON"}
+  reasoning-config: {type: string, description: "Reasoning model config as JSON"}
+  diffusion-config: {type: string, description: "Diffusion LLM config as JSON"}
+  spec-method: {type: string, description: "Speculative decoding method, e.g. mtp or ngram"}
+  spec-tokens: {type: int, min: 1, description: "Speculative tokens per step"}
+  fail-on-environ-validation: {type: bool, negatable: true, description: "Fail when environment validation fails"}
+  shutdown-timeout: {type: int, min: 0, description: "Graceful shutdown seconds, 0 aborts"}
+  gdn-prefill-backend: {type: string, enum: [flashinfer, triton, cutedsl], description: "GDN prefill backend"}
+  kda-prefill-backend: {type: string, enum: [auto, triton, flashkda], description: "KDA prefill backend"}
 
 diagnostics:
   runtime: vllm

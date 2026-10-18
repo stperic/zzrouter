@@ -20,7 +20,7 @@ func TestBuildDataDirAndModelRootShareDeclaration(t *testing.T) {
 	}}
 	for _, dir := range []string{"data", "storage/nested"} {
 		cfg.Runtime.DataDir = dir
-		launch, err := NewCommandBuilder(cfg).Build(ResolvedModel{}, 8188, nil)
+		launch, err := NewCommandBuilder(cfg).Build(ResolvedModel{}, 8188, nil, nil)
 		require.NoError(t, err)
 		data, err := cfg.Runtime.DataPath(fsroot.ProviderDir(cfg.Name))
 		require.NoError(t, err)
@@ -39,7 +39,7 @@ func TestBuildKeepsExpandedEnvironmentLiteral(t *testing.T) {
 	value := "${PORT}/${MODEL}/${MODEL_PATH}/${DATA_DIR}"
 	t.Setenv("HF_HOME", value)
 	cfg := &config.ServiceConfig{Runtime: &config.AppRuntimeConfig{Execution: config.ExecutionConfig{Command: "engine", Args: []string{"${HF_HOME}"}}}}
-	launch, err := NewCommandBuilder(cfg).Build(ResolvedModel{}, 8188, nil)
+	launch, err := NewCommandBuilder(cfg).Build(ResolvedModel{}, 8188, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{value}, launch.Args)
 }

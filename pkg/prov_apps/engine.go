@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/constants"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -248,8 +250,22 @@ func (e servedEngine) down(ctx context.Context, run *instance.Instance) error {
 	return loader.UnloadModel(ctx, protocol.TargetOf(resolved), run.WireModel)
 }
 
-// prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent.
-func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, _ string, req EnsureRequest, _ int) (preparedLaunch, error) {
+// prepare is the one served preparation: the daemon's name and the run's keep-alive; no parameter is sent,
+// so a request may carry only the run settings. Configured tiers are the operator's and never reach the daemon;
+// the run settings read from them are checked with the request.
+func (e servedEngine) prepare(ctx context.Context, svc config.ServiceConfig, configKey string, req EnsureRequest, _ int) (preparedLaunch, error) {
+	declared, err := e.m.launchSchema(configKey)
+	if err != nil {
+		return preparedLaunch{}, err
+	}
+	endpoint := string(EndpointOrDefault(req.Endpoint))
+	read, _ := e.m.resolveRawLaunchParams(svc, req, endpoint)
+	maps.DeleteFunc(read, func(key string, at config.ResolvedValue) bool {
+		return at.Tier != config.TierRequest && !runsettings.IsParameter(key)
+	})
+	if err := checkLaunchParameters(svc, svc.Name, declared.ForEndpoint(endpoint), nil, read); err != nil {
+		return preparedLaunch{}, err
+	}
 	settings, err := e.m.runSettings(svc, req)
 	if err != nil {
 		return preparedLaunch{}, err

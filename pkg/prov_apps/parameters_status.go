@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 )
@@ -59,7 +60,8 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 	slices.Sort(changed)
 
 	// Raw tiers still name held keys when config-only preparation is invalid.
-	fromConfig, fromConfigEnv, _ := m.resolveRawLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
+	raw, fromConfigEnv := m.resolveRawLaunchParams(svcCfg, EnsureRequest{Provider: req.Provider, Model: req.Model}, endpoint)
+	fromConfig := config.FlattenParameters(raw)
 	declared := next.parameters.declared
 	if declared == nil {
 		declared, err = m.launchSchema(configKey)
@@ -69,8 +71,9 @@ func (m *ProviderAppManager) ParametersStatus(ctx context.Context, inst *instanc
 			fromConfig, fromConfigEnv = configured.Params, configured.Environment
 		}
 	}
-	freezeFeaturePaths(svcCfg, req.Parameters)
-	overridden := heldKeys(parametersPath, req.Parameters, fromConfig)
+	explicit := config.FlattenParameters(requestParameters(req.Parameters))
+	freezeFeaturePaths(svcCfg, explicit)
+	overridden := heldKeys(parametersPath, explicit, fromConfig)
 	overridden = append(overridden, heldKeys(environmentPath, req.EnvVars, fromConfigEnv)...)
 
 	status := &instance.ParametersStatus{Provider: configKey, State: instance.ParametersCurrent, Changed: changed, Overridden: overridden}

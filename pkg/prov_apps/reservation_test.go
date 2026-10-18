@@ -2,6 +2,7 @@ package prov_apps
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net"
 	"os"
@@ -400,7 +401,10 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	declared, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
 	require.Equal(t, "float", declared.Parameters["reserve-vram"].Type)
-	manager, err := NewProviderAppManager(cfg, WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) { return declared.Diagnostics.Memory, nil })))
+	manager, err := NewProviderAppManager(cfg, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
+		merged, errs := schema.Merge(provider, declared)
+		return merged, errors.Join(errs...)
+	}))
 	require.NoError(t, err)
 	cleanupProviderManager(t, manager)
 	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-A")

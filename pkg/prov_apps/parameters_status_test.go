@@ -44,13 +44,13 @@ func TestParametersStatus_ConfigChangeIsStale(t *testing.T) {
 
 	reloadWith(t, m, func(svc *config.ServiceConfig) {
 		svc.Models["llama3"] = config.ModelSpec{
-			Parameters:  map[string]string{"ctx-size": "changed", "added": "1"},
+			Parameters:  map[string]string{"ctx-size": "changed", "seed": "1"},
 			Environment: map[string]string{"ZZ_ENV": "changed"},
 		}
 	})
 	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersStale, got.State)
-	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.added", "parameters.ctx-size"}, got.Changed)
+	assert.Equal(t, []string{"environment.ZZ_ENV", "parameters.ctx-size", "parameters.seed"}, got.Changed)
 }
 
 func TestParametersStatusDataDirChangeAndRestartPreparation(t *testing.T) {
@@ -99,6 +99,20 @@ func TestParametersStatus_RequestTierHoldsItsKeys(t *testing.T) {
 			Environment: map[string]string{"ZZ_ENV": "tier1"},
 		}
 	})
+	got := m.ParametersStatus(t.Context(), inst)
+	assert.Equal(t, instance.ParametersCurrent, got.State)
+	assert.Empty(t, got.Changed)
+	assert.Equal(t, []string{"parameters.ctx-size"}, got.Overridden)
+}
+
+// A spelling is not a change: a run asked for ctx_size over a configured
+// only_default is current, and its request key holds the configured flag.
+func TestParametersStatus_SpellingIsNotAChange(t *testing.T) {
+	m := tierManager(t, "")
+	reloadWith(t, m, func(svc *config.ServiceConfig) { svc.Defaults.Parameters = map[string]string{"only_default": "d"} })
+	inst := launchLlama(t, m, map[string]string{"ctx_size": "mine"})
+	require.Equal(t, map[string]string{"ctx-size": "mine", "only-default": "d"}, inst.Resolved().Parameters)
+
 	got := m.ParametersStatus(t.Context(), inst)
 	assert.Equal(t, instance.ParametersCurrent, got.State)
 	assert.Empty(t, got.Changed)

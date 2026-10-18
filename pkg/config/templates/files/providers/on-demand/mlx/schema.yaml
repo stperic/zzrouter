@@ -4,10 +4,6 @@ recurrent_state_rows: 1
 auto_min_context_tokens: 4096
 memory_usable_fraction: 0.75
 parameters:
-  temperature:
-    type: float
-    min: 0.0
-    description: Sampling temperature
   top-p:
     type: float
     min: 0.0
@@ -22,6 +18,42 @@ parameters:
     # argument verbatim, so it takes the template's text, not a path.
     pass: content
     description: Jinja chat template overriding the model's own, by asset name
+  # Both engines' flags an operator may set, each marked with the engine that
+  # reads it: mlx_lm.server 0.31.3 runs text models, mlx_vlm.server the runtime
+  # features; runtime and feature exclude_parameters drop the other engine's.
+  # Engine tuning and running code from the model repo are the operator's
+  # choice; paths, URLs, downloads, adapters, auth and logging stay out.
+  temp: {type: float, description: "Default sampling temperature (mlx_lm)"}
+  top-k: {type: int, description: "Default top-k, 0 disables (mlx_lm)"}
+  min-p: {type: float, description: "Default min-p, 0.0 disables (mlx_lm)"}
+  num-draft-tokens: {type: int, description: "Draft tokens per step for a request's draft model (mlx_lm)"}
+  use-default-chat-template: {type: bool, description: "Use the tokenizer's default chat template (mlx_lm)"}
+  chat-template-args: {type: string, description: "apply_chat_template arguments as JSON (mlx_lm)"}
+  decode-concurrency: {type: int, description: "Batchable requests decoded in parallel (mlx_lm)"}
+  prompt-concurrency: {type: int, description: "Batchable prompts processed in parallel (mlx_lm)"}
+  prompt-cache-size: {type: int, description: "Max distinct KV caches in the prompt cache (mlx_lm)"}
+  prompt-cache-bytes: {type: int, description: "Max prompt cache size in bytes (mlx_lm)"}
+  pipeline: {type: bool, description: "Use pipelining instead of tensor parallelism (mlx_lm)"}
+  prefill-step-size: {type: int, description: "Tokens per prefill step"}
+  vision-cache-size: {type: int, description: "Max cached vision features (mlx_vlm)"}
+  enable-thinking: {type: bool, description: "Enable thinking by default (mlx_vlm)"}
+  thinking-budget: {type: int, description: "Default max tokens in a thinking block (mlx_vlm)"}
+  thinking-start-token: {type: string, description: "Default token opening a thinking block (mlx_vlm)"}
+  thinking-end-token: {type: string, description: "Default token closing a thinking block (mlx_vlm)"}
+  kv-bits: {type: float, description: "KV cache quantization bits, e.g. 3.5 for TurboQuant (mlx_vlm)"}
+  kv-key-bits: {type: float, description: "TurboQuant key bit-width (mlx_vlm)"}
+  kv-value-bits: {type: float, description: "TurboQuant value bit-width (mlx_vlm)"}
+  kv-key-scheme: {type: string, enum: [uniform, turboquant], description: "KV quantization backend for keys (mlx_vlm)"}
+  kv-value-scheme: {type: string, enum: [uniform, turboquant], description: "KV quantization backend for values (mlx_vlm)"}
+  kv-quant-scheme: {type: string, enum: [uniform, turboquant], description: "KV cache quantization backend (mlx_vlm)"}
+  kv-group-size: {type: int, description: "Group size for uniform KV quantization (mlx_vlm)"}
+  max-kv-size: {type: int, description: "Maximum KV cache size in tokens (mlx_vlm)"}
+  quantized-kv-start: {type: int, description: "Start index for the quantized KV cache (mlx_vlm)"}
+  expert-cache-gb: {type: float, description: "Resident routed-expert budget in GB (mlx_vlm)"}
+  draft-kind: {type: string, enum: [dflash, eagle3, mtp], description: "Drafter family (mlx_vlm)"}
+  draft-block-size: {type: int, description: "Drafter block size override (mlx_vlm)"}
+  max-num-seqs: {type: int, min: 1, description: "Max sequences decoded concurrently (mlx_vlm)"}
+  top-logprobs-k: {type: int, min: 0, max: 20, description: "Server cap for per-token top_logprobs (mlx_vlm)"}
 
 diagnostics:
   runtime: mlx

@@ -36,7 +36,7 @@ func TestLauncherAppliesPreparedWorkingDirectory(t *testing.T) {
 	require.Equal(t, dir, strings.TrimSpace(output.String()))
 	require.Equal(t, dir, result.Command.WorkingDir)
 	svc := config.ServiceConfig{Name: "studio", Runtime: &config.AppRuntimeConfig{Execution: config.ExecutionConfig{Command: "python", WorkingDir: "source"}}}
-	prepared, err := NewCommandBuilder(&svc).Build(ResolvedModel{}, 8188, nil)
+	prepared, err := NewCommandBuilder(&svc).Build(ResolvedModel{}, 8188, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, fsroot.ProviderDir("studio")+"/source", prepared.WorkingDir)
 }
@@ -75,7 +75,7 @@ func TestReconciledProviderWorkingDirectories(t *testing.T) {
 		t.Run(provider, func(t *testing.T) {
 			svc, ok := apps.LookupApp(provider)
 			require.True(t, ok)
-			prepared, err := NewCommandBuilder(&svc).Build(ResolvedModel{Name: "local-model", Path: filepath.Join(providerRoot, "weights")}, svc.Runtime.BasePort, nil)
+			prepared, err := NewCommandBuilder(&svc).Build(ResolvedModel{Name: "local-model", Path: filepath.Join(providerRoot, "weights")}, svc.Runtime.BasePort, nil, nil)
 			require.NoError(t, err)
 			run := instance.NewInstance(provider+"-working-directory", provider, "", 0, 0, 0)
 			defer run.Cancel()

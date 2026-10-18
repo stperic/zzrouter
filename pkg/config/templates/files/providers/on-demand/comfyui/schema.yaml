@@ -7,10 +7,89 @@ parameters:
   reserve-vram:
     type: float
     min: 0
-    description: Exact allocator complement derived from device total and reservation in GiB
+    description: Allocator complement in GiB, from device total and reservation
   listen:
     type: string
     description: ComfyUI bind address, use 127.0.0.1 for single-host access
+  # Every other ComfyUI 0.40.0 flag an operator may set. Engine tuning is the
+  # operator's choice; flags the runtime passes, paths, URLs, downloads,
+  # custom-node installs, TLS, CORS and logging stay out.
+  max-upload-size: {type: float, description: "Maximum upload size in MB"}
+  disable-auto-launch: {type: bool, description: "Never open a browser at startup"}
+  cuda-device: {type: string, description: "CUDA device ids to use, comma-separated, or all"}
+  default-device: {type: int, description: "Default device id; other devices stay visible"}
+  cuda-malloc: {type: bool, description: "Enable cudaMallocAsync"}
+  disable-cuda-malloc: {type: bool, description: "Disable cudaMallocAsync"}
+  force-fp32: {type: bool, description: "Force fp32"}
+  force-fp16: {type: bool, description: "Force fp16"}
+  fp32-unet: {type: bool, description: "Run the diffusion model in fp32"}
+  fp64-unet: {type: bool, description: "Run the diffusion model in fp64"}
+  bf16-unet: {type: bool, description: "Run the diffusion model in bf16"}
+  fp16-unet: {type: bool, description: "Run the diffusion model in fp16"}
+  fp16-vae: {type: bool, description: "Run the VAE in fp16"}
+  fp32-vae: {type: bool, description: "Run the VAE in fp32"}
+  bf16-vae: {type: bool, description: "Run the VAE in bf16"}
+  cpu-vae: {type: bool, description: "Run the VAE on the CPU"}
+  fp16-text-enc: {type: bool, description: "Store text encoder weights in fp16"}
+  fp32-text-enc: {type: bool, description: "Store text encoder weights in fp32"}
+  bf16-text-enc: {type: bool, description: "Store text encoder weights in bf16"}
+  fp16-intermediates: {type: bool, description: "Use fp16 for tensors between nodes"}
+  force-channels-last: {type: bool, description: "Force channels-last format"}
+  supports-fp8-compute: {type: bool, description: "Act as if the device supports fp8 compute"}
+  enable-triton-backend: {type: bool, description: "Enable the comfy-kitchen Triton backend"}
+  disable-triton-backend: {type: bool, description: "Disable the comfy-kitchen Triton backend"}
+  preview-method: {type: string, enum: [none, auto, latent2rgb, taesd], description: "Default preview method for sampler nodes"}
+  preview-size: {type: int, description: "Maximum preview size for sampler nodes"}
+  cache-ram: {type: float, description: "RAM headroom in GB for pressure caching"}
+  cache-classic: {type: bool, description: "Use aggressive classic caching"}
+  cache-lru: {type: int, min: 0, description: "LRU cache of N node results"}
+  cache-none: {type: bool, description: "Disable caching, re-running every node"}
+  high-ram: {type: bool, description: "Prefer RAM over model reloads"}
+  use-split-cross-attention: {type: bool, description: "Use split cross attention"}
+  use-quad-cross-attention: {type: bool, description: "Use sub-quadratic cross attention"}
+  use-pytorch-cross-attention: {type: bool, description: "Use PyTorch 2.0 cross attention"}
+  use-sage-attention: {type: bool, description: "Use sage attention"}
+  use-flash-attention: {type: bool, description: "Use FlashAttention"}
+  use-ck-attention: {type: bool, description: "Use Comfy Kitchen attention"}
+  disable-xformers: {type: bool, description: "Disable xformers"}
+  force-upcast-attention: {type: bool, description: "Force attention upcasting"}
+  dont-upcast-attention: {type: bool, description: "Disable attention upcasting"}
+  gpu-only: {type: bool, description: "Store and run everything on the GPU"}
+  highvram: {type: bool, description: "Keep models in GPU memory after use"}
+  lowvram: {type: bool, description: "Run text encoders on the CPU without dynamic VRAM"}
+  novram: {type: bool, description: "Minimize VRAM use beyond lowvram"}
+  cpu: {type: bool, description: "Run everything on the CPU"}
+  vram-headroom: {type: float, min: 0, description: "Extra free VRAM in GB kept by dynamic VRAM"}
+  disable-nvml-pressure: {type: bool, description: "Use CUDA instead of NVML for memory pressure"}
+  async-offload: {type: int, min: 1, description: "Async weight offload streams"}
+  disable-async-offload: {type: bool, description: "Disable async weight offloading"}
+  disable-dynamic-vram: {type: bool, description: "Use estimate-based model loading"}
+  enable-dynamic-vram: {type: bool, description: "Enable dynamic VRAM"}
+  fast-disk: {type: bool, description: "Prefer disk-backed loading over unpinned RAM"}
+  disable-fast-disk: {type: bool, description: "Disable disk-backed loading"}
+  disable-cuda-graphs: {type: bool, description: "Disable CUDA graphs"}
+  disable-comfy-compiler: {type: bool, description: "Disable the Comfy model compiler"}
+  assert-graph-breaks: {type: bool, description: "Fail on compiler graph breaks"}
+  force-non-blocking: {type: bool, description: "Use non-blocking tensor operations"}
+  default-hashing-function: {type: string, enum: [md5, sha1, sha256, sha512], description: "Hash for duplicate file comparison"}
+  disable-smart-memory: {type: bool, description: "Offload models to RAM aggressively"}
+  deterministic: {type: bool, description: "Prefer deterministic PyTorch algorithms"}
+  fast: {type: string, enum: ["true", "false", fp16_accumulation, fp8_matrix_mult, cublas_ops, autotune], description: "One experimental optimization, true for all"}
+  debug-hang: {type: bool, description: "Dump stack traces on Ctrl-C"}
+  disable-pinned-memory: {type: bool, description: "Disable pinned memory"}
+  mmap-torch-files: {type: bool, description: "Use mmap for ckpt/pt files"}
+  disable-mmap: {type: bool, description: "Do not mmap safetensors"}
+  disable-metadata: {type: bool, description: "Do not save prompt metadata in files"}
+  disable-all-custom-nodes: {type: bool, description: "Do not load custom nodes"}
+  disable-partner-nodes: {type: bool, description: "Do not load paid API partner nodes"}
+  offline: {type: bool, description: "Block frontend internet access and partner nodes"}
+  disable-api-nodes: {type: bool, description: "Deprecated alias of offline"}
+  multi-user: {type: bool, description: "Per-user storage"}
+  enable-compress-response-body: {type: bool, description: "Compress response bodies"}
+  enable-assets: {type: bool, description: "Enable the assets system"}
+  disable-assets: {type: bool, description: "Disable the assets system"}
+  enable-asset-hashing: {type: bool, description: "Hash assets while scanning"}
+  feature-flag: {type: string, description: "One server feature flag, KEY or KEY=VALUE"}
 diagnostics:
   runtime: comfyui
   runtimes:

@@ -1,12 +1,14 @@
 package schema
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"maps"
 	"path"
 	"regexp"
+	"strconv"
 
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 
@@ -44,6 +46,8 @@ type YAMLParam struct {
 	ContextOverride bool              `yaml:"context_override,omitempty"`
 	SequenceSlots   bool              `yaml:"sequence_slots,omitempty"`
 	PlacementLog    map[string]string `yaml:"placement_log,omitempty"`
+	// Negatable marks a bool the engine also spells --no-<flag>.
+	Negatable bool `yaml:"negatable,omitempty"`
 }
 
 // YAMLEndpoint is the on-disk shape for an endpoint overlay schema. Only
@@ -103,7 +107,7 @@ func LoadYAMLSchema(data []byte) (*YAMLSchema, error) {
 // fail-fast so startup reports all of them).
 func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	out := &ProviderSchema{Parameters: map[string]ParamShape{
-		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Launch idle duration, 0 after release, negative pins against idle expiry and pressure reclaim; inference hints do not change pins"},
+		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Idle time before the run stops; 0 stops on release, negative pins it"},
 		runsettings.EvictIdleParameter: {Kind: ParamBool, Description: "Reclaim unpinned idle runs when this launch cannot fit"},
 	}}
 	for k, v := range Registry[provider] {
@@ -197,6 +201,11 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if len(out.Enum) == 0 {
 		out.Enum = yp.Enum
 	}
+	enum, err := canonicalEnum(out.Kind, out.Enum)
+	if err != nil {
+		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
+	}
+	out.Enum = enum
 	pass, err := parsePass(yp.Pass, out.Kind)
 	if err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
@@ -210,6 +219,9 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 	if out.Served == "" {
 		out.Served = yp.Served
 	}
+	if out.Negatable = out.Negatable || yp.Negatable; out.Negatable && out.Kind != ParamBool {
+		return ParamShape{}, fmt.Errorf("%s.%s: negatable applies only to type bool, not %q", provider, qualifiedName, out.Kind)
+	}
 	if err := out.mergeSizing(yp); err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 	}
@@ -219,6 +231,23 @@ func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (Pa
 		if err != nil {
 			return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 		}
+	}
+	return out, nil
+}
+
+// canonicalEnum writes a numeric kind's entries as a value is written
+// (Canonical), so a float enum's 1.0 matches the 1 a request's 1.0 becomes.
+func canonicalEnum(kind ParamKind, enum []string) ([]string, error) {
+	if kind != ParamInt && kind != ParamFloat {
+		return enum, nil
+	}
+	out := make([]string, len(enum))
+	for i, entry := range enum {
+		value, ok := Canonical(json.RawMessage(entry))
+		if _, err := strconv.ParseFloat(value, 64); !ok || err != nil {
+			return nil, fmt.Errorf("enum entry %q is not a number", entry)
+		}
+		out[i] = value
 	}
 	return out, nil
 }

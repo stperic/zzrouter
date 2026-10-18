@@ -99,7 +99,11 @@ func TestNodeEnableChoiceSurvivesItsLastParameter(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.SetProviderEnabled("vllm", "worker-a", true)
 	require.NoError(t, err)
-	require.NoError(t, store.DeleteNodeParameter("vllm", "worker-a", "max-model-len"))
+	require.NoError(t, store.ApplyParameterPatch("vllm", func(sc *ServiceConfig) error {
+		DeleteParameter(sc.Nodes["worker-a"].Parameters, "max-model-len")
+		CleanupNodeSpecFor(sc, "worker-a")
+		return nil
+	}))
 	require.True(t, enabledFor(t, dir, "worker-a", "vllm"))
 }
 

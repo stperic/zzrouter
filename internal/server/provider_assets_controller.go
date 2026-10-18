@@ -12,6 +12,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -224,7 +225,7 @@ func assetRefs(cfg *pkgConfig.ServiceConfig, sch *schema.ProviderSchema) []asset
 	for _, site := range cfg.ParameterSites() {
 		shapes := sch.ForEndpoint(site.Endpoint)
 		for _, key := range slices.Sorted(maps.Keys(site.Parameters)) {
-			if shapes[key].Kind == schema.ParamAsset && !pkgConfig.IsAuto(site.Parameters[key]) {
+			if shapes[runsettings.FlagName(key)].Kind == schema.ParamAsset && !pkgConfig.IsAuto(site.Parameters[key]) {
 				refs = append(refs, assetRef{Path: site.Path + "." + key, Name: site.Parameters[key]})
 			}
 		}

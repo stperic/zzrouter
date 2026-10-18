@@ -151,7 +151,6 @@ func TestShippedAutoContextPolicies(t *testing.T) {
 	assert.Equal(t, "k", schemas["llamacpp"].Parameters["cache-type-k"].KVCacheDtype)
 	assert.Equal(t, "v", schemas["llamacpp"].Parameters["cache-type-v"].KVCacheDtype)
 	assert.Equal(t, "both", schemas["vllm"].Parameters["kv-cache-dtype"].KVCacheDtype)
-	assert.True(t, schemas["vllm"].Parameters["rope-scaling"].ContextOverride)
 	assert.True(t, schemas["vllm"].Parameters["hf-overrides"].ContextOverride)
 	for key := range schemas["mlx"].Parameters {
 		assert.NotEqual(t, "context", key)

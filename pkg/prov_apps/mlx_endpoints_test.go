@@ -3,6 +3,7 @@ package prov_apps
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/health"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -19,9 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func mlxEndpointFixture(t *testing.T, installed bool) (*ProviderAppManager, config.ServiceConfig, string) {
+func mlxEndpointFixture(t *testing.T, installed bool, declared ...string) (*ProviderAppManager, config.ServiceConfig, string) {
 	t.Helper()
-	m, _, dir := featureLaunchFixture(t)
+	m, _, dir := featureLaunchFixture(t, declared...)
 	isolateProviderRoot(t)
 	providers := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(providers))
@@ -46,7 +48,7 @@ func TestMLXEndpointRuntimeRequired(t *testing.T) {
 	m, svc, _ := mlxEndpointFixture(t, false)
 	for _, endpoint := range []Endpoint{EndpointEmbeddings, EndpointReranking} {
 		req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: endpoint}
-		_, _, _, err := m.featureRuntime(svc, process.ResolveModel(svc, req.Model), "", string(endpoint))
+		_, _, err := m.featureRuntime(svc, process.ResolveModel(svc, req.Model), "", string(endpoint))
 		require.ErrorIs(t, err, ErrParameterValidation)
 		_, err = m.EnsureRun(t.Context(), req)
 		require.ErrorIs(t, err, ErrParameterValidation)
@@ -59,8 +61,19 @@ func TestMLXEndpointRuntimeRequired(t *testing.T) {
 }
 
 func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
-	m, svc, dir := mlxEndpointFixture(t, true)
+	m, _, dir := mlxEndpointFixture(t, true)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
+	// Configured tiers are policy across engines: what mlx_vlm excludes is dropped.
+	excluded := map[string]string{"chat-template": "x", "temp": "0.5", "top-p": "0.9", "max-tokens": "10"}
+	cfg := m.AppsConfig()
+	require.NoError(t, cfg.UpdateApp("mlx", func(out *config.ServiceConfig) error {
+		params := maps.Clone(out.Defaults.Parameters)
+		maps.Copy(params, excluded)
+		out.Defaults.Parameters = params
+		return nil
+	}))
+	m.ReloadConfig(cfg)
+	svc, _ := cfg.LookupApp("mlx")
 	for _, tc := range []struct {
 		endpoint   Endpoint
 		flag, wire string
@@ -69,7 +82,7 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 		{EndpointReranking, "--reranker-model", "rerank"},
 	} {
 		t.Run(string(tc.endpoint), func(t *testing.T) {
-			req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: tc.endpoint, Parameters: map[string]string{"chat-template": "x", "temperature": "0.5", "top-p": "0.9", "max-tokens": "10"}}
+			req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: tc.endpoint}
 			prepared, err := m.prepareStart(t.Context(), req)
 			require.NoError(t, err)
 			require.Equal(t, tc.endpoint, prepared.req.Endpoint)
@@ -80,7 +93,7 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 			require.Equal(t, []string{"-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "8090", tc.flag, launch.launch.ModelPath}, launch.launch.Args)
 			require.Equal(t, launch.launch.ModelPath, launch.launch.WireModel)
 			require.Equal(t, []string{tc.wire}, launch.resolved.WireEndpoints)
-			for key := range req.Parameters {
+			for key := range excluded {
 				require.NotContains(t, launch.parameters.Params, key)
 			}
 			run, err := m.newRun(prepared.req, selected.config, 8090)
@@ -118,6 +131,24 @@ func TestMLXEndpointLaunchAndCatalog(t *testing.T) {
 	require.NoError(t, m.EnsureModelFeatures(context.Background(), "mlx", dir, []string{"embeddings", "reranking"}, nil, nil))
 }
 
+// zz_params_get lists temp for MLX, which mlx_lm takes and mlx_vlm, serving
+// a vision model, does not: a request's temp is refused naming that runtime,
+// while auto asks for nothing and passes. An undeclared key's auto is still
+// refused, so a misspelling is never accepted.
+func TestMLXVisionRefusesWhatItsRuntimeLacks(t *testing.T) {
+	m, _, dir := mlxEndpointFixture(t, true, "parameters:\n  temp: {type: float}\n")
+	preview := func(params map[string]string) error {
+		_, err := m.PreviewLaunch(t.Context(), EnsureRequest{Provider: "mlx", Model: "vendor/model", Parameters: params}, 8090)
+		return err
+	}
+	require.NoError(t, preview(map[string]string{"temp": "0.5"}), "the base runtime takes temp")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
+	refused := requireRefused(t, preview(map[string]string{"temp": "0.5"}), "temp", httperr.CodeExcludedByRuntime)
+	require.Contains(t, refused.Issues[0].Message, "runtime mlx-vlm")
+	require.NoError(t, preview(map[string]string{"temp": "auto"}))
+	requireRefused(t, preview(map[string]string{"context_length": "auto"}), "context_length", httperr.CodeUnknownFlag)
+}
+
 func TestMLXVisionReadinessOverlay(t *testing.T) {
 	m, _, dir := mlxEndpointFixture(t, true)
 	cfg := m.AppsConfig()
@@ -125,10 +156,10 @@ func TestMLXVisionReadinessOverlay(t *testing.T) {
 	m.ReloadConfig(cfg)
 	svc, _ := cfg.LookupApp("mlx")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"vision_config":{}}`), 0600))
-	selected, _, excluded, err := m.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
+	selected, _, err := m.featureRuntime(svc, process.ResolveModel(svc, "vendor/model"), "", "chat")
 	require.NoError(t, err)
-	require.Contains(t, excluded, "temperature")
-	require.Contains(t, excluded, "top-p")
+	require.Contains(t, selected.Runtime.ExcludeParameters, "temp")
+	require.Contains(t, selected.Runtime.ExcludeParameters, "top-p")
 	req := EnsureRequest{Provider: "mlx", Model: "vendor/model", Endpoint: EndpointChat}
 	selection, err := m.resolveLaunch(&req)
 	require.NoError(t, err)

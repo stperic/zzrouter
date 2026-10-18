@@ -38,7 +38,7 @@ func TestParametersPatch_ToolCallingRemedy(t *testing.T) {
 	runtime := *svc.Runtime
 	runtime.Execution.Args = []string{"serve", "${MODEL}"}
 	svc.Runtime = &runtime
-	launch, err := process.NewCommandBuilder(&svc).Build(process.ResolvedModel{Name: "probe-model"}, 1234, params)
+	launch, err := process.NewCommandBuilder(&svc).Build(process.ResolvedModel{Name: "probe-model"}, 1234, params, nil)
 	require.NoError(t, err)
 	assert.Contains(t, launch.Args, "--enable-auto-tool-choice")
 	assert.NotContains(t, launch.Args, "true", "a true bool renders as a bare flag")
@@ -420,8 +420,8 @@ func TestValidatePatch_AssetParameter(t *testing.T) {
 // A kind the validator does not handle must refuse, not wave the value
 // through: that is how an asset-typed key would pass unchecked had its
 // case been forgotten.
-func TestValidateAgainstShape_UnknownKindRefuses(t *testing.T) {
-	e := validateAgainstShape("k", raw("anything"), schema.ParamShape{Kind: "mystery"})
+func TestValidateLeaf_UnknownKindRefuses(t *testing.T) {
+	e := validateLeaf("k", raw("anything"), false, map[string]schema.ParamShape{"k": {Kind: "mystery"}})
 	require.NotNil(t, e)
 	assert.Equal(t, string(httperr.CodeWrongType), e.Code)
 }
@@ -458,7 +458,7 @@ func TestParametersPatch_ChecksAssetOnCoordinator(t *testing.T) {
 // a new reference dangle is refused.
 func TestParametersPatch_RefusesOnlyNewDanglingRefs(t *testing.T) {
 	server, _ := assetTestNode(t)
-	require.NoError(t, server.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+	setLlamacppDefault(t, server, "chat-template-file", "t.jinja")
 	require.NoError(t, os.Remove(filepath.Join(server.configStore.DirPath(), "on-demand", "llamacpp", "assets", "t.jinja")))
 
 	patch := func(body map[string]any) *TestResponse {

@@ -95,7 +95,7 @@ func newContractRig(t *testing.T, holdReady bool, opts ...Option) *contractRig {
 		r.attempts.Add(1)
 		return ctx, func(EnsureResult, error) {}
 	})
-	m, err := NewProviderAppManager(cfg, append([]Option{observe}, opts...)...)
+	m, err := NewProviderAppManager(cfg, append([]Option{observe, declaredSchema(t, "parameters:\n  budget: {}\n")}, opts...)...)
 	require.NoError(t, err)
 	cleanupProviderManager(t, m)
 	r.m = m

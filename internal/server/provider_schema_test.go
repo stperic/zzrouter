@@ -236,8 +236,9 @@ func TestContextAutoSpellsOnlyArgv(t *testing.T) {
 			cfg, ok := store.Config().LookupApp(tc.provider)
 			require.True(t, ok)
 			assert.Equal(t, "auto", cfg.Defaults.Parameters[tc.key])
-			input := map[string]string{tc.key: "auto", "chat-template-file": "t.jinja"}
+			input := map[string]string{tc.key: "auto"}
 			if tc.provider == "llamacpp" {
+				input["chat-template-file"] = "t.jinja"
 				_, err = store.WriteAsset(tc.provider, "t.jinja", []byte("template"))
 				require.NoError(t, err)
 			}

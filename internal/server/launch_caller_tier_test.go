@@ -47,18 +47,19 @@ func TestEnsureRun_HandsTheManagerTheCallersTierOnly(t *testing.T) {
 			BasePort:  8400,
 			Execution: pkgConfig.ExecutionConfig{Type: "cli", Command: "sleep", Args: []string{"2"}},
 		},
-		// A value the tree supplies and the caller does not.
-		Defaults:     &pkgConfig.AppDefaultsConfig{Parameters: map[string]string{"ctx-size": "8192"}},
+		// A value the tree supplies and the caller does not. A provider with
+		// no schema.yaml declares only the run settings.
+		Defaults:     &pkgConfig.AppDefaultsConfig{Parameters: map[string]string{"keep-alive": "10m"}},
 		Capabilities: &pkgConfig.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))
 
 	server.providers.appMgr.ReloadConfig(server.appsConfig())
-	res, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: "tier-model", Provider: provider, Parameters: map[string]string{"seed": "42"}})
+	res, err := server.providers.appMgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Model: "tier-model", Provider: provider, Parameters: map[string]string{"evict-idle-on-memory-pressure": "true"}})
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]string{"seed": "42"}, res.Run.SnapshotConfig().Parameters,
+	assert.Equal(t, map[string]string{"evict-idle-on-memory-pressure": "true"}, res.Run.SnapshotConfig().Parameters,
 		"the launch request must carry the caller's parameters and nothing else; "+
 			"a configured value in here is replayed on every restart as the caller's own")
-	assert.NotContains(t, res.Run.SnapshotConfig().Parameters, "ctx-size",
+	assert.NotContains(t, res.Run.SnapshotConfig().Parameters, "keep-alive",
 		"the tier tree is resolved inside EnsureRun, once")
 }

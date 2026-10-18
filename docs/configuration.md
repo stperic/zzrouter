@@ -203,6 +203,12 @@ Change settings through `PATCH /zzrouter/v1/providers/:name/parameters` with
 arrays replace. Workers redirect coordinator-owned writes with HTTP 421 and
 `Location`.
 
+PATCH and every launch take only the parameters
+`GET /zzrouter/v1/providers/:name/schema` lists. A bool the engine also spells
+`--no-<flag>` is listed once, with `negatable: true`: `true` passes `--<flag>`,
+`false` passes `--no-<flag>`, and a `no-<flag>` key is refused with
+`unknown_flag`. Another bool's `false` leaves its flag unset.
+
 Set `keep-alive: "-1"` (or another negative duration) in the provider tier tree
 or run-start `parameters` to pin a run against zzRouter idle expiry and pressure
 reclaim. For example, PATCH `/zzrouter/v1/providers/vllm/parameters` with

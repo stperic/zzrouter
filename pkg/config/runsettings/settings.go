@@ -1,3 +1,5 @@
+// Package runsettings owns the run-parameter key vocabulary: how a key is
+// spelled (FlagName), the auto value, and the run settings zzRouter reserves.
 package runsettings
 
 import (
@@ -12,6 +14,15 @@ const (
 	EvictIdleParameter = "evict-idle-on-memory-pressure"
 )
 
+// Auto is the reserved value asking zzRouter to choose a parameter's value.
+const Auto = "auto"
+
+// FlagName is how argv spells a parameter key, after "--": parameter_name
+// and parameter-name are one flag, which every merge, write and check keys by.
+func FlagName(key string) string {
+	return strings.ReplaceAll(key, "_", "-")
+}
+
 // Settings is one launch's idle and memory-pressure policy.
 type Settings struct {
 	KeepAlive         time.Duration
@@ -20,13 +31,9 @@ type Settings struct {
 	EvictIdleExplicit bool
 }
 
-// Parse validates reserved parameters, with the legacy node eviction option as fallback.
+// Parse validates reserved parameters keyed by flag name, with the legacy
+// node eviction option as fallback.
 func Parse(params map[string]string, evictDefault bool) (Settings, error) {
-	for key := range params {
-		if IsParameter(key) && key != KeepAliveParameter && key != EvictIdleParameter {
-			return Settings{}, fmt.Errorf("use canonical run parameter spelling for %q", key)
-		}
-	}
 	raw, explicit := params[KeepAliveParameter]
 	duration, err := Duration(raw)
 	if err != nil {
@@ -59,8 +66,7 @@ func Duration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// IsParameter recognizes reserved names, including underscore aliases engines normalize to flags.
+// IsParameter recognizes a reserved name, keyed by flag name.
 func IsParameter(key string) bool {
-	key = strings.ReplaceAll(key, "_", "-")
 	return key == KeepAliveParameter || key == EvictIdleParameter
 }

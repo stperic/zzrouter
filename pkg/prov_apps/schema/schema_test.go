@@ -23,7 +23,7 @@ func TestMerge_YAMLAugmentsGoSpine(t *testing.T) {
 		Provider: "vllm",
 		Parameters: map[string]YAMLParam{
 			// Long-tail YAML-only flag.
-			"swap-space": {Type: "int", Description: "CPU swap per GPU in GiB"},
+			"max-num-batched-tokens": {Type: "int", Description: "Max tokens processed per iteration"},
 			// Go-spine flag enriched with Description (Go left blank — but
 			// here vllm.max-model-len already has one; use gpu-memory as
 			// the case where YAML provides description detail).
@@ -34,8 +34,8 @@ func TestMerge_YAMLAugmentsGoSpine(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("unexpected merge errors: %v", errs)
 	}
-	if s := merged.Parameters["swap-space"]; s.Kind != ParamInt {
-		t.Errorf("swap-space Kind = %q, want int", s.Kind)
+	if s := merged.Parameters["max-num-batched-tokens"]; s.Kind != ParamInt {
+		t.Errorf("max-num-batched-tokens Kind = %q, want int", s.Kind)
 	}
 	if s := merged.Parameters["max-model-len"]; s.Kind != ParamInt {
 		t.Errorf("Go spine lost: max-model-len.Kind = %q", s.Kind)
@@ -76,7 +76,7 @@ func TestMerge_UnknownTypeFails(t *testing.T) {
 func TestLoadFromFS_ReadsOnlyProviderSchemas(t *testing.T) {
 	inject := []byte("parameters:\n  injected: {type: string}\n")
 	fsys := fstest.MapFS{
-		"root/on-demand/vllm/schema.yaml":                   {Data: []byte("parameters:\n  swap-space: {type: int}\n")},
+		"root/on-demand/vllm/schema.yaml":                   {Data: []byte("parameters:\n  max-num-batched-tokens: {type: int}\n")},
 		"root/on-demand/llamacpp/schema.yaml":               {Data: []byte("parameters:\n  chat-template-file: {type: asset}\n")},
 		"root/on-demand/mlx.schema.yaml":                    {Data: inject},
 		"root/on-demand/llamacpp/assets/schema.yaml":        {Data: inject},
@@ -87,7 +87,7 @@ func TestLoadFromFS_ReadsOnlyProviderSchemas(t *testing.T) {
 	if len(errs) != 0 {
 		t.Fatalf("only provider schemas may be parsed: %v", errs)
 	}
-	if _, ok := merged["vllm"].Parameters["swap-space"]; !ok {
+	if _, ok := merged["vllm"].Parameters["max-num-batched-tokens"]; !ok {
 		t.Error("provider schema.yaml not merged")
 	}
 	if _, ok := merged["vllm"].Parameters["max-model-len"]; !ok {
@@ -223,5 +223,27 @@ func TestForEndpoint(t *testing.T) {
 	}
 	if p.Parameters["b"].Kind != ParamString {
 		t.Error("ForEndpoint must not mutate the flat set")
+	}
+}
+
+// negatable is a bool's attribute; on any other type it would make false
+// render a flag the engine does not have.
+func TestMerge_Negatable(t *testing.T) {
+	merged, errs := Merge("llamacpp", &YAMLSchema{Parameters: map[string]YAMLParam{
+		"mmap":    {Type: "bool", Negatable: true},
+		"cpu-moe": {Type: "bool"},
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("unexpected merge errors: %v", errs)
+	}
+	if !merged.Parameters["mmap"].Negatable || merged.Parameters["cpu-moe"].Negatable {
+		t.Errorf("negatable did not merge as declared: %+v", merged.Parameters)
+	}
+	y, err := LoadYAMLSchema([]byte("parameters:\n  threads: {type: int, negatable: true}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, errs := Merge("llamacpp", y); len(errs) == 0 {
+		t.Error("negatable on an int must be refused")
 	}
 }

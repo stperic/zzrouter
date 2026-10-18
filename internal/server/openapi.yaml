@@ -894,7 +894,12 @@ paths:
           description: >
             Invalid request fields, an endpoint the provider does not serve, a required
             endpoint runtime that is not installed, a parameter the provider's schema rejects,
-            or a port outside the configured range. Retrying the same body cannot succeed.
+            or a port outside the configured range. Every parameter the launch would pass,
+            from the request or a configured tier, is checked against the provider's schema
+            for the endpoint: errors[] holds one entry per key (unknown_flag, wrong_type,
+            out_of_range, coercion_failed, invalid_value, duplicate_flag, excluded_by_runtime)
+            whose message names the tier.
+            Retrying the same body cannot succeed.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1301,8 +1306,9 @@ paths:
           description: |
             `provider` missing, or a provider that is not configured or
             not enabled on this cluster; an endpoint the provider does not serve;
-            or a required endpoint runtime that is not installed. Endpoint refusals
-            name the provider and endpoint; missing runtimes include the install call.
+            a required endpoint runtime that is not installed; or a parameter the
+            provider's schema refuses, with the same errors[] as POST /runs. Endpoint
+            refusals name the provider and endpoint; missing runtimes include the install call.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -12964,7 +12970,7 @@ components:
       example:
         defaults:
           parameters:
-            num-ctx: 4096
+            ctx-size: 4096
         nodes:
           worker-1:
             parameters:
@@ -13076,7 +13082,7 @@ components:
           description: |
             The winning value. Under `parameters` and `environment` it is
             always a string: the tier maps that feed the resolver are
-            string-keyed, so `num-ctx` comes back as `"2048"` even though
+            string-keyed, so `ctx-size` comes back as `"4096"` even though
             its schema types it `int`, and `""` is a real value, distinct
             from an absent key. The accepted type of each key is in
             `GET /providers/{name}/schema`. Under `request` it keeps its
@@ -13100,6 +13106,13 @@ components:
             For an injected model feature or a key whose schema type is `asset`: the content digest of
             the file the value names, so a caller sees which bytes a launch
             gets. Absent for other keys, missing assets, and legacy feature files without a manifest digest.
+        conflicts:
+          type: array
+          description: |
+            Other spellings of this flag (`ctx_size` beside `ctx-size`) that the
+            same map sets to a different value. A launch refuses them with
+            `duplicate_flag`; a PATCH of the flag replaces every spelling.
+          items: { type: string }
 
     AssetInfo:
       type: object
@@ -13317,7 +13330,7 @@ components:
           type: string
           # Full pkg/httperr.AllParamErrorCodes() enum; pinned by
           # TestOpenAPIParamErrorEnum_MatchesDeclaredCodes.
-          enum: [unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use, invalid_model_category, invalid_file_name, file_exists, file_not_found, download_in_progress, provider_model_store_unsupported]
+          enum: [unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, duplicate_flag, excluded_by_runtime, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use, invalid_model_category, invalid_file_name, file_exists, file_not_found, download_in_progress, provider_model_store_unsupported]
         got:
           description: |
             The value that was rejected. Omitted where echoing it would
@@ -13829,7 +13842,26 @@ components:
         description: { type: string }
         enum:
           type: array
+          description: The values accepted, whatever the `type`.
           items: { type: string }
+        negatable:
+          type: boolean
+          description: |
+            For `type: bool` only: `false` passes `--no-<flag>`, so it also
+            turns off a setting the engine enables by default. Without it,
+            `false` leaves the flag unset. The `no-` spelling is not a key.
+        excluded_by:
+          type: array
+          description: |
+            The runtimes that do not take this parameter. A request setting it
+            for a model that runtime serves is refused with
+            `excluded_by_runtime`; a configured value is dropped.
+          items:
+            type: object
+            required: [runtime]
+            properties:
+              runtime: { type: string, description: "The runtime, named as excluded_by_runtime names it: the provider's name for its base runtime." }
+              feature: { type: string, description: The model feature that selects this runtime; absent for the base runtime. }
         pass:
           type: string
           enum: [path, content]

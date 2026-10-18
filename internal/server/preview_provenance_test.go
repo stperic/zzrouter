@@ -10,80 +10,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 )
 
-// preMergeForRequest flattens the tier tree into a plain map of values
-// before the request leaves the coordinator. The node that receives it
-// sees every value arrive as a request parameter and can only report
-// them as `request` -- accurate about the wire it saw, wrong about
-// where the values came from. An operator reading that in the CLI is
-// told they sent values they never sent.
-//
-// The coordinator owns the provider tree (a worker's copy is a cache),
-// so it is the only place that can answer this truthfully, which is why
-// the tiers are carried out of the merge rather than recomputed later.
-func TestPreMergeForRequest_ReportsTheTierEachValueCameFrom(t *testing.T) {
-	cfg := &config.AppsConfig{}
-	require.NoError(t, cfg.AddApp("vllm", config.ServiceConfig{
-		Enabled:  new(true),
-		Name:     "vLLM",
-		Protocol: config.ProtocolOpenAI,
-		Mode:     "on-demand",
-		Runtime: &config.AppRuntimeConfig{
-			PortRange: []int{8100, 8105},
-			BasePort:  8100,
-			Execution: config.ExecutionConfig{Type: "cli", Command: "vllm"},
-		},
-		Defaults: &config.AppDefaultsConfig{
-			Parameters: map[string]string{
-				"gpu-memory-utilization": "0.95",
-				"max-model-len":          "8192",
-			},
-		},
-		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
-	}))
-
-	req := &LoadModelRequest{
-		Provider:  "vllm",
-		ModelName: "some-model",
-		// The one value the caller really did send.
-		Parameters: map[string]string{"max-model-len": "4096"},
-	}
-
-	sources := preMergeForRequest(cfg, req, "worker1")
-	require.NotNil(t, sources)
-
-	assert.Equal(t, config.TierDefault.String(), sources["gpu-memory-utilization"],
-		"a value from the provider's defaults was reported as caller-supplied")
-	assert.Equal(t, config.TierRequest.String(), sources["max-model-len"],
-		"a value the caller actually sent must still read as request")
-
-	// The merge itself must be unchanged: request wins over defaults.
-	assert.Equal(t, "4096", req.Parameters["max-model-len"])
-	assert.Equal(t, "0.95", req.Parameters["gpu-memory-utilization"])
-}
-
-// Nothing to merge means nothing to claim. An unknown provider or a
-// missing config must not invent provenance.
-func TestPreMergeForRequest_ClaimsNothingWithoutATree(t *testing.T) {
-	req := &LoadModelRequest{Provider: "vllm", ModelName: "m"}
-	assert.Nil(t, preMergeForRequest(nil, req, "worker1"))
-
-	empty := &config.AppsConfig{}
-	assert.Nil(t, preMergeForRequest(empty, &LoadModelRequest{Provider: "nope", ModelName: "m"}, "worker1"))
-	assert.Nil(t, preMergeForRequest(empty, &LoadModelRequest{ModelName: "m"}, "worker1"))
-
-	// No target is the same as no tree: there is no node whose tiers
-	// this could be resolving. Asserted against a config that DOES hold
-	// the provider — against `empty` it would pass on the provider
-	// lookup failing first, and would go on passing with the target
-	// check deleted.
-	assert.Nil(t, preMergeForRequest(tierProbeConfig(t), &LoadModelRequest{Provider: "vllm", ModelName: "m"}, ""))
-}
-
-// The unit test above proves the tiers are computed. This drives the
-// actual route, because the tiers being right in the merge and the
-// response reporting them are two separate things -- and the second is
-// where they were lost. Removing the controller's stamp passes every
-// other test in this package.
+// A preview reports the tier each value came from in the walk of the node
+// that rendered it, so a request that sent no parameters claims none.
 func TestIntegration_PreviewReportsWhereValuesCameFrom(t *testing.T) {
 	cfg := DefaultTestNodeConfig()
 	server := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: cfg})
@@ -102,8 +30,9 @@ func TestIntegration_PreviewReportsWhereValuesCameFrom(t *testing.T) {
 			BasePort:  8300,
 			Execution: config.ExecutionConfig{Type: "cli", Command: "previewprov"},
 		},
+		// A provider with no schema.yaml declares only the run settings.
 		Defaults: &config.AppDefaultsConfig{
-			Parameters: map[string]string{"gpu-memory-utilization": "0.95"},
+			Parameters: map[string]string{"keep-alive": "10m"},
 		},
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 	}))

@@ -136,8 +136,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	// ========================================================================
 	// PARAMS - Direct parameter management (coordinator-only)
 	// ========================================================================
-	// Parameter CRUD is coordinator-only. Workers receive pre-merged parameters
-	// from the coordinator in the launch request and only resolve "auto" values.
+	// Parameter CRUD is coordinator-only. A worker resolves its own synced
+	// tree for a launch or a preview; a request carries only the caller's parameters.
 	paramsExecutor := s.newParamsExecutor()
 	router.GET("/providers/:name/resolved", paramsExecutor.HandleResolved)
 	if !s.node.IsWorker() {

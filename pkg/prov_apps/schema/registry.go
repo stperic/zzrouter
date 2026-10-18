@@ -58,6 +58,9 @@ type ParamShape struct {
 	ContextOverride bool
 	SequenceSlots   bool
 	PlacementLog    map[string]*regexp.Regexp
+	// Negatable marks a bool the engine also takes as --no-<flag>, so false
+	// passes that spelling instead of omitting the flag.
+	Negatable bool
 }
 
 // AutoContext declares context and recurrent-state allocation evidence for sizing.
@@ -89,17 +92,14 @@ var Registry = map[string]map[string]ParamShape{
 		"max-model-len":          {Kind: ParamInt, Min: fptr(1), Description: "Maximum model context length in tokens"},
 		"gpu-memory-utilization": {Kind: ParamFloat, Min: fptr(0), Max: fptr(1), Description: "Fraction of GPU memory allocated to model weights and activations"},
 		"tensor-parallel-size":   {Kind: ParamInt, Min: fptr(1), Description: "Number of GPUs for tensor parallelism"},
-		"dtype":                  {Kind: ParamString, Description: "Model weight dtype (auto|bf16|fp16|fp32)"},
+		"dtype":                  {Kind: ParamString, Enum: []string{"auto", "half", "float16", "bfloat16", "float", "float32"}, Description: "Model weight and activation dtype, auto from the model"},
 	},
 	"llamacpp": {
 		"ctx-size":     {Kind: ParamInt, Min: fptr(1), Description: "Context window size in tokens"},
-		"n-gpu-layers": {Kind: ParamInt, Min: fptr(0), Description: "Number of layers to offload to GPU"},
+		"n-gpu-layers": {Kind: ParamInt, Description: "Layers stored in VRAM: a count, -1 or auto, -2 for all"},
 	},
 	"mlx": {
 		"max-tokens": {Kind: ParamInt, Min: fptr(1), Description: "Maximum generation length"},
-	},
-	"ollama": {
-		"num-ctx": {Kind: ParamInt, Min: fptr(1), Description: "Context window size in tokens"},
 	},
 }
 

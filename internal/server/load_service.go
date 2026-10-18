@@ -9,7 +9,6 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
-	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
@@ -41,59 +40,12 @@ func NewLoadService(cache ModelCacheProvider, router routing.Router) *LoadServic
 	}
 }
 
-// WithTierResolution lets this node resolve the provider tier tree for a
-// request before it leaves for the node that will run the model. Without
-// it the receiving node resolves its own tree, which is a peer-synced
-// cache of this one.
-func (s *LoadService) WithTierResolution(appsConfig func() *pkgConfig.AppsConfig) *LoadService {
+// WithAppsConfig lets the service refuse a run target the provider config
+// rules out before routing it. Tiers resolve on the node that runs the
+// model, for a preview as for a start.
+func (s *LoadService) WithAppsConfig(appsConfig func() *pkgConfig.AppsConfig) *LoadService {
 	s.appsConfig = appsConfig
 	return s
-}
-
-// launchTarget names the remote node a request would run on, or "" when
-// this node would run it or the request fans out.
-//
-// Only a remote target is worth resolving for. Work that stays here
-// reads the live tree anyway, and a fan-out has no single node to
-// resolve for at all.
-func (s *LoadService) launchTarget(ctx context.Context, node, model string) (string, error) {
-	if s.appsConfig == nil {
-		return "", nil
-	}
-	if node == "" && model != "" {
-		resolved, err := s.cache.ResolveModel(ctx, resolver.Reference{Model: model})
-		if err != nil {
-			return "", err
-		}
-		node = resolved.Node
-	}
-	if node == "*" || s.cache.IsLocalNode(node) {
-		return "", nil
-	}
-	return node, nil
-}
-
-// preMerge resolves the tier tree for the node a request names, and
-// reports the tier each value came from. Nothing is merged and nothing
-// is claimed when the target is this node or unknown.
-//
-// Preview is the only caller. A launch is left to resolve on the node
-// that runs it: what arrives in a launch request is stored as the
-// caller's own request tier and replayed on every restart, so a
-// coordinator that resolved a launch would pin every configured value
-// against the config it read them from. Rendering a command creates no
-// instance, so it carries no such consequence — and the coordinator
-// owns the tree, which is what lets a preview answer for a node whose
-// copy of it is a cache.
-func (s *LoadService) preMerge(ctx context.Context, req *LoadModelRequest) (map[string]string, error) {
-	target, err := s.launchTarget(ctx, req.Node, req.ModelName)
-	if err != nil {
-		return nil, err
-	}
-	if target == "" {
-		return nil, nil
-	}
-	return preMergeForRequest(s.appsConfig(), req, target), nil
 }
 
 // LoadModelRequest represents a request to load a model
@@ -229,11 +181,6 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	}
 	slog.Info("[LoadService] PreviewRun", "model", req.ModelName, "provider", req.Provider, "node", req.Node)
 
-	sources, err := s.preMerge(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
 	requestBody, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -261,15 +208,6 @@ func (s *LoadService) PreviewRun(ctx context.Context, req *PreviewRunRequest) (*
 	}
 
 	preview.Assessment.NormalizeLegacy()
-
-	// The node that rendered this preview received every value as a
-	// request parameter, so the sources it reported read `request` for
-	// all of them — true of the wire it saw, false about where the
-	// values came from. Restore the tiers from the tree they were
-	// actually resolved against.
-	if len(sources) > 0 {
-		preview.ParameterSources = sources
-	}
 
 	slog.Info("[LoadService] Preview generated for model", "model", preview.Model)
 	return &preview, nil

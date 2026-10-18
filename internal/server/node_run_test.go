@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +45,13 @@ func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsCo
 		Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}},
 		Runtime:      &config.AppRuntimeConfig{BasePort: 8840, PortRange: []int{8840, 8849}, Execution: config.ExecutionConfig{Type: "cli", Command: engine}},
 	}))
-	mgr, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
+	// seed is the fixture's own integer parameter: its values exceed float64 precision.
+	declared := &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"seed": {Type: "int"}}}
+	seed := prov_apps.WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
+		merged, errs := schema.Merge(provider, declared)
+		return merged, errors.Join(errs...)
+	})
+	mgr, err := prov_apps.NewProviderAppManager(cfg, seed, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
 		t.Error("node run used the model catalog")
 		return false, nil
 	}))

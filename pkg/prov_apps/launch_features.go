@@ -17,6 +17,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/integrity"
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/prov_apps/detect"
@@ -25,6 +26,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // LocalizeModelFeatures supplies present file features without replacing any
@@ -123,10 +125,9 @@ func localizeModelFeatures(svc config.ServiceConfig, dir string, params map[stri
 	return out, nil
 }
 
-func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model process.ResolvedModel, selected, endpoint string) (config.ServiceConfig, string, []string, error) {
+func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model process.ResolvedModel, selected, endpoint string) (config.ServiceConfig, string, error) {
 	endpoint = string(EndpointOrDefault(Endpoint(endpoint)))
 	runtimeKey := ""
-	var excluded []string
 	hasRuntime := false
 	dir := model.Directory()
 	for _, name := range slices.Sorted(maps.Keys(svc.Features)) {
@@ -141,26 +142,27 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model proc
 		}
 		qualifies, err := featurePredicate(dir, feature.When)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return svc, "", nil, fmt.Errorf("%w: model %q feature %q: %w; repair or re-download malformed evidence; ask the operator to correct unreadable evidence", ErrFeatureEvidence, model.Name, name, err)
+			return svc, "", fmt.Errorf("%w: model %q feature %q: %w; repair or re-download malformed evidence; ask the operator to correct unreadable evidence", ErrFeatureEvidence, model.Name, name, err)
 		}
 		if !qualifies {
 			continue
 		}
 		installer, err := m.installs.Installer(feature.Runtime)
 		if err != nil {
-			return svc, "", nil, err
+			return svc, "", err
 		}
 		if !installer.IsInstalled() && explicit != feature.Runtime {
 			continue
 		}
 		if runtimeKey != "" {
-			return svc, "", nil, fmt.Errorf("multiple installed runtime features for model %q", model)
+			return svc, "", fmt.Errorf("multiple installed runtime features for model %q", model)
 		}
 		if feature.Execution == nil || svc.Runtime == nil {
-			return svc, "", nil, fmt.Errorf("feature %q has no execution configuration", name)
+			return svc, "", fmt.Errorf("feature %q has no execution configuration", name)
 		}
 		runtimeCopy := *svc.Runtime
 		runtimeCopy.Execution = *feature.Execution
+		runtimeCopy.ExcludeParameters = feature.ExcludeParameters
 		if feature.HealthCheck != nil {
 			runtimeCopy.HealthCheck = *feature.HealthCheck
 		}
@@ -171,19 +173,18 @@ func (m *ProviderAppManager) featureRuntime(svc config.ServiceConfig, model proc
 			svc.Capabilities = &caps
 		}
 		runtimeKey = feature.Runtime
-		excluded = feature.ExcludeParameters
 	}
 	effective := svc
 	effective.Features = nil
 	if err := effective.ServesEndpoint(endpoint); hasRuntime && err != nil {
 		for name, feature := range svc.Features {
 			if installer, lookupErr := m.installs.Installer(feature.Runtime); config.FeatureEndpoint(name) == endpoint && feature.Runtime != "" && lookupErr == nil && !installer.IsInstalled() {
-				return svc, "", nil, fmt.Errorf("%w: %w; requires runtime %q; install with POST /zzrouter/v1/providers/%s/install {\"runtime\": \"%s\"}", ErrParameterValidation, err, feature.Runtime, svc.Name, feature.Runtime)
+				return svc, "", fmt.Errorf("%w: %w; requires runtime %q; install with POST /zzrouter/v1/providers/%s/install {\"runtime\": \"%s\"}", ErrParameterValidation, err, feature.Runtime, svc.Name, feature.Runtime)
 			}
 		}
-		return svc, "", nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+		return svc, "", fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
-	return svc, runtimeKey, excluded, nil
+	return svc, runtimeKey, nil
 }
 
 func executionDigest(svc config.ServiceConfig, runtimeKey, command string) string {
@@ -232,7 +233,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if req.Runtime != "" && req.DisposablePlanID == "" && req.Origin != OriginInstall {
 		return LaunchParameters{}, fmt.Errorf("runtime selection requires disposable_plan_id")
 	}
-	params, env, sources := m.resolveRawLaunchParams(svc, req, endpoint)
+	resolved, env := m.resolveRawLaunchParams(svc, req, endpoint)
 	selected := req.Runtime
 	if selected == "" {
 		selected = req.selectedRuntime
@@ -241,7 +242,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if req.Endpoint != "" {
 		featureEndpoint = string(req.Endpoint)
 	}
-	svc, key, excluded, err := m.featureRuntime(svc, model, selected, featureEndpoint)
+	svc, key, err := m.featureRuntime(svc, model, selected, featureEndpoint)
 	if err != nil {
 		return LaunchParameters{}, err
 	}
@@ -252,8 +253,13 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	if req.DisposablePlanID != "" && svc.Install != nil && svc.Install.Runtimes[runtime].Source != nil {
 		return LaunchParameters{}, fmt.Errorf("source recipes do not support disposable launches")
 	}
-	for _, name := range excluded {
-		delete(params, name)
+	excluded := dropExcluded(svc, resolved)
+	if err := checkLaunchParameters(svc, runtime, declared.ForEndpoint(endpoint), excluded, resolved); err != nil {
+		return LaunchParameters{}, err
+	}
+	params, sources := config.FlattenParameters(resolved), make(map[string]string, len(resolved))
+	for key, value := range resolved {
+		sources[key] = value.Tier.String()
 	}
 	features, err := localizeModelFeatures(svc, model.Directory(), params)
 	if err != nil {
@@ -284,10 +290,7 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 		return LaunchParameters{}, err
 	}
 	maps.Copy(sources, features.Sources)
-	params, err = filterLaunchAuto(declared, endpoint, features.Params)
-	if err != nil {
-		return LaunchParameters{}, err
-	}
+	params = filterLaunchAuto(declared, endpoint, features.Params)
 	commitments := make(map[string]int64)
 	budget := launchBudget(declared)
 	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
@@ -297,6 +300,103 @@ func (m *ProviderAppManager) modelLaunchParameters(ctx context.Context, svc conf
 	}
 	freezeFeaturePaths(svc, params)
 	return LaunchParameters{parameterShapes: declared.ForEndpoint(endpoint), declared: declared, Commitments: commitments, model: model, ExecutionEnvironment: toolkit.Compose, Executable: executable, Params: params, Environment: env, Files: features.Files, Sources: sources, Config: svc, RuntimeKey: key}, nil
+}
+
+// ParameterError is a launch refused for parameters its provider's schema
+// does not accept, one issue per parameter.
+type ParameterError struct {
+	Provider string
+	// ContextParameter is the provider's context length parameter, when it declares one.
+	ContextParameter string
+	// Served marks a provider whose daemon owns its model settings.
+	Served bool
+	Issues []utils.ParamError
+	tiers  []config.Tier // the tier that set each issue's key
+}
+
+func (e *ParameterError) Error() string {
+	messages := make([]string, len(e.Issues))
+	for i, issue := range e.Issues {
+		messages[i] = issue.Message
+	}
+	return fmt.Sprintf("provider %s refuses %s", e.Provider, strings.Join(slices.Compact(messages), "; "))
+}
+
+// ParamIssues is each issue with what to do about it, chosen by the tier
+// that set its key: a request's is fixed in the request, a configured one
+// with zz_params_set.
+func (e *ParameterError) ParamIssues() []utils.ParamError {
+	issues := slices.Clone(e.Issues)
+	for i := range issues {
+		issues[i].Hint = e.hint(issues[i].Code, i < len(e.tiers) && e.tiers[i] == config.TierRequest)
+	}
+	return issues
+}
+
+func (e *ParameterError) hint(code string, requested bool) string {
+	if e.Served && code == string(httperr.CodeUnknownFlag) {
+		return fmt.Sprintf("%s's daemon owns its model settings: a run takes only the run settings zz_params_get lists in accepts.", e.Provider)
+	}
+	hint := fmt.Sprintf("Read the parameters %s accepts, with types and ranges, from zz_params_get", e.Provider)
+	if requested {
+		hint += ", and fix the key in zz_run_preview or zz_run_start."
+	} else {
+		hint += ", and fix the key with zz_params_set (null removes it)."
+	}
+	if e.ContextParameter != "" && !e.Served {
+		hint += fmt.Sprintf(" Its context length parameter is %s.", e.ContextParameter)
+	}
+	return hint
+}
+
+// dropExcluded drops the configured parameters svc's runtime excludes, a
+// policy across engines, and returns its exclusions; a request's stays for
+// the check to refuse, since it would not take effect.
+func dropExcluded(svc config.ServiceConfig, resolved map[string]config.ResolvedValue) []string {
+	if svc.Runtime == nil {
+		return nil
+	}
+	for _, name := range svc.Runtime.ExcludeParameters {
+		if value, set := resolved[name]; set && value.Tier != config.TierRequest {
+			delete(resolved, name)
+		}
+	}
+	return svc.Runtime.ExcludeParameters
+}
+
+// checkLaunchParameters refuses every parameter resolved passes that shapes,
+// less what the runtime excludes, do not accept, naming each key as stored or
+// sent and the tier that set it. A declared key the launch drops as auto is
+// not passed, so not checked: even one the runtime lacks, since auto asks
+// for nothing.
+func checkLaunchParameters(svc config.ServiceConfig, runtime string, shapes map[string]schema.ParamShape, excluded []string, resolved map[string]config.ResolvedValue) error {
+	params := config.FlattenParameters(resolved)
+	refused := &ParameterError{Provider: svc.Name, ContextParameter: svc.GetContextParam(), Served: Lifecycle(svc) == LifecycleServed}
+	for _, key := range slices.Sorted(maps.Keys(params)) {
+		at := resolved[key]
+		shape, declared := shapes[key]
+		var found []utils.ParamError
+		switch {
+		case len(at.Conflicts) > 0:
+			found = schema.Duplicate(append([]string{at.Key}, at.Conflicts...))
+		case declared && dropsAuto(key, params[key], shape):
+			continue
+		case declared && slices.Contains(excluded, key):
+			found = []utils.ParamError{{Key: at.Key, Code: string(httperr.CodeExcludedByRuntime), Message: fmt.Sprintf("runtime %s does not take %s", runtime, at.Key)}}
+		default:
+			if issue := schema.Check(at.Key, params[key], shapes); issue != nil {
+				found = []utils.ParamError{*issue}
+			}
+		}
+		for _, issue := range found {
+			issue.Message += fmt.Sprintf(" (%s tier, runtime %s)", at.Tier, runtime)
+			refused.Issues, refused.tiers = append(refused.Issues, issue), append(refused.tiers, at.Tier)
+		}
+	}
+	if refused.Issues == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrParameterValidation, refused)
 }
 
 // disposableLaunch binds a launch to a disposable plan's venv once the plan

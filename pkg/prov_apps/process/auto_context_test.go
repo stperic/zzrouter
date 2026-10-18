@@ -244,6 +244,13 @@ func TestKVCacheDtypeRoles(t *testing.T) {
 	}
 	_, err := AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, auto, map[string]string{"budget": "0.6"}, nil, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil, 0)
 	require.Error(t, err, "auto KV exceeds the same numeric budget")
+	// vLLM spells the 16-bit cache dtypes in full.
+	for _, dtype := range []string{"float16", "bfloat16"} {
+		params["cache-encoding"] = dtype
+		n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{}, shapes)
+		require.True(t, ok, dtype)
+		assert.Equal(t, auto.KVMiB, n.KVMiB, dtype)
+	}
 }
 func TestLlamaPlacementBoundaries(t *testing.T) {
 	// (16 weights + 4096 KV + 4096 overhead) * 1.1, rounded up.
@@ -320,22 +327,18 @@ func TestMemoryDecisionHasNoEngineNameBranches(t *testing.T) {
 	}
 }
 
-func TestAutoContextAliasesAndNullScaling(t *testing.T) {
+// Launch parameters arrive keyed by flag spelling; the launch merge
+// (pkg/prov_apps resolveRawLaunchParams) folds ctx_size into ctx-size.
+func TestAutoContextNullScaling(t *testing.T) {
 	cfg := denseAttentionConfig()
 	cfg["max_position_embeddings"] = 32768
 	cfg["rope_scaling"] = nil
 	dir, svc, params := needFixture(t, cfg)
-	delete(params, "max-model-len")
-	params["max_model_len"] = "auto"
+	params["max-model-len"] = "auto"
 	n, ok := ModelMemoryNeed(ResolvedModel{Path: dir}, svc, params, schema.AutoContext{AutoMinContextTokens: 4096}, nil)
 	require.True(t, ok)
 	assert.Equal(t, "auto", n.ContextMode)
 	assert.Equal(t, int64(4096), n.ContextTokens)
-	canonical := ggufNeed(t, "llama", map[string]string{"ctx-size": "auto", "cache-type-k": "q8_0", "cache-type-v": "q4_0"}, nil)
-	aliases := ggufNeed(t, "llama", map[string]string{"ctx_size": "auto", "cache_type_k": "q8_0", "cache_type_v": "q4_0"}, nil)
-	assert.Empty(t, aliases.UnknownCause)
-	assert.Equal(t, canonical.KVMiB, aliases.KVMiB)
-	assert.Equal(t, canonical.ContextTokens, aliases.ContextTokens)
 }
 
 func TestAffordableContextRespectsFixedReservationAvailability(t *testing.T) {

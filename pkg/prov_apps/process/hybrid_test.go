@@ -158,7 +158,8 @@ func TestHybridMTPExcludedFromNormalCache(t *testing.T) {
 		"attention.key_length": 256, "attention.value_length": 256, "ssm.conv_kernel": 4,
 		"ssm.group_count": 16, "ssm.time_step_rank": 48, "ssm.state_size": 128, "ssm.inner_size": 6144}
 	shapes := map[string]schema.ParamShape{"slots": {Kind: schema.ParamInt, SequenceSlots: true, AutoContext: schema.AutoContext{RecurrentStateRows: ptrRows(4)}}}
-	for _, slots := range []string{"", "1", "4"} {
+	// auto leaves the count to the engine, sized by the declared default rows.
+	for _, slots := range []string{"", "1", "4", "auto"} {
 		params := map[string]string{"ctx-size": "4096", "slots": slots}
 		n := ggufNeed(t, "qwen35", params, extra, shapes)
 		require.Empty(t, n.UnknownCause)

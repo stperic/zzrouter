@@ -10,6 +10,7 @@ parameters:
     served: meta.n_ctx
   # Read because diagnostics.memory names n-gpu-layers with kind layers.
   n-gpu-layers:
+    auto: auto
     placement_log:
       layers: 'offloaded (\d+)/(\d+) layers to GPU'
       cpu_overrides: 'tensor overrides to CPU'
@@ -17,11 +18,13 @@ parameters:
   cache-type-k:
     type: string
     kv_cache_dtype: k
-    description: KV key cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
+    enum: [f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1]
+    description: KV key cache type
   cache-type-v:
     type: string
     kv_cache_dtype: v
-    description: KV value cache encoding; sizing supports f16, bf16, f32, q8_0, q4_0, q4_1, q5_0, q5_1 and iq4_nl
+    enum: [f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1]
+    description: KV value cache type
   threads:
     type: int
     min: 1
@@ -39,16 +42,181 @@ parameters:
     recurrent_state_rows: 4
     type: int
     min: 1
-    description: Number of sequence slots; recurrent states allocate one row per slot
+    auto: "-1"
+    description: Server slots, auto by default; recurrent state takes a row each
   flash-attn:
-    type: bool
-    description: Enable flash attention kernels when available
+    type: string
+    enum: ["on", "off", auto]
+    description: Flash attention kernels, auto uses them when available
   verbose:
     type: bool
     description: Enable verbose llama-server logging
   chat-template-file:
     type: asset
     description: Jinja chat template overriding the model's own, by asset name
+  # Every other llama-server b10549 flag an operator may set. Engine tuning and
+  # running code from the model repo are the operator's choice; flags the runtime
+  # passes, paths, URLs, downloads, plugins, LoRA adapters, auth, TLS, CORS and
+  # logging stay out. A bool llama.cpp also spells --no-<flag> is one negatable key.
+  threads-batch: {type: int, description: "CPU threads for batch and prompt processing"}
+  cpu-mask: {type: string, description: "CPU affinity mask (hex)"}
+  cpu-range: {type: string, description: "CPU affinity range lo-hi"}
+  cpu-strict: {type: int, min: 0, max: 1, description: "Strict CPU placement"}
+  prio: {type: int, min: -1, max: 3, description: "Thread priority, -1 low to 3 realtime"}
+  poll: {type: int, min: 0, max: 100, description: "Polling level while waiting for work"}
+  cpu-mask-batch: {type: string, description: "CPU affinity mask for batch processing (hex)"}
+  cpu-range-batch: {type: string, description: "CPU affinity range for batch processing"}
+  cpu-strict-batch: {type: int, min: 0, max: 1, description: "Strict CPU placement for batch processing"}
+  prio-batch: {type: int, min: 0, max: 3, description: "Batch thread priority, 0 normal to 3 realtime"}
+  poll-batch: {type: int, min: 0, max: 1, description: "Poll while waiting for batch work"}
+  n-predict: {type: int, description: "Default tokens to predict, -1 unlimited"}
+  keep: {type: int, description: "Prompt tokens kept on context shift, -1 all"}
+  swa-full: {type: bool, description: "Use a full-size sliding-window attention cache"}
+  perf: {type: bool, negatable: true, description: "Internal performance timings (default on)"}
+  escape: {type: bool, negatable: true, description: "Process escape sequences (default on)"}
+  rope-scaling: {type: string, enum: [none, linear, yarn], description: "RoPE frequency scaling method"}
+  rope-scale: {type: float, description: "RoPE context scaling factor"}
+  rope-freq-base: {type: float, description: "RoPE base frequency"}
+  rope-freq-scale: {type: float, description: "RoPE frequency scaling factor"}
+  yarn-orig-ctx: {type: int, description: "YaRN original context size, 0 from the model"}
+  yarn-ext-factor: {type: float, description: "YaRN extrapolation mix factor"}
+  yarn-attn-factor: {type: float, description: "YaRN attention magnitude scale"}
+  yarn-beta-slow: {type: float, description: "YaRN high correction dim or alpha"}
+  yarn-beta-fast: {type: float, description: "YaRN low correction dim or beta"}
+  kv-offload: {type: bool, negatable: true, description: "Offload the KV cache to the GPU (default on)"}
+  repack: {type: bool, negatable: true, description: "Repack weights for faster kernels (default on)"}
+  no-host: {type: bool, description: "Bypass the host buffer to allow extra buffers"}
+  defrag-thold: {type: float, description: "Deprecated no-op"}
+  mlock: {type: bool, description: "Deprecated: same as load-mode mlock"}
+  mmap: {type: bool, negatable: true, description: "Deprecated: true is load-mode mmap, false none"}
+  direct-io: {type: bool, negatable: true, description: "Deprecated: true is load-mode dio, false none"}
+  load-mode: {type: string, enum: [auto, none, mmap, mlock, mmap+mlock, dio], description: "Model loading mode"}
+  numa: {type: string, enum: [distribute, isolate, numactl], description: "NUMA optimization strategy"}
+  device: {type: string, description: "Comma-separated devices to offload to, or none"}
+  override-tensor: {type: string, description: "Tensor buffer overrides, pattern=type,..."}
+  cpu-moe: {type: bool, description: "Keep all MoE expert weights on the CPU"}
+  n-cpu-moe: {type: int, description: "Keep MoE weights of the first N layers on the CPU"}
+  split-mode: {type: string, enum: [none, layer, row, tensor], description: "How to split the model across GPUs"}
+  tensor-split: {type: string, description: "Per-GPU offload proportions, e.g. 3,1"}
+  main-gpu: {type: int, description: "GPU for the model (split-mode none) or for KV (row)"}
+  fit: {type: string, enum: ["on", "off"], description: "Fit unset arguments to device memory"}
+  fit-target: {type: string, description: "Free MiB to leave per device when fitting, comma list"}
+  fit-ctx: {type: int, description: "Minimum context size fit may choose"}
+  check-tensors: {type: bool, description: "Check model tensor data for invalid values"}
+  override-kv: {type: string, description: "Override model metadata, KEY=TYPE:VALUE,..."}
+  op-offload: {type: bool, negatable: true, description: "Offload host tensor operations to devices (default on)"}
+  spec-draft-type-k: {type: string, enum: [f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1], description: "Draft model KV key cache type"}
+  spec-draft-type-v: {type: string, enum: [f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1], description: "Draft model KV value cache type"}
+  samplers: {type: string, description: "Sampler order, separated by ;"}
+  seed: {type: int, description: "RNG seed, -1 random"}
+  sampling-seq: {type: string, description: "Sampler order as a letter sequence"}
+  ignore-eos: {type: bool, description: "Ignore end of stream and keep generating"}
+  temperature: {type: float, description: "Default sampling temperature"}
+  top-k: {type: int, description: "Default top-k, 0 disables"}
+  top-p: {type: float, description: "Default top-p, 1.0 disables"}
+  min-p: {type: float, description: "Default min-p, 0.0 disables"}
+  top-n-sigma: {type: float, description: "Default top-n-sigma, -1 disables"}
+  xtc-probability: {type: float, description: "XTC probability, 0.0 disables"}
+  xtc-threshold: {type: float, description: "XTC threshold, 1.0 disables"}
+  typical-p: {type: float, description: "Locally typical sampling p, 1.0 disables"}
+  repeat-last-n: {type: int, min: 0, description: "Tokens considered for repeat penalty, 0 disables"}
+  repeat-penalty: {type: float, description: "Repeat penalty, 1.0 disables"}
+  presence-penalty: {type: float, description: "Presence penalty, 0.0 disables"}
+  frequency-penalty: {type: float, description: "Frequency penalty, 0.0 disables"}
+  dry-multiplier: {type: float, description: "DRY sampling multiplier, 0.0 disables"}
+  dry-base: {type: float, description: "DRY sampling base"}
+  dry-allowed-length: {type: int, description: "DRY allowed length"}
+  dry-penalty-last-n: {type: int, min: 0, description: "DRY penalty window, 0 disables"}
+  dry-sequence-breaker: {type: string, description: "DRY sequence breaker replacing the defaults, or none"}
+  adaptive-target: {type: float, max: 1, description: "Adaptive-p target probability, negative disables"}
+  adaptive-decay: {type: float, min: 0, max: 0.99, description: "Adaptive-p decay rate"}
+  dynatemp-range: {type: float, description: "Dynamic temperature range, 0.0 disables"}
+  dynatemp-exp: {type: float, description: "Dynamic temperature exponent"}
+  mirostat: {type: int, min: 0, max: 2, description: "Mirostat sampling version, 0 disables"}
+  mirostat-lr: {type: float, description: "Mirostat learning rate (eta)"}
+  mirostat-ent: {type: float, description: "Mirostat target entropy (tau)"}
+  logit-bias: {type: string, description: "Token bias, TOKEN_ID+BIAS or TOKEN_ID-BIAS"}
+  grammar: {type: string, description: "BNF-like grammar constraining generation"}
+  grammar-file: {type: asset, description: "BNF-like grammar constraining generation, by asset name"}
+  json-schema: {type: string, description: "JSON schema constraining generation"}
+  json-schema-file: {type: asset, description: "JSON schema constraining generation, by asset name"}
+  backend-sampling: {type: bool, description: "Sample on the backend (experimental)"}
+  spec-type: {type: string, description: "Speculative decoding types, comma-separated"}
+  spec-draft-threads: {type: int, description: "Draft CPU threads for generation"}
+  spec-draft-threads-batch: {type: int, description: "Draft CPU threads for batch processing"}
+  spec-draft-cpu-mask: {type: string, description: "Draft CPU affinity mask (hex)"}
+  spec-draft-cpu-range: {type: string, description: "Draft CPU affinity range lo-hi"}
+  spec-draft-cpu-strict: {type: int, min: 0, max: 1, description: "Strict CPU placement for the draft"}
+  spec-draft-prio: {type: int, min: 0, max: 3, description: "Draft thread priority, 0 normal to 3 realtime"}
+  spec-draft-poll: {type: int, min: 0, max: 1, description: "Poll while waiting for draft work"}
+  spec-draft-cpu-mask-batch: {type: string, description: "Draft batch CPU affinity mask (hex)"}
+  spec-draft-cpu-strict-batch: {type: int, min: 0, max: 1, description: "Strict CPU placement for draft batches"}
+  spec-draft-prio-batch: {type: int, min: 0, max: 3, description: "Draft batch thread priority, 0 to 3"}
+  spec-draft-poll-batch: {type: int, min: 0, max: 1, description: "Poll while waiting for draft batch work"}
+  spec-draft-override-tensor: {type: string, description: "Draft tensor buffer overrides, pattern=type,..."}
+  spec-draft-cpu-moe: {type: bool, description: "Keep all draft MoE expert weights on the CPU"}
+  spec-draft-n-cpu-moe: {type: int, description: "Keep draft MoE weights of the first N layers on CPU"}
+  spec-draft-n-max: {type: int, description: "Maximum tokens to draft"}
+  spec-draft-n-min: {type: int, description: "Minimum draft tokens to use"}
+  spec-draft-p-split: {type: float, description: "Speculative decoding split probability"}
+  spec-draft-p-min: {type: float, description: "Minimum speculative decoding probability"}
+  spec-draft-backend-sampling: {type: bool, negatable: true, description: "Sample drafts on the backend (default on)"}
+  spec-draft-device: {type: string, description: "Comma-separated devices for the draft, or none"}
+  spec-draft-ngl: {type: int, auto: auto, description: "Draft layers in VRAM: a count, -1 or auto, -2 for all"}
+  spec-ngram-mod-n-min: {type: int, description: "ngram-mod minimum draft tokens"}
+  spec-ngram-mod-n-max: {type: int, description: "ngram-mod maximum draft tokens"}
+  spec-ngram-mod-n-match: {type: int, description: "ngram-mod lookup length"}
+  spec-ngram-simple-size-n: {type: int, description: "ngram-simple lookup n-gram length"}
+  spec-ngram-simple-size-m: {type: int, description: "ngram-simple draft m-gram length"}
+  spec-ngram-simple-min-hits: {type: int, description: "ngram-simple minimum hits"}
+  spec-ngram-map-k-size-n: {type: int, description: "ngram-map-k lookup n-gram length"}
+  spec-ngram-map-k-size-m: {type: int, description: "ngram-map-k draft m-gram length"}
+  spec-ngram-map-k-min-hits: {type: int, description: "ngram-map-k minimum hits"}
+  spec-ngram-map-k4v-size-n: {type: int, description: "ngram-map-k4v lookup n-gram length"}
+  spec-ngram-map-k4v-size-m: {type: int, description: "ngram-map-k4v draft m-gram length"}
+  spec-ngram-map-k4v-min-hits: {type: int, description: "ngram-map-k4v minimum hits"}
+  spec-default: {type: bool, description: "Enable the default speculative decoding config"}
+  ctx-checkpoints: {type: int, description: "Max context checkpoints per slot"}
+  checkpoint-min-step: {type: int, min: 0, description: "Minimum tokens between context checkpoints"}
+  cache-ram: {type: int, description: "Prompt cache limit in MiB, -1 unlimited, 0 off"}
+  kv-unified: {type: bool, negatable: true, description: "One KV buffer for all slots (default with auto slots)"}
+  cache-idle-slots: {type: bool, negatable: true, description: "Save idle slots to the prompt cache (default on)"}
+  context-shift: {type: bool, negatable: true, description: "Shift context on infinite generation (default off)"}
+  reverse-prompt: {type: string, description: "Halt generation at this prompt"}
+  special: {type: bool, description: "Output special tokens"}
+  warmup: {type: bool, negatable: true, description: "Run an empty warmup pass (default on)"}
+  spm-infill: {type: bool, description: "Use Suffix/Prefix/Middle order for infill"}
+  cont-batching: {type: bool, negatable: true, description: "Continuous batching (default on)"}
+  mmproj-offload: {type: bool, negatable: true, description: "Multimodal projector on the GPU (default on)"}
+  mmproj-device: {type: string, description: "Device for the multimodal projector, or none"}
+  image-min-tokens: {type: int, description: "Minimum tokens per image (dynamic resolution)"}
+  image-max-tokens: {type: int, description: "Maximum tokens per image (dynamic resolution)"}
+  mtmd-batch-max-tokens: {type: int, description: "Maximum image tokens per encoding batch"}
+  tags: {type: string, description: "Informational model tags, comma-separated"}
+  ui: {type: bool, negatable: true, description: "Serve the built-in web UI (default on)"}
+  ui-config: {type: string, description: "Web UI default settings as JSON"}
+  chat-template-kwargs: {type: string, description: "Extra chat template parameters as a JSON object"}
+  timeout: {type: int, description: "Server read/write timeout in seconds"}
+  sse-ping-interval: {type: int, description: "SSE ping interval in seconds, -1 disables"}
+  threads-http: {type: int, description: "Threads for HTTP requests"}
+  cache-prompt: {type: bool, negatable: true, description: "Prompt caching (default on)"}
+  cache-reuse: {type: int, description: "Minimum chunk size reused from the cache by KV shift"}
+  metrics: {type: bool, description: "Serve Prometheus metrics at /metrics"}
+  props: {type: bool, description: "Allow changing global properties via POST /props"}
+  slots: {type: bool, negatable: true, description: "Serve the slots monitoring endpoint (default on)"}
+  jinja: {type: bool, negatable: true, description: "Jinja chat templates; false uses the legacy engine"}
+  reasoning-format: {type: string, enum: [auto, none, deepseek, deepseek-legacy], description: "How thoughts are returned in responses"}
+  reasoning: {type: string, enum: ["on", "off", auto], description: "Use reasoning in chat, auto detects from the template"}
+  reasoning-effort: {type: string, description: "Reasoning effort given to the chat template"}
+  reasoning-budget: {type: int, min: -1, description: "Thinking token budget, -1 unrestricted"}
+  reasoning-budget-message: {type: string, description: "Message injected when the reasoning budget runs out"}
+  reasoning-preserve: {type: bool, negatable: true, description: "Keep every turn's reasoning; unset follows the template"}
+  chat-template: {type: string, description: "Built-in chat template name or inline Jinja"}
+  skip-chat-parsing: {type: bool, negatable: true, description: "Return reasoning and tool calls as plain content"}
+  prefill-assistant: {type: bool, negatable: true, description: "Prefill a final assistant message (default on)"}
+  slot-prompt-similarity: {type: float, description: "Prompt similarity needed to reuse a slot, 0 off"}
+  lora-init-without-apply: {type: bool, description: "Load LoRA adapters without applying them"}
+  sleep-idle-seconds: {type: int, min: 1, description: "Idle seconds before the server sleeps; unset never"}
 # Per-endpoint overlay schemas. The resolver applies these on top of the
 # base parameters when an instance is launched for a given endpoint, so
 # the same flag (e.g. "embeddings: true") is only legal under the matching
@@ -64,6 +232,7 @@ endpoints:
         type: string
         description: Pooling strategy for embeddings
         enum: [none, mean, cls, last, rank]
+      embd-normalize: {type: int, min: -1, description: "Embedding normalization, -1 none, 2 euclidean"}
   reranking:
     parameters:
       reranking:

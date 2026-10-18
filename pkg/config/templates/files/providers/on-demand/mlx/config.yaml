@@ -15,7 +15,9 @@ features:
     # messages is left out so it is translated: native /v1/messages drops a tool_result
     # image that carries no text, which Claude Code sends after Read.
     wire_endpoints: [chat_completions, responses]
-    exclude_parameters: [chat-template, temperature, top-p]
+    exclude_parameters: [chat-template, top-p, temp, top-k, min-p,
+      num-draft-tokens, use-default-chat-template, chat-template-args, decode-concurrency,
+      prompt-concurrency, prompt-cache-size, prompt-cache-bytes, pipeline]
     health_check:
       path: /v1/models
       interval: 30s
@@ -42,7 +44,9 @@ features:
       args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--embedding-model", "${MODEL_PATH}"]
       wire_model: path
     wire_endpoints: [embeddings]
-    exclude_parameters: [chat-template, temperature, top-p, max-tokens]
+    exclude_parameters: [chat-template, top-p, max-tokens, temp, top-k, min-p,
+      num-draft-tokens, use-default-chat-template, chat-template-args, decode-concurrency,
+      prompt-concurrency, prompt-cache-size, prompt-cache-bytes, pipeline]
     health_check:
       path: /v1/models
       interval: 30s
@@ -69,7 +73,9 @@ features:
       args: ["-m", "mlx_vlm.server", "--host", "127.0.0.1", "--port", "${PORT}", "--reranker-model", "${MODEL_PATH}"]
       wire_model: path
     wire_endpoints: [rerank]
-    exclude_parameters: [chat-template, temperature, top-p, max-tokens]
+    exclude_parameters: [chat-template, top-p, max-tokens, temp, top-k, min-p,
+      num-draft-tokens, use-default-chat-template, chat-template-args, decode-concurrency,
+      prompt-concurrency, prompt-cache-size, prompt-cache-bytes, pipeline]
     health_check:
       path: /v1/models
       interval: 30s
@@ -199,6 +205,12 @@ runtime:
     # to --model. So it must be addressed by path on the wire; zzRouter
     # restores the client-facing name on the way out.
     wire_model: path
+  # mlx_lm.server 0.31.3 has none of the flags only mlx_vlm.server reads.
+  exclude_parameters: [vision-cache-size, enable-thinking, thinking-budget,
+    thinking-start-token, thinking-end-token, kv-bits, kv-key-bits, kv-value-bits,
+    kv-key-scheme, kv-value-scheme, kv-quant-scheme, kv-group-size, max-kv-size,
+    quantized-kv-start, expert-cache-gb, draft-kind, draft-block-size, max-num-seqs,
+    top-logprobs-k]
 
   health_check:
     path: /v1/models

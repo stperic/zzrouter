@@ -63,6 +63,7 @@ var failureTable = []failureRow{
 	{sentinel: prov_apps.ErrUnsupportedPlatform, status: http.StatusBadRequest, code: ""},
 	{sentinel: process.ErrMemoryBudgetInvalid, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrModelNotLocal, status: http.StatusNotFound, code: "", resolve: resolveModelNotLocal},
+	{sentinel: prov_apps.ErrParameterValidation, status: http.StatusBadRequest, resolve: resolveParameterIssues, extra: parameterIssuesExtra},
 	{sentinel: prov_apps.ErrParameterValidation, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrPortOutOfRange, status: http.StatusBadRequest, code: ""},
 	{sentinel: prov_apps.ErrDangerousEnvVar, status: http.StatusBadRequest, code: ""},
@@ -146,6 +147,24 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 		hint = "Inspect accepted settings with zz_params_get and candidates with zz_models and zz_nodes; use zz_run_preview with a supported budget or numeric context, then zz_run_start."
 	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
+}
+
+// resolveParameterIssues repeats the per-key code when every refused parameter shares it.
+func resolveParameterIssues(err error, wire *httperr.Error) bool {
+	var refused *prov_apps.ParameterError
+	if !errors.As(err, &refused) {
+		return false
+	}
+	wire.Code = sharedParamCode(refused.Issues)
+	return true
+}
+
+func parameterIssuesExtra(err error, _ httperr.Error) map[string]any {
+	var refused *prov_apps.ParameterError
+	if !errors.As(err, &refused) {
+		return nil
+	}
+	return map[string]any{"errors": refused.ParamIssues()}
 }
 
 func resolveAdmission(err error, wire *httperr.Error) bool {

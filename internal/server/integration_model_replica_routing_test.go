@@ -320,16 +320,14 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 			require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 			router := &launchBroadcastRouter{}
 			s.cluster.router = router
-			svc := NewLoadService(s, router).WithTierResolution(s.appsConfig)
+			svc := NewLoadService(s, router).WithAppsConfig(s.appsConfig)
 			for _, name := range []string{"unknown", "qwen"} {
 				wantError := name == "qwen" && !unscoped
 				resolved, inferenceErr := s.ResolveModel(t.Context(), resolver.Reference{Model: name})
-				target, targetErr := svc.launchTarget(t.Context(), "", name)
 				req := &LoadModelRequest{ModelName: name, Provider: "llamacpp"}
-				sources, mergeErr := svc.preMerge(t.Context(), req)
 				_, previewErr := svc.PreviewRun(t.Context(), req)
 				_, loadErr := svc.LoadModel(t.Context(), req)
-				for _, err := range []error{inferenceErr, targetErr, mergeErr, previewErr, loadErr} {
+				for _, err := range []error{inferenceErr, previewErr, loadErr} {
 					if wantError {
 						response := httptest.NewRecorder()
 						c, _ := gin.CreateTestContext(response)
@@ -343,8 +341,6 @@ func TestLoadServiceDegradedCatalogUsesInferenceRule(t *testing.T) {
 				}
 				if !wantError {
 					require.Empty(t, resolved.Node)
-					require.Empty(t, target)
-					require.Nil(t, sources)
 					require.Empty(t, req.Parameters)
 				}
 			}

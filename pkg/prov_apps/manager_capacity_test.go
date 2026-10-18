@@ -161,7 +161,10 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	assessment := m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
-	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return &schema.ProviderSchema{}, nil }
+	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
+		spine, _ := schema.Merge(provider, nil) // declares no memory budget
+		return spine, nil
+	}
 	assessment = m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.BudgetNotSized, assessment.UnknownCause)

@@ -10,7 +10,11 @@ package config
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
+
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 )
 
 // defaultEndpoint mirrors prov_apps.EndpointChat; can't import the typed
@@ -70,18 +74,18 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 	// apply lays one tier's base and then its overlay for endpoint over
 	// what the lower tiers left.
 	apply := func(params, env map[string]string, endpoints map[string]EndpointOverlay, src ResolvedValue) {
-		set := func(dst map[string]ResolvedValue, from map[string]string, src ResolvedValue) {
+		setEnv := func(from map[string]string, src ResolvedValue) {
 			for k, v := range from {
-				src.Value = v
-				dst[k] = src
+				src.Key, src.Value = k, v
+				out.Environment[k] = src
 			}
 		}
-		set(out.Parameters, params, src)
-		set(out.Environment, env, src)
+		LayParameters(out.Parameters, params, src)
+		setEnv(env, src)
 		if ov, ok := endpoints[endpoint]; ok {
 			src.Endpoint = endpoint
-			set(out.Parameters, ov.Parameters, src)
-			set(out.Environment, ov.Environment, src)
+			LayParameters(out.Parameters, ov.Parameters, src)
+			setEnv(ov.Environment, src)
 		}
 	}
 	applyRequest := func(request map[string]any, src ResolvedValue) {
@@ -101,7 +105,7 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 
 	// The legacy runtime value is the default tier, overridden by the tree.
 	if s.Runtime != nil && s.Runtime.KeepAlive != "" {
-		out.Parameters[KeepAliveParameter] = ResolvedValue{Value: s.Runtime.KeepAlive, Tier: TierDefault}
+		out.Parameters[KeepAliveParameter] = ResolvedValue{Value: s.Runtime.KeepAlive, Tier: TierDefault, Key: KeepAliveParameter}
 	}
 
 	// Tier 0 — defaults.
@@ -129,6 +133,42 @@ func (s *ServiceConfig) ResolveEndpoint(node, model, endpoint string) ResolvedPa
 	}
 
 	return out
+}
+
+// LayParameters lays one map of parameters over dst by FlagName, stamped with
+// src, so the later map in the walk wins whatever either spelled. Spellings in
+// params apply in sorted order, the flag name first; one whose value differs
+// is recorded in Conflicts rather than chosen by map order.
+func LayParameters(dst map[string]ResolvedValue, params map[string]string, src ResolvedValue) {
+	laid := make(map[string]bool, len(params))
+	for _, key := range slices.Sorted(maps.Keys(params)) {
+		flag := runsettings.FlagName(key)
+		if !laid[flag] {
+			laid[flag] = true
+			src.Key, src.Value = key, params[key]
+			dst[flag] = src
+		} else if first := dst[flag]; first.Value != params[key] {
+			first.Conflicts = append(first.Conflicts, key)
+			dst[flag] = first
+		}
+	}
+}
+
+// SetParameter stores value under key's flag name in params and removes the
+// flag's other spellings, so a write leaves one; it returns params,
+// allocated when nil.
+func SetParameter(params map[string]string, key, value string) map[string]string {
+	DeleteParameter(params, key)
+	if params == nil {
+		params = make(map[string]string, 1)
+	}
+	params[runsettings.FlagName(key)] = value
+	return params
+}
+
+// DeleteParameter removes every spelling of key's flag from params.
+func DeleteParameter(params map[string]string, key string) {
+	maps.DeleteFunc(params, func(stored, _ string) bool { return runsettings.FlagName(stored) == runsettings.FlagName(key) })
 }
 
 // patternIfNot is key unless key is the model's own name, which needs no
@@ -203,4 +243,4 @@ func matchSpec[T any](specs map[string]T, model string) (string, T, bool) {
 }
 
 // IsAuto identifies the user-facing request for provider-selected behavior.
-func IsAuto(v string) bool { return v == "auto" }
+func IsAuto(v string) bool { return v == runsettings.Auto }

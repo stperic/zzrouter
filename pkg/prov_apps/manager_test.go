@@ -216,7 +216,7 @@ func TestProviderAppManager_RestartInstance(t *testing.T) {
 	instResult, err := m.EnsureRun(context.Background(), EnsureRequest{
 		Provider:   "vllm",
 		Model:      "llama3",
-		Parameters: map[string]string{"temperature": "0.7"},
+		Parameters: map[string]string{"max-model-len": "4096"},
 		EnvVars:    map[string]string{"HF_TOKEN": "secret"},
 	})
 	inst := instResult.Run
@@ -228,7 +228,7 @@ func TestProviderAppManager_RestartInstance(t *testing.T) {
 	assert.NotEqual(t, oldID, newInst.ID, "restart should mint a new instance ID")
 	assert.Equal(t, "vllm", newInst.Provider)
 	assert.Equal(t, "llama3", newInst.Model)
-	assert.Equal(t, "0.7", newInst.Config.Parameters["temperature"], "parameters must carry over")
+	assert.Equal(t, "4096", newInst.Config.Parameters["max-model-len"], "parameters must carry over")
 	assert.Equal(t, "secret", newInst.Config.EnvVars["HF_TOKEN"], "env vars must carry over")
 
 	// Old instance must be gone from the registry.

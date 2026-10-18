@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -119,6 +121,9 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 				errs = append(errs, *e)
 			}
 		}
+		if !isEnv {
+			errs = append(errs, duplicateSpellings(pp)...)
+		}
 	}
 	checkEndpoints := func(eps map[string]*endpointPatch) {
 		// Endpoint overlay parameters look up the per-endpoint schema first
@@ -134,6 +139,7 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 					errs = append(errs, *e)
 				}
 			}
+			errs = append(errs, duplicateSpellings(ep.Parameters)...)
 			for k, raw := range ep.Environment {
 				if e := validateLeaf(k, raw, true, flat); e != nil {
 					errs = append(errs, *e)
@@ -273,102 +279,60 @@ func validateLeaf(key string, raw json.RawMessage, isEnv bool, sch map[string]sc
 		}
 		return nil
 	}
-	shape, known := sch[key]
-	if !known {
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeUnknownFlag),
-			Message: fmt.Sprintf("unknown parameter %q", key)}
-	}
-	var value string
-	if shape.Auto != "" && json.Unmarshal(raw, &value) == nil && pkgConfig.IsAuto(value) {
-		return nil
-	}
-	if e := validateAgainstShape(key, raw, shape); e != nil {
-		return e
-	}
-	if key == pkgConfig.KeepAliveParameter {
-		var value string
-		_ = json.Unmarshal(raw, &value)
-		if _, err := pkgConfig.ParseRunSettings(map[string]string{key: value}, false); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed), Message: err.Error()}
+	if shape, known := sch[runsettings.FlagName(key)]; known { // a write addresses the flag, whatever spelling stored it
+		if e := checkJSONType(key, raw, shape); e != nil {
+			return e
 		}
 	}
-	return nil
+	value, _ := schema.Canonical(raw) // a non-scalar failed checkJSONType, or is undeclared and Check refuses it
+	return schema.Check(key, value, sch)
 }
 
-func validateAgainstShape(key string, raw json.RawMessage, shape schema.ParamShape) *utils.ParamError {
-	switch shape.Kind {
-	case schema.ParamInt:
-		var n float64
-		if err := json.Unmarshal(raw, &n); err != nil || n != float64(int64(n)) {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "int",
-				Message: fmt.Sprintf("%s must be an integer", key)}
+// duplicateSpellings refuses two spellings of one flag that one patched map
+// sets to values it would store differently: which the write keeps is the
+// caller's to say.
+func duplicateSpellings(pp map[string]json.RawMessage) []utils.ParamError {
+	sent := make(map[string]string, len(pp))
+	for key, raw := range pp {
+		value, scalar := schema.Canonical(raw)
+		if !scalar {
+			value = string(raw) // a null deletes, so it differs from every value
 		}
-		if shape.Min != nil && n < *shape.Min {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Min: *shape.Min,
-				Message: fmt.Sprintf("%s=%v below minimum %v", key, n, *shape.Min)}
-		}
-		if shape.Max != nil && n > *shape.Max {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Max: *shape.Max,
-				Message: fmt.Sprintf("%s=%v exceeds maximum %v", key, n, *shape.Max)}
-		}
-	case schema.ParamFloat:
-		var n float64
-		if err := json.Unmarshal(raw, &n); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "float",
-				Message: fmt.Sprintf("%s must be a number", key)}
-		}
-		if shape.Min != nil && n < *shape.Min {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Min: *shape.Min,
-				Message: fmt.Sprintf("%s=%v below minimum %v", key, n, *shape.Min)}
-		}
-		if shape.Max != nil && n > *shape.Max {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeOutOfRange), Got: n, Max: *shape.Max,
-				Message: fmt.Sprintf("%s=%v exceeds maximum %v", key, n, *shape.Max)}
-		}
-	case schema.ParamBool:
-		var b bool
-		if err := json.Unmarshal(raw, &b); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "bool",
-				Message: fmt.Sprintf("%s must be a boolean", key)}
-		}
-	case schema.ParamString, "":
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "string",
-				Message: fmt.Sprintf("%s must be a string", key)}
-		}
-		if len(shape.Enum) > 0 {
-			ok := false
-			for _, allowed := range shape.Enum {
-				if s == allowed {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				return &utils.ParamError{Key: key, Code: string(httperr.CodeCoercionFailed),
-					Message: fmt.Sprintf("%s=%q not in allowed set %v", key, s, shape.Enum)}
-			}
-		}
-	case schema.ParamAsset:
-		var name string
-		if err := json.Unmarshal(raw, &name); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType), Want: "string",
-				Message: fmt.Sprintf("%s must be an asset name", key)}
-		}
-		// Existence is checked when the patch is applied, under the lock
-		// asset writes take, so a concurrent delete cannot slip between.
-		if err := assets.ValidateName(name); err != nil {
-			return &utils.ParamError{Key: key, Code: string(httperr.CodeInvalidValue), Want: "asset name",
-				Message: fmt.Sprintf("%s: %v", key, err)}
-		}
-	default:
-		// The kinds are a closed set; one this switch does not know would
-		// otherwise pass any value unchecked.
-		return &utils.ParamError{Key: key, Code: string(httperr.CodeWrongType),
-			Message: fmt.Sprintf("%s has schema type %q, which this server cannot validate", key, shape.Kind)}
+		sent[key] = fmt.Sprint(scalar, value)
 	}
-	return nil
+	laid := make(map[string]pkgConfig.ResolvedValue, len(sent))
+	pkgConfig.LayParameters(laid, sent, pkgConfig.ResolvedValue{})
+	var errs []utils.ParamError
+	for _, flag := range slices.Sorted(maps.Keys(laid)) {
+		if at := laid[flag]; len(at.Conflicts) > 0 {
+			errs = append(errs, schema.Duplicate(append([]string{at.Key}, at.Conflicts...))...)
+		}
+	}
+	return errs
+}
+
+// checkJSONType holds a persisted value to its JSON type: a number for int
+// and float, a boolean for bool, otherwise a string. Launch requests carry
+// canonical strings, so this gate is the PATCH's own; the auto keyword is
+// the one string an auto shape takes in a typed slot.
+func checkJSONType(key string, raw json.RawMessage, shape schema.ParamShape) *utils.ParamError {
+	var value any
+	_ = json.Unmarshal(raw, &value)
+	var ok bool
+	switch shape.Kind {
+	case schema.ParamInt, schema.ParamFloat:
+		_, ok = value.(float64)
+	case schema.ParamBool:
+		_, ok = value.(bool)
+	case schema.ParamString, "", schema.ParamAsset:
+		_, ok = value.(string)
+	default:
+		return nil // schema.Check refuses a kind it cannot validate
+	}
+	if s, isString := value.(string); ok || (isString && shape.Auto != "" && pkgConfig.IsAuto(s)) {
+		return nil
+	}
+	return schema.WrongType(key, shape.Kind)
 }
 
 // isJSONNull reports whether a RawMessage is literally `null`.
@@ -385,25 +349,6 @@ func isJSONNull(raw json.RawMessage) bool {
 		j--
 	}
 	return j-i == 4 && string(raw[i:j]) == "null"
-}
-
-// rawToString coerces a validated non-null RawMessage to its string form
-// for persistence. Numbers and bools are stringified so the existing
-// map[string]string on-disk shape holds.
-func rawToString(raw json.RawMessage) (string, error) {
-	if isJSONNull(raw) {
-		return "", fmt.Errorf("null cannot be coerced to string")
-	}
-	// String: decode to strip quotes.
-	if len(raw) > 0 && raw[0] == '"' {
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return "", err
-		}
-		return s, nil
-	}
-	// Numbers/bools/other: raw JSON text is the canonical string.
-	return string(raw), nil
 }
 
 // decodePatchBody decodes a merge-patch body, rejecting any field the

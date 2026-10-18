@@ -5,6 +5,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -94,7 +95,7 @@ func RespondWithParamErrors(c *gin.Context, status int, title string, errs []uti
 	for _, e := range errs {
 		details = append(details, e.Message)
 	}
-	RespondWithParamErrorsDetail(c, status, title, strings.Join(details, "; "), errs)
+	RespondWithParamErrorsDetail(c, status, title, strings.Join(slices.Compact(details), "; "), errs) // spellings of one flag share one message
 }
 
 // RespondWithParamErrorsDetail is RespondWithParamErrors with the

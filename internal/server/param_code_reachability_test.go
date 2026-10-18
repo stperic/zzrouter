@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/preflight"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -57,11 +58,36 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 		httperr.CodeDownloadInProgress:            providerModelParamCodeCase(httperr.CodeDownloadInProgress),
 		httperr.CodeProviderModelStoreUnsupported: providerModelParamCodeCase(httperr.CodeProviderModelStoreUnsupported),
 		httperr.CodeUnknownFlag: {
-			how: "a parameter name the provider schema does not define",
+			how: "a parameter name the provider schema does not define, patched or passed by a launch",
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {
-				return codesFromPatch(t, &paramPatchBody{
+				patched := codesFromPatch(t, &paramPatchBody{
 					Defaults: ptrDefaults(map[string]json.RawMessage{"ghost-flag": raw(1)}, nil),
 				})
+				require.Contains(t, patched, httperr.CodeUnknownFlag, "PATCH")
+				s := variantNode(t)
+				rec := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ghost-flag":1}}`))
+				return codesFromParamErrors(t, rec)
+			},
+		},
+		httperr.CodeDuplicateFlag: {
+			how: "two spellings of one flag with different values in a launch request",
+			provoke: func(t *testing.T) []httperr.ParamErrorCode {
+				rec := assetRequest(t, variantNode(t), http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"ctx_size":1024,"ctx-size":2048}}`))
+				return codesFromParamErrors(t, rec)
+			},
+		},
+		httperr.CodeExcludedByRuntime: {
+			how: "a request parameter the provider declares that its selected runtime does not take",
+			provoke: func(t *testing.T) []httperr.ParamErrorCode {
+				s := variantNode(t)
+				require.NoError(t, s.configStore.ApplyParameterPatch("llamacpp", func(svc *pkgConfig.ServiceConfig) error {
+					runtime := *svc.Runtime
+					runtime.ExcludeParameters = []string{"n-gpu-layers"}
+					svc.Runtime = &runtime
+					return nil
+				}))
+				rec := assetRequest(t, s, http.MethodPost, "/zzrouter/v1/runs/preview", []byte(`{"model":"`+qwenModel+`","provider":"llamacpp","parameters":{"n-gpu-layers":10}}`))
+				return codesFromParamErrors(t, rec)
 			},
 		},
 		httperr.CodeUnknownAsset: {
@@ -83,7 +109,7 @@ func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 			provoke: func(t *testing.T) []httperr.ParamErrorCode {
 				t.Helper()
 				server, _ := assetTestNode(t)
-				require.NoError(t, server.configStore.SetAppParameter("llamacpp", "chat-template-file", "t.jinja"))
+				setLlamacppDefault(t, server, "chat-template-file", "t.jinja")
 				c, rec := testGinContext(http.MethodDelete, apipath.ProviderAsset("llamacpp", "t.jinja"))
 				c.Params = gin.Params{{Key: "name", Value: "llamacpp"}, {Key: "asset", Value: "t.jinja"}}
 				NewProviderAssetsController(server.configStore).Delete(c)

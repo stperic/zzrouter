@@ -27,10 +27,13 @@ type AppRuntimeConfig struct {
 	BasePort        int                `yaml:"base_port,omitempty"`  // Starting port for dynamic allocation
 	KeepAlive       string             `yaml:"keep_alive,omitempty"` // Duration to keep model loaded (e.g., "5m", "1h", "0" to disable, "-1" for indefinite)
 	Execution       ExecutionConfig    `yaml:"execution"`
-	HealthCheck     HealthcheckConfig  `yaml:"health_check,omitempty"`
-	Resources       *ResourcesConfig   `yaml:"resources,omitempty"`
-	Container       *ContainerConfig   `yaml:"container,omitempty"`
-	API             *APIConfig         `yaml:"api,omitempty"` // For external API apps
+	// ExcludeParameters are parameters the execution's engine does not take,
+	// as a feature runtime's exclude_parameters are for its engine.
+	ExcludeParameters []string          `yaml:"exclude_parameters,omitempty" json:"exclude_parameters,omitempty"`
+	HealthCheck       HealthcheckConfig `yaml:"health_check,omitempty"`
+	Resources         *ResourcesConfig  `yaml:"resources,omitempty"`
+	Container         *ContainerConfig  `yaml:"container,omitempty"`
+	API               *APIConfig        `yaml:"api,omitempty"` // For external API apps
 
 	// Concurrency gating for on-demand instances.
 	// 0 or omitted = unlimited. Only meaningful for on-demand providers;

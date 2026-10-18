@@ -135,13 +135,6 @@ func TestVariant_LookupAndWeights(t *testing.T) {
 	_, _, ok = cfg.LookupVariant(base)
 	assert.False(t, ok)
 
-	// Saving values equal to the defaults clears the variant's launch
-	// values and keeps what makes it a variant.
-	require.NoError(t, cfg.SaveModelDefaults("llamacpp", agent, map[string]string{"ctx-size": "8192"}, nil))
-	saved, _ := cfg.LookupApp("llamacpp")
-	assert.Empty(t, saved.Models[agent].Parameters)
-	assert.Equal(t, base, saved.Models[agent].From)
-	assert.NotEmpty(t, saved.Models[agent].Request)
 }
 
 func TestValidateVariantName(t *testing.T) {

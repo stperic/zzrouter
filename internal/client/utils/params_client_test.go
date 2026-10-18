@@ -45,7 +45,7 @@ func paramsTestServer(t *testing.T, got *[]capturedRequest) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/schema") {
 			_, _ = w.Write([]byte(`{"parameters":{"threads":{"type":"int"},` +
-				`"flash-attn":{"type":"bool"},"alias":{"type":"string"}},"environment":{}}`))
+				`"context-shift":{"type":"bool"},"alias":{"type":"string"}},"environment":{}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"provider":"llamacpp","parameters":[],"environment":[]}`))
@@ -187,26 +187,26 @@ func TestValidateWithoutSaving_IsRefusedNotSaved(t *testing.T) {
 // Found by driving the real coordinator, not the mock.
 func TestTypeValues_CoercesAgainstSchema(t *testing.T) {
 	schema := map[string]ParameterSchema{
-		"threads":    {Type: "int"},
-		"flash-attn": {Type: "bool"},
-		"alias":      {Type: "string"},
-		"temp":       {Type: "float"},
+		"threads":       {Type: "int"},
+		"context-shift": {Type: "bool"},
+		"alias":         {Type: "string"},
+		"temp":          {Type: "float"},
 	}
 	got := typeValues(schema, map[string]string{
-		"threads":    "6",
-		"flash-attn": "true",
-		"alias":      "my-model",
-		"temp":       "0.7",
-		"unknown":    "42",     // not in schema: pass through untouched
-		"bad-int":    "twelve", // unparseable: let the server say so
+		"threads":       "6",
+		"context-shift": "true",
+		"alias":         "my-model",
+		"temp":          "0.7",
+		"unknown":       "42",     // not in schema: pass through untouched
+		"bad-int":       "twelve", // unparseable: let the server say so
 	})
 	want := map[string]any{
-		"threads":    int64(6),
-		"flash-attn": true,
-		"alias":      "my-model",
-		"temp":       0.7,
-		"unknown":    "42",
-		"bad-int":    "twelve",
+		"threads":       int64(6),
+		"context-shift": true,
+		"alias":         "my-model",
+		"temp":          0.7,
+		"unknown":       "42",
+		"bad-int":       "twelve",
 	}
 	for k, w := range want {
 		if got[k] != w {

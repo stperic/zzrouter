@@ -57,6 +57,8 @@ func TestParamErrorCodeWireValuesAreStable(t *testing.T) {
 		"CodeUnknownModel":                  "unknown_model",
 		"CodeCoercionFailed":                "coercion_failed",
 		"CodeRetired":                       "retired",
+		"CodeDuplicateFlag":                 "duplicate_flag",
+		"CodeExcludedByRuntime":             "excluded_by_runtime",
 		"CodeRouteUnknown":                  "route_unknown",
 		"CodeReplicaUnknown":                "replica_unknown",
 		"CodeReplicaLastInGroup":            "replica_last_in_group",

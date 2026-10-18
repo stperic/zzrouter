@@ -51,9 +51,16 @@ func TestRunSettingsRoundTripAndValidation(t *testing.T) {
 	assert.False(t, s.KeepAliveExplicit)
 }
 
-func TestRunSettingsRejectReservedAliases(t *testing.T) {
-	for _, key := range []string{"keep_alive", "evict_idle_on_memory_pressure"} {
-		_, err := ParseRunSettings(map[string]string{key: "true"}, false)
-		require.ErrorContains(t, err, "canonical")
-	}
+// keep_alive is the keep-alive run setting at a config site as in a
+// request: load validates it and the walk resolves it.
+func TestRunSettingsReadFlagNames(t *testing.T) {
+	sc := ServiceConfig{Name: "test", Defaults: &AppDefaultsConfig{Parameters: map[string]string{"keep_alive": "2m", "evict_idle_on_memory_pressure": "true"}}}
+	require.NoError(t, sc.ValidateRunSettings())
+	settings, err := ParseRunSettings(FlattenParameters(sc.Resolve("", "").Parameters), false)
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Minute, settings.KeepAlive)
+	assert.True(t, settings.EvictIdle)
+
+	sc.Defaults.Parameters["keep_alive"] = "soon"
+	require.ErrorContains(t, sc.ValidateRunSettings(), `invalid keep_alive duration "soon"`)
 }

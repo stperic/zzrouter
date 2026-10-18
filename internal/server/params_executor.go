@@ -209,6 +209,8 @@ type resolvedValueDTO struct {
 	// SHA256 is the content of the asset an asset-typed value names, so
 	// a caller sees which bytes a launch gets, not only which name.
 	SHA256 string `json:"sha256,omitempty"`
+	// Conflicts are other spellings of the flag the same map sets differently.
+	Conflicts []string `json:"conflicts,omitempty"`
 }
 
 // resolvedResponse is the body for GET /providers/:name/resolved.
@@ -288,10 +290,11 @@ func (e *ParamsExecutor) resolvedView(provider string, r pkgConfig.ResolvedParam
 		return out
 	}
 	shapes := loadProviderSchema(e.configStore, provider).Parameters
-	for key, v := range out.Parameters {
-		if name, ok := v.Value.(string); ok && shapes[key].Kind == schema.ParamAsset {
-			v.SHA256 = digests[name]
-			out.Parameters[key] = v
+	for flag, v := range r.Parameters {
+		if name, ok := v.Value.(string); ok && shapes[flag].Kind == schema.ParamAsset {
+			dto := out.Parameters[v.Key]
+			dto.SHA256 = digests[name]
+			out.Parameters[v.Key] = dto
 		}
 	}
 	return out
@@ -320,17 +323,18 @@ func (e *ParamsExecutor) assetDigests(provider string) map[string]string {
 	return digests
 }
 
-// resolvedToDTO converts an internal ResolvedParams into the wire shape.
+// resolvedToDTO converts an internal ResolvedParams into the wire shape,
+// keyed as stored so a key it lists is one PATCH can address.
 func resolvedToDTO(r pkgConfig.ResolvedParams) resolvedResponse {
 	out := resolvedResponse{
 		Parameters:  make(map[string]resolvedValueDTO, len(r.Parameters)),
 		Environment: make(map[string]resolvedValueDTO, len(r.Environment)),
 	}
-	for k, v := range r.Parameters {
-		out.Parameters[k] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
+	for _, v := range r.Parameters {
+		out.Parameters[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern, Conflicts: v.Conflicts}
 	}
-	for k, v := range r.Environment {
-		out.Environment[k] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
+	for _, v := range r.Environment {
+		out.Environment[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
 	}
 	if len(r.Request) > 0 {
 		out.Request = make(map[string]resolvedValueDTO, len(r.Request))
@@ -380,6 +384,17 @@ type schemaParamDTO struct {
 	Pass   string `json:"pass,omitempty"`
 	Auto   string `json:"auto,omitempty"`
 	Served string `json:"served,omitempty"`
+	// Negatable says false passes --no-<flag> rather than leaving it unset.
+	Negatable bool `json:"negatable,omitempty"`
+	// ExcludedBy names the runtimes that do not take the parameter.
+	ExcludedBy []exclusionDTO `json:"excluded_by,omitempty"`
+}
+
+// exclusionDTO is a runtime that does not take a parameter, with the feature
+// that selects it; the base runtime has none and is named as the provider.
+type exclusionDTO struct {
+	Runtime string `json:"runtime"`
+	Feature string `json:"feature,omitempty"`
 }
 
 type endpointSchemaDTO struct {
@@ -423,7 +438,34 @@ func (e *ParamsExecutor) HandleSchema(c *gin.Context) {
 			resp.Endpoints[epName] = endpointSchemaDTO{Parameters: paramShapeMapToDTO(ep.Parameters)}
 		}
 	}
+	markExclusions(cfg, resp.Parameters)
 	c.JSON(http.StatusOK, resp)
+}
+
+// markExclusions names on each parameter the runtimes that do not take it,
+// as excluded_by_runtime names them, each with the feature that selects it:
+// one runtime can serve several features with different exclusions.
+func markExclusions(cfg *pkgConfig.ServiceConfig, params map[string]schemaParamDTO) {
+	exclusions := map[exclusionDTO][]string{}
+	if cfg.Runtime != nil {
+		exclusions[exclusionDTO{Runtime: cfg.Name}] = cfg.Runtime.ExcludeParameters
+	}
+	for name, feature := range cfg.Features {
+		if feature.Runtime != "" {
+			exclusions[exclusionDTO{Runtime: feature.Runtime, Feature: name}] = feature.ExcludeParameters
+		}
+	}
+	by := slices.SortedFunc(maps.Keys(exclusions), func(a, b exclusionDTO) int {
+		return cmp.Or(cmp.Compare(a.Runtime, b.Runtime), cmp.Compare(a.Feature, b.Feature))
+	})
+	for _, runtime := range by {
+		for _, key := range exclusions[runtime] {
+			if dto, declared := params[key]; declared {
+				dto.ExcludedBy = append(dto.ExcludedBy, runtime)
+				params[key] = dto
+			}
+		}
+	}
 }
 
 // paramShapeMapToDTO is shared by HandleSchema across the flat and
@@ -444,6 +486,7 @@ func paramShapeMapToDTO(m map[string]schema.ParamShape) map[string]schemaParamDT
 			Pass:        string(shape.Pass),
 			Auto:        shape.Auto,
 			Served:      shape.Served,
+			Negatable:   shape.Negatable,
 		}
 	}
 	return out
@@ -835,37 +878,40 @@ func applyEndpointsPatch(dst *map[string]pkgConfig.EndpointOverlay, eps map[stri
 	return nil
 }
 
-// applyLeafPatch sets / deletes keys on the two leaf maps per the
-// RFC 7396 rule: null deletes, other values set. Maps are lazily
-// allocated so absent-at-both-tiers null is a clean no-op.
+// applyLeafPatch sets / deletes keys on the two leaf maps per the RFC 7396
+// rule: null deletes, other values set. A parameter is addressed by flag
+// name (config.SetParameter); an environment variable by its exact name.
 func applyLeafPatch(params, env *map[string]string, p *specPatch) error {
 	if p == nil {
 		return nil
 	}
-	applyOne := func(dst *map[string]string, kv map[string]json.RawMessage, isEnv bool) error {
-		for k, raw := range kv {
-			if isJSONNull(raw) {
-				if *dst != nil {
-					delete(*dst, k)
-				}
-				continue
-			}
-			s, err := rawToString(raw)
-			if err != nil {
-				return fmt.Errorf("coerce %q: %w", k, err)
-			}
-			_ = isEnv // env validation ran in validatePatch (H4 — pre-apply).
-			if *dst == nil {
-				*dst = make(map[string]string)
-			}
-			(*dst)[k] = s
-		}
-		return nil
-	}
-	if err := applyOne(params, p.Parameters, false); err != nil {
+	err := eachLeaf(p.Parameters, func(k, v string) { *params = pkgConfig.SetParameter(*params, k, v) }, func(k string) { pkgConfig.DeleteParameter(*params, k) })
+	if err != nil {
 		return err
 	}
-	return applyOne(env, p.Environment, true)
+	return eachLeaf(p.Environment, func(k, v string) {
+		if *env == nil {
+			*env = make(map[string]string)
+		}
+		(*env)[k] = v
+	}, func(k string) { delete(*env, k) })
+}
+
+// eachLeaf hands set each validated non-null leaf in its stored form and
+// remove each null one.
+func eachLeaf(kv map[string]json.RawMessage, set func(k, v string), remove func(k string)) error {
+	for k, raw := range kv {
+		if isJSONNull(raw) {
+			remove(k)
+			continue
+		}
+		s, ok := schema.Canonical(raw)
+		if !ok {
+			return fmt.Errorf("coerce %q: not a JSON scalar", k)
+		}
+		set(k, s)
+	}
+	return nil
 }
 
 // ============================================================================
