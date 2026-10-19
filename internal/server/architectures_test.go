@@ -74,6 +74,7 @@ func TestDeployArchitectureMismatch(t *testing.T) {
 	}
 	req := &DeployRequest{Model: "org/model-GGUF", Provider: "llamacpp"}
 	_, err := service.planDeploy(t.Context(), req, []string{"worker"})
+	err = planError(err) // what Deploy answers
 	var routed *RoutedError
 	require.ErrorAs(t, err, &routed)
 	require.Equal(t, http.StatusBadRequest, routed.StatusCode)
@@ -95,7 +96,8 @@ func TestDeployArchitectureMismatch(t *testing.T) {
 		return metadata.RepoFiles{Architecture: "qwen3", Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}}}, nil
 	}
 	_, err = service.planDeploy(t.Context(), req, []string{"worker"})
-	require.ErrorAs(t, err, &routed)
+	require.ErrorAs(t, planError(err), &routed)
+	require.Equal(t, http.StatusBadRequest, routed.StatusCode)
 	require.Equal(t, string(httperr.CodeArchitectureUnsupported), routed.ProblemDetails.Code)
 	listed = 0
 	req.Provider = ""

@@ -177,7 +177,7 @@ func (s *DeploymentsService) deployProvider(ctx context.Context, req *DeployRequ
 			Got:     map[string]any{"provider": provider, "architecture": architecture, "eligible_providers": eligible},
 			Message: "choose an eligible provider for this architecture", Hint: hint,
 		}}
-		return "", problem
+		return "", invalidInputf("%w", problem)
 	}
 	if provider == "" {
 		if len(eligible) != 1 {
