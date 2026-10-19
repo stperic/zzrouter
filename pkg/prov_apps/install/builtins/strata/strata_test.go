@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -17,6 +18,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+// unixOnly skips a test that runs Strata's release fixture; Strata ships for linux/amd64.
+func unixOnly(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Strata's release fixture runs Unix scripts and paths")
+	}
+}
 
 func managedFixture(t *testing.T) string {
 	t.Helper()
@@ -181,6 +190,7 @@ func TestRollbackSelectsVerifiedReleaseAndUninstallRetainsData(t *testing.T) {
 }
 
 func TestLauncherDriftUsesInstallVerification(t *testing.T) {
+	unixOnly(t)
 	managedFixture(t)
 	plan := strataPlan(t, New(nil), "0.1.44.1")
 	step := plan.Steps[7]
@@ -198,6 +208,7 @@ func TestLauncherDriftUsesInstallVerification(t *testing.T) {
 }
 
 func TestEngineVerificationKeepsPreviousRelease(t *testing.T) {
+	unixOnly(t)
 	for _, engine := range []string{"#!/bin/sh\necho qwen35moe\n", "#!/bin/sh\necho qwen4exp_extra\n", "#!/bin/sh\necho missing-library >&2\nexit 127\n"} {
 		t.Run(engine, func(t *testing.T) {
 			managedFixture(t)
@@ -218,6 +229,7 @@ func TestEngineVerificationKeepsPreviousRelease(t *testing.T) {
 }
 
 func TestLauncherRefusesUnsupportedModel(t *testing.T) {
+	unixOnly(t)
 	managedFixture(t)
 	dir := releaseDir("0.1.44.1")
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "tools"), 0700))
@@ -232,6 +244,7 @@ func TestLauncherRefusesUnsupportedModel(t *testing.T) {
 }
 
 func TestMTPPreparationUsesSharedLayer(t *testing.T) {
+	unixOnly(t)
 	managedFixture(t)
 	dir := releaseDir("0.1.44.1")
 	mtpPythonFixture(t, dir)
@@ -268,6 +281,7 @@ elif Path(__file__).name == "mtp_fetch.py":
 }
 
 func TestEngineVerificationActivatesSupportedRelease(t *testing.T) {
+	unixOnly(t)
 	managedFixture(t)
 	dir := writeReleaseFixture(t, "0.1.45")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "engine", "strata"), []byte("#!/bin/sh\necho 'qwen4exp qwen35moe'\n"), 0700))
