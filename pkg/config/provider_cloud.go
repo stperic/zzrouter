@@ -53,6 +53,9 @@ func (p *CloudProvider) IsAvailable() bool {
 // present (the API value is always present, but auth_type must be set to
 // one of the known values — empty is not allowed for cloud).
 func (p *CloudProvider) Validate() error {
+	if err := p.Capabilities.ValidateArchitectures(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := validateFeatures(p.Features); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}

@@ -40,9 +40,10 @@ package version
 // Protocol 14 adds typed unknown causes and local weight evidence.
 // Protocol 15 adds per-node provider enable choices, which older provider schemas reject,
 // and the worker route that records them on the coordinator.
+// Protocol 16 adds architecture capabilities and internal deploy architecture selection.
 const (
-	ClusterProtocolVersion    = 15
-	MinClusterProtocolVersion = 15
+	ClusterProtocolVersion    = 16
+	MinClusterProtocolVersion = 16
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

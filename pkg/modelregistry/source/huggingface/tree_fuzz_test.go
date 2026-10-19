@@ -36,13 +36,13 @@ func FuzzParseRepoFilesJSON(f *testing.F) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, body []byte) {
-		files, err := parseRepoFilesJSON(body, "fuzz/model")
+		listing, err := parseRepoFilesJSON(body, "fuzz/model")
 		if err != nil {
 			return // unparseable JSON is a fine outcome
 		}
 		// Acceptance invariants: every returned filename must pass the
 		// validator. If any does not, the gate has been bypassed.
-		for _, f := range files {
+		for _, f := range listing.Files {
 			require.NoError(t, validateRepoFileName(f.Name),
 				"parser returned filename that fails validation: %q", f.Name)
 		}

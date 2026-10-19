@@ -169,7 +169,7 @@ func (hfc *Connector) downloadFiles(ctx context.Context, req metadata.DownloadRe
 		if err != nil {
 			return nil, fmt.Errorf("failed to get repo files: %w", err)
 		}
-		files, err = Plan(listing, req)
+		files, err = Plan(listing.Files, req)
 		if err != nil {
 			return nil, err
 		}

@@ -61,7 +61,7 @@ func assignToJobObject(pid int) (uintptr, error) {
 func terminateProcessTree(req TerminateRequest) error {
 	if req.StdinPipe != nil {
 		slog.Debug("closing stdin pipe for graceful shutdown", "pid", req.PID)
-		_ = req.StdinPipe.Close()
+		req.StdinPipe()
 	}
 	return nil
 }
@@ -116,4 +116,8 @@ func CloseJobHandle(h uintptr) {
 		job := jobobj.FromHandle(h)
 		_ = job.Close()
 	}
+}
+
+func processTreeExists(req TerminateRequest) bool {
+	return ProcessExists(int32(req.PID))
 }

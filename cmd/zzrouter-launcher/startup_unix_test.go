@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -64,6 +66,7 @@ func TestLauncherStartupShutdown(t *testing.T) {
 			require.NoError(t, os.WriteFile(engine, []byte(testproc.Script(script)), 0o600))
 			cmd := host.Command(binary, "--instance-id=fixture", "--provider=fixture", "--pid-dir", dir,
 				"--", "/bin/sh", engine, childPIDFile, trapFile)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			var output bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &output, &output
 			input, err := cmd.StdinPipe()
@@ -100,6 +103,7 @@ func TestLauncherStartupShutdown(t *testing.T) {
 			group, err := syscall.Getpgid(childPID)
 			require.NoError(t, err)
 			require.Equal(t, childPID, group, "fixture child must own its process group")
+			require.NotEqual(t, cmd.Process.Pid, group, "a standalone group leader must still isolate its child")
 			t.Cleanup(func() { _ = syscall.Kill(-childPID, syscall.SIGKILL) })
 			t.Logf("launcher=%d child=%d group=%d", cmd.Process.Pid, childPID, group)
 			if tc.closeStdin {
@@ -182,4 +186,122 @@ func TestLauncherExitCleanup(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNodeOwnedLauncherCleansUpOnEOFAfterSignal(t *testing.T) {
+	binary := buildFixtureLauncher(t)
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	engine := filepath.Join(dir, "engine")
+	require.NoError(t, os.WriteFile(engine, []byte(testproc.Script("trap '' TERM\ntrap 'exit 0' INT\nprintf ready > \"$1\"\nwhile kill -0 $test_owner; do :; done\n")), 0600))
+	cmd := host.Command(binary, "--node-owned", "--instance-id=orphan", "--provider=fixture", "--pid-dir", dir, "--", "/bin/sh", engine, ready)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("node-owned launcher was not reaped")
+		}
+	})
+	pidFile := filepath.Join(dir, "orphan.pid")
+	require.Eventually(t, func() bool {
+		if _, err := os.Stat(pidFile); err != nil {
+			return false
+		}
+		_, err := os.Stat(ready)
+		return err == nil
+	}, 5*time.Second, 5*time.Millisecond)
+	data, err := os.ReadFile(pidFile)
+	require.NoError(t, err)
+	var info pidInfo
+	require.NoError(t, json.Unmarshal(data, &info))
+	group, err := syscall.Getpgid(info.ChildPID)
+	require.NoError(t, err)
+	require.Equal(t, cmd.Process.Pid, group, "a node-owned child must stay in the node's group")
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	select {
+	case err := <-done:
+		t.Fatalf("launcher exited before the node died: %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+	require.NoError(t, stdin.Close()) // The node died during the graceful wait.
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(7 * time.Second):
+		t.Fatal("launcher ignored node death while waiting for its child")
+	}
+}
+
+func TestLauncherBeforeChildStartHelper(t *testing.T) {
+	ready := os.Getenv("LAUNCHER_BEFORE_START")
+	if ready == "" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			os.Args = append(os.Args[:1], os.Args[i+1:]...)
+			break
+		}
+	}
+	flag.CommandLine = flag.NewFlagSet("launcher", flag.ExitOnError)
+	os.Exit(run(func(cmd *exec.Cmd) error {
+		if err := os.WriteFile(ready, nil, 0600); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(os.Stdin, make([]byte, 1)); err != nil {
+			return err
+		}
+		return cmd.Start()
+	}))
+}
+
+func TestNodeOwnedLauncherSignalBeforeChildStart(t *testing.T) {
+	dir := t.TempDir()
+	ready, child := filepath.Join(dir, "ready"), filepath.Join(dir, "child")
+	binary, err := os.Executable()
+	require.NoError(t, err)
+	cmd := host.Command(binary, "-test.run=^TestLauncherBeforeChildStartHelper$", "--", "--node-owned",
+		"--instance-id=early-stop", "--provider=fixture", "--pid-dir", dir,
+		"--", "/bin/sh", "-c", `printf '%s' "$$" > "$1"`, "engine", child)
+	cmd.Env = append(os.Environ(), "LAUNCHER_BEFORE_START="+ready)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("launcher was not reaped")
+		}
+	})
+	require.Eventually(t, func() bool { _, err := os.Stat(ready); return err == nil }, 5*time.Second, 5*time.Millisecond)
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("launcher swallowed a stop before starting its child")
+		_, _ = stdin.Write([]byte{1})
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("launcher did not finish after releasing child startup")
+		}
+	}
+	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	require.True(t, status.Signaled(), "the stop must terminate the launcher before child startup")
+	require.Equal(t, syscall.SIGTERM, status.Signal())
+	require.NoFileExists(t, child, "a stopped launcher must never start its child")
 }

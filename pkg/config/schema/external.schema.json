@@ -314,6 +314,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "architectures": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "formats": { "type": "array", "items": { "type": "string" } },
         "format_note": { "type": "string" },
         "models": { "type": "array", "items": { "type": "string" } },
@@ -407,7 +408,7 @@
       "required": ["manager"],
       "additionalProperties": false,
       "properties": {
-        "manager": { "enum": ["auto", "systemd", "launchd", "nssm", "none"] }
+        "manager": { "enum": ["auto", "systemd", "launchd", "nssm"] }
       }
     },
     "search": {

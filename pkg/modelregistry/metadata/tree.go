@@ -61,3 +61,9 @@ type DownloadFile struct {
 	TreeFileEntry
 	Feature string `json:"feature,omitempty"`
 }
+
+// RepoFiles carries one repository listing and its GGUF architecture evidence.
+type RepoFiles struct {
+	Files        []TreeFileEntry
+	Architecture string
+}

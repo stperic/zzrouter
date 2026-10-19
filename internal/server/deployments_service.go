@@ -35,7 +35,7 @@ type DeploymentsService struct {
 	tracker        *DeploymentTracker
 	nodeInfo       NodeNamer
 	appsConfig     func() *pkgConfig.AppsConfig
-	repoFiles      func(context.Context, string) ([]metadata.TreeFileEntry, error)
+	repoFiles      func(context.Context, string) (metadata.RepoFiles, error)
 	refresher      *runsRefresher
 	jobs           *jobAccess
 	shutdown       func() context.Context
@@ -518,6 +518,8 @@ func (s *DeploymentsService) CancelAllDeployments(ctx context.Context) int {
 func planError(err error) error {
 	var routed *RoutedError
 	switch {
+	case isInvalidInput(err) && errors.As(err, &routed):
+		return routed // a refusal that already carries its problem keeps it
 	case isInvalidInput(err):
 		return newProblemError(http.StatusBadRequest, "Bad Request", err.Error())
 	case errors.As(err, &routed) && routed.StatusCode >= http.StatusInternalServerError:

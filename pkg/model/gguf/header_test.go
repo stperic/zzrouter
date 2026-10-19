@@ -183,3 +183,14 @@ func TestHybridHeaderBoundsAndTypes(t *testing.T) {
 	_, err = Read(bytes.NewReader(header(entry("qwen35.nextn_predict_layers", 4, uint32(0)))))
 	require.NoError(t, err, "zero MTP layers is valid")
 }
+
+func TestArchitectureReadStopsAtValue(t *testing.T) {
+	for _, architecture := range []string{"llama", "qwen4exp", "future-family", " "} {
+		data := header(entry("llama.block_count", 8, "not geometry"), entry("general.architecture", 8, architecture), []byte{0xff})
+		got, err := ReadArchitecture(bytes.NewReader(data))
+		require.NoError(t, err)
+		require.Equal(t, architecture, got)
+		_, err = Read(bytes.NewReader(data))
+		require.Error(t, err, "the remainder is not a valid full header")
+	}
+}

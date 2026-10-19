@@ -79,6 +79,7 @@ func TestFeatureTemplatesAndUpdateRoundTrip(t *testing.T) {
 	expected["vllm"]["tools"] = Feature{RequiresParameters: []string{"enable-auto-tool-choice", "tool-call-parser"}}
 	expected["mlx"]["tools"] = Feature{}
 	expected["ollama"]["tools"] = Feature{}
+	expected["strata"] = map[string]Feature{"tools": {}}
 	for name, endpoint := range map[string]string{"embeddings": "embeddings", "reranking": "rerank"} {
 		flag, body := "--embedding-model", `{"model":"${WIRE_MODEL}","input":"ping"}`
 		if name == "reranking" {

@@ -18,11 +18,12 @@ import (
 // invariant — no synchronization needed.
 var childJob *jobobj.Job
 
-func setupProcessGroup(cmd *exec.Cmd) {
+func setupProcessGroup(cmd *exec.Cmd, _ bool) bool {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | host.CreateNoWindow,
 		HideWindow:    true,
 	}
+	return false
 }
 
 // assignChildToJob creates a Job Object with KILL_ON_JOB_CLOSE and assigns

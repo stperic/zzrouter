@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,9 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
+	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -51,6 +55,26 @@ type paramCodeCase struct {
 
 func paramCodeCases() map[httperr.ParamErrorCode]paramCodeCase {
 	return map[httperr.ParamErrorCode]paramCodeCase{
+		httperr.CodeArchitectureUnsupported: {
+			how: "a named provider excluded by a known model architecture",
+			provoke: func(t *testing.T) []httperr.ParamErrorCode {
+				s := architectureServer(t)
+				executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, s.eligibleDeployProviders, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+					return process.MemoryAssessment{Status: "unknown"}
+				})
+				router := capacityRouter{serve: func(req *routing.Request) *httptest.ResponseRecorder {
+					c, rec := testGinContext(req.Method, req.Path)
+					executor.HandleInternalListCompatibleNodes(c)
+					return rec
+				}}
+				service := NewDeploymentsService(&router, nil, s.appsConfig)
+				_, err := service.deployProvider(t.Context(), &DeployRequest{Model: "org/model-GGUF"}, "llamacpp", "worker", "huggingface", "qwen4exp")
+				require.Error(t, err)
+				c, rec := testGinContext(http.MethodPost, "/zzrouter/v1/deployments")
+				RespondToError(c, err)
+				return codesFromParamErrors(t, rec)
+			},
+		},
 		httperr.CodeInvalidModelCategory:          providerModelParamCodeCase(httperr.CodeInvalidModelCategory),
 		httperr.CodeInvalidFileName:               providerModelParamCodeCase(httperr.CodeInvalidFileName),
 		httperr.CodeFileExists:                    providerModelParamCodeCase(httperr.CodeFileExists),

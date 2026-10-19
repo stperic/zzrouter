@@ -289,7 +289,7 @@ func (s *Server) isLocalNodeCompatible(model, repo, provider string) bool {
 	if s.model.Cache.HasModel(model) {
 		return true
 	}
-	return len(s.eligibleDeployProviders(model, repo, "", provider, false)) > 0
+	return len(s.eligibleDeployProviders(model, repo, "", "", provider, false, true).Providers) > 0
 }
 
 // buildIncompatibleDeployError builds a descriptive error message explaining why a

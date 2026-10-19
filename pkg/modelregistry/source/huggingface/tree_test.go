@@ -12,14 +12,14 @@ func TestParseRepoFilesJSON_ExtractsLFSSHA(t *testing.T) {
 		{"rfilename":"model.gguf","size":1234567890,
 		 "lfs":{"oid":"abc123def4567890","size":1234567890,"pointerSize":134}}
 	]}`)
-	files, err := parseRepoFilesJSON(body, "test/repo")
+	listing, err := parseRepoFilesJSON(body, "test/repo")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(files) != 2 {
-		t.Fatalf("got %d files, want 2", len(files))
+	if len(listing.Files) != 2 {
+		t.Fatalf("got %d files, want 2", len(listing.Files))
 	}
-	for _, f := range files {
+	for _, f := range listing.Files {
 		switch f.Name {
 		case "config.json":
 			if f.SHA256 != "" {
@@ -30,5 +30,15 @@ func TestParseRepoFilesJSON_ExtractsLFSSHA(t *testing.T) {
 				t.Errorf("LFS oid not extracted: got %q", f.SHA256)
 			}
 		}
+	}
+}
+
+func TestArchitectureListingEvidence(t *testing.T) {
+	listing, err := parseRepoFilesJSON([]byte(`{"gguf":{"architecture":"qwen4exp"},"siblings":[{"rfilename":"model.gguf","size":7}]}`), "org/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listing.Architecture != "qwen4exp" || len(listing.Files) != 1 {
+		t.Fatalf("listing lost architecture or files: %+v", listing)
 	}
 }

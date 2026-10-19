@@ -18,7 +18,8 @@ import (
 // (one network call). Surfaced on Registry so HTTP-layer callers don't
 // need to reach through to the connector type.
 func (r *Registry) ListHuggingFaceRepoFiles(ctx context.Context, modelID string) ([]metadata.TreeFileEntry, error) {
-	return r.huggingfaceConnector.GetRepoFiles(ctx, modelID)
+	listing, err := r.huggingfaceConnector.GetRepoFiles(ctx, modelID)
+	return listing.Files, err
 }
 
 // PullOllamaModel pulls a model from Ollama in the caller's goroutine.

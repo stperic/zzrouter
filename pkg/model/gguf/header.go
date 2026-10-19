@@ -110,6 +110,16 @@ func valueSize(kind uint64) int {
 
 // Read accepts little-endian GGUF v2/v3, with at most 4096 keys and 64 MiB of metadata.
 func Read(r io.Reader) (Header, error) {
+	return read(r, false)
+}
+
+// ReadArchitecture stops at general.architecture without parsing later metadata.
+func ReadArchitecture(r io.Reader) (string, error) {
+	h, err := read(r, true)
+	return h.Architecture, err
+}
+
+func read(r io.Reader, architectureOnly bool) (Header, error) {
 	d := decoder{r: bufio.NewReader(&io.LimitedReader{R: r, N: 64 << 20})}
 	h := Header{Values: map[string]int64{}}
 	magic, version := d.number(4), d.number(4)
@@ -132,6 +142,10 @@ func Read(r io.Reader) (Header, error) {
 			return h, fmt.Errorf("duplicate GGUF key")
 		}
 		seen[key] = true
+		if architectureOnly && key != "general.architecture" {
+			d.value(kind, false)
+			continue
+		}
 		_, suffix, _ := strings.Cut(key, ".")
 		keep := key == "general.architecture"
 		switch suffix {
@@ -144,6 +158,10 @@ func Read(r io.Reader) (Header, error) {
 			return h, d.err
 		}
 		if key == "general.architecture" {
+			if architectureOnly {
+				h.Architecture = text
+				return h, nil
+			}
 			switch text {
 			case "llama", "qwen2", "qwen3", "qwen3moe", "qwen35":
 			default:

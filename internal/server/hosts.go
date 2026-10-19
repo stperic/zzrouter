@@ -742,15 +742,20 @@ func (s *Server) workerPublicURL() string {
 // Executor (Internal API)
 // ============================================================================
 
+type deployEligibility struct {
+	Providers            []string `json:"eligible_providers"`
+	ArchitectureExcluded []string `json:"architecture_excluded_providers,omitempty"`
+}
+
 // NodesExecutor handles direct local host operations
 type NodesExecutor struct {
 	getLocalNodeInfo  func() map[string]any
-	eligibleProviders func(model, repo, format, provider string, force bool) []string
+	eligibleProviders func(model, repo, format, architecture, provider string, force, allowUnknown bool) deployEligibility
 	assessCapacity    func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment
 }
 
 // NewNodesExecutor shares the manager's launch policy on each serving node.
-func NewNodesExecutor(getLocalNodeInfo func() map[string]any, eligible func(string, string, string, string, bool) []string, assess func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment) *NodesExecutor {
+func NewNodesExecutor(getLocalNodeInfo func() map[string]any, eligible func(string, string, string, string, string, bool, bool) deployEligibility, assess func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment) *NodesExecutor {
 	return &NodesExecutor{getLocalNodeInfo: getLocalNodeInfo, eligibleProviders: eligible, assessCapacity: assess}
 }
 
@@ -767,35 +772,50 @@ func (e *NodesExecutor) HandleInternalListCompatibleNodes(c *gin.Context) {
 		return
 	}
 
-	eligible := e.eligibleProviders(model, QueryRegistry(c), c.Query("format"), QueryProvider(c), c.Query("force") == "true")
+	eligible := e.eligibleProviders(model, QueryRegistry(c), c.Query("format"), c.Query("architecture"), QueryProvider(c), c.Query("force") == "true", QueryProvider(c) != "" || c.Query("allow_unknown_architecture") == "true")
 	hostInfo := maps.Clone(e.getLocalNodeInfo())
 	name, _ := hostInfo["name"].(string)
 	assessments := []NodeMemoryAssessment{}
-	for _, provider := range eligible {
+	for _, provider := range eligible.Providers {
 		assessment := e.assessCapacity(c.Request.Context(), prov_apps.EnsureRequest{Provider: provider, Model: model})
 		assessments = append(assessments, NodeMemoryAssessment{Node: name, Provider: provider, MemoryAssessment: assessment})
 	}
-	hostInfo["eligible_providers"], hostInfo["assessments"] = eligible, assessments
+	hostInfo["eligible_providers"], hostInfo["assessments"] = eligible.Providers, assessments
+	if len(eligible.ArchitectureExcluded) > 0 {
+		hostInfo["architecture_excluded_providers"] = eligible.ArchitectureExcluded
+	}
 	c.JSON(http.StatusOK, gin.H{"data": []map[string]any{hostInfo}})
 }
 
 // eligibleDeployProviders names installed or configured local providers that
 // can serve the requested format, even when the weights are already cached.
-func (s *Server) eligibleDeployProviders(model, repo, format, provider string, force bool) []string {
+func (s *Server) eligibleDeployProviders(model, repo, format, architecture, provider string, force, allowUnknown bool) deployEligibility {
 	if format == "" {
 		format = modelregistry.DetectFormatFromName(model)
 	}
-	names := []string{}
+	result := deployEligibility{Providers: []string{}}
 	if s.providers.appMgr == nil {
-		return names
+		return result
 	}
-	for _, info := range s.buildCompatibleAppsInfo() {
-		if (provider == "" || utils.NormalizeAppType(info.Key) == utils.NormalizeAppType(provider) || strings.EqualFold(info.Type, provider)) && metadata.RepoAppCompatible(repo, info.Type) && (force || modelregistry.FormatSupported(info.Formats, format)) {
-			names = append(names, info.Key)
+	candidates := map[string][]string{}
+	infos := s.buildCompatibleAppsInfo()
+	for _, info := range infos {
+		if metadata.RepoAppCompatible(repo, info.Type) && (force || modelregistry.FormatSupported(info.Formats, format)) {
+			candidates[info.Key] = info.Architectures
 		}
 	}
-	slices.Sort(names)
-	return slices.Compact(names)
+	eligible := config.FilterArchitectures(candidates, architecture, allowUnknown)
+	for _, info := range infos {
+		if _, candidate := candidates[info.Key]; candidate && architecture != "" && !slices.Contains(eligible, info.Key) {
+			result.ArchitectureExcluded = append(result.ArchitectureExcluded, info.Key)
+		}
+		if slices.Contains(eligible, info.Key) && (provider == "" || utils.NormalizeAppType(info.Key) == utils.NormalizeAppType(provider) || strings.EqualFold(info.Type, provider)) {
+			result.Providers = append(result.Providers, info.Key)
+		}
+	}
+	slices.Sort(result.Providers)
+	slices.Sort(result.ArchitectureExcluded)
+	return result
 }
 
 // buildLocalAppsInfo preserves the full inference inventory for REST and peer snapshots.

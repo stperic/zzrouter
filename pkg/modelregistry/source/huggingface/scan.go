@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -146,6 +147,10 @@ func (hfc *Connector) ScanModels() ([]*metadata.ModelMetadata, error) {
 		// entry, and a feature's file is none.
 		if variants := layout.GGUFVariants(files); len(variants) > 0 {
 			for _, v := range variants {
+				extra := maps.Clone(extra)
+				if details, ok := extra["details"].(map[string]any); ok {
+					extra["details"] = maps.Clone(details)
+				}
 				models = append(models, &metadata.ModelMetadata{
 					Name:         v.Name,
 					FullPath:     filepath.Join(modelDir, filepath.FromSlash(v.Files[0].Path)),

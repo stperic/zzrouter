@@ -140,6 +140,7 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 	// Wrap with zzrouter-launcher for PID tracking and signal forwarding
 	if launcherPath := findLauncherBinary(); launcherPath != "" {
 		launcherArgs := []string{
+			"--node-owned",
 			"--instance-id", inst.ID,
 			"--provider", inst.Provider,
 		}
@@ -182,11 +183,7 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 		process.Stderr = logWriter
 	}
 
-	// Create a stdin pipe to the launcher for graceful shutdown signaling.
-	// When zzrouter-node wants to stop this instance, it closes the pipe;
-	// the launcher detects EOF and initiates provider shutdown. This works
-	// in all sessions including Windows Service (session 0) where console-
-	// based signals are undeliverable.
+	// Windows stops through stdin EOF; Unix uses it to detect a node crash.
 	stdinPipe, pipeErr := process.StdinPipe()
 	if pipeErr != nil {
 		slog.Warn("failed to create stdin pipe: graceful shutdown will use signals only",
@@ -202,12 +199,7 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 
 	pid := process.Process.Pid
 
-	// When using the launcher, store pgid=0 so Terminate signals the launcher
-	// PID directly (not a process group).
-	pgid := 0
-	if !inst.IsUsingLauncher() {
-		pgid = getProcessGroupID(process.Process)
-	}
+	pgid := getProcessGroupID(process.Process)
 
 	// Assign to a Windows Job Object for automatic orphan cleanup.
 	// If zzrouter-node crashes, the kernel closes the handle and kills
@@ -225,13 +217,8 @@ func (l *Launcher) Launch(_ context.Context, inst *instance.Instance, cmd string
 	startToken, err := readToken(pid)
 	if err != nil {
 		req := TerminateRequest{PID: pid, ProcessGroupID: pgid, JobHandle: jobHandle}
-		if inst.IsUsingLauncher() && runtime.GOOS != "windows" {
-			// The wrapper owns a separately grouped engine and bounded escalation.
-			_ = terminateProcessTree(req)
-		} else {
-			// The unreaped leader still owns its process group or Windows Job.
-			_ = killProcessTree(req)
-		}
+		// The unreaped leader still owns its process group or Windows Job.
+		_ = killProcessTree(req)
 		_ = process.Wait()
 		CloseJobHandle(jobHandle)
 		return nil, fmt.Errorf("read launched process identity: %w", err)

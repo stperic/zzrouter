@@ -3,13 +3,13 @@
 //
 // Usage:
 //
-//	zzrouter-launcher --instance-id=ID --provider=TYPE [--pid-dir=DIR] -- CMD [ARGS...]
+//	zzrouter-launcher --instance-id=ID --provider=TYPE [--pid-dir=DIR] [--node-owned] -- CMD [ARGS...]
 //
 // The launcher:
 // 1. Writes a PID file ({pid-dir}/{instance-id}.pid)
-// 2. Launches the child command in a new process group
-// 3. Forwards SIGTERM/SIGINT to the child process group
-// 4. Waits for graceful shutdown (5s), then escalates to SIGKILL
+// 2. With --node-owned on Unix, keeps the child in the node's group and leaves signaling to the node
+// 3. Otherwise isolates the child and forwards shutdown signals
+// 4. On stdin EOF, forwards shutdown; escalates forwarded shutdowns after 5s
 // 5. Removes PID file on exit
 // 6. Exits with the child's exit code
 package main
@@ -43,13 +43,14 @@ type pidInfo struct {
 }
 
 func main() {
-	os.Exit(run())
+	os.Exit(run((*exec.Cmd).Start))
 }
 
-func run() int {
+func run(startChild func(*exec.Cmd) error) int {
 	instanceID := flag.String("instance-id", "", "unique instance identifier (required)")
 	provider := flag.String("provider", "", "provider type, e.g. vllm, llama-cpp, mlx (required)")
 	pidDir := flag.String("pid-dir", filepath.Join(os.TempDir(), "zzrouter-pids"), "directory for PID files")
+	nodeOwnedFlag := flag.Bool("node-owned", false, "let the node own the child's process group on Unix")
 	flag.Parse()
 
 	if *instanceID == "" || *provider == "" {
@@ -70,21 +71,26 @@ func run() int {
 		return 1
 	}
 
-	// Set up the child command in its own process group.
+	// Keep a node-owned group; isolate a standalone child.
 	cmd := host.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	setupProcessGroup(cmd)
+	nodeOwned := setupProcessGroup(cmd, *nodeOwnedFlag)
 
-	// Own shutdown before creating a child that needs signal forwarding.
+	// A node-owned launcher must die on a stop before its child starts.
 	sigCh := make(chan os.Signal, 2)
-	signal.Notify(sigCh, shutdownSignals()...)
+	if !nodeOwned {
+		signal.Notify(sigCh, shutdownSignals()...)
+	}
 	defer signal.Stop(sigCh)
 
-	if err := cmd.Start(); err != nil {
+	if err := startChild(cmd); err != nil {
 		fmt.Fprintf(os.Stderr, "error: failed to start child: %v\n", err)
 		return 1
+	}
+	if nodeOwned {
+		signal.Notify(sigCh, shutdownSignals()...)
 	}
 	assignChildToJob(cmd)
 
@@ -110,11 +116,8 @@ func run() int {
 		waitCh <- cmd.Wait()
 	}()
 
-	// Monitor stdin for EOF. When zzrouter-node wants to gracefully stop
-	// this instance, it closes the stdin pipe. This is the primary Windows
-	// shutdown mechanism (works in any session including session 0 / Windows
-	// Service). On Unix, stdin is typically /dev/null (EOF immediately) or
-	// a terminal; we only enable this if stdin is a pipe.
+	// Stdin EOF requests shutdown on Windows and means the node died on Unix.
+	// Only pipes are monitored: standalone launchers can use /dev/null or a terminal.
 	stdinClosed := make(chan struct{}, 1)
 	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeNamedPipe != 0) {
 		go func() {
@@ -133,6 +136,15 @@ func run() int {
 	var shutdown os.Signal
 	select {
 	case shutdown = <-sigCh:
+		if nodeOwned {
+			// The node owns escalation unless it dies before the child exits.
+			select {
+			case <-waitCh:
+				return exitCode(cmd)
+			case <-stdinClosed:
+				shutdown = os.Interrupt
+			}
+		}
 	case <-stdinClosed:
 		shutdown = os.Interrupt
 	case <-waitCh:

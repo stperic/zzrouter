@@ -852,8 +852,9 @@ func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instanc
 		ProcessGroupID: inst.GetProcessGroupID(),
 		Graceful:       m.resolveShutdownTimeout(inst.Provider),
 		JobHandle:      inst.GetJobHandle(),
+		StdinPipe:      inst.CloseStdinPipe,
 	}
-	inst.CloseStdinPipe() // idempotent; the request leaves StdinPipe nil so it is not closed twice
+	defer inst.CloseStdinPipe()
 	return process.Terminate(ctx, req)
 }
 

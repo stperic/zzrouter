@@ -49,6 +49,7 @@ func TestAllParamErrorCodesIsComplete(t *testing.T) {
 // test rather than a silent pass.
 func TestParamErrorCodeWireValuesAreStable(t *testing.T) {
 	want := map[string]string{
+		"CodeArchitectureUnsupported":       "architecture_unsupported",
 		"CodeUnknownFlag":                   "unknown_flag",
 		"CodeUnknownField":                  "unknown_field",
 		"CodeWrongType":                     "wrong_type",

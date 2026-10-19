@@ -123,9 +123,6 @@ func (m *ProviderAppManager) serviceConfig(name string) (config.ServiceConfig, e
 // serviceManager resolves the host supervisor within the caller's budget; a
 // probe that cannot answer is an error, never a missing service.
 func serviceManager(ctx context.Context, name string, cfg config.ServiceConfig) (service.Manager, error) {
-	if cfg.Service != nil && cfg.Service.Manager == "none" {
-		return nil, nil
-	}
 	if cfg.Service != nil && cfg.Service.Manager != "" && cfg.Service.Manager != "auto" {
 		manager, err := service.Get(cfg.Service.Manager)
 		if err != nil {

@@ -1,0 +1,30 @@
+provider: strata
+parameters:
+  max-context:
+    type: int
+    min: 1
+    description: Maximum context length
+  kv:
+    type: string
+    description: KV cache representation
+  kv-resident:
+    type: int
+    min: 1
+    description: Context tokens kept resident on the GPU
+  expert-cache:
+    type: string
+    auto: auto
+    description: Expert cache size, auto sizes from free memory
+  prefill:
+    type: string
+    auto: auto
+    description: Prompt chunk size, auto selects the engine default
+  spec:
+    type: int
+    min: 2
+    description: Speculative decoding window required by native packs
+  spec-min-p:
+    type: float
+    min: 0
+    max: 1
+    description: Minimum draft probability

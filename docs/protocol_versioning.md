@@ -25,6 +25,13 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 16 raises the minimum from 15 to 16. Provider synchronization carries
+`capabilities.architectures`, which older strict loaders reject. Internal
+`/zzrouter/v1/internal/nodes/compatible` requests carry `architecture` and
+`allow_unknown_architecture`
+so deployment selection and storage admission apply the same compatibility rule.
+Upgrade coordinators and workers together.
+
 Protocol 15 raises the minimum from 13 to 15. Provider synchronization carries
 per-node enable choices, `nodes.<node>.enabled`, which older strict loaders
 reject, and a worker records its own choice through a new coordinator route,
