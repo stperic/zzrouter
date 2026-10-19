@@ -87,7 +87,8 @@ func TestLaunchTokenReadFailureStopsTree(t *testing.T) {
 			require.Greater(t, leader, 1)
 			assert.False(t, ProcessExists(int32(leader)), "failed launch must reap the leader")
 			require.Greater(t, engine, int32(1))
-			assert.False(t, ProcessExists(engine), "engine survived token-read failure")
+			// A group SIGKILL orphans the engine; it exists as a zombie until init reaps it.
+			assert.Eventually(t, func() bool { return !ProcessExists(engine) }, 5*time.Second, 10*time.Millisecond, "engine survived token-read failure")
 			if memberDone != nil {
 				select {
 				case <-memberDone:
