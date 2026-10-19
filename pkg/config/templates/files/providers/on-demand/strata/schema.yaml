@@ -13,9 +13,11 @@ parameters:
     description: Context tokens kept resident on the GPU
   expert-cache:
     type: string
+    auto: auto
     description: Expert cache size, auto sizes from free memory
   prefill:
     type: string
+    auto: auto
     description: Prompt chunk size, auto selects the engine default
   spec:
     type: int
