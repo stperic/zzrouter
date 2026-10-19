@@ -55,6 +55,9 @@ func (p *ExternalProvider) GetDescription() string { return p.Description }
 // external daemons: protocol + endpoint. Credentials are optional (Ollama
 // runs without auth by default), but auth_type must be one zzRouter knows.
 func (p *ExternalProvider) Validate() error {
+	if err := p.Capabilities.ValidateArchitectures(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}

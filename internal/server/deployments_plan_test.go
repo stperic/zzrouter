@@ -33,9 +33,9 @@ func TestCompatibleProvidersHonorsExplicitFormat(t *testing.T) {
 	e := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, nil, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
 		return process.MemoryAssessment{Status: "unknown", Reason: "unsized"}
 	})
-	e.eligibleProviders = func(_, _, format, _ string, _ bool) []string {
+	e.eligibleProviders = func(_, _, format, _, _ string, _, _ bool) deployEligibility {
 		assert.Equal(t, "gguf", format)
-		return []string{"llamacpp"}
+		return deployEligibility{Providers: []string{"llamacpp"}}
 	}
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -82,8 +82,8 @@ func TestDeployChecksSourceAgainstEachTargetsPlan(t *testing.T) {
 	require.NoError(t, cfg.AddApp("llamacpp-text", text))
 	router := &deploymentPlanRouter{providers: map[string][]string{"text": {"llamacpp-text"}, "vision": {"llamacpp"}}, presentFiles: map[string]map[string]bool{"text": {"model.gguf": true}}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg }).WithNodeURLResolver(func(string) string { return "https://peer:9090" })
-	s.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-		return []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}, nil
+	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}}, nil
 	}
 	_, err := s.Deploy(t.Context(), &DeployRequest{Model: "org/model-GGUF", Nodes: []string{"text", "vision"}})
 	require.NoError(t, err)
@@ -107,8 +107,8 @@ func TestDeployPlansDefaultsAndExplicitSelection(t *testing.T) {
 	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp"}}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
 	t.Cleanup(func() { s.Stop(context.Background()) })
-	s.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-		return []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}, nil
+	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}}, nil
 	}
 	req := &DeployRequest{Model: "org/model-GGUF", File: "Q8_0", Nodes: []string{"worker"}}
 	plans, err := s.planDeploy(context.Background(), req, req.Nodes)
@@ -150,8 +150,8 @@ func TestDeployCarriesPlanAndForceBypassesPresence(t *testing.T) {
 	cfg := featureTestConfig(t)
 	router := &deploymentPlanRouter{providers: map[string][]string{"a": {"llamacpp"}, "b": {"llamacpp"}}, fullyPresent: map[string]bool{"a": true}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg }).WithNodeURLResolver(func(string) string { return "https://peer:9090" })
-	s.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-		return []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}, nil
+	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}}, nil
 	}
 	for _, force := range []bool{false, true} {
 		router.calls = nil
@@ -253,16 +253,16 @@ func (r *unreachableRouter) Route(ctx context.Context, req *routing.Request) (*r
 func TestDeployPlanErrorsSayWhose(t *testing.T) {
 	t.Parallel()
 	cfg := featureTestConfig(t)
-	listing := func(err error) func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-		return func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-			return []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}, err
+	listing := func(err error) func(context.Context, string) (metadata.RepoFiles, error) {
+		return func(context.Context, string) (metadata.RepoFiles, error) {
+			return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}}, err
 		}
 	}
 	unknown := []string{"imaginary"}
 	cases := []struct {
 		name   string
 		apps   bool
-		files  func(context.Context, string) ([]metadata.TreeFileEntry, error)
+		files  func(context.Context, string) (metadata.RepoFiles, error)
 		req    DeployRequest
 		status int
 	}{
@@ -305,5 +305,72 @@ func TestDeployPlanErrorsSayWhose(t *testing.T) {
 			require.ErrorAs(t, err, &routed)
 			assert.Equal(t, tc.status, routed.StatusCode, err.Error())
 		})
+	}
+}
+
+func TestDeployUnnamedVariantListsBaseWeights(t *testing.T) {
+	cfg := featureTestConfig(t)
+	require.NoError(t, cfg.UpdateApp("llamacpp", func(svc *pkgConfig.ServiceConfig) error {
+		svc.Models = map[string]pkgConfig.ModelSpec{"variant": {From: "org/model-GGUF#Q8_0"}}
+		return nil
+	}))
+	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp"}}}
+	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
+	s.repoFiles = func(_ context.Context, repo string) (metadata.RepoFiles, error) {
+		require.Equal(t, "org/model-GGUF", repo)
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}}, nil
+	}
+	plans, err := s.planDeploy(t.Context(), &DeployRequest{Model: "variant", Registry: "huggingface"}, []string{"worker"})
+	require.NoError(t, err)
+	require.Equal(t, "org/model-GGUF", plans["worker"].Download.Repo)
+	require.Equal(t, "Q8_0", plans["worker"].Download.Weights)
+}
+
+func TestDeployUnnamedVariantRefusesWrongProviderBeforeStarting(t *testing.T) {
+	cfg := featureTestConfig(t)
+	require.NoError(t, cfg.UpdateApp("llamacpp", func(svc *pkgConfig.ServiceConfig) error {
+		svc.Models = map[string]pkgConfig.ModelSpec{"foo+fast": {From: "org/model#Q8_0"}}
+		return nil
+	}))
+	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"vllm"}}}
+	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
+	t.Cleanup(func() { s.Stop(context.Background()) })
+	s.repoFiles = func(_ context.Context, repo string) (metadata.RepoFiles, error) {
+		require.Equal(t, "org/model", repo)
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model-Q8_0.gguf", Size: 7}}}, nil
+	}
+	_, err := s.Deploy(t.Context(), &DeployRequest{Model: "foo+fast", Registry: "huggingface", Nodes: []string{"worker"}})
+	require.ErrorContains(t, err, `provider "llamacpp" is not eligible on node "worker"`)
+	require.Empty(t, s.tracker.ListDeployments(false))
+	for _, call := range router.calls {
+		u, err := url.Parse(call.Path)
+		require.NoError(t, err)
+		require.Equal(t, "/zzrouter/v1/internal/nodes/compatible", u.Path, "refuse before starting any download")
+	}
+}
+
+func TestCompatibleNodesArchitectureExclusionsOmittedWhenEmpty(t *testing.T) {
+	for _, excluded := range [][]string{nil, {}, {"strata"}} {
+		e := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} },
+			func(_, _, _, _, _ string, _, _ bool) deployEligibility {
+				return deployEligibility{Providers: []string{"llamacpp"}, ArchitectureExcluded: excluded}
+			}, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+				return process.MemoryAssessment{ContextMode: "numeric", Status: "fit", Reason: "sized"}
+			})
+		engine := gin.New()
+		NewNodesController(capacityService(e)).RegisterPublicRoutes(engine.Group(""))
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nodes/compatible?model=org/model", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+		var response struct {
+			Data []map[string]json.RawMessage `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+		require.Len(t, response.Data, 1)
+		if len(excluded) == 0 {
+			require.NotContains(t, response.Data[0], "architecture_excluded_providers")
+		} else {
+			require.JSONEq(t, `["strata"]`, string(response.Data[0]["architecture_excluded_providers"]))
+		}
 	}
 }

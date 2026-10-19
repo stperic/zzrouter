@@ -13306,7 +13306,7 @@ components:
           type: string
           # Full pkg/httperr.AllParamErrorCodes() enum; pinned by
           # TestOpenAPIParamErrorEnum_MatchesDeclaredCodes.
-          enum: [unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, duplicate_flag, excluded_by_runtime, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use, invalid_model_category, invalid_file_name, file_exists, file_not_found, download_in_progress, provider_model_store_unsupported]
+          enum: [architecture_unsupported, unknown_flag, unknown_field, wrong_type, out_of_range, unknown_node, unknown_model, coercion_failed, retired, duplicate_flag, excluded_by_runtime, route_unknown, replica_unknown, replica_last_in_group, route_not_claimed, reserved_name, required, invalid_value, preflight_failed, unknown_asset, asset_in_use, invalid_model_category, invalid_file_name, file_exists, file_not_found, download_in_progress, provider_model_store_unsupported]
         got:
           description: |
             The value that was rejected. Omitted where echoing it would

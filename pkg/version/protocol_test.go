@@ -306,3 +306,16 @@ func TestExplainableAssessmentProtocolCutover(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestArchitectureProtocolWindow(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min != MinClusterProtocolVersion || window.Max != ClusterProtocolVersion {
+		t.Fatalf("architecture contract needs the local protocol window, got %+v", window)
+	}
+	if err := window.Check(ClusterProtocolVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := window.Check(MinClusterProtocolVersion - 1); err == nil {
+		t.Fatal("the preceding protocol cannot accept architecture declarations")
+	}
+}

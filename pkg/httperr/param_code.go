@@ -7,7 +7,9 @@ package httperr
 type ParamErrorCode string
 
 const (
-	CodeUnknownFlag ParamErrorCode = "unknown_flag"
+	// CodeArchitectureUnsupported refuses a provider excluded by model architecture.
+	CodeArchitectureUnsupported ParamErrorCode = "architecture_unsupported"
+	CodeUnknownFlag             ParamErrorCode = "unknown_flag"
 	// CodeUnknownField is a STRUCTURAL failure: a key the merge-patch
 	// body does not define, as opposed to CodeUnknownFlag's unknown
 	// parameter name inside a block this endpoint does define.
@@ -91,6 +93,7 @@ const (
 // constant is declared without being listed here.
 func AllParamErrorCodes() []ParamErrorCode {
 	return []ParamErrorCode{
+		CodeArchitectureUnsupported,
 		CodeUnknownFlag,
 		CodeUnknownField,
 		CodeWrongType,

@@ -231,8 +231,8 @@ func TestRunsService_AutoDeployTargetsLaunchNode(t *testing.T) {
 			}))
 			router := &autoDeployRouter{launched: make(chan routing.Request, 1)}
 			deployments := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
-			deployments.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-				return []metadata.TreeFileEntry{{Name: "base-Q4_K_M.gguf", Size: 7}}, nil
+			deployments.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+				return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "base-Q4_K_M.gguf", Size: 7}}}, nil
 			}
 			service := NewRunsService(router).WithAutoDeploy(deployments, func(string) bool { return false },
 				func() *pkgConfig.AppsConfig { return cfg }, newJobsForChainTest(t))

@@ -82,13 +82,15 @@ const versionUnknown = "unknown"
 // here rather than reaching back into Protocols/Install/AppsConfig at
 // the call site.
 type LocalProviderInfo struct {
-	RunScope string         `json:"run_scope,omitempty"`
-	Key      string         `json:"key"`
-	Name     string         `json:"name"`
-	Type     string         `json:"type"`
-	Kind     string         `json:"kind"`
-	Mode     string         `json:"mode"`
-	State    LifecycleState `json:"state"`
+	// Architectures carries declared family compatibility with the inventory snapshot.
+	Architectures []string       `json:"architectures,omitempty"`
+	RunScope      string         `json:"run_scope,omitempty"`
+	Key           string         `json:"key"`
+	Name          string         `json:"name"`
+	Type          string         `json:"type"`
+	Kind          string         `json:"kind"`
+	Mode          string         `json:"mode"`
+	State         LifecycleState `json:"state"`
 	// Managed reports that zzRouter put this install here (marker file
 	// plus a binary), which is what makes uninstalling it our business.
 	// It is a real field rather than one of the derived booleans below
@@ -183,6 +185,9 @@ func (m *ProviderAppManager) LocalInfo(nodeName string) []LocalProviderInfo {
 			Description:      describe(svc.Name, state),
 			SupportsRouting:  state.IsRoutable() && svc.RunScope != config.RunScopeNode,
 			SupportsDownload: state.IsRoutable() && svc.RunScope != config.RunScopeNode,
+		}
+		if svc.Capabilities != nil {
+			info.Architectures = svc.Capabilities.Architectures
 		}
 		if info.Version == "" {
 			info.Version = versionUnknown

@@ -541,6 +541,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "architectures": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
         "formats": {
           "type": "array",
           "items": {

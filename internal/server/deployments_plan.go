@@ -15,8 +15,10 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 type deployPlan struct {
@@ -76,6 +78,10 @@ func (s *DeploymentsService) planDeploy(ctx context.Context, req *DeployRequest,
 		}
 		return nil, nil
 	}
+	owner := req.Provider
+	if owner == "" {
+		owner, _, _ = cfg.LookupVariant(req.Model)
+	}
 	registry := req.Registry
 	if registry == "" {
 		registry = constants.RepoOllama
@@ -83,40 +89,16 @@ func (s *DeploymentsService) planDeploy(ctx context.Context, req *DeployRequest,
 			registry = constants.RepoHuggingFace
 		}
 	}
+	huggingFace := registry == constants.RepoHuggingFace || registry == constants.RepoHFAlias
 	plans := make(map[string]deployPlan, len(nodes))
-	var listing []metadata.TreeFileEntry
-	listed := false
+	listing, err := s.deployListing(ctx, cfg, req, owner, huggingFace)
+	if err != nil {
+		return nil, err
+	}
 	for _, node := range nodes {
-		provider := req.Provider
-		if s.isCloudRegistry(registry) {
-			if provider != "" && provider != registry {
-				return nil, invalidInputf("cloud registry %q requires provider %q", registry, registry)
-			}
-			provider = registry
-		} else {
-			q := url.Values{"model": {req.Model}, "registry": {registry}, "format": {req.Format}, "force": {strconv.FormatBool(req.Force)}}
-			got, err := routeAndParse[struct {
-				Data []struct {
-					Providers []string `json:"eligible_providers"`
-				} `json:"data"`
-			}](ctx, s.router, "GET", "/zzrouter/v1/internal/nodes/compatible?"+q.Encode(), node, nil)
-			if err != nil {
-				return nil, fmt.Errorf("resolve provider on %s: %w", node, err)
-			}
-			var eligible []string
-			for _, n := range got.Data {
-				eligible = append(eligible, n.Providers...)
-			}
-			slices.Sort(eligible)
-			eligible = slices.Compact(eligible)
-			if provider == "" {
-				if len(eligible) != 1 {
-					return nil, invalidInputf("node %q has %d eligible providers (%s); specify provider", node, len(eligible), strings.Join(eligible, ", "))
-				}
-				provider = eligible[0]
-			} else if !slices.Contains(eligible, provider) {
-				return nil, invalidInputf("provider %q is not eligible on node %q", provider, node)
-			}
+		provider, err := s.deployProvider(ctx, req, owner, node, registry, listing.Architecture)
+		if err != nil {
+			return nil, err
 		}
 		svc, ok := cfg.LookupApp(provider)
 		if !ok {
@@ -127,22 +109,9 @@ func (s *DeploymentsService) planDeploy(ctx context.Context, req *DeployRequest,
 			return nil, invalidInputf("provider %q: %w", provider, err)
 		}
 		p := deployPlan{Provider: provider, Features: names}
-		if registry == constants.RepoHuggingFace || registry == constants.RepoHFAlias {
-			if s.repoFiles == nil {
-				return nil, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "registry file planner is unavailable")
-			}
+		if huggingFace {
 			d := featureDownload(req, svc, names)
-			if !listed {
-				listing, err = s.repoFiles(ctx, d.Repo)
-				if errors.Is(err, huggingface.ErrModelNotFound) {
-					return nil, invalidInputf("%w", err)
-				}
-				if err != nil {
-					return nil, err
-				}
-				listed = true
-			}
-			d.Files, err = huggingface.Plan(listing, d)
+			d.Files, err = huggingface.Plan(listing.Files, d)
 			if err != nil {
 				return nil, invalidInputf("%w", err)
 			}
@@ -158,6 +127,67 @@ func (s *DeploymentsService) planDeploy(ctx context.Context, req *DeployRequest,
 		plans[node] = p
 	}
 	return plans, nil
+}
+
+func (s *DeploymentsService) deployListing(ctx context.Context, cfg *pkgConfig.AppsConfig, req *DeployRequest, owner string, huggingFace bool) (metadata.RepoFiles, error) {
+	if !huggingFace {
+		return metadata.RepoFiles{}, nil
+	}
+	if s.repoFiles == nil {
+		return metadata.RepoFiles{}, newProblemError(http.StatusServiceUnavailable, "Service Unavailable", "registry file planner is unavailable")
+	}
+	svc, _ := cfg.LookupApp(owner)
+	repo, _, _ := strings.Cut(svc.WeightsOf(req.Model), "#")
+	listing, err := s.repoFiles(ctx, repo)
+	if errors.Is(err, huggingface.ErrModelNotFound) {
+		return listing, invalidInputf("%w", err)
+	}
+	return listing, err
+}
+
+func (s *DeploymentsService) deployProvider(ctx context.Context, req *DeployRequest, provider, node, registry, architecture string) (string, error) {
+	if s.isCloudRegistry(registry) {
+		if provider != "" && provider != registry {
+			return "", invalidInputf("cloud registry %q requires provider %q", registry, registry)
+		}
+		return registry, nil
+	}
+	q := url.Values{"model": {req.Model}, "registry": {registry}, "format": {req.Format}, "architecture": {architecture}, "allow_unknown_architecture": {strconv.FormatBool(provider != "")}, "force": {strconv.FormatBool(req.Force)}}
+	got, err := routeAndParse[struct {
+		Data []deployEligibility `json:"data"`
+	}](ctx, s.router, "GET", "/zzrouter/v1/internal/nodes/compatible?"+q.Encode(), node, nil)
+	if err != nil {
+		return "", fmt.Errorf("resolve provider on %s: %w", node, err)
+	}
+	var eligible, excluded []string
+	for _, n := range got.Data {
+		eligible = append(eligible, n.Providers...)
+		excluded = append(excluded, n.ArchitectureExcluded...)
+	}
+	slices.Sort(eligible)
+	eligible = slices.Compact(eligible)
+	if (provider == "" && len(eligible) == 0 && len(excluded) > 0) || slices.Contains(excluded, provider) {
+		hint := fmt.Sprintf("Call zz_model_download with model %q, node %q and a provider from eligible_providers", req.Model, node)
+		if len(eligible) == 0 {
+			hint = fmt.Sprintf("Call zz_providers with node %q to find a provider accepting this architecture before zz_provider_install and zz_model_download", node)
+		}
+		problem := newRouteProblemError(http.StatusBadRequest, "Bad Request", "provider is excluded by model architecture", httperr.RouteErrorCode(httperr.CodeArchitectureUnsupported), node)
+		problem.ProblemDetails.Errors = []utils.ParamError{{
+			Key: "provider", Code: string(httperr.CodeArchitectureUnsupported),
+			Got:     map[string]any{"provider": provider, "architecture": architecture, "eligible_providers": eligible},
+			Message: "choose an eligible provider for this architecture", Hint: hint,
+		}}
+		return "", problem
+	}
+	if provider == "" {
+		if len(eligible) != 1 {
+			return "", invalidInputf("node %q has %d eligible providers (%s); specify provider", node, len(eligible), strings.Join(eligible, ", "))
+		}
+		provider = eligible[0]
+	} else if !slices.Contains(eligible, provider) {
+		return "", invalidInputf("provider %q is not eligible on node %q", provider, node)
+	}
+	return provider, nil
 }
 
 func deployPlanKey(provider string, names []string, download *metadata.DownloadRequest) string {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
+
+	"github.com/stperic/zzrouter/pkg/model/gguf"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -291,7 +294,26 @@ func (r *Registry) autoAssignApps(models []*metadata.ModelMetadata) {
 		if format == "" {
 			format = DetectFormatFromTags(extractTagsFromExtra(model.Extra))
 		}
-		provider, host := AutoAssignProvider(model.Name, format, r.appsConfigFn())
+		details, _ := model.Extra["details"].(map[string]any)
+		if format == metadata.FormatGGUF {
+			if f, err := os.Open(model.FullPath); err == nil {
+				architecture, err := gguf.ReadArchitecture(f)
+				_ = f.Close()
+				if err == nil && architecture != "" {
+					if model.Extra == nil {
+						model.Extra = map[string]any{}
+					}
+					if details == nil {
+						details = map[string]any{}
+						model.Extra["details"] = details
+					}
+					details["family"] = architecture
+					details["families"] = []string{architecture}
+				}
+			}
+		}
+		architecture, _ := details["family"].(string)
+		provider, host := AutoAssignProvider(model.Name, format, architecture, r.appsConfigFn())
 		if provider != "" {
 			model.AssignedApp = provider
 			model.AssignedNode = host

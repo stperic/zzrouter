@@ -35,7 +35,7 @@ type DeploymentsService struct {
 	tracker        *DeploymentTracker
 	nodeInfo       NodeNamer
 	appsConfig     func() *pkgConfig.AppsConfig
-	repoFiles      func(context.Context, string) ([]metadata.TreeFileEntry, error)
+	repoFiles      func(context.Context, string) (metadata.RepoFiles, error)
 	refresher      *runsRefresher
 	jobs           *jobAccess
 	shutdown       func() context.Context

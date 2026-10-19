@@ -494,10 +494,12 @@ type AppMetadata struct {
 
 // AppCapabilities defines what model formats an app supports
 type AppCapabilities struct {
-	Formats    []string `yaml:"formats"`               // Supported formats: gguf, safetensors, pytorch, etc.
-	FormatNote string   `yaml:"format_note,omitempty"` // Optional note to display with format (e.g., "ollama" -> "gguf(ollama)")
-	Models     []string `yaml:"models"`                // Explicit model assignments (overrides format matching, supports wildcards)
-	Priority   int      `yaml:"priority"`              // Priority for auto-assignment (0-10, higher = more preferred)
+	// Architectures limits format compatibility to these model families.
+	Architectures []string `yaml:"architectures,omitempty" json:"architectures,omitempty"`
+	Formats       []string `yaml:"formats"`               // Supported formats: gguf, safetensors, pytorch, etc.
+	FormatNote    string   `yaml:"format_note,omitempty"` // Optional note to display with format (e.g., "ollama" -> "gguf(ollama)")
+	Models        []string `yaml:"models"`                // Explicit model assignments (overrides format matching, supports wildcards)
+	Priority      int      `yaml:"priority"`              // Priority for auto-assignment (0-10, higher = more preferred)
 	// DefaultVariant selects which file to download from a multi-variant
 	// repo (e.g. GGUF Q4_K_M vs Q8_0 on the same HF model). Read by the
 	// auto-deploy path when /runs is invoked with a model that isn't yet

@@ -44,7 +44,9 @@ func TestCompatibleNodesCachedOversizeNotAffirmative(t *testing.T) {
 	s := featureRoutingServer(t)
 	require.True(t, s.model.Cache.HasModel("same-model"))
 	assert.True(t, s.isLocalNodeCompatible("same-model", "huggingface", "vllm"), "cached weights retain download eligibility")
-	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"vllm"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, string, bool, bool) deployEligibility {
+		return deployEligibility{Providers: []string{"vllm"}}
+	}, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
 		return process.MemoryAssessment{ContextMode: "numeric", Status: "no_fit", Reason: "weight lower bound", RequiredMiB: 10001, CapacityMiB: 10000}
 	})
 	result, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "same-model"})
@@ -66,14 +68,16 @@ func TestCachedModelDownloadEligibilityIgnoresUnsupportedFormat(t *testing.T) {
 	s.model.Cache = cache.New(cache.Config{Node: s.node, NodeConfig: &config.NodeConfig{}, Registry: func() *modelregistry.Registry { return nil }, AppsConfig: func() *config.AppsConfig { return cfg }, ClusterClient: s.getClusterClient})
 	require.NoError(t, s.model.Cache.RefreshCacheSync(t.Context()))
 	require.True(t, s.model.Cache.HasModel("cached.safetensors"))
-	require.Empty(t, s.eligibleDeployProviders("cached.safetensors", "huggingface", "", "gguf-only", false))
+	require.Empty(t, s.eligibleDeployProviders("cached.safetensors", "huggingface", "", "", "gguf-only", false, false).Providers)
 	assert.True(t, s.isLocalNodeCompatible("cached.safetensors", "huggingface", "gguf-only"))
 	assert.False(t, s.isLocalNodeCompatible("uncached.safetensors", "huggingface", "gguf-only"))
 }
 
 func TestCompatibleNodesPublicProvidersIncludeOnlyFits(t *testing.T) {
 	providers := []string{"fit", "no-fit", "unknown"}
-	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return providers }, func(_ context.Context, req prov_apps.EnsureRequest) process.MemoryAssessment {
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, string, bool, bool) deployEligibility {
+		return deployEligibility{Providers: providers}
+	}, func(_ context.Context, req prov_apps.EnsureRequest) process.MemoryAssessment {
 		status := map[string]string{"fit": "fit", "no-fit": "no_fit", "unknown": "unknown"}[req.Provider]
 		return process.MemoryAssessment{ContextMode: "numeric", Status: status, Reason: status}
 	})
@@ -222,7 +226,7 @@ func TestCompatibleNodesWorkerAssessment(t *testing.T) {
 }
 
 func TestCompatibleNodesCurrentProviderNotEligible(t *testing.T) {
-	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return nil }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, string, bool, bool) deployEligibility { return deployEligibility{} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
 		t.Fatal("ineligible provider must not be assessed")
 		return process.MemoryAssessment{}
 	})
@@ -238,7 +242,9 @@ func TestCompatibleNodesCurrentProviderNotEligible(t *testing.T) {
 }
 
 func TestDeploymentEligibilityIgnoresCapacityUnknown(t *testing.T) {
-	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, func(string, string, string, string, bool) []string { return []string{"llamacpp"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
+	executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "worker"} }, func(string, string, string, string, string, bool, bool) deployEligibility {
+		return deployEligibility{Providers: []string{"llamacpp"}}
+	}, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment {
 		return process.MemoryAssessment{ContextMode: "numeric", Status: "unknown", Reason: "missing weights"}
 	})
 	router := &capacityRouter{serve: func(req *routing.Request) *httptest.ResponseRecorder {
@@ -250,8 +256,8 @@ func TestDeploymentEligibilityIgnoresCapacityUnknown(t *testing.T) {
 	}}
 	cfg := featureTestConfig(t)
 	s := NewDeploymentsService(router, nil, func() *config.AppsConfig { return cfg })
-	s.repoFiles = func(context.Context, string) ([]metadata.TreeFileEntry, error) {
-		return []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj.gguf", Size: 9}}, nil
+	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj.gguf", Size: 9}}}, nil
 	}
 	plans, err := s.planDeploy(t.Context(), &DeployRequest{Model: "org/model-GGUF", Provider: "llamacpp"}, []string{"worker"})
 	require.NoError(t, err)
@@ -318,7 +324,9 @@ func TestAutoContextRESTPreservesEvidence(t *testing.T) {
 			if status == "unknown" {
 				evidence.UnknownCause = process.ModelUnmodelled
 			}
-			executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, bool) []string { return []string{"p"} }, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment { return evidence })
+			executor := NewNodesExecutor(func() map[string]any { return map[string]any{"name": "node"} }, func(string, string, string, string, string, bool, bool) deployEligibility {
+				return deployEligibility{Providers: []string{"p"}}
+			}, func(context.Context, prov_apps.EnsureRequest) process.MemoryAssessment { return evidence })
 			nodes, err := capacityService(executor).ListCompatibleNodes(t.Context(), &ListCompatibleNodesRequest{Model: "m"})
 			require.NoError(t, err)
 			if status == "fit" {

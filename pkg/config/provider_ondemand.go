@@ -70,6 +70,9 @@ func (p *OnDemandProvider) GetDescription() string { return p.Description }
 // pool, and a valid execution type. Command may be empty for template
 // entries awaiting configurator fill.
 func (p *OnDemandProvider) Validate() error {
+	if err := p.Capabilities.ValidateArchitectures(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
@@ -152,7 +155,7 @@ func (p *OnDemandProvider) validateRunScope() error {
 		if p.Protocol != "" || len(p.Models) != 0 || len(p.Features) != 0 || p.Search != nil {
 			return fmt.Errorf("node run_scope cannot declare protocol, models, features or search")
 		}
-		if p.Capabilities != nil && (len(p.Capabilities.Formats) != 0 || len(p.Capabilities.WireEndpoints) != 0 || len(p.Capabilities.Models) != 0) {
+		if p.Capabilities != nil && (len(p.Capabilities.Formats) != 0 || len(p.Capabilities.WireEndpoints) != 0 || len(p.Capabilities.Models) != 0 || len(p.Capabilities.Architectures) != 0) {
 			return fmt.Errorf("node run_scope cannot declare model capabilities")
 		}
 		if p.Defaults != nil && len(p.Defaults.Endpoints) != 0 {

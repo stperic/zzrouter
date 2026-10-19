@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Select engines by model architecture as well as format. A declared architecture
+  shadows format-only providers; explicit model assignments still win. GGUF shard
+  1 supplies `details.family`, ahead of Hugging Face metadata. Incompatible deploys
+  return `architecture_unsupported`. Cluster protocol is now 16/16; upgrade all
+  coordinators and workers together.
+
 - Share MCP server configuration, schemas, errors and HTTP transport through
   `common/mcp`. Keep tool registration contracts, REST dispatch and authorization
   in zzRouter.
