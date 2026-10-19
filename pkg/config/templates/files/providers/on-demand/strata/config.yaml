@@ -1,0 +1,59 @@
+# MANAGED FILE : overwritten on every cluster sync.
+# Edit on the coordinator, never here.
+description: "Strata engine for Qwen3.8-Flash-Next"
+protocol: openai
+enabled: false
+search: {registry: huggingface}
+features:
+  tools: {}
+# pinned_version is release-managed and refreshed on startup.
+# An explicit install-call version overrides this seed.
+# version_source below reports whether upstream has moved on.
+pinned_version: "0.1.44.1"
+version_source:
+  type: github_release
+  repo: Niko1221/Strata
+  strip_prefix: "v"
+  compare: pep440
+platforms: [{os: linux, arch: amd64}]
+requirements:
+  disk_space: "20GB"
+  python: {min: "3.10"}
+  gpu: {vendor: nvidia, policy: required}
+capabilities:
+  formats: [gguf]
+  architectures: [qwen4exp]
+  wire_endpoints: [chat_completions, responses]
+defaults:
+  parameters:
+    max-context: "131072"
+    kv: int8
+    kv-resident: "32768"
+    expert-cache: auto
+    prefill: auto
+    spec: "4"
+    spec-min-p: "0.5"
+  metadata:
+    context_param: max-context
+    shutdown_timeout: gpu
+runtime:
+  port_range: [8100, 8109]
+  base_port: 8100
+  keep_alive: 30m
+  max_concurrent_requests: 1
+  execution:
+    type: cli
+    command: strata-launch
+    args: ["--model-path", "${MODEL_PATH}", "--name", "${MODEL}", "--port", "${PORT}", "--"]
+    wire_model: name
+  health_check:
+    path: /health
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    readiness_probe:
+      serve:
+        path: /v1/chat/completions
+        method: POST
+        body: '{"model":"${WIRE_MODEL}","messages":[{"role":"user","content":"ping"}],"max_tokens":1}'
+      timeout: 900s

@@ -408,7 +408,7 @@
       "required": ["manager"],
       "additionalProperties": false,
       "properties": {
-        "manager": { "enum": ["auto", "systemd", "launchd", "nssm", "none"] }
+        "manager": { "enum": ["auto", "systemd", "launchd", "nssm"] }
       }
     },
     "search": {

@@ -134,6 +134,9 @@ func TestDeployRefusesAmbiguousOrWrongProviderBeforeStarting(t *testing.T) {
 	router := &deploymentPlanRouter{providers: map[string][]string{"worker": {"llamacpp", "mlx"}}}
 	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg })
 	t.Cleanup(func() { s.Stop(context.Background()) })
+	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
+		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}}}, nil
+	}
 	for _, provider := range []string{"", "vllm"} {
 		_, err := s.Deploy(context.Background(), &DeployRequest{Model: "org/model", Nodes: []string{"worker"}, Provider: provider, Force: true})
 		require.Error(t, err)

@@ -222,10 +222,10 @@ func TestExplicitUnavailableServiceDoesNotFallBack(t *testing.T) {
 	require.Nil(t, manager)
 }
 
-func TestServiceManagerNoneUsesZZRouterSupervisor(t *testing.T) {
+func TestServiceManagerNoneIsRefused(t *testing.T) {
 	cfg := config.ServiceConfig{Service: &config.ServiceManagement{Manager: "none"}}
-	manager, err := serviceManager(context.Background(), "strata", cfg)
-	require.NoError(t, err)
+	manager, err := serviceManager(context.Background(), "generic-daemon", cfg)
+	require.Error(t, err)
 	require.Nil(t, manager)
 }
 
