@@ -3,7 +3,6 @@ package process
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"time"
 
@@ -24,8 +23,8 @@ type TerminateRequest struct {
 	StartToken int64
 	Inspector
 	ProcessGroupID int
-	StdinPipe      io.WriteCloser // Windows: close to signal launcher; nil on Unix
-	JobHandle      uintptr        // Windows: Job Object handle; 0 on Unix
+	StdinPipe      func()  // Windows: close to signal launcher
+	JobHandle      uintptr // Windows: Job Object handle; 0 on Unix
 	Graceful       time.Duration
 }
 
@@ -51,12 +50,12 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 
 	// Graceful: platform-specific (SIGTERM on Unix, stdin-pipe close on Windows)
 	if err := terminateProcessTree(req); err != nil {
-		if !ProcessExists(int32(req.PID)) {
+		if !processTreeExists(req) {
 			return nil
 		}
 	}
 
-	// Wait for process to exit
+	// Wait for every member to release its resources.
 	gracefulTimer := time.After(graceful)
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -68,7 +67,7 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 		case <-gracefulTimer:
 			return forceKill(req)
 		case <-ticker.C:
-			if !ProcessExists(int32(req.PID)) {
+			if !processTreeExists(req) {
 				return nil
 			}
 		}
@@ -78,7 +77,7 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 // forceKill sends SIGKILL (Unix) or TerminateJobObject (Windows) to the
 // process tree.
 func forceKill(req TerminateRequest) error {
-	if !req.Owns(req.PID, req.StartToken) {
+	if !req.Owns(req.PID, req.StartToken) && (req.ProcessGroupID <= 0 || ProcessExists(int32(req.PID))) {
 		return nil
 	}
 
@@ -93,7 +92,7 @@ func forceKill(req TerminateRequest) error {
 	for {
 		select {
 		case <-forceTimer:
-			if !ProcessExists(int32(req.PID)) {
+			if !processTreeExists(req) {
 				return nil
 			}
 			if killErr != nil {
@@ -101,7 +100,7 @@ func forceKill(req TerminateRequest) error {
 			}
 			return fmt.Errorf("process %d did not exit after force kill", req.PID)
 		case <-ticker.C:
-			if !ProcessExists(int32(req.PID)) {
+			if !processTreeExists(req) {
 				return nil
 			}
 		}

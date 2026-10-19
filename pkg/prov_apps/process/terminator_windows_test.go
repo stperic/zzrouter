@@ -79,3 +79,14 @@ func TestTerminateWindowsStaleJobHandleFallsBackToLiveProcess(t *testing.T) {
 	require.EqualValues(t, windows.WAIT_OBJECT_0, event)
 	assert.False(t, ProcessExists(int32(pid)))
 }
+
+func TestTerminateWindowsClosesLauncherStdin(t *testing.T) {
+	pid, startToken, _, stdin, wait := startTerminateWindowsHelper(t)
+	closed := 0
+	require.NoError(t, Terminate(t.Context(), TerminateRequest{PID: pid, StartToken: startToken, StdinPipe: func() {
+		closed++
+		require.NoError(t, stdin.Close())
+	}}))
+	require.Equal(t, 1, closed)
+	require.NoError(t, <-wait)
+}

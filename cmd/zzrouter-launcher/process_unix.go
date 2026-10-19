@@ -8,9 +8,10 @@ import (
 	"syscall"
 )
 
-// setupProcessGroup configures the child to run in its own process group.
-func setupProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+// setupProcessGroup preserves a node-owned group; standalone launchers isolate the child.
+func setupProcessGroup(cmd *exec.Cmd, nodeOwned bool) bool {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: !nodeOwned}
+	return nodeOwned
 }
 
 // assignChildToJob is a no-op on Unix (Job Objects are Windows-only).

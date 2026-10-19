@@ -3,6 +3,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -18,14 +19,9 @@ func setProcAttributes(cmd *exec.Cmd) {
 	cmd.SysProcAttr.Setpgid = !cmd.SysProcAttr.Setsid
 }
 
-// setSpawnAttributes configures process attributes based on whether the
-// zzrouter-launcher wrapper is in use.
-// Unix: when NOT using the launcher, set Setpgid. When using the launcher,
-// skip — the launcher creates its own group for the child internally.
-func setSpawnAttributes(cmd *exec.Cmd, usingLauncher bool) {
-	if !usingLauncher {
-		setProcAttributes(cmd)
-	}
+// setSpawnAttributes gives direct and wrapped launches one node-owned group.
+func setSpawnAttributes(cmd *exec.Cmd, _ bool) {
+	setProcAttributes(cmd)
 }
 
 // getProcessGroupID returns the process group ID for a process.
@@ -71,4 +67,12 @@ func killProcessTree(req TerminateRequest) error {
 		return nil //nolint:nilerr // process already gone: kill is idempotent
 	}
 	return proc.Kill()
+}
+
+// processTreeExists keeps waiting after the leader exits while its group drains.
+func processTreeExists(req TerminateRequest) bool {
+	if req.ProcessGroupID > 0 {
+		return !errors.Is(syscall.Kill(-req.ProcessGroupID, 0), syscall.ESRCH)
+	}
+	return ProcessExists(int32(req.PID))
 }
