@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -149,7 +151,8 @@ type paramsInput struct {
 }
 type paramsGetInput struct {
 	paramsInput
-	Grep string `json:"grep,omitempty" jsonschema:"Literal text matched case-insensitively in accepted parameter names and descriptions, for example context, kv or thread. Adds matches to the set parameters in accepts."`
+	Endpoint string `json:"endpoint,omitempty" jsonschema:"Run endpoint to read: chat (default), embeddings or reranking. Its endpoint-scoped parameters join the values, accepts and grep; endpoint_parameters names them when it is omitted."`
+	Grep     string `json:"grep,omitempty" jsonschema:"Literal text matched case-insensitively in accepted parameter names and descriptions, for example context, kv or thread. Adds matches to the set parameters in accepts."`
 }
 type patchInput struct {
 	paramsInput
@@ -518,16 +521,32 @@ func (d dispatcher) install(ctx context.Context, in installInput) (agentOutput, 
 }
 
 func (d dispatcher) params(ctx context.Context, in paramsGetInput) (agentOutput, error) {
-	out, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{"node": {in.Node}, "model": {in.Model}}}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use zz_params_set to change them.")
+	query := url.Values{"node": {in.Node}, "model": {in.Model}}
+	if in.Endpoint != "" {
+		query.Set("endpoint", in.Endpoint)
+	}
+	out, err := d.childObject(ctx, request{method: http.MethodGet, query: query}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use zz_params_set to change them.")
 	if err != nil {
 		return out, err
 	}
 	// Config is identical on every node, so the coordinator owns the dictionary.
-	schema, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, providersRoute, in.Provider, "/schema", "", "parameters", "")
+	schema, err := d.childObject(ctx, request{method: http.MethodGet, query: url.Values{}}, providersRoute, in.Provider, "/schema", "", "parameters endpoints", "")
 	if err != nil {
 		return out, err
 	}
-	all, _ := schema.fields["parameters"].(map[string]any)
+	base, _ := schema.fields["parameters"].(map[string]any)
+	endpoints, _ := schema.fields["endpoints"].(map[string]any)
+	all := maps.Clone(base)
+	scoped := map[string][]string{}
+	for name, raw := range endpoints {
+		overlay, _ := raw.(map[string]any)
+		params, _ := overlay["parameters"].(map[string]any)
+		if name == in.Endpoint {
+			maps.Copy(all, params) // the endpoint's shape wins, as at launch
+		} else if in.Endpoint == "" && len(params) > 0 {
+			scoped[name] = slices.Sorted(maps.Keys(params))
+		}
+	}
 	set, _ := out.fields["parameters"].(map[string]any)
 	accepts := map[string]any{}
 	for key := range set {
@@ -546,6 +565,10 @@ func (d dispatcher) params(ctx context.Context, in paramsGetInput) (agentOutput,
 	out.fields["accepts"], out.fields["accepts_total"] = accepts, len(all)
 	if len(accepts) < len(all) {
 		out.text += " Pass grep to zz_params_get to find more accepted parameter names and descriptions."
+	}
+	if len(scoped) > 0 {
+		out.fields["endpoint_parameters"] = scoped
+		out.text += " endpoint_parameters names parameters that apply only to that endpoint: pass endpoint to zz_params_get for their shapes and values, and set them with zz_params_set under endpoints.<endpoint>.parameters."
 	}
 	return out, nil
 }

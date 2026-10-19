@@ -663,3 +663,56 @@ func TestRunCachePreservesReportedCapacity(t *testing.T) {
 		require.NotContains(t, cache, "kv_pools")
 	}
 }
+
+func TestParamsGetEndpointOverlays(t *testing.T) {
+	const schemaBody = `{"data":{"parameters":{"ctx-size":{"type":"int","description":"Context length"},"threads":{"type":"int"}},` +
+		`"endpoints":{"embeddings":{"parameters":{"pooling":{"type":"string","description":"Pooling strategy for embeddings"},"embd-normalize":{"type":"int"}}},` +
+		`"reranking":{"parameters":{"reranking":{"type":"bool"}}}}}}`
+	for _, tc := range []struct {
+		name, endpoint, grep, resolved string
+		accepts                        []string
+		total                          int
+		scoped                         map[string]any
+	}{
+		{name: "names overlays without an endpoint", resolved: `{"parameters":{"ctx_size":{"value":"4096","tier":"default"}}}`,
+			accepts: []string{"ctx-size"}, total: 2, scoped: map[string]any{"embeddings": []any{"embd-normalize", "pooling"}, "reranking": []any{"reranking"}}},
+		{name: "describes the endpoint's set overlay", endpoint: "embeddings",
+			resolved: `{"parameters":{"ctx_size":{"value":"4096","tier":"default"},"pooling":{"value":"mean","tier":"default","endpoint":"embeddings"}}}`,
+			accepts:  []string{"ctx-size", "pooling"}, total: 4},
+		{name: "greps the endpoint's overlay", endpoint: "embeddings", grep: "normal", resolved: `{"parameters":{}}`,
+			accepts: []string{"embd-normalize"}, total: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/zzrouter/v1/providers/llamacpp/resolved":
+					require.Equal(t, tc.endpoint, r.URL.Query().Get("endpoint"))
+					writeFixture(t, w, []byte(tc.resolved))
+				case "/zzrouter/v1/providers/llamacpp/schema":
+					writeFixture(t, w, []byte(schemaBody))
+				default:
+					t.Fatalf("unexpected %s", r.URL.Path)
+				}
+			})
+			args := map[string]any{"provider": "llamacpp", "grep": tc.grep}
+			if tc.endpoint != "" {
+				args["endpoint"] = tc.endpoint
+			}
+			result := callAgentTool(t, d, "zz_params_get", args)
+			require.NotEqual(t, true, result["isError"], result)
+			fields := result["structuredContent"].(map[string]any)
+			accepts := fields["accepts"].(map[string]any)
+			require.Len(t, accepts, len(tc.accepts))
+			for _, key := range tc.accepts {
+				require.Contains(t, accepts, key)
+			}
+			require.EqualValues(t, tc.total, fields["accepts_total"])
+			if tc.scoped == nil {
+				require.NotContains(t, fields, "endpoint_parameters")
+				return
+			}
+			require.Equal(t, tc.scoped, fields["endpoint_parameters"])
+			require.Contains(t, fmt.Sprint(result["content"]), "endpoints.<endpoint>.parameters")
+		})
+	}
+}

@@ -206,6 +206,8 @@ type resolvedValueDTO struct {
 	// Pattern is the model key that supplied the value when it is not the
 	// model's own name: a glob.
 	Pattern string `json:"pattern,omitempty"`
+	// Endpoint names the endpoints.<endpoint> overlay that set the value.
+	Endpoint string `json:"endpoint,omitempty"`
 	// SHA256 is the content of the asset an asset-typed value names, so
 	// a caller sees which bytes a launch gets, not only which name.
 	SHA256 string `json:"sha256,omitempty"`
@@ -232,16 +234,20 @@ func (e *ParamsExecutor) HandleResolved(c *gin.Context) {
 	if node == "" && e.nodename != nil {
 		node = e.nodename()
 	}
-	model := c.Query("model")
+	model, endpoint := c.Query("model"), c.Query("endpoint")
 
 	cfg, err := getAppConfig(e.appsConfig(), provider)
 	if err != nil {
 		NotFound(c, err.Error())
 		return
 	}
+	if err := cfg.ServesEndpoint(endpoint); err != nil {
+		BadRequest(c, err.Error())
+		return
+	}
 
 	digests := e.assetDigests(provider)
-	resolved := cfg.Resolve(node, model)
+	resolved := cfg.ResolveEndpoint(node, model, endpoint)
 	out := e.resolvedView(provider, resolved, digests)
 	if cfg.Install != nil {
 		out.Install = map[string]pkgConfig.ResolvedInstall{}
@@ -256,7 +262,11 @@ func (e *ParamsExecutor) HandleResolved(c *gin.Context) {
 	}
 	// A remote node's file presence is answered by that node over mTLS.
 	if node != "" && e.nodename != nil && node != e.nodename() && e.router != nil {
-		resp, err := e.router.Route(c.Request.Context(), &routing.Request{Method: http.MethodGet, Path: constants.ZZROUTERInternalApps + "/" + url.PathEscape(provider) + "/resolved?" + url.Values{"model": []string{model}}.Encode(), Node: node})
+		query := url.Values{"model": []string{model}}
+		if endpoint != "" {
+			query.Set("endpoint", endpoint)
+		}
+		resp, err := e.router.Route(c.Request.Context(), &routing.Request{Method: http.MethodGet, Path: constants.ZZROUTERInternalApps + "/" + url.PathEscape(provider) + "/resolved?" + query.Encode(), Node: node})
 		if err != nil {
 			InternalNodeError(c, "failed to resolve model features on target node")
 			return
@@ -331,10 +341,10 @@ func resolvedToDTO(r pkgConfig.ResolvedParams) resolvedResponse {
 		Environment: make(map[string]resolvedValueDTO, len(r.Environment)),
 	}
 	for _, v := range r.Parameters {
-		out.Parameters[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern, Conflicts: v.Conflicts}
+		out.Parameters[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern, Endpoint: v.Endpoint, Conflicts: v.Conflicts}
 	}
 	for _, v := range r.Environment {
-		out.Environment[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern}
+		out.Environment[v.Key] = resolvedValueDTO{Value: v.Value, Tier: v.Tier.String(), Node: v.Node, Model: v.Model, Pattern: v.Pattern, Endpoint: v.Endpoint}
 	}
 	if len(r.Request) > 0 {
 		out.Request = make(map[string]resolvedValueDTO, len(r.Request))

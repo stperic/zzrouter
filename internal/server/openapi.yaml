@@ -1841,6 +1841,14 @@ paths:
           name: model
           description: Model whose overrides participate.
           schema: { type: string }
+        - in: query
+          name: endpoint
+          description: |
+            Run endpoint whose launch to resolve: `chat` (the default),
+            `embeddings` or `reranking`. Each tier's `endpoints.<endpoint>`
+            overlay applies over that tier's base, and values it set carry
+            `endpoint`. An endpoint the provider does not serve is a 400.
+          schema: { type: string }
       responses:
         '200':
           description: OK
@@ -13076,6 +13084,11 @@ components:
           description: |
             The model key that supplied the value when it is not the
             model's own name: a glob such as `qwen*`.
+        endpoint:
+          type: string
+          description: |
+            Set when the value came from that tier's `endpoints.<endpoint>`
+            overlay; patch it under `endpoints.<endpoint>.parameters`.
         sha256:
           type: string
           description: |

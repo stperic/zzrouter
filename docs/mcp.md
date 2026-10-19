@@ -318,7 +318,11 @@ and `from`. Its `accepts` describes every set parameter with type, range and
 description. Pass `grep` to add literal, case-insensitive matches in parameter
 names and descriptions, for example `context`, `kv` or `thread`. Underscores in a
 name query match hyphens. `accepts_total` counts the full dictionary, which remains
-available through REST `/schema` and the TUI editor.
+available through REST `/schema` and the TUI editor. Some parameters apply to one
+run endpoint only (llama.cpp's `pooling` for `embeddings`): without `endpoint`,
+`endpoint_parameters` names them per endpoint; with `endpoint`, they join the
+values, `accepts` and `grep`, and a value set by an overlay carries `endpoint`.
+Set them with `zz_params_set` under `endpoints.<endpoint>.parameters` at a tier.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
