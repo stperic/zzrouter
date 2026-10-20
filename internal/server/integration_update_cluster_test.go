@@ -373,3 +373,34 @@ func TestUpdateVersionQueryReadsProtocolWindow(t *testing.T) {
 	_, err = queryClusterVersion(context.Background(), client, "worker")
 	require.ErrorIs(t, err, update.ErrNodeUnavailable)
 }
+
+func TestUpdateStatusKeepsRolloutEvidence(t *testing.T) {
+	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, UserKey: TestUserKey, NodeName: "coord", ClusterMode: config.ClusterModeCoordinator})
+	installTestUpdateOwner(t, s)
+	record, err := s.updateRollouts.Submit(context.Background(), "2.0.0", []string{"coord"}, nil)
+	require.NoError(t, err)
+	for _, suffix := range []string{"", "?nodes=coord"} {
+		response := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/update/status"+suffix, TestAdminKey, nil)
+		require.Equal(t, http.StatusOK, response.Code, string(response.Body))
+		var body struct {
+			Data struct {
+				Rollouts []update.Rollout `json:"rollouts"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(response.Body, &body))
+		require.Len(t, body.Data.Rollouts, 1)
+		require.Equal(t, record, body.Data.Rollouts[0])
+	}
+	for _, args := range []map[string]any{{}, {"nodes": []string{"coord"}}} {
+		result := mcpWireResponse(t, s, mcpWireRequest(t, "tools/call", "2026-07-28", map[string]any{"name": "zz_update_status", "arguments": args}), http.StatusOK)["result"].(map[string]any)
+		require.NotEqual(t, true, result["isError"])
+		data := result["structuredContent"].(map[string]any)
+		rollouts := data["rollouts"].([]any)
+		require.Len(t, rollouts, 1)
+		outcome := rollouts[0].(map[string]any)
+		require.Equal(t, record.JobID, outcome["job_id"])
+		require.Equal(t, "running", outcome["state"])
+		require.Equal(t, "pending", outcome["nodes"].([]any)[0].(map[string]any)["state"])
+		require.NotContains(t, outcome, "expires_at")
+	}
+}

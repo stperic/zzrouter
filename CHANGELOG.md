@@ -8,6 +8,18 @@
 - Validate launch parameter keys with the shared run-parameter rule: start with
   a letter, followed by letters, digits, hyphens or underscores.
 
+- Retain finished jobs for 24 hours after completion or their latest ID hand-out,
+  whichever is later, using the same window as idempotency replay. Replay starts
+  at request arrival, and warm run reuse extends the existing job's retention.
+  Reuse checks liveness and renews retention atomically. Unavailable job IDs
+  are omitted, and a missing auto-deploy job returns 503 with outcome guidance.
+  Sparse terminal event rings release unused slots while keeping every event.
+  Terminal REST, SSE and MCP job views expose `expires_at`; reads enforce it
+  before cleanup. Job-not-found hints name the outcome tool for each known kind.
+  Jobs disappear on restart; persisted, count-bounded update rollout outcomes
+  survive and are included in `zz_update_status` without an expiry. Cluster
+  protocol advances to 18/18; upgrade every coordinator and worker together.
+
 - Declare new engine flags in an operator-owned `schema:` block without a
   zzRouter release. One parameters PATCH or `zz_params_set` can declare and set
   a flag atomically. Accepted shapes carry `operator: true`; GET `/schema` and

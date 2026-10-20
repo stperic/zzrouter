@@ -1250,3 +1250,8 @@ func (m *ProviderAppManager) providerInstalled(key string, svc config.ServiceCon
 	}
 	return version != "" && version != versionUnknown
 }
+
+// RunJobID hands out a run's retained readiness job, or no ID after expiry.
+func (m *ProviderAppManager) RunJobID(run *instance.Instance) string {
+	return m.jobsRegistry.HandOut(run.StreamJobID)
+}

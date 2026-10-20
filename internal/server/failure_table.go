@@ -188,6 +188,9 @@ func resolveLoadState(err error, wire *httperr.Error) bool {
 		return false
 	}
 	wire.Message = utils.SanitizeErrorMessage(state.message)
+	if state.runID != "" && state.jobID == "" {
+		wire.Message += "; job outcome unavailable; inspect zz_runs"
+	}
 	return true
 }
 
@@ -195,6 +198,9 @@ func warmingFailureExtra(err error, _ httperr.Error) map[string]any {
 	var state *loadState
 	if !errors.As(err, &state) || state.runID == "" {
 		return nil
+	}
+	if state.jobID == "" {
+		return map[string]any{"run_id": state.runID}
 	}
 	return map[string]any{"run_id": state.runID, "job_id": state.jobID}
 }

@@ -94,9 +94,11 @@ func (s *Scheduler) ApplyVersionAsync(ctx context.Context, target string) (strin
 	if !s.beginApply() {
 		status := s.GetStatus()
 		if status.Operation != nil && status.Operation.ToVersion == target && !status.Operation.Finished() {
-			return status.Operation.JobID, nil
+			if id := s.jobsRegistry.HandOut(status.Operation.JobID); id != "" {
+				return id, nil
+			}
 		}
-		return "", ErrApplyInFlight
+		return "", fmt.Errorf("%w; inspect zz_update_status", ErrApplyInFlight)
 	}
 	release, err := s.exactRelease(ctx, target)
 	if err != nil {

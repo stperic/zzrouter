@@ -1,6 +1,9 @@
 package jobs
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Kind is the operation category a job represents. Ring policy, ID
 // prefix, and inactivity timeouts are derived from the kind.
@@ -43,27 +46,32 @@ type RingPolicy struct {
 	Size int
 }
 
-// Kind-prefixed job IDs make `grep dl_` and similar one-liners useful
-// against structured logs. Prefix is auto-derived in Registry.Start —
-// producers cannot mis-tag.
+var kindPrefixes = map[Kind]string{
+	KindDownload:     "dl_",
+	KindInstall:      "inst_",
+	KindUpdate:       "upd_",
+	KindSync:         "sync_",
+	KindInferenceLog: "inflog_",
+	KindRun:          "run_",
+	KindService:      "svc_",
+}
+
+// idPrefix derives IDs from the same table that decodes them.
 func (k Kind) idPrefix() string {
-	switch k {
-	case KindDownload:
-		return "dl_"
-	case KindInstall:
-		return "inst_"
-	case KindUpdate:
-		return "upd_"
-	case KindSync:
-		return "sync_"
-	case KindInferenceLog:
-		return "inflog_"
-	case KindRun:
-		return "run_"
-	case KindService:
-		return "svc_"
+	if prefix, ok := kindPrefixes[k]; ok {
+		return prefix
 	}
 	return "job_"
+}
+
+// KindFromID decodes the registry's kind prefix; unknown IDs return an empty kind.
+func KindFromID(id string) Kind {
+	for k, prefix := range kindPrefixes {
+		if strings.HasPrefix(id, prefix) {
+			return k
+		}
+	}
+	return ""
 }
 
 // Ring sizes picked from the plan doc (plan_jobs.md §Ring policy):

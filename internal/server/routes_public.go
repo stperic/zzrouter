@@ -216,7 +216,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 		s.services.InferenceLog = NewInferenceLogService(s.inference.logStore)
 		s.controllers.InferenceLog = NewInferenceLogController(
 			s.services.InferenceLog,
-			func() string { return s.inference.logJobID },
+			func() string { return s.jobs.HandOut(s.inference.logJobID) },
 		)
 		s.controllers.InferenceLog.RegisterPublicRoutes(router)
 	}

@@ -64,7 +64,7 @@ func TestOpenRunCanceledCallerWritesNothingContract(t *testing.T) {
 func TestWarmingExtensionsAcrossDialectsContract(t *testing.T) {
 	run := instance.NewInstance("r", "p", "m", 0, 0, 1)
 	run.StreamJobID = "j"
-	wire := loadFailureWire(fmt.Errorf("outer: %w", loadStillWarming("warming").forRun(run)))
+	wire := loadFailureWire(fmt.Errorf("outer: %w", loadStillWarming("warming").forRun(run, run.StreamJobID)))
 	assert.Equal(t, "warming", wire.Message, "synthetic state keeps its stored message through wrapping")
 	for _, path := range []string{"/v1/chat/completions", "/v1/messages", "/api/generate", "/zzrouter/v1/runs"} {
 		t.Run(path, func(t *testing.T) {
@@ -128,7 +128,7 @@ func TestLoadStateRetainsReasonAndCauseContract(t *testing.T) {
 func TestCommittedStreamRetainsSupportedFieldsContract(t *testing.T) {
 	run := instance.NewInstance("r", "p", "m", 0, 0, 1)
 	run.StreamJobID = "j"
-	wire := loadFailureWire(loadStillWarming("warming").forRun(run))
+	wire := loadFailureWire(loadStillWarming("warming").forRun(run, run.StreamJobID))
 	header := httptest.NewRecorder()
 	writeError(header, nil, wire)
 	assert.Contains(t, header.Body.String(), "job_id")

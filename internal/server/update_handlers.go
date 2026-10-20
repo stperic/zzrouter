@@ -60,7 +60,14 @@ func (c *UpdateController) HandleGetStatus(ctx *gin.Context) {
 	if c.clusterRead(ctx, false) {
 		return
 	}
-	respondSuccess(ctx, "Update status retrieved", sched.GetStatus())
+	status := struct {
+		update.UpdateStatus
+		Rollouts []update.Rollout `json:"rollouts,omitempty"`
+	}{UpdateStatus: sched.GetStatus()}
+	if c.server != nil && c.server.updateRollouts != nil {
+		status.Rollouts = c.server.updateRollouts.History()
+	}
+	respondSuccess(ctx, "Update status retrieved", status)
 }
 
 // HandleCheckNow triggers an immediate update check

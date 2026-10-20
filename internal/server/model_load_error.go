@@ -24,8 +24,8 @@ type loadState struct {
 
 func (e *loadState) Error() string { return e.message }
 func (e *loadState) Unwrap() error { return e.cause }
-func (e *loadState) forRun(run *instance.Instance) *loadState {
-	e.runID, e.jobID = run.ID, run.StreamJobID
+func (e *loadState) forRun(run *instance.Instance, jobID string) *loadState {
+	e.runID, e.jobID = run.ID, jobID
 	return e
 }
 func (e *loadState) withCause(err error) *loadState { e.cause = errors.Join(e.cause, err); return e }

@@ -389,7 +389,9 @@ func (c *InstallCoordinator) reserveJob(provider, jobID string) (string, bool) {
 	c.liveMu.Lock()
 	defer c.liveMu.Unlock()
 	if existing, ok := c.liveJobs[provider]; ok {
-		return existing, true
+		if id := c.jobs.HandOut(existing); id != "" {
+			return id, true
+		}
 	}
 	c.liveJobs[provider] = jobID
 	return "", false

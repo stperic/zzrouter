@@ -2,6 +2,9 @@ package constants
 
 import "time"
 
+// IdempotencyReplayWindow bounds response replay and finished-job retention.
+const IdempotencyReplayWindow = 24 * time.Hour
+
 // ======================================================================================
 // Timeout Constants - Centralized timeout configuration for the entire application
 // ======================================================================================

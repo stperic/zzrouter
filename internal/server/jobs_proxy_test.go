@@ -15,10 +15,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
+	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -698,4 +700,128 @@ func TestListJobsPeers_SkipsUnusablePeers(t *testing.T) {
 		require.NoError(t, coord.RegisterEndpoint(ep))
 	}
 	assert.ElementsMatch(t, []string{"up", "grace"}, s.listJobsPeers())
+}
+
+func TestJobRetentionHintsAfterRestart(t *testing.T) {
+	kinds := []struct {
+		kind jobs.Kind
+		tool string
+	}{
+		{jobs.KindInstall, "zz_providers"}, {jobs.KindService, "zz_providers"},
+		{jobs.KindDownload, "zz_models"}, {jobs.KindRun, "zz_runs"}, {jobs.KindUpdate, "zz_update_status"},
+		{jobs.KindSync, ""}, {jobs.KindInferenceLog, ""}, {jobs.Kind("unknown"), ""},
+	}
+	before, err := jobs.NewRegistry(jobs.Config{NodeName: "worker", Clock: clock.System()})
+	require.NoError(t, err)
+	ids := make([]string, len(kinds))
+	for i, tc := range kinds {
+		h, startErr := before.StartDetached(tc.kind, "", nil)
+		require.NoError(t, startErr)
+		h.Done()
+		ids[i] = h.ID()
+	}
+	before.Stop()
+	after, err := jobs.NewRegistry(jobs.Config{NodeName: "worker", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(after.Stop)
+	worker := gin.New()
+	NewJobsController(after, "worker", nil).RegisterInternalRoutes(worker.Group("/zzrouter/v1/internal"))
+	peer := httptest.NewServer(worker)
+	t.Cleanup(peer.Close)
+	ctrl := newJobLookupController(t, map[string]string{"worker": peer.URL})
+	router := gin.New()
+	ctrl.RegisterPublicRoutes(router.Group("/zzrouter/v1"))
+	for i, tc := range kinds {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			for _, scope := range []string{"?node=worker", ""} {
+				for _, route := range []struct{ method, suffix string }{{http.MethodGet, ""}, {http.MethodDelete, ""}, {http.MethodGet, "/stream"}} {
+					rec := httptest.NewRecorder()
+					router.ServeHTTP(rec, httptest.NewRequest(route.method, "/zzrouter/v1/jobs/"+ids[i]+route.suffix+scope, nil))
+					require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+					require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+					var problem utils.ProblemDetails
+					require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+					require.Equal(t, "job_not_found", problem.Code)
+					require.Len(t, problem.Errors, 1)
+					hint := problem.Errors[0].Hint
+					if tc.tool != "" {
+						require.Contains(t, hint, tc.tool)
+					} else {
+						require.NotContains(t, hint, "zz_")
+					}
+					require.NotContains(t, hint, "/zzrouter/")
+					require.Empty(t, rec.Header().Get("Retry-After"))
+				}
+			}
+		})
+	}
+}
+
+func TestJobExpiryRESTSnapshotsListAndSSE(t *testing.T) {
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "worker", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	h, err := registry.StartDetached(jobs.KindRun, "", nil)
+	require.NoError(t, err)
+	h.Done()
+	worker := gin.New()
+	controller := NewJobsController(registry, "worker", nil)
+	controller.RegisterInternalRoutes(worker.Group("/zzrouter/v1/internal"))
+	verify := func(t *testing.T, ctrl *JobsController) {
+		t.Helper()
+		router := gin.New()
+		ctrl.RegisterPublicRoutes(router.Group("/zzrouter/v1"))
+		for _, path := range []string{"/jobs/" + h.ID(), "/jobs?kind=run", "/jobs/" + h.ID() + "/stream"} {
+			rec := httptest.NewRecorder()
+			separator := "?"
+			if strings.Contains(path, "?") {
+				separator = "&"
+			}
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/zzrouter/v1"+path+separator+"node=worker", nil))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Contains(t, rec.Body.String(), `"expires_at":"`+fc.Now().Add(constants.IdempotencyReplayWindow).Format(time.RFC3339)+`"`)
+		}
+	}
+	t.Run("local", func(t *testing.T) { verify(t, controller) })
+	t.Run("peer", func(t *testing.T) {
+		peer := httptest.NewServer(worker)
+		t.Cleanup(peer.Close)
+		verify(t, newJobLookupController(t, map[string]string{"worker": peer.URL}))
+	})
+	fc.Advance(constants.IdempotencyReplayWindow)
+	checkJobLookupRoutes(t, controller, h.ID(), func(t *testing.T, _ string, rec *httptest.ResponseRecorder) {
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		require.Contains(t, rec.Body.String(), "zz_runs")
+	})
+}
+
+func TestJobKindHintsLocal(t *testing.T) {
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "local", Clock: clock.System()})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	ctrl := NewJobsController(registry, "local", nil)
+	router := gin.New()
+	ctrl.RegisterPublicRoutes(router.Group("/zzrouter/v1"))
+	for _, tc := range []struct{ id, tool string }{
+		{"inst_gone", "zz_providers"}, {"svc_gone", "zz_providers"}, {"dl_gone", "zz_models"}, {"run_gone", "zz_runs"}, {"upd_gone", "zz_update_status"}, {"sync_gone", ""}, {"inflog_gone", ""}, {"job_gone", ""},
+	} {
+		for _, scope := range []string{"", "?node=local"} {
+			for _, route := range []struct{ method, suffix string }{{http.MethodGet, ""}, {http.MethodDelete, ""}, {http.MethodGet, "/stream"}} {
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, httptest.NewRequest(route.method, "/zzrouter/v1/jobs/"+tc.id+route.suffix+scope, nil))
+				require.Equal(t, http.StatusNotFound, rec.Code)
+				var problem utils.ProblemDetails
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &problem))
+				require.Equal(t, "job_not_found", problem.Code)
+				require.Len(t, problem.Errors, 1)
+				hint := problem.Errors[0].Hint
+				if tc.tool != "" {
+					require.Contains(t, hint, tc.tool)
+				} else {
+					require.NotContains(t, hint, "zz_")
+				}
+			}
+		}
+	}
 }

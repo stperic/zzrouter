@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -27,23 +28,24 @@ type job struct {
 	createdBy     string
 	policy        RingPolicy
 	inactivityTTL time.Duration
+	completedTTL  time.Duration
 	subBuffer     int
 	clk           clock.Clock
 	ctx           context.Context
 	cancel        context.CancelCauseFunc
 
 	// Guarded by mu.
-	mu             sync.Mutex
-	phase          Phase
-	seq            uint64 // next seq to emit
-	meta           Meta
-	ring           []Event // nil for Firehose
-	firstSeq       uint64  // seq of ring[0] (when ring non-empty)
-	subs           []*Subscriber
-	lastActivityAt time.Time
-	terminatedAt   time.Time
-	lastEvent      Event // most recent, for Get snapshots
-	evicted        bool  // true after Registry.Stop → evict
+	mu              sync.Mutex
+	phase           Phase
+	seq             uint64 // next seq to emit
+	meta            Meta
+	ring            []Event // nil for Firehose
+	firstSeq        uint64  // seq of ring[0] (when ring non-empty)
+	subs            []*Subscriber
+	lastActivityAt  time.Time
+	lastHandedOutAt time.Time
+	lastEvent       Event // most recent, for Get snapshots
+	evicted         bool  // true after Registry.Stop → evict
 }
 
 // ID reports the kind-prefixed job ID.
@@ -157,9 +159,6 @@ func (j *job) emit(phase Phase, percent int, step string, bytes *Bytes, errMsg s
 	now := j.clk.Now()
 	j.phase = phase
 	j.lastActivityAt = now
-	if phase.IsTerminal() {
-		j.terminatedAt = now
-	}
 	ev := Event{
 		JobID:   j.id,
 		Node:    j.node,
@@ -175,6 +174,9 @@ func (j *job) emit(phase Phase, percent int, step string, bytes *Bytes, errMsg s
 		Err:     errMsg,
 		Warning: warning,
 	}
+	if phase.IsTerminal() {
+		ev.ExpiresAt = maxTime(now, j.lastHandedOutAt).Add(j.completedTTL)
+	}
 	j.seq++
 	j.lastEvent = ev
 	j.appendRing(ev)
@@ -184,6 +186,10 @@ func (j *job) emit(phase Phase, percent int, step string, bytes *Bytes, errMsg s
 	}
 
 	if phase.IsTerminal() {
+		if len(j.ring) < cap(j.ring) {
+			// Clip alone retains the allocation; clone to release unused slots.
+			j.ring = slices.Clip(slices.Clone(j.ring))
+		}
 		j.cancel(nil)
 		for _, s := range j.subs {
 			s.close()
@@ -211,18 +217,35 @@ func (j *job) appendRing(ev Event) {
 	j.firstSeq++
 }
 
-// snapshot returns the most-recently-emitted event. Used by Get.
-func (j *job) snapshot() Event {
+// snapshot checks expiry and optionally records a hand-out under the same lock as termination.
+func (j *job) snapshot(handOut bool) (Event, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.lastEvent
+	if j.expired() {
+		return Event{}, ErrNotFound
+	}
+	if handOut {
+		j.lastHandedOutAt = j.clk.Now()
+		if j.phase.IsTerminal() {
+			j.lastEvent.ExpiresAt = maxTime(j.lastEvent.At, j.lastHandedOutAt).Add(j.completedTTL)
+			if len(j.ring) > 0 {
+				j.ring[len(j.ring)-1] = j.lastEvent
+			}
+		}
+	}
+	return j.lastEvent, nil
 }
 
-// phaseAndTimestamps is the janitor's read-only accessor.
-func (j *job) phaseAndTimestamps() (Phase, time.Time, time.Time) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	return j.phase, j.lastActivityAt, j.terminatedAt
+// expired is shared by reads and sweeping; the caller holds mu.
+func (j *job) expired() bool {
+	return !j.lastEvent.ExpiresAt.IsZero() && !j.clk.Now().Before(j.lastEvent.ExpiresAt)
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // evict is called by Registry.Stop to tear down a job immediately. Does
@@ -245,19 +268,23 @@ func (j *job) evict() {
 // registration atomically under j.mu so no live event can slip between
 // the two.
 func (j *job) subscribe(opts SubscribeOptions) (*Subscriber, error) {
-	if opts.Epoch != "" && opts.Epoch != j.epoch {
-		return nil, ErrEpochMismatch
-	}
-	if j.policy.Mode == RingFirehose && opts.From != nil && *opts.From > 0 {
-		return nil, ErrReplayUnsupported
-	}
-
 	var sub *Subscriber
 	detach := func() { j.detach(sub) }
 	sub = newSubscriber(j.subBuffer, detach)
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	if j.expired() {
+		return nil, ErrNotFound
+	}
+
+	if opts.Epoch != "" && opts.Epoch != j.epoch {
+		return nil, ErrEpochMismatch
+	}
+	if j.policy.Mode == RingFirehose && opts.From != nil && *opts.From > 0 {
+		return nil, ErrReplayUnsupported
+	}
 
 	if j.evicted {
 		// Registry was stopped before this Subscribe took the lock.
@@ -304,13 +331,14 @@ func (j *job) collectReplay(opts SubscribeOptions) ([]Event, *Event) {
 	var dropped *Event
 	if from > 0 && from < j.firstSeq {
 		marker := Event{
-			JobID: j.id,
-			Node:  j.node,
-			Kind:  j.kind,
-			Epoch: j.epoch,
-			Seq:   j.firstSeq,
-			At:    j.clk.Now(),
-			Phase: j.phase,
+			JobID:     j.id,
+			Node:      j.node,
+			Kind:      j.kind,
+			Epoch:     j.epoch,
+			Seq:       j.firstSeq,
+			At:        j.clk.Now(),
+			Phase:     j.phase,
+			ExpiresAt: j.lastEvent.ExpiresAt,
 			Dropped: &DroppedMarker{
 				Since:   from,
 				Current: j.firstSeq,

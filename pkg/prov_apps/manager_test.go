@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
+	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -656,4 +659,72 @@ func drainEvents(ch <-chan Event, n int, timeout time.Duration) []Event {
 		}
 	}
 	return events
+}
+
+func TestExistingJobHandOutRetention(t *testing.T) {
+	for _, path := range []string{"run", "install", "service"} {
+		t.Run(path, func(t *testing.T) {
+			fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+			registry, err := jobs.NewRegistry(jobs.Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
+			require.NoError(t, err)
+			t.Cleanup(registry.Stop)
+			h, err := registry.StartDetached(jobs.KindRun, "", nil)
+			require.NoError(t, err)
+			h.Done()
+			fc.Advance(23 * time.Hour)
+			var id string
+			switch path {
+			case "run":
+				manager := &ProviderAppManager{jobsRegistry: registry}
+				id = manager.RunJobID(&instance.Instance{StreamJobID: h.ID()})
+			case "install":
+				coordinator := &InstallCoordinator{jobs: registry, liveJobs: map[string]string{"engine": h.ID()}}
+				var busy bool
+				id, busy = coordinator.reserveJob("engine", "new")
+				require.True(t, busy)
+			case "service":
+				state := &managedService{ready: h}
+				id = state.readyID(registry)
+			}
+			require.Equal(t, h.ID(), id)
+			ev, err := registry.Get(id)
+			require.NoError(t, err)
+			require.Equal(t, fc.Now().Add(constants.IdempotencyReplayWindow), ev.ExpiresAt)
+			fc.Advance(constants.IdempotencyReplayWindow)
+			require.Empty(t, registry.HandOut(id))
+		})
+	}
+}
+
+func TestInstallReservationReplacesGoneJob(t *testing.T) {
+	for _, gone := range []string{"expired", "never-registered"} {
+		t.Run(gone, func(t *testing.T) {
+			fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+			registry, err := jobs.NewRegistry(jobs.Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
+			require.NoError(t, err)
+			t.Cleanup(registry.Stop)
+			id := "inst_never-registered"
+			if gone == "expired" {
+				h, startErr := registry.StartDetached(jobs.KindInstall, "", nil)
+				require.NoError(t, startErr)
+				h.Done()
+				id = h.ID()
+				fc.Advance(constants.IdempotencyReplayWindow)
+			}
+			coordinator := &InstallCoordinator{jobs: registry, liveJobs: map[string]string{"engine": id}}
+			next, err := registry.StartDetached(jobs.KindInstall, "", nil)
+			require.NoError(t, err)
+			existing, busy := coordinator.reserveJob("engine", next.ID())
+			require.False(t, busy, "absence must take the ordinary new-install branch")
+			require.Empty(t, existing)
+			require.Equal(t, next.ID(), coordinator.liveJobs["engine"])
+			coordinator.releaseJob("engine", id)
+			existing, busy = coordinator.reserveJob("engine", "another")
+			require.True(t, busy)
+			require.Equal(t, next.ID(), existing, "late cleanup cannot erase the replacement")
+			registry.Stop()
+			state := &managedService{ready: next}
+			require.Empty(t, state.readyID(registry))
+		})
+	}
 }

@@ -245,14 +245,13 @@ func (e *DeploymentsExecutor) beginDownload(c *gin.Context, admission downloadAd
 			RespondToError(c, httperr.Error{Status: http.StatusConflict, Code: string(httperr.CodeDownloadInProgress), Message: "another source is downloading to this destination"})
 			return nil
 		}
-		id := e.jobKeys[key]
-		ev, err := e.jobs.Get(id)
+		ev, err := e.jobs.Reuse(e.jobKeys[key])
 		if err != nil || ev.Phase.IsTerminal() {
-			ServiceUnavailable(c, "existing download has no observable live job; stop it before retrying")
+			ServiceUnavailable(c, "existing download has no observable live job; inspect zz_models and stop it before retrying")
 			return nil
 		}
 		result := e.newDeploymentResult(key, model, repo, existing.Status, "Download already in progress")
-		result.JobID = id
+		result.JobID = ev.JobID
 		result.Target = existing.Target
 		c.JSON(http.StatusOK, result)
 		return nil

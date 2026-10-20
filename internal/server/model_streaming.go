@@ -228,14 +228,14 @@ func (s *Server) waitForLocalInstance(inst *instance.Instance) (*instance.Instan
 		}
 		if budget <= 0 {
 			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst)
+				"instance '%s' is still loading; retry shortly", inst.ID)).forRun(inst, s.jobs.HandOut(inst.StreamJobID))
 		}
 		timer := time.NewTimer(budget)
 		defer timer.Stop()
 		select {
 		case <-timer.C:
 			return nil, loadStillWarming(fmt.Sprintf(
-				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst)
+				"instance '%s' did not become ready in time; the load is still running, retry shortly", inst.ID)).forRun(inst, s.jobs.HandOut(inst.StreamJobID))
 		case <-inst.LeftStarting():
 		}
 	}

@@ -10,6 +10,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
@@ -152,4 +157,36 @@ func TestConfirmationWriteFailureRestoresPairBeforeRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, originalLauncher, launcher)
 	require.False(t, f.restarter.called)
+}
+
+func TestExactApplyReuseRequiresLiveJob(t *testing.T) {
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	h, err := registry.StartDetached(jobs.KindUpdate, "", nil)
+	require.NoError(t, err)
+	h.Done()
+	s := NewSchedulerIn(t.TempDir(), &config.UpdateConfig{}, fc, WithJobsRegistry(registry))
+	t.Cleanup(s.Stop)
+	require.True(t, s.beginApply())
+	defer s.endApply()
+	s.status.Operation = &RunStatus{JobID: h.ID(), ToVersion: "2.0.0", State: StateApplying}
+	fc.Advance(23 * time.Hour)
+	id, err := s.ApplyVersionAsync(t.Context(), "2.0.0")
+	require.NoError(t, err)
+	require.Equal(t, h.ID(), id)
+	ev, err := registry.Get(id)
+	require.NoError(t, err)
+	require.Equal(t, fc.Now().Add(constants.IdempotencyReplayWindow), ev.ExpiresAt)
+	fc.Advance(constants.IdempotencyReplayWindow)
+	id, err = s.ApplyVersionAsync(t.Context(), "2.0.0")
+	require.ErrorIs(t, err, ErrApplyInFlight)
+	require.ErrorContains(t, err, "zz_update_status")
+	require.Empty(t, id)
+	s.status.Operation.JobID = "upd_never-registered"
+	id, err = s.ApplyVersionAsync(t.Context(), "2.0.0")
+	require.ErrorIs(t, err, ErrApplyInFlight)
+	require.ErrorContains(t, err, "zz_update_status")
+	require.Empty(t, id)
 }

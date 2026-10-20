@@ -195,18 +195,22 @@ func TestHandleAutoDeployLaunch_DownloadsTheVariantsBase(t *testing.T) {
 		Runtime:      &pkgConfig.AppRuntimeConfig{BasePort: 18080, Execution: pkgConfig.ExecutionConfig{Type: "cli", Command: "stub"}},
 		Models:       map[string]pkgConfig.ModelSpec{"fast": {From: "org/Base-GGUF"}},
 	}))
+	registry := newJobsForChainTest(t)
+	deployJob, err := registry.StartDetached(jobs.KindDownload, "", nil)
+	require.NoError(t, err)
 	var sent *DeployRequest
 	exec := &RunsExecutor{
 		appsConfig:  func() *pkgConfig.AppsConfig { return cfg },
 		getNodename: func() string { return "test-node" },
-		jobs:        newJobsForChainTest(t),
+		jobs:        registry,
 		deploy: func(_ context.Context, req *DeployRequest) (*Deployment, error) {
 			sent = req
-			return &Deployment{Nodes: []modelregistry.DeploymentNode{{Node: "test-node", JobID: "deploy-job"}}}, nil
+			return &Deployment{Nodes: []modelregistry.DeploymentNode{{Node: "test-node", JobID: deployJob.ID()}}}, nil
 		},
 	}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
 	exec.handleAutoDeployLaunch(c, "llamacpp", "", prov_apps.EnsureRequest{Model: "fast"})
 

@@ -25,8 +25,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // sseKeepAliveInterval picks the cadence of `:ping` comment frames
@@ -281,10 +283,29 @@ func (c *JobsController) InternalCancelJob(ctx *gin.Context) {
 
 // --- helpers ---
 
+var jobOutcomeTools = map[jobs.Kind]string{
+	jobs.KindInstall:  "zz_providers",
+	jobs.KindService:  "zz_providers",
+	jobs.KindDownload: "zz_models",
+	jobs.KindRun:      "zz_runs",
+	jobs.KindUpdate:   "zz_update_status",
+}
+
 func respondJobNotFound(ctx *gin.Context, node string) {
+	hint := "The outcome is unavailable here; inspect the operation's current state."
+	tool := jobOutcomeTools[jobs.KindFromID(ctx.Param("id"))]
+	if tool != "" {
+		hint = "Inspect the outcome with " + tool + "."
+	}
 	RespondWithProblemOpts(ctx, http.StatusNotFound, "Not Found",
-		"job not found within the requested lookup scope; jobs live in memory on the node that runs them and may be absent after retention cleanup or a node restart; check recent jobs on that node",
-		ProblemOpts{Code: string(httperr.CodeJobNotFound), Node: node})
+		fmt.Sprintf("job not found within the requested lookup scope; jobs live in memory on the node that runs them and may be absent after retention cleanup or a node restart; retention lasts %g hours after completion or the latest hand-out, whichever is later", constants.IdempotencyReplayWindow.Hours()),
+		ProblemOpts{
+			Code: string(httperr.CodeJobNotFound), Node: node,
+			Errors: []utils.ParamError{{
+				Key: "job_id", Code: string(httperr.CodeJobNotFound),
+				Message: "Job outcome unavailable", Hint: hint,
+			}},
+		})
 	ctx.Abort()
 }
 

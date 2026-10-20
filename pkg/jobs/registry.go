@@ -10,18 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
 )
 
-// Default janitor tick interval. Chosen so a 5-min CompletedTTL is
-// evicted within ~10% of its window; inactivity gating does not need
-// sub-second precision (kind timeouts are minutes-scale).
+// The janitor checks inactivity and releases expired jobs without sub-second wakeups.
 const defaultJanitorInterval = 30 * time.Second
-
-// Default CompletedTTL picked from the plan doc (plan_jobs.md
-// §Lifecycle): human-in-the-loop TUI reconnect after brief network
-// loss needs well over 60s. 5min covers handoffs and SSH reconnects.
-const DefaultCompletedTTL = 5 * time.Minute
 
 // Default subscriber channel buffer. Small enough to surface
 // backpressure quickly (drop-oldest counts grow, operator notices);
@@ -38,9 +32,8 @@ type Config struct {
 	Clock clock.Clock
 
 	// CompletedTTL is the window a terminal job stays in the registry
-	// before eviction. Late subscribers within the window replay the
-	// ring and see the final event; after eviction, Get returns
-	// ErrNotFound. Zero → DefaultCompletedTTL.
+	// after termination or the latest hand-out, whichever is later.
+	// Zero uses constants.IdempotencyReplayWindow.
 	CompletedTTL time.Duration
 
 	// JanitorInterval is the tick period for the TTL + inactivity
@@ -87,7 +80,7 @@ func NewRegistry(cfg Config) (*Registry, error) {
 		return nil, fmt.Errorf("jobs: Clock is required")
 	}
 	if cfg.CompletedTTL <= 0 {
-		cfg.CompletedTTL = DefaultCompletedTTL
+		cfg.CompletedTTL = constants.IdempotencyReplayWindow
 	}
 	if cfg.JanitorInterval <= 0 {
 		cfg.JanitorInterval = defaultJanitorInterval
@@ -215,31 +208,31 @@ func (r *Registry) start(ctx context.Context, kind Kind, createdBy, id string, m
 	mergedCtx, cancel := mergeCancel(r.ctx, ctx)
 
 	j := &job{
-		id:             id,
-		kind:           kind,
-		epoch:          epoch,
-		node:           r.cfg.NodeName,
-		createdBy:      createdBy,
-		policy:         policy,
-		inactivityTTL:  r.inactivityFor(kind),
-		subBuffer:      r.cfg.SubscriberBuffer,
-		clk:            r.clk,
-		ctx:            mergedCtx,
-		cancel:         cancel,
-		meta:           cloneMeta(meta),
-		phase:          PhasePending,
-		lastActivityAt: r.clk.Now(),
+		id:              id,
+		kind:            kind,
+		epoch:           epoch,
+		node:            r.cfg.NodeName,
+		createdBy:       createdBy,
+		policy:          policy,
+		inactivityTTL:   r.inactivityFor(kind),
+		completedTTL:    r.cfg.CompletedTTL,
+		subBuffer:       r.cfg.SubscriberBuffer,
+		clk:             r.clk,
+		ctx:             mergedCtx,
+		cancel:          cancel,
+		meta:            cloneMeta(meta),
+		phase:           PhasePending,
+		lastActivityAt:  r.clk.Now(),
+		lastHandedOutAt: r.clk.Now(),
 	}
 	if policy.Mode != RingFirehose && policy.Size > 0 {
 		j.ring = make([]Event, 0, policy.Size)
 	}
 
+	// Publish only after seq 0 is available to readers and subscribers.
+	j.emitInitial()
 	r.jobs[id] = j
 	r.mu.Unlock()
-
-	// Emit the pending event — seq 0, established before any subscriber
-	// can observe so the ring invariant "index 0 is always seq 0" holds.
-	j.emitInitial()
 	return j, nil
 }
 
@@ -250,13 +243,31 @@ func (r *Registry) StartDetached(kind Kind, createdBy string, meta Meta) (Handle
 
 // Get returns a snapshot of the job's most recent event, or ErrNotFound.
 func (r *Registry) Get(id string) (Event, error) {
+	return r.snapshot(id, false)
+}
+
+// Reuse checks liveness and records the hand-out atomically with terminal transitions.
+func (r *Registry) Reuse(id string) (Event, error) {
+	return r.snapshot(id, true)
+}
+
+// HandOut records an ID returned for new work or reuse; absent or expired jobs return no ID.
+func (r *Registry) HandOut(id string) string {
+	if r == nil {
+		return ""
+	}
+	ev, _ := r.Reuse(id)
+	return ev.JobID
+}
+
+func (r *Registry) snapshot(id string, handOut bool) (Event, error) {
 	r.mu.Lock()
 	j, ok := r.jobs[id]
 	r.mu.Unlock()
 	if !ok {
 		return Event{}, ErrNotFound
 	}
-	return j.snapshot(), nil
+	return j.snapshot(handOut)
 }
 
 // List returns snapshots of every job in the registry. Filter by
@@ -269,7 +280,9 @@ func (r *Registry) List(kind Kind) []Event {
 		if kind != "" && j.kind != kind {
 			continue
 		}
-		out = append(out, j.snapshot())
+		if ev, err := j.snapshot(false); err == nil {
+			out = append(out, ev)
+		}
 	}
 	return out
 }
@@ -316,6 +329,9 @@ func (r *Registry) Cancel(id string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if r.HandOut(id) == "" {
+		return ErrNotFound
+	}
 	j.cancel(ErrCanceled)
 	return nil
 }
@@ -344,19 +360,15 @@ func (r *Registry) sweep() {
 
 	r.mu.Lock()
 	toFail := make([]*job, 0)
-	toEvict := make([]string, 0)
 	for id, j := range r.jobs {
-		phase, lastActivity, terminatedAt := j.phaseAndTimestamps()
-		if phase == PhaseRunning && j.inactivityTTL > 0 && now.Sub(lastActivity) > j.inactivityTTL {
+		j.mu.Lock()
+		if j.phase == PhaseRunning && j.inactivityTTL > 0 && now.Sub(j.lastActivityAt) > j.inactivityTTL {
 			toFail = append(toFail, j)
-			continue
 		}
-		if phase.IsTerminal() && now.Sub(terminatedAt) > r.cfg.CompletedTTL {
-			toEvict = append(toEvict, id)
+		if j.expired() {
+			delete(r.jobs, id)
 		}
-	}
-	for _, id := range toEvict {
-		delete(r.jobs, id)
+		j.mu.Unlock()
 	}
 	r.mu.Unlock()
 
