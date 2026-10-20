@@ -328,6 +328,30 @@ The PATCH reply resolves the single endpoint written across all tiers; pass
 endpoint on a read keeps the base view, including on embeddings-only providers.
 Unknown overlay names are refused at their merge-patch paths.
 
+Declare a new engine flag and set it in one `zz_params_set` call:
+
+```json
+{"provider":"llamacpp","patch":{"schema":{"future_flag":{"type":"bool","negatable":true}},"defaults":{"parameters":{"future-flag":false}}}}
+```
+
+`patch.schema.<flag>` is the operator-owned declaration in provider config, with
+`type`, `min`, `max`, `enum`, `description`, `pass`, `auto` and `negatable` fields.
+On a shipped `schema.yaml` key only enum, range and description overrides are
+allowed; zzRouter-owned keys cannot be overridden. Declarations are flat and
+use the engine's literal flag spelling, starting with a letter and containing
+only letters, digits, hyphens or underscores. Ranges require `min <= max`.
+A key shipped only under endpoints is refused at `schema.<flag>` with those
+endpoint names; set its value under the shipped endpoint instead.
+`zz_params_get` includes `operator: true`
+in accepted shapes and carries `problems` when declarations or fields were
+refused, including problems created by a later release. `grep` finds operator
+entries by name or description. A declaration and a value commit together or
+neither does. Deleting or narrowing a declaration used by a configured value is
+400 at that value's path; remove both together to delete them. Null deletes a
+declaration or one of its fields. Workers still answer 421 for writes. ETags are
+advisory; If-Match is not implemented. See [provider parameters](configuration.md)
+for promotion, run staleness and the protocol-17 cluster upgrade requirement.
+
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location
 and required flag. An operation a task tool uses carries `task_tools`, naming that

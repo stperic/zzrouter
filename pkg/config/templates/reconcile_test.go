@@ -14,7 +14,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stperic/zzrouter/pkg/config/assets"
-	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
 func TestMergeManagedSpine(t *testing.T) {
@@ -505,47 +504,6 @@ func TestReconcileRemovesRetiredFeatureDeclaration(t *testing.T) {
 	assert.Equal(t, got, again)
 }
 
-func TestReconcileRestoresShippedDiagnostics(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, InstallDefaults(root))
-	filename := filepath.Join(root, "on-demand", "vllm", "schema.yaml")
-	require.NoError(t, os.WriteFile(filename, []byte("parameters: {}\n"), 0o600))
-	changed, err := ReconcileManagedSpine(root)
-	require.NoError(t, err)
-	assert.Contains(t, changed, pathpkg.Join("on-demand", "vllm", "schema.yaml"))
-	restored, err := os.ReadFile(filename)
-	require.NoError(t, err)
-	declared, err := schema.LoadYAMLSchema(restored)
-	require.NoError(t, err)
-	require.NotNil(t, declared.Diagnostics)
-	require.NoError(t, declared.Diagnostics.Validate())
-	assert.Contains(t, declared.Diagnostics.Runtimes["vllm"].Imports, "vllm.entrypoints.openai.api_server")
-	assert.Contains(t, declared.Diagnostics.Runtimes["vllm"].Imports, "vllm.v1.engine.core")
-
-	for _, rel := range []string{"on-demand/mlx", "on-demand/llamacpp", "external/ollama"} {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel), "schema.yaml"))
-		require.NoError(t, err)
-		declared, err := schema.LoadYAMLSchema(data)
-		require.NoError(t, err)
-		require.NoError(t, declared.Diagnostics.Validate())
-		require.NotNil(t, declared.Diagnostics)
-	}
-}
-
-func TestMLXDiagnosticDoesNotRequireJITOnlyBuild(t *testing.T) {
-	root := t.TempDir()
-	require.NoError(t, InstallDefaults(root))
-	data, err := os.ReadFile(filepath.Join(root, "on-demand", "mlx", "schema.yaml"))
-	require.NoError(t, err)
-	declared, err := schema.LoadYAMLSchema(data)
-	require.NoError(t, err)
-	for _, runtime := range []string{"mlx", "mlx-vlm"} {
-		t.Run(runtime, func(t *testing.T) {
-			assert.Equal(t, "prebuilt_or_jit", declared.Diagnostics.Runtimes[runtime].Kernels)
-		})
-	}
-}
-
 func TestReconcileRefreshesShippedPinsWithoutChangingOperatorTuning(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, InstallDefaults(dir))
@@ -650,4 +608,25 @@ func TestReconcileVllmReadinessStall(t *testing.T) {
 	changed, err = ReconcileManagedSpine(dir)
 	require.NoError(t, err)
 	require.Empty(t, changed)
+}
+
+func TestReconcilePreservesOperatorSchema(t *testing.T) {
+	src := fstest.MapFS{"files/providers/on-demand/eng/config.yaml": {Data: []byte("description: updated\nruntime:\n  execution: {command: engine}\n")}}
+	root := t.TempDir()
+	filename := filepath.Join(root, "on-demand", "eng", "config.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(filename), 0700))
+	require.NoError(t, os.WriteFile(filename, []byte("description: old\nschema:\n  future_flag: {type: bool, negatable: true}\n  dtype: {enum: [old, new]}\nruntime:\n  execution: {command: previous}\n"), 0600))
+	var before map[string]any
+	data, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(data, &before))
+	changed, err := reconcile(src, root)
+	require.NoError(t, err)
+	require.NotEmpty(t, changed)
+	data, err = os.ReadFile(filename)
+	require.NoError(t, err)
+	var after map[string]any
+	require.NoError(t, yaml.Unmarshal(data, &after))
+	assert.Equal(t, before["schema"], after["schema"])
+	assert.Equal(t, "engine", after["runtime"].(map[string]any)["execution"].(map[string]any)["command"])
 }

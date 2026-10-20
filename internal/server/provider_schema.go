@@ -24,7 +24,7 @@ func loadProviderSchema(store *pkgConfig.AppsConfigStore, provider string) *sche
 		slog.Warn("provider schema incomplete; using available shapes", "provider", provider, "error", err)
 	}
 	if merged == nil {
-		merged, _ = schema.Merge(provider, nil)
+		merged, _ = schema.Merge(provider, nil, pkgConfig.ServiceConfig{})
 	}
 	return merged
 }
@@ -146,36 +146,46 @@ func providerRuntimeChecks(store *pkgConfig.AppsConfigStore) install.RuntimeChec
 
 func providerSchema(store *pkgConfig.AppsConfigStore) func(string) (*schema.ProviderSchema, error) {
 	return func(provider string) (*schema.ProviderSchema, error) {
-		var declared *schema.YAMLSchema
-		var features map[string]pkgConfig.Feature
+		var svc pkgConfig.ServiceConfig
 		if store != nil {
-			svc, _ := store.Config().LookupApp(provider)
-			features = svc.Features
-			data, err := store.ReadProviderSchemaBytes(provider)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
-			if len(data) > 0 {
-				declared, err = schema.LoadYAMLSchema(data)
-				if err != nil {
-					return nil, err
-				}
-			}
+			svc, _ = store.Config().LookupApp(provider)
 		}
-		merged, errs := schema.Merge(provider, declared)
+		declared, err := readProviderSchema(store, provider)
+		if err != nil {
+			return nil, err
+		}
+		merged, errs := serviceSchema(provider, svc, declared)
 		for _, err := range errs {
 			slog.Warn("provider schema entry dropped", "provider", provider, "error", err)
 		}
-		// A file feature's flag takes only an opt-out of the file zzRouter
-		// supplies, never a path (docs/model_features.md).
-		for name, feature := range features {
-			if _, declared := merged.Parameters[feature.Flag]; feature.Flag != "" && !declared {
-				merged.Parameters[feature.Flag] = schema.ParamShape{Kind: schema.ParamString, Enum: []string{runsettings.Auto, "false"}, Description: "Opt out of the " + name + " feature's file"}
-			}
+		for _, problem := range merged.Problems {
+			slog.Warn("operator schema field dropped", "provider", provider, "path", problem.Key, "problem", problem.Message)
 		}
 		if declared != nil && declared.Diagnostics != nil && merged.Diagnostics == nil {
 			return merged, errors.Join(errs...)
 		}
 		return merged, nil
 	}
+}
+
+func readProviderSchema(store *pkgConfig.AppsConfigStore, provider string) (*schema.YAMLSchema, error) {
+	if store == nil {
+		return nil, nil
+	}
+	data, err := store.ReadProviderSchemaBytes(provider)
+	if err != nil || len(data) == 0 {
+		return nil, err
+	}
+	return schema.LoadYAMLSchema(data)
+}
+
+func serviceSchema(provider string, svc pkgConfig.ServiceConfig, declared *schema.YAMLSchema) (*schema.ProviderSchema, []error) {
+	merged, errs := schema.Merge(provider, declared, svc)
+	// A file feature's flag takes only an opt-out of the file zzRouter supplies.
+	for name, feature := range svc.Features {
+		if _, declared := merged.Parameters[feature.Flag]; feature.Flag != "" && !declared {
+			merged.Parameters[feature.Flag] = schema.ParamShape{Kind: schema.ParamString, Enum: []string{runsettings.Auto, "false"}, Description: "Opt out of the " + name + " feature's file"}
+		}
+	}
+	return merged, errs
 }

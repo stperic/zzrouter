@@ -40,7 +40,7 @@ func lifecycleSchema(t *testing.T) (Option, func(bool)) {
 	}
 	set(true)
 	return WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		declared, errs := schema.Merge(provider, current.Load())
+		declared, errs := schema.Merge(provider, current.Load(), config.ServiceConfig{})
 		return declared, errors.Join(errs...)
 	}), set
 }

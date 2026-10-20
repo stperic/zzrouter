@@ -3,11 +3,11 @@ package schema
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Check reads the canonical string a launch passes: a JSON number or
@@ -103,7 +103,7 @@ func TestCheckEnumBoundsNumbers(t *testing.T) {
 func TestMerge_NumericEnumIsCanonical(t *testing.T) {
 	y, err := LoadYAMLSchema([]byte("provider: x\nparameters:\n  scale: {type: float, enum: [0.5, 1.0, 2e0]}\n  rank: {type: int, enum: [8, 16.0]}\n  mode: {type: string, enum: [\"1.0\"]}\n"))
 	require.NoError(t, err)
-	merged, errs := Merge("x", y)
+	merged, errs := Merge("x", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, []string{"0.5", "1", "2"}, merged.Parameters["scale"].Enum)
 	assert.Equal(t, []string{"8", "16"}, merged.Parameters["rank"].Enum)
@@ -112,7 +112,7 @@ func TestMerge_NumericEnumIsCanonical(t *testing.T) {
 
 	y, err = LoadYAMLSchema([]byte("provider: x\nparameters:\n  scale: {type: float, enum: [low]}\n"))
 	require.NoError(t, err)
-	_, errs = Merge("x", y)
+	_, errs = Merge("x", y, config.ServiceConfig{})
 	require.Len(t, errs, 1)
 	assert.ErrorContains(t, errs[0], `enum entry "low" is not a number`)
 }

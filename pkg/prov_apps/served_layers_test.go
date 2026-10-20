@@ -34,7 +34,7 @@ func offloadSchema(t *testing.T) *schema.ProviderSchema {
 	require.NoError(t, err)
 	y, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
-	declared, errs := schema.Merge("llamacpp", y)
+	declared, errs := schema.Merge("llamacpp", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	declared.Parameters["budget"] = schema.ParamShape{} // the contract rig's providers set it
 	return declared

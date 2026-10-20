@@ -4,6 +4,7 @@ package runsettings
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -16,6 +17,13 @@ const (
 
 // Auto is the reserved value asking zzRouter to choose a parameter's value.
 const Auto = "auto"
+
+var paramKeyRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+
+// ValidKey reports whether a parameter key uses the run-parameter vocabulary.
+func ValidKey(key string) bool {
+	return paramKeyRe.MatchString(key)
+}
 
 // FlagName is how argv spells a parameter key, after "--": parameter_name
 // and parameter-name are one flag, which every merge, write and check keys by.

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
@@ -40,7 +41,7 @@ func cacheSchema(t *testing.T, provider string) *schema.ProviderSchema {
 	require.NoError(t, err)
 	y, err := schema.LoadYAMLSchema(data)
 	require.NoError(t, err)
-	declared, errs := schema.Merge(provider, y)
+	declared, errs := schema.Merge(provider, y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	declared.Parameters["budget"] = schema.ParamShape{} // the contract rig's providers set it
 	return declared

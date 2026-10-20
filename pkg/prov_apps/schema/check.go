@@ -24,7 +24,7 @@ func Check(key, value string, shapes map[string]ParamShape) *utils.ParamError {
 	flag := runsettings.FlagName(key) // the key as stored or sent names its flag, and refusals name the key
 	shape, known := shapes[flag]
 	if !known {
-		message := fmt.Sprintf("unknown parameter %q", key)
+		message := fmt.Sprintf("unknown parameter %q; declare a newer engine flag under schema.<flag> with zz_params_set", key)
 		if positive, negated := strings.CutPrefix(flag, "no-"); negated && shapes[positive].Negatable {
 			message += fmt.Sprintf("; set %s: false, which passes --%s", positive, flag)
 		}

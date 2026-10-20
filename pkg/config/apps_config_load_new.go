@@ -299,6 +299,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 	switch tp := p.(type) {
 	case *OnDemandProvider:
 		return ServiceConfig{
+			Schema:          tp.Schema,
 			Install:         tp.Install,
 			Features:        tp.Features,
 			Enabled:         tp.Enabled,
@@ -322,6 +323,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 		}
 	case *ExternalProvider:
 		return ServiceConfig{
+			Schema:          tp.Schema,
 			Features:        tp.Features,
 			Enabled:         tp.Enabled,
 			Name:            tp.Name,

@@ -25,6 +25,12 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 17 raises both the current version and minimum from 16 to 17. Provider
+synchronization carries the operator-owned `schema:` block in `config.yaml`,
+which protocol-16 strict loaders reject. The existing fresh-evidence gate sends
+no provider push to a protocol-16 peer. Upgrade coordinators and workers together
+using the maintenance procedure below before declaring new engine flags.
+
 Protocol 16 raises the minimum from 15 to 16. Provider synchronization carries
 `capabilities.architectures`, which older strict loaders reject. Internal
 `/zzrouter/v1/internal/nodes/compatible` requests carry `architecture` and

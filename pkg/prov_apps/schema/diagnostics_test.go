@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -44,7 +45,7 @@ func TestDiagnosticsRejectUnsafeDeclarations(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			declared, err := LoadYAMLSchema([]byte(strings.Replace(diagnosticSchema, tc.old, tc.replacement, 1)))
 			if err == nil {
-				_, errs := Merge("arbitrary-engine", declared)
+				_, errs := Merge("arbitrary-engine", declared, config.ServiceConfig{})
 				require.NotEmpty(t, errs)
 			}
 		})
@@ -54,7 +55,7 @@ func TestDiagnosticsRejectUnsafeDeclarations(t *testing.T) {
 func TestDiagnosticsSurviveSchemaAndWireRoundTrips(t *testing.T) {
 	declared, err := LoadYAMLSchema([]byte(diagnosticSchema))
 	require.NoError(t, err)
-	merged, errs := Merge("arbitrary-engine", declared)
+	merged, errs := Merge("arbitrary-engine", declared, config.ServiceConfig{})
 	require.Empty(t, errs)
 	require.NotNil(t, merged.Diagnostics)
 	assert.Equal(t, "device-budget", merged.Diagnostics.Memory.Parameter)
@@ -121,7 +122,7 @@ func TestAutoMarginSchemaRoundTripAndDefaultCompatibility(t *testing.T) {
 func TestReservationSchema(t *testing.T) {
 	declared, err := LoadYAMLSchema([]byte(strings.Replace(diagnosticSchema, "kind: fraction_total, parameter: device-budget", "kind: reserve_mib, parameter: device-budget, complement_parameter: reserve-vram", 1)))
 	require.NoError(t, err)
-	_, errs := Merge("studio", declared)
+	_, errs := Merge("studio", declared, config.ServiceConfig{})
 	require.Empty(t, errs)
 	for _, budget := range []*MemoryBudget{
 		{Kind: "reserve_mib"},

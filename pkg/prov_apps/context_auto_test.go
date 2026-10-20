@@ -73,7 +73,7 @@ func TestContextAutoUsesFreeMemoryMinusMargin(t *testing.T) {
 			Parameters: map[string]schema.YAMLParam{"max-model-len": {Auto: "auto"}},
 			Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}},
 				Memory: &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "gpu-memory-utilization", AutoSafetyMarginMiB: 1000}},
-		})
+		}, config.ServiceConfig{})
 		require.Empty(t, errs)
 		return declared, nil
 	}
@@ -122,7 +122,7 @@ func TestFilterLaunchAutoUsesEndpointShape(t *testing.T) {
 			Endpoints: map[string]schema.YAMLEndpoint{"embeddings": {Parameters: map[string]schema.YAMLParam{"context": {Auto: "auto"}}}},
 			Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}},
 				Memory: &schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}},
-		})
+		}, config.ServiceConfig{})
 		require.Empty(t, errs)
 		return declared, nil
 	}
@@ -136,7 +136,7 @@ func TestFilterLaunchAutoUsesEndpointShape(t *testing.T) {
 
 func TestLaunchPreparationResolvesSchemaOnce(t *testing.T) {
 	var calls atomic.Int32
-	declared, errs := schema.Merge("generic", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"context": {Type: "int", Auto: "0"}, "budget": {}}})
+	declared, errs := schema.Merge("generic", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"context": {Type: "int", Auto: "0"}, "budget": {}}}, config.ServiceConfig{})
 	require.Empty(t, errs)
 	r := newContractRig(t, true, WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
 		calls.Add(1)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +31,7 @@ func TestCacheLogDeclarationsValidateCaptures(t *testing.T) {
 				y, err := LoadYAMLSchema([]byte("unknown_future_metadata: ignored\ncache_log:\n  " + role + ": '" + tc.pattern + "'\n"))
 				require.NoError(t, err)
 				y.Parameters = map[string]YAMLParam{"long-tail": {Type: "int"}}
-				declared, errs := Merge("generic", y)
+				declared, errs := Merge("generic", y, config.ServiceConfig{})
 				require.Empty(t, errs)
 				assert.Equal(t, ParamInt, declared.Parameters["long-tail"].Kind)
 				if !tc.valid {
@@ -49,7 +50,7 @@ func TestCacheLogDeclarationsValidateCaptures(t *testing.T) {
 			})
 		}
 	}
-	declared, errs := Merge("generic", &YAMLSchema{CacheLog: map[string]string{"tokens": "(value)", "invented": "(value)"}})
+	declared, errs := Merge("generic", &YAMLSchema{CacheLog: map[string]string{"tokens": "(value)", "invented": "(value)"}}, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Nil(t, declared.CacheLog)
 }

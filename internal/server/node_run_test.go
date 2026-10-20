@@ -49,7 +49,7 @@ func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsCo
 	// seed is the fixture's own integer parameter: its values exceed float64 precision.
 	declared := &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"seed": {Type: "int"}}}
 	seed := prov_apps.WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared)
+		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	})
 	mgr, err := prov_apps.NewProviderAppManager(cfg, seed, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {

@@ -33,6 +33,7 @@ const (
 // ServiceConfig represents a single app's configuration (synthesized
 // view of a typed Provider in the providers/ directory tree)
 type ServiceConfig struct {
+	Schema map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
 	// node is the node this view is read for: IsEnabled and its siblings
 	// resolve that node's choice. AppsConfig.LookupApp and RangeApps set it.
 	node     string

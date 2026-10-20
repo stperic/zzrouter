@@ -39,7 +39,7 @@ func declaredSchema(t *testing.T, fragments ...string) Option {
 	declared, err := declaredFragments(fragments...)
 	require.NoError(t, err)
 	return WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared)
+		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	})
 }
@@ -212,7 +212,7 @@ parameters:
 	require.NoError(t, err)
 	current.Store(parsed)
 	r := newContractRig(t, false, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, current.Load())
+		merged, errs := schema.Merge(provider, current.Load(), config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	}))
 	run := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "m", Parameters: map[string]string{"seed": "7"}})})[0]

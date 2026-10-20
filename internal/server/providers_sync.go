@@ -89,7 +89,7 @@ func (s *Server) HandleProviderSync(c *gin.Context) {
 			BadRequest(c, "validate schema: "+err.Error())
 			return
 		}
-		_, errs := schema.Merge(name, declared)
+		_, errs := schema.Merge(name, declared, pkgConfig.ServiceConfig{})
 		if len(errs) != 0 {
 			BadRequest(c, "validate schema: "+errors.Join(errs...).Error())
 			return

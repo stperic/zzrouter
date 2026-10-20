@@ -21,6 +21,7 @@ import (
 // PATCH /providers/:name/parameters. json.RawMessage lets us distinguish
 // absent keys (no-op), explicit null (delete), and set values.
 type paramPatchBody struct {
+	Schema   json.RawMessage        `json:"schema,omitempty"`
 	Defaults *defaultsPatch         `json:"defaults,omitempty"`
 	Models   map[string]*modelPatch `json:"models,omitempty"`
 	Nodes    map[string]*nodePatch  `json:"nodes,omitempty"`
@@ -110,6 +111,9 @@ func validatePatch(provider string, cfg *pkgConfig.ServiceConfig, patch *paramPa
 	mergedSchema *schema.ProviderSchema, scope patchScope,
 ) []utils.ParamError {
 	var errs []utils.ParamError
+	if len(patch.Schema) > 0 && !cfg.SyncedToWorkers() {
+		errs = append(errs, utils.ParamError{Key: "schema", Code: string(httperr.CodeInvalidValue), Message: "schema declarations require an on-demand or external provider"})
+	}
 	knownNodes := scope.nodes
 	knownModels := knownModelsForProvider(cfg)
 	flat := mergedSchema.Parameters
@@ -337,18 +341,7 @@ func checkJSONType(key string, raw json.RawMessage, shape schema.ParamShape) *ut
 
 // isJSONNull reports whether a RawMessage is literally `null`.
 func isJSONNull(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	// Trim ASCII whitespace that json.RawMessage may carry.
-	i, j := 0, len(raw)
-	for i < j && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r') {
-		i++
-	}
-	for j > i && (raw[j-1] == ' ' || raw[j-1] == '\t' || raw[j-1] == '\n' || raw[j-1] == '\r') {
-		j--
-	}
-	return j-i == 4 && string(raw[i:j]) == "null"
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // decodePatchBody decodes a merge-patch body, rejecting any field the
@@ -370,6 +363,12 @@ func decodePatchBody(c *gin.Context, raw []byte) (*paramPatchBody, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	err := dec.Decode(&patch)
+	if err == nil && len(patch.Schema) > 0 {
+		var declarations map[string]*pkgConfig.ParameterDeclaration
+		strict := json.NewDecoder(bytes.NewReader(patch.Schema))
+		strict.DisallowUnknownFields()
+		err = strict.Decode(&declarations)
+	}
 	if err == nil {
 		if dec.More() {
 			BadRequest(c, "merge-patch "+errTrailingJSON.Error())
@@ -382,7 +381,7 @@ func decodePatchBody(c *gin.Context, raw []byte) (*paramPatchBody, bool) {
 		RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", []utils.ParamError{{
 			Key:     strings.Trim(name, `"`),
 			Code:    string(httperr.CodeUnknownField),
-			Want:    "defaults | models.<model> | nodes.<node>[.models.<model>], each holding parameters | environment | endpoints, and models.<model> also from | request",
+			Want:    "schema.<flag> (type | min | max | enum | description | pass | auto | negatable); defaults | models.<model> | nodes.<node>[.models.<model>], each holding parameters | environment | endpoints, and models.<model> also from | request",
 			Message: unknownFieldAdvice(strings.Trim(name, `"`)),
 		}})
 		return nil, false

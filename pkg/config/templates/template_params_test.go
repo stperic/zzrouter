@@ -88,7 +88,7 @@ func TestVLLMToolCallingSchemaReachesExistingInstall(t *testing.T) {
 	require.Equal(t, live, updated)
 	declared, err = schema.LoadYAMLSchema(updated)
 	require.NoError(t, err)
-	merged, errs := schema.Merge("vllm", declared)
+	merged, errs := schema.Merge("vllm", declared, config.ServiceConfig{})
 	require.Empty(t, errs)
 	for key, kind := range map[string]schema.ParamKind{"enable-auto-tool-choice": schema.ParamBool, "tool-call-parser": schema.ParamString, "reasoning-parser": schema.ParamString} {
 		require.Equal(t, kind, merged.Parameters[key].Kind)
@@ -161,4 +161,45 @@ func TestShippedAutoContextPolicies(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &svc))
 	assert.Empty(t, svc.GetContextParam())
 	assert.Empty(t, svc.Defaults.Environment)
+}
+
+func TestReconcileRestoresShippedDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	filename := filepath.Join(root, "on-demand", "vllm", "schema.yaml")
+	require.NoError(t, os.WriteFile(filename, []byte("parameters: {}\n"), 0o600))
+	changed, err := templates.ReconcileManagedSpine(root)
+	require.NoError(t, err)
+	assert.Contains(t, changed, path.Join("on-demand", "vllm", "schema.yaml"))
+	restored, err := os.ReadFile(filename)
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(restored)
+	require.NoError(t, err)
+	require.NotNil(t, declared.Diagnostics)
+	require.NoError(t, declared.Diagnostics.Validate())
+	assert.Contains(t, declared.Diagnostics.Runtimes["vllm"].Imports, "vllm.entrypoints.openai.api_server")
+	assert.Contains(t, declared.Diagnostics.Runtimes["vllm"].Imports, "vllm.v1.engine.core")
+
+	for _, rel := range []string{"on-demand/mlx", "on-demand/llamacpp", "external/ollama"} {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel), "schema.yaml"))
+		require.NoError(t, err)
+		declared, err := schema.LoadYAMLSchema(data)
+		require.NoError(t, err)
+		require.NoError(t, declared.Diagnostics.Validate())
+		require.NotNil(t, declared.Diagnostics)
+	}
+}
+
+func TestMLXDiagnosticDoesNotRequireJITOnlyBuild(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, templates.InstallDefaults(root))
+	data, err := os.ReadFile(filepath.Join(root, "on-demand", "mlx", "schema.yaml"))
+	require.NoError(t, err)
+	declared, err := schema.LoadYAMLSchema(data)
+	require.NoError(t, err)
+	for _, runtime := range []string{"mlx", "mlx-vlm"} {
+		t.Run(runtime, func(t *testing.T) {
+			assert.Equal(t, "prebuilt_or_jit", declared.Diagnostics.Runtimes[runtime].Kernels)
+		})
+	}
 }

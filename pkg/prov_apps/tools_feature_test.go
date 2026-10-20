@@ -27,7 +27,7 @@ func toolsLaunchFixture(t *testing.T) (*ProviderAppManager, config.ServiceConfig
 	svc.Features["tools"] = config.Feature{RequiresParameters: []string{"enable-auto-tool-choice", "tool-call-parser"}}
 	tools, err := declaredFragments(tierParameters, "parameters:\n  enable-auto-tool-choice: {type: bool}\n  tool-call-parser: {type: string}\n  chat-template: {type: string}\n")
 	require.NoError(t, err)
-	declared, errs := schema.Merge("vllm", tools)
+	declared, errs := schema.Merge("vllm", tools, config.ServiceConfig{})
 	require.Empty(t, errs)
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return declared, nil }
 	return m, svc, dir

@@ -11,14 +11,15 @@ import (
 // still manage the service-level config via systemd/launchd/nssm (see
 // ServiceManagement), but never launches it per model.
 type ExternalProvider struct {
-	Features      map[string]Feature `yaml:"features,omitempty" json:"features,omitempty"`
-	Name          string             `yaml:"-" json:"name"`
-	Description   string             `yaml:"description,omitempty" json:"description,omitempty"`
-	Protocol      AppProtocol        `yaml:"protocol" json:"protocol"`
-	Enabled       *bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	PinnedVersion string             `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
-	VersionSource *VersionSource     `yaml:"version_source,omitempty" json:"version_source,omitempty"`
-	Requirements  *AppRequirements   `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	Schema        map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
+	Features      map[string]Feature              `yaml:"features,omitempty" json:"features,omitempty"`
+	Name          string                          `yaml:"-" json:"name"`
+	Description   string                          `yaml:"description,omitempty" json:"description,omitempty"`
+	Protocol      AppProtocol                     `yaml:"protocol" json:"protocol"`
+	Enabled       *bool                           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	PinnedVersion string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
+	VersionSource *VersionSource                  `yaml:"version_source,omitempty" json:"version_source,omitempty"`
+	Requirements  *AppRequirements                `yaml:"requirements,omitempty" json:"requirements,omitempty"`
 	// InstallVariants declares per-platform/hardware install artifacts so
 	// zzRouter can install the daemon without hardcoded URLs in Go. Most
 	// externals are user-installed and leave this empty; Ollama declares

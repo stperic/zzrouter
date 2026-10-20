@@ -41,9 +41,10 @@ package version
 // Protocol 15 adds per-node provider enable choices, which older provider schemas reject,
 // and the worker route that records them on the coordinator.
 // Protocol 16 adds architecture capabilities and internal deploy architecture selection.
+// Protocol 17 adds operator schema declarations to strictly decoded provider configs.
 const (
-	ClusterProtocolVersion    = 16
-	MinClusterProtocolVersion = 16
+	ClusterProtocolVersion    = 17
+	MinClusterProtocolVersion = 17
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

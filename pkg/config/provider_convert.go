@@ -21,6 +21,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 	switch sc.Mode {
 	case constants.AppModeOnDemand:
 		return &OnDemandProvider{
+			Schema:          sc.Schema,
 			Install:         sc.Install,
 			Features:        sc.Features,
 			Name:            name,
@@ -49,6 +50,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 		// stays on the typed struct so systemd/launchd/nssm paths keep
 		// working for ollama.
 		return &ExternalProvider{
+			Schema:          sc.Schema,
 			Features:        sc.Features,
 			Name:            name,
 			Description:     sc.Description,

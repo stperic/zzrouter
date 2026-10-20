@@ -579,3 +579,14 @@ func TestParametersPatch_RunSettings(t *testing.T) {
 	svc, _ = server.configStore.Config().LookupApp("vllm")
 	assert.NotContains(t, svc.Defaults.Parameters, "evict-idle-on-memory-pressure")
 }
+
+func TestOperatorSchemaRefusesUnsupportedKinds(t *testing.T) {
+	for _, mode := range []string{"cloud", "registry"} {
+		cfg := &pkgConfig.ServiceConfig{Mode: mode}
+		patch := &paramPatchBody{Schema: raw(map[string]any{"future": map[string]any{"type": "string"}})}
+		errs := validatePatch("remote", cfg, patch, &schema.ProviderSchema{}, patchScope{})
+		require.Len(t, errs, 1)
+		assert.Equal(t, "schema", errs[0].Key)
+		assert.Equal(t, string(httperr.CodeInvalidValue), errs[0].Code)
+	}
+}

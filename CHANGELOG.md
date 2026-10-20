@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Declare new engine flags in an operator-owned `schema:` block without a
+  zzRouter release. One parameters PATCH or `zz_params_set` can declare and set
+  a flag atomically. Accepted shapes carry `operator: true`; GET `/schema` and
+  `zz_params_get` report refused entries or fields in `problems`. Operator enums,
+  ranges and descriptions survive a later release declaring the same key.
+  Declarations reject invalid flag names, reversed ranges and keys shipped only
+  under endpoint overlays, keeping those endpoint shapes intact.
+  Writes refuse newly invalid configured values, including concurrent narrowing
+  or deletion; existing release problems allow unrelated edits. Reconciliation
+  and provider sync preserve the block. Cluster protocol advances from 16/16 to
+  17/17 because older strict loaders reject it. Upgrade every coordinator and
+  worker together using the maintenance procedure in `docs/protocol_versioning.md`.
+
 - Resolve endpoint parameter overlays consistently in reads and PATCH replies.
   Plain reads work on embeddings-only providers; named views use launch endpoint
   admission, endpoint asset digests and run names in refusals. PATCH replies
@@ -15,7 +28,7 @@
 - Select engines by model architecture as well as format. A declared architecture
   shadows format-only providers; explicit model assignments still win. GGUF shard
   1 supplies `details.family`, ahead of Hugging Face metadata. Incompatible deploys
-  return `architecture_unsupported`. Cluster protocol is now 16/16; upgrade all
+  return `architecture_unsupported`. Architecture capabilities require upgraded
   coordinators and workers together.
 
 - Share MCP server configuration, schemas, errors and HTTP transport through

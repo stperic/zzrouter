@@ -1,11 +1,36 @@
 package schema
 
 import (
+	"errors"
 	"testing"
 	"testing/fstest"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMergeRejectsReversedRanges(t *testing.T) {
+	for _, site := range []string{"flat", "endpoint", "inherited"} {
+		t.Run(site, func(t *testing.T) {
+			parameter := YAMLParam{Type: "int", Min: new(5.0), Max: new(1.0)}
+			y := &YAMLSchema{Parameters: map[string]YAMLParam{"count": parameter}}
+			if site != "flat" {
+				y.Parameters = nil
+				if site == "inherited" {
+					y.Parameters = map[string]YAMLParam{"count": {Type: "int", Min: new(5.0)}}
+					parameter.Min = nil
+				}
+				y.Endpoints = map[string]YAMLEndpoint{"embeddings": {Parameters: map[string]YAMLParam{"count": parameter}}}
+			}
+			_, errs := Merge("custom", y, config.ServiceConfig{})
+			require.Len(t, errs, 1)
+			require.True(t, errors.Is(errs[0], errInvalidRange))
+			require.ErrorContains(t, errs[0], "count.min")
+		})
+	}
+	_, errs := Merge("custom", &YAMLSchema{Parameters: map[string]YAMLParam{"count": {Type: "int", Min: new(5.0), Max: new(5.0)}}}, config.ServiceConfig{})
+	require.Empty(t, errs, "equal bounds admit exactly one number")
+}
 
 func TestLookup(t *testing.T) {
 	shape, ok := Lookup("vllm", "max-model-len")
@@ -32,7 +57,7 @@ func TestMerge_YAMLAugmentsGoSpine(t *testing.T) {
 			"gpu-memory-utilization": {Description: "Weights + KV cache fraction"},
 		},
 	}
-	merged, errs := Merge("vllm", y)
+	merged, errs := Merge("vllm", y, config.ServiceConfig{})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected merge errors: %v", errs)
 	}
@@ -52,7 +77,7 @@ func TestMerge_ShapeConflictFails(t *testing.T) {
 			"max-model-len": {Type: "string"},
 		},
 	}
-	_, errs := Merge("vllm", y)
+	_, errs := Merge("vllm", y, config.ServiceConfig{})
 	if len(errs) == 0 {
 		t.Fatal("expected shape conflict error")
 	}
@@ -65,7 +90,7 @@ func TestMerge_UnknownTypeFails(t *testing.T) {
 			"weird": {Type: "frobnicator"},
 		},
 	}
-	_, errs := Merge("vllm", y)
+	_, errs := Merge("vllm", y, config.ServiceConfig{})
 	if len(errs) == 0 {
 		t.Fatal("expected parse error for unknown type")
 	}
@@ -134,7 +159,7 @@ func TestMerge_EndpointsOverlay(t *testing.T) {
 			},
 		},
 	}
-	merged, errs := Merge("llamacpp", y)
+	merged, errs := Merge("llamacpp", y, config.ServiceConfig{})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected merge errors: %v", errs)
 	}
@@ -203,7 +228,7 @@ func TestMerge_AssetKind(t *testing.T) {
 		// An asset claim on a key the Go spine types as int is still a conflict.
 		"ctx-size": {Type: "asset"},
 	}}
-	merged, errs := Merge("llamacpp", y)
+	merged, errs := Merge("llamacpp", y, config.ServiceConfig{})
 	if merged.Parameters["chat-template-file"].Kind != ParamAsset {
 		t.Fatalf("chat-template-file: got %+v", merged.Parameters["chat-template-file"])
 	}
@@ -234,7 +259,7 @@ func TestMerge_Negatable(t *testing.T) {
 	merged, errs := Merge("llamacpp", &YAMLSchema{Parameters: map[string]YAMLParam{
 		"mmap":    {Type: "bool", Negatable: true},
 		"cpu-moe": {Type: "bool"},
-	}})
+	}}, config.ServiceConfig{})
 	if len(errs) != 0 {
 		t.Fatalf("unexpected merge errors: %v", errs)
 	}
@@ -245,7 +270,7 @@ func TestMerge_Negatable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, errs := Merge("llamacpp", y); len(errs) == 0 {
+	if _, errs := Merge("llamacpp", y, config.ServiceConfig{}); len(errs) == 0 {
 		t.Error("negatable on an int must be refused")
 	}
 }
@@ -258,14 +283,14 @@ func TestMergeLiteralFlagSpelling(t *testing.T) {
 			if endpoint != "" {
 				y = &YAMLSchema{Endpoints: map[string]YAMLEndpoint{endpoint: {Parameters: parameters}}}
 			}
-			merged, errs := Merge("custom", y)
+			merged, errs := Merge("custom", y, config.ServiceConfig{})
 			require.Empty(t, errs)
 			shapes := merged.ForEndpoint(endpoint)
 			require.NotContains(t, shapes, "fp8_e4m3fn-unet")
 			require.Equal(t, "fp8_e4m3fn-unet", shapes["fp8-e4m3fn-unet"].Flag)
 			require.Nil(t, Check("fp8_e4m3fn_unet", "true", shapes))
 			parameters["fp8-e4m3fn-unet"] = YAMLParam{Type: "bool"}
-			_, errs = Merge("custom", y)
+			_, errs = Merge("custom", y, config.ServiceConfig{})
 			require.NotEmpty(t, errs)
 		})
 	}
@@ -277,7 +302,7 @@ func TestEndpointOverlayKeepsBaseLiteralFlag(t *testing.T) {
 		Endpoints: map[string]YAMLEndpoint{"embeddings": {Parameters: map[string]YAMLParam{
 			"fp8-e4m3fn-unet": {Type: "bool"},
 		}}},
-	})
+	}, config.ServiceConfig{})
 	require.Empty(t, errs)
 	shape := merged.ForEndpoint("embeddings")["fp8-e4m3fn-unet"]
 	require.Equal(t, "fp8_e4m3fn-unet", shape.Flag)
@@ -287,7 +312,7 @@ func TestEndpointOverlayKeepsBaseLiteralFlag(t *testing.T) {
 func TestEndpointOverlayErrorPath(t *testing.T) {
 	_, errs := Merge("llamacpp", &YAMLSchema{Endpoints: map[string]YAMLEndpoint{
 		"embeddings": {Parameters: map[string]YAMLParam{"ctx-size": {Type: "string"}}},
-	}})
+	}}, config.ServiceConfig{})
 	require.Len(t, errs, 1)
 	require.EqualError(t, errs[0], `llamacpp.endpoints.embeddings.parameters.ctx-size: schema.yaml type "string" conflicts with Go spine kind "int"`)
 }
