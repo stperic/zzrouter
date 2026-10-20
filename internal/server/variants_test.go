@@ -130,7 +130,7 @@ func TestPatchView(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			node, model := patchView(&tc.patch)
+			node, model, _ := patchView(&tc.patch)
 			assert.Equal(t, tc.node, node)
 			assert.Equal(t, tc.mdl, model)
 		})

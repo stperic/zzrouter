@@ -23,7 +23,7 @@ func TestServesEndpoint(t *testing.T) {
 		err := svc.ValidateRunTarget("model", endpoint)
 		require.ErrorContains(t, err, "chat-only")
 		require.ErrorContains(t, err, endpoint)
-		require.ErrorContains(t, err, "chat_completions")
+		require.ErrorContains(t, err, "serves: chat")
 	}
 	svc.Features = map[string]Feature{"embeddings": {WireEndpoints: []string{"embeddings"}}}
 	require.NoError(t, svc.ServesEndpoint("embeddings"))
@@ -47,6 +47,34 @@ func TestChatEndpointServedByAnyTextAPI(t *testing.T) {
 	svc := ServiceConfig{Name: "embeddings-only", Capabilities: &AppCapabilities{WireEndpoints: []string{"embeddings"}}}
 	require.NoError(t, svc.ValidateRunTarget("model", "embeddings"))
 	require.ErrorContains(t, svc.ValidateRunTarget("model", "chat"), "embeddings-only")
+}
+
+func TestCloudRunEndpointNames(t *testing.T) {
+	svc := ServiceConfig{Name: "cloud", Mode: "cloud", Capabilities: &AppCapabilities{WireEndpoints: []string{"chat_completions"}}}
+	for _, endpoint := range []string{"", "chat", "embeddings", "reranking"} {
+		require.NoError(t, svc.ValidateRunEndpoint(endpoint))
+		require.NoError(t, svc.ValidateRunTarget("model", endpoint))
+	}
+	require.EqualError(t, svc.ValidateRunEndpoint("typo"), `unknown run endpoint "typo"`)
+	require.EqualError(t, svc.ValidateRunTarget("model", "typo"), `unknown run endpoint "typo"`)
+}
+
+func TestNodeRunRefusalNamesSuppliedField(t *testing.T) {
+	svc := ServiceConfig{Name: "node", RunScope: RunScopeNode}
+	for _, tc := range []struct{ model, endpoint, field string }{
+		{model: "model", field: "model_name"},
+		{endpoint: "chat", field: "endpoint"},
+		{model: "model", endpoint: "chat", field: "model_name"},
+	} {
+		t.Run(tc.model+"/"+tc.endpoint, func(t *testing.T) {
+			require.EqualError(t, svc.ValidateRunTarget(tc.model, tc.endpoint), `node-scoped provider "node" accepts no `+tc.field)
+		})
+	}
+}
+
+func TestEndpointRefusalWhenNoRunEndpointServed(t *testing.T) {
+	svc := ServiceConfig{Name: "shim", Capabilities: &AppCapabilities{WireEndpoints: []string{"messages_compat"}}}
+	require.EqualError(t, svc.ServesEndpoint("chat"), `provider "shim" does not serve endpoint "chat": serves no run endpoint`)
 }
 
 func TestEndpointFeatureLoadValidation(t *testing.T) {
@@ -74,5 +102,19 @@ func TestRuntimeExecutionIsDeterministic(t *testing.T) {
 	svc := ServiceConfig{Features: map[string]Feature{"vision": {Runtime: "shared", Execution: last}, "embeddings": {Runtime: "shared", Execution: first}}}
 	for range 100 {
 		require.Same(t, last, svc.RuntimeExecution("shared"))
+	}
+}
+
+func TestEndpointRefusalNamesServedRunEndpoints(t *testing.T) {
+	svc := ServiceConfig{Name: "ranker", Capabilities: &AppCapabilities{WireEndpoints: []string{"rerank"}},
+		Features: map[string]Feature{"embeddings": {WireEndpoints: []string{"embeddings"}}}}
+	require.NoError(t, svc.ServesEndpoint("reranking"))
+	require.NoError(t, svc.ServesEndpoint("embeddings"))
+	require.EqualError(t, svc.ServesEndpoint("chat"), `provider "ranker" does not serve endpoint "chat" (serves: embeddings, reranking)`)
+	require.Error(t, svc.ServesEndpoint(""), "an unnamed launch still means chat")
+	svc.RunScope = RunScopeNode
+	for _, endpoint := range []string{"chat", "embeddings", "reranking", "typo"} {
+		require.EqualError(t, svc.ValidateRunEndpoint(endpoint), `node-scoped provider "ranker" accepts no endpoint`)
+		require.EqualError(t, svc.ValidateRunTarget("", endpoint), `node-scoped provider "ranker" accepts no endpoint`)
 	}
 }

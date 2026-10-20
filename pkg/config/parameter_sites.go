@@ -2,6 +2,8 @@ package config
 
 import (
 	"cmp"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -24,7 +26,7 @@ type ParameterSite struct {
 // walks this rather than the tree's shape.
 func (s *ServiceConfig) ParameterSites() []ParameterSite {
 	var sites []ParameterSite
-	add := func(base []string, params map[string]string, endpoints map[string]EndpointOverlay) {
+	s.parameterTiers(func(base []string, params map[string]string, endpoints map[string]EndpointOverlay) {
 		if len(params) > 0 {
 			sites = append(sites, ParameterSite{Path: dotted(append(base, "parameters")...), Parameters: params})
 		}
@@ -37,21 +39,40 @@ func (s *ServiceConfig) ParameterSites() []ParameterSite {
 				})
 			}
 		}
-	}
-	if s.Defaults != nil {
-		add([]string{"defaults"}, s.Defaults.Parameters, s.Defaults.Endpoints)
-	}
-	for m, spec := range s.Models {
-		add([]string{"models", m}, spec.Parameters, spec.Endpoints)
-	}
-	for n, spec := range s.Nodes {
-		add([]string{"nodes", n}, spec.Parameters, spec.Endpoints)
-		for m, cell := range spec.Models {
-			add([]string{"nodes", n, "models", m}, cell.Parameters, cell.Endpoints)
-		}
-	}
+	})
 	slices.SortFunc(sites, func(a, b ParameterSite) int { return cmp.Compare(a.Path, b.Path) })
 	return sites
+}
+
+// parameterTiers visits every tier, including empty and environment-only overlays.
+func (s *ServiceConfig) parameterTiers(visit func([]string, map[string]string, map[string]EndpointOverlay)) {
+	if s.Defaults != nil {
+		visit([]string{"defaults"}, s.Defaults.Parameters, s.Defaults.Endpoints)
+	}
+	for m, spec := range s.Models {
+		visit([]string{"models", m}, spec.Parameters, spec.Endpoints)
+	}
+	for n, spec := range s.Nodes {
+		visit([]string{"nodes", n}, spec.Parameters, spec.Endpoints)
+		for m, cell := range spec.Models {
+			visit([]string{"nodes", n, "models", m}, cell.Parameters, cell.Endpoints)
+		}
+	}
+}
+
+// checkEndpointNames holds every overlay to the closed set of run endpoints.
+func (s ServiceConfig) checkEndpointNames() error {
+	var problems TreeProblems
+	s.parameterTiers(func(base []string, _ map[string]string, endpoints map[string]EndpointOverlay) {
+		for _, endpoint := range slices.Sorted(maps.Keys(endpoints)) {
+			if _, ok := runWireEndpoints[endpoint]; !ok {
+				problems = append(problems, TreeProblem{Path: dotted(append(base, "endpoints", endpoint)...),
+					Want: strings.Join(slices.Sorted(maps.Keys(runWireEndpoints)), ", "), Message: fmt.Sprintf("unknown run endpoint %q", endpoint)})
+			}
+		}
+	})
+	slices.SortFunc(problems, func(a, b TreeProblem) int { return cmp.Compare(a.Path, b.Path) })
+	return problems.orNil()
 }
 
 func dotted(parts ...string) string { return strings.Join(parts, ".") }

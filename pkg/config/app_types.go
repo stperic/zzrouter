@@ -546,24 +546,39 @@ func (s ServiceConfig) ServesEndpoint(endpoint string) error {
 	if endpoint == "" {
 		endpoint = defaultEndpoint
 	}
-	wires, err := WireEndpoints(endpoint)
-	if err != nil {
+	if _, err := WireEndpoints(endpoint); err != nil {
 		return err
 	}
 	if s.Capabilities == nil || len(s.Capabilities.WireEndpoints) == 0 {
 		return nil
 	}
-	for _, wire := range wires {
-		if s.Capabilities.SupportsWireEndpoint(wire) {
-			return nil
-		}
+	served := s.servedRunEndpoints()
+	if slices.Contains(served, endpoint) {
+		return nil
+	}
+	if len(served) == 0 {
+		return fmt.Errorf("provider %q does not serve endpoint %q: serves no run endpoint", s.Name, endpoint)
+	}
+	return fmt.Errorf("provider %q does not serve endpoint %q (serves: %s)", s.Name, endpoint, strings.Join(served, ", "))
+}
+
+// servedRunEndpoints derives run names from declared base and feature APIs.
+func (s ServiceConfig) servedRunEndpoints() []string {
+	var served []string
+	base := s.Capabilities.EffectiveWireEndpoints()
+	for endpoint, wires := range runWireEndpoints {
+		declared := base
 		for name, feature := range s.Features {
-			if FeatureEndpoint(name) == endpoint && slices.Contains(feature.WireEndpoints, wire) {
-				return nil
+			if FeatureEndpoint(name) == endpoint {
+				declared = append(declared, feature.WireEndpoints...)
 			}
 		}
+		if slices.ContainsFunc(wires, func(wire string) bool { return slices.Contains(declared, wire) }) {
+			served = append(served, endpoint)
+		}
 	}
-	return fmt.Errorf("provider %q does not serve endpoint %q (serves: %s)", s.Name, endpoint, strings.Join(s.Capabilities.EffectiveWireEndpoints(), ", "))
+	slices.Sort(served)
+	return served
 }
 
 // compatShims maps each translation shim to the native endpoint it
@@ -640,19 +655,33 @@ func (c *AppCapabilities) ValidateWireEndpoints() error {
 
 // ValidateRunTarget keeps model requirements consistent across launch and preview.
 func (s ServiceConfig) ValidateRunTarget(model, endpoint string) error {
-	if s.RunScope == RunScopeNode {
-		if model != "" || endpoint != "" {
-			return fmt.Errorf("node-scoped provider %q accepts no model_name or endpoint", s.Name)
-		}
-		return nil
+	if s.RunScope == RunScopeNode && model != "" {
+		return s.nodeRunFieldError("model_name")
 	}
-	if model == "" {
+	if s.RunScope != RunScopeNode && model == "" {
 		return fmt.Errorf("model_name is required: a model-scoped run names its model")
 	}
-	if s.IsCloudProvider() {
+	return s.ValidateRunEndpoint(endpoint)
+}
+
+// ValidateRunEndpoint keeps endpoint admission consistent across launches and views.
+// An endpoint of "" means chat; reads omit this check for their base view.
+func (s ServiceConfig) ValidateRunEndpoint(endpoint string) error {
+	if s.RunScope == RunScopeNode && endpoint != "" {
+		return s.nodeRunFieldError("endpoint")
+	}
+	if _, err := WireEndpoints(endpoint); err != nil {
+		return err
+	}
+	if s.RunScope == RunScopeNode || s.IsCloudProvider() {
 		return nil
 	}
 	return s.ServesEndpoint(endpoint)
+}
+
+// nodeRunFieldError names the supplied field a node-scoped run cannot accept.
+func (s ServiceConfig) nodeRunFieldError(field string) error {
+	return fmt.Errorf("node-scoped provider %q accepts no %s", s.Name, field)
 }
 
 // ValidatePlatform keeps install and launch restrictions on the same declared platforms.

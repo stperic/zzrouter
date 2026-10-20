@@ -227,6 +227,14 @@ type resolvedResponse struct {
 	From string `json:"from,omitempty"`
 }
 
+// validateViewEndpoint leaves unnamed reads on the base view.
+func validateViewEndpoint(cfg *pkgConfig.ServiceConfig, endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	return cfg.ValidateRunEndpoint(endpoint)
+}
+
 // HandleResolved handles GET /providers/:name/resolved?node=&model=.
 func (e *ParamsExecutor) HandleResolved(c *gin.Context) {
 	provider := c.Param("name")
@@ -241,14 +249,14 @@ func (e *ParamsExecutor) HandleResolved(c *gin.Context) {
 		NotFound(c, err.Error())
 		return
 	}
-	if err := cfg.ServesEndpoint(endpoint); err != nil {
+	if err := validateViewEndpoint(cfg, endpoint); err != nil {
 		BadRequest(c, err.Error())
 		return
 	}
 
 	digests := e.assetDigests(provider)
 	resolved := cfg.ResolveEndpoint(node, model, endpoint)
-	out := e.resolvedView(provider, resolved, digests)
+	out := e.resolvedView(provider, endpoint, resolved, digests)
 	if cfg.Install != nil {
 		out.Install = map[string]pkgConfig.ResolvedInstall{}
 		for runtime := range cfg.Install.Runtimes {
@@ -294,12 +302,12 @@ func (e *ParamsExecutor) HandleResolved(c *gin.Context) {
 
 // resolvedView is the wire shape of a resolved tree, with each
 // asset-typed value's content digest.
-func (e *ParamsExecutor) resolvedView(provider string, r pkgConfig.ResolvedParams, digests map[string]string) resolvedResponse {
+func (e *ParamsExecutor) resolvedView(provider, endpoint string, r pkgConfig.ResolvedParams, digests map[string]string) resolvedResponse {
 	out := resolvedToDTO(r)
 	if len(digests) == 0 {
 		return out
 	}
-	shapes := loadProviderSchema(e.configStore, provider).Parameters
+	shapes := loadProviderSchema(e.configStore, provider).ForEndpoint(endpoint)
 	for flag, v := range r.Parameters {
 		if name, ok := v.Value.(string); ok && shapes[flag].Kind == schema.ParamAsset {
 			dto := out.Parameters[v.Key]
@@ -539,6 +547,16 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 		return
 	}
 
+	patchNode, patchModel, patchEndpoint := patchView(patch)
+	node := cmp.Or(c.Query("node"), patchNode, e.nodename())
+	model := cmp.Or(c.Query("model"), patchModel)
+	endpoint := c.Query("endpoint")
+	if err := validateViewEndpoint(cfg, endpoint); err != nil {
+		BadRequest(c, err.Error())
+		return
+	}
+	endpoint = cmp.Or(endpoint, patchEndpoint)
+
 	mergedSchema := loadProviderSchema(e.configStore, provider)
 	nodes := map[string]bool{}
 	if e.knownNodes != nil {
@@ -604,9 +622,9 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 			RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", refused)
 			return
 		}
-		var problems pkgConfig.ModelProblems
+		var problems pkgConfig.TreeProblems
 		if errors.As(err, &problems) {
-			RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", modelProblemErrors(problems))
+			RespondWithParamErrors(c, http.StatusBadRequest, "Bad Request", treeProblemErrors(problems))
 			return
 		}
 		InternalNodeError(c, err.Error())
@@ -632,12 +650,7 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 	}
 	digests := e.assetDigests(provider)
 	e.writeETag(c, provider, digests)
-	// Default response view keys off the patch's most-specific tier when
-	// callers skip ?node=&model=; fall back to coordinator node name.
-	patchNode, patchModel := patchView(patch)
-	node := cmp.Or(c.Query("node"), patchNode, e.nodename())
-	model := cmp.Or(c.Query("model"), patchModel)
-	view := e.resolvedView(provider, cfg2.Resolve(node, model), digests)
+	view := e.resolvedView(provider, endpoint, cfg2.ResolveEndpoint(node, model, endpoint), digests)
 	if cfg2.Install != nil {
 		view.Install = map[string]pkgConfig.ResolvedInstall{}
 		for runtime := range cfg2.Install.Runtimes {
@@ -655,17 +668,28 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 	})
 }
 
-// patchView names the one node and the one model a patch wrote, where it
-// wrote only one, so the answer shows the cell written rather than the
-// provider defaults beside it.
-func patchView(p *paramPatchBody) (node, model string) {
-	if len(p.Models) == 1 {
-		for m := range p.Models {
-			model = m
+// patchView names the one node, model and endpoint a patch wrote, where
+// it wrote only one, so the answer shows the cell written.
+func patchView(p *paramPatchBody) (node, model, endpoint string) {
+	endpoints := map[string]bool{}
+	add := func(eps map[string]*endpointPatch) {
+		for ep := range eps {
+			endpoints[ep] = true
 		}
 	}
-	if len(p.Nodes) == 1 {
-		for n, np := range p.Nodes {
+	if p.Defaults != nil {
+		add(p.Defaults.Endpoints)
+	}
+	for m, mp := range p.Models {
+		if len(p.Models) == 1 {
+			model = m
+		}
+		if mp != nil {
+			add(mp.Endpoints)
+		}
+	}
+	for n, np := range p.Nodes {
+		if len(p.Nodes) == 1 {
 			node = n
 			if model == "" && np != nil && len(np.Models) == 1 {
 				for m := range np.Models {
@@ -673,21 +697,34 @@ func patchView(p *paramPatchBody) (node, model string) {
 				}
 			}
 		}
+		if np != nil {
+			add(np.Endpoints)
+			for _, mp := range np.Models {
+				if mp != nil {
+					add(mp.Endpoints)
+				}
+			}
+		}
+	}
+	if len(endpoints) == 1 {
+		for ep := range endpoints {
+			endpoint = ep
+		}
 	}
 	// A glob key names no model to resolve; resolving it literally would
 	// miss the very cell it wrote.
 	if strings.ContainsAny(model, globMetaChars) {
 		model = ""
 	}
-	return node, model
+	return node, model, endpoint
 }
 
 // globMetaChars are the filepath.Match metacharacters a model key may use.
 const globMetaChars = "*?["
 
-// modelProblemErrors reports what the patched tree could not hold, each
+// treeProblemErrors reports what the patched tree could not hold, each
 // at the path of the field at fault.
-func modelProblemErrors(problems pkgConfig.ModelProblems) []utils.ParamError {
+func treeProblemErrors(problems pkgConfig.TreeProblems) []utils.ParamError {
 	errs := make([]utils.ParamError, len(problems))
 	for i, p := range problems {
 		errs[i] = utils.ParamError{Key: p.Path, Code: string(httperr.CodeInvalidValue), Want: p.Want, Message: p.Message}

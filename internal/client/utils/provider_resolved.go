@@ -19,6 +19,10 @@ type ResolvedValue struct {
 	// Pattern is the model key that matched when it is not the model's
 	// own name: a glob, or a shipped model default's family pattern.
 	Pattern string `json:"pattern,omitempty"`
+	// Endpoint names the overlay that set the value.
+	Endpoint string `json:"endpoint,omitempty"`
+	// Conflicts names other spellings with disagreeing values for this flag.
+	Conflicts []string `json:"conflicts,omitempty"`
 	// SHA256 is the content of the asset an asset-typed value names.
 	SHA256 string `json:"sha256,omitempty"`
 }
@@ -107,14 +111,17 @@ func (c *Client) patchModelCell(provider, model string, cell map[string]any, res
 }
 
 // GetProviderResolved resolves a provider's parameter tree for one model
-// on one node; either may be empty.
-func (c *Client) GetProviderResolved(provider, node, model string) (*ProviderResolved, error) {
+// on one node and endpoint; selectors may be empty.
+func (c *Client) GetProviderResolved(provider, node, model, endpoint string) (*ProviderResolved, error) {
 	q := url.Values{}
 	if node != "" {
 		q.Set("node", node)
 	}
 	if model != "" {
 		q.Set("model", model)
+	}
+	if endpoint != "" {
+		q.Set("endpoint", endpoint)
 	}
 	var out ProviderResolved
 	if err := c.doJSON(http.MethodGet, withQuery(apipath.ProviderResolved(provider), q), nil, &out, "get resolved parameters"); err != nil {

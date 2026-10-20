@@ -120,7 +120,7 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_providers", "GET", "/zzrouter/v1/providers/vllm/status", `{"provider":"vllm","node":"worker"}`, "node=worker", "", `{"data":{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand","instances":[{"drop":"huge"}]}}`, `{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand"}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
 		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
-		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"id":"kept","overridden":["ctx"]}],"unknown":[{"id":"unsynced","reason":"sync pending"}]}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"run_id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"run_id":"kept","overridden":["ctx"]}],"unknown":[{"run_id":"unsynced","reason":"sync pending"}]}}`},
+		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "endpoint=&node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"id":"kept","overridden":["ctx"]}],"unknown":[{"id":"unsynced","reason":"sync pending"}]}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"run_id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"run_id":"kept","overridden":["ctx"]}],"unknown":[{"run_id":"unsynced","reason":"sync pending"}]}}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r"}`, "follow=false&lines=200", "", `{"data":{"lines":["old","last"],"total_lines":12,"count":2,"log_file":"run.log"}}`, `{"lines":["old","last"],"total_lines":12,"log_file":"run.log"}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r","node":"worker"}`, "follow=false&lines=200&node=worker", "", `{"data":{"lines":["stopped"],"total_lines":1,"count":1,"log_file":"r.log"}}`, `{"lines":["stopped"],"total_lines":1,"log_file":"r.log"}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r","grep":"offloaded"}`, "follow=false&lines=200&grep=offloaded", "", `{"data":{"lines":["offloaded 10/29 layers to GPU"],"total_lines":900,"count":1,"filtered":true,"log_file":"run.log"}}`, `{"lines":["offloaded 10/29 layers to GPU"],"total_lines":900,"filtered":true,"log_file":"run.log"}`},
@@ -666,8 +666,8 @@ func TestRunCachePreservesReportedCapacity(t *testing.T) {
 
 func TestParamsGetEndpointOverlays(t *testing.T) {
 	const schemaBody = `{"data":{"parameters":{"ctx-size":{"type":"int","description":"Context length"},"threads":{"type":"int"}},` +
-		`"endpoints":{"embeddings":{"parameters":{"pooling":{"type":"string","description":"Pooling strategy for embeddings"},"embd-normalize":{"type":"int"}}},` +
-		`"reranking":{"parameters":{"reranking":{"type":"bool"}}}}}}`
+		`"endpoints":{"embeddings":{"parameters":{"ctx-size":{"type":"string","enum":["auto"]},"pooling":{"type":"string","description":"Pooling strategy for embeddings"},"embd-normalize":{"type":"int"}}},` +
+		`"reranking":{"parameters":{"reranking":{"type":"bool"}}},"chat":{"parameters":{"threads":{"type":"int"}}}}}}`
 	for _, tc := range []struct {
 		name, endpoint, grep, resolved string
 		accepts                        []string
@@ -707,12 +707,31 @@ func TestParamsGetEndpointOverlays(t *testing.T) {
 				require.Contains(t, accepts, key)
 			}
 			require.EqualValues(t, tc.total, fields["accepts_total"])
+			if shape, ok := accepts["ctx-size"]; ok {
+				if tc.endpoint == "embeddings" {
+					require.Equal(t, "string", shape.(map[string]any)["type"])
+					require.Equal(t, []any{"auto"}, shape.(map[string]any)["enum"])
+				} else {
+					require.Equal(t, "int", shape.(map[string]any)["type"])
+				}
+			}
 			if tc.scoped == nil {
 				require.NotContains(t, fields, "endpoint_parameters")
 				return
 			}
 			require.Equal(t, tc.scoped, fields["endpoint_parameters"])
-			require.Contains(t, fmt.Sprint(result["content"]), "endpoints.<endpoint>.parameters")
 		})
 	}
+}
+
+func TestParamsSetForwardsEndpointSelector(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPatch, r.Method)
+		require.Equal(t, "/zzrouter/v1/providers/llamacpp/parameters", r.URL.Path)
+		require.Equal(t, "embeddings", r.URL.Query().Get("endpoint"))
+		require.Equal(t, "m", r.URL.Query().Get("model"))
+		writeFixture(t, w, []byte(`{"parameters":{"pooling":{"value":"mean","endpoint":"embeddings"}}}`))
+	})
+	result := callAgentTool(t, d, "zz_params_set", map[string]any{"provider": "llamacpp", "model": "m", "endpoint": "embeddings", "patch": map[string]any{}})
+	require.NotEqual(t, true, result["isError"], result)
 }

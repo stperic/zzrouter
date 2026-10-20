@@ -61,6 +61,9 @@ func (p *ExternalProvider) Validate() error {
 	if _, err := (&AppRuntimeConfig{KeepAlive: p.Runtime.KeepAlive}).GetKeepAliveDuration(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
+	if err := providerToServiceConfig(p).checkEndpointNames(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := providerToServiceConfig(p).ValidateRunSettings(); err != nil {
 		return err
 	}

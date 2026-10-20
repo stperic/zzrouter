@@ -62,20 +62,19 @@ func isReservedRequestField(key string) bool {
 	return slices.ContainsFunc(reservedRequestFields, func(f string) bool { return strings.EqualFold(f, key) })
 }
 
-// ModelProblem is a models entry the tree cannot hold,
+// TreeProblem is a field the provider tree cannot hold,
 // at the merge-patch path of the field at fault.
-type ModelProblem struct {
+type TreeProblem struct {
 	Path    string
 	Want    string
 	Message string
 }
 
-// ModelProblems is every ModelProblem found in one check. As an error it
-// wraps ErrInvalidVariant, so a load names them all and a write can
-// report each at its own path.
-type ModelProblems []ModelProblem
+// TreeProblems reports every invalid field found in one tree check,
+// so a load names them all and a write can report each at its own path.
+type TreeProblems []TreeProblem
 
-func (p ModelProblems) Error() string {
+func (p TreeProblems) Error() string {
 	msgs := make([]string, len(p))
 	for i, m := range p {
 		msgs[i] = m.Path + ": " + m.Message
@@ -83,10 +82,8 @@ func (p ModelProblems) Error() string {
 	return strings.Join(msgs, "; ")
 }
 
-func (p ModelProblems) Unwrap() error { return ErrInvalidVariant }
-
 // orNil keeps an empty check from reading as a typed non-nil error.
-func (p ModelProblems) orNil() error {
+func (p TreeProblems) orNil() error {
 	if len(p) == 0 {
 		return nil
 	}
@@ -106,9 +103,9 @@ const (
 // path that brings a tree in — load, sync, a write — runs it, so no
 // caller has to know the rules. A Message never repeats its Path.
 func checkModels(launches bool, models map[string]ModelSpec) error {
-	var problems ModelProblems
+	var problems TreeProblems
 	add := func(path, want, format string, args ...any) {
-		problems = append(problems, ModelProblem{Path: path, Want: want, Message: fmt.Sprintf(format, args...)})
+		problems = append(problems, TreeProblem{Path: path, Want: want, Message: fmt.Sprintf(format, args...)})
 	}
 	checkRequest := func(prefix string, request map[string]any) {
 		for _, field := range slices.Sorted(maps.Keys(request)) {
@@ -164,7 +161,10 @@ func checkModels(launches bool, models map[string]ModelSpec) error {
 				"makes %q a variant, but variant %q runs it; a variant's base must be weights", base, name)
 		}
 	}
-	return problems.orNil()
+	if err := problems.orNil(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidVariant, err)
+	}
+	return nil
 }
 
 // Variant reports whether model names a variant in this provider: a
@@ -242,44 +242,35 @@ func (s *ServiceConfig) SameLaunch(node, a, b string) bool {
 // overlay anywhere in the tree names.
 func (s *ServiceConfig) overlaidEndpoints() []string {
 	set := map[string]bool{defaultEndpoint: true}
-	add := func(eps map[string]EndpointOverlay) {
-		for ep := range eps {
+	s.parameterTiers(func(_ []string, _ map[string]string, endpoints map[string]EndpointOverlay) {
+		for ep := range endpoints {
 			set[ep] = true
 		}
-	}
-	if s.Defaults != nil {
-		add(s.Defaults.Endpoints)
-	}
-	for _, m := range s.Models {
-		add(m.Endpoints)
-	}
-	for _, n := range s.Nodes {
-		add(n.Endpoints)
-		for _, nm := range n.Models {
-			add(nm.Endpoints)
-		}
-	}
+	})
 	return slices.Sorted(maps.Keys(set))
 }
 
 // checkVariantNames refuses a variant of provider that another provider
 // also defines: a variant name selects one engine.
 func (c *AppsConfig) checkVariantNames(provider string, sc ServiceConfig) error {
-	var problems ModelProblems
+	var problems TreeProblems
 	for _, v := range slices.Sorted(maps.Keys(sc.Variants())) {
 		c.RangeApps(func(other string, osc ServiceConfig) bool {
 			if other == provider || osc.Mode != constants.AppModeOnDemand {
 				return true
 			}
 			if _, _, found := osc.Variant(v); found {
-				problems = append(problems, ModelProblem{Path: "models." + v + ".from", Want: "a name no other provider uses",
+				problems = append(problems, TreeProblem{Path: "models." + v + ".from", Want: "a name no other provider uses",
 					Message: fmt.Sprintf("provider %s already defines variant %q; a variant name selects one engine", other, v)})
 				return false
 			}
 			return true
 		})
 	}
-	return problems.orNil()
+	if err := problems.orNil(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidVariant, err)
+	}
+	return nil
 }
 
 // LookupVariant finds the provider that defines a variant of this name.

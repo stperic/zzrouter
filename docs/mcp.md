@@ -323,6 +323,10 @@ run endpoint only (llama.cpp's `pooling` for `embeddings`): without `endpoint`,
 `endpoint_parameters` names them per endpoint; with `endpoint`, they join the
 values, `accepts` and `grep`, and a value set by an overlay carries `endpoint`.
 Set them with `zz_params_set` under `endpoints.<endpoint>.parameters` at a tier.
+The PATCH reply resolves the single endpoint written across all tiers; pass
+`endpoint` to `zz_params_set` to select its reply view explicitly. An omitted
+endpoint on a read keeps the base view, including on embeddings-only providers.
+Unknown overlay names are refused at their merge-patch paths.
 
 `zz_api_search` searches the embedded [OpenAPI contract](../internal/server/openapi.yaml) and
 returns methods, paths, operation IDs, summaries and each parameter's name, location

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Resolve endpoint parameter overlays consistently in reads and PATCH replies.
+  Plain reads work on embeddings-only providers; named views use launch endpoint
+  admission, endpoint asset digests and run names in refusals. PATCH replies
+  select the one endpoint written unless overridden. Unknown overlay names are
+  refused at every tier, including environment-only overlays, before persistence.
+  A misspelled overlay name in a provider file now stops configuration loading,
+  like other strict-load validation failures.
+  `providers resolved --endpoint` exposes the same view, and `zz_params_get`
+  lists only additional endpoint keys in `endpoint_parameters`.
+
 - Select engines by model architecture as well as format. A declared architecture
   shadows format-only providers; explicit model assignments still win. GGUF shard
   1 supplies `details.family`, ahead of Hugging Face metadata. Incompatible deploys

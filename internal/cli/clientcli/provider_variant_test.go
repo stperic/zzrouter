@@ -35,7 +35,7 @@ func (f *fakeVariantAPI) DeleteModelCell(_, model string) error {
 	return nil
 }
 
-func (f *fakeVariantAPI) GetProviderResolved(_, _, model string) (*pkgClient.ProviderResolved, error) {
+func (f *fakeVariantAPI) GetProviderResolved(_, _, model, _ string) (*pkgClient.ProviderResolved, error) {
 	if strings.Contains(model, "+") {
 		return &pkgClient.ProviderResolved{From: "Qwen3.8-27B-Q8_0"}, nil
 	}

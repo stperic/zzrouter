@@ -165,7 +165,7 @@ func TestModelSpec_IsEmpty(t *testing.T) {
 // checked on the tree, not on the write that produced it.
 func TestCheckModels(t *testing.T) {
 	pathsOf := func(err error) []string {
-		var problems ModelProblems
+		var problems TreeProblems
 		require.ErrorAs(t, err, &problems)
 		require.ErrorIs(t, err, ErrInvalidVariant)
 		out := make([]string, len(problems))
@@ -210,7 +210,7 @@ func TestLoad_RefusesABrokenVariant(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, body, 0o600))
 
 	_, err = LoadAppsConfig(dir)
-	var problems ModelProblems
+	var problems TreeProblems
 	require.ErrorAs(t, err, &problems)
 	assert.ElementsMatch(t, []string{"models.v2.from", "models.v1.from"}, []string{problems[0].Path, problems[1].Path})
 }

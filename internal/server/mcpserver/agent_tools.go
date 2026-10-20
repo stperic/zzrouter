@@ -148,11 +148,11 @@ type paramsInput struct {
 	Provider string `json:"provider" jsonschema:"Provider whose parameters to read or change. zz_params_get describes set parameters under accepts; pass grep to zz_params_get to find more accepted names and descriptions."`
 	Node     string `json:"node,omitempty" jsonschema:"Optional target node name, never an address."`
 	Model    string `json:"model,omitempty" jsonschema:"Optional model name for model-tier resolution."`
+	Endpoint string `json:"endpoint,omitempty" jsonschema:"Optional run endpoint to resolve: chat, embeddings or reranking. Reads default to the base view; writes default to the single endpoint in the patch. Its parameters join values and accepts on reads; zz_params_get lists additional keys in endpoint_parameters."`
 }
 type paramsGetInput struct {
 	paramsInput
-	Endpoint string `json:"endpoint,omitempty" jsonschema:"Run endpoint to read: chat (default), embeddings or reranking. Its endpoint-scoped parameters join the values, accepts and grep; endpoint_parameters names them when it is omitted."`
-	Grep     string `json:"grep,omitempty" jsonschema:"Literal text matched case-insensitively in accepted parameter names and descriptions, for example context, kv or thread. Adds matches to the set parameters in accepts."`
+	Grep string `json:"grep,omitempty" jsonschema:"Literal text matched case-insensitively in accepted parameter names and descriptions, for example context, kv or thread. Adds matches to the set parameters in accepts."`
 }
 type patchInput struct {
 	paramsInput
@@ -521,10 +521,7 @@ func (d dispatcher) install(ctx context.Context, in installInput) (agentOutput, 
 }
 
 func (d dispatcher) params(ctx context.Context, in paramsGetInput) (agentOutput, error) {
-	query := url.Values{"node": {in.Node}, "model": {in.Model}}
-	if in.Endpoint != "" {
-		query.Set("endpoint", in.Endpoint)
-	}
+	query := url.Values{"node": {in.Node}, "model": {in.Model}, "endpoint": {in.Endpoint}}
 	out, err := d.childObject(ctx, request{method: http.MethodGet, query: query}, providersRoute, in.Provider, "/resolved", in.Node, "parameters environment request from", "Resolved values and tiers retrieved; use zz_params_set to change them.")
 	if err != nil {
 		return out, err
@@ -543,8 +540,12 @@ func (d dispatcher) params(ctx context.Context, in paramsGetInput) (agentOutput,
 		params, _ := overlay["parameters"].(map[string]any)
 		if name == in.Endpoint {
 			maps.Copy(all, params) // the endpoint's shape wins, as at launch
-		} else if in.Endpoint == "" && len(params) > 0 {
-			scoped[name] = slices.Sorted(maps.Keys(params))
+		} else if in.Endpoint == "" {
+			for _, key := range slices.Sorted(maps.Keys(params)) {
+				if _, shared := base[key]; !shared {
+					scoped[name] = append(scoped[name], key)
+				}
+			}
 		}
 	}
 	set, _ := out.fields["parameters"].(map[string]any)
@@ -577,7 +578,7 @@ func (d dispatcher) patch(ctx context.Context, in patchInput) (agentOutput, erro
 	if in.Patch == nil {
 		return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "patch must be a merge-patch object", nil)
 	}
-	q := url.Values{"node": {in.Node}, "model": {in.Model}}
+	q := url.Values{"node": {in.Node}, "model": {in.Model}, "endpoint": {in.Endpoint}}
 	if in.RestartAffected {
 		q.Set("restart", "affected")
 	}
