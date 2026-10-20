@@ -25,6 +25,11 @@ func ValidKey(key string) bool {
 	return paramKeyRe.MatchString(key)
 }
 
+// InvalidKeyError describes a key outside the run-parameter vocabulary.
+func InvalidKeyError(key string) error {
+	return fmt.Errorf("invalid parameter key %q: must start with a letter and contain only letters, digits, hyphens, underscores", key)
+}
+
 // FlagName is how argv spells a parameter key, after "--": parameter_name
 // and parameter-name are one flag, which every merge, write and check keys by.
 func FlagName(key string) string {
