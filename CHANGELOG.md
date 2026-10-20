@@ -20,6 +20,22 @@
   survive and are included in `zz_update_status` without an expiry. Cluster
   protocol advances to 18/18; upgrade every coordinator and worker together.
 
+- Check replacement memory before stopping an existing run. Refuse only when the
+  launch cannot fit even if the stop freed all used memory that is not provably
+  held by another process, plus the run's unused reservations, per device. Pins
+  and activity do not reduce this credit. A 409 `out_of_range` refusal keeps the
+  old run and reports `kept_run` and `credited_mib`: for a free-memory refusal,
+  the most stopping the kept run could free on the refused device; zero for a
+  sized-context or weights refusal, which no stop fixes. Auto fractions report the
+  free memory needed for a positive rounded fraction. Tool hints explain how to
+  lower the request or stop holders explicitly. Idle evictions are planned first
+  and revalidated after the stop. Unknown driver used memory and unbudgeted
+  engines keep stop-then-admit ordering. Recovery waits target attributed
+  holdings, excluding unaccounted use; caller cancellation aborts, and timeout
+  continues to fresh admission and its memory refusal with tool hints. A late
+  steal may still refuse, retaining the pin record without claiming that a run was
+  kept.
+
 - Declare new engine flags in an operator-owned `schema:` block without a
   zzRouter release. One parameters PATCH or `zz_params_set` can declare and set
   a flag atomically. Accepted shapes carry `operator: true`; GET `/schema` and

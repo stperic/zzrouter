@@ -42,7 +42,15 @@ type RunRef struct {
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
 type MemoryFitError struct {
-	Sized             bool           `json:"-"`
+	// UnaccountedMiB is used memory not provably attributed; nil means used memory is unknown.
+	UnaccountedMiB *int64 `json:"-"`
+	// KeptRun names the registered run preserved by a replacement refusal.
+	KeptRun string `json:"kept_run,omitempty"`
+	// CreditedMiB is the most stopping KeptRun could free on the refused device for a free-memory refusal.
+	// Sized-context and weights refusals cannot be fixed by a stop and report zero.
+	CreditedMiB int64 `json:"credited_mib"`
+	Sized       bool  `json:"-"`
+	// BudgetKind is set only by refusals against totals (sized context or weights reach), which no stop changes.
 	BudgetKind        string         `json:"budget_kind,omitempty"`
 	Parameter         string         `json:"parameter"`
 	Device            string         `json:"device"`
@@ -55,13 +63,17 @@ type MemoryFitError struct {
 // Error names who holds the memory, so the reader can tell an idle zzRouter
 // run it may stop from a workload only the operator can release.
 func (e *MemoryFitError) Error() string {
+	kept := ""
+	if e.KeptRun != "" {
+		kept = fmt.Sprintf("kept run %s; replacement credited %d MiB: ", e.KeptRun, e.CreditedMiB)
+	}
 	if e.Sized {
-		return fmt.Sprintf("model context requirement %d MiB exceeds %s budget of %d MiB (%s)", e.RequiredMiB, e.BudgetKind, e.FreeMiB, e.Parameter)
+		return kept + fmt.Sprintf("model context requirement %d MiB exceeds %s budget of %d MiB (%s)", e.RequiredMiB, e.BudgetKind, e.FreeMiB, e.Parameter)
 	}
 	if e.BudgetKind != "" {
-		return fmt.Sprintf("model weights require %g GiB, exceeding %s reach of %g GiB (%s); choose a smaller quantization or another node", float64(e.RequiredMiB)/1024, e.BudgetKind, float64(e.FreeMiB)/1024, e.Parameter)
+		return kept + fmt.Sprintf("model weights require %g GiB, exceeding %s reach of %g GiB (%s); choose a smaller quantization or another node", float64(e.RequiredMiB)/1024, e.BudgetKind, float64(e.FreeMiB)/1024, e.Parameter)
 	}
-	msg := fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s)", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
+	msg := kept + fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s)", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
 	var held []string
 	for _, h := range e.Holders {
 		size := "size unknown"
@@ -386,15 +398,23 @@ func admitReserved(budget schema.MemoryBudget, parameters, environment map[strin
 func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners []RunRef) *MemoryFitError {
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
 	used := make(map[string]int64)
+	var attributed int64
 	for _, process := range device.Processes {
 		holder := MemoryHolder{PID: process.PID, MemoryMiB: process.MemoryMiB, Ownership: "other_or_untracked"}
-		if run, ok := runOwning(process.PID, owners); ok {
+		run, complete := runOwning(process.PID, owners)
+		if complete && process.MemoryMiB != nil {
+			attributed += max(0, *process.MemoryMiB)
+		}
+		if run.ID != "" {
 			holder.Run, holder.Model, holder.Ownership, holder.Provider = run.ID, run.Model, "zzrouter", run.Provider
 			if process.MemoryMiB != nil {
 				used[run.ID] += max(0, *process.MemoryMiB)
 			}
 		}
 		failure.Holders = append(failure.Holders, holder)
+	}
+	if device.UsedMiB != nil {
+		failure.UnaccountedMiB = new(max(0, *device.UsedMiB-attributed))
 	}
 	for _, run := range owners {
 		usage := used[run.ID]
@@ -412,8 +432,8 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 	return failure
 }
 
-// runOwning returns the run whose process is pid or one of its ancestors: engines hold the GPU from
-// child processes. An ancestry it cannot read is nobody's.
+// runOwning returns the owning run and whether its ancestry was fully read: engines use children.
+// Unreadable ancestry owns nothing; a fully read foreign ancestry is complete evidence.
 func runOwning(pid int, owners []RunRef) (RunRef, bool) {
 	for seen := map[int]bool{}; pid > 0 && len(owners) > 0 && !seen[pid]; {
 		for _, run := range owners {
@@ -428,7 +448,7 @@ func runOwning(pid int, owners []RunRef) (RunRef, bool) {
 		}
 		pid = int(parent)
 	}
-	return RunRef{}, false
+	return RunRef{}, pid <= 0 || len(owners) == 0
 }
 
 // parentPID reads a process's parent; tests replace it.

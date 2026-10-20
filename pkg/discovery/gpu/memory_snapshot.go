@@ -25,13 +25,15 @@ type MemoryDevice struct {
 	FreeMiB       int64           `json:"free_mib"`
 	Processes     []MemoryProcess `json:"processes"`
 	ProcessReason string          `json:"process_reason,omitempty"`
+	// UsedMiB is the driver's memory.used; nil means unknown.
+	UsedMiB *int64 `json:"used_mib,omitempty"`
 }
 
 // MemorySnapshotContext queries memory for admission without using cached metrics.
 func MemorySnapshotContext(ctx context.Context) ([]MemoryDevice, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	fields := []string{nvidiaFieldUUID, nvidiaFieldIndex, nvidiaFieldMemoryTotalMiB, nvidiaFieldMemoryFreeMiB}
+	fields := []string{nvidiaFieldUUID, nvidiaFieldIndex, nvidiaFieldMemoryTotalMiB, nvidiaFieldMemoryFreeMiB, nvidiaFieldMemoryUsedMiB}
 	output, err := boundedNVIDIAOutput(ctx, "--query-gpu="+strings.Join(fields, ","), "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, err
@@ -81,7 +83,11 @@ func memoryDevices(rows []nvidiaRow) ([]MemoryDevice, error) {
 		if indexErr != nil || index < 0 || totalErr != nil || freeErr != nil || total <= 0 || free < 0 || free > total || !isMeaningful(row[nvidiaFieldUUID]) {
 			return nil, fmt.Errorf("GPU memory observation incomplete; no safe admission budget")
 		}
-		devices = append(devices, MemoryDevice{UUID: row[nvidiaFieldUUID], Index: index, TotalMiB: total, FreeMiB: free, Processes: []MemoryProcess{}})
+		device := MemoryDevice{UUID: row[nvidiaFieldUUID], Index: index, TotalMiB: total, FreeMiB: free, Processes: []MemoryProcess{}}
+		if used, err := strconv.ParseInt(row[nvidiaFieldMemoryUsedMiB], 10, 64); err == nil && used >= 0 && used <= total {
+			device.UsedMiB = &used
+		}
+		devices = append(devices, device)
 	}
 	return devices, nil
 }

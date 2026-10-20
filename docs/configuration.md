@@ -292,10 +292,30 @@ with parameters and its last refusal code. Use `zz_params_set` to fix config, th
 `zz_run_start` or `zz_run_restart` to replay; `zz_run_stop` forgets it. It has no run log.
 Explicit stop, including CLI `zzrouter stop <model>`, forgets matching pins only after a
 successful stop. Model deletion and provider disable/uninstall retain the record.
-Restarts prepare before stopping the old run, so preparation refusals keep it serving.
-Memory admission and process start still follow the stop: a memory refusal leaves the
-record, with no live run. Surviving daemon models can be re-adopted; daemon unloads are
-not prevented.
+Restarts prepare and check memory before stopping the old run. A pre-check refuses
+only if the launch cannot fit even if the stop freed all driver-reported used memory
+not provably held by another process, plus the run's unused commitments, per device.
+Known process memory is excluded from that bound only when its ancestry is fully read
+and belongs to another run or no run. Unattributed context memory, unknown process
+sizes and unreadable ancestry stay inside the bound. A failed process listing leaves
+all used memory inside it. Pins, activity and leases do not reduce replacement credit.
+Eligible idle evictions are planned without stopping or claiming victims; execution
+revalidates eligibility after the old run stops. A refusal keeps the old run registered
+and serving if it was live: the existing 409 `out_of_range` includes
+`errors[].got.kept_run` and `credited_mib`: for a free-memory refusal, the most stopping
+the kept run could free on the refused device; zero for a sized-context or weights
+refusal, which no stop fixes.
+Lower the request with `zz_params_set` and `zz_run_preview`, stop other holders with
+`zz_run_stop`, or explicitly stop the kept run with `zz_run_stop` then `zz_run_start`.
+Unknown driver used memory and unbudgeted engines retain stop-then-admit ordering.
+No admission slot is held across the stop: another workload can take the released
+memory. When replacement credit was needed, the start waits for driver recovery of
+its attributed holdings with a bounded timeout, excluding unaccounted use. Expiry
+continues to fresh preparation and admission, including auto GPU budgets and device
+selection; caller cancellation aborts. If memory still cannot fit, admission returns
+the same 409 refusal and tool hints. A late refusal retains the pin record with no live
+run and makes no `kept_run` claim. Surviving daemon models can be re-adopted; daemon
+unloads are not prevented.
 Upgrade every worker before relying on pins: an older worker keeps `-1` as
 idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.
 

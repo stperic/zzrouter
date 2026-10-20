@@ -319,3 +319,10 @@ const (
 	// mistaken for a chat chunk.
 	ModelLoadHeartbeat = 10 * time.Second
 )
+
+const (
+	// MemoryRecoveryTimeout bounds asynchronous driver release after a process exits.
+	MemoryRecoveryTimeout = 5 * time.Second
+	// MemoryRecoveryInterval avoids hammering the driver while its accounting settles.
+	MemoryRecoveryInterval = 100 * time.Millisecond
+)

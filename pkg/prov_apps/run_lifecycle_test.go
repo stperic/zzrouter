@@ -237,24 +237,36 @@ func TestRunLifecyclePrepareBeforeReplacement(t *testing.T) {
 }
 
 func TestRunLifecycleMemoryRefusalKeepsRecord(t *testing.T) {
-	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
-	f := newQueueFixture(t)
-	result, err := f.mgr.EnsureRun(t.Context(), pinRequest("memory"))
-	require.NoError(t, err)
-	f.release(t, result.Run)
-	before := readPins(t)
-	f.setFree("4000")
-	req := pinRequest("memory")
-	req.Force = true
-	_, err = f.mgr.EnsureRun(t.Context(), req)
-	var refused *process.MemoryFitError
-	require.ErrorAs(t, err, &refused)
-	assert.Equal(t, before, readPins(t))
-	assert.Empty(t, f.mgr.instances.List())
-	listed := f.mgr.ListInstances("node")
-	require.Len(t, listed, 1)
-	assert.True(t, listed[0].RecordOnly)
-	require.ErrorAs(t, listed[0].Refusal, &refused)
+	for _, known := range []bool{true, false} {
+		t.Run(map[bool]string{true: "known", false: "unknown"}[known], func(t *testing.T) {
+			r := newReplacementRig(t, 1000, 2000, true)
+			if !known {
+				r.before[0].Processes = nil
+			}
+			before := readPins(t)
+			_, err := r.replace(t)
+			var refused *process.MemoryFitError
+			require.ErrorAs(t, err, &refused)
+			assert.Equal(t, before, readPins(t))
+			if known {
+				registered, ok := r.m.instances.Get(r.old.ID)
+				require.True(t, ok)
+				assert.Same(t, r.old, registered)
+				assert.Equal(t, instance.StatusRunning, r.old.GetStatus())
+			} else {
+				assert.False(t, r.m.instances.Has(r.old.ID))
+				assert.Equal(t, instance.StatusStopped, r.old.GetStatus())
+			}
+			for _, listed := range r.m.ListInstances("node") {
+				if listed.Model == r.old.Model {
+					assert.Equal(t, !known, listed.RecordOnly)
+					if !known {
+						require.ErrorAs(t, listed.Refusal, &refused)
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestRunLifecycleInferenceConfigPinIsNotRecorded(t *testing.T) {

@@ -93,7 +93,7 @@ func TestPreviewLaunchPreservesPartialResultOnPrepareError(t *testing.T) {
 	cause := errors.New("schema unavailable")
 	m.providerSchema = func(string) (*schema.ProviderSchema, error) { return nil, cause }
 	m.memoryInventory = func(context.Context) []gpu.CardMetrics {
-		t.Fatal("failed preparation must not assess capacity")
+		t.Error("failed preparation must not assess capacity")
 		return nil
 	}
 	preview, err := m.PreviewLaunch(t.Context(), req, 8100)
@@ -124,7 +124,7 @@ func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
 	assert.Zero(t, assessment.CapacityMiB)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	assessment, err = m.checkMemory(t.Context(), features, false)
+	assessment, _, err = m.checkMemory(t.Context(), features, false, nil)
 	require.NoError(t, err, "CPU launch keeps its existing observation bypass")
 	assert.Equal(t, "unknown", assessment.Status)
 }
@@ -234,7 +234,7 @@ func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
 			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 			}
-			decision, err := m.checkMemory(ctx, features, false)
+			decision, _, err := m.checkMemory(ctx, features, false, nil)
 			require.NoError(t, err)
 			require.Equal(t, "fit", decision.Status)
 			require.Positive(t, decision.RequiredMiB)
@@ -244,7 +244,7 @@ func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
 				cancel()
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 			}
-			assessment, err := m.checkMemory(ctx, features, false)
+			assessment, _, err := m.checkMemory(ctx, features, false, nil)
 			require.ErrorIs(t, err, context.Canceled)
 			assert.Equal(t, "unknown", assessment.Status)
 			assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
@@ -287,12 +287,12 @@ func TestNilBudgetLaunchEvidenceIsBestEffort(t *testing.T) {
 				}
 				features.model = process.ResolvedModel{Path: dir}
 				m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-					t.Fatal("nil budgets must not observe or wait for device memory")
-					return nil, nil
+					t.Error("nil budgets must not observe or wait for device memory")
+					return nil, process.ErrMemoryObservation
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
-				assessment, err := m.checkMemory(ctx, features, false)
+				assessment, _, err := m.checkMemory(ctx, features, false, nil)
 				require.NoError(t, err)
 				assert.Equal(t, "unknown", assessment.Status)
 				assert.Equal(t, process.BudgetNotSized, assessment.UnknownCause)
@@ -357,7 +357,7 @@ func TestCapacityPreservesEnvironmentValidation(t *testing.T) {
 	require.NoError(t, err)
 	features.Environment = map[string]string{"LD_PRELOAD": "injected"}
 	for _, capacity := range []bool{false, true} {
-		assessment, err := m.checkMemory(t.Context(), features, capacity)
+		assessment, _, err := m.checkMemory(t.Context(), features, capacity, nil)
 		require.ErrorIs(t, err, process.ErrDangerousEnvVar)
 		assert.NotErrorIs(t, err, process.ErrMemoryObservation)
 		assert.Equal(t, "unknown", assessment.Status)
@@ -397,7 +397,7 @@ func TestMinimumContextUsesEndpointSchema(t *testing.T) {
 		require.NoError(t, err)
 		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 		require.NoError(t, err)
-		admitted, err := m.checkMemory(t.Context(), features, false)
+		admitted, _, err := m.checkMemory(t.Context(), features, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, tc.tokens, preview.Assessment.ContextTokens)
 		assert.Equal(t, preview.Assessment, admitted)
@@ -413,7 +413,7 @@ func TestAutoContextCapacityAndAdmissionDifferOnlyByObservation(t *testing.T) {
 	require.Equal(t, "fit", capacity.Status)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	admission, err := m.checkMemory(t.Context(), features, false)
+	admission, _, err := m.checkMemory(t.Context(), features, false, nil)
 	require.Error(t, err)
 	assert.Equal(t, "no_fit", admission.Status)
 	assert.Equal(t, capacity.ContextTokens, admission.ContextTokens)
@@ -458,7 +458,9 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 	fraction := 0.75
 	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
 		declared, errs := schema.Merge(provider, &schema.YAMLSchema{AutoContext: schema.AutoContext{AutoMinContextTokens: 4096}, MemoryUsableFraction: &fraction, Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: schema.MemoryUnified}}}, config.ServiceConfig{})
-		require.Empty(t, errs)
+		if !assert.Empty(t, errs) {
+			return nil, errors.New("invalid test schema")
+		}
 		return declared, nil
 	}
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
@@ -476,7 +478,7 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 			originalEnvironment = maps.Clone(features.Environment)
 		}
 		assert.Equal(t, originalEnvironment, features.Environment, "schema fraction never changes recorded engine environment")
-		admission, err := m.checkMemory(t.Context(), features, false)
+		admission, _, err := m.checkMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, admission)
 		assert.Equal(t, "auto", admission.ContextMode)
 		assert.Equal(t, int64(4096), admission.ContextTokens)
@@ -537,7 +539,7 @@ func TestNativeContextAdmissionAllowsEngineAdaptation(t *testing.T) {
 		require.NoError(t, err)
 		features, err := m.ResolveLaunchParameters(t.Context(), req)
 		require.NoError(t, err)
-		assessment, err := m.checkMemory(t.Context(), features, false)
+		assessment, _, err := m.checkMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, assessment)
 		if context == "auto" {
 			require.NoError(t, err)
@@ -574,7 +576,7 @@ func TestKVCacheRolesReachPreviewAndAdmission(t *testing.T) {
 		require.NoError(t, err)
 		features, err := m.ResolveLaunchParameters(t.Context(), req)
 		require.NoError(t, err)
-		assessment, err := m.checkMemory(t.Context(), features, false)
+		assessment, _, err := m.checkMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, assessment)
 		switch dtype {
 		case "auto":
@@ -610,13 +612,17 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 			fraction := .75
 			m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
 				y, err := schema.LoadYAMLSchema([]byte("recurrent_state_rows: 2\nparameters:\n  max-model-len: {auto: auto, auto_min_context_tokens: 4096}\n"))
-				require.NoError(t, err)
+				if !assert.NoError(t, err) {
+					return nil, err
+				}
 				y.Diagnostics = &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: kind, Parameter: "gpu-memory-utilization"}}
 				if kind == schema.MemoryUnified {
 					y.MemoryUsableFraction = &fraction
 				}
 				declared, errs := schema.Merge(provider, y, config.ServiceConfig{})
-				require.Empty(t, errs)
+				if !assert.Empty(t, errs) {
+					return nil, errors.New("invalid test schema")
+				}
 				return declared, nil
 			}
 			total := int64(10000)
@@ -643,7 +649,7 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 				assert.Equal(t, m.AssessCapacity(t.Context(), req), preview.Assessment)
 				features, err := m.ResolveLaunchParameters(t.Context(), req)
 				require.NoError(t, err)
-				admission, err := m.checkMemory(t.Context(), features, false)
+				admission, _, err := m.checkMemory(t.Context(), features, false, nil)
 				assert.Equal(t, preview.Assessment, admission)
 				if want == "fit" {
 					require.NoError(t, err)

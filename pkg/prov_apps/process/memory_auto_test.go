@@ -92,3 +92,28 @@ func TestAutoMemoryWithoutHeadroomNamesTheHolder(t *testing.T) {
 	assert.Equal(t, httperr.FailureMemory, cause.Class)
 	assert.NotErrorIs(t, refusal, ErrMemoryObservation)
 }
+
+func TestAutoMemoryRefusalReportsQuantizedThreshold(t *testing.T) {
+	budget := schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget", AutoSafetyMarginMiB: 1000}
+	for _, tc := range []struct {
+		name            string
+		total, required int64
+	}{
+		{"partial step", 10001, 1002},
+		{"two MiB step", 20000, 1002},
+		{"localai", 97887, 1010},
+		{"ten MiB step", 100000, 1010},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: tc.total, FreeMiB: tc.required - 1}
+			params := map[string]string{"budget": "auto"}
+			var fit *MemoryFitError
+			require.ErrorAs(t, admitBudget(budget, Need{}, params, nil, []gpu.MemoryDevice{device}, nil, nil), &fit)
+			assert.Equal(t, tc.required, fit.RequiredMiB)
+			assert.Equal(t, "auto", params["budget"])
+			device.FreeMiB = fit.RequiredMiB
+			require.NoError(t, admitBudget(budget, Need{}, params, nil, []gpu.MemoryDevice{device}, nil, nil))
+			assert.Equal(t, "0.0001", params["budget"])
+		})
+	}
+}

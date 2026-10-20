@@ -146,10 +146,32 @@ Every start prepares before queue acceptance or replacement stop: schema, platfo
 features, toolkit, assets and argv. Preparation shares preview and parameter-status logic.
 As required by `docs/agent-memory.md`, slow per-model conversion/packing never runs in
 prepare or command building, including while an old run still serves. A preparation
-refusal leaves that run and record intact. Memory admission, weight verification and process
-start remain after the stop: a memory-refused replacement leaves no live run, keeping the
-old record. Preparation runs twice per start, before the stop and again in up; a config change
-between those checks can also leave nothing running. Admitting a replacement before stopping is deferred.
+refusal leaves that run and record intact. A replacement also checks memory before the
+stop. The shared reclaim plan credits the most the stop could free per device:
+its attributed holdings, unused commitments and all driver-reported used memory not
+provably attributed to a process. Known memory of another process is excluded only
+when its ancestry is fully read, whether owned by another run or by no run. Unknown
+process sizes, unreadable ancestry and unattributed context memory stay inside the
+bound; a failed process listing leaves all used memory inside it. Ownership follows
+process ancestry from the run's PID, so GPU workers a run hands to another service
+(vLLM's Ray executor on an existing Ray cluster, whose workers are children of the
+raylet) count as another process: such a replacement can be refused although the
+stop would make room, and the agent stops the run explicitly. The pre-check
+refuses only if the launch cannot fit even with that credit and eligible idle stops.
+Replacement credit ignores voluntary idle eligibility; planned victims are not claimed.
+A refusal preserves the registered run and pin record, reporting `kept_run` and
+`credited_mib` under the existing 409 `out_of_range`: for a free-memory refusal, the
+most stopping the kept run could free on the refused device; zero for a sized-context
+or weights refusal, which no stop fixes. Unknown driver used memory and unbudgeted
+engines retain stop-then-admit ordering. The unified device still encodes total
+availability and zero use; its weights and sized-context checks use totals.
+After a successful stop, recovery targets only attributed holdings and unused
+commitments, excluding unaccounted use. Expiry continues to fresh admission, which
+returns the ordinary memory refusal and tool hints if memory still cannot fit;
+caller cancellation aborts. Preparation, weight verification and process
+start still run fresh after the stop; idle claims revalidate then. No admission slot spans the stop, so a late
+steal or config change can leave no live run while preserving its pin record. Such a refusal
+makes no `kept_run` claim.
 
 ## Deployment outcome ownership
 
