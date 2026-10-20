@@ -228,14 +228,17 @@ func TestRunsLoadProviderRefusalsUseFailureTable(t *testing.T) {
 func TestRunsLoadReusesRunningAndStartingWith409Success(t *testing.T) {
 	for _, status := range []instance.Status{instance.StatusRunning, instance.StatusStarting} {
 		t.Run(string(status), func(t *testing.T) {
-			mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
+			registry := newJobsForChainTest(t)
+			h, err := registry.StartDetached(jobs.KindRun, "", nil)
+			require.NoError(t, err)
+			mgr, err := prov_apps.NewProviderAppManager(aliasLoadConfig(t), prov_apps.WithJobsRegistry(registry), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
 				t.Error("reuse queried catalog")
 				return false, nil
 			}))
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
 			run := instance.NewInstance("warm", "fake", "local", 8300, 0, 0)
-			run.StreamJobID = "existing-job"
+			run.StreamJobID = h.ID()
 			run.SetStatus(status)
 			require.NoError(t, mgr.Instances().Register(run))
 			c, internal := postJSON(t, `{"model_name":"local","provider":"fake"}`)

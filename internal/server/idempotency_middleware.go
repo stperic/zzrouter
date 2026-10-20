@@ -15,13 +15,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/protocol/openai"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
-
-// idempotencyTTL covers agent retries across outages lasting hours.
-const idempotencyTTL = 24 * time.Hour
 
 // idempotencyMaxEntries covers thousands of retries while bounding single-node metadata and captures.
 const idempotencyMaxEntries = 4096
@@ -76,7 +74,7 @@ type idemEntry struct {
 type idempotencyStore struct {
 	mu            sync.Mutex
 	m             map[idemKey]*idemEntry
-	completed     list.List // Completion order also orders the completion-based TTL.
+	completed     list.List // Completion order controls capacity eviction.
 	bytes         int
 	maxEntries    int
 	maxBytes      int
@@ -140,16 +138,16 @@ func (s *idempotencyStore) sweep() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	for front := s.completed.Front(); front != nil; front = s.completed.Front() {
-		entry := entryOf(front)
-		if now.Before(entry.expiresAt) {
-			return
+	for item := s.completed.Front(); item != nil; {
+		entry := entryOf(item)
+		item = item.Next()
+		if !now.Before(entry.expiresAt) {
+			s.forgetLocked(entry)
 		}
-		s.forgetLocked(entry)
 	}
 }
 
-func (s *idempotencyStore) acquire(key idemKey, bodyHash [32]byte) (*idemEntry, bool) {
+func (s *idempotencyStore) acquire(key idemKey, bodyHash [32]byte, arrivedAt time.Time) (*idemEntry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry := s.m[key]; entry != nil {
@@ -161,7 +159,7 @@ func (s *idempotencyStore) acquire(key idemKey, bodyHash [32]byte) (*idemEntry, 
 	if !s.makeRoomLocked(1, 1) {
 		return nil, false
 	}
-	entry := &idemEntry{key: key, bodyHash: bodyHash, inflight: make(chan struct{})}
+	entry := &idemEntry{key: key, bodyHash: bodyHash, inflight: make(chan struct{}), expiresAt: arrivedAt.Add(constants.IdempotencyReplayWindow)}
 	s.m[key] = entry
 	return entry, true
 }
@@ -197,7 +195,6 @@ func (s *idempotencyStore) complete(entry *idemEntry, status int, body []byte, c
 		}
 		s.forgetLocked(entry)
 	} else {
-		entry.expiresAt = s.now().Add(idempotencyTTL)
 		entry.completed = s.completed.PushBack(entry)
 	}
 	close(entry.inflight)
@@ -226,6 +223,7 @@ func (s *idempotencyStore) forgetLocked(entry *idemEntry) {
 // middlewareWithBodySkip bypasses bodies whose response cannot be replayed safely.
 func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		arrivedAt := s.now()
 		// Cluster-internal forwarded requests are already deduped at
 		// the entry point; skip to keep storage at coord-only. Identified
 		// by CtxKeyClusterTrusted set by the worker compat engine's
@@ -272,7 +270,7 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			value: headerVal,
 		}
 
-		entry, first := s.acquire(key, bodyHash)
+		entry, first := s.acquire(key, bodyHash, arrivedAt)
 		if entry == nil {
 			respondSurfaceError(c, httperr.Error{
 				Status:     http.StatusServiceUnavailable,
@@ -312,21 +310,26 @@ func (s *idempotencyStore) middlewareWithBodySkip(bodySkip func(body []byte) boo
 			c.Abort()
 			return
 		}
-		// Same body — wait for the original to finish and replay.
+		// Same body: wait for the original, but never replay beyond its arrival window.
+		waitExpired := false
 		select {
 		case <-entry.inflight:
+			waitExpired = !s.now().Before(entry.expiresAt)
 		case <-time.After(idempotencyWaitTimeout):
+			waitExpired = true
+		case <-c.Request.Context().Done():
+			c.AbortWithStatus(httperr.StatusClientClosedRequest)
+			return
+		}
+		if waitExpired {
 			respondSurfaceError(c, httperr.Error{
 				Status:  http.StatusGatewayTimeout,
 				Title:   "Idempotency Wait Timeout",
 				Type:    "api_error",
 				Code:    string(openai.ErrorCodeIdempotencyWaitTimeout),
-				Message: "original idempotent request still in flight; retry shortly",
+				Message: "original idempotent request exceeded its wait or replay window; retry shortly",
 			})
 			c.Abort()
-			return
-		case <-c.Request.Context().Done():
-			c.AbortWithStatus(httperr.StatusClientClosedRequest)
 			return
 		}
 		if entry.statusCode == 0 {

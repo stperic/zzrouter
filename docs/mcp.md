@@ -230,11 +230,36 @@ Job-starting tools return IDs immediately. `zz_run_start`, `zz_run_restart`,
 `zz_model_download`, `zz_provider_install` (including `preflight_only: true`)
 and `zz_update_apply` replay successful REST responses when retried with the
 same `idempotency_key`, body and query on the same route by the same caller.
-Replay uses a bounded, in-memory cache for up to 24 hours and does not survive
+Replay uses a bounded, in-memory cache for up to 24 hours from request arrival and does not survive
 server restarts. Only an accepted request is retained, and replay returns that acceptance:
 for a job-creating tool, the same `job_id`, even if that job later failed.
 A retry after an error runs again; after a failed job, use a new key.
-Use a fresh key to rerun preflight checks.
+Use a fresh key to rerun preflight checks. A duplicate waiting across the
+original request's replay deadline receives 504 `idempotency_wait_timeout`
+instead of an expired acceptance; retry the same key and body.
+
+Finished jobs remain readable for 24 hours after completion or their latest ID
+hand-out for an operation, whichever is later. Creation counts, and a warm run
+reuse extends the existing job's window. The same duration bounds idempotency
+replay, anchored at request arrival. Replaying an acceptance and observing a job
+do not renew retention. Pending and running jobs have no expiry. Terminal
+`zz_job` snapshots and list entries carry `expires_at`; at that instant the job
+is not-found, independent of cleanup timing. Accepted run and download replies
+do not predict a completion time, and their MCP projections do not expose
+`expires_at`. Unavailable job IDs are omitted; a reused run can still be
+inspected with `zz_runs`. An auto-deploy whose download job is absent returns
+503 with `zz_models` guidance and starts no run chain. `zz_update_check` returns
+release availability rather than a job.
+
+Jobs disappear on the serving node's restart. `job_not_found` preserves a hint
+in both text and structured `errors[].hint`: install and service IDs point to
+`zz_providers`, downloads to `zz_models`, runs to `zz_runs`, and updates to
+`zz_update_status`. Sync, firehose and unknown IDs have an honest generic hint.
+A missing job does not establish success or failure. An incomplete owner search
+remains 503 `node_unreachable`, so retry after the indicated delay.
+`zz_update_status` preserves bounded persisted `rollouts`, including node outcomes
+and errors. That history survives job expiry and restart, has its existing count
+limit, and carries no expiry; reading it never recreates a terminal job.
 
 Omit `job_id` from `zz_job` to list recent jobs on the coordinator, or set
 `node` to list one serving node's jobs. Use `limit` and `offset`; results include

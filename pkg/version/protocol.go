@@ -42,9 +42,10 @@ package version
 // and the worker route that records them on the coordinator.
 // Protocol 16 adds architecture capabilities and internal deploy architecture selection.
 // Protocol 17 adds operator schema declarations to strictly decoded provider configs.
+// Protocol 18 requires terminal job expiry and replay-safe retention.
 const (
-	ClusterProtocolVersion    = 17
-	MinClusterProtocolVersion = 17
+	ClusterProtocolVersion    = 18
+	MinClusterProtocolVersion = 18
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

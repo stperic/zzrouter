@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/utils/clock/clocktest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -674,7 +676,7 @@ func TestIdempotencyStore_NeverEvictsInflight(t *testing.T) {
 		}(i)
 		waitIdemSignal(t, entered)
 	}
-	now = now.Add(2 * idempotencyTTL)
+	now = now.Add(2 * constants.IdempotencyReplayWindow)
 	store.sweep()
 	w := doPOST(r, "{}", map[string]string{idempotencyHeader: "refused"})
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -696,7 +698,7 @@ func TestIdempotencyStore_NeverEvictsInflight(t *testing.T) {
 		replay := doPOST(r, "{}", map[string]string{idempotencyHeader: fmt.Sprint(i)})
 		assert.Equal(t, original.Body.String(), replay.Body.String())
 	}
-	assert.EqualValues(t, store.maxEntries, calls.Load(), "every original must remain replayable")
+	assert.EqualValues(t, 2*store.maxEntries, calls.Load(), "in-flight work survives expiry, but its completed response must not replay past the arrival window")
 }
 
 func TestIdempotencyStore_SweepExpires(t *testing.T) {
@@ -709,7 +711,7 @@ func TestIdempotencyStore_SweepExpires(t *testing.T) {
 	store.sweep()
 	assert.Len(t, store.m, 2)
 	require.Positive(t, store.bytes)
-	now = now.Add(idempotencyTTL + time.Second)
+	now = now.Add(constants.IdempotencyReplayWindow + time.Second)
 	store.sweep()
 	assert.Empty(t, store.m)
 	assert.Zero(t, store.bytes)
@@ -786,5 +788,53 @@ func TestIdempotencyStore_StopWaitsAndIsIdempotent(t *testing.T) {
 		waitIdemSignal(t, stopped)
 		waitIdemSignal(t, stoppedAgain)
 		store.Stop()
+	})
+}
+
+func TestIdempotencyExpiryUsesArrivalOrder(t *testing.T) {
+	store := newIdempotencyStore()
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	store.now = fc.Now
+	keyA := idemKey{value: "early"}
+	keyB := idemKey{value: "later"}
+	early, first := store.acquire(keyA, [32]byte{}, fc.Now())
+	require.True(t, first)
+	fc.Advance(time.Hour)
+	later, first := store.acquire(keyB, [32]byte{}, fc.Now())
+	require.True(t, first)
+	store.complete(later, http.StatusAccepted, []byte(`{}`), "application/json")
+	store.complete(early, http.StatusAccepted, []byte(`{}`), "application/json")
+	fc.Advance(constants.IdempotencyReplayWindow - time.Hour)
+	store.sweep()
+	require.NotContains(t, store.m, keyA, "a later completion cannot hide an earlier expiry")
+	require.Contains(t, store.m, keyB)
+	require.Equal(t, 1, store.completed.Len())
+}
+
+func TestIdempotencyWaiterCannotReplayPastArrivalWindow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+		store := newIdempotencyStore()
+		store.now = fc.Now
+		entered, release := make(chan struct{}), make(chan struct{})
+		r := makeIdemStoreRouter(store, func(c *gin.Context) {
+			close(entered)
+			<-release
+			c.JSON(http.StatusAccepted, gin.H{"job_id": "run_x"})
+		})
+		var first, duplicate *httptest.ResponseRecorder
+		headers := map[string]string{idempotencyHeader: "same-key"}
+		go func() { first = doPOST(r, "{}", headers) }()
+		<-entered
+		fc.Advance(constants.IdempotencyReplayWindow - time.Second)
+		go func() { duplicate = doPOST(r, "{}", headers) }()
+		synctest.Wait()
+		fc.Advance(time.Second)
+		close(release)
+		synctest.Wait()
+		require.Equal(t, http.StatusAccepted, first.Code)
+		require.Equal(t, http.StatusGatewayTimeout, duplicate.Code)
+		require.Contains(t, duplicate.Body.String(), "idempotency_wait_timeout")
+		require.NotContains(t, duplicate.Body.String(), "run_x")
 	})
 }

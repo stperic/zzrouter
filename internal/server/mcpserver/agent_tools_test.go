@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
@@ -108,18 +109,18 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "limit=50&offset=0&node=worker&status=", "", `{"data":{"id":"r","status":"running","processor":"100% GPU","context_length":8192,"process_id":42}}`, `{"run_id":"r","status":"running","processor":"100% GPU","context_length":8192}`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs/r", `{"run_id":"r"}`, "limit=50&offset=0&node=&status=", "", `{"data":{"id":"r","status":"running","pinned":true,"started_by":"request","evicted_runs":[{"run_id":"old","model":"m","freed_mib":2048}]}}`, `{"run_id":"r","status":"running","pinned":true,"started_by":"request","evicted_runs":[{"run_id":"old","model":"m","freed_mib":2048}]}`},
 		{"zz_run_preview", "POST", "/zzrouter/v1/runs/preview", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, "", `{"model":"m","provider":"vllm","node":"worker","environment":{"A":"1"}}`, `{"data":{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"},"working_dir":"drop"}}`, `{"full_command":"engine --model m","parameters":{"ctx":"32"},"parameter_sources":{"ctx":"request"}}`},
-		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"}}`, `{"data":{"id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
-		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_run_id":"r","job_id":"j","node":"worker"}`},
+		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"},"idempotency_key":"retry"}`, "", `{"model":"m","provider":"vllm","node":"worker","env_vars":{"A":"1"}}`, `{"data":{"expires_at":"must-not-project","id":"new","job_id":"j","node":"worker","health_url":"drop"}}`, `{"run_id":"new","job_id":"j","node":"worker"}`},
+		{"zz_run_restart", "POST", "/zzrouter/v1/runs/r/restart", `{"run_id":"r","node":"worker","idempotency_key":"retry"}`, "node=worker", "", `{"data":{"expires_at":"must-not-project","id":"new","old_id":"r","job_id":"j","node":"worker"}}`, `{"run_id":"new","old_run_id":"r","job_id":"j","node":"worker"}`},
 		{"zz_runs", "GET", "/zzrouter/v1/runs/pin", `{"run_id":"pin"}`, "limit=50&offset=0&node=&status=", "", `{"data":{"id":"pin","status":"stopped","pinned":true,"record_only":true,"parameters":{"keep-alive":"-1"},"last_refusal":{"code":"unknown_flag","message":"refused"}}}`, `{"run_id":"pin","status":"stopped","pinned":true,"record_only":true,"parameters":{"keep-alive":"-1"},"last_refusal":{"code":"unknown_flag","message":"refused"}}`},
-		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"generic"}`, "", `{"model":"m","provider":"generic"}`, `{"data":{"id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}}`, `{"run_id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}`},
+		{"zz_run_start", "POST", "/zzrouter/v1/runs", `{"model":"m","provider":"generic"}`, "", `{"model":"m","provider":"generic"}`, `{"data":{"expires_at":"must-not-project","id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}}`, `{"run_id":"new","pinned":true,"parameters":{"keep-alive":"-1","budget":"0.37"}}`},
 		{"zz_run_stop", "DELETE", "/zzrouter/v1/runs/r", `{"run_id":"r","node":"worker"}`, "node=worker", "", `{"data":{"id":"r","status":"stopped"}}`, `{"run_id":"r","status":"stopped"}`},
-		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","features":["vision"],"idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":"","features":["vision"]}`, `{"data":{"id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999}]}}`, `{"deployment_id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
+		{"zz_model_download", "POST", "/zzrouter/v1/deployments", `{"model":"org/model","node":"worker","registry":"huggingface","features":["vision"],"idempotency_key":"retry"}`, "", `{"model":"org/model","nodes":["worker"],"registry":"huggingface","provider":"","file":"","format":"","features":["vision"]}`, `{"data":{"id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading","bytes_total":999999,"expires_at":"must-not-project"}]}}`, `{"deployment_id":"d","model":"org/model","file":"q4.gguf","status":"downloading","nodes":[{"node":"worker","job_id":"j","status":"downloading"}]}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/jobs/j", `{"job_id":"j","node":"worker"}`, "node=worker", "", `{"accepted":true,"job_id":"j"}`, `{"accepted":true,"job_id":"j"}`},
 		{"zz_job_cancel", "DELETE", "/zzrouter/v1/deployments/d", `{"deployment_id":"d"}`, "node=", "", `{"data":{"id":"d","status":"cancelled"}}`, `{"id":"d","status":"cancelled"}`},
 		{"zz_providers", "GET", "/zzrouter/v1/providers", "{}", "limit=50&offset=0&node=", "", `{"data":[{"name":"llamacpp","kind":"on-demand","enabled":false,"installed":false,"managed":false,"version":"unknown","node":"coord","description":"drop"}],"total":1}`, `[{"name":"llamacpp","kind":"on-demand","enabled":false,"installed":false,"managed":false,"version":"unknown","node":"coord"}]`},
 		{"zz_providers", "GET", "/zzrouter/v1/providers/vllm/status", `{"provider":"vllm","node":"worker"}`, "node=worker", "", `{"data":{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand","instances":[{"drop":"huge"}]}}`, `{"name":"vllm","installed":true,"enabled":true,"managed":true,"managed_process":"running","mode":"on-demand"}`},
-		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
-		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
+		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install/preflight", `{"provider":"vllm","preflight_only":true,"node":"worker"}`, "node=worker", "{}", `{"data":{"expires_at":"must-not-project","provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}}`, `{"provider":"vllm","all_ok":false,"results":[{"check":"gpu","passed":false,"hint":"detect a GPU"}]}`},
+		{"zz_provider_install", "POST", "/zzrouter/v1/providers/vllm/install", `{"provider":"vllm","version":"1.0","runtime":"vllm","node":"worker","idempotency_key":"retry"}`, "node=worker", `{"version":"1.0","runtime":"vllm"}`, `{"data":{"expires_at":"must-not-project","accepted":true,"job_id":"j","provider":"vllm","node":"worker","stream_url":"drop"}}`, `{"accepted":true,"job_id":"j","provider":"vllm","node":"worker"}`},
 		{"zz_params_set", "PATCH", "/zzrouter/v1/providers/vllm/parameters", `{"provider":"vllm","restart_affected":true,"patch":{"defaults":{"parameters":{"ctx":8192,"old":null}}}}`, "endpoint=&node=&model=&restart=affected", `{"defaults":{"parameters":{"ctx":8192,"old":null}}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"id":"kept","overridden":["ctx"]}],"unknown":[{"id":"unsynced","reason":"sync pending"}]}}`, `{"parameters":{"ctx":{"value":8192,"tier":"operator"}},"runs":{"restart_job_id":"j","stale":[{"run_id":"old","node":"worker","model":"m","changed":["ctx"]}],"overridden":[{"run_id":"kept","overridden":["ctx"]}],"unknown":[{"run_id":"unsynced","reason":"sync pending"}]}}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r"}`, "follow=false&lines=200", "", `{"data":{"lines":["old","last"],"total_lines":12,"count":2,"log_file":"run.log"}}`, `{"lines":["old","last"],"total_lines":12,"log_file":"run.log"}`},
 		{"zz_logs", "GET", "/zzrouter/v1/runs/r/logs", `{"run_id":"r","node":"worker"}`, "follow=false&lines=200&node=worker", "", `{"data":{"lines":["stopped"],"total_lines":1,"count":1,"log_file":"r.log"}}`, `{"lines":["stopped"],"total_lines":1,"log_file":"r.log"}`},
@@ -127,8 +128,8 @@ func TestAgentToolsRESTContracts(t *testing.T) {
 		{"zz_logs", "GET", "/zzrouter/v1/server/logs", "{}", "limit=50&offset=0", "", `{"data":[{"instance_id":"r","size":12,"path":"drop"}],"total":1}`, `[{"run_id":"r","size":12}]`},
 		{"zz_update_status", "GET", "/zzrouter/v1/update/status", "{}", "", "", `{"data":{"state":"idle","update_available":true,"current_version":"1.0"}}`, `{"state":"idle","update_available":true,"current_version":"1.0"}`},
 		{"zz_update_check", "POST", "/zzrouter/v1/update/check", `{}`, "", "", `{"data":{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}}`, `{"current_version":"1.0","update_available":false,"skipped_reason":"offline"}`},
-		{"zz_update_apply", "POST", "/zzrouter/v1/update/apply", `{"version":"1.1","nodes":["worker"],"idempotency_key":"retry"}`, "", `{"version":"1.1","nodes":["worker"]}`, `{"data":{"job_id":"j","version":"1.1","state":"queued"}}`, `{"job_id":"j","version":"1.1","state":"queued"}`},
-		{"zz_update_apply", "POST", "/zzrouter/v1/update/apply", "{}", "", "{}", `{"data":{"delegated_to":"private path","action":"apply"}}`, `{"action":"apply"}`},
+		{"zz_update_apply", "POST", "/zzrouter/v1/update/apply", `{"version":"1.1","nodes":["worker"],"idempotency_key":"retry"}`, "", `{"version":"1.1","nodes":["worker"]}`, `{"data":{"expires_at":"must-not-project","job_id":"j","version":"1.1","state":"queued"}}`, `{"job_id":"j","version":"1.1","state":"queued"}`},
+		{"zz_update_apply", "POST", "/zzrouter/v1/update/apply", "{}", "", "{}", `{"data":{"expires_at":"must-not-project","delegated_to":"private path","action":"apply"}}`, `{"action":"apply"}`},
 	} {
 		t.Run(tc.name+tc.path, func(t *testing.T) {
 			var args map[string]any
@@ -368,12 +369,12 @@ func TestAgentNestedProjections(t *testing.T) {
 	t.Run("selected update nodes", func(t *testing.T) {
 		d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
 			require.Equal(t, "worker", r.URL.Query().Get("nodes"))
-			writeFixture(t, w, []byte(`{"data":{"nodes":[{"node":"worker","status":{"current_version":"1.0","latest_release":{"tag_name":"v1.1","body":"drop","assets":[{"drop":"huge"}]},"skipped_reason":"offline","pending_release":{"drop":"huge"}}}],"rollouts":[{"drop":"huge"}]}}`))
+			writeFixture(t, w, []byte(`{"data":{"nodes":[{"node":"worker","status":{"current_version":"1.0","latest_release":{"tag_name":"v1.1","body":"drop","assets":[{"drop":"huge"}]},"skipped_reason":"offline","pending_release":{"drop":"huge"}}}],"rollouts":[{"job_id":"upd_x","version":"1.1","state":"failed","nodes":[{"node":"worker","state":"failed","error":"failed to restart"}],"unchecked_peers":["sleeping"],"drop":"huge"}]}}`))
 		})
 		result := callAgentTool(t, d, "zz_update_status", map[string]any{"nodes": []string{"worker"}})
 		data, err := json.Marshal(result["structuredContent"])
 		require.NoError(t, err)
-		require.JSONEq(t, `{"nodes":[{"node":"worker","status":{"current_version":"1.0","latest_release":{"tag_name":"v1.1"},"skipped_reason":"offline"}}]}`, string(data))
+		require.JSONEq(t, `{"nodes":[{"node":"worker","status":{"current_version":"1.0","latest_release":{"tag_name":"v1.1"},"skipped_reason":"offline"}}],"rollouts":[{"job_id":"upd_x","version":"1.1","state":"failed","nodes":[{"node":"worker","state":"failed","error":"failed to restart"}],"unchecked_peers":["sleeping"]}]}`, string(data))
 	})
 }
 
@@ -412,6 +413,14 @@ func TestAgentSchemaDescriptions(t *testing.T) {
 			assert.Contains(t, tool.InputSchema.Properties["patch"].Description, "models.<new-name>.from")
 		}
 	}
+	retention := fmt.Sprintf("%g hours", constants.IdempotencyReplayWindow.Hours())
+	for _, name := range []string{"zz_job", "zz_model_download", "zz_run_start", "zz_run_restart", "zz_provider_install", "zz_update_apply"} {
+		require.Contains(t, descriptions[name], retention, name)
+		require.Contains(t, descriptions[name], "expires_at", name)
+		require.Contains(t, descriptions[name], "node restart", name)
+	}
+	require.NotContains(t, descriptions["zz_update_check"], "expires_at")
+
 	for _, name := range []string{"zz_run_preview", "zz_run_start"} {
 		require.Contains(t, descriptions[name], "Check zz_models first")
 		require.Contains(t, descriptions[name], "absent")

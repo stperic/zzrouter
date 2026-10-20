@@ -25,13 +25,13 @@ func TestStillWarmingNamesTheRunToFollow(t *testing.T) {
 	run := instance.NewInstance("run-1", "llamacpp", "m", 8080, time.Minute, 0)
 	run.StreamJobID = "run_abc"
 
-	wire := loadFailureWire(loadStillWarming("still loading").forRun(run))
+	wire := loadFailureWire(loadStillWarming("still loading").forRun(run, run.StreamJobID))
 
 	assert.Equal(t, http.StatusServiceUnavailable, wire.Status)
 	assert.Equal(t, "model_load_timeout", wire.Code)
 	assert.Positive(t, wire.RetryAfter)
 	assert.Equal(t, map[string]any{"run_id": "run-1", "job_id": "run_abc"}, wire.Extra)
-	assert.Equal(t, wire.Extra, loadFailureWire(fmt.Errorf("load: %w", loadStillWarming("still loading").forRun(run))).Extra)
+	assert.Equal(t, wire.Extra, loadFailureWire(fmt.Errorf("load: %w", loadStillWarming("still loading").forRun(run, run.StreamJobID))).Extra)
 
 	w := httptest.NewRecorder()
 	writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)), wire)

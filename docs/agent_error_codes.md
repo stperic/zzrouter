@@ -282,7 +282,7 @@ peers means the local registry is the complete lookup.
 
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
-| `job_not_found` | 404 | Confirmed absence within the selected node or complete searched scope. Jobs are in memory; retention cleanup or a node restart can cause absence. | Check the job ID and recent jobs on its node. Absence does not establish how the job ended. |
+| `job_not_found` | 404 | Confirmed absence within the selected node or complete searched scope. Jobs are in memory; retention cleanup or a node restart can cause absence. | Use `errors[].hint`: install/service IDs name `zz_providers`, downloads `zz_models`, runs `zz_runs`, updates `zz_update_status` (persisted rollout outcomes). Sync, firehose and unknown IDs have a generic hint. Absence does not establish how the job ended. |
 | `node_unreachable` | 503 | A peer that may own the job did not answer definitively, so absence is unconfirmed. | Honor `Retry-After` and retry the lookup. |
 
 ### Cluster update rollout preflight
@@ -326,11 +326,18 @@ These codes apply to keyed management and inference requests, using each surface
 | `code` | HTTP | Meaning | Recovery |
 |---|---|---|---|
 | `idempotency_key_conflict` | 422 | The same key names a different request body. | Send the original body or choose a new key. |
-| `idempotency_wait_timeout` | 504 | The original request is still in flight after the duplicate's wait limit. | Retry the same key and body shortly. |
+| `idempotency_wait_timeout` | 504 | The original request exceeded the duplicate's wait limit, or its replay window elapsed while the duplicate waited. | Retry the same key and body shortly. |
 | `idempotency_store_full` | 503 | All store slots are occupied by in-flight requests. | Honor `Retry-After` and retry the same key and body. |
 
+Terminal jobs carry `expires_at` and remain readable until 24 hours after the
+later of completion and their latest ID hand-out for an operation. Creation
+counts; a fresh warm reuse extends retention, while observations and replays do
+not. Running and pending jobs have no expiry. Reads at expiry are not-found
+before cleanup. Jobs disappear on restart; persisted count-bounded update
+rollout history has no expiry and survives without renewing jobs.
+
 Replay storage retains up to 4,096 entries and 32 MiB of response bodies.
-Completed entries expire 24 hours after completion and are swept every five
+Completed entries expire 24 hours after request arrival and are swept every five
 minutes. Capacity eviction removes the oldest completed response first, never
 an in-flight request. Replies larger than 1 MiB are served in full and forgotten,
 so a later repeat runs again; duplicates already waiting must retry.

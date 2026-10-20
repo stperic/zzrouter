@@ -54,9 +54,35 @@ outcome first. Matching dead partials are removed by the next serialized fetch.
 Provider-store destinations remain reserved until physical cleanup finishes.
 Ollama owns its blobs and their cleanup.
 
+Finished jobs stay readable for 24 hours after the later of completion and the
+latest hand-out of their ID for an operation, including warm run reuse. Creation
+counts as a hand-out; reading, listing and replaying an acceptance do not extend
+retention. Pending and running jobs have no expiry. Terminal snapshot, list and
+SSE events carry `expires_at`, and reads at or after it return not-found even
+before cleanup. Sparse terminal event rings release unused slots without dropping
+events or imposing a job count cap. The duration is the idempotency replay
+window; replay is anchored at request arrival, so every replayed acceptance
+names a still-readable job.
+Accepted run and download replies do not predict a completion timestamp. A
+reused run whose job has expired or is absent returns no job ID; inspect `zz_runs`.
+Job IDs are omitted when unavailable, including from warmup refusals. An
+auto-deploy with no observable download job returns 503 and points to `zz_models`;
+it starts no run chain. Existing download and sync work with no observable job
+also returns 503. Install reuse with a missing job takes the normal new-install
+path. Sync acceptance omits an absent parent job ID and keeps its local job ID.
+
+Jobs live only in the serving node's memory and disappear on restart. Update
+rollout history is separate, persisted and count-bounded: its outcomes survive
+job expiry and restart without an expiry or renewal. Update status includes
+`rollouts` both locally and when querying selected nodes.
+
 Job GET, cancellation and pre-stream failures use Problem Details. A confirmed
 absence within the selected node or complete searched scope returns
 404/`job_not_found`; retention cleanup or a node restart can cause absence.
+Its `errors[].hint` names `zz_providers` for install/service IDs, `zz_models` for
+downloads, `zz_runs` for runs, and `zz_update_status` for updates. Sync, firehose
+and unknown IDs have a generic outcome-unavailable hint. Absence does not tell
+whether the operation succeeded.
 If a possible owner did not answer, lookup returns 503/`node_unreachable` with
 `Retry-After: 5`. Proxied refusals preserve status, code, node and retry metadata,
 with the public request ID and path. Malformed successful replies return

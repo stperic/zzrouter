@@ -91,3 +91,16 @@ func TestStableOutputSchemasValidateIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestAcceptedJobSchemasDoNotPredictExpiry(t *testing.T) {
+	for _, output := range []json.Marshaler{objectSchema[runOutput]{}, objectSchema[downloadOutput]{}} {
+		raw, err := output.MarshalJSON()
+		require.NoError(t, err)
+		var schema jsonschema.Schema
+		require.NoError(t, json.Unmarshal(raw, &schema))
+		require.NotContains(t, schema.Properties, "expires_at")
+		if nodes := schema.Properties["nodes"]; nodes != nil {
+			require.NotContains(t, nodes.Items.Properties, "expires_at")
+		}
+	}
+}

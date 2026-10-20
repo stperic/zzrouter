@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -80,10 +81,11 @@ func registerTool[In any, Out interface{ summary() string }](s *mcp.Server, cfg 
 
 func registerTools(s *mcp.Server, cfg Config) map[string][]string {
 	bindings := map[string][]string{}
+	jobRetentionDescription := fmt.Sprintf("Finished jobs stay readable for %g hours after completion or their latest hand-out, whichever is later; zz_job reports expires_at. Jobs disappear on node restart.", constants.IdempotencyReplayWindow.Hours())
 	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: new(bool)}
 	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_overview", OutputSchema: objectSchema[overviewOutput]{}, Description: "Start here: read cluster node names, roles, health, enabled providers and the endpoint count. Use node names as selectors; consult /openapi.yaml for the full REST contract.", Annotations: annotations}, []string{"getApiDiscovery", "listNodes", "getApiHealth"}, dispatcher.overview)
-	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Omit job_id to list recent jobs on the coordinator or selected node, with limit and offset; this is not a cluster-wide list. Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"listJobs", "getJob"}, dispatcher.job)
-	registerAgentTools(s, cfg, bindings)
+	registerTool(s, cfg, bindings, &mcp.Tool{Name: "zz_job", Description: "Omit job_id to list recent jobs on the coordinator or selected node, with limit and offset; this is not a cluster-wide list. Pass job_id here, not run_id, to read state, progress and result or error. A result's run_id belongs to zz_runs, zz_logs, zz_run_restart or zz_run_stop. " + jobRetentionDescription + " Job-not-found hints name an outcome tool. Optionally wait up to 45 seconds; call again when state is pending, running or still running.", Annotations: annotations}, []string{"listJobs", "getJob"}, dispatcher.job)
+	registerAgentTools(s, cfg, bindings, jobRetentionDescription)
 	registerAPITools(s, cfg, bindings)
 	return bindings
 }
@@ -151,7 +153,7 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (out agentOutput, e
 		if input.WaitSeconds != 0 {
 			return agentOutput{}, newToolError(http.StatusBadRequest, codeInvalidInput, "wait_seconds requires job_id", nil)
 		}
-		return d.list(ctx, routePrefix(strings.TrimSuffix(string(jobsRoute), "/")).path(), input.pageInput, url.Values{"node": {input.Node}}, "", "job_id node kind phase:state percent:progress step err:error", "jobs")
+		return d.list(ctx, routePrefix(strings.TrimSuffix(string(jobsRoute), "/")).path(), input.pageInput, url.Values{"node": {input.Node}}, "", "job_id node kind phase:state percent:progress step err:error expires_at", "jobs")
 	}
 	defer func() {
 		if err == nil {
@@ -190,6 +192,7 @@ func (d dispatcher) job(ctx context.Context, input jobInput) (out agentOutput, e
 		ev := response.Data
 		out.fields = map[string]any{"job_id": ev.JobID, "state": string(ev.Phase), "progress": ev.Percent, "step": ev.Step, "error": ev.Err}
 		if ev.Phase.IsTerminal() {
+			out.fields["expires_at"] = ev.ExpiresAt
 			out.fields["result"] = ev.Meta
 			delete(ev.Meta, "health_url")
 			if id, ok := ev.Meta["instance_id"]; ok {

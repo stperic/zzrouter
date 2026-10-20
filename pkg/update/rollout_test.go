@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/utils/clock"
@@ -402,4 +403,67 @@ func TestRolloutManifestFailureStartsNothing(t *testing.T) {
 	_, statErr := os.Stat(r.path)
 	require.True(t, os.IsNotExist(statErr), "nothing may be persisted")
 	require.Empty(t, f.calls)
+}
+
+func TestRolloutHistoryOutlivesRegistryExpiryAndRestart(t *testing.T) {
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "coord", Clock: fc})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	backend := &rolloutFixture{statuses: map[string]UpdateStatus{}, unavailable: map[string]bool{}}
+	path := filepath.Join(t.TempDir(), "rollouts.json")
+	r, err := NewRollouts(path, "coord", backend, registry, fc)
+	require.NoError(t, err)
+	t.Cleanup(r.Stop)
+	record, err := r.Submit(context.Background(), "2.0.0", []string{"worker"}, nil)
+	require.NoError(t, err)
+	r.step(context.Background())
+	completeNode(backend, "worker")
+	r.step(context.Background())
+	r.step(context.Background())
+	ev, err := registry.Get(record.JobID)
+	require.NoError(t, err)
+	require.Equal(t, jobs.PhaseDone, ev.Phase)
+	require.Equal(t, fc.Now().Add(constants.IdempotencyReplayWindow), ev.ExpiresAt)
+	evidence := r.History()
+	require.Equal(t, "succeeded", evidence[0].Nodes[0].State)
+	fc.Advance(constants.IdempotencyReplayWindow)
+	_, err = registry.Get(record.JobID)
+	require.ErrorIs(t, err, jobs.ErrNotFound)
+	require.Equal(t, evidence, r.History())
+	registry.Stop()
+	fresh, err := jobs.NewRegistry(jobs.Config{NodeName: "coord", Clock: fc})
+	require.NoError(t, err)
+	t.Cleanup(fresh.Stop)
+	restored, err := NewRollouts(path, "coord", backend, fresh, fc)
+	require.NoError(t, err)
+	t.Cleanup(restored.Stop)
+	require.NoError(t, restored.Start(context.Background()))
+	require.Equal(t, evidence, restored.History())
+	require.Empty(t, fresh.List(jobs.KindUpdate), "terminal history must not renew or recreate registry jobs")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "expires_at")
+}
+
+func TestExactApplyReuseHandsOutRetainedJob(t *testing.T) {
+	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
+	registry, err := jobs.NewRegistry(jobs.Config{NodeName: "node", Clock: fc})
+	require.NoError(t, err)
+	t.Cleanup(registry.Stop)
+	scheduler := NewSchedulerIn(t.TempDir(), &config.UpdateConfig{}, fc, WithJobsRegistry(registry))
+	t.Cleanup(scheduler.Stop)
+	h, err := registry.StartDetached(jobs.KindUpdate, "", nil)
+	require.NoError(t, err)
+	_, err = scheduler.recordOperation(h.ID(), &ReleaseInfo{Version: version.MustParseVersion("2.0.0")})
+	require.NoError(t, err)
+	scheduler.applying.Store(true)
+	h.Done()
+	fc.Advance(23 * time.Hour)
+	id, err := scheduler.ApplyVersionAsync(context.Background(), "2.0.0")
+	require.NoError(t, err)
+	require.Equal(t, h.ID(), id)
+	event, err := registry.Get(id)
+	require.NoError(t, err)
+	require.Equal(t, fc.Now().Add(constants.IdempotencyReplayWindow), event.ExpiresAt)
 }

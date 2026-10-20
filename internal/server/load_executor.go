@@ -110,11 +110,11 @@ func (e *LoadExecutor) LoadLocalModel(ctx context.Context, req *LoadModelRequest
 	}
 	status := run.GetStatus()
 	reused := !result.Started && (status == instance.StatusRunning || status == instance.StatusStarting)
-	message := "Model launch accepted; subscribe to job_id"
+	message := "Model launch accepted; follow job_id when present, otherwise inspect zz_runs"
 	if reused {
-		message = fmt.Sprintf("Model '%s' is already %s", run.Model, status)
+		message = fmt.Sprintf("Model '%s' is already %s; follow job_id when present, otherwise inspect zz_runs", run.Model, status)
 	}
-	return &LoadModelResponse{BaseURL: run.BaseURL, Reused: reused, InstanceID: run.ID, JobID: run.StreamJobID, Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Message: message}, nil
+	return &LoadModelResponse{BaseURL: run.BaseURL, Reused: reused, InstanceID: run.ID, JobID: e.appMgr.RunJobID(run), Model: run.Model, Provider: run.Provider, Port: run.Port, Status: string(status), Message: message}, nil
 }
 
 // PreviewLocalRun generates a preview of what would be run

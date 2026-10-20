@@ -36,18 +36,20 @@ type Meta map[string]any
 // change, or stream-lifecycle signal. Serialized as JSON to SSE data
 // frames.
 type Event struct {
-	JobID   string    `json:"job_id"`
-	Node    string    `json:"node"`
-	Kind    Kind      `json:"kind"`
-	Epoch   string    `json:"epoch"`
-	Seq     uint64    `json:"seq"`
-	At      time.Time `json:"at"`
-	Phase   Phase     `json:"phase"`
-	Percent int       `json:"percent,omitempty"`
-	Step    string    `json:"step,omitempty"`
-	Bytes   *Bytes    `json:"bytes,omitempty"`
-	Meta    Meta      `json:"meta,omitempty"`
-	Err     string    `json:"err,omitempty"`
+	// ExpiresAt is the terminal job's read deadline; later hand-outs can move it.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	JobID     string    `json:"job_id"`
+	Node      string    `json:"node"`
+	Kind      Kind      `json:"kind"`
+	Epoch     string    `json:"epoch"`
+	Seq       uint64    `json:"seq"`
+	At        time.Time `json:"at"`
+	Phase     Phase     `json:"phase"`
+	Percent   int       `json:"percent,omitempty"`
+	Step      string    `json:"step,omitempty"`
+	Bytes     *Bytes    `json:"bytes,omitempty"`
+	Meta      Meta      `json:"meta,omitempty"`
+	Err       string    `json:"err,omitempty"`
 
 	Warning string `json:"warning,omitempty"`
 

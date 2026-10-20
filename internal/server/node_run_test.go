@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsConfig) {
+func nodeRunFixture(t *testing.T, options ...prov_apps.Option) (*prov_apps.ProviderAppManager, *config.AppsConfig) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix process fixture")
@@ -52,10 +52,10 @@ func nodeRunFixture(t *testing.T) (*prov_apps.ProviderAppManager, *config.AppsCo
 		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	})
-	mgr, err := prov_apps.NewProviderAppManager(cfg, seed, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
+	mgr, err := prov_apps.NewProviderAppManager(cfg, append(options, seed, prov_apps.WithNodename(func() string { return "worker" }), prov_apps.WithSelfHost(func() string { return "2001:db8::123" }), prov_apps.WithLocalCatalog(func(context.Context, string) (bool, error) {
 		t.Error("node run used the model catalog")
 		return false, nil
-	}))
+	}))...)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, mgr.Stop(context.Background())) })
 	return mgr, cfg

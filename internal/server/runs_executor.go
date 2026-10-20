@@ -245,12 +245,12 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		Accepted: true,
 		OldID:    runID,
 		ID:       newInst.ID,
-		JobID:    newInst.StreamJobID,
+		JobID:    e.appMgr.RunJobID(newInst),
 		Provider: newInst.Provider, BaseURL: newInst.BaseURL,
 		Model:   newInst.Model,
 		Port:    newInst.Port,
 		Status:  string(newInst.GetStatus()),
-		Message: fmt.Sprintf("Instance %s restart accepted as %s; subscribe to job_id", runID, newInst.ID),
+		Message: fmt.Sprintf("Instance %s restart accepted as %s; follow job_id when present, otherwise inspect zz_runs", runID, newInst.ID),
 		Node:    e.getNodename(),
 	})
 }
@@ -344,30 +344,29 @@ func (e *RunsExecutor) HandleInternalLaunchRun(c *gin.Context) {
 		return
 	}
 
-	hostname := e.getNodename()
-	message := "Instance launch accepted; subscribe to job_id for readiness"
+	message := "Instance launch accepted; follow job_id when present, otherwise inspect zz_runs"
 	if !result.Started {
-		message = "Run already exists; reused"
+		message = "Run already exists; reused; follow job_id when present, otherwise inspect zz_runs"
 	}
 
 	cfg := inst.SnapshotConfig()
-	c.JSON(http.StatusAccepted, gin.H{
-		"accepted":           true,
-		"id":                 inst.ID,
-		"job_id":             inst.StreamJobID,
-		"provider":           inst.Provider,
-		"launch_mode":        string(inst.LaunchMode),
-		"status":             string(inst.GetStatus()),
-		"port":               inst.Port,
-		"health_url":         inst.HealthURL,
-		"base_url":           inst.BaseURL,
-		"started_at":         inst.GetStartedAt().Format(time.RFC3339),
-		"message":            message,
-		"files_mounted":      len(req.Files),
-		"parameters_applied": len(cfg.Parameters),
-		"parameters":         cfg.Parameters,
-		"pinned":             inst.IdleSnapshot().Pinned,
-		"node":               hostname,
+	c.JSON(http.StatusAccepted, LaunchRunResponse{
+		Accepted:          true,
+		ID:                inst.ID,
+		JobID:             e.appMgr.RunJobID(inst),
+		Provider:          inst.Provider,
+		LaunchMode:        string(inst.LaunchMode),
+		Status:            string(inst.GetStatus()),
+		Port:              inst.Port,
+		HealthURL:         inst.HealthURL,
+		BaseURL:           inst.BaseURL,
+		StartedAt:         inst.GetStartedAt().Format(time.RFC3339),
+		Message:           message,
+		FilesMounted:      len(req.Files),
+		ParametersApplied: len(cfg.Parameters),
+		Parameters:        cfg.Parameters,
+		Pinned:            inst.IdleSnapshot().Pinned,
+		Node:              e.getNodename(),
 	})
 }
 
@@ -556,9 +555,9 @@ func (e *RunsExecutor) handleAutoDeployLaunch(c *gin.Context, providerName, endp
 		InternalNodeError(c, "deploy returned unexpected type")
 		return
 	}
-	deployJobID := deploymentLocalJobID(deployment, e.getNodename())
+	deployJobID := e.jobs.HandOut(deploymentLocalJobID(deployment, e.getNodename()))
 	if deployJobID == "" {
-		InternalNodeError(c, "deploy returned no job_id; cannot chain launch")
+		ServiceUnavailable(c, "deploy job outcome unavailable; inspect zz_models before starting the run")
 		return
 	}
 

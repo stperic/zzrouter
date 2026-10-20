@@ -532,12 +532,12 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	inflightKey := req.Model + "|" + req.Format + "|" + deployPlanKey(req.Provider, req.Features, req.Download)
 	if existing, claimed := e.claimInflightDeploy(inflightKey, localJobID); !claimed {
 		handle.Fail(fmt.Errorf("sync already in progress: %s", existing))
-		existingEvent, err := e.jobs.Get(existing)
+		existingEvent, err := e.jobs.Reuse(existing)
 		if err != nil {
-			ServiceUnavailable(c, "existing sync outcome unavailable")
+			ServiceUnavailable(c, "existing sync outcome unavailable; inspect zz_models")
 			return
 		}
-		c.JSON(http.StatusConflict, gin.H{"source": existingEvent.Meta["source"], "status": "conflict", "model": req.Model, "format": req.Format, "existing_job_id": existing})
+		c.JSON(http.StatusConflict, gin.H{"source": existingEvent.Meta["source"], "status": "conflict", "model": req.Model, "format": req.Format, "existing_job_id": existingEvent.JobID})
 		return
 	}
 
@@ -547,15 +547,18 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	// Return accepted status immediately. Caller should subscribe to
 	// local_job_id for live progress; req.JobID is echoed for trace
 	// correlation with any upstream parent job.
-	c.JSON(http.StatusAccepted, gin.H{
+	response := gin.H{
 		"status":       "accepted",
 		"model":        req.Model,
 		"format":       req.Format,
 		"source":       req.SourceNode,
-		"job_id":       req.JobID,
 		"local_job_id": localJobID,
 		"message":      "Sync started in background",
-	})
+	}
+	if req.JobID != "" {
+		response["job_id"] = req.JobID
+	}
+	c.JSON(http.StatusAccepted, response)
 }
 
 func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, inflightKey string, syncClient *modelsync.Client, clusterSourceURL string) {

@@ -319,3 +319,15 @@ func TestArchitectureProtocolWindow(t *testing.T) {
 		t.Fatal("the preceding protocol cannot accept architecture declarations")
 	}
 }
+
+func TestJobRetentionProtocolCutover(t *testing.T) {
+	window := LocalProtocolWindow()
+	if err := window.Check(18); err != nil {
+		t.Fatalf("retention-aware peer rejected: %v", err)
+	}
+	for _, peer := range []int{17, 19} {
+		if err := window.Check(peer); err == nil {
+			t.Errorf("peer protocol %d must be refused by the retention cutover", peer)
+		}
+	}
+}

@@ -231,7 +231,7 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 		if changed && !status.Running {
 			state.status.LastExit = &ProviderServiceExit{At: utils.NowUTC(), Reason: manager.Name() + " reported that the provider stopped; exit details are unavailable"}
 		}
-		result.Desired, result.JobID = state.status.Desired, state.readyID()
+		result.Desired, result.JobID = state.status.Desired, state.readyID(m.jobsRegistry)
 		result.LastExit = state.status.Clone().LastExit
 		state.mu.Unlock()
 		if changed {
@@ -246,7 +246,7 @@ func (m *ProviderAppManager) ProviderServiceStatus(ctx context.Context, name str
 	state := m.serviceState(name)
 	state.mu.Lock()
 	result = state.status.Clone()
-	result.Enabled, result.Managed, result.JobID = cfg.IsEnabled(), true, state.readyID()
+	result.Enabled, result.Managed, result.JobID = cfg.IsEnabled(), true, state.readyID(m.jobsRegistry)
 	owned := state.cancel != nil
 	state.mu.Unlock()
 	if !owned {
@@ -379,7 +379,7 @@ func (m *ProviderAppManager) awaitReady(name string, since time.Time) string {
 		return "" // once Stop begins, stopServices may already have waited on the watchers
 	}
 	state.readySince = since
-	if id := state.readyID(); id != "" {
+	if id := state.readyID(m.jobsRegistry); id != "" {
 		return id
 	}
 	h, err := m.jobsRegistry.StartDetached(jobs.KindService, "", jobs.Meta{"provider": name})
@@ -466,11 +466,11 @@ func (state *managedService) endReady(why error) {
 }
 
 // readyID names the live readiness job, "" when none; the caller holds mu.
-func (state *managedService) readyID() string {
+func (state *managedService) readyID(registry *jobs.Registry) string {
 	if state.ready == nil {
 		return ""
 	}
-	return state.ready.ID()
+	return registry.HandOut(state.ready.ID())
 }
 
 // beginControl marks a host supervisor control in flight; until endControl, an

@@ -25,6 +25,14 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 18 raises both the current version and minimum from 17 to 18. Terminal
+job events, snapshots and lists carry `expires_at` and all peers must enforce
+retention through the idempotency replay window, including a fresh request that
+reuses an older job ID. Every peer is 18, so absence of terminal expiry is not a
+compatibility case. Upgrade coordinators and workers together using the
+maintenance procedure below. Jobs are in memory and disappear on restart;
+persisted rollout history survives without recreating terminal jobs.
+
 Protocol 17 raises both the current version and minimum from 16 to 17. Provider
 synchronization carries the operator-owned `schema:` block in `config.yaml`,
 which protocol-16 strict loaders reject. The existing fresh-evidence gate sends
