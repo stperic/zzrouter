@@ -15,7 +15,7 @@ import (
 
 // resolvedAPI is the part of the client the resolved command uses.
 type resolvedAPI interface {
-	GetProviderResolved(provider, node, model string) (*pkgClient.ProviderResolved, error)
+	GetProviderResolved(provider, node, model, endpoint string) (*pkgClient.ProviderResolved, error)
 }
 
 // newProviderResolvedCmd shows what a launch of a model on a node would
@@ -51,16 +51,18 @@ Examples:
 			}
 			node, _ := cmd.Flags().GetString("node")
 			model, _ := cmd.Flags().GetString("model")
-			return runProviderResolved(cmd, client, args[0], node, model)
+			endpoint, _ := cmd.Flags().GetString("endpoint")
+			return runProviderResolved(cmd, client, args[0], node, model, endpoint)
 		},
 	}
 	cmd.Flags().StringP("node", "n", "", "Node whose tiers take part")
 	cmd.Flags().StringP("model", "m", "", "Model whose tiers take part")
+	cmd.Flags().String("endpoint", "", "Run endpoint whose overlay takes part: chat, embeddings or reranking")
 	return cmd
 }
 
-func runProviderResolved(cmd *cobra.Command, api resolvedAPI, provider, node, model string) error {
-	r, err := api.GetProviderResolved(provider, node, model)
+func runProviderResolved(cmd *cobra.Command, api resolvedAPI, provider, node, model, endpoint string) error {
+	r, err := api.GetProviderResolved(provider, node, model, endpoint)
 	if err != nil {
 		return err
 	}
@@ -76,11 +78,11 @@ func displayResolved(out io.Writer, r *pkgClient.ProviderResolved) {
 		return
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "KEY\tVALUE\tTIER\tPATTERN\tSHA256")
+	fmt.Fprintln(tw, "KEY\tVALUE\tTIER\tPATTERN\tSHA256\tENDPOINT")
 	row := func(prefix string, values map[string]pkgClient.ResolvedValue) {
 		for _, key := range slices.Sorted(maps.Keys(values)) {
 			v := values[key]
-			fmt.Fprintf(tw, "%s%s\t%v\t%s\t%s\t%s\n", prefix, key, v.Value, v.Tier, dashIfEmpty(v.Pattern), dashIfEmpty(shortDigest(v.SHA256)))
+			fmt.Fprintf(tw, "%s%s\t%v\t%s\t%s\t%s\t%s\n", prefix, key, v.Value, v.Tier, dashIfEmpty(v.Pattern), dashIfEmpty(shortDigest(v.SHA256)), dashIfEmpty(v.Endpoint))
 		}
 	}
 	row("", r.Parameters)

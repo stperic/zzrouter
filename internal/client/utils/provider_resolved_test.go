@@ -53,3 +53,22 @@ func TestUpdateModelCell(t *testing.T) {
 	require.NoError(t, c.DeleteModelCell("llamacpp", "q+agent"))
 	assert.Equal(t, map[string]any{"models": map[string]any{"q+agent": nil}}, got)
 }
+
+func TestGetProviderResolvedEndpoint(t *testing.T) {
+	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/zzrouter/v1/providers/llamacpp/resolved", r.URL.Path)
+		assert.Equal(t, "endpoint=embeddings&model=m&node=worker", r.URL.RawQuery)
+		_, _ = io.WriteString(w, `{"parameters":{"pooling":{"value":"mean","tier":"default","endpoint":"embeddings","conflicts":["pool_ing"]}}}`)
+	}))
+	got, err := c.GetProviderResolved("llamacpp", "worker", "m", "embeddings")
+	require.NoError(t, err)
+	assert.Equal(t, "embeddings", got.Parameters["pooling"].Endpoint)
+	assert.Equal(t, []string{"pool_ing"}, got.Parameters["pooling"].Conflicts)
+}
+
+func TestResolvedValueEndpointProvenance(t *testing.T) {
+	var got ProviderResolved
+	require.NoError(t, json.Unmarshal([]byte(`{"parameters":{"pooling":{"value":"mean","tier":"default","endpoint":"embeddings","conflicts":["pool_ing"]}}}`), &got))
+	assert.Equal(t, "embeddings", got.Parameters["pooling"].Endpoint)
+	assert.Equal(t, []string{"pool_ing"}, got.Parameters["pooling"].Conflicts)
+}

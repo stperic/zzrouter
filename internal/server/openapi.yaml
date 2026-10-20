@@ -1841,6 +1841,15 @@ paths:
           name: model
           description: Model whose overrides participate.
           schema: { type: string }
+        - in: query
+          name: endpoint
+          description: |
+            Run endpoint whose launch to resolve: `chat`, `embeddings` or
+            `reranking`. Omit for the base view, including on providers that
+            do not serve chat. Each tier's `endpoints.<endpoint>`
+            overlay applies over that tier's base, and values it set carry
+            `endpoint`. An endpoint the provider does not serve is a 400.
+          schema: { type: string }
       responses:
         '200':
           description: OK
@@ -2280,6 +2289,11 @@ paths:
         one model the patch wrote (when it wrote exactly one), so a write to
         `models.<m>` answers with `<m>`'s resolution. Otherwise the node is
         the coordinator and the model is none, which shows the defaults.
+        `endpoint` selects the run overlay; omitted, it defaults to the one
+        endpoint the patch wrote across all tiers, or the base view when it
+        wrote several or none. An explicit endpoint the provider does not
+        serve is a 400 before any write. Unknown overlay names are refused
+        at their paths, including overlays that only set environment.
       parameters:
         - $ref: '#/components/parameters/RestartParam'
         - in: query
@@ -2289,6 +2303,16 @@ paths:
         - in: query
           name: model
           description: Model whose resolution the response shows. Defaults as described above.
+          schema: { type: string }
+        - in: query
+          name: endpoint
+          description: |
+            Run endpoint whose overlay the response shows. Without `?endpoint=`,
+            the reply shows the one endpoint the patch wrote across all tiers,
+            or the base view when it wrote several or none. This inferred
+            endpoint is not checked against what the provider serves: writing
+            an overlay for an unserved endpoint is allowed. An explicit endpoint
+            must pass the provider's endpoint admission before any write.
           schema: { type: string }
       requestBody:
         required: true
@@ -2301,7 +2325,7 @@ paths:
               $ref: '#/components/schemas/ProviderParametersPatch'
       responses:
         '200':
-          description: OK , the resolved cell after the patch (see `node`, `model`)
+          description: OK , the resolved cell after the patch (see `node`, `model`, `endpoint`)
           headers:
             X-Provider-Sync:
               description: |
@@ -13076,6 +13100,11 @@ components:
           description: |
             The model key that supplied the value when it is not the
             model's own name: a glob such as `qwen*`.
+        endpoint:
+          type: string
+          description: |
+            Set when the value came from that tier's `endpoints.<endpoint>`
+            overlay; patch it under `endpoints.<endpoint>.parameters`.
         sha256:
           type: string
           description: |

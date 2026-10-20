@@ -13,7 +13,7 @@ import (
 type variantAPI interface {
 	UpdateModelCell(provider, model string, u pkgClient.ModelCellUpdate, restart bool) (*pkgClient.ProviderParametersWrite, error)
 	DeleteModelCell(provider, model string) error
-	GetProviderResolved(provider, node, model string) (*pkgClient.ProviderResolved, error)
+	GetProviderResolved(provider, node, model, endpoint string) (*pkgClient.ProviderResolved, error)
 }
 
 // newProviderVariantCmd defines and removes variants: a model name of its
@@ -155,7 +155,7 @@ func parseRequest(items []string) (map[string]any, error) {
 // entry, so a name that is not a variant is refused rather than having
 // its operator settings wiped.
 func runVariantRm(cmd *cobra.Command, api variantAPI, provider, name string) error {
-	resolved, err := api.GetProviderResolved(provider, "", name)
+	resolved, err := api.GetProviderResolved(provider, "", name, "")
 	if err != nil {
 		return err
 	}
