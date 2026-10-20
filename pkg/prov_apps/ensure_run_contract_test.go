@@ -52,6 +52,7 @@ const contractWait = 10 * time.Second
 // forwards INT when its stdin closes, TERM when signalled). It ends with
 // its test process (testproc).
 var contractEngine = testproc.Script(`trap 'echo "$$" >> "$0.terms"; kill $! 2>/dev/null; exit 0' TERM INT
+: > "$0.spawned"
 while kill -0 $test_owner && [ ! -e "$0.ready" ]; do /bin/sleep 0.01; done
 kill -0 $test_owner || exit 0
 printf 'READY\n'
@@ -1157,6 +1158,29 @@ func TestEnsureRunContractServed(t *testing.T) {
 	})
 
 	t.Run("S4 stop while a start is held", func(t *testing.T) {
+		t.Run("late process publication", func(t *testing.T) {
+			r := newContractRig(t, false)
+			b := newBarrier()
+			r.m.seams.processStarted = func(*process.LaunchResult) {
+				require.Eventually(t, func() bool { _, err := os.Stat(r.engine + ".spawned"); return err == nil }, contractWait, time.Millisecond)
+				b.hold()
+			}
+			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "late"})})[0]
+			require.NoError(t, o.err)
+			b.reached(t)
+			stopped := make(chan error, 1)
+			go func() { stopped <- r.m.Stop(t.Context()) }()
+			waitParkedOn(t, ").endRun(", 1, contractWait)
+			b.open()
+			select {
+			case err := <-stopped:
+				require.NoError(t, err)
+			case <-time.After(contractWait):
+				t.Fatal("shutdown did not reap the late process")
+			}
+			require.Equal(t, 1, r.terms(t))
+			require.Empty(t, r.m.instances.List())
+		})
 		t.Run("before registration", func(t *testing.T) {
 			b := newBarrier()
 			r := newServedRig(t, modelSourceBarrier(b, nil))

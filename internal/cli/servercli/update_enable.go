@@ -55,7 +55,10 @@ func enableManagedUpdates(restart bool) error {
 		return errors.New("update enable rewrites the unit file and moves the node's binaries; run it as root")
 	}
 
-	svcMgr := service.NewServiceManager()
+	return enableManagedUpdatesWith(restart, service.NewServiceManager(), update.EnsureManagedLayout)
+}
+
+func enableManagedUpdatesWith(restart bool, svcMgr service.ServiceManager, layout func() (string, bool, error)) error {
 	if svcMgr.IsFirstRun() {
 		return errors.New("no service install found here; run `zzrouter-node start` as root to install one")
 	}
@@ -72,7 +75,7 @@ func enableManagedUpdates(restart bool) error {
 	fmt.Println("done")
 
 	fmt.Print("  Placing binaries... ")
-	nodePath, relocated, err := update.EnsureManagedLayout()
+	nodePath, relocated, err := layout()
 	switch {
 	case errors.Is(err, update.ErrNotRelocatable):
 		fmt.Println("failed")

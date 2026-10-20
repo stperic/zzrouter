@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 
 	"github.com/creack/pty"
@@ -68,7 +69,7 @@ func runStepPTY(ctx context.Context, cmd *exec.Cmd, onLine func(string)) error {
 		}
 
 	}()
-	err = process.RunOwnedCommandStarted(ctx, cmd, func(int) { _ = tty.Close() })
+	err = process.RunOwnedCommandStarted(ctx, cmd, func(int) { _ = tty.Close() }, constants.NoGrace)
 	select {
 	case <-scanned:
 	case <-time.After(2 * time.Second):

@@ -83,6 +83,14 @@ type ServiceManager interface {
 	SwitchToServiceUser() error
 }
 
+// EnsureStopSettings applies supervisor stop settings where supported, from privileged callers.
+func EnsureStopSettings(manager ServiceManager) error {
+	if installer, ok := manager.(interface{ EnsureStopSettings() error }); ok {
+		return installer.EnsureStopSettings()
+	}
+	return nil
+}
+
 // Status represents the current state of the service
 type Status struct {
 	// Running indicates if the service is currently running

@@ -78,6 +78,27 @@ from `child_pid`. Managed-daemon identification captures the same token with the
 canonical binary and fixed arguments, allowing an unmarked identified daemon to
 migrate through the same terminator. Windows keeps stdin shutdown and Job Objects.
 
+## Node stop
+
+Engines stay up while HTTP drains, for up to 45 seconds. Provider teardown then
+gets its own 40-second budget. The manager stops all runs in parallel through the
+ordinary run stop path, joins a concurrent API stop and reports a join timeout.
+Served models remain loaded and pin records survive shutdown.
+
+On Unix, each process group receives one SIGTERM, waits its configured
+`shutdown_timeout` (default 10 seconds, `gpu` 30 seconds), then receives SIGKILL
+if needed. API stops honor the full configured grace. A node stop bounds each
+engine's grace by the shared run budget, then force-kills surviving members.
+A node-started daemon uses the same terminator on lifetime cancellation, with an independent 10-second grace; external daemons are untouched.
+Windows retains stdin signaling, Job Objects and its leader-only wait.
+
+The node budget reserves HTTP drain, run teardown, force wait and final teardown.
+The later subsystems get a separate 30-second epilogue context after provider
+teardown. Systemd's stop-only drop-in carries `KillMode=mixed` and a derived
+`TimeoutStopSec`; the unit carries neither setting. Launchd's installed plist
+uses the same derived `ExitTimeOut`.
+Worker refresh admission and its bounded drain belong to Signaler.
+
 ## Waiter contract
 
 A caller that joins a start in flight gets that start's outcome, the run or the error, judged by `Decide`

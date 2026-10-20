@@ -12,6 +12,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
 	"howett.net/plist"
 )
@@ -42,6 +43,8 @@ type LaunchdPlist struct {
 	StandardErrorPath    string            `plist:"StandardErrorPath"`
 	EnvironmentVariables map[string]string `plist:"EnvironmentVariables,omitempty"`
 	WorkingDirectory     string            `plist:"WorkingDirectory"`
+	// ExitTimeOut reserves the node shutdown budget before launchd escalates.
+	ExitTimeOut int `plist:"ExitTimeOut"`
 }
 
 // IsPrivileged returns true if running as root
@@ -102,26 +105,7 @@ func (m *LaunchdManager) InstallService() error {
 		return fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	configDir := filepath.Join(homeDir, macOSAppSupportDir)
-	logDir := filepath.Join(homeDir, macOSLogsDir)
-
-	// Create the plist structure
-	plistData := LaunchdPlist{
-		Label: launchdLabel,
-		ProgramArguments: []string{
-			exe,
-			"start",
-			"--no-setup",
-		},
-		RunAtLoad:         true,
-		KeepAlive:         true,
-		StandardOutPath:   filepath.Join(logDir, "output.log"),
-		StandardErrorPath: filepath.Join(logDir, "error.log"),
-		WorkingDirectory:  configDir,
-		EnvironmentVariables: map[string]string{
-			"ZZROUTER_CONFIG_DIR": configDir,
-		},
-	}
+	plistData := launchdDefinition(exe, homeDir)
 
 	// Encode to plist format
 	plistBytes, err := plist.MarshalIndent(plistData, plist.XMLFormat, "\t")
@@ -149,6 +133,30 @@ func (m *LaunchdManager) InstallService() error {
 	}
 
 	return nil
+}
+
+func launchdDefinition(exe, homeDir string) LaunchdPlist {
+	configDir := filepath.Join(homeDir, macOSAppSupportDir)
+	logDir := filepath.Join(homeDir, macOSLogsDir)
+
+	// Create the plist structure
+	return LaunchdPlist{
+		Label: launchdLabel,
+		ProgramArguments: []string{
+			exe,
+			"start",
+			"--no-setup",
+		},
+		RunAtLoad:         true,
+		KeepAlive:         true,
+		ExitTimeOut:       int(constants.SupervisorStopTimeout.Seconds()),
+		StandardOutPath:   filepath.Join(logDir, "output.log"),
+		StandardErrorPath: filepath.Join(logDir, "error.log"),
+		WorkingDirectory:  configDir,
+		EnvironmentVariables: map[string]string{
+			"ZZROUTER_CONFIG_DIR": configDir,
+		},
+	}
 }
 
 // UninstallService unloads and removes the launchd plist

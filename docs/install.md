@@ -220,3 +220,23 @@ does not automatically roll back again after an explicit rollback fails health.
 There is no automatic three-way merge without a target-era baseline. Fresh
 templates also do not undo provider runtime upgrades, so check the target's
 runtime and dependency requirements before resuming workloads.
+
+### Graceful node stop on existing systemd installs
+
+New installations use `KillMode=mixed` so systemd signals only the node first;
+the node signals each engine once and waits for graceful exit before escalation.
+The root updater atomically installs `/etc/systemd/system/zzrouter-node.service.d/stop.conf`
+and reloads systemd before restarting. First installation and `update enable`
+write it through the same function. The drop-in is the sole definition of these
+settings; the base unit carries neither. A write or reload failure is logged and
+reported in `operation.warning`; the update or rollback continues. Recover
+immediately with `sudo zzrouter-node update enable`, or let the next apply or
+rollback retry; an update `check` does not retry the drop-in. The drop-in changes
+only stop settings.
+
+The updater applying the first update to this release is the old binary, so that
+first update does not install the drop-in. It arrives on the next apply, or
+immediately with `sudo zzrouter-node update enable`. This uses the existing
+privileged installer, with managed layout setup before service installation.
+Uninstall removes the managed stop drop-in and its directory when empty,
+preserving operator drop-ins.

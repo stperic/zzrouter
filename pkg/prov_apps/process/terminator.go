@@ -7,15 +7,24 @@ import (
 	"time"
 
 	"github.com/shirou/gopsutil/v4/process"
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 // Termination timeouts. These are longer than constants.ProcessGracefulTimeout (3s)
 // because LLM processes (vLLM, llama.cpp) may need time to flush GPU memory and
 // save state. The 10s graceful window avoids premature SIGKILL on heavy workloads.
 const (
-	GracefulTimeout = 10 * time.Second
-	ForceTimeout    = 5 * time.Second
+	GracefulTimeout = constants.EngineGracefulTimeout
+	ForceTimeout    = constants.EngineForceTimeout
 )
+
+// ShutdownGrace uses the configured grace, defaulting nonpositive values.
+func ShutdownGrace(grace time.Duration) time.Duration {
+	if grace <= 0 {
+		grace = GracefulTimeout
+	}
+	return grace
+}
 
 // TerminateRequest carries the identified leader through both shutdown stages.
 type TerminateRequest struct {
@@ -38,10 +47,7 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 		return nil
 	}
 
-	graceful := req.Graceful
-	if graceful <= 0 {
-		graceful = GracefulTimeout
-	}
+	graceful := ShutdownGrace(req.Graceful)
 
 	// Identity may change between inspection and signal; the existing narrow race is accepted.
 	if !req.Owns(req.PID, req.StartToken) {

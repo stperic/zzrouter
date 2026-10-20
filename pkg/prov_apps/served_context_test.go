@@ -270,7 +270,7 @@ func TestServedContextReadStoppedOrRetired(t *testing.T) {
 				unblock()
 				drainContextRead(t, run)
 				assert.Equal(t, instance.StatusRunning, run.GetStatus())
-				run.ReleaseEnd()
+				run.FinishEnd(instance.ErrStopping)
 			}
 			assert.Zero(t, run.ToInfo("").ContextLength)
 		})

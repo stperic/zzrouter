@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // StatusError is a coordinator refusal, kept whole so the caller can relay
@@ -120,21 +122,38 @@ func (s *Signaler) Stop(ctx context.Context) {
 //
 // The certificate names both the inventory and the endpoint to re-probe.
 func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
-	if s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
-		return nil
-	}
+	return s.notify(ctx, false)
+}
+
+// NotifyCacheRefreshAsync admits a notification before spawning so Stop owns its drain.
+func (s *Signaler) NotifyCacheRefreshAsync(ctx context.Context) {
+	_ = s.notify(ctx, true)
+}
+
+func (s *Signaler) notify(ctx context.Context, async bool) error {
 	s.lifecycleMu.Lock()
 	lifeCtx := s.lifeCtx
-	if lifeCtx == nil {
+	if lifeCtx == nil || s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
 	s.notifyWG.Add(1)
 	s.lifecycleMu.Unlock()
+	if async {
+		go func() {
+			defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
+			_ = s.notifyCacheRefresh(ctx, lifeCtx)
+		}()
+		return nil
+	}
+	return s.notifyCacheRefresh(ctx, lifeCtx)
+}
+
+func (s *Signaler) notifyCacheRefresh(ctx, lifeCtx context.Context) error {
 	defer s.notifyWG.Done()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stop := context.AfterFunc(lifeCtx, cancel) //nolint:contextcheck // bounds the caller's ctx by the signaler's lifetime so Stop ends in-flight notifications
+	stop := context.AfterFunc(lifeCtx, cancel)
 	defer stop()
 	if lifeCtx.Err() != nil {
 		cancel()

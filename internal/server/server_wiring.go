@@ -281,12 +281,7 @@ func (s *Server) notifyCoordinatorAsync() {
 	if s.cluster.signaler == nil || s.draining.Load() {
 		return
 	}
-	s.refreshWG.Add(1)
-	go func() {
-		defer s.refreshWG.Done()
-		defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
-		_ = s.cluster.signaler.NotifyCacheRefresh(s.shutdownCtx)
-	}()
+	s.cluster.signaler.NotifyCacheRefreshAsync(s.shutdownCtx)
 }
 
 // observeModelStart records one attempt and refreshes resources after a cold start.

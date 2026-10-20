@@ -488,7 +488,7 @@ type AppDefaultsConfig struct {
 type AppMetadata struct {
 	ProcessPatterns []string `yaml:"process_patterns,omitempty"` // Patterns for orphan process detection (e.g., ["vllm.entrypoints"])
 	StartupPatterns []string `yaml:"startup_patterns,omitempty"` // Log patterns indicating readiness (e.g., ["Application startup complete"])
-	ShutdownTimeout string   `yaml:"shutdown_timeout,omitempty"` // Graceful shutdown: "30s", "gpu" (30s), or empty (5s default)
+	ShutdownTimeout string   `yaml:"shutdown_timeout,omitempty"` // Graceful shutdown: duration, "gpu" (30s), or empty (10s); node stop bounds it by the run budget
 	ProcessorType   string   `yaml:"processor_type,omitempty"`   // Display label: "GPU", "Metal GPU", "CPU"
 	ContextParam    string   `yaml:"context_param,omitempty"`    // Parameter name for context length: "max-model-len", "ctx-size"
 }

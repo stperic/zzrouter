@@ -109,6 +109,8 @@ const (
 // --------------------------------------------------------------------------------------
 
 const (
+	// NoGrace requests immediate cleanup instead of graceful cancellation.
+	NoGrace time.Duration = 0
 	// ProcessGracefulTimeout is time allowed for graceful shutdown (SIGTERM)
 	ProcessGracefulTimeout = 3 * time.Second
 
@@ -125,12 +127,24 @@ const (
 	// ProcessDefaultStopTimeout is default timeout when stopping instances
 	ProcessDefaultStopTimeout = 3 * time.Second
 
-	// ShutdownMaxTimeout caps the total shutdown time to prevent indefinite hangs.
-	// Sits comfortably inside systemd's default TimeoutStopSec=90s so the OS
-	// won't SIGKILL mid-flush under heavy HTTP drain. Spend state is pre-drained
-	// to disk before HTTP drain starts, so this cap governs HTTP and goroutine
-	// teardown only.
-	ShutdownMaxTimeout = 45 * time.Second
+	// EngineGracefulTimeout is the default engine termination grace.
+	EngineGracefulTimeout = 10 * time.Second
+	// EngineMaxGracefulTimeout reserves the largest built-in grace; configured grace may exceed it.
+	EngineMaxGracefulTimeout = 30 * time.Second
+	// EngineForceTimeout bounds the wait after force-killing an engine.
+	EngineForceTimeout = 5 * time.Second
+	// ShutdownDrainTimeout reserves time for HTTP drain and coordinator teardown.
+	ShutdownDrainTimeout = 45 * time.Second
+	// ShutdownRunEpilogueTimeout reserves run reaping and registry cleanup.
+	ShutdownRunEpilogueTimeout = 5 * time.Second
+	// ShutdownRunTimeout reserves grace, escalation and run epilogues after drain.
+	ShutdownRunTimeout = EngineMaxGracefulTimeout + EngineForceTimeout + ShutdownRunEpilogueTimeout
+	// ShutdownEpilogueTimeout covers daemon cancellation and remaining subsystem teardown.
+	ShutdownEpilogueTimeout = EngineGracefulTimeout + EngineForceTimeout + 15*time.Second
+	// ShutdownMaxTimeout includes drain, runs, force wait and final teardown.
+	ShutdownMaxTimeout = ShutdownDrainTimeout + ShutdownRunTimeout + EngineForceTimeout + ShutdownEpilogueTimeout
+	// SupervisorStopTimeout leaves a force-wait margin beyond the node's budget.
+	SupervisorStopTimeout = ShutdownMaxTimeout + EngineForceTimeout
 
 	// RoleDemoteTimeout bounds the coordinator-subsystem teardown when the
 	// role manager transitions the node out of coordinator mode. Kept tight

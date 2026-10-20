@@ -145,6 +145,7 @@ type RunStatus struct {
 	FinishedAt  *time.Time    `json:"finished_at,omitempty"`
 	Success     bool          `json:"success"`
 	Error       string        `json:"error,omitempty"`
+	Warning     string        `json:"warning,omitempty"` // Nonfatal failure; the requested update may still succeed.
 }
 
 // Finished reports whether the run this status describes is over.

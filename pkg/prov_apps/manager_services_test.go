@@ -17,6 +17,7 @@ import (
 
 	"github.com/stperic/zzrouter/internal/testproc"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
 	"github.com/stperic/zzrouter/pkg/host/service"
 	"github.com/stperic/zzrouter/pkg/jobs"
@@ -402,7 +403,9 @@ func TestBootReconcileBlockedByAnExitingDaemonIsRetried(t *testing.T) {
 	cmd.Env, err = process.ChildEnvironment(m.providerServiceEnv("generic-daemon"))
 	require.NoError(t, err)
 	started, done := make(chan int, 1), make(chan error, 1)
-	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()
+	go func() {
+		done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }, constants.NoGrace)
+	}()
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
@@ -433,7 +436,9 @@ func TestRestartMigratesOnlyTheIdentifiedManagedDaemon(t *testing.T) {
 	cmd.Env = []string{"PROVIDER_DAEMON_HELPER=1", owner + "=" + pid}
 	started := make(chan int, 1)
 	done := make(chan error, 1)
-	go func() { done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }) }()
+	go func() {
+		done <- process.RunOwnedCommandStarted(ctx, cmd, func(pid int) { started <- pid }, constants.NoGrace)
+	}()
 	var priorPID int
 	select {
 	case priorPID = <-started:
