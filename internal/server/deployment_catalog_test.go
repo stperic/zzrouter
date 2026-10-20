@@ -197,7 +197,7 @@ func TestFinalizeCatalogNotificationDoesNotBlockCallback(t *testing.T) {
 	t.Cleanup(func() {
 		close(release)
 		<-returned
-		target.refreshWG.Wait()
+		target.cluster.signaler.Stop(context.Background())
 		target.cluster.signaler.Stop(context.Background())
 	})
 	go func() {
@@ -216,7 +216,7 @@ func TestFinalizeCatalogNotificationDoesNotBlockCallback(t *testing.T) {
 	}
 	drained := make(chan struct{})
 	go func() {
-		target.refreshWG.Wait()
+		target.cluster.signaler.Stop(context.Background())
 		close(drained)
 	}()
 	select {

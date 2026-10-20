@@ -36,6 +36,18 @@
   steal may still refuse, retaining the pin record without claiming that a run was
   kept.
 
+- Stop node-owned engines in parallel with one SIGTERM per process group and a
+  full run budget after HTTP drain. Join concurrent API stops, keep pins and
+  served models, and bound worker refresh shutdown. API stops honor configured
+  grace; node stops bound it by the run budget and give later subsystems a
+  separate epilogue budget. Node-started daemons receive TERM before escalation.
+  Systemd keeps stop settings solely in a drop-in with
+  `KillMode=mixed`; the privileged updater installs the drop-in on its next
+  update, or immediately via `sudo zzrouter-node update enable`. Launchd's
+  installed plist carries the derived stop timeout. Drop-in installation failures
+  warn in update status and logs while updates and rollbacks continue. Windows
+  process handling is unchanged.
+
 - Declare new engine flags in an operator-owned `schema:` block without a
   zzRouter release. One parameters PATCH or `zz_params_set` can declare and set
   a flag atomically. Accepted shapes carry `operator: true`; GET `/schema` and

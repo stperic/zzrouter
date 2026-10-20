@@ -1002,7 +1002,12 @@ paths:
         still starting is `DELETE /zzrouter/v1/jobs/{id}` against the
         job id that `POST /runs` returned. Once the run reaches
         running, that launch job is terminal and only this route stops
-        the instance.
+        the instance. On Unix, graceful termination signals its process group once,
+        waits the full shutdown_timeout (10 seconds by default, gpu 30 seconds),
+        then force-kills surviving members. Node shutdown bounds each engine's
+        grace by its independent run budget and uses this
+        same termination path in parallel, keeps pin records and leaves served
+        models loaded. A concurrent operator stop is joined by node shutdown.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
       responses:
@@ -14225,6 +14230,7 @@ components:
         finished_at: { type: string, format: date-time }
         success: { type: boolean }
         error: { type: string }
+        warning: { type: string, description: Nonfatal update preparation failure; the operation may still succeed and the next run retries. }
 
     NodeUpdate:
       type: object

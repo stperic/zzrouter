@@ -703,7 +703,7 @@ func (m *ProviderAppManager) superviseService(ctx context.Context, name, binary 
 				state.status.Running, state.status.PID, state.status.Backoff = true, pid, ""
 				state.mu.Unlock()
 				m.serviceCatalogChanged()
-			})
+			}, process.GracefulTimeout)
 			_ = logFile.Close()
 		}
 		release()
@@ -898,6 +898,7 @@ func (m *ProviderAppManager) retireRun(run *instance.Instance, why string, reaso
 	if !run.ClaimEnd() {
 		return // a stop in progress ends it
 	}
+	defer run.FinishEnd(nil)
 	run.Cancel()
 	m.releaseRun(run, fmt.Errorf("%w: %s", ErrModelDropped, why))
 	m.record(run, stoppedEvent(run, reason, why))

@@ -3,11 +3,19 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"syscall"
 )
+
+func cancelOwnedCommand(ctx context.Context, req TerminateRequest) error {
+	if req.Graceful > 0 {
+		return Terminate(context.WithoutCancel(ctx), req)
+	}
+	return killProcessTree(req)
+}
 
 // setProcAttributes sets Unix-specific process attributes.
 // Setpgid creates a new process group so we can kill the entire tree.

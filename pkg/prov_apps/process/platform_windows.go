@@ -3,6 +3,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process/jobobj"
 )
+
+func cancelOwnedCommand(_ context.Context, req TerminateRequest) error {
+	return killProcessTree(req)
+}
 
 // setProcAttributes is a no-op on Windows.
 func setProcAttributes(_ *exec.Cmd) {}

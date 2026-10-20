@@ -16,7 +16,9 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 //go:embed templates/zzrouter-node.service
@@ -41,10 +43,35 @@ func NewServiceManager() ServiceManager {
 }
 
 // SystemdManager handles service management on Linux using systemd
-type SystemdManager struct{}
+type SystemdManager struct{ unitPath string }
 
 // systemd service file path
 const systemdServicePath = "/etc/systemd/system/zzrouter-node.service"
+
+func (m *SystemdManager) servicePath() string {
+	if m.unitPath != "" {
+		return m.unitPath
+	}
+	return systemdServicePath
+}
+
+// EnsureStopSettings atomically updates only stop policy and reloads even after a prior reload failure.
+func (m *SystemdManager) EnsureStopSettings() error {
+	path := m.servicePath() + ".d/stop.conf"
+	content := fmt.Sprintf("[Service]\nKillMode=mixed\nTimeoutStopSec=%.0fs\n", constants.SupervisorStopTimeout.Seconds())
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	if current, _ := os.ReadFile(path); string(current) != content {
+		if err := utils.AtomicWriteFile(path, []byte(content), 0644); err != nil {
+			return fmt.Errorf("write stop settings: %w", err)
+		}
+	}
+	if err := host.Command("systemctl", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("reload stop settings: %w", err)
+	}
+	return nil
+}
 
 // IsPrivileged returns true if running as root
 func (m *SystemdManager) IsPrivileged() bool {
@@ -60,7 +87,7 @@ func (m *SystemdManager) IsFirstRun() bool {
 	}
 
 	// Check if service file exists
-	if _, err := os.Stat(systemdServicePath); os.IsNotExist(err) {
+	if _, err := os.Stat(m.servicePath()); os.IsNotExist(err) {
 		return true
 	}
 
@@ -320,18 +347,17 @@ func (m *SystemdManager) InstallService() error {
 	}
 
 	// Write service file
-	if err := os.WriteFile(systemdServicePath, []byte(serviceContent), 0644); err != nil {
+	if err := os.WriteFile(m.servicePath(), []byte(serviceContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 
-	// Reload systemd daemon
-	cmd := host.Command("systemctl", "daemon-reload")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to reload systemd: %w", err)
+	// Write the stop drop-in and reload systemd.
+	if err := m.EnsureStopSettings(); err != nil {
+		return err
 	}
 
 	// Enable service to start on boot
-	cmd = host.Command("systemctl", "enable", "zzrouter-node.service")
+	cmd := host.Command("systemctl", "enable", "zzrouter-node.service")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to enable service: %w", err)
 	}
@@ -369,7 +395,7 @@ var updaterUnits = []struct {
 func (m *SystemdManager) installUpdaterUnits(nodePath string) error {
 	for _, unit := range updaterUnits {
 		content := strings.ReplaceAll(unit.template, defaultManagedNodePath, nodePath)
-		path := filepath.Join(filepath.Dir(systemdServicePath), unit.name)
+		path := filepath.Join(filepath.Dir(m.servicePath()), unit.name)
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
@@ -411,9 +437,13 @@ func (m *SystemdManager) UninstallService() error {
 	_ = host.Command("systemctl", "disable", "zzrouter-node.service").Run() // Best-effort cleanup: remove the unit even if systemctl cannot disable it.
 
 	// Remove the service file
-	if err := os.Remove(systemdServicePath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(m.servicePath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove service file: %w", err)
 	}
+	if err := os.Remove(m.servicePath() + ".d/stop.conf"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stop settings: %w", err)
+	}
+	_ = os.Remove(m.servicePath() + ".d") // Preserve directories containing operator drop-ins.
 
 	// Reload systemd daemon
 	if err := host.Command("systemctl", "daemon-reload").Run(); err != nil {

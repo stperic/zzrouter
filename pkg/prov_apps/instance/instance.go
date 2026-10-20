@@ -62,6 +62,7 @@ type Instance struct {
 	StopUnconfirmed atomic.Bool `json:"-"`
 	// ending is held by the one stop or retirement ending the run; a failed stop gives it back.
 	ending bool
+	end    *endResult
 
 	// String not prov_apps.Endpoint to avoid a back-import (prov_apps imports instance).
 	Endpoint   string `json:"endpoint,omitempty"`
@@ -210,6 +211,11 @@ func (i *Instance) Cancel() {
 	}
 }
 
+type endResult struct {
+	done chan struct{}
+	err  error
+}
+
 // ClaimEnd takes the right to end the run; false while another stop or retirement holds it.
 func (i *Instance) ClaimEnd() bool {
 	i.mu.Lock()
@@ -218,14 +224,30 @@ func (i *Instance) ClaimEnd() bool {
 		return false
 	}
 	i.ending = true
+	i.end = &endResult{done: make(chan struct{})}
 	return true
 }
 
-// ReleaseEnd gives the right back after a stop that failed, so a retry can take it.
-func (i *Instance) ReleaseEnd() {
+// FinishEnd publishes a stop's result and releases ownership only after failure.
+func (i *Instance) FinishEnd(err error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.ending = false
+	i.ending = err == nil
+	i.end.err = err
+	close(i.end.done)
+}
+
+// WaitForEnd joins the stop that already owns this run, bounded by ctx.
+func (i *Instance) WaitForEnd(ctx context.Context) error {
+	i.mu.RLock()
+	result := i.end
+	i.mu.RUnlock()
+	select {
+	case <-result.done:
+		return result.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // --- Thread-safe status reads ---

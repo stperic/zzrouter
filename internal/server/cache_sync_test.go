@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
@@ -262,7 +263,9 @@ func TestCatalogNotificationsDrainCleanly(t *testing.T) {
 			wg.Go(s.notifyCoordinatorAsync)
 		}
 		wg.Wait()
-		s.refreshWG.Wait()
+		require.Eventually(t, func() bool { return calls.Load() == int32(wave*20) }, time.Second, time.Millisecond)
+		s.cluster.signaler.Stop(context.Background())
+		s.cluster.signaler.Start(t.Context())
 		require.EqualValues(t, wave*20, calls.Load(), "each wave drains before another starts")
 	}
 }
@@ -272,7 +275,7 @@ func TestCatalogNotificationsDrainingShortCircuits(t *testing.T) {
 	calls := notificationCounter(t, s)
 	s.draining.Store(true)
 	s.notifyCoordinatorAsync()
-	s.refreshWG.Wait()
+	s.cluster.signaler.Stop(context.Background())
 	require.Zero(t, calls.Load(), "draining must not start a notification")
 }
 

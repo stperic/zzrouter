@@ -261,6 +261,13 @@ func (r *privilegedRun) execute(ctx context.Context) error {
 
 // perform dispatches a claimed request or an in-memory CLI action.
 func (r *privilegedRun) perform(ctx context.Context) error {
+	if r.req.Action == update.ActionApply || r.req.Action == update.ActionRollback {
+		if err := service.EnsureStopSettings(r.manager); err != nil {
+			slog.Warn("could not configure node stop settings; continuing update and retrying next run", "err", err)
+			r.withStatus(func(s *update.RunStatus) { s.Warning = "configure node stop settings: " + err.Error() })
+			r.publish()
+		}
+	}
 	switch r.req.Action {
 	case update.ActionCheck:
 		return r.check(ctx)

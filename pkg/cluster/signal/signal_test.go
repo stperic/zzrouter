@@ -337,3 +337,44 @@ func TestSignaler_NotifyCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestSignalerAsyncAdmissionRacingStop(t *testing.T) {
+	checked, release, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	s := New(Config{IsWorker: func() bool { close(checked); <-release; return true }, MTLSClient: func() *http.Client { calls.Add(1); return nil }})
+	s.Start(t.Context())
+	go func() { s.NotifyCacheRefreshAsync(t.Context()); close(returned) }()
+	<-checked
+	stopped := make(chan struct{})
+	go func() { s.Stop(t.Context()); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("shutdown passed admission between its check and Add")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	<-returned
+	<-stopped
+	before := calls.Load()
+	s.NotifyCacheRefreshAsync(t.Context())
+	require.Equal(t, before, calls.Load(), "admission after Stop must not add work")
+}
+
+func TestSignalerAsyncStalledNotificationHasBoundedStop(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	s := New(Config{IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { close(entered); <-release; return nil }})
+	s.Start(t.Context())
+	s.NotifyCacheRefreshAsync(t.Context())
+	<-entered
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+	returned := make(chan struct{})
+	go func() { s.Stop(ctx); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("stalled notification hung Stop")
+	}
+	close(release)
+	s.notifyWG.Wait()
+}

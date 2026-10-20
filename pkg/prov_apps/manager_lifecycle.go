@@ -790,9 +790,8 @@ func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance
 	}
 	inst.StopUnconfirmed.Store(true)
 	defer func() {
-		if inst.StopUnconfirmed.Store(result != nil); result != nil {
-			inst.ReleaseEnd()
-		}
+		inst.StopUnconfirmed.Store(result != nil)
+		inst.FinishEnd(result)
 	}()
 
 	// Mark stopping
@@ -880,21 +879,14 @@ func (m *ProviderAppManager) shuttingDown() bool {
 	return m.stopping.Load() || m.shutdown.Load()
 }
 
-// Stop gracefully stops all instances and releases resources.
-//
-// Sequence:
-//  1. Set shutdown flag
-//  2. Cancel shutdownCtx (stops keepalive, health monitors)
-//  3. Stop all running instances
-//  4. Close log manager
-//  5. Close event channel
+// Stop closes admission, stops runs in parallel and drains installs and services.
 func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	if m == nil {
 		return nil
 	}
 	// `stopping` gates concurrent Stop() callers. `shutdown` flips
-	// only AFTER the per-instance stop loop so emitEvent keeps accepting
-	// each StopInstance's EventStopped — otherwise the audit trail loses
+	// only AFTER the per-instance drain so emitEvent keeps accepting
+	// each run's EventStopped — otherwise the audit trail loses
 	// every shutdown-time termination.
 	// Serialize feature-install admission with the shutdown drain.
 	m.mu.Lock()
@@ -924,25 +916,24 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		stopErr = ctx.Err()
 	}
-	for _, inst := range m.instances.List() {
-		if err := ctx.Err(); err != nil {
-			slog.Warn("provider manager shutdown interrupted by caller deadline",
-				"instances_remaining", len(m.instances.List()),
-				"error", err)
-			stopErr = err
-			break
-		}
-		eng := m.runEngine(inst)
-		down := eng.down
-		if eng.outlivesNode() {
-			down = nil
-		}
-		// A stop already in progress is its caller's to finish.
-		if err := m.endRun(ctx, inst, obsruns.StopReasonUser, down); err != nil && !errors.Is(err, instance.ErrStopping) {
-			stopErr = err
-			slog.Warn("failed to stop instance during shutdown",
-				"id", inst.ID, "error", err)
-		}
+	runs := m.instances.List()
+	stopped := make(chan error, len(runs))
+	for _, inst := range runs {
+		go func() {
+			eng := m.runEngine(inst)
+			down := eng.down
+			if eng.outlivesNode() {
+				down = nil
+			}
+			err := m.endRun(ctx, inst, obsruns.StopReasonUser, down)
+			if errors.Is(err, instance.ErrStopping) {
+				err = inst.WaitForEnd(ctx)
+			}
+			stopped <- err
+		}()
+	}
+	for range runs {
+		stopErr = errors.Join(stopErr, <-stopped)
 	}
 
 	// Drain any in-flight async installs BEFORE flipping the shutdown
@@ -1233,13 +1224,9 @@ func mergeStringMaps(defaults, overrides map[string]string) map[string]string {
 	return result
 }
 
-// stopEpilogue covers a stop's work after the process exits: goroutine wait,
-// registry removal and port release.
-const stopEpilogue = 5 * time.Second
-
 // stopBudget bounds a stop of provider's process: its graceful timeout plus the epilogue.
 func (m *ProviderAppManager) stopBudget(provider string) time.Duration {
-	return m.resolveShutdownTimeout(provider) + stopEpilogue
+	return m.resolveShutdownTimeout(provider) + constants.ShutdownRunEpilogueTimeout
 }
 
 // resolveShutdownTimeout returns the graceful shutdown timeout for a provider.
@@ -1258,10 +1245,10 @@ func (m *ProviderAppManager) resolveShutdownTimeout(provider string) time.Durati
 	case "":
 		return process.GracefulTimeout
 	case "gpu":
-		return 30 * time.Second
+		return constants.EngineMaxGracefulTimeout
 	default:
 		if d, err := time.ParseDuration(hint); err == nil {
-			return d
+			return process.ShutdownGrace(d)
 		}
 		return process.GracefulTimeout
 	}

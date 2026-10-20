@@ -224,7 +224,7 @@ func TestToolsEngineMetadataFailure(t *testing.T) {
 			drainContextRead(t, run)
 			assert.Equal(t, "unknown", run.Resolved().Features["tools"])
 			if ending == "retired" {
-				run.ReleaseEnd()
+				run.FinishEnd(instance.ErrStopping)
 			}
 		})
 	}

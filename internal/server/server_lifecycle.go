@@ -62,9 +62,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// health poll. Fires once the public listener is bound (before
 	// Serve accepts traffic) — no self-probe, no scheme guessing.
 	if s.role.Current().IsWorker() && s.cluster.signaler != nil {
-		s.refreshWG.Add(1)
 		go func() {
-			defer s.refreshWG.Done()
 			defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
 			select {
 			case <-s.listenerReady:
@@ -83,9 +81,13 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop mirrors Start in reverse.
 func (s *Server) Stop() error {
+	return s.stop(constants.ShutdownDrainTimeout)
+}
+
+func (s *Server) stop(drainTimeout time.Duration) error {
 	slog.Info("Stopping zzrouter server gracefully")
 
-	ctx, cancel := context.WithTimeout(context.Background(), constants.ShutdownMaxTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 
 	s.draining.Store(true)
@@ -128,8 +130,6 @@ func (s *Server) Stop() error {
 		coordStopErr = s.stopCoordinatorSubsystems(ctx)
 	}
 
-	// Drain async endpoint refreshes (HealthMonitor.Stop above unblocks them).
-	s.refreshWG.Wait()
 	stopErr := errors.Join(coordStopErr, s.stopCommonSubsystems(ctx))
 
 	slog.Info("Node stopped gracefully")
@@ -615,17 +615,23 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
 }
 
 // stopCommonSubsystems stops subsystems that run on every node.
-// ctx carries the shutdown deadline for subsystems that need graceful drain.
+// ctx bounds deployment drain; providers and epilogues get independent budgets.
 // Returns the joined error from subsystems whose Stop can fail; others
 // are swallowed silently (they already log internally on failure paths).
 func (s *Server) stopCommonSubsystems(ctx context.Context) error {
 	s.services.Deployments.Stop(ctx)
+	// Drop the drain deadline so providers and epilogues receive their full independent budgets.
+	ctx = context.WithoutCancel(ctx)
 	var errs []error
 	// Provider processes first — they're child processes that must be
 	// stopped before their parent goroutines are gone.
-	if err := s.providers.appMgr.Stop(ctx); err != nil {
+	runCtx, runCancel := context.WithTimeout(ctx, constants.ShutdownRunTimeout)
+	if err := s.providers.appMgr.Stop(runCtx); err != nil {
 		errs = append(errs, fmt.Errorf("provider app manager: %w", err))
 	}
+	runCancel()
+	ctx, cancel := context.WithTimeout(ctx, constants.ShutdownEpilogueTimeout)
+	defer cancel()
 	s.maintenance.Stop()
 	if s.updateRollouts != nil {
 		s.updateRollouts.Stop()
@@ -633,13 +639,8 @@ func (s *Server) stopCommonSubsystems(ctx context.Context) error {
 	if s.updateScheduler != nil {
 		s.updateScheduler.Stop()
 	}
-	// Cluster listener stops before the resource group so /internal/*
-	// dispatches (wired in mTLS PR 3) stop arriving before the
-	// ResourceTracker + mDNS state those handlers consume is torn
-	// down. Today the listener's routes are self-contained and either
-	// order works; the ordering is chosen to be stable across the PR 3
-	// landing. Node.Stop honors the caller's ctx (capped internally at
-	// 5s) so Server.Stop's outer shutdown deadline bounds the drain.
+	// Stop cluster admission before tearing down resources used by internal requests.
+	// The independent epilogue context bounds this drain and the remaining cleanup.
 	if err := s.cluster.listener.Stop(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("cluster listener: %w", err))
 	}
