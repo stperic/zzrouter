@@ -3,6 +3,7 @@ package schema
 import (
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,7 +14,7 @@ func TestMerge_AssetPass(t *testing.T) {
 		"by-path":    {Type: "asset", Pass: "path"},
 		"default":    {Type: "asset"},
 	}}
-	got, errs := Merge("eng", y)
+	got, errs := Merge("eng", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, AssetPassContent, got.Parameters["by-content"].Pass)
 	assert.Equal(t, AssetPassPath, got.Parameters["by-path"].Pass)
@@ -27,7 +28,7 @@ func TestMerge_AssetPassRefusals(t *testing.T) {
 		"not an asset": {Type: "string", Pass: "content"},
 		"unknown mode": {Type: "asset", Pass: "inline"},
 	} {
-		got, errs := Merge("eng", &YAMLSchema{Parameters: map[string]YAMLParam{"k": yp}})
+		got, errs := Merge("eng", &YAMLSchema{Parameters: map[string]YAMLParam{"k": yp}}, config.ServiceConfig{})
 		assert.Len(t, errs, 1, name)
 		assert.NotContains(t, got.Parameters, "k", name)
 	}

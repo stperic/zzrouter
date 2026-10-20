@@ -402,7 +402,7 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "float", declared.Parameters["reserve-vram"].Type)
 	manager, err := NewProviderAppManager(cfg, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
-		merged, errs := schema.Merge(provider, declared)
+		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(errs...)
 	}))
 	require.NoError(t, err)

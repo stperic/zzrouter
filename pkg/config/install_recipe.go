@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -143,60 +142,11 @@ func mergeInstallFields(dst, src map[string]any, path, tier string, provenance m
 
 // MergeInstallPatch applies RFC 7396 only to the override, so null restores inheritance.
 func MergeInstallPatch(current *InstallConfig, raw []byte) (*InstallConfig, error) {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, nil
-	}
-	var patch map[string]any
-	if err := json.Unmarshal(raw, &patch); err != nil {
+	result, err := MergePatch(current, raw)
+	if err != nil || result == nil || len(result.Runtimes) == 0 {
 		return nil, err
 	}
-	if patch == nil {
-		return nil, fmt.Errorf("install must be an object")
-	}
-	original := map[string]any{}
-	if current != nil {
-		data, err := json.Marshal(current)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &original); err != nil {
-			return nil, err
-		}
-	}
-	mergeInstallPatch(original, patch)
-	data, err := json.Marshal(original)
-	if err != nil {
-		return nil, err
-	}
-	var result InstallConfig
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&result); err != nil {
-		return nil, err
-	}
-	if len(result.Runtimes) == 0 {
-		return nil, nil
-	}
-	return &result, nil
-}
-
-func mergeInstallPatch(dst, src map[string]any) {
-	for key, value := range src {
-		if value == nil {
-			delete(dst, key)
-			continue
-		}
-		if fields, ok := value.(map[string]any); ok {
-			existing, _ := dst[key].(map[string]any)
-			if existing == nil {
-				existing = map[string]any{}
-			}
-			mergeInstallPatch(existing, fields)
-			dst[key] = existing
-		} else {
-			dst[key] = value
-		}
-	}
+	return result, nil
 }
 
 // Validate checks a complete resolved recipe without granting execution authority.

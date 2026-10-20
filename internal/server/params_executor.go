@@ -22,6 +22,7 @@ import (
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/assets"
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	configschema "github.com/stperic/zzrouter/pkg/config/schema"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -35,16 +36,12 @@ import (
 // names are validated against the merged schema instead of a regex.
 var envKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
-// paramKeyRe bounds flag-key characters for consumers of the /runs
-// launch path, which still takes free-form parameter maps.
-var paramKeyRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
-
 // validateParameterMaps checks parameter keys and values for invalid
 // characters. Preserved for the /runs launch path which has not moved
 // to the typed PATCH flow.
 func validateParameterMaps(parameters, environment map[string]string) error {
 	for k, v := range parameters {
-		if !paramKeyRe.MatchString(k) {
+		if !runsettings.ValidKey(k) {
 			return fmt.Errorf("invalid parameter key %q: must contain only letters, digits, hyphens, underscores", k)
 		}
 		if err := validateEnvValue(k, v); err != nil {
@@ -392,6 +389,7 @@ func (e *ParamsExecutor) writeETag(c *gin.Context, provider string, digests map[
 // schemaParamDTO mirrors schema.ParamShape on the wire (pointers become
 // inline numeric fields; empty Kind becomes "string" at the DTO edge).
 type schemaParamDTO struct {
+	Operator    bool     `json:"operator,omitempty"`
 	Type        string   `json:"type"`
 	Min         *float64 `json:"min,omitempty"`
 	Max         *float64 `json:"max,omitempty"`
@@ -420,6 +418,7 @@ type endpointSchemaDTO struct {
 }
 
 type schemaResponse struct {
+	Problems    []utils.ParamError           `json:"problems,omitempty"`
 	Install     json.RawMessage              `json:"install,omitempty"`
 	Diagnostics *schema.Diagnostics          `json:"diagnostics,omitempty"`
 	Parameters  map[string]schemaParamDTO    `json:"parameters"`
@@ -438,6 +437,7 @@ func (e *ParamsExecutor) HandleSchema(c *gin.Context) {
 	}
 	merged := loadProviderSchema(e.configStore, provider)
 	resp := schemaResponse{
+		Problems:    merged.Problems,
 		Diagnostics: merged.Diagnostics,
 		Parameters:  paramShapeMapToDTO(merged.Parameters),
 		Environment: make(map[string]schemaParamDTO),
@@ -496,6 +496,7 @@ func paramShapeMapToDTO(m map[string]schema.ParamShape) map[string]schemaParamDT
 			kind = "string"
 		}
 		out[name] = schemaParamDTO{
+			Operator:    shape.Operator,
 			Type:        kind,
 			Min:         shape.Min,
 			Max:         shape.Max,
@@ -557,7 +558,17 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 	}
 	endpoint = cmp.Or(endpoint, patchEndpoint)
 
-	mergedSchema := loadProviderSchema(e.configStore, provider)
+	declared, err := readProviderSchema(e.configStore, provider)
+	if err != nil {
+		slog.Warn("provider schema incomplete; using available shapes", "provider", provider, "error", err)
+	}
+	next, err := cloneService(cfg)
+	if err != nil {
+		InternalNodeError(c, err.Error())
+		return
+	}
+	applyErr := applyPatchToConfig(&next, patch)
+	mergedSchema, _ := serviceSchema(provider, next, declared)
 	nodes := map[string]bool{}
 	if e.knownNodes != nil {
 		nodes = e.knownNodes()
@@ -577,10 +588,15 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 			return node, found
 		}
 	}
-	errs := validatePatch(provider, cfg, patch, mergedSchema, patchScope{nodes: nodes, weights: weights})
+	beforeSchema, _ := serviceSchema(provider, *cfg, declared)
+	errs := append(newSchemaProblems(beforeSchema, mergedSchema), validatePatch(provider, cfg, patch, mergedSchema, patchScope{nodes: nodes, weights: weights})...)
 	errs = append(errs, validateInstallPatch(patch, *cfg, restart)...)
 	if catalogErr != nil {
 		ServiceUnavailable(c, "cannot validate variant names: "+catalogErr.Error())
+		return
+	}
+	if applyErr != nil && len(errs) == 0 {
+		BadRequest(c, applyErr.Error())
 		return
 	}
 	if len(errs) > 0 {
@@ -596,23 +612,7 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 		"body_sha256", hex.EncodeToString(bodySum[:]),
 	)
 
-	locate := providerAssets(e.configStore, provider)
-	if err := e.configStore.ApplyParameterPatch(provider, func(sc *pkgConfig.ServiceConfig) error {
-		// Under the lock asset deletes take, so the assets checked here
-		// are the ones the stored config will name.
-		before := danglingAssetRefs(sc, mergedSchema, locate)
-		original, err := cloneService(sc)
-		if err != nil {
-			return err
-		}
-		if err := applyPatchToConfig(sc, patch); err != nil {
-			return err
-		}
-		if err := e.checkInstallMutation(c.Request.Context(), &original, sc, nodes); err != nil {
-			return err
-		}
-		return newlyDangling(before, danglingAssetRefs(sc, mergedSchema, locate))
-	}); err != nil {
+	if err := e.applyParameterPatch(c.Request.Context(), provider, patch, declared, nodes); err != nil {
 		if errors.Is(err, pkgConfig.ErrProviderNotFound) {
 			NotFound(c, err.Error())
 			return
@@ -666,6 +666,63 @@ func (e *ParamsExecutor) HandleParametersPatch(c *gin.Context) {
 		resolvedResponse: view,
 		Runs:             runs,
 	})
+}
+
+func (e *ParamsExecutor) applyParameterPatch(ctx context.Context, provider string, patch *paramPatchBody, declared *schema.YAMLSchema, nodes map[string]bool) error {
+	locate := providerAssets(e.configStore, provider)
+	return e.configStore.ApplyParameterPatch(provider, func(sc *pkgConfig.ServiceConfig) error {
+		// Under the lock asset deletes take, so the assets checked here
+		// are the ones the stored config will name.
+		beforeSchema, _ := serviceSchema(provider, *sc, declared)
+		before := danglingAssetRefs(sc, beforeSchema, locate)
+		original, err := cloneService(sc)
+		if err != nil {
+			return err
+		}
+		if err := applyPatchToConfig(sc, patch); err != nil {
+			return err
+		}
+		if err := e.checkInstallMutation(ctx, &original, sc, nodes); err != nil {
+			return err
+		}
+		afterSchema, _ := serviceSchema(provider, *sc, declared)
+		refused := newSchemaProblems(beforeSchema, afterSchema)
+		invalidBefore := parameterProblems(&original, beforeSchema)
+		for path, problem := range parameterProblems(sc, afterSchema) {
+			if _, wasInvalid := invalidBefore[path]; !wasInvalid {
+				refused = append(refused, problem)
+			}
+		}
+		if len(refused) > 0 {
+			return refused
+		}
+		return newlyDangling(before, danglingAssetRefs(sc, afterSchema, locate))
+	})
+}
+
+func newSchemaProblems(before, after *schema.ProviderSchema) paramErrors {
+	var refused paramErrors
+	for _, p := range after.Problems {
+		if !slices.ContainsFunc(before.Problems, func(b utils.ParamError) bool {
+			return b.Key == p.Key && b.Code == p.Code && b.Message == p.Message
+		}) {
+			refused = append(refused, p)
+		}
+	}
+	return refused
+}
+
+func parameterProblems(cfg *pkgConfig.ServiceConfig, sch *schema.ProviderSchema) map[string]utils.ParamError {
+	out := map[string]utils.ParamError{}
+	for _, site := range cfg.ParameterSites() {
+		for key, value := range site.Parameters {
+			if p := schema.Check(key, value, sch.ForEndpoint(site.Endpoint)); p != nil {
+				p.Key = site.Path + "." + key
+				out[p.Key] = *p
+			}
+		}
+	}
+	return out
 }
 
 // patchView names the one node, model and endpoint a patch wrote, where
@@ -743,6 +800,13 @@ type parametersWriteResponse struct {
 // tree. Validation has already run against the pre-mutation cfg, so any
 // error here is an unexpected env-value constraint failure.
 func applyPatchToConfig(sc *pkgConfig.ServiceConfig, patch *paramPatchBody) error {
+	if len(patch.Schema) > 0 {
+		var err error
+		sc.Schema, err = pkgConfig.MergePatch(sc.Schema, patch.Schema)
+		if err != nil {
+			return err
+		}
+	}
 	if patch.Defaults != nil {
 		if sc.Defaults == nil {
 			sc.Defaults = &pkgConfig.AppDefaultsConfig{}
@@ -858,33 +922,12 @@ func applyModelCellPatch(spec *pkgConfig.ModelSpec, mp *modelPatch) error {
 		if err := json.Unmarshal(mp.Request, &patch); err != nil {
 			return fmt.Errorf("decode request: %w", err)
 		}
-		spec.Request = mergePatchObject(spec.Request, patch)
+		spec.Request = pkgConfig.MergePatchObject(spec.Request, patch)
 		if len(spec.Request) == 0 {
 			spec.Request = nil
 		}
 	}
 	return nil
-}
-
-// mergePatchObject applies an RFC 7396 merge patch to an object: null
-// deletes a member, an object merges into an object member, anything
-// else replaces it. dst is modified and returned, allocated when nil.
-func mergePatchObject(dst, patch map[string]any) map[string]any {
-	if dst == nil {
-		dst = map[string]any{}
-	}
-	for k, v := range patch {
-		switch pv := v.(type) {
-		case nil:
-			delete(dst, k)
-		case map[string]any:
-			cur, _ := dst[k].(map[string]any)
-			dst[k] = mergePatchObject(cur, pv)
-		default:
-			dst[k] = v
-		}
-	}
-	return dst
 }
 
 // applyEndpointsPatch merges per-endpoint overlay patches into the tier's

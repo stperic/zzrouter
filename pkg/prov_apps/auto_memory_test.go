@@ -34,7 +34,7 @@ func memoryBudgetSchema(resolve func(string) (*schema.MemoryBudget, error), frag
 				}
 			}
 		}
-		merged, errs := schema.Merge(provider, declared)
+		merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 		return merged, errors.Join(append(errs, err)...)
 	}
 }

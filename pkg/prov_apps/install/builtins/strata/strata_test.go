@@ -142,7 +142,7 @@ func TestShippedStrataTemplateNamesTheIntendedProject(t *testing.T) {
 	require.NoError(t, err)
 	declared, err := schema.LoadYAMLSchema(dictionary)
 	require.NoError(t, err)
-	merged, conflicts := schema.Merge("strata", declared)
+	merged, conflicts := schema.Merge("strata", declared, config.ServiceConfig{})
 	require.Empty(t, conflicts)
 	for name, value := range provider.Defaults.Parameters {
 		require.Nil(t, schema.Check(name, value, merged.Parameters), name)

@@ -44,6 +44,8 @@ const (
 // empty Kind means "not structurally gated by Go" — only YAML policy
 // applies.
 type ParamShape struct {
+	// Operator marks a shape that includes accepted operator fields.
+	Operator bool
 	AutoContext
 	Flag        string // The engine's literal spelling when its canonical name differs.
 	Kind        ParamKind

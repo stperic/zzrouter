@@ -14,7 +14,7 @@ func (m *ProviderAppManager) launchSchema(provider string) (*schema.ProviderSche
 		provider = key
 	}
 	if m.providerSchema == nil {
-		merged, _ := schema.Merge(provider, nil)
+		merged, _ := schema.Merge(provider, nil, config.ServiceConfig{})
 		return merged, nil
 	}
 	merged, err := m.providerSchema(provider)

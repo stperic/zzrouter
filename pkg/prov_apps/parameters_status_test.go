@@ -205,3 +205,33 @@ func TestParametersStatus_ServedEvictionSetting(t *testing.T) {
 	r.edit(t, func(svc *config.ServiceConfig) { svc.Defaults.Parameters[config.EvictIdleParameter] = "false" })
 	assert.Contains(t, r.m.ParametersStatus(t.Context(), run).Changed, "parameters.evict-idle-on-memory-pressure")
 }
+
+func TestOperatorSchemaParametersStatus(t *testing.T) {
+	var manager *ProviderAppManager
+	r := newContractRig(t, false, WithProviderSchema(func(provider string) (*schema.ProviderSchema, error) {
+		svc, _ := manager.AppsConfig().LookupApp(provider)
+		merged, errs := schema.Merge(provider, &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"budget": {Type: "string"}}}, svc)
+		return merged, errors.Join(errs...)
+	}))
+	manager = r.m
+	edit := func(declaration config.ParameterDeclaration) {
+		svc, _ := manager.AppsConfig().LookupApp("generic")
+		svc.Schema = map[string]config.ParameterDeclaration{"future": declaration}
+		svc.Defaults = &config.AppDefaultsConfig{Parameters: map[string]string{"budget": "0.55", "future": "auto"}}
+		next := &config.AppsConfig{}
+		require.NoError(t, next.AddApp("generic", svc))
+		manager.ReloadConfig(next)
+	}
+	edit(config.ParameterDeclaration{Type: new("string")})
+	started := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "m"})})[0]
+	require.NoError(t, started.err)
+	run := started.result.Run
+	awaitRunning(t, run)
+	require.Equal(t, instance.ParametersCurrent, manager.ParametersStatus(t.Context(), run).State)
+	edit(config.ParameterDeclaration{Type: new("string"), Description: new("metadata only")})
+	assert.Equal(t, instance.ParametersCurrent, manager.ParametersStatus(t.Context(), run).State)
+	edit(config.ParameterDeclaration{Type: new("string"), Auto: new("auto")})
+	status := manager.ParametersStatus(t.Context(), run)
+	assert.Equal(t, instance.ParametersStale, status.State)
+	assert.Contains(t, status.Changed, "parameters.future")
+}

@@ -215,6 +215,48 @@ spelling: ComfyUI's `fp8-e4m3fn-unet` renders `--fp8_e4m3fn-unet`. PATCH accepts
 either spelling and stores one key; conflicting values for two spellings are
 `duplicate_flag`. A schema cannot declare two spellings of the same flag.
 
+Operator declarations live in a top-level `schema:` block of an on-demand or
+external provider's `config.yaml`. This lets an engine upgrade add flags without
+a zzRouter release. The block survives managed-file reconciliation and is pushed
+to compatible workers. For example, declare and set a new flag in one PATCH:
+
+```json
+{"schema":{"future_flag":{"type":"bool","negatable":true,"description":"New engine flag"}},"defaults":{"parameters":{"future-flag":false}}}
+```
+
+New keys accept `type` (`int`, `float`, `string`, `bool`, `asset`), `min`, `max`,
+`enum`, `description`, `pass`, `auto` and `negatable`. Keys use the engine's literal
+spelling, including underscores; two spellings of one flag are both refused.
+Keys must start with a letter and contain only letters, digits, hyphens or
+underscores. A range must satisfy `min <= max`.
+`pass: content` applies only to assets. `auto` declares the literal the engine
+accepts for the value `auto`; without it, launch omits an `auto` value.
+
+On keys shipped in `schema.yaml`, only `enum`, `min`, `max` and `description` may
+be overridden. Supplied fields replace the shipped fields, so enums can widen
+as well as narrow, while sizing metadata stays intact. The Go spine, run settings
+and feature flags remain owned by zzRouter. Declarations are flat; endpoint
+shapes inherit their fields. Endpoint declarations inside `schema:` are not supported.
+A key shipped only in an endpoint overlay cannot be declared here: its problem
+names those endpoints. Set its value under the shipped endpoint instead.
+
+A semantically bad entry leaves its valid siblings usable. GET `/schema` marks
+accepted entries `operator: true` and lists dropped entries or fields in
+`problems`, each with a config path and closed error code. Unknown fields are
+structural errors that fail configuration loading. If a later release ships an
+operator-declared key, the operator's enum, range and description still win;
+its other fields are refused and reported without dropping those overrides.
+
+PATCH validates against its resulting schema and commits atomically. A new
+semantic problem, or narrowing or deleting a declaration that a configured value
+uses, returns 400 at the offending declaration or value path. Delete the value
+and declaration in the same PATCH to remove both. Existing release-created
+problems allow unrelated writes. RFC 7396 null deletes declarations or individual
+fields; `schema: null` removes the block. ETags remain advisory; If-Match is not
+implemented. Metadata-only changes leave runs `current`; declaring `auto` on a
+flag whose effective value is `auto` makes a run `stale` because its next launch
+would pass that flag. Cluster protocol 17/17 requires upgrading every node together.
+
 Set `keep-alive: "-1"` (or another negative duration) in the provider tier tree
 or run-start `parameters` to pin a run against zzRouter idle expiry and pressure
 reclaim. For example, PATCH `/zzrouter/v1/providers/vllm/parameters` with

@@ -6,10 +6,10 @@ import (
 	"math"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestMergePlacementLog(t *testing.T) {
@@ -43,7 +43,7 @@ func TestMergePlacementLog(t *testing.T) {
 					require.NoError(t, err)
 					decoded, err := LoadYAMLSchema(data)
 					require.NoError(t, err)
-					merged, errs := Merge("llamacpp", decoded)
+					merged, errs := Merge("llamacpp", decoded, config.ServiceConfig{})
 					if !tc.valid {
 						require.NotEmpty(t, errs)
 						assert.Contains(t, errs[0].Error(), "placement_log."+name)
@@ -70,7 +70,7 @@ func TestMergePlacementLog(t *testing.T) {
 func TestMergePlacementLogUnknownPattern(t *testing.T) {
 	_, errs := Merge("llamacpp", &YAMLSchema{Parameters: map[string]YAMLParam{
 		"n-gpu-layers": {PlacementLog: map[string]string{"buffer": "model buffer size"}},
-	}})
+	}}, config.ServiceConfig{})
 	require.Len(t, errs, 1)
 	assert.Contains(t, errs[0].Error(), "unknown placement_log.buffer")
 }
@@ -84,7 +84,7 @@ endpoints:
       ctx-size: {auto: "auto", served: max_model_len}
 `))
 	require.NoError(t, err)
-	merged, errs := Merge("llamacpp", declared)
+	merged, errs := Merge("llamacpp", declared, config.ServiceConfig{})
 	require.Empty(t, errs)
 	shape := merged.ForEndpoint("chat")["ctx-size"]
 	assert.Equal(t, ParamInt, shape.Kind)
@@ -105,7 +105,7 @@ func TestMergeMemoryAutoComesFromValidatedBudget(t *testing.T) {
 				Diagnostics: &Diagnostics{Runtime: "test", Runtimes: map[string]RuntimeChecks{"test": {Kernels: "unknown"}},
 					Memory: &MemoryBudget{Kind: kind, Parameter: "budget"}},
 			}
-			merged, errs := Merge("generic", declared)
+			merged, errs := Merge("generic", declared, config.ServiceConfig{})
 			if kind == "invalid" {
 				require.NotEmpty(t, errs)
 				assert.Nil(t, merged.Diagnostics)
@@ -141,7 +141,7 @@ func TestAutoContextMetadataValidationAndEndpointResolution(t *testing.T) {
 	} {
 		y, err := LoadYAMLSchema([]byte("parameters:\n  " + tc.declaration + "\n"))
 		require.NoError(t, err)
-		_, errs := Merge("vllm", y)
+		_, errs := Merge("vllm", y, config.ServiceConfig{})
 		assert.Equal(t, tc.valid, len(errs) == 0, tc.declaration)
 	}
 	y, err := LoadYAMLSchema([]byte(`auto_min_context_tokens: 4096
@@ -153,7 +153,7 @@ endpoints:
       max-model-len: {auto_min_context_tokens: 8192}
 `))
 	require.NoError(t, err)
-	merged, errs := Merge("vllm", y)
+	merged, errs := Merge("vllm", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, int64(4096), merged.AutoMinContextTokens)
 	assert.Equal(t, int64(4096), merged.ForEndpoint("chat")["max-model-len"].AutoMinContextTokens)
@@ -167,7 +167,7 @@ func TestMemoryUsableFractionValidation(t *testing.T) {
 			if kind != "" {
 				y.Diagnostics = &Diagnostics{Runtime: "test", Runtimes: map[string]RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &MemoryBudget{Kind: kind, Parameter: "budget"}}
 			}
-			merged, errs := Merge("generic", y)
+			merged, errs := Merge("generic", y, config.ServiceConfig{})
 			valid := kind == MemoryUnified && fraction > 0 && fraction <= 1
 			assert.Equal(t, valid, len(errs) == 0, "kind=%s fraction=%g", kind, fraction)
 			if valid {
@@ -184,7 +184,7 @@ func TestMemoryUsableFractionValidation(t *testing.T) {
 	require.NoError(t, legacy.Diagnostics.Validate())
 	declared, err := LoadYAMLSchema(data)
 	require.NoError(t, err)
-	merged, errs := Merge("generic", declared)
+	merged, errs := Merge("generic", declared, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, 0.75, merged.MemoryUsableFraction)
 }
@@ -194,7 +194,7 @@ func TestMemoryParameterRolesMerge(t *testing.T) {
 		data := fmt.Appendf(nil, "parameters:\n  cache: {type: string, kv_cache_dtype: %q}\n  override: {type: string, context_override: true}\nendpoints:\n  embeddings:\n    parameters:\n      cache: {kv_cache_dtype: v}\n", role)
 		declared, err := LoadYAMLSchema(data)
 		require.NoError(t, err)
-		merged, errs := Merge("generic", declared)
+		merged, errs := Merge("generic", declared, config.ServiceConfig{})
 		if role == "invalid" {
 			require.NotEmpty(t, errs)
 			continue
@@ -213,7 +213,7 @@ func TestRecurrentRowsValidationAndEndpointResolution(t *testing.T) {
 			if parameter {
 				y = &YAMLSchema{Parameters: map[string]YAMLParam{"slots": {Type: "int", SequenceSlots: true, AutoContext: AutoContext{RecurrentStateRows: &rows}}}}
 			}
-			_, errs := Merge("generic", y)
+			_, errs := Merge("generic", y, config.ServiceConfig{})
 			assert.Equal(t, rows >= 1 && rows <= MaxRecurrentStateRows, len(errs) == 0)
 		}
 	}
@@ -224,7 +224,7 @@ func TestRecurrentRowsValidationAndEndpointResolution(t *testing.T) {
 	} {
 		y, err := LoadYAMLSchema([]byte("parameters:\n  " + declaration + "\n"))
 		require.NoError(t, err)
-		_, errs := Merge("generic", y)
+		_, errs := Merge("generic", y, config.ServiceConfig{})
 		require.NotEmpty(t, errs, declaration)
 	}
 	y, err := LoadYAMLSchema([]byte(`recurrent_state_rows: 2
@@ -236,7 +236,7 @@ endpoints:
       slots: {recurrent_state_rows: 1}
 `))
 	require.NoError(t, err)
-	merged, errs := Merge("generic", y)
+	merged, errs := Merge("generic", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, int64(2), *merged.RecurrentStateRows)
 	assert.Equal(t, int64(4), *merged.ForEndpoint("chat")["slots"].RecurrentStateRows)
@@ -264,7 +264,7 @@ diagnostics:
 	assert.Equal(t, "int", legacy.Parameters["slots"].Type)
 	y, err := LoadYAMLSchema(data)
 	require.NoError(t, err)
-	merged, errs := Merge("generic", y)
+	merged, errs := Merge("generic", y, config.ServiceConfig{})
 	require.Empty(t, errs)
 	assert.Equal(t, int64(2), *merged.RecurrentStateRows)
 }

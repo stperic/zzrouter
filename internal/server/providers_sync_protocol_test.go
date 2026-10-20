@@ -67,6 +67,7 @@ func TestProviderSyncProtocolFreshEvidence(t *testing.T) {
 		allow     bool
 	}{
 		{name: "compatible", protocol: window.Max, status: 200, allow: true},
+		{name: "protocol 16 cannot decode schema overlay", protocol: 16, status: 200},
 		{name: "zero", status: 200},
 		{name: "below minimum", protocol: window.Min - 1, status: 200},
 		{name: "above maximum", protocol: window.Max + 1, status: 200},
@@ -226,6 +227,10 @@ func TestProviderSyncProtocolPendingKeepsHealthyLanded(t *testing.T) {
 
 func TestProviderSyncProtocolMeshIdentityAndWholeBytes(t *testing.T) {
 	store := newFanOutTestStore(t)
+	require.NoError(t, store.ApplyParameterPatch("ollama", func(sc *pkgConfig.ServiceConfig) error {
+		sc.Schema = map[string]pkgConfig.ParameterDeclaration{"future": {Type: new("int"), Min: new(1.0)}}
+		return nil
+	}))
 	_, err := store.WriteAsset("ollama", "workflow.json", []byte(`{"operator":"asset"}`))
 	require.NoError(t, err)
 	schemaPath := filepath.Join(store.DirPath(), "external", "ollama", "schema.yaml")
@@ -247,6 +252,9 @@ func TestProviderSyncProtocolMeshIdentityAndWholeBytes(t *testing.T) {
 		var body ProviderSyncBody
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, config, body.ConfigYAML)
+		decoded, err := pkgConfig.DecodeProviderBytes(body.Kind, "ollama", body.ConfigYAML)
+		require.NoError(t, err)
+		assert.Equal(t, "int", *decoded.(*pkgConfig.ExternalProvider).Schema["future"].Type)
 		assert.Equal(t, []byte(schema), body.SchemaYAML)
 		assert.Equal(t, map[string][]byte{"workflow.json": []byte(`{"operator":"asset"}`)}, body.Assets)
 		return syncTestResponse(r, 200, `{}`), nil

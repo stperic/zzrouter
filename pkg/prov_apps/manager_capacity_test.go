@@ -162,7 +162,7 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
 	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
-		spine, _ := schema.Merge(provider, nil) // declares no memory budget
+		spine, _ := schema.Merge(provider, nil, config.ServiceConfig{}) // declares no memory budget
 		return spine, nil
 	}
 	assessment = m.AssessCapacity(t.Context(), req)
@@ -457,7 +457,7 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 	m.ReloadConfig(cfg)
 	fraction := 0.75
 	m.providerSchema = func(provider string) (*schema.ProviderSchema, error) {
-		declared, errs := schema.Merge(provider, &schema.YAMLSchema{AutoContext: schema.AutoContext{AutoMinContextTokens: 4096}, MemoryUsableFraction: &fraction, Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: schema.MemoryUnified}}})
+		declared, errs := schema.Merge(provider, &schema.YAMLSchema{AutoContext: schema.AutoContext{AutoMinContextTokens: 4096}, MemoryUsableFraction: &fraction, Diagnostics: &schema.Diagnostics{Runtime: "test", Runtimes: map[string]schema.RuntimeChecks{"test": {Kernels: "unknown"}}, Memory: &schema.MemoryBudget{Kind: schema.MemoryUnified}}}, config.ServiceConfig{})
 		require.Empty(t, errs)
 		return declared, nil
 	}
@@ -615,7 +615,7 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 				if kind == schema.MemoryUnified {
 					y.MemoryUsableFraction = &fraction
 				}
-				declared, errs := schema.Merge(provider, y)
+				declared, errs := schema.Merge(provider, y, config.ServiceConfig{})
 				require.Empty(t, errs)
 				return declared, nil
 			}

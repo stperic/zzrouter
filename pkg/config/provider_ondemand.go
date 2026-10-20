@@ -14,25 +14,26 @@ import (
 // install variants, readiness probes, a port-pool, and optional node/model
 // parameter overrides. Everything a local inference engine needs.
 type OnDemandProvider struct {
-	RunScope        string               `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
-	Install         *InstallConfig       `yaml:"install,omitempty" json:"install,omitempty"`
-	Features        map[string]Feature   `yaml:"features,omitempty" json:"features,omitempty"`
-	Name            string               `yaml:"-" json:"name"`
-	Description     string               `yaml:"description,omitempty" json:"description,omitempty"`
-	Protocol        AppProtocol          `yaml:"protocol,omitempty" json:"protocol,omitempty"`
-	Enabled         *bool                `yaml:"enabled,omitempty" json:"enabled,omitempty"`
-	PinnedVersion   string               `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
-	VersionSource   *VersionSource       `yaml:"version_source,omitempty" json:"version_source,omitempty"`
-	Platforms       []InstallPlatform    `yaml:"platforms,omitempty" json:"platforms,omitempty"`
-	Requirements    *AppRequirements     `yaml:"requirements,omitempty" json:"requirements,omitempty"`
-	InstallVariants []AppInstallVariant  `yaml:"install_variants,omitempty" json:"install_variants,omitempty"`
-	Capabilities    *AppCapabilities     `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Discovery       *AppDiscovery        `yaml:"discovery,omitempty" json:"discovery,omitempty"`
-	Defaults        *AppDefaultsConfig   `yaml:"defaults" json:"defaults"`
-	Models          map[string]ModelSpec `yaml:"models,omitempty" json:"models,omitempty"`
-	Nodes           map[string]NodeSpec  `yaml:"nodes,omitempty" json:"nodes,omitempty"`
-	Search          *AppSearchConfig     `yaml:"search,omitempty" json:"search,omitempty"`
-	Runtime         OnDemandRuntime      `yaml:"runtime" json:"runtime"`
+	Schema          map[string]ParameterDeclaration `yaml:"schema,omitempty" json:"schema,omitempty"`
+	RunScope        string                          `yaml:"run_scope,omitempty" json:"run_scope,omitempty"`
+	Install         *InstallConfig                  `yaml:"install,omitempty" json:"install,omitempty"`
+	Features        map[string]Feature              `yaml:"features,omitempty" json:"features,omitempty"`
+	Name            string                          `yaml:"-" json:"name"`
+	Description     string                          `yaml:"description,omitempty" json:"description,omitempty"`
+	Protocol        AppProtocol                     `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	Enabled         *bool                           `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	PinnedVersion   string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
+	VersionSource   *VersionSource                  `yaml:"version_source,omitempty" json:"version_source,omitempty"`
+	Platforms       []InstallPlatform               `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+	Requirements    *AppRequirements                `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	InstallVariants []AppInstallVariant             `yaml:"install_variants,omitempty" json:"install_variants,omitempty"`
+	Capabilities    *AppCapabilities                `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Discovery       *AppDiscovery                   `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	Defaults        *AppDefaultsConfig              `yaml:"defaults" json:"defaults"`
+	Models          map[string]ModelSpec            `yaml:"models,omitempty" json:"models,omitempty"`
+	Nodes           map[string]NodeSpec             `yaml:"nodes,omitempty" json:"nodes,omitempty"`
+	Search          *AppSearchConfig                `yaml:"search,omitempty" json:"search,omitempty"`
+	Runtime         OnDemandRuntime                 `yaml:"runtime" json:"runtime"`
 }
 
 // OnDemandRuntime configures how a per-model inference engine is launched

@@ -96,7 +96,7 @@ func TestCatalogFileOptOutWithCorruptLaunchConfig(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				merged, errs := schema.Merge(provider, declared)
+				merged, errs := schema.Merge(provider, declared, config.ServiceConfig{})
 				return merged, errors.Join(errs...)
 			}
 			_, err := m.ResolveLaunchParameters(t.Context(), EnsureRequest{Provider: "vllm", Model: "variant"})

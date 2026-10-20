@@ -351,7 +351,7 @@ func TestValidateVariantModel_IgnoresDeclaredFeatureWeights(t *testing.T) {
 }
 
 func TestBuildParameterArgsLiteralFlagSpelling(t *testing.T) {
-	shapes, errs := schema.Merge("custom", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"fp8_e4m3fn-unet": {Type: "bool", Negatable: true}}})
+	shapes, errs := schema.Merge("custom", &schema.YAMLSchema{Parameters: map[string]schema.YAMLParam{"fp8_e4m3fn-unet": {Type: "bool", Negatable: true}}}, config.ServiceConfig{})
 	require.Empty(t, errs)
 	for _, key := range []string{"fp8_e4m3fn_unet", "fp8-e4m3fn-unet"} {
 		require.Equal(t, []string{"--fp8_e4m3fn-unet"}, buildParameterArgs(map[string]string{key: "true"}, shapes.Parameters, nil))

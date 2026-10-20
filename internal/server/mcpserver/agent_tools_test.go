@@ -735,3 +735,21 @@ func TestParamsSetForwardsEndpointSelector(t *testing.T) {
 	result := callAgentTool(t, d, "zz_params_set", map[string]any{"provider": "llamacpp", "model": "m", "endpoint": "embeddings", "patch": map[string]any{}})
 	require.NotEqual(t, true, result["isError"], result)
 }
+
+func TestParamsGetOperatorAndProblems(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zzrouter/v1/providers/engine/resolved":
+			writeFixture(t, w, []byte(`{"parameters":{},"environment":{}}`))
+		case "/zzrouter/v1/providers/engine/schema":
+			writeFixture(t, w, []byte(`{"parameters":{"future":{"type":"int","description":"operator experiment","operator":true}},"problems":[{"key":"schema.bad","code":"invalid_value","message":"unknown type"}]}`))
+		default:
+			t.Fatalf("unexpected route %s", r.URL.Path)
+		}
+	})
+	result := callAgentTool(t, d, "zz_params_get", map[string]any{"provider": "engine", "grep": "experiment"})
+	require.NotEqual(t, true, result["isError"], result)
+	fields := result["structuredContent"].(map[string]any)
+	assert.Equal(t, true, fields["accepts"].(map[string]any)["future"].(map[string]any)["operator"])
+	assert.Equal(t, "schema.bad", fields["problems"].([]any)[0].(map[string]any)["key"])
+}

@@ -1,7 +1,9 @@
 package schema
 
 import (
+	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -10,7 +12,9 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/runsettings"
+	"github.com/stperic/zzrouter/pkg/utils"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,6 +64,8 @@ type YAMLEndpoint struct {
 // provider. Endpoints is the per-endpoint overlay schema; absent when
 // the provider declares none.
 type ProviderSchema struct {
+	// Problems reports refused operator entries and fields at their config paths.
+	Problems []utils.ParamError
 	AutoContext
 	MemoryUsableFraction float64
 	Parameters           map[string]ParamShape
@@ -101,11 +107,12 @@ func LoadYAMLSchema(data []byte) (*YAMLSchema, error) {
 // Merge unions the YAML entries onto the Go spine for one provider. When a
 // parameter is declared in both, the YAML's Kind must match the Go Kind —
 // otherwise it is a shape conflict and merge fails (plan §4.4). YAML-only
-// entries flow through. Go-only entries remain authoritative.
+// entries flow through. Go-only entries remain authoritative. Operator declarations
+// apply to the flat shapes before endpoint shapes inherit them.
 //
 // Returns the merged schema plus any conflict errors (collected rather than
 // fail-fast so startup reports all of them).
-func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
+func Merge(provider string, y *YAMLSchema, operator config.ServiceConfig) (*ProviderSchema, []error) {
 	out := &ProviderSchema{Parameters: map[string]ParamShape{
 		runsettings.KeepAliveParameter: {Kind: ParamString, Description: "Idle time before the run stops; 0 stops on release, negative pins it"},
 		runsettings.EvictIdleParameter: {Kind: ParamBool, Description: "Reclaim unpinned idle runs when this launch cannot fit"},
@@ -115,7 +122,7 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 	}
 	var errs []error
 	if y == nil {
-		return out, nil
+		y = &YAMLSchema{}
 	}
 	var err error
 	out.CacheLog, err = compileLogPatterns("cache_log", y.CacheLog, map[string]int{"tokens": 1, "concurrency": 2, "pools": 2, "slots": 3, "sequence_slots": 1})
@@ -147,6 +154,7 @@ func Merge(provider string, y *YAMLSchema) (*ProviderSchema, []error) {
 		shape.Auto = "auto"
 		out.Parameters[name] = shape
 	}
+	out.Parameters, out.Problems = Declare(provider, out.Parameters, y.Endpoints, operator)
 	if len(y.Endpoints) > 0 {
 		out.Endpoints = make(map[string]EndpointSchema, len(y.Endpoints))
 		for epName, ep := range y.Endpoints {
@@ -180,51 +188,41 @@ func mergeParameters(provider, path string, parameters map[string]YAMLParam, bas
 	return out, errs
 }
 
+var errInvalidRange = errors.New("min must not exceed max")
+
 // mergeOne merges one YAML param entry onto a (possibly empty) base shape.
 // The base is treated as "Go spine if present" — its non-empty fields win.
 func mergeOne(provider, qualifiedName string, yp YAMLParam, base ParamShape) (ParamShape, error) {
-	yk, kErr := parseKind(yp.Type)
-	if kErr != nil {
-		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, kErr)
+	yk, err := parseKind(yp.Type)
+	if err != nil {
+		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 	}
 	if base.Kind != "" && yk != "" && base.Kind != yk {
 		return ParamShape{}, fmt.Errorf("%s.%s: schema.yaml type %q conflicts with Go spine kind %q",
 			provider, qualifiedName, yk, base.Kind)
 	}
 	out := base
-	if out.Kind == "" {
-		out.Kind = yk
+	out.Kind = cmp.Or(out.Kind, yk)
+	out.Min = cmp.Or(out.Min, yp.Min)
+	out.Max = cmp.Or(out.Max, yp.Max)
+	if out.Min != nil && out.Max != nil && *out.Min > *out.Max {
+		return ParamShape{}, fmt.Errorf("%s.%s.min: %w", provider, qualifiedName, errInvalidRange)
 	}
-	if out.Min == nil {
-		out.Min = yp.Min
-	}
-	if out.Max == nil {
-		out.Max = yp.Max
-	}
-	if out.Description == "" {
-		out.Description = yp.Description
-	}
+	out.Description = cmp.Or(out.Description, yp.Description)
 	if len(out.Enum) == 0 {
 		out.Enum = yp.Enum
 	}
-	enum, err := canonicalEnum(out.Kind, out.Enum)
+	out.Enum, err = canonicalEnum(out.Kind, out.Enum)
 	if err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 	}
-	out.Enum = enum
 	pass, err := parsePass(yp.Pass, out.Kind)
 	if err != nil {
 		return ParamShape{}, fmt.Errorf("%s.%s: %w", provider, qualifiedName, err)
 	}
-	if out.Pass == "" {
-		out.Pass = pass
-	}
-	if out.Auto == "" {
-		out.Auto = yp.Auto
-	}
-	if out.Served == "" {
-		out.Served = yp.Served
-	}
+	out.Pass = cmp.Or(out.Pass, pass)
+	out.Auto = cmp.Or(out.Auto, yp.Auto)
+	out.Served = cmp.Or(out.Served, yp.Served)
 	if out.Negatable = out.Negatable || yp.Negatable; out.Negatable && out.Kind != ParamBool {
 		return ParamShape{}, fmt.Errorf("%s.%s: negatable applies only to type bool, not %q", provider, qualifiedName, out.Kind)
 	}
@@ -333,7 +331,7 @@ func parseKind(s string) (ParamKind, error) {
 func LoadFromFS(fsys fs.FS, root string) (map[string]*ProviderSchema, []error) {
 	merged := make(map[string]*ProviderSchema)
 	for provider := range Registry {
-		merged[provider] = &ProviderSchema{Parameters: cloneProvider(Registry[provider])}
+		merged[provider], _ = Merge(provider, nil, config.ServiceConfig{})
 	}
 	paths, err := fs.Glob(fsys, path.Join(root, "*", "*", schemaFileName))
 	if err != nil {
@@ -352,7 +350,7 @@ func LoadFromFS(fsys fs.FS, root string) (map[string]*ProviderSchema, []error) {
 			errs = append(errs, fmt.Errorf("parse %s: %w", p, perr))
 			continue
 		}
-		m, mergeErrs := Merge(provider, y)
+		m, mergeErrs := Merge(provider, y, config.ServiceConfig{})
 		errs = append(errs, mergeErrs...)
 		merged[provider] = m
 	}
@@ -361,7 +359,3 @@ func LoadFromFS(fsys fs.FS, root string) (map[string]*ProviderSchema, []error) {
 
 // schemaFileName is the per-provider schema beside its config.yaml.
 const schemaFileName = "schema.yaml"
-
-func cloneProvider(m map[string]ParamShape) map[string]ParamShape {
-	return maps.Clone(m)
-}

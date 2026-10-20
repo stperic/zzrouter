@@ -18,6 +18,42 @@
   }],
   "additionalProperties": false,
   "properties": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "enum": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "pass": {
+            "type": "string"
+          },
+          "auto": {
+            "type": "string"
+          },
+          "negatable": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
     "run_scope": {"enum": ["model", "node"]},
     "features": {
       "type": "object",

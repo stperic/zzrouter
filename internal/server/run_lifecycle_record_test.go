@@ -52,7 +52,7 @@ func lifecycleRecordManager(t *testing.T, saved ...prov_apps.EnsureRequest) (*pr
 	parsed, err := schema.LoadYAMLSchema([]byte("parameters:\n  budget: {type: float}\n"))
 	require.NoError(t, err)
 	m, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithProviderSchema(func(name string) (*schema.ProviderSchema, error) {
-		declared, errs := schema.Merge(name, parsed)
+		declared, errs := schema.Merge(name, parsed, config.ServiceConfig{})
 		require.Empty(t, errs)
 		return declared, nil
 	}))

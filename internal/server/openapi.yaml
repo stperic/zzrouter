@@ -1878,10 +1878,11 @@ paths:
       operationId: getProviderSchema
       summary: Parameters this provider accepts
       description: |
-        The union of the Go spine and the provider's own `schema.yaml`,
-        which is what parameter writes are validated against. Read it
-        before a `PATCH`: an unknown flag or an out-of-range value is
-        rejected, and this endpoint is where the accepted set lives.
+        The Go spine and the provider's `schema.yaml`, with accepted operator
+        declarations from `config.yaml`. Writes and launches use this set.
+        Accepted operator entries carry `operator: true`; `problems` lists
+        refused entries or fields at their config paths. A PATCH can declare
+        a newer engine flag under `schema.<flag>` and set it in one call.
 
         `endpoints` appears for providers whose parameters differ per
         endpoint; a flat provider omits it entirely.
@@ -2268,8 +2269,23 @@ paths:
 
         `null` is never persisted: after a patch the key is either present
         with a value or absent. Every leaf is validated against the merged
-        schema (the Go spine union the provider's own `schema.yaml`), and a
+        schema (Go spine, `schema.yaml` and operator declarations), and a
         rejection names the offending key with a closed-enum `code`.
+
+        Top-level `schema.<flag>` declares a new engine flag and can set its
+        value in this same request. Fields are type, min, max, enum, description,
+        pass, auto and negatable. Shipped keys accept only enum, min, max and
+        description; zzRouter-owned keys are refused. Declarations are flat.
+        Keys start with a letter and contain only letters, digits, hyphens or
+        underscores; min must not exceed max. Keys shipped only in endpoint
+        overlays are refused with their endpoint names; set their values under
+        those endpoints instead.
+        New declaration problems and newly invalid configured values are refused
+        atomically at their config paths, including under concurrent writes.
+        Null deletes a declaration or a field; remove a used value and its
+        declaration together. Existing release-created problems permit unrelated
+        writes. GET /schema reports problems and marks accepted operator entries.
+        ETags are advisory; If-Match is not implemented.
 
         Only the coordinator accepts writes. A worker answers `421` with a
         `Location` header naming its coordinator; worker config is a cache
@@ -12943,6 +12959,11 @@ components:
         Every level is optional; only what you send is touched. A leaf set
         to `null` deletes the key at that tier.
       properties:
+        schema:
+          type: object
+          nullable: true
+          description: Flat operator declarations; null deletes the block or a declaration.
+          additionalProperties: { $ref: '#/components/schemas/OperatorParameterDeclaration' }
         defaults:
           allOf:
             - $ref: '#/components/schemas/ParameterTierPatch'
@@ -12975,6 +12996,29 @@ components:
           worker-1:
             parameters:
               num-gpu: null
+
+    OperatorParameterDeclaration:
+      type: object
+      nullable: true
+      additionalProperties: false
+      description: |
+        An operator-owned shape; null fields delete overrides. New keys allow
+        all fields. On a shipped key only enum, min, max and description apply;
+        the remaining fields are reported as problems after release promotion.
+        Unknown fields are refused structurally. Two spellings of one flag are
+        both refused. Type conflicts and zzRouter-owned keys are refused.
+        Keys start with a letter and contain only letters, digits, hyphens or
+        underscores. Ranges require min <= max. A key shipped only under
+        endpoints is refused at schema.<flag>, naming those endpoints.
+      properties:
+        type: { type: string, nullable: true, enum: [int, float, string, bool, asset, null] }
+        min: { type: number, nullable: true }
+        max: { type: number, nullable: true }
+        enum: { type: array, nullable: true, items: { type: string } }
+        description: { type: string, nullable: true }
+        pass: { type: string, nullable: true, enum: [path, content, null] }
+        auto: { type: string, nullable: true }
+        negatable: { type: boolean, nullable: true }
 
     ModelCellPatch:
       description: |
@@ -13654,10 +13698,17 @@ components:
       type: object
       description: |
         What a provider accepts, as the union of the Go spine and the
-        provider's `schema.yaml`. This is the set parameter writes are
-        validated against.
+        provider's `schema.yaml`, with accepted operator `config.yaml` declarations.
+        This is the set parameter writes and launches are validated against.
+        Bad operator entries or fields are dropped with warnings and listed in
+        problems; valid siblings remain usable. Release promotion keeps operator
+        enum, range and description overrides and reports its other fields.
       required: [parameters, environment]
       properties:
+        problems:
+          type: array
+          description: Refused operator entries or fields, keyed by schema.<flag>[.<field>].
+          items: { $ref: '#/components/schemas/ParamError' }
         diagnostics:
           $ref: '#/components/schemas/ProviderDiagnostics'
         parameters:
@@ -13841,6 +13892,7 @@ components:
       type: object
       required: [type]
       properties:
+        operator: { type: boolean, description: Accepted operator fields contribute to this shape; omitted otherwise. }
         type:        { type: string, description: Declared kind; defaults to `string` when the schema omits it. }
         min:         { type: number }
         max:         { type: number }
