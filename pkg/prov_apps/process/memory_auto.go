@@ -29,7 +29,8 @@ func autoFraction(budget schema.MemoryBudget, selected []gpu.MemoryDevice, owner
 			return 0, fmt.Errorf("%w: auto requires valid GPU totals on %s", ErrMemoryObservation, device.UUID)
 		}
 		margin := safetyMargin(budget, device)
-		fit := memoryFitError(budget.Parameter, device, margin+1, owners)
+		required := margin + int64(math.Ceil(float64(device.TotalMiB)/autoFractionScale))
+		fit := memoryFitError(budget.Parameter, device, required, owners)
 		room := math.Floor(float64(fit.FreeMiB-margin)/float64(device.TotalMiB)*autoFractionScale) / autoFractionScale
 		if room <= 0 {
 			return 0, fit

@@ -796,13 +796,32 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
+        Replacements refuse before stopping the old run only if the launch cannot
+        fit even if the stop freed all driver-reported used memory not provably held
+        by another process, plus the run's unused commitments, per selected device.
+        A process's known memory is excluded from this bound only when its ancestry
+        is fully read and belongs to another run or no run. Unattributed context use,
+        unknown process sizes and unreadable ancestry stay inside the bound. A failed
+        process listing leaves all used memory inside it. A refusal keeps the run
+        registered and uses the same 409 out_of_range, adding kept_run and credited_mib
+        under errors[].got. For a free-memory refusal, credited_mib is the most stopping
+        the kept run could free on the refused device; it is zero for a sized-context or
+        weights refusal, which no stop fixes. Lower the request using zz_params_set and
+        zz_run_preview, stop other holders with zz_run_stop, or explicitly zz_run_stop
+        the kept run then zz_run_start. Idle victims are only planned before the stop
+        and revalidated afterwards. Unknown driver used memory and unbudgeted engines
+        retain stop-then-admit ordering. No slot is held across the stop: recovery waits
+        target attributed holdings and unused commitments, excluding unaccounted use,
+        and caller cancellation aborts. Recovery timeout continues to fresh admission,
+        which can still return the same 409 refusal and tool hints without a kept_run
+        claim if memory cannot fit.
         With eviction enabled, skipped runs carry `reclaim_skipped_reason` (pinned, busy,
         in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
         Unknown measurements or ambiguous device selection return 503. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and
-        unified-memory estimation is currently unsupported; those launches retain
-        their existing behavior. A memory snapshot cannot reserve against other
+        unified-memory estimates use reachable totals when model evidence permits.
+        A memory snapshot cannot reserve against other
         workloads changing memory after the check.
 
         While another run on the node is still claiming GPU memory, the
@@ -901,6 +920,10 @@ paths:
             is renamed or its from definition is removed. A fraction_total GPU budget
             exceeding fresh free device memory is refused before process start;
             errors[].got includes required_mib, free_mib and known holder attribution.
+            A replacement refused before stopping its old run also reports kept_run
+            and credited_mib: for a free-memory refusal, the most stopping the kept run
+            could free on the refused device; zero for a sized-context or weights
+            refusal, which no stop fixes.
             Malformed or unreadable endpoint-applicable feature evidence returns code
             model_feature_evidence_invalid even if the optional runtime is absent.
             Repair or re-download malformed evidence; ask the operator to correct

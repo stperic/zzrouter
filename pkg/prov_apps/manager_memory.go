@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
@@ -19,10 +20,6 @@ import (
 )
 
 const (
-	// memoryRecoveryTimeout bounds asynchronous driver release after a process exits.
-	memoryRecoveryTimeout = 5 * time.Second
-	// memoryRecoveryInterval avoids hammering the driver while its accounting settles.
-	memoryRecoveryInterval = 100 * time.Millisecond
 	// memoryRecoveryToleranceMiB allows minor allocator/accounting variation after release.
 	memoryRecoveryToleranceMiB int64 = 64
 )
@@ -56,11 +53,22 @@ func (m *ProviderAppManager) stopClaimedIdle(ctx context.Context, inst *instance
 	return m.stopInstance(stopCtx, inst.ID, reason)
 }
 
-// reclaimFor stops the least recently active idle runs covering fit's
-// shortfall and returns the runs it stopped and the reasons it skipped others.
-func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) ([]instance.EvictedRun, map[string]string) {
-	skipped := make(map[string]string)
-	sizes := make(map[string]int64)
+type memoryReclaimPlan struct {
+	claims  []instance.IdleStopCandidate
+	sizes   map[string]int64
+	skipped map[string]string
+	credit  int64
+	covered bool
+}
+
+func annotateMemoryHolders(fit *process.MemoryFitError, skipped map[string]string) {
+	for i := range fit.Holders {
+		fit.Holders[i].ReclaimSkippedReason = skipped[fit.Holders[i].Run]
+	}
+}
+
+func (m *ProviderAppManager) reclaimPlan(fit *process.MemoryFitError, replacing string, evictIdle bool) memoryReclaimPlan {
+	plan := memoryReclaimPlan{sizes: make(map[string]int64), skipped: make(map[string]string)}
 	for _, holder := range fit.Holders {
 		if holder.Ownership != "zzrouter" || holder.Run == "" {
 			continue
@@ -69,76 +77,83 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 		if holder.MemoryMiB != nil {
 			mib = max(0, *holder.MemoryMiB)
 		}
-		sizes[holder.Run] += mib
+		plan.sizes[holder.Run] += mib
 	}
 	var candidates []evictionCandidate
-	inputs := make(map[string]instance.IdleStopCandidate)
-	for id, mib := range sizes {
+	for id, mib := range plan.sizes {
+		if id == replacing || !evictIdle {
+			continue
+		}
 		if inst, ok := m.instances.Get(id); ok {
 			if reason := m.evictionBlockedReason(inst); reason != "" {
-				skipped[id] = reason
+				plan.skipped[id] = reason
 				continue
 			}
-			activity := inst.GetLastActivity()
-			candidates = append(candidates, evictionCandidate{id, mib, activity})
-			inputs[id] = instance.IdleStopCandidate{Instance: inst, Activity: activity}
+			candidates = append(candidates, evictionCandidate{instance.IdleStopCandidate{Instance: inst, Activity: inst.GetLastActivity()}, mib})
 		}
 	}
-	shortfall := fit.RequiredMiB - fit.FreeMiB
-	var claims []instance.IdleStopCandidate
-	for _, id := range chooseEvictions(shortfall, candidates) {
-		claims = append(claims, inputs[id])
+	plan.credit = plan.sizes[replacing]
+	if replacing != "" && fit.UnaccountedMiB != nil {
+		plan.credit += *fit.UnaccountedMiB
 	}
+	plan.claims, plan.covered = chooseEvictions(fit.RequiredMiB-fit.FreeMiB, plan.credit, candidates)
+	return plan
+}
+
+// reclaimFor executes the shared plan, claiming idle eligibility again before any stop.
+func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) ([]instance.EvictedRun, map[string]string) {
+	plan := m.reclaimPlan(fit, "", true)
 	if ctx.Err() != nil {
-		return nil, skipped
+		return nil, plan.skipped
 	}
-	release, refusal := instance.ClaimIdleStops(claims)
+	release, refusal := instance.ClaimIdleStops(plan.claims)
 	if release == nil {
 		if refusal != nil {
-			skipped[refusal.RunID] = refusal.Reason
+			plan.skipped[refusal.RunID] = refusal.Reason
 		}
-		return nil, skipped
+		return nil, plan.skipped
 	}
 	defer release()
 	var freed int64
 	var stopped []instance.EvictedRun
-	for _, claim := range claims {
-		victim := claim.Instance
-		mib := sizes[victim.ID]
+	for _, claim := range plan.claims {
 		if ctx.Err() != nil {
 			break
 		}
+		victim := claim.Instance
+		mib := plan.sizes[victim.ID]
 		if err := m.stopClaimedIdle(ctx, victim, obsruns.StopReasonMemoryPressure); err != nil {
 			slog.Warn("failed to reclaim idle GPU run", "instance", victim.ID, "device", fit.Device, "error", err)
 			continue
 		}
 		stopped = append(stopped, instance.EvictedRun{RunID: victim.ID, Model: victim.Model, Provider: victim.Provider, FreedMiB: mib})
 		freed += mib
-		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.ID, "provider", victim.Provider, "model", victim.Model, "device", fit.Device, "held_mib", mib, "shortfall_mib", shortfall)
+		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.ID, "provider", victim.Provider, "model", victim.Model, "device", fit.Device, "held_mib", mib, "shortfall_mib", fit.RequiredMiB-fit.FreeMiB)
 	}
 	if len(stopped) > 0 {
-		m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
+		_ = m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
 	}
-	return stopped, skipped
+	return stopped, plan.skipped
 }
 
-func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device string, target int64) {
-	recoveryCtx, cancel := context.WithTimeout(ctx, memoryRecoveryTimeout)
+// waitMemoryRecovery leaves recovery expiry to fresh admission; only caller cancellation returns an error.
+func (m *ProviderAppManager) waitMemoryRecovery(ctx context.Context, device string, target int64) error {
+	recoveryCtx, cancel := context.WithTimeout(ctx, constants.MemoryRecoveryTimeout)
 	defer cancel()
-	ticker := time.NewTicker(memoryRecoveryInterval)
+	ticker := time.NewTicker(constants.MemoryRecoveryInterval)
 	defer ticker.Stop()
 	for {
 		devices, err := m.memorySnapshot(recoveryCtx)
 		if err == nil {
 			for _, snapshot := range devices {
 				if snapshot.UUID == device && snapshot.FreeMiB >= target {
-					return
+					return ctx.Err()
 				}
 			}
 		}
 		select {
 		case <-recoveryCtx.Done():
-			return
+			return ctx.Err() // Recovery expiry leaves the decision to fresh admission.
 		case <-ticker.C:
 		}
 	}
@@ -152,11 +167,20 @@ func (m *ProviderAppManager) AssessCapacity(ctx context.Context, req EnsureReque
 		assessment.SetUnknown(process.AssessmentFailed, err.Error())
 		return assessment
 	}
-	assessment, _ := m.checkMemory(ctx, features, true)
+	assessment, _, _ := m.checkMemory(ctx, features, true, nil)
 	return assessment
 }
 
-func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchParameters, capacity bool) (process.MemoryAssessment, error) {
+type replacementCheck struct {
+	run      string
+	recovery map[string]int64
+}
+
+func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchParameters, capacity bool, replacement *replacementCheck) (process.MemoryAssessment, config.RunSettings, error) {
+	settings, err := config.ParseRunSettings(features.Params, m.idleEvictionDefault)
+	if err != nil {
+		return process.MemoryAssessment{}, settings, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+	}
 	policy := schema.AutoContext{}
 	if features.declared != nil {
 		policy = features.declared.AutoContext
@@ -171,33 +195,66 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 	assessment.SetUnknown(process.BudgetNotSized, "")
 	budget := launchBudget(features.declared)
 	if budget == nil {
-		return assessment, nil
+		return assessment, settings, nil
 	}
 	assessment.BudgetKind = budget.Kind
 	params, environment, commitments := features.Params, features.Environment, features.Commitments
+	if capacity || replacement != nil {
+		params, environment, commitments = maps.Clone(params), maps.Clone(environment), maps.Clone(commitments)
+	}
 	var owners []process.RunRef
 	if capacity {
-		params, environment, commitments = maps.Clone(params), maps.Clone(environment), nil
+		commitments = nil
 	} else {
 		owners = m.memoryRuns()
 	}
 	visible, err := visibleDeviceEnvironment(environment)
 	if err != nil {
 		assessment.SetUnknown(process.MemoryEvidenceUnavailable, err.Error())
-		return assessment, err
+		return assessment, settings, err
 	}
 	devices, systemMiB, err := m.memoryDevices(ctx, budget.Kind, capacity)
 	if err == nil {
-		if capacity {
-			devices = slices.Clone(devices)
+		// Virtual availability must not change the driver's devices or live owners' commitments.
+		devices = slices.Clone(devices)
+		for {
+			assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, features.declared.MemoryUsableFraction)
+			var fit *process.MemoryFitError
+			if replacement == nil || !errors.As(err, &fit) {
+				break
+			}
+			// Unknown used memory leaves the release bound unknown; totals-based refusals stay conclusive.
+			if fit.UnaccountedMiB == nil && fit.BudgetKind == "" {
+				clear(replacement.recovery)
+				err = nil
+				break
+			}
+			plan := m.reclaimPlan(fit, replacement.run, settings.EvictIdle)
+			annotateMemoryHolders(fit, plan.skipped)
+			fit.KeptRun, fit.CreditedMiB = replacement.run, plan.credit
+			if !plan.covered {
+				break
+			}
+			if held := plan.sizes[replacement.run]; held > 0 {
+				replacement.recovery[fit.Device] = fit.FreeMiB + held - memoryRecoveryToleranceMiB
+			}
 			for i := range devices {
-				devices[i].FreeMiB, devices[i].Processes = devices[i].TotalMiB, nil
+				if devices[i].UUID == fit.Device {
+					devices[i].FreeMiB = max(fit.RequiredMiB, fit.FreeMiB+plan.credit)
+				}
+			}
+			for i := range owners {
+				owners[i].Commitments = maps.Clone(owners[i].Commitments)
+				delete(owners[i].Commitments, fit.Device)
 			}
 		}
-		assessment, err = process.AdmitMemoryBudget(*budget, need, params, visible, devices, systemMiB, owners, commitments, features.declared.MemoryUsableFraction)
 	} else {
 		err = fmt.Errorf("%w: %w", process.ErrMemoryObservation, err)
 		assessment.SetUnknown(process.MemoryEvidenceUnavailable, err.Error())
+	}
+	if replacement != nil && errors.Is(err, process.ErrMemoryObservation) {
+		clear(replacement.recovery)
+		err = nil // Unavailable evidence leaves admission until after the stop.
 	}
 	if !capacity && (budget.Kind == schema.MemoryLayers || budget.Kind == schema.MemoryUnified) && errors.Is(err, process.ErrMemoryObservation) && !slices.ContainsFunc(owners, func(run process.RunRef) bool { return len(run.Commitments) > 0 }) {
 		err = nil
@@ -205,9 +262,9 @@ func (m *ProviderAppManager) checkMemory(ctx context.Context, features LaunchPar
 	if ctx.Err() != nil {
 		assessment = process.MemoryAssessment{WeightsMiB: need.WeightsMiB, ContextMode: need.ContextMode, ContextTokens: need.ContextTokens}
 		assessment.SetUnknown(process.AssessmentFailed, ctx.Err().Error())
-		return assessment, ctx.Err()
+		return assessment, settings, ctx.Err()
 	}
-	return assessment, err
+	return assessment, settings, err
 }
 
 // memoryTotals shares the cached device observation used by reservation preparation.
@@ -219,7 +276,7 @@ func (m *ProviderAppManager) memoryTotals(ctx context.Context) ([]gpu.MemoryDevi
 	devices := make([]gpu.MemoryDevice, 0, len(cards))
 	for _, card := range cards {
 		if card.UUID != "" && card.TotalMemoryMiB > 0 {
-			devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB})
+			devices = append(devices, gpu.MemoryDevice{UUID: card.UUID, TotalMiB: card.TotalMemoryMiB, FreeMiB: card.TotalMemoryMiB})
 		}
 	}
 	if len(devices) == 0 {
@@ -248,7 +305,7 @@ func (m *ProviderAppManager) memoryDevices(ctx context.Context, kind string, cap
 		if systemMiB <= 0 {
 			return nil, systemMiB, process.ErrMemoryObservation
 		}
-		devices, err = []gpu.MemoryDevice{{UUID: "unified", TotalMiB: systemMiB, FreeMiB: systemMiB, Unified: true}}, nil
+		devices, err = []gpu.MemoryDevice{{UUID: "unified", TotalMiB: systemMiB, FreeMiB: systemMiB, UsedMiB: new(int64(0)), Unified: true}}, nil
 	}
 	return devices, systemMiB, err
 }

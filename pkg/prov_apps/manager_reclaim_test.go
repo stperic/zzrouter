@@ -2,9 +2,11 @@ package prov_apps
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	obsruns "github.com/stperic/zzrouter/pkg/observability/runs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -48,7 +50,7 @@ func newReclaimFixture(t *testing.T, enabled bool, keepAlive ...time.Duration) *
 	require.NoError(t, mgr.instances.Register(old))
 	require.NoError(t, mgr.instances.Register(newer))
 	f := &reclaimFixture{mgr: mgr, older: old, newer: newer, features: LaunchParameters{declared: requireLaunchSchema(t, mgr, "vllm"), Params: map[string]string{"budget": "0.5"}}, device: gpu.MemoryDevice{
-		UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000,
+		UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 1000, UsedMiB: new(int64(9000)),
 		Processes: []gpu.MemoryProcess{{PID: 9000001, MemoryMiB: new(int64(4500))}, {PID: 9000002, MemoryMiB: new(int64(4500))}},
 	}}
 	mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
@@ -68,11 +70,15 @@ func (f *reclaimFixture) admit(t *testing.T) ([]instance.EvictedRun, error) {
 	return f.mgr.admitMemory(t.Context(), f.features)
 }
 
-func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string) {
+func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string, unaccounted ...int64) {
 	t.Helper()
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
-	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB,
+	expectedUnaccounted := int64(0)
+	if len(unaccounted) > 0 {
+		expectedUnaccounted = unaccounted[0]
+	}
+	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB, UnaccountedMiB: &expectedUnaccounted,
 		Holders: []process.MemoryHolder{
 			{PID: f.device.Processes[0].PID, MemoryMiB: f.device.Processes[0].MemoryMiB, Run: f.older.ID, Model: f.older.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.older.ID]},
 			{PID: f.device.Processes[1].PID, MemoryMiB: f.device.Processes[1].MemoryMiB, Run: f.newer.ID, Model: f.newer.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.newer.ID]},
@@ -80,10 +86,10 @@ func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[
 }
 
 // assertNothingEvicted admits and expects the original fit error with no run evicted.
-func (f *reclaimFixture) assertNothingEvicted(t *testing.T, skipped map[string]string) {
+func (f *reclaimFixture) assertNothingEvicted(t *testing.T, skipped map[string]string, unaccounted ...int64) {
 	t.Helper()
 	evicted, err := f.admit(t)
-	f.assertOriginalFit(t, err, skipped)
+	f.assertOriginalFit(t, err, skipped, unaccounted...)
 	assert.Empty(t, evicted)
 }
 
@@ -121,7 +127,7 @@ func TestMemoryReclaimProtectsLease(t *testing.T) {
 	require.NoError(t, err)
 	defer lease.Release()
 	*f.device.Processes[1].MemoryMiB = 100
-	f.assertNothingEvicted(t, map[string]string{f.older.ID: "in use"})
+	f.assertNothingEvicted(t, map[string]string{f.older.ID: "in use"}, 4400)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -130,9 +136,45 @@ func TestMemoryReclaimInsufficientStopsNothing(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	*f.device.Processes[0].MemoryMiB = 1500
 	*f.device.Processes[1].MemoryMiB = 1500
-	f.assertNothingEvicted(t, nil)
+	f.assertNothingEvicted(t, nil, 6000)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+}
+
+func TestMemoryReclaimAutoFractionInsufficientStopsNothing(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	f.features.Params["budget"] = "auto"
+	f.device.TotalMiB, f.device.FreeMiB, f.device.UsedMiB = 20000, 2048, new(int64(17952))
+	*f.device.Processes[0].MemoryMiB, *f.device.Processes[1].MemoryMiB = 1, 0
+	f.mgr.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		device := f.device
+		if f.older.GetStatus() == instance.StatusStopped {
+			device.FreeMiB++
+		}
+		return []gpu.MemoryDevice{device}, nil
+	}
+	evicted, err := f.admit(t)
+	var fit *process.MemoryFitError
+	require.ErrorAs(t, err, &fit)
+	assert.Equal(t, int64(2050), fit.RequiredMiB)
+	assert.Equal(t, int64(2048), fit.FreeMiB)
+	assert.Empty(t, evicted, "one MiB covers margin+1, but cannot yield a positive auto fraction")
+	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
+	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+}
+
+func TestMemoryReclaimDoesNotCreditUnaccountedMemory(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	*f.device.Processes[0].MemoryMiB = 2000
+	*f.device.Processes[1].MemoryMiB = 2000
+	evicted, err := f.admit(t)
+	require.NoError(t, err)
+	assert.Equal(t, []instance.EvictedRun{
+		{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 2000},
+		{RunID: f.newer.ID, Model: f.newer.Model, Provider: f.newer.Provider, FreedMiB: 2000},
+	}, evicted, "unaccounted use cannot replace either victim's attributed release")
+	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
+	assert.Equal(t, instance.StatusStopped, f.newer.GetStatus())
 }
 
 func TestMemoryReclaimWaitsForRecovery(t *testing.T) {
@@ -162,10 +204,10 @@ func TestMemoryReclaimWaitsForRecovery(t *testing.T) {
 				require.ErrorAs(t, err, &fit)
 				assert.Equal(t, int64(1000), fit.FreeMiB)
 				assert.Equal(t, int64(5000), fit.RequiredMiB)
-				assert.GreaterOrEqual(t, utils.Now().Sub(started), memoryRecoveryTimeout)
+				assert.GreaterOrEqual(t, utils.Now().Sub(started), constants.MemoryRecoveryTimeout)
 			}
 			assert.Equal(t, 2, attempts, "exactly one retry after reclamation")
-			assert.Less(t, utils.Now().Sub(started), memoryRecoveryTimeout+2*time.Second)
+			assert.Less(t, utils.Now().Sub(started), constants.MemoryRecoveryTimeout+2*time.Second)
 			assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 		})
@@ -245,8 +287,31 @@ func TestMemoryRecoveryUsesDeviceAndBaseline(t *testing.T) {
 		}
 		return []gpu.MemoryDevice{{UUID: "GPU-other", FreeMiB: 10000}, {UUID: "GPU-A", FreeMiB: free}}, nil
 	}
-	f.mgr.waitMemoryRecovery(t.Context(), "GPU-A", 1000+4500-memoryRecoveryToleranceMiB)
+	require.NoError(t, f.mgr.waitMemoryRecovery(t.Context(), "GPU-A", 1000+4500-memoryRecoveryToleranceMiB))
 	assert.Equal(t, 3, polls, "wait for held sizes, not merely enough memory for admission")
+}
+
+func TestMemoryRecoveryCallerCancellation(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			for _, recovered := range []bool{false, true} {
+				t.Run(map[bool]string{false: "pending", true: "recovered"}[recovered], func(t *testing.T) {
+					f := newReclaimFixture(t, true)
+					ctx, cancel := context.WithCancel(t.Context())
+					if cause == context.DeadlineExceeded {
+						cancel()
+						ctx, cancel = context.WithDeadline(t.Context(), time.Unix(0, 0))
+					}
+					cancel()
+					target := f.device.FreeMiB + 1
+					if recovered {
+						target = f.device.FreeMiB
+					}
+					assert.ErrorIs(t, f.mgr.waitMemoryRecovery(ctx, f.device.UUID, target), cause)
+				})
+			}
+		})
+	}
 }
 
 func TestIdleStopAndLeaseClaim(t *testing.T) {
@@ -294,6 +359,40 @@ func TestMemoryReclaimCancellationBoundsRecovery(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 2, attempts)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
+}
+
+func TestMemoryReclaimCancellationStopsDrain(t *testing.T) {
+	f := newReclaimFixture(t, true)
+	*f.device.Processes[0].MemoryMiB = 2000
+	*f.device.Processes[1].MemoryMiB = 2500
+	log := capturePinLog(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	f.older.TrackGoroutine()
+	go func() {
+		defer f.older.GoroutineDone()
+		<-f.older.Context().Done()
+		cancel()
+	}()
+	_, err := f.mgr.admitMemory(ctx, f.features)
+	require.Error(t, err)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
+	lease, err := f.newer.Acquire(t.Context(), nil)
+	require.NoError(t, err, "cancellation releases the remaining idle claim")
+	lease.Release()
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	for _, record := range log.records {
+		if record.Message == "failed to reclaim idle GPU run" {
+			record.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "instance" {
+					assert.NotEqual(t, f.newer.ID, attr.Value.String(), "remaining victims are not attempted after cancellation")
+				}
+				return true
+			})
+		}
+	}
 }
 
 func TestMemoryReclaimReservesWholeSetBeforeDrain(t *testing.T) {
@@ -413,7 +512,7 @@ func TestPinnedRunRefusesMemoryLaunch(t *testing.T) {
 			require.NoError(t, err)
 			lease.Release()
 			before := f.older.ToInfo("")
-			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
+			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"}, 4400)
 			assert.Equal(t, before, f.older.ToInfo(""))
 			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 			assert.Empty(t, f.mgr.auditEvents, "refusal must issue zero stops")
@@ -430,7 +529,7 @@ func TestMemoryReclaimSkipsPinnedAndEvictsUnpinned(t *testing.T) {
 			f := newReclaimFixture(t, true, -1)
 			if !sufficient {
 				*f.device.Processes[1].MemoryMiB = 100
-				f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
+				f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"}, 4400)
 				assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 				assert.Empty(t, f.mgr.auditEvents)
 			} else {

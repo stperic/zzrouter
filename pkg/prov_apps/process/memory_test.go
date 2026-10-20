@@ -91,3 +91,60 @@ func admitBudget(budget schema.MemoryBudget, need Need, params, env map[string]s
 	_, err := AdmitMemoryBudget(budget, need, params, env, devices, 0, owners, commitments, 0)
 	return err
 }
+
+func TestMemoryUnaccountedBound(t *testing.T) {
+	read := parentPID
+	t.Cleanup(func() { parentPID = read })
+	parentPID = func(pid int32) (int32, error) {
+		if pid == 99 {
+			return 0, os.ErrPermission
+		}
+		return 0, nil
+	}
+	for _, tc := range []struct {
+		name        string
+		processes   []gpu.MemoryProcess
+		reason      string
+		unaccounted int64
+	}{
+		{name: "complete", processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: new(int64(3000))}}},
+		{name: "partial", processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: new(int64(1000))}}, unaccounted: 2000},
+		{name: "unknown", unaccounted: 3000},
+		{name: "unknown size", processes: []gpu.MemoryProcess{{PID: 42}}, unaccounted: 3000},
+		{name: "ancestry failed", processes: []gpu.MemoryProcess{{PID: 99, MemoryMiB: new(int64(3000))}}, unaccounted: 3000},
+		{name: "foreign", processes: []gpu.MemoryProcess{{PID: 98, MemoryMiB: new(int64(3000))}}},
+		{name: "driver reason", reason: "driver listing unavailable", unaccounted: 3000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fit := memoryFitError("budget", gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 7000, UsedMiB: new(int64(3000)), Processes: tc.processes, ProcessReason: tc.reason}, 8000, []RunRef{{ID: "old", PID: 42}})
+			require.NotNil(t, fit.UnaccountedMiB)
+			assert.Equal(t, tc.unaccounted, *fit.UnaccountedMiB)
+			if tc.name == "ancestry failed" {
+				require.Len(t, fit.Holders, 1)
+				assert.Empty(t, fit.Holders[0].Run)
+				assert.Equal(t, "other_or_untracked", fit.Holders[0].Ownership)
+			}
+		})
+	}
+}
+
+func TestMemoryFootprintUsesDriverUsedMemory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		free        int64
+		used        *int64
+		unaccounted *int64
+	}{
+		{name: "driver reserved only", free: 97248, used: new(int64(0)), unaccounted: new(int64(0))},
+		{name: "used unknown", free: 97248},
+		{name: "used unknown without reservations", free: 97887},
+		{name: "unattributed use", free: 97248, used: new(int64(1)), unaccounted: new(int64(1))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fit := memoryFitError("budget", gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 97887, FreeMiB: tc.free, UsedMiB: tc.used}, 97887, nil)
+			assert.Equal(t, tc.unaccounted, fit.UnaccountedMiB)
+			assert.Equal(t, tc.free, fit.FreeMiB, "driver reservations remain unavailable for admission")
+			assert.Empty(t, fit.Holders)
+		})
+	}
+}

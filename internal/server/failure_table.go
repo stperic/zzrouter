@@ -152,6 +152,9 @@ func memoryFailureExtra(err error, wire httperr.Error) map[string]any {
 	if memory.Sized {
 		hint = "Inspect accepted settings with zz_params_get and candidates with zz_models and zz_nodes; use zz_run_preview with a supported budget or numeric context, then zz_run_start."
 	}
+	if memory.KeptRun != "" {
+		hint = "Lower the request with zz_params_set and zz_run_preview, stop other holders with zz_run_stop, or explicitly use zz_run_stop on kept_run then zz_run_start."
+	}
 	return map[string]any{"errors": []utils.ParamError{{Key: memory.Parameter, Code: wire.Code, Got: memory, Max: memory.FreeMiB, Want: "required_mib <= free_mib on each selected device", Message: wire.Message, Hint: hint}}}
 }
 

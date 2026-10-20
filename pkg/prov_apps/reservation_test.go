@@ -84,7 +84,7 @@ func TestReservationIgnoresUnusableInventoryCards(t *testing.T) {
 	}
 	devices, err := r.m.memoryTotals(t.Context())
 	require.NoError(t, err)
-	require.Equal(t, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576}}, devices)
+	require.Equal(t, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 24576, FreeMiB: 24576}}, devices)
 	result, err := r.m.EnsureRun(t.Context(), EnsureRequest{Provider: "generic"})
 	require.NoError(t, err)
 	awaitRunning(t, result.Run)

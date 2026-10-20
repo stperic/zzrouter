@@ -158,3 +158,55 @@ func TestInventoryAdmissionExplicitEmptyCodeContract(t *testing.T) {
 		assert.Equal(t, want.Type, e["type"])
 	}
 }
+
+func TestReplacementRefusalWire(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		kept   string
+		credit int64
+		sized  bool
+	}{
+		{name: "zero credit", kept: "old"},
+		{name: "credited", kept: "old", credit: 2000},
+		{name: "sized", kept: "old", sized: true},
+		{name: "late steal"},
+		{name: "unaccounted memory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fit := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5500, FreeMiB: 1000, KeptRun: tc.kept, CreditedMiB: tc.credit, Sized: tc.sized}
+			if tc.name == "unaccounted memory" {
+				fit.UnaccountedMiB = new(int64(26))
+			}
+			if tc.sized {
+				fit.BudgetKind = "fraction_total"
+			}
+			w := httptest.NewRecorder()
+			writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", nil)), failureWire(fit, http.StatusInternalServerError))
+			require.Equal(t, http.StatusConflict, w.Code)
+			var body map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+			assert.Equal(t, "out_of_range", body["code"])
+			details := body["errors"].([]any)
+			require.Len(t, details, 1)
+			detail := details[0].(map[string]any)
+			assert.Equal(t, "out_of_range", detail["code"])
+			got := detail["got"].(map[string]any)
+			assert.NotContains(t, got, "UnaccountedMiB")
+			assert.NotContains(t, got, "unaccounted_mib")
+			assert.Equal(t, float64(tc.credit), got["credited_mib"])
+			if tc.kept == "" {
+				assert.NotContains(t, got, "kept_run")
+				assert.NotContains(t, body["detail"], "kept run")
+				assert.NotContains(t, detail["hint"], "kept_run")
+			} else {
+				assert.Equal(t, tc.kept, got["kept_run"])
+				assert.Contains(t, body["detail"], "kept run old")
+				for _, tool := range []string{"zz_params_set", "zz_run_preview", "zz_run_stop", "zz_run_start"} {
+					assert.Contains(t, detail["hint"], tool)
+				}
+				assert.Contains(t, detail["hint"], "Lower the request")
+				assert.Contains(t, detail["hint"], "stop other holders")
+			}
+		})
+	}
+}

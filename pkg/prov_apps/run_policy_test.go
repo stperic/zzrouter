@@ -151,25 +151,41 @@ func TestDecide(t *testing.T) {
 
 func TestChooseEvictions(t *testing.T) {
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
-	candidates := []evictionCandidate{{"new", 4, now}, {"b", 3, now.Add(-time.Hour)}, {"a", 2, now.Add(-time.Hour)}}
+	candidates := []evictionCandidate{
+		{instance.IdleStopCandidate{Instance: instance.NewInstance("new", "p", "new", 0, 0, 1), Activity: now}, 4},
+		{instance.IdleStopCandidate{Instance: instance.NewInstance("b", "p", "b", 0, 0, 1), Activity: now.Add(-time.Hour)}, 3},
+		{instance.IdleStopCandidate{Instance: instance.NewInstance("a", "p", "a", 0, 0, 1), Activity: now.Add(-time.Hour)}, 2},
+	}
 	for _, tc := range []struct {
-		name      string
-		shortfall int64
-		want      []string
+		name              string
+		shortfall, credit int64
+		want              []string
+		covered           bool
 	}{
-		{"no shortage", 0, nil}, {"negative shortage", -1, nil},
-		{"oldest and tiebreak", 4, []string{"a", "b"}},
-		{"exact cover", 5, []string{"a", "b"}},
-		{"one victim", 2, []string{"a"}},
-		{"all victims", 9, []string{"a", "b", "new"}},
-		{"not enough", 10, nil},
+		{"no shortage", 0, 0, nil, true}, {"negative shortage", -1, 0, nil, true},
+		{"oldest and tiebreak", 4, 0, []string{"a", "b"}, true},
+		{"exact cover", 5, 0, []string{"a", "b"}, true},
+		{"one victim", 2, 0, []string{"a"}, true},
+		{"all victims", 9, 0, []string{"a", "b", "new"}, true},
+		{"not enough", 10, 0, nil, false},
+		{"replacement alone", 10, 10, nil, true},
+		{"replacement then oldest", 10, 6, []string{"a", "b"}, true},
+		{"replacement still insufficient", 11, 1, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, chooseEvictions(tc.shortfall, candidates))
-			assert.Equal(t, "new", candidates[0].id)
+			selected, covered := chooseEvictions(tc.shortfall, tc.credit, candidates)
+			var ids []string
+			for _, candidate := range selected {
+				ids = append(ids, candidate.Instance.ID)
+			}
+			assert.Equal(t, tc.want, ids)
+			assert.Equal(t, tc.covered, covered)
+			assert.Equal(t, "new", candidates[0].Instance.ID)
 		})
 	}
-	assert.Empty(t, chooseEvictions(1, nil))
+	ids, covered := chooseEvictions(1, 0, nil)
+	assert.Empty(t, ids)
+	assert.False(t, covered)
 }
 
 func TestIdleExpired(t *testing.T) {

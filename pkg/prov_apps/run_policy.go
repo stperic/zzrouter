@@ -171,36 +171,32 @@ func decideExisting(w Want, n Node, smoke bool) Decision {
 }
 
 type evictionCandidate struct {
-	id       string
-	mib      int64
-	activity time.Time
+	instance.IdleStopCandidate
+	mib int64
 }
 
-func chooseEvictions(shortfall int64, candidates []evictionCandidate) []string {
-	var available int64
-	for _, candidate := range candidates {
-		available += candidate.mib
-	}
-	if shortfall <= 0 || available < shortfall {
-		return nil
+func chooseEvictions(shortfall, credit int64, candidates []evictionCandidate) ([]instance.IdleStopCandidate, bool) {
+	shortfall -= credit
+	if shortfall <= 0 {
+		return nil, true
 	}
 	candidates = slices.Clone(candidates)
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].activity.Equal(candidates[j].activity) {
-			return candidates[i].id < candidates[j].id
+		if candidates[i].Activity.Equal(candidates[j].Activity) {
+			return candidates[i].Instance.ID < candidates[j].Instance.ID
 		}
-		return candidates[i].activity.Before(candidates[j].activity)
+		return candidates[i].Activity.Before(candidates[j].Activity)
 	})
 	var selected int64
-	var ids []string
+	var selectedRuns []instance.IdleStopCandidate
 	for _, candidate := range candidates {
-		ids = append(ids, candidate.id)
+		selectedRuns = append(selectedRuns, candidate.IdleStopCandidate)
 		selected += candidate.mib
 		if selected >= shortfall {
-			break
+			return selectedRuns, true
 		}
 	}
-	return ids
+	return nil, false
 }
 
 // Expired is the idle rule: held leases, claims and pins never expire, zero expires after release.

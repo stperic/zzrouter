@@ -305,15 +305,25 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 			return result, err
 		}
 	}
-	if _, err = m.engine(prepared.lifecycle).prepare(ctx, prepared.selection.config, prepared.selection.key, req, 0); err != nil {
+	launch, err := m.engine(prepared.lifecycle).prepare(ctx, prepared.selection.config, prepared.selection.key, req, 0)
+	if err != nil {
 		return result, err
 	}
 	if err = ctx.Err(); err != nil {
 		return result, err
 	}
 	if replace := prepared.decision.Replace; replace != "" {
+		check := &replacementCheck{run: replace, recovery: make(map[string]int64)}
+		if _, _, err = m.checkMemory(ctx, launch.parameters, false, check); err != nil {
+			return result, err
+		}
 		if err = m.stopInstance(ctx, replace, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			return result, err
+		}
+		for device, target := range check.recovery {
+			if err = m.waitMemoryRecovery(ctx, device, target); err != nil {
+				return result, err
+			}
 		}
 	}
 	run, err := m.engine(prepared.lifecycle).up(ctx, req, prepared.selection)
