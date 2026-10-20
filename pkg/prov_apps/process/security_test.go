@@ -197,6 +197,19 @@ func TestValidateParameters(t *testing.T) {
 	})
 }
 
+func TestValidateParametersRejectsInvalidKeyStarts(t *testing.T) {
+	for name, key := range map[string]string{
+		"leading digit":      "2lead",
+		"leading hyphen":     "-lead",
+		"leading underscore": "_lead",
+		"empty":              "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, ValidateParameters(map[string]string{key: "value"}))
+		})
+	}
+}
+
 func TestBuildChildEnvironment(t *testing.T) {
 	t.Run("includes user vars", func(t *testing.T) {
 		env := buildChildEnvironment(map[string]string{

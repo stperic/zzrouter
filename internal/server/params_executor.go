@@ -42,7 +42,7 @@ var envKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 func validateParameterMaps(parameters, environment map[string]string) error {
 	for k, v := range parameters {
 		if !runsettings.ValidKey(k) {
-			return fmt.Errorf("invalid parameter key %q: must contain only letters, digits, hyphens, underscores", k)
+			return runsettings.InvalidKeyError(k)
 		}
 		if err := validateEnvValue(k, v); err != nil {
 			return err

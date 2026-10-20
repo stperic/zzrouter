@@ -470,7 +470,7 @@ func (s *RunsService) LaunchRun(ctx context.Context, req *LaunchRunRequest) (*La
 
 	// Validate parameter keys and values
 	if err := validateParameterMaps(req.Parameters, req.EnvVars); err != nil {
-		return nil, fmt.Errorf("invalid parameters: %w", err)
+		return nil, invalidInputf("invalid parameters: %w", err)
 	}
 
 	// Auto-deploy at the public layer when wired and the model is missing

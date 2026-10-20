@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Return HTTP 400 for invalid launch parameter keys and control characters in
+  parameter or environment values.
+
+- Validate launch parameter keys with the shared run-parameter rule: start with
+  a letter, followed by letters, digits, hyphens or underscores.
+
 - Declare new engine flags in an operator-owned `schema:` block without a
   zzRouter release. One parameters PATCH or `zz_params_set` can declare and set
   a flag atomically. Accepted shapes carry `operator: true`; GET `/schema` and

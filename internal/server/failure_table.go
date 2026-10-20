@@ -79,6 +79,7 @@ var failureTable = []failureRow{
 	{sentinel: errLoadWarming, status: http.StatusServiceUnavailable, code: "model_load_timeout", retryAfter: modelWarmupRetryAfter, resolve: resolveLoadState, extra: warmingFailureExtra},
 	{sentinel: errLoadInternal, status: http.StatusInternalServerError, code: "model_load_failed", errType: "server_error", resolve: resolveLoadState},
 	{sentinel: errLoadFailed, status: http.StatusBadGateway, code: "model_load_failed", resolve: resolveLoadState},
+	{status: http.StatusBadRequest, code: "", resolve: resolveInvalidInput},
 }
 
 // knownFailure is the one table lookup for every known run refusal.
@@ -113,6 +114,10 @@ func knownFailure(err error) (httperr.Error, bool) {
 
 func resolveExplicitWire(err error, wire *httperr.Error) bool {
 	return errors.As(err, wire)
+}
+
+func resolveInvalidInput(err error, _ *httperr.Error) bool {
+	return isInvalidInput(err)
 }
 
 func resolveCatalogMiss(err error, wire *httperr.Error) bool {

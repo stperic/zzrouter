@@ -9,7 +9,37 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stperic/zzrouter/pkg/utils"
 )
+
+// TestRuns_LaunchRun_InvalidParameterMaps keeps caller errors ahead of auto-deployment.
+func TestRuns_LaunchRun_InvalidParameterMaps(t *testing.T) {
+	s := createTestNodeWithDefaults(t)
+	for _, tc := range []struct {
+		name   string
+		fields map[string]any
+	}{
+		{"leading digit", map[string]any{"parameters": map[string]string{"2lead": "value"}}},
+		{"leading hyphen", map[string]any{"parameters": map[string]string{"-lead": "value"}}},
+		{"parameter newline", map[string]any{"parameters": map[string]string{"text": "bad\nvalue"}}},
+		{"environment newline", map[string]any{"env_vars": map[string]string{"TEXT": "bad\nvalue"}}},
+		{"environment key", map[string]any{"env_vars": map[string]string{"bad-key": "value"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.fields["provider"] = "llamacpp"
+			tc.fields["model_name"] = "missing-model"
+			tc.fields["auto_deploy"] = true
+			resp := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/runs", TestAdminKey, tc.fields)
+			assert.Equal(t, http.StatusBadRequest, resp.Code, string(resp.Body))
+			assert.Contains(t, resp.Headers.Get("Content-Type"), "application/problem+json")
+			var problem utils.ProblemDetails
+			require.NoError(t, json.Unmarshal(resp.Body, &problem))
+			assert.Equal(t, http.StatusBadRequest, problem.Status)
+			assert.Equal(t, "bad_request", problem.Code)
+		})
+	}
+}
 
 // TestRuns_LaunchRun_4xxPropagation pins POST /zzrouter/v1/runs: an
 // internal-executor 4xx (e.g. "unsupported provider") propagates as 400

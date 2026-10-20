@@ -27,7 +27,7 @@ func Declare(provider string, base map[string]ParamShape, endpointShapes map[str
 			problems = append(problems, utils.ParamError{Key: "schema." + key + field, Code: string(code), Message: message})
 		}
 		if !runsettings.ValidKey(key) {
-			refuse("", httperr.CodeInvalidValue, "a parameter key must start with a letter and contain only letters, digits, hyphens or underscores")
+			refuse("", httperr.CodeInvalidValue, runsettings.InvalidKeyError(key).Error())
 			continue
 		}
 		if counts[name] > 1 {

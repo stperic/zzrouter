@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/stperic/zzrouter/pkg/config/runsettings"
 	"github.com/stperic/zzrouter/pkg/host"
 )
 
@@ -252,9 +253,6 @@ func (sv *SecurityValidator) SandboxCommand(command []string) []string {
 	return command
 }
 
-// paramKeyRegex validates parameter keys — alphanumeric, hyphens, underscores only.
-var paramKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
 // dangerousEnvVars is a blocklist of environment variable names that could enable
 // code injection or privilege escalation when set on child processes.
 var dangerousEnvVars = map[string]bool{
@@ -323,16 +321,12 @@ var paramValueRegex = regexp.MustCompile(`^[a-zA-Z0-9._:/\\@+\-= ,~%\t]+$`)
 // could cause the provider binary to read arbitrary files.
 var pathTraversalPattern = regexp.MustCompile(`(?:^(?:[a-zA-Z]:)?|[/\\])\.\.(?:[/\\]|$)`)
 
-// ValidateParameters checks parameter keys and values for safety.
-// Called unconditionally — even for trusted (config-driven) commands.
-//
-// Keys: alphanumeric + hyphens + underscores.
-// Values: safe character set, max length, no path traversal, no shell
-// metacharacters. Empty values are allowed (some flags are boolean).
+// ValidateParameters checks run-parameter keys and values for safe process execution.
+// It applies even to trusted config; empty values are allowed for boolean flags.
 func ValidateParameters(params map[string]string) error {
 	for key, value := range params {
-		if !paramKeyRegex.MatchString(key) {
-			return fmt.Errorf("invalid parameter key %q: must contain only letters, digits, hyphens, underscores", key)
+		if !runsettings.ValidKey(key) {
+			return runsettings.InvalidKeyError(key)
 		}
 		if err := validateParamValue(key, value); err != nil {
 			return err
