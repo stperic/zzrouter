@@ -1219,6 +1219,38 @@ func TestEnsureRunContractServed(t *testing.T) {
 		})
 	})
 
+	t.Run("S4 load cause precedes removal after stop claim", func(t *testing.T) {
+		for _, cancelRun := range []bool{false, true} {
+			name := "before cancellation"
+			if cancelRun {
+				name = "after cancellation"
+			}
+			t.Run(name, func(t *testing.T) {
+				r := newServedRig(t)
+				r.daemon.holdLoads()
+				o := collect(t, []<-chan outcome{r.ensure(t.Context(), served)})[0]
+				require.NoError(t, o.err)
+				run := o.result.Run
+				r.daemon.waitEntered(t)
+				require.True(t, run.ClaimEnd())
+				run.SetStatus(instance.StatusStopping)
+				if cancelRun {
+					run.Cancel()
+				}
+				r.m.startsCancel()
+				ctx, cancel := context.WithTimeout(t.Context(), contractWait)
+				defer cancel()
+				require.NoError(t, run.WaitForGoroutines(ctx))
+				assert.ErrorIs(t, run.FailureCause(), ErrShutdown)
+				assert.Equal(t, instance.StatusStopping, run.GetStatus())
+				run.FinishEnd(context.Canceled)
+				require.NoError(t, r.m.Stop(t.Context()))
+				assert.ErrorIs(t, run.FailureCause(), ErrShutdown)
+				assert.Zero(t, r.daemon.count(true))
+			})
+		}
+	})
+
 	t.Run("S5 concurrent force unloads once and loads once", func(t *testing.T) {
 		b := newBarrier()
 		var gate atomic.Bool

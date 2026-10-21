@@ -180,7 +180,10 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 	if err != nil {
 		return nil, err
 	}
+	// Track before publication so a stop cannot finish before load dispatch.
+	run.TrackGoroutine()
 	if err := m.instances.Register(run); err != nil {
+		run.GoroutineDone()
 		return nil, err
 	}
 	m.watchRun(run, req)
@@ -191,7 +194,6 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 	m.record(run, runEvent(EventInstanceStarting, run, "load requested, keep-alive "+sent))
 	// The load ends the start: Stop waits for it, as for any start, before it forgets runs.
 	m.onDemandStarts.Add(1)
-	run.TrackGoroutine()
 	go func() {
 		defer m.onDemandStarts.Done()
 		defer run.GoroutineDone()
@@ -218,10 +220,9 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 	}
 	if err != nil {
 		err = fmt.Errorf("load %s failed: %w", run.Model, err)
+		run.MarkLoadFailedError(err)
 		if run.Context().Err() == nil { // a stop in progress owns the run's removal
 			m.releaseRun(run, err)
-		} else {
-			run.MarkLoadFailedError(err)
 		}
 		m.record(run, failedEvent(run, obsruns.FailureLaunchErr, err))
 		return

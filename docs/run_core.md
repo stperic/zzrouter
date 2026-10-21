@@ -92,7 +92,13 @@ ordinary run stop path before joining idle, replacement or API stops already in
 progress, reports a join timeout, then sweeps for runs registered during teardown.
 The sweep signals new runs without waiting for earlier stops and never retries
 a run already seen, including one whose stop failed. Results are collected once.
-Served models remain loaded and pin records survive shutdown.
+Served models remain loaded and pin records survive shutdown. A cancelled served
+load records `ErrShutdown` before either the loader removes the run or the stop
+finishes draining it. Its drain slot is claimed before registry publication, so
+shutdown also waits for a registered load that has not yet been dispatched. The
+loader records its cause even between the stop's `stopping` transition and
+cancellation of the run context. Ordinary process starts
+that race a stop still answer readiness waiters with retryable `ErrStopping`.
 
 On Unix, each process group receives one SIGTERM, waits its configured
 `shutdown_timeout` (default 10 seconds, `gpu` 30 seconds), then receives SIGKILL

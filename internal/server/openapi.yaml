@@ -1043,7 +1043,10 @@ paths:
         grace by its independent run budget, caps run cleanup at that deadline
         plus force wait and epilogue, and uses this
         same termination path in parallel, keeps pin records and leaves served
-        models loaded. A concurrent operator stop is joined by node shutdown.
+        models loaded. A cancelled served load retains its shutdown failure cause
+        before its run is removed; ordinary process starts racing a stop retain
+        the retryable stopping outcome.
+        A concurrent operator stop is joined by node shutdown.
       parameters:
         - $ref: '#/components/parameters/NodeParam'
       responses:
