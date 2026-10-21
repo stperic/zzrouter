@@ -1,14 +1,15 @@
 package prov_apps
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/protocol"
 )
 
@@ -170,33 +171,41 @@ func decideExisting(w Want, n Node, smoke bool) Decision {
 	}
 }
 
-type evictionCandidate struct {
-	instance.IdleStopCandidate
-	mib int64
+// memoryNeedsStop leaves unknown evidence to admission after stopping the replaced run.
+func memoryNeedsStop(err error, bounds map[string]*int64) bool {
+	var fit *process.MemoryFitError
+	if errors.As(err, &fit) {
+		return fit.BudgetKind == "" && !fit.CommitmentOnly && bounds[fit.Device] == nil
+	}
+	return errors.Is(err, process.ErrMemoryObservation) && !errors.Is(err, process.ErrMemorySelection)
 }
 
-func chooseEvictions(shortfall, credit int64, candidates []evictionCandidate) ([]instance.IdleStopCandidate, bool) {
-	shortfall -= credit
+type evictionCandidate struct {
+	instance.IdleStopCandidate
+	relief int64
+}
+
+// chooseEvictions selects the oldest candidates only when they cover the positive shortfall.
+func chooseEvictions(shortfall int64, candidates []evictionCandidate) []instance.IdleStopCandidate {
 	if shortfall <= 0 {
-		return nil, true
+		return nil
 	}
 	candidates = slices.Clone(candidates)
-	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].Activity.Equal(candidates[j].Activity) {
-			return candidates[i].Instance.ID < candidates[j].Instance.ID
-		}
-		return candidates[i].Activity.Before(candidates[j].Activity)
+	slices.SortFunc(candidates, func(a, b evictionCandidate) int {
+		return cmp.Or(a.Activity.Compare(b.Activity), cmp.Compare(a.Instance.ID, b.Instance.ID))
 	})
-	var selected int64
-	var selectedRuns []instance.IdleStopCandidate
+	var selected []instance.IdleStopCandidate
 	for _, candidate := range candidates {
-		selectedRuns = append(selectedRuns, candidate.IdleStopCandidate)
-		selected += candidate.mib
-		if selected >= shortfall {
-			return selectedRuns, true
+		if candidate.relief <= 0 {
+			continue
+		}
+		selected = append(selected, candidate.IdleStopCandidate)
+		shortfall -= candidate.relief
+		if shortfall <= 0 {
+			return selected
 		}
 	}
-	return nil, false
+	return nil
 }
 
 // Expired is the idle rule: held leases, claims and pins never expire, zero expires after release.

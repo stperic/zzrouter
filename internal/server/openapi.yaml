@@ -796,28 +796,48 @@ paths:
         budget is compared with fresh per-device free memory. An oversized budget
         returns 409 with errors[].got containing required_mib, free_mib, device,
         holders (driver PIDs and known zzRouter run ownership) and attribution gaps.
-        Replacements refuse before stopping the old run only if the launch cannot
-        fit even if the stop freed all driver-reported used memory not provably held
-        by another process, plus the run's unused commitments, per selected device.
-        A process's known memory is excluded from this bound only when its ancestry
-        is fully read and belongs to another run or no run. Unattributed context use,
-        unknown process sizes and unreadable ancestry stay inside the bound. A failed
-        process listing leaves all used memory inside it. A refusal keeps the run
-        registered and uses the same 409 out_of_range, adding kept_run and credited_mib
-        under errors[].got. For a free-memory refusal, credited_mib is the most stopping
-        the kept run could free on the refused device; it is zero for a sized-context or
-        weights refusal, which no stop fixes. Lower the request using zz_params_set and
-        zz_run_preview, stop other holders with zz_run_stop, or explicitly zz_run_stop
-        the kept run then zz_run_start. Idle victims are only planned before the stop
-        and revalidated afterwards. Unknown driver used memory and unbudgeted engines
-        retain stop-then-admit ordering. No slot is held across the stop: recovery waits
-        target attributed holdings and unused commitments, excluding unaccounted use,
-        and caller cancellation aborts. Recovery timeout continues to fresh admission,
-        which can still return the same 409 refusal and tool hints without a kept_run
-        claim if memory cannot fit.
+        Before a replacement stop, the same memory admission checks a simulated stop:
+        cloned devices lose the old run's processes, its owner entry and commitments
+        are removed, and free memory increases by its release bound on each device.
+        Other runs keep their commitments. The bound is attributed holdings plus
+        driver-reported used memory not provably held by fully attributed processes;
+        unknown sizes, unreadable ancestry and unattributed context remain inside it.
+        A failed process listing makes the release bound unknown. With idle eviction
+        enabled, both paths admit, try one covering reclaim on the first refused
+        device, then admit once more. For layers or unified refusals caused only by
+        unused commitments, selection counts only those commitments; process memory
+        alone provides no relief. A second pre-check refusal keeps the old run. The
+        pre-check simulates only that one victim set using attributed holdings;
+        victims are never claimed or stopped during the pre-check. A refusal
+        preserves the old run, using the same 409 out_of_range and adding kept_run
+        and credited_mib under errors[].got only when a run is kept. For a
+        free-memory refusal, credited_mib is its release bound on the refused device,
+        free_mib (and errors[].max) is availability after the simulated stop and
+        remaining unused commitments and the single simulated idle reclaim, if
+        applied. Remaining process holders have known sizes and fully read ancestry
+        outside the kept run. Unknown sizes or ancestry were credited in the bound
+        and removed; other runs keep their unused commitment holders. Sized-context
+        and weights refusals report zero credit and retain their own budget hints,
+        because no stop repairs them. Lower a free-memory request with zz_params_set
+        and zz_run_preview, or stop other holders with zz_run_stop. When holders show
+        unused_commitment_mib, only stopping those holders with zz_run_stop helps. Stop
+        kept_run first only when holders include other_or_untracked memory zzRouter
+        could not attribute, then zz_run_start. A snapshot failure keeps
+        stop-then-admit. A failed process listing or unknown used memory on the refused
+        device does so for free-memory refusals; commitment-only, sized-context and
+        weights refusals preserve the run whatever the bound. A commitment-only refusal
+        with an unknown release bound reports credited_mib: 0 because no release-bound
+        credit could be established. GPU-selection errors preserve the run when ordinary
+        admission refuses, with the same 503 class. Layers and unified launches still
+        admit unavailable observations or invalid selectors when no run holds
+        commitments, including fresh starts.
+        Unbudgeted engines keep stop-then-admit. No slot spans the stop: recovery
+        targets attributed holdings only, excluding unaccounted use, and caller
+        cancellation aborts. Recovery timeout continues to fresh admission, which can
+        still refuse without a kept_run claim. Idle claims revalidate after the stop.
         With eviction enabled, skipped runs carry `reclaim_skipped_reason` (pinned, busy,
         in use or not idle) from the reclaim decision. Unused commitments omit `pid`.
-        Unknown measurements or ambiguous device selection return 503. Multi-GPU
+        Refused observations or device selections retain their 503 class. Multi-GPU
         admission requires full UUIDs in CUDA_VISIBLE_DEVICES. This is an engine
         allocation budget, not a complete model-weight/KV estimate. Layer and
         unified-memory estimates use reachable totals when model evidence permits.
@@ -921,9 +941,15 @@ paths:
             exceeding fresh free device memory is refused before process start;
             errors[].got includes required_mib, free_mib and known holder attribution.
             A replacement refused before stopping its old run also reports kept_run
-            and credited_mib: for a free-memory refusal, the most stopping the kept run
-            could free on the refused device; zero for a sized-context or weights
-            refusal, which no stop fixes.
+            and credited_mib: for a free-memory refusal, the most stopping the kept
+            run could free on the refused device. free_mib and errors[].max describe
+            availability after the simulated stop, remaining unused commitments and
+            the single simulated idle reclaim, if applied. Holders contain only
+            known-size processes with fully read ancestry outside the kept run and
+            other runs' remaining unused commitments. Unknown processes were already
+            credited in the release bound and removed. Credit is zero for a
+            sized-context or weights refusal, which no stop fixes. Fresh and late
+            refusals omit both kept_run and credited_mib.
             Malformed or unreadable endpoint-applicable feature evidence returns code
             model_feature_evidence_invalid even if the optional runtime is absent.
             Repair or re-download malformed evidence; ask the operator to correct

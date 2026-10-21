@@ -1,7 +1,6 @@
 package process
 
 import (
-	"errors"
 	"os"
 	"testing"
 
@@ -53,6 +52,12 @@ func TestMemoryFitErrorAttributesDescendants(t *testing.T) {
 	}
 }
 
+func TestMemoryFitErrorKeptRunWithoutCredit(t *testing.T) {
+	fit := &MemoryFitError{KeptRun: "old", CommitmentOnly: true, Device: "GPU-A", RequiredMiB: 6000, FreeMiB: 4000}
+	assert.Contains(t, fit.Error(), "kept run old; replacement credited 0 MiB")
+	assert.NotNil(t, fit.Unwrap())
+}
+
 func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	budget := schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget", DeviceCountParameter: "devices"}
 	amount := int64(3000)
@@ -80,11 +85,14 @@ func TestMemoryBudgetUsesPerDeviceFreeMemory(t *testing.T) {
 	for _, selector := range []string{"", "0", "GPU-A,GPU-A", "MIG-unknown"} {
 		err := admitBudget(budget, Need{}, map[string]string{"budget": "0.55", "devices": "2"}, map[string]string{"CUDA_VISIBLE_DEVICES": selector}, devices, nil, nil)
 		assert.ErrorIs(t, err, ErrMemoryObservation)
+		assert.ErrorIs(t, err, ErrMemorySelection)
 	}
 	for _, fraction := range []string{"NaN", "Inf", "0", "1.5", "unknown"} {
 		assert.ErrorIs(t, admitBudget(budget, Need{}, map[string]string{"budget": fraction}, nil, devices, nil, nil), ErrMemoryBudgetInvalid)
 	}
-	assert.True(t, errors.Is(admitBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil), ErrMemoryObservation))
+	err = admitBudget(budget, Need{}, map[string]string{"budget": "0.55"}, nil, devices, nil, nil)
+	assert.ErrorIs(t, err, ErrMemoryObservation)
+	assert.ErrorIs(t, err, ErrMemorySelection)
 }
 
 func admitBudget(budget schema.MemoryBudget, need Need, params, env map[string]string, devices []gpu.MemoryDevice, owners []RunRef, commitments map[string]int64) error {
@@ -92,7 +100,22 @@ func admitBudget(budget schema.MemoryBudget, need Need, params, env map[string]s
 	return err
 }
 
-func TestMemoryUnaccountedBound(t *testing.T) {
+func TestMemoryCommitmentOnlyRefusal(t *testing.T) {
+	for _, kind := range []string{schema.MemoryLayers, schema.MemoryUnified} {
+		t.Run(kind, func(t *testing.T) {
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 2000, UsedMiB: new(int64(8000)), Processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: new(int64(2000))}}}
+			owners := []RunRef{{ID: "comfy", PID: 42, Commitments: map[string]int64{"GPU-A": 4000}}}
+			err := admitBudget(schema.MemoryBudget{Kind: kind}, Need{}, nil, nil, []gpu.MemoryDevice{device}, owners, nil)
+			var fit *MemoryFitError
+			require.ErrorAs(t, err, &fit)
+			assert.True(t, fit.CommitmentOnly)
+			assert.Equal(t, int64(2000), fit.RequiredMiB)
+			assert.Zero(t, fit.FreeMiB)
+		})
+	}
+}
+
+func TestMemoryReleaseBound(t *testing.T) {
 	read := parentPID
 	t.Cleanup(func() { parentPID = read })
 	parentPID = func(pid int32) (int32, error) {
@@ -111,18 +134,35 @@ func TestMemoryUnaccountedBound(t *testing.T) {
 		{name: "partial", processes: []gpu.MemoryProcess{{PID: 42, MemoryMiB: new(int64(1000))}}, unaccounted: 2000},
 		{name: "unknown", unaccounted: 3000},
 		{name: "unknown size", processes: []gpu.MemoryProcess{{PID: 42}}, unaccounted: 3000},
+		{name: "foreign unknown size", processes: []gpu.MemoryProcess{{PID: 98}}, unaccounted: 3000},
 		{name: "ancestry failed", processes: []gpu.MemoryProcess{{PID: 99, MemoryMiB: new(int64(3000))}}, unaccounted: 3000},
 		{name: "foreign", processes: []gpu.MemoryProcess{{PID: 98, MemoryMiB: new(int64(3000))}}},
 		{name: "driver reason", reason: "driver listing unavailable", unaccounted: 3000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fit := memoryFitError("budget", gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 7000, UsedMiB: new(int64(3000)), Processes: tc.processes, ProcessReason: tc.reason}, 8000, []RunRef{{ID: "old", PID: 42}})
-			require.NotNil(t, fit.UnaccountedMiB)
-			assert.Equal(t, tc.unaccounted, *fit.UnaccountedMiB)
-			if tc.name == "ancestry failed" {
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 7000, UsedMiB: new(int64(3000)), Processes: tc.processes, ProcessReason: tc.reason}
+			owners := []RunRef{{ID: "old", PID: 42}}
+			after, bound := MemoryAfterStop(device, owners, "old")
+			held := int64(0)
+			for _, p := range tc.processes {
+				if p.PID == 42 && p.MemoryMiB != nil {
+					held += *p.MemoryMiB
+				}
+			}
+			if tc.reason == "" {
+				require.NotNil(t, bound)
+				assert.Equal(t, held+tc.unaccounted, *bound)
+			} else {
+				assert.Nil(t, bound, "a failed listing cannot establish release")
+			}
+			assert.Equal(t, device.FreeMiB+held, after.FreeMiB)
+			fit := memoryFitError("budget", after, 8000, nil)
+			if tc.name == "foreign" {
 				require.Len(t, fit.Holders, 1)
 				assert.Empty(t, fit.Holders[0].Run)
 				assert.Equal(t, "other_or_untracked", fit.Holders[0].Ownership)
+			} else {
+				assert.Empty(t, fit.Holders, "all processes inside the release bound leave the simulation")
 			}
 		})
 	}
@@ -141,8 +181,10 @@ func TestMemoryFootprintUsesDriverUsedMemory(t *testing.T) {
 		{name: "unattributed use", free: 97248, used: new(int64(1)), unaccounted: new(int64(1))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fit := memoryFitError("budget", gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 97887, FreeMiB: tc.free, UsedMiB: tc.used}, 97887, nil)
-			assert.Equal(t, tc.unaccounted, fit.UnaccountedMiB)
+			device := gpu.MemoryDevice{UUID: "GPU-A", TotalMiB: 97887, FreeMiB: tc.free, UsedMiB: tc.used}
+			_, bound := MemoryAfterStop(device, nil, "old")
+			assert.Equal(t, tc.unaccounted, bound)
+			fit := memoryFitError("budget", device, 97887, nil)
 			assert.Equal(t, tc.free, fit.FreeMiB, "driver reservations remain unavailable for admission")
 			assert.Empty(t, fit.Holders)
 		})

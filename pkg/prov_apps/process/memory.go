@@ -18,6 +18,9 @@ import (
 // ErrMemoryObservation means free device memory cannot be safely measured or selected.
 var ErrMemoryObservation = errors.New("GPU memory observation unavailable")
 
+// ErrMemorySelection identifies GPU selectors no stop can repair.
+var ErrMemorySelection = fmt.Errorf("%w", ErrMemoryObservation)
+
 // ErrMemoryBudgetInvalid identifies an invalid resolved budget parameter.
 var ErrMemoryBudgetInvalid = errors.New("invalid GPU memory budget")
 
@@ -42,14 +45,15 @@ type RunRef struct {
 
 // MemoryFitError refuses an engine's declared budget before the process starts.
 type MemoryFitError struct {
-	// UnaccountedMiB is used memory not provably attributed; nil means used memory is unknown.
-	UnaccountedMiB *int64 `json:"-"`
 	// KeptRun names the registered run preserved by a replacement refusal.
 	KeptRun string `json:"kept_run,omitempty"`
 	// CreditedMiB is the most stopping KeptRun could free on the refused device for a free-memory refusal.
 	// Sized-context and weights refusals cannot be fixed by a stop and report zero.
-	CreditedMiB int64 `json:"credited_mib"`
-	Sized       bool  `json:"-"`
+	// Commitment-only refusals with an unknown release bound also report zero.
+	CreditedMiB *int64 `json:"credited_mib,omitempty"`
+	Sized       bool   `json:"-"`
+	// CommitmentOnly means only removing unused commitments can repair this refusal.
+	CommitmentOnly bool `json:"-"`
 	// BudgetKind is set only by refusals against totals (sized context or weights reach), which no stop changes.
 	BudgetKind        string         `json:"budget_kind,omitempty"`
 	Parameter         string         `json:"parameter"`
@@ -63,9 +67,13 @@ type MemoryFitError struct {
 // Error names who holds the memory, so the reader can tell an idle zzRouter
 // run it may stop from a workload only the operator can release.
 func (e *MemoryFitError) Error() string {
-	kept := ""
+	kept, free := "", "currently free"
 	if e.KeptRun != "" {
-		kept = fmt.Sprintf("kept run %s; replacement credited %d MiB: ", e.KeptRun, e.CreditedMiB)
+		credit := int64(0)
+		if e.CreditedMiB != nil {
+			credit = *e.CreditedMiB
+		}
+		kept, free = fmt.Sprintf("kept run %s; replacement credited %d MiB: ", e.KeptRun, credit), "free after the stop"
 	}
 	if e.Sized {
 		return kept + fmt.Sprintf("model context requirement %d MiB exceeds %s budget of %d MiB (%s)", e.RequiredMiB, e.BudgetKind, e.FreeMiB, e.Parameter)
@@ -73,29 +81,27 @@ func (e *MemoryFitError) Error() string {
 	if e.BudgetKind != "" {
 		return kept + fmt.Sprintf("model weights require %g GiB, exceeding %s reach of %g GiB (%s); choose a smaller quantization or another node", float64(e.RequiredMiB)/1024, e.BudgetKind, float64(e.FreeMiB)/1024, e.Parameter)
 	}
-	msg := kept + fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, currently free %d MiB (%s)", e.Device, e.RequiredMiB, e.FreeMiB, e.Parameter)
+	msg := kept + fmt.Sprintf("GPU budget cannot fit on %s: required %d MiB, %s %d MiB (%s)", e.Device, e.RequiredMiB, free, e.FreeMiB, e.Parameter)
 	var held []string
 	for _, h := range e.Holders {
-		size := "size unknown"
+		detail := fmt.Sprintf("pid %d, size unknown", h.PID)
 		if h.MemoryMiB != nil {
-			size = fmt.Sprintf("%d MiB", *h.MemoryMiB)
+			detail = fmt.Sprintf("pid %d, %d MiB", h.PID, *h.MemoryMiB)
 		}
+		identity := "a process zzRouter does not manage"
 		if h.Run != "" {
-			identity := "serving " + h.Model
+			identity = fmt.Sprintf("zzRouter run %s serving %s", h.Run, h.Model)
 			if h.Provider != "" {
-				identity = "provider " + h.Provider
+				identity = fmt.Sprintf("zzRouter run %s provider %s", h.Run, h.Provider)
 			}
-			detail := fmt.Sprintf("pid %d, %s", h.PID, size)
-			if h.UnusedCommitmentMiB > 0 {
-				detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
-			}
-			if h.ReclaimSkippedReason != "" {
-				detail += "; reclaim skipped: " + h.ReclaimSkippedReason
-			}
-			held = append(held, fmt.Sprintf("zzRouter run %s %s (%s)", h.Run, identity, detail))
-		} else {
-			held = append(held, fmt.Sprintf("a process zzRouter does not manage (pid %d, %s)", h.PID, size))
 		}
+		if h.UnusedCommitmentMiB > 0 {
+			detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
+		}
+		if h.ReclaimSkippedReason != "" {
+			detail += "; reclaim skipped: " + h.ReclaimSkippedReason
+		}
+		held = append(held, fmt.Sprintf("%s (%s)", identity, detail))
 	}
 	switch {
 	case len(held) > 0:
@@ -221,6 +227,7 @@ func AdmitMemoryBudget(budget schema.MemoryBudget, need Need, parameters, enviro
 		for _, device := range selected {
 			fit := memoryFitError(budget.Parameter, device, device.FreeMiB, owners)
 			if fit.FreeMiB < device.FreeMiB {
+				fit.CommitmentOnly = true
 				return assessment, fit
 			}
 		}
@@ -396,26 +403,8 @@ func admitReserved(budget schema.MemoryBudget, parameters, environment map[strin
 
 // memoryFitError names every process holding the device, marking zzRouter's own runs.
 func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, owners []RunRef) *MemoryFitError {
-	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: []MemoryHolder{}, AttributionReason: device.ProcessReason}
-	used := make(map[string]int64)
-	var attributed int64
-	for _, process := range device.Processes {
-		holder := MemoryHolder{PID: process.PID, MemoryMiB: process.MemoryMiB, Ownership: "other_or_untracked"}
-		run, complete := runOwning(process.PID, owners)
-		if complete && process.MemoryMiB != nil {
-			attributed += max(0, *process.MemoryMiB)
-		}
-		if run.ID != "" {
-			holder.Run, holder.Model, holder.Ownership, holder.Provider = run.ID, run.Model, "zzrouter", run.Provider
-			if process.MemoryMiB != nil {
-				used[run.ID] += max(0, *process.MemoryMiB)
-			}
-		}
-		failure.Holders = append(failure.Holders, holder)
-	}
-	if device.UsedMiB != nil {
-		failure.UnaccountedMiB = new(max(0, *device.UsedMiB-attributed))
-	}
+	holders, used, _, _ := memoryAttribution(device, owners, "")
+	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: holders, AttributionReason: device.ProcessReason}
 	for _, run := range owners {
 		usage := used[run.ID]
 		if device.ProcessReason != "" {
@@ -430,6 +419,39 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 	}
 	failure.FreeMiB = max(0, failure.FreeMiB)
 	return failure
+}
+
+// MemoryAfterStop removes processes inside the release bound and adds the run's attributed holdings to free memory.
+// The bound includes used memory not provably attributed; nil means unknown use or a failed listing.
+func MemoryAfterStop(device gpu.MemoryDevice, owners []RunRef, run string) (gpu.MemoryDevice, *int64) {
+	_, used, attributed, remaining := memoryAttribution(device, owners, run)
+	device.Processes, device.FreeMiB = remaining, device.FreeMiB+used[run]
+	if device.UsedMiB == nil || device.ProcessReason != "" {
+		return device, nil
+	}
+	return device, new(used[run] + max(0, *device.UsedMiB-attributed))
+}
+
+func memoryAttribution(device gpu.MemoryDevice, owners []RunRef, stopping string) (holders []MemoryHolder, used map[string]int64, attributed int64, remaining []gpu.MemoryProcess) {
+	holders, used = []MemoryHolder{}, make(map[string]int64)
+	for _, process := range device.Processes {
+		holder := MemoryHolder{PID: process.PID, MemoryMiB: process.MemoryMiB, Ownership: "other_or_untracked"}
+		run, complete := runOwning(process.PID, owners)
+		if complete && process.MemoryMiB != nil {
+			attributed += max(0, *process.MemoryMiB)
+			if stopping != "" && run.ID != stopping {
+				remaining = append(remaining, process)
+			}
+		}
+		if run.ID != "" {
+			holder.Run, holder.Model, holder.Ownership, holder.Provider = run.ID, run.Model, "zzrouter", run.Provider
+			if process.MemoryMiB != nil {
+				used[run.ID] += max(0, *process.MemoryMiB)
+			}
+		}
+		holders = append(holders, holder)
+	}
+	return
 }
 
 // runOwning returns the owning run and whether its ancestry was fully read: engines use children.
@@ -472,7 +494,7 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 		}
 		// CUDA's default ordering need not match NVML on multi-GPU nodes.
 		if len(devices) != 1 || count != 1 {
-			return nil, fmt.Errorf("%w: multiple GPUs require explicit UUID visibility for budget admission", ErrMemoryObservation)
+			return nil, fmt.Errorf("%w: multiple GPUs require explicit UUID visibility for budget admission", ErrMemorySelection)
 		}
 		return devices, nil
 	}
@@ -481,7 +503,7 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 		count = len(selectors)
 	}
 	if len(selectors) < count || count > maxMemoryDevices {
-		return nil, fmt.Errorf("%w: insufficient visible GPUs", ErrMemoryObservation)
+		return nil, fmt.Errorf("%w: insufficient visible GPUs", ErrMemorySelection)
 	}
 	selected := make([]gpu.MemoryDevice, 0, count)
 	seen := make(map[string]bool)
@@ -495,7 +517,7 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 			}
 		}
 		if len(matches) != 1 || seen[matches[0].UUID] {
-			return nil, fmt.Errorf("%w: unknown or ambiguous GPU selector; use full GPU UUIDs", ErrMemoryObservation)
+			return nil, fmt.Errorf("%w: unknown or ambiguous GPU selector; use full GPU UUIDs", ErrMemorySelection)
 		}
 		seen[matches[0].UUID] = true
 		selected = append(selected, matches[0])

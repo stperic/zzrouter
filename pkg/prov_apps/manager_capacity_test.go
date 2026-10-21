@@ -82,7 +82,7 @@ func TestPreviewCapacityHasNoSideEffects(t *testing.T) {
 	assert.Zero(t, observations, "capacity reads use cached totals")
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	_, err = m.admitMemory(t.Context(), features)
+	_, _, err = m.admitMemory(t.Context(), features, false, nil)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit, "capacity fit must not bypass current-load admission")
 	assert.Equal(t, 1, observations)
@@ -124,7 +124,7 @@ func TestCapacityCPUOnlyUnknownDocumented(t *testing.T) {
 	assert.Zero(t, assessment.CapacityMiB)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	assessment, _, err = m.checkMemory(t.Context(), features, false, nil)
+	assessment, _, err = m.admitMemory(t.Context(), features, false, nil)
 	require.NoError(t, err, "CPU launch keeps its existing observation bypass")
 	assert.Equal(t, "unknown", assessment.Status)
 }
@@ -148,7 +148,7 @@ func TestCompatibleNodesCachedOversizeNotAffirmative(t *testing.T) {
 	assert.Equal(t, int64(10001), assessment.RequiredMiB)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	_, err = m.admitMemory(t.Context(), features)
+	_, _, err = m.admitMemory(t.Context(), features, false, nil)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
 	assert.Equal(t, "reachable memory", fit.Device)
@@ -189,7 +189,7 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	assert.Equal(t, "no_fit", m.AssessCapacity(t.Context(), req).Status)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	_, err = m.admitMemory(t.Context(), features)
+	_, _, err = m.admitMemory(t.Context(), features, false, nil)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
 }
@@ -234,7 +234,7 @@ func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
 			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 			}
-			decision, _, err := m.checkMemory(ctx, features, false, nil)
+			decision, _, err := m.admitMemory(ctx, features, false, nil)
 			require.NoError(t, err)
 			require.Equal(t, "fit", decision.Status)
 			require.Positive(t, decision.RequiredMiB)
@@ -244,7 +244,7 @@ func TestCancelledAdmissionDiscardsDecisionEvidence(t *testing.T) {
 				cancel()
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, nil
 			}
-			assessment, _, err := m.checkMemory(ctx, features, false, nil)
+			assessment, _, err := m.admitMemory(ctx, features, false, nil)
 			require.ErrorIs(t, err, context.Canceled)
 			assert.Equal(t, "unknown", assessment.Status)
 			assert.Equal(t, process.AssessmentFailed, assessment.UnknownCause)
@@ -292,14 +292,14 @@ func TestNilBudgetLaunchEvidenceIsBestEffort(t *testing.T) {
 				}
 				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				defer cancel()
-				assessment, _, err := m.checkMemory(ctx, features, false, nil)
+				assessment, _, err := m.admitMemory(ctx, features, false, nil)
 				require.NoError(t, err)
 				assert.Equal(t, "unknown", assessment.Status)
 				assert.Equal(t, process.BudgetNotSized, assessment.UnknownCause)
 				assert.Zero(t, assessment.WeightsMiB)
 				assert.Equal(t, "numeric", assessment.ContextMode)
 				assert.Equal(t, int64(2048), assessment.ContextTokens)
-				_, err = m.admitMemory(ctx, features)
+				_, _, err = m.admitMemory(ctx, features, false, nil)
 				require.NoError(t, err)
 				require.NoError(t, ctx.Err())
 			})
@@ -346,7 +346,7 @@ func TestCapacityLayersUseUnifiedPool(t *testing.T) {
 	assert.Equal(t, int64(512), assessment.CapacityMiB)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	_, err = m.admitMemory(t.Context(), features)
+	_, _, err = m.admitMemory(t.Context(), features, false, nil)
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
 }
@@ -357,7 +357,7 @@ func TestCapacityPreservesEnvironmentValidation(t *testing.T) {
 	require.NoError(t, err)
 	features.Environment = map[string]string{"LD_PRELOAD": "injected"}
 	for _, capacity := range []bool{false, true} {
-		assessment, _, err := m.checkMemory(t.Context(), features, capacity, nil)
+		assessment, _, err := m.admitMemory(t.Context(), features, capacity, nil)
 		require.ErrorIs(t, err, process.ErrDangerousEnvVar)
 		assert.NotErrorIs(t, err, process.ErrMemoryObservation)
 		assert.Equal(t, "unknown", assessment.Status)
@@ -397,7 +397,7 @@ func TestMinimumContextUsesEndpointSchema(t *testing.T) {
 		require.NoError(t, err)
 		preview, err := m.PreviewLaunch(t.Context(), req, 8100)
 		require.NoError(t, err)
-		admitted, _, err := m.checkMemory(t.Context(), features, false, nil)
+		admitted, _, err := m.admitMemory(t.Context(), features, false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, tc.tokens, preview.Assessment.ContextTokens)
 		assert.Equal(t, preview.Assessment, admitted)
@@ -413,7 +413,7 @@ func TestAutoContextCapacityAndAdmissionDifferOnlyByObservation(t *testing.T) {
 	require.Equal(t, "fit", capacity.Status)
 	features, err := m.ResolveLaunchParameters(t.Context(), req)
 	require.NoError(t, err)
-	admission, _, err := m.checkMemory(t.Context(), features, false, nil)
+	admission, _, err := m.admitMemory(t.Context(), features, false, nil)
 	require.Error(t, err)
 	assert.Equal(t, "no_fit", admission.Status)
 	assert.Equal(t, capacity.ContextTokens, admission.ContextTokens)
@@ -434,7 +434,7 @@ func TestFixedBudgetShortfallDoesNotEvictOrLaunch(t *testing.T) {
 			features, err := m.ResolveLaunchParameters(t.Context(), req)
 			require.NoError(t, err)
 			before := maps.Clone(features.Params)
-			evicted, err := m.admitMemory(t.Context(), features)
+			_, evicted, err := m.admitMemory(t.Context(), features, false, nil)
 			require.Error(t, err)
 			assert.Empty(t, evicted)
 			assert.Equal(t, before, features.Params)
@@ -478,7 +478,7 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 			originalEnvironment = maps.Clone(features.Environment)
 		}
 		assert.Equal(t, originalEnvironment, features.Environment, "schema fraction never changes recorded engine environment")
-		admission, _, err := m.checkMemory(t.Context(), features, false, nil)
+		admission, _, err := m.admitMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, admission)
 		assert.Equal(t, "auto", admission.ContextMode)
 		assert.Equal(t, int64(4096), admission.ContextTokens)
@@ -539,13 +539,13 @@ func TestNativeContextAdmissionAllowsEngineAdaptation(t *testing.T) {
 		require.NoError(t, err)
 		features, err := m.ResolveLaunchParameters(t.Context(), req)
 		require.NoError(t, err)
-		assessment, _, err := m.checkMemory(t.Context(), features, false, nil)
+		assessment, _, err := m.admitMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, assessment)
 		if context == "auto" {
 			require.NoError(t, err)
 			assert.Equal(t, "unknown", assessment.Status)
 			assert.Contains(t, assessment.Reason, "engine may adapt")
-			_, err = m.admitMemory(t.Context(), features)
+			_, _, err = m.admitMemory(t.Context(), features, false, nil)
 			require.NoError(t, err)
 		} else {
 			assert.Equal(t, "no_fit", assessment.Status)
@@ -576,7 +576,7 @@ func TestKVCacheRolesReachPreviewAndAdmission(t *testing.T) {
 		require.NoError(t, err)
 		features, err := m.ResolveLaunchParameters(t.Context(), req)
 		require.NoError(t, err)
-		assessment, _, err := m.checkMemory(t.Context(), features, false, nil)
+		assessment, _, err := m.admitMemory(t.Context(), features, false, nil)
 		assert.Equal(t, preview.Assessment, assessment)
 		switch dtype {
 		case "auto":
@@ -649,7 +649,7 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 				assert.Equal(t, m.AssessCapacity(t.Context(), req), preview.Assessment)
 				features, err := m.ResolveLaunchParameters(t.Context(), req)
 				require.NoError(t, err)
-				admission, _, err := m.checkMemory(t.Context(), features, false, nil)
+				admission, _, err := m.admitMemory(t.Context(), features, false, nil)
 				assert.Equal(t, preview.Assessment, admission)
 				if want == "fit" {
 					require.NoError(t, err)

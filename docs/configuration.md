@@ -292,30 +292,50 @@ with parameters and its last refusal code. Use `zz_params_set` to fix config, th
 `zz_run_start` or `zz_run_restart` to replay; `zz_run_stop` forgets it. It has no run log.
 Explicit stop, including CLI `zzrouter stop <model>`, forgets matching pins only after a
 successful stop. Model deletion and provider disable/uninstall retain the record.
-Restarts prepare and check memory before stopping the old run. A pre-check refuses
-only if the launch cannot fit even if the stop freed all driver-reported used memory
-not provably held by another process, plus the run's unused commitments, per device.
-Known process memory is excluded from that bound only when its ancestry is fully read
-and belongs to another run or no run. Unattributed context memory, unknown process
-sizes and unreadable ancestry stay inside the bound. A failed process listing leaves
-all used memory inside it. Pins, activity and leases do not reduce replacement credit.
-Eligible idle evictions are planned without stopping or claiming victims; execution
-revalidates eligibility after the old run stops. A refusal keeps the old run registered
-and serving if it was live: the existing 409 `out_of_range` includes
-`errors[].got.kept_run` and `credited_mib`: for a free-memory refusal, the most stopping
-the kept run could free on the refused device; zero for a sized-context or weights
-refusal, which no stop fixes.
-Lower the request with `zz_params_set` and `zz_run_preview`, stop other holders with
-`zz_run_stop`, or explicitly stop the kept run with `zz_run_stop` then `zz_run_start`.
-Unknown driver used memory and unbudgeted engines retain stop-then-admit ordering.
-No admission slot is held across the stop: another workload can take the released
-memory. When replacement credit was needed, the start waits for driver recovery of
-its attributed holdings with a bounded timeout, excluding unaccounted use. Expiry
-continues to fresh preparation and admission, including auto GPU budgets and device
-selection; caller cancellation aborts. If memory still cannot fit, admission returns
-the same 409 refusal and tool hints. A late refusal retains the pin record with no live
-run and makes no `kept_run` claim. Surviving daemon models can be re-adopted; daemon
-unloads are not prevented.
+Restarts prepare and check memory before stopping the old run. The pre-check asks the
+same memory admission what it would answer after the stop: it removes that run's
+processes and commitments from a copy of the snapshot and adds its release bound to free
+memory on each device. Other runs keep their commitments. The bound is attributed
+holdings plus driver-reported used memory not provably held by a fully attributed
+process. Unknown process sizes, unreadable ancestry and unattributed context memory stay
+inside it. A failed process listing makes the release bound unknown. Pins, activity and
+leases do not reduce a known bound. With idle eviction enabled, the pre-check uses the
+same single reclaim attempt as the real start: admit, select a covering idle victim set
+on the first refused device, then admit once more. For layers or unified refusals caused
+only by unused commitments, only those commitments count toward victim selection;
+process memory alone provides no relief. A second pre-check refusal keeps the old run,
+even if another reclaim could pass. Simulation never stops or claims a victim; execution
+revalidates eligibility after the stop. A refusal preserves the registered run and pin
+record. The existing 409 `out_of_range` adds `errors[].got.kept_run` and `credited_mib`
+only when the old run is kept. For a free-memory refusal, `credited_mib` is that run's
+release bound on the refused device, `free_mib` (and the parameter error's `max`) is
+availability after the simulated stop, including remaining unused commitments and the
+single simulated idle reclaim, if applied. Process `holders` have known sizes and fully
+read ancestry outside the kept run. Processes with unknown size or ancestry are already
+inside its release bound and removed from the simulation; other runs keep their unused
+commitment holders. A sized-context or weights refusal reports zero credit and keeps its
+own tool hint: no stop repairs its budget. Lower a free-memory request with
+`zz_params_set` and `zz_run_preview`, or stop other holders with `zz_run_stop`. When
+holders show `unused_commitment_mib`, only stopping those holders with `zz_run_stop`
+helps. Stop `kept_run` first only when holders include `other_or_untracked` memory
+zzRouter could not attribute, then use `zz_run_start`. A snapshot failure keeps
+stop-then-admit. A failed process listing or unknown used memory on the refused device
+does so for free-memory refusals; commitment-only, sized-context and weights refusals
+preserve the old run whatever the bound. A commitment-only refusal with an unknown
+release bound reports `credited_mib: 0` because no release-bound credit could be
+established. GPU-selection errors preserve the old run when ordinary admission refuses,
+retaining its 503 response. Layers and unified launches still admit unavailable
+observations or ambiguous selectors when no run holds commitments, including fresh
+starts. Unbudgeted engines keep stop-then-admit. No
+admission slot spans the stop, so another workload can take the released memory.
+Every replacement waits for recovery on each device the old run held, including when the
+pre-check passed without credit. Recovery targets attributed holdings only, excluding
+unaccounted use. The wait ends as soon as memory returns, at most
+`MemoryRecoveryTimeout` (5 seconds) per device. Expiry continues to fresh preparation
+and admission, including auto GPU budgets; caller cancellation aborts. A late refusal
+retains the pin record with no live run and makes no `kept_run` claim. Surviving daemon
+models can be re-adopted; daemon unloads are not
+prevented.
 Upgrade every worker before relying on pins: an older worker keeps `-1` as
 idle-only and may reclaim it under pressure. No cluster protocol bump enforces this.
 

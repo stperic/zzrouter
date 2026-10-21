@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -161,24 +163,34 @@ func TestInventoryAdmissionExplicitEmptyCodeContract(t *testing.T) {
 
 func TestReplacementRefusalWire(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		kept   string
-		credit int64
-		sized  bool
+		name       string
+		kept       string
+		credit     int64
+		sized      bool
+		weights    bool
+		commitment bool
 	}{
 		{name: "zero credit", kept: "old"},
 		{name: "credited", kept: "old", credit: 2000},
+		{name: "commitment-only unknown credit", kept: "old", commitment: true},
 		{name: "sized", kept: "old", sized: true},
+		{name: "fresh start"},
+		{name: "fresh weights", weights: true},
+		{name: "fresh sized", sized: true},
 		{name: "late steal"},
-		{name: "unaccounted memory"},
+		{name: "weights", kept: "old", weights: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fit := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5500, FreeMiB: 1000, KeptRun: tc.kept, CreditedMiB: tc.credit, Sized: tc.sized}
-			if tc.name == "unaccounted memory" {
-				fit.UnaccountedMiB = new(int64(26))
+			fit := &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5500, FreeMiB: 1000, Sized: tc.sized}
+			if tc.kept != "" {
+				fit.KeptRun, fit.CreditedMiB = tc.kept, new(tc.credit)
 			}
-			if tc.sized {
+			if tc.sized || tc.weights {
 				fit.BudgetKind = "fraction_total"
+			}
+			if tc.commitment {
+				fit.CommitmentOnly = true
+				fit.Holders = []process.MemoryHolder{{Run: "comfy", Ownership: "zzrouter", UnusedCommitmentMiB: 2000}}
 			}
 			w := httptest.NewRecorder()
 			writeError(w, routedRequest(httptest.NewRequest(http.MethodPost, "/zzrouter/v1/runs", nil)), failureWire(fit, http.StatusInternalServerError))
@@ -193,20 +205,52 @@ func TestReplacementRefusalWire(t *testing.T) {
 			got := detail["got"].(map[string]any)
 			assert.NotContains(t, got, "UnaccountedMiB")
 			assert.NotContains(t, got, "unaccounted_mib")
-			assert.Equal(t, float64(tc.credit), got["credited_mib"])
+			assert.NotContains(t, got, "CommitmentOnly")
+			assert.NotContains(t, got, "commitment_only")
+			if tc.commitment {
+				holders := got["holders"].([]any)
+				require.Len(t, holders, 1)
+				assert.Equal(t, float64(2000), holders[0].(map[string]any)["unused_commitment_mib"])
+			}
+			assert.Equal(t, float64(fit.FreeMiB), detail["max"])
 			if tc.kept == "" {
 				assert.NotContains(t, got, "kept_run")
+				assert.NotContains(t, got, "credited_mib")
 				assert.NotContains(t, body["detail"], "kept run")
 				assert.NotContains(t, detail["hint"], "kept_run")
+				if tc.sized {
+					assert.Contains(t, detail["hint"], "zz_models and zz_nodes")
+				} else {
+					assert.Equal(t, "Inspect holders with zz_runs and zz_logs, accepted settings with zz_params_get, then use zz_run_stop or zz_params_set as appropriate and zz_run_preview before zz_run_start.", detail["hint"])
+				}
 			} else {
 				assert.Equal(t, tc.kept, got["kept_run"])
+				assert.Equal(t, float64(tc.credit), got["credited_mib"])
 				assert.Contains(t, body["detail"], "kept run old")
-				for _, tool := range []string{"zz_params_set", "zz_run_preview", "zz_run_stop", "zz_run_start"} {
-					assert.Contains(t, detail["hint"], tool)
+				if tc.sized || tc.weights {
+					assert.NotContains(t, detail["hint"], "kept_run")
+					assert.Contains(t, detail["hint"], "zz_params_get")
+					assert.Contains(t, detail["hint"], "zz_run_preview")
+				} else {
+					for _, tool := range []string{"zz_params_set", "zz_run_preview", "zz_run_stop", "zz_run_start"} {
+						assert.Contains(t, detail["hint"], tool)
+					}
+					assert.Contains(t, detail["hint"], "stop kept_run first only when holders include other_or_untracked")
+					assert.Contains(t, detail["hint"], "Lower the request")
+					assert.Contains(t, detail["hint"], "stop other holders")
+					assert.Contains(t, detail["hint"], "When holders show unused_commitment_mib, only stopping those holders with zz_run_stop helps.")
+					assert.Contains(t, body["detail"], "free after the stop")
 				}
-				assert.Contains(t, detail["hint"], "Lower the request")
-				assert.Contains(t, detail["hint"], "stop other holders")
 			}
 		})
 	}
+}
+
+func TestMemorySelectionRetainsObservationStatus(t *testing.T) {
+	_, err := process.AdmitMemoryBudget(schema.MemoryBudget{Kind: schema.MemoryFractionTotal, Parameter: "budget"}, process.Need{}, map[string]string{"budget": "0.5"}, map[string]string{"CUDA_VISIBLE_DEVICES": "GPU-unknown"}, []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: 10000, FreeMiB: 10000}}, 0, nil, nil, 0)
+	require.ErrorIs(t, err, process.ErrMemorySelection)
+	wire := failureWire(err, http.StatusInternalServerError)
+	assert.Equal(t, "GPU memory observation unavailable: unknown or ambiguous GPU selector; use full GPU UUIDs", wire.Message)
+	assert.Equal(t, http.StatusServiceUnavailable, wire.Status)
+	assert.Equal(t, failureWire(process.ErrMemoryObservation, http.StatusInternalServerError).Code, wire.Code)
 }
