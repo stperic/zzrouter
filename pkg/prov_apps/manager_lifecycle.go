@@ -761,15 +761,24 @@ func (m *ProviderAppManager) stopInstance(ctx context.Context, id string, reason
 	if !ok {
 		return ErrInstanceNotFound
 	}
-	return m.endRun(ctx, inst, reason, m.runEngine(inst).down)
+	return m.endRun(ctx, inst, reason, m.runEngine(inst).down, time.Time{})
 }
 
 // endRun stops a run: down ends its model (nil leaves it loaded), then the run drains and leaves the registry.
-func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason, down func(context.Context, *instance.Instance) error) (result error) {
+func (m *ProviderAppManager) endRun(ctx context.Context, inst *instance.Instance, reason obsruns.StopReason, down func(context.Context, *instance.Instance) error, deadline time.Time) (result error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := inst.ID
 	if !inst.ClaimEnd() {
 		return &instance.AdmissionError{Reason: instance.ErrStopping, RetryAfter: instance.AdmissionRetryAfter}
 	}
+	stopDeadline := utils.Now().Add(m.stopBudget(inst.Provider))
+	if !deadline.IsZero() && deadline.Before(stopDeadline) {
+		stopDeadline = deadline
+	}
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), stopDeadline)
+	defer cancel()
 	inst.StopUnconfirmed.Store(true)
 	defer func() {
 		inst.StopUnconfirmed.Store(result != nil)
@@ -826,6 +835,7 @@ func (m *ProviderAppManager) terminateProcess(ctx context.Context, inst *instanc
 		Inspector:      m.seams.inspector,
 		ProcessGroupID: inst.GetProcessGroupID(),
 		Graceful:       m.resolveShutdownTimeout(inst.Provider),
+		BudgetExpired:  m.runExpired,
 		JobHandle:      inst.GetJobHandle(),
 		StdinPipe:      inst.CloseStdinPipe,
 	}
@@ -877,15 +887,46 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	if !beginStop {
 		return nil
 	}
+	endBudget := context.AfterFunc(ctx, func() { close(m.runExpired) })
+	defer endBudget()
 
-	// Background starts end before the instance drain, so none registers a run after it.
 	m.startsCancel()
+	deadline, bounded := ctx.Deadline()
+	if bounded {
+		deadline = deadline.Add(constants.ShutdownRunTailTimeout)
+	}
 	var stopErr error
+	var stops []<-chan error
+	seen := make(map[*instance.Instance]bool)
+	// Signal existing runs before joining background stops that may still be in grace.
+	stopRuns := func() {
+		for _, inst := range m.instances.List() {
+			if seen[inst] {
+				continue
+			}
+			seen[inst] = true
+			stopped := make(chan error, 1)
+			stops = append(stops, stopped)
+			go func() {
+				eng := m.runEngine(inst)
+				down := eng.down
+				if eng.outlivesNode() {
+					down = nil
+				}
+				err := m.endRun(context.WithoutCancel(ctx), inst, obsruns.StopReasonUser, down, deadline)
+				if errors.Is(err, instance.ErrStopping) {
+					err = inst.WaitForEnd(ctx)
+				}
+				stopped <- err
+			}()
+		}
+	}
+	stopRuns()
 	if m.reaperDone != nil {
 		select {
 		case <-m.reaperDone:
 		case <-ctx.Done():
-			stopErr = ctx.Err()
+			stopErr = errors.Join(stopErr, ctx.Err())
 		}
 	}
 	done := make(chan struct{})
@@ -896,25 +937,11 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		stopErr = ctx.Err()
+		stopErr = errors.Join(stopErr, ctx.Err())
 	}
-	runs := m.instances.List()
-	stopped := make(chan error, len(runs))
-	for _, inst := range runs {
-		go func() {
-			eng := m.runEngine(inst)
-			down := eng.down
-			if eng.outlivesNode() {
-				down = nil
-			}
-			err := m.endRun(ctx, inst, obsruns.StopReasonUser, down)
-			if errors.Is(err, instance.ErrStopping) {
-				err = inst.WaitForEnd(ctx)
-			}
-			stopped <- err
-		}()
-	}
-	for range runs {
+	// Sweep any runs registered while joining background starts.
+	stopRuns()
+	for _, stopped := range stops {
 		stopErr = errors.Join(stopErr, <-stopped)
 	}
 
@@ -940,15 +967,13 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	// out of scope.
 	m.shutdown.Store(true)
 
-	// Cancel shutdownCtx so eventLoop, idleReaper, and any in-flight
-	// detection exit promptly.
+	daemonCtx, daemonCancel := context.WithTimeout(context.WithoutCancel(ctx), constants.ShutdownDaemonTimeout)
+	defer daemonCancel()
+	// Cancel daemon lifetimes and remaining background work only after runs stop.
 	m.shutdownCancel()
+	m.daemonsCancel()
 
-	if err := m.stopServices(ctx); err != nil && stopErr == nil {
-		stopErr = err
-	}
-
-	return stopErr
+	return errors.Join(stopErr, m.stopServices(daemonCtx))
 }
 
 // --- Helpers ---
@@ -1204,11 +1229,6 @@ func mergeStringMaps(defaults, overrides map[string]string) map[string]string {
 	maps.Copy(result, defaults)
 	maps.Copy(result, overrides)
 	return result
-}
-
-// stopBudget bounds a stop of provider's process: its graceful timeout plus the epilogue.
-func (m *ProviderAppManager) stopBudget(provider string) time.Duration {
-	return m.resolveShutdownTimeout(provider) + constants.ShutdownRunEpilogueTimeout
 }
 
 // resolveShutdownTimeout returns the graceful shutdown timeout for a provider.

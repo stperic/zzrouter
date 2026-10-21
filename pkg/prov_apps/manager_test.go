@@ -51,6 +51,22 @@ func cleanupProviderManager(t *testing.T, m *ProviderAppManager) {
 	})
 }
 
+func TestProviderManagerServerCancellationStopsBackgroundWork(t *testing.T) {
+	r := newContractRig(t, false)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	r.m.Start(ctx)
+	cancel()
+	require.ErrorIs(t, r.m.shutdownCtx.Err(), context.Canceled)
+	require.ErrorIs(t, r.m.startsCtx.Err(), context.Canceled)
+	require.NoError(t, r.m.daemonsCtx.Err(), "only daemon lifetimes stay detached until Stop")
+	select {
+	case <-r.m.reaperDone:
+	case <-time.After(contractWait):
+		t.Fatal("idle reaper outlived server cancellation")
+	}
+}
+
 func TestPackageRuntimePathsAreIsolated(t *testing.T) {
 	root := os.Getenv("ZZROUTER_TEST_HOME")
 	require.NotEmpty(t, root, "TestMain must isolate config and data before any manager starts")

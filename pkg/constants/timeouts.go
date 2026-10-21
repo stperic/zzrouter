@@ -137,12 +137,18 @@ const (
 	ShutdownDrainTimeout = 45 * time.Second
 	// ShutdownRunEpilogueTimeout reserves run reaping and registry cleanup.
 	ShutdownRunEpilogueTimeout = 5 * time.Second
+	// ShutdownRunTailTimeout bounds force wait and reaping after the run deadline.
+	ShutdownRunTailTimeout = EngineForceTimeout + ShutdownRunEpilogueTimeout
 	// ShutdownRunTimeout reserves grace, escalation and run epilogues after drain.
-	ShutdownRunTimeout = EngineMaxGracefulTimeout + EngineForceTimeout + ShutdownRunEpilogueTimeout
-	// ShutdownEpilogueTimeout covers daemon cancellation and remaining subsystem teardown.
-	ShutdownEpilogueTimeout = EngineGracefulTimeout + EngineForceTimeout + 15*time.Second
-	// ShutdownMaxTimeout includes drain, runs, force wait and final teardown.
-	ShutdownMaxTimeout = ShutdownDrainTimeout + ShutdownRunTimeout + EngineForceTimeout + ShutdownEpilogueTimeout
+	ShutdownRunTimeout = EngineMaxGracefulTimeout + ShutdownRunTailTimeout
+	// ShutdownDaemonTimeout reserves daemon grace and escalation after the run phase.
+	ShutdownDaemonTimeout = EngineGracefulTimeout + EngineForceTimeout
+	// ShutdownSubsystemTimeout reserves final subsystem teardown after daemons.
+	ShutdownSubsystemTimeout = 15 * time.Second
+	// ShutdownEpilogueTimeout covers the independent daemon and subsystem phases.
+	ShutdownEpilogueTimeout = ShutdownDaemonTimeout + ShutdownSubsystemTimeout
+	// ShutdownMaxTimeout includes drain, runs, their bounded tail and final teardown.
+	ShutdownMaxTimeout = ShutdownDrainTimeout + ShutdownRunTimeout + ShutdownRunTailTimeout + ShutdownEpilogueTimeout
 	// SupervisorStopTimeout leaves a force-wait margin beyond the node's budget.
 	SupervisorStopTimeout = ShutdownMaxTimeout + EngineForceTimeout
 

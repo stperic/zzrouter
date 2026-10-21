@@ -630,7 +630,7 @@ func (s *Server) stopCommonSubsystems(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("provider app manager: %w", err))
 	}
 	runCancel()
-	ctx, cancel := context.WithTimeout(ctx, constants.ShutdownEpilogueTimeout)
+	ctx, cancel := context.WithTimeout(ctx, constants.ShutdownSubsystemTimeout)
 	defer cancel()
 	s.maintenance.Stop()
 	if s.updateRollouts != nil {

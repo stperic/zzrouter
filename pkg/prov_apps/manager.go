@@ -88,6 +88,7 @@ type ProviderAppManager struct {
 
 	// reaperDone closes once idle scheduling and stops have drained.
 	reaperDone chan struct{}
+	runExpired chan struct{}
 
 	mu             sync.RWMutex
 	shutdown       atomic.Bool // true once Stop() has drained instances; gates emitEvent
@@ -97,6 +98,9 @@ type ProviderAppManager struct {
 	pins           *pinnedRuns
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+	daemonsCtx     context.Context
+	daemonsCancel  context.CancelFunc
+	stopBudget     func(string) time.Duration // Bounds the engine stop and reaping together.
 	// startsCtx is shutdownCtx's child for background on-demand starts, cancelled first by Stop.
 	startsCtx      context.Context
 	startsCancel   context.CancelFunc
@@ -360,12 +364,19 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		versions:        newVersionCache(),
 		auditEvents:     make(chan Event, defaultEventChannelSize),
 		memoryAdmission: make(chan struct{}, 1),
+		runExpired:      make(chan struct{}),
 		memorySnapshot:  gpu.MemorySnapshotContext,
 		memorySystem:    inventory.Default().GetMemoryInfo,
 		memoryInventory: inventory.Default().GetGPUCardMetrics,
 		services:        make(map[string]*managedService),
 		flights:         make(map[instance.Key]*flight),
 		sightings:       make(map[string]map[string]bool),
+	}
+	m.stopBudget = func(provider string) time.Duration {
+		if _, svc, _ := m.resolveConfigKey(provider); Lifecycle(svc) == LifecycleServed {
+			return servedLoadTimeout(svc) + constants.ShutdownRunEpilogueTimeout
+		}
+		return m.resolveShutdownTimeout(provider) + constants.ShutdownRunTailTimeout
 	}
 
 	// Options first so WithParentContext can supply the ctx parent.
@@ -393,6 +404,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	portMgr, err := port.NewAppPoolManager(appsConfig)
 	if err != nil {
 		m.shutdownCancel()
+		m.daemonsCancel()
 		return nil, err
 	}
 	m.ports = portMgr
@@ -447,9 +459,8 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 }
 
 // Start launches the background goroutines (event consumer, idle reaper).
-// The provided ctx controls the lifetime of these goroutines; cancelling it
-// is equivalent to calling Stop. Fire-and-forget — degraded-ok if not called
-// (events are dropped via non-blocking sends).
+// The provided ctx controls background work; Stop owns daemon cancellation.
+// Fire-and-forget: events are dropped via non-blocking sends if not started.
 //
 // Refuses to spin up goroutines if Stop has already run (shutdown set).
 // Without this gate, a Start-after-Stop call would spawn an idleReaper that
@@ -466,9 +477,9 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 			slog.Warn("Start called after Stop; manager remains shutdown")
 			return
 		}
-		// Replace the background context with the caller's context so that
-		// the server's shutdown propagates to the manager's goroutines.
+		// Background work follows the server; daemons serve through its drain.
 		m.shutdownCancel()
+		m.daemonsCancel()
 		m.setShutdownCtx(ctx)
 		childCtx := m.shutdownCtx
 
@@ -483,10 +494,11 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 	})
 }
 
-// setShutdownCtx derives the manager's lifetime context, and the background-start context under it.
+// setShutdownCtx keeps background work under the parent and daemon lifetime under Stop.
 func (m *ProviderAppManager) setShutdownCtx(parent context.Context) {
-	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)    //nolint:gosec // G118: Stop calls the stored cancel
-	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx) //nolint:gosec // G118: Stop calls the stored cancel
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)                      //nolint:gosec // G118: Stop calls the stored cancel
+	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx)                   //nolint:gosec // G118: Stop calls the stored cancel
+	m.daemonsCtx, m.daemonsCancel = context.WithCancel(context.WithoutCancel(parent)) //nolint:gosec // G118: Stop calls the stored cancel
 }
 
 // eventLoop drains the audit channel and logs all provider events.

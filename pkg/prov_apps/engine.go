@@ -128,6 +128,14 @@ func (processEngine) outlivesNode() bool { return false }
 // servedEngine loads a run's model into its provider's daemon, which schedules its own memory.
 type servedEngine struct{ m *ProviderAppManager }
 
+func servedLoadTimeout(svc config.ServiceConfig) time.Duration {
+	budget := ""
+	if rc := svc.Runtime; rc != nil && rc.HealthCheck.ReadinessProbe != nil {
+		budget = rc.HealthCheck.ReadinessProbe.Timeout
+	}
+	return readinessTimeout(budget)
+}
+
 // neverExpires is the keep-alive of a run zzRouter does not expire: a served run's daemon expires it.
 const neverExpires time.Duration = -1
 
@@ -181,10 +189,6 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		sent = instance.FormatKeepAlive(*daemonKeepAlive)
 	}
 	m.record(run, runEvent(EventInstanceStarting, run, "load requested, keep-alive "+sent))
-	budget := "" // the provider's readiness window
-	if rc := selection.config.Runtime; rc != nil && rc.HealthCheck.ReadinessProbe != nil {
-		budget = rc.HealthCheck.ReadinessProbe.Timeout
-	}
 	// The load ends the start: Stop waits for it, as for any start, before it forgets runs.
 	m.onDemandStarts.Add(1)
 	run.TrackGoroutine()
@@ -192,7 +196,7 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		defer m.onDemandStarts.Done()
 		defer run.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.loadServed")
-		e.load(run, daemonKeepAlive, readinessTimeout(budget))
+		e.load(run, daemonKeepAlive, servedLoadTimeout(selection.config))
 	}()
 	return run, nil
 }
@@ -216,6 +220,8 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		err = fmt.Errorf("load %s failed: %w", run.Model, err)
 		if run.Context().Err() == nil { // a stop in progress owns the run's removal
 			m.releaseRun(run, err)
+		} else {
+			run.MarkLoadFailedError(err)
 		}
 		m.record(run, failedEvent(run, obsruns.FailureLaunchErr, err))
 		return

@@ -71,7 +71,7 @@ func (m *ProviderAppManager) idleReaper() {
 				if release == nil {
 					continue
 				}
-				if err := m.stopClaimedIdle(m.startsCtx, run, obsruns.StopReasonIdle); err != nil {
+				if err := m.stopInstance(m.startsCtx, run.ID, obsruns.StopReasonIdle); err != nil {
 					slog.Warn("failed to stop idle run", "run", run.ID, "error", err)
 				}
 				release()

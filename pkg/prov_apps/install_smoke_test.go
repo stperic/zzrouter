@@ -142,17 +142,6 @@ func TestSmokeFailureUsesExistingRollbackBeforeFinalization(t *testing.T) {
 	}
 }
 
-type smokeDrainContext struct {
-	context.Context
-	entered chan struct{}
-	once    sync.Once
-}
-
-func (c *smokeDrainContext) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.entered) })
-	return c.Context.Done()
-}
-
 func TestSmokeStrictStopRetainsUnconfirmedRun(t *testing.T) {
 	cfg := &config.AppsConfig{}
 	require.NoError(t, cfg.AddApp("generic", config.ServiceConfig{Name: "generic", Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}, Enabled: new(true), Mode: "on-demand", Protocol: config.ProtocolOpenAI, Runtime: &config.AppRuntimeConfig{BasePort: 8600, PortRange: []int{8600, 8602}, Execution: config.ExecutionConfig{Type: "cli", Command: "test-only"}}}))
@@ -170,27 +159,19 @@ func TestSmokeStrictStopRetainsUnconfirmedRun(t *testing.T) {
 	require.NoError(t, mgr.instances.Register(run))
 	replacement := instance.NewInstance("replacement", "generic", "model", 8601, time.Minute, 0)
 	assert.ErrorIs(t, mgr.instances.Register(replacement), instance.ErrModelAlreadyLoaded)
-	parent, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ctx := &smokeDrainContext{Context: parent, entered: make(chan struct{})}
-	stopped := make(chan error, 1)
-	go func() { stopped <- mgr.StopInstance(ctx, run.ID) }()
-	select {
-	case <-ctx.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("stop did not reach process drain")
-	}
+	budget := mgr.stopBudget
+	mgr.stopBudget = func(string) time.Duration { return -1 }
+	assert.ErrorIs(t, mgr.StopInstance(t.Context(), run.ID), context.DeadlineExceeded)
 	assert.ErrorIs(t, run.Context().Err(), context.Canceled, "monitor stays canceled when draining fails")
 	run.MarkFailed("late readiness failure while cleanup is pending")
 	assert.True(t, run.StopUnconfirmed.Load())
 	assert.ErrorIs(t, mgr.instances.Register(replacement), instance.ErrModelAlreadyLoaded)
 	assert.True(t, mgr.installs.runtimeInUse("generic"))
 	assert.Equal(t, 1, mgr.instances.CountActiveByProvider("generic"))
-	cancel()
-	assert.ErrorIs(t, <-stopped, context.Canceled)
 	run.FailedAt = time.Now().Add(-2 * instance.FailedInstanceTTL)
 	assert.Zero(t, mgr.instances.CleanupExpiredFailures(), "unconfirmed engines cannot expire from the registry")
 	release()
+	mgr.stopBudget = budget
 	require.NoError(t, mgr.StopInstance(t.Context(), run.ID))
 	assert.False(t, run.StopUnconfirmed.Load())
 	assert.True(t, run.GetStatus().IsTerminal())

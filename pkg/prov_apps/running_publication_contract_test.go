@@ -108,7 +108,7 @@ func TestRunningPublicationContractAdoptedStartingStop(t *testing.T) {
 	r.daemon.set(func(d *fakeDaemon) { d.loaded[run.WireModel] = time.Time{} })
 	require.True(t, r.daemon.isLoaded(run.WireModel))
 	require.True(t, run.GetStartedAt().IsZero())
-	require.NoError(t, r.m.endRun(t.Context(), run, obsruns.StopReasonUser, (servedEngine{r.m}).down))
+	require.NoError(t, r.m.endRun(t.Context(), run, obsruns.StopReasonUser, (servedEngine{r.m}).down, time.Time{}))
 	assert.Equal(t, 1, r.daemon.count(true))
 	assert.False(t, r.daemon.isLoaded(run.WireModel))
 	assert.True(t, run.GetStartedAt().IsZero())

@@ -32,17 +32,23 @@ type FailureInfo struct {
 
 // MarkFailedWithExit records process exit details without losing an earlier cause.
 func (i *Instance) MarkFailedWithExit(reason string, exitCode *int, signal string) {
-	i.markFailedWithExit(reason, nil, exitCode, signal)
+	i.markFailedWithExit(reason, nil, exitCode, signal, false)
 }
 
-func (i *Instance) markFailedWithExit(reason string, cause error, exitCode *int, signal string) {
+func (i *Instance) markFailedWithExit(reason string, cause error, exitCode *int, signal string, stoppedLoad bool) {
 	failure, summary := CaptureFailure(i.LogFilePath, reason, exitCode, signal, i.FailureClassifier)
 	if cause == nil && failure.cause != nil {
 		cause = failure.cause
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.Status == StatusStopping || i.Status == StatusStopped {
+	if i.Status == StatusStopped || i.Status == StatusStopping && !stoppedLoad {
+		return
+	}
+	if cause != nil && i.failureCause == nil {
+		i.failureCause, i.waitingOn = cause, ""
+	}
+	if i.Status == StatusStopping {
 		return
 	}
 	if i.failure == nil {
@@ -62,9 +68,6 @@ func (i *Instance) markFailedWithExit(reason string, cause error, exitCode *int,
 		i.failure.ErrorTail = failure.ErrorTail
 	}
 	i.failure.Truncated = i.failure.Truncated || failure.Truncated
-	if cause != nil && i.failureCause == nil {
-		i.failureCause, i.waitingOn = cause, ""
-	}
 	i.setStatusLocked(StatusFailed)
 	if i.FailedAt.IsZero() {
 		i.FailedAt = utils.Now()
