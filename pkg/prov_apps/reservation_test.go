@@ -373,14 +373,14 @@ func TestReservationAndFractionShareDeviceVisibility(t *testing.T) {
 			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
 			require.Equal(t, expected, reserved.Environment["CUDA_VISIBLE_DEVICES"])
 			require.Equal(t, complement, reserved.Params["reserve-vram"])
-			_, err = r.m.admitMemory(t.Context(), reserved)
+			_, _, err = r.m.admitMemory(t.Context(), reserved, false, nil)
 			require.NoError(t, err)
 			require.Equal(t, map[string]int64{expected: 9000}, reserved.Commitments)
 			require.Equal(t, complement, reserved.Params["reserve-vram"])
 			req.Provider, req.Model = "other", "llm"
 			fraction, err := r.m.ResolveLaunchParameters(t.Context(), req)
 			require.NoError(t, err)
-			_, err = r.m.admitMemory(t.Context(), fraction)
+			_, _, err = r.m.admitMemory(t.Context(), fraction, false, nil)
 			require.NoError(t, err)
 		})
 	}

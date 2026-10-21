@@ -8,6 +8,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,40 +153,37 @@ func TestDecide(t *testing.T) {
 func TestChooseEvictions(t *testing.T) {
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
 	candidates := []evictionCandidate{
+		{instance.IdleStopCandidate{Instance: instance.NewInstance("no-relief", "p", "none", 0, 0, 1), Activity: now.Add(-2 * time.Hour)}, 0},
 		{instance.IdleStopCandidate{Instance: instance.NewInstance("new", "p", "new", 0, 0, 1), Activity: now}, 4},
 		{instance.IdleStopCandidate{Instance: instance.NewInstance("b", "p", "b", 0, 0, 1), Activity: now.Add(-time.Hour)}, 3},
 		{instance.IdleStopCandidate{Instance: instance.NewInstance("a", "p", "a", 0, 0, 1), Activity: now.Add(-time.Hour)}, 2},
 	}
 	for _, tc := range []struct {
-		name              string
-		shortfall, credit int64
-		want              []string
-		covered           bool
+		name      string
+		shortfall int64
+		want      []string
 	}{
-		{"no shortage", 0, 0, nil, true}, {"negative shortage", -1, 0, nil, true},
-		{"oldest and tiebreak", 4, 0, []string{"a", "b"}, true},
-		{"exact cover", 5, 0, []string{"a", "b"}, true},
-		{"one victim", 2, 0, []string{"a"}, true},
-		{"all victims", 9, 0, []string{"a", "b", "new"}, true},
-		{"not enough", 10, 0, nil, false},
-		{"replacement alone", 10, 10, nil, true},
-		{"replacement then oldest", 10, 6, []string{"a", "b"}, true},
-		{"replacement still insufficient", 11, 1, nil, false},
+		{"no shortage", 0, nil}, {"negative shortage", -1, nil},
+		{"oldest and tiebreak", 4, []string{"a", "b"}},
+		{"exact cover", 5, []string{"a", "b"}},
+		{"one victim", 2, []string{"a"}},
+		{"all victims", 9, []string{"a", "b", "new"}},
+		{"not enough", 10, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			selected, covered := chooseEvictions(tc.shortfall, tc.credit, candidates)
+			selected := chooseEvictions(tc.shortfall, candidates)
 			var ids []string
 			for _, candidate := range selected {
 				ids = append(ids, candidate.Instance.ID)
 			}
 			assert.Equal(t, tc.want, ids)
-			assert.Equal(t, tc.covered, covered)
-			assert.Equal(t, "new", candidates[0].Instance.ID)
+			assert.Equal(t, "no-relief", candidates[0].Instance.ID)
 		})
 	}
-	ids, covered := chooseEvictions(1, 0, nil)
-	assert.Empty(t, ids)
-	assert.False(t, covered)
+	for _, shortfall := range []int64{-1, 0, 1} {
+		assert.Empty(t, chooseEvictions(shortfall, nil))
+		assert.Empty(t, chooseEvictions(shortfall, candidates[:1]))
+	}
 }
 
 func TestIdleExpired(t *testing.T) {
@@ -259,4 +257,28 @@ func TestExpiredState(t *testing.T) {
 	assert.True(t, Expired(base, now))
 	base.Released = false
 	assert.False(t, Expired(base, now), "zero must wait for release")
+}
+
+func TestMemoryNeedsStop(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		bound *int64
+		want  bool
+	}{
+		{name: "fit"},
+		{name: "known zero bound", err: &process.MemoryFitError{Device: "GPU-A"}, bound: new(int64(0))},
+		{name: "known positive bound", err: &process.MemoryFitError{Device: "GPU-A"}, bound: new(int64(2000))},
+		{name: "unknown bound", err: &process.MemoryFitError{Device: "GPU-A"}, want: true},
+		{name: "commitment-only unknown bound", err: &process.MemoryFitError{Device: "GPU-A", CommitmentOnly: true}},
+		{name: "intrinsic unknown bound", err: &process.MemoryFitError{BudgetKind: "layers"}},
+		{name: "snapshot unavailable", err: process.ErrMemoryObservation, want: true},
+		{name: "selection refused", err: process.ErrMemorySelection},
+		{name: "invalid budget", err: process.ErrMemoryBudgetInvalid},
+		{name: "cancelled", err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, memoryNeedsStop(tc.err, map[string]*int64{"GPU-A": tc.bound}))
+		})
+	}
 }

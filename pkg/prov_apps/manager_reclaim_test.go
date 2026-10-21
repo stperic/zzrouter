@@ -67,18 +67,15 @@ func (f *reclaimFixture) admit(t *testing.T) ([]instance.EvictedRun, error) {
 	t.Helper()
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
-	return f.mgr.admitMemory(t.Context(), f.features)
+	_, evicted, err := f.mgr.admitMemory(t.Context(), f.features, false, nil)
+	return evicted, err
 }
 
-func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string, unaccounted ...int64) {
+func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string) {
 	t.Helper()
 	var fit *process.MemoryFitError
 	require.ErrorAs(t, err, &fit)
-	expectedUnaccounted := int64(0)
-	if len(unaccounted) > 0 {
-		expectedUnaccounted = unaccounted[0]
-	}
-	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB, UnaccountedMiB: &expectedUnaccounted,
+	assert.Equal(t, &process.MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 5000, FreeMiB: f.device.FreeMiB,
 		Holders: []process.MemoryHolder{
 			{PID: f.device.Processes[0].PID, MemoryMiB: f.device.Processes[0].MemoryMiB, Run: f.older.ID, Model: f.older.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.older.ID]},
 			{PID: f.device.Processes[1].PID, MemoryMiB: f.device.Processes[1].MemoryMiB, Run: f.newer.ID, Model: f.newer.Model, Ownership: "zzrouter", ReclaimSkippedReason: skipped[f.newer.ID]},
@@ -86,10 +83,10 @@ func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[
 }
 
 // assertNothingEvicted admits and expects the original fit error with no run evicted.
-func (f *reclaimFixture) assertNothingEvicted(t *testing.T, skipped map[string]string, unaccounted ...int64) {
+func (f *reclaimFixture) assertNothingEvicted(t *testing.T, skipped map[string]string) {
 	t.Helper()
 	evicted, err := f.admit(t)
-	f.assertOriginalFit(t, err, skipped, unaccounted...)
+	f.assertOriginalFit(t, err, skipped)
 	assert.Empty(t, evicted)
 }
 
@@ -127,7 +124,7 @@ func TestMemoryReclaimProtectsLease(t *testing.T) {
 	require.NoError(t, err)
 	defer lease.Release()
 	*f.device.Processes[1].MemoryMiB = 100
-	f.assertNothingEvicted(t, map[string]string{f.older.ID: "in use"}, 4400)
+	f.assertNothingEvicted(t, map[string]string{f.older.ID: "in use"})
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -136,7 +133,7 @@ func TestMemoryReclaimInsufficientStopsNothing(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	*f.device.Processes[0].MemoryMiB = 1500
 	*f.device.Processes[1].MemoryMiB = 1500
-	f.assertNothingEvicted(t, nil, 6000)
+	f.assertNothingEvicted(t, nil)
 	assert.Equal(t, instance.StatusRunning, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 }
@@ -333,9 +330,10 @@ func TestIdleStopAndLeaseClaim(t *testing.T) {
 func TestMemoryReclaimUnknownHolderCountsZero(t *testing.T) {
 	f := newReclaimFixture(t, true)
 	f.device.Processes[0].MemoryMiB = nil
-	_, err := f.admit(t)
+	evicted, err := f.admit(t)
 	require.NoError(t, err)
-	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
+	assert.Equal(t, []instance.EvictedRun{{RunID: f.newer.ID, Model: f.newer.Model, Provider: f.newer.Provider, FreedMiB: 4500}}, evicted)
+	assert.Equal(t, instance.StatusRunning, f.older.GetStatus(), "an unknown-size holder offers no relief")
 	assert.Equal(t, instance.StatusStopped, f.newer.GetStatus(), "unknown oldest holder cannot cover the shortfall")
 }
 
@@ -355,7 +353,7 @@ func TestMemoryReclaimCancellationBoundsRecovery(t *testing.T) {
 	}
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
-	_, err := f.mgr.admitMemory(ctx, f.features)
+	_, _, err := f.mgr.admitMemory(ctx, f.features, false, nil)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 2, attempts)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
@@ -374,7 +372,7 @@ func TestMemoryReclaimCancellationStopsDrain(t *testing.T) {
 		<-f.older.Context().Done()
 		cancel()
 	}()
-	_, err := f.mgr.admitMemory(ctx, f.features)
+	_, _, err := f.mgr.admitMemory(ctx, f.features, false, nil)
 	require.Error(t, err)
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
@@ -512,7 +510,7 @@ func TestPinnedRunRefusesMemoryLaunch(t *testing.T) {
 			require.NoError(t, err)
 			lease.Release()
 			before := f.older.ToInfo("")
-			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"}, 4400)
+			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
 			assert.Equal(t, before, f.older.ToInfo(""))
 			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 			assert.Empty(t, f.mgr.auditEvents, "refusal must issue zero stops")
@@ -529,7 +527,7 @@ func TestMemoryReclaimSkipsPinnedAndEvictsUnpinned(t *testing.T) {
 			f := newReclaimFixture(t, true, -1)
 			if !sufficient {
 				*f.device.Processes[1].MemoryMiB = 100
-				f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"}, 4400)
+				f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
 				assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 				assert.Empty(t, f.mgr.auditEvents)
 			} else {

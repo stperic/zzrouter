@@ -314,7 +314,7 @@ func (m *ProviderAppManager) executeStart(ctx context.Context, prepared prepared
 	}
 	if replace := prepared.decision.Replace; replace != "" {
 		check := &replacementCheck{run: replace, recovery: make(map[string]int64)}
-		if _, _, err = m.checkMemory(ctx, launch.parameters, false, check); err != nil {
+		if _, _, err = m.admitMemory(ctx, launch.parameters, false, check); err != nil {
 			return result, err
 		}
 		if err = m.stopInstance(ctx, replace, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {

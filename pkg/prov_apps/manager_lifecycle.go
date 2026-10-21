@@ -258,7 +258,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	argvFeatures := features
 	argvFeatures.Params = maps.Clone(features.Params)
-	evicted, err := m.admitMemory(ctx, argvFeatures)
+	_, evicted, err := m.admitMemory(ctx, argvFeatures, false, nil)
 	inst.SetEvictedRuns(evicted)
 	var prepared preparedLaunch
 	if err == nil {
@@ -491,24 +491,6 @@ func visibleDeviceEnvironment(environment map[string]string) (map[string]string,
 		}
 	}
 	return visible, nil
-}
-
-// admitMemory checks a launch's GPU memory budget, evicting idle runs when
-// the node allows it, and returns the runs it evicted.
-func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchParameters) ([]instance.EvictedRun, error) {
-	_, settings, err := m.checkMemory(ctx, features, false, nil)
-	var fit *process.MemoryFitError
-	if !settings.EvictIdle || !errors.As(err, &fit) {
-		return nil, err
-	}
-	evicted, skipped := m.reclaimFor(ctx, fit)
-	if len(evicted) > 0 {
-		_, _, err = m.checkMemory(ctx, features, false, nil)
-	}
-	if errors.As(err, &fit) {
-		annotateMemoryHolders(fit, skipped)
-	}
-	return evicted, err
 }
 
 func (m *ProviderAppManager) memoryRuns() []process.RunRef {
@@ -1183,7 +1165,7 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	prepared, err := m.engine(Lifecycle(svc)).prepare(ctx, svc, key, req, port)
 	preview := LaunchPreview{Launch: prepared.launch, LaunchParameters: prepared.parameters, Model: req.Model}
 	if err == nil {
-		preview.Assessment, _, _ = m.checkMemory(ctx, prepared.parameters, true, nil)
+		preview.Assessment, _, _ = m.admitMemory(ctx, prepared.parameters, true, nil)
 	}
 	return preview, err
 }

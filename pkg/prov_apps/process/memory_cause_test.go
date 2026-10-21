@@ -387,7 +387,7 @@ func TestUnknownCauseDoesNotChangeMemoryDecisions(t *testing.T) {
 				params:      map[string]string{"budget": "auto"},
 				environment: map[string]string{},
 				commitments: map[string]int64{},
-				fit:         &MemoryFitError{Parameter: "budget", Device: "GPU-A", RequiredMiB: 10000, FreeMiB: 9000, Holders: []MemoryHolder{{MemoryMiB: new(int64(1000)), Run: "held", Ownership: "zzrouter", UnusedCommitmentMiB: 1000}}},
+				fit:         &MemoryFitError{CommitmentOnly: true, Parameter: "budget", Device: "GPU-A", RequiredMiB: 10000, FreeMiB: 9000, Holders: []MemoryHolder{{MemoryMiB: new(int64(1000)), Run: "held", Ownership: "zzrouter", UnusedCommitmentMiB: 1000}}},
 				class:       "memory",
 			},
 		},

@@ -11,7 +11,13 @@ Starting, reusing, queueing, evicting and idling runs is one pure policy and one
   wants (model, provider, runtime, force, origin: API, request, install or restore) and what the node shows (lifecycle,
   reachability, catalog, the run holding the key, a starting blocker, the admission slot). It returns one act
   (refuse, ready, reuse, start, queue) with a typed reason that `internal/server/failure_table.go` maps
-  to the wire. An unset decision is an error.
+  to the wire. An unset decision is an error. `chooseEvictions` selects enough candidates by oldest
+  activity, breaking ties by run id, skipping zero-relief candidates for every refusal,
+  and returning no victims when coverage is insufficient. For free-memory refusals,
+  this skips older runs with unknown process size, which previously could be evicted.
+  `memoryNeedsStop` leaves unknown evidence until after the stop and preserves conclusive
+  refusals. The manager gathers eligible holders and sizes; `admitMemory` calls eviction
+  policy only when resolved `EvictIdle` is enabled. `Expired` owns idle expiry.
 - **Mechanism** (`ensure_run.go`): one keyed flight per model and endpoint. The first caller creates it and runs
   the start on a context no caller can cancel (Stop can); the flight re-decides against the registry, ends at
   handoff (process started, run queued, or failure) and leaves the map before it answers.
@@ -164,34 +170,56 @@ and `zz_run_stop` to forget. A record-only entry has no run log. Corrupt or unkn
 files are set aside as `.corrupt` evidence and are not restored.
 
 Every start prepares before queue acceptance or replacement stop: schema, platform/GPU,
-features, toolkit, assets and argv. Preparation shares preview and parameter-status logic.
-As required by `docs/agent-memory.md`, slow per-model conversion/packing never runs in
-prepare or command building, including while an old run still serves. A preparation
-refusal leaves that run and record intact. A replacement also checks memory before the
-stop. The shared reclaim plan credits the most the stop could free per device:
-its attributed holdings, unused commitments and all driver-reported used memory not
-provably attributed to a process. Known memory of another process is excluded only
-when its ancestry is fully read, whether owned by another run or by no run. Unknown
-process sizes, unreadable ancestry and unattributed context memory stay inside the
-bound; a failed process listing leaves all used memory inside it. Ownership follows
-process ancestry from the run's PID, so GPU workers a run hands to another service
-(vLLM's Ray executor on an existing Ray cluster, whose workers are children of the
-raylet) count as another process: such a replacement can be refused although the
-stop would make room, and the agent stops the run explicitly. The pre-check
-refuses only if the launch cannot fit even with that credit and eligible idle stops.
-Replacement credit ignores voluntary idle eligibility; planned victims are not claimed.
-A refusal preserves the registered run and pin record, reporting `kept_run` and
-`credited_mib` under the existing 409 `out_of_range`: for a free-memory refusal, the
-most stopping the kept run could free on the refused device; zero for a sized-context
-or weights refusal, which no stop fixes. Unknown driver used memory and unbudgeted
-engines retain stop-then-admit ordering. The unified device still encodes total
-availability and zero use; its weights and sized-context checks use totals.
-After a successful stop, recovery targets only attributed holdings and unused
-commitments, excluding unaccounted use. Expiry continues to fresh admission, which
-returns the ordinary memory refusal and tool hints if memory still cannot fit;
-caller cancellation aborts. Preparation, weight verification and process
-start still run fresh after the stop; idle claims revalidate then. No admission slot spans the stop, so a late
-steal or config change can leave no live run while preserving its pin record. Such a refusal
+features, toolkit, assets and argv. Preparation shares preview and parameter-status
+logic. As required by `docs/agent-memory.md`, slow per-model conversion/packing never
+runs in prepare or command building, including while an old run still serves. A
+preparation refusal leaves that run and record intact. A replacement asks ordinary
+memory admission what it would answer after the stop, using cloned devices with the
+replaced run's processes and owner entry removed. Its commitments leave with it; other
+runs keep theirs. Free memory increases by the run's per-device release bound:
+attributed holdings plus `max(0, used - known memory of every fully attributed
+process)`. Unknown sizes, unreadable ancestry and unattributed context memory stay
+inside the bound. A failed process listing makes the release bound unknown. A known
+bound ignores idle eligibility. Ownership follows ancestry from the run's PID, so GPU
+workers delegated to another service (such as an existing Ray cluster) count as another
+process. The agent may explicitly stop such a run when holders include
+`other_or_untracked` memory. Both paths share one rule: admit, try one covering idle
+reclaim on the first refused device when enabled, then admit once more. For layers or
+unified refusals caused only by unused commitments, selection counts only those
+commitments; evicting process memory alone cannot help. The pre-check simulates that one
+victim set by removing its processes and owner entries and adding only attributed
+holdings to free memory. A second pre-check refusal keeps the old run. The pre-check
+never claims or stops a victim; execution revalidates eligibility during actual
+admission. A refusal preserves the registered run and pin record. Only a kept-run
+refusal carries `kept_run` and `credited_mib` in the existing 409 `out_of_range`. For a
+free-memory refusal, credit is the replaced run's release bound on that device,
+`free_mib` (also the parameter error's `max`) is availability after the simulated stop
+and remaining unused commitments and the single simulated idle reclaim, if applied.
+Remaining process holders have known sizes and fully read ancestry outside the kept run;
+unknown sizes or ancestry were credited in its bound and removed. Other runs keep their
+unused commitment holders. Sized-context and weights refusals report zero credit and
+retain their budget hints because no stop repairs them. The free-memory hint names
+`zz_params_set` and `zz_run_preview` to lower the request, or `zz_run_stop` to stop
+other holders. When holders show `unused_commitment_mib`, only stopping those holders
+with `zz_run_stop` helps. Stop `kept_run` first only when holders include memory
+zzRouter could not attribute (`other_or_untracked`), then `zz_run_start`. A snapshot
+failure keeps stop-then-admit. A failed process listing or unknown used memory on the
+refused device does so for free-memory refusals; commitment-only, sized-context and
+weights refusals preserve the run whatever the bound. A commitment-only refusal with an
+unknown release bound reports `credited_mib: 0` because no release-bound credit could be
+established.
+GPU-selection errors preserve the run when ordinary admission refuses, with the same 503
+classification. Layers and unified launches retain ordinary admission without
+observations or valid selectors when no run holds commitments, fresh starts included.
+Unbudgeted engines retain stop-then-admit. The unified device still encodes total
+availability and zero use; its weights and sized-context checks use totals. After the
+stop, every replacement waits for recovery on each device the old run held, including
+when the pre-check passed without credit. The wait targets only attributed holdings,
+excluding unaccounted use, and ends as soon as memory returns, at most
+`MemoryRecoveryTimeout` (5 seconds) per device. Expiry continues to fresh admission;
+caller cancellation aborts. Preparation, weights verification and process start run
+fresh, and idle claims revalidate then. No admission slot spans the stop, so a late steal
+or config change can leave no live run while preserving its pin record. Such a refusal
 makes no `kept_run` claim.
 
 ## Deployment outcome ownership

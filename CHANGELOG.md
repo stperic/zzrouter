@@ -20,21 +20,36 @@
   survive and are included in `zz_update_status` without an expiry. Cluster
   protocol advances to 18/18; upgrade every coordinator and worker together.
 
-- Check replacement memory before stopping an existing run. Refuse only when the
-  launch cannot fit even if the stop freed all used memory that is not provably
-  held by another process, plus the run's unused reservations, per device. Pins
-  and activity do not reduce this credit. A 409 `out_of_range` refusal keeps the
-  old run and reports `kept_run` and `credited_mib`: for a free-memory refusal,
-  the most stopping the kept run could free on the refused device; zero for a
-  sized-context or weights refusal, which no stop fixes. Auto fractions report the
-  free memory needed for a positive rounded fraction. Tool hints explain how to
-  lower the request or stop holders explicitly. Idle evictions are planned first
-  and revalidated after the stop. Unknown driver used memory and unbudgeted
-  engines keep stop-then-admit ordering. Recovery waits target attributed
-  holdings, excluding unaccounted use; caller cancellation aborts, and timeout
-  continues to fresh admission and its memory refusal with tool hints. A late
-  steal may still refuse, retaining the pin record without claiming that a run was
-  kept.
+- Check replacement memory by asking ordinary admission what it would answer
+  after the stop. Simulate the old run's processes and commitments away, credit
+  its release bound per device, and preserve other runs' commitments, including
+  ComfyUI reserves. Pins and activity do not reduce the bound. A 409
+  `out_of_range` refusal keeps the old run and reports `kept_run` and
+  `credited_mib` only for kept runs. Free-memory refusals describe free memory
+  and holders after the simulated stop; sized-context and weights refusals
+  report zero credit and use their budget hints; fresh weights refusals retain
+  their holders hint. Free-memory hints explain how to lower the request or stop
+  other holders; stop `kept_run` first only for `other_or_untracked` holders.
+  When holders show `unused_commitment_mib`, only stopping those holders helps.
+  The pure run policy selects idle victims, with one shared admit, reclaim once
+  on the refused device, admit again rule for simulation and execution.
+  Commitment-only layers and unified refusals select only victims whose unused
+  commitments provide relief, skipping process-only holders. All refusals skip
+  zero-relief candidates, including free-memory holders with unknown process
+  size. A second pre-check refusal keeps the old run and evicts nothing.
+  Processes inside the release bound are removed from simulated holders.
+  GPU-selection errors preserve the run when ordinary admission refuses, with
+  the same 503 class; layers and
+  unified launches without commitments retain their ordinary admission when
+  observation or selection is unavailable, fresh starts included. Snapshot
+  failures and unbudgeted engines keep stop-then-admit. Failed process
+  listings and unknown used memory on the refused device do so for free-memory
+  refusals; commitment-only and intrinsic refusals preserve the old run
+  whatever the bound. Commitment-only refusals report zero credit when the
+  release bound is unknown. Auto fractions report the free memory needed for a
+  positive rounded fraction. Recovery targets attributed holdings only;
+  cancellation aborts, and timeout continues to fresh admission. A late steal
+  may still refuse, retaining the pin record without claiming a run was kept.
 
 - Stop node-owned engines in parallel with one SIGTERM per process group and a
   full run budget after HTTP drain. Join concurrent API stops, keep pins and
