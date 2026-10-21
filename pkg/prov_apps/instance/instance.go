@@ -345,10 +345,15 @@ func (i *Instance) Admit() bool {
 
 // MarkFailedError retains the typed cause before publishing the failed state.
 func (i *Instance) MarkFailedError(err error) {
-	i.markFailedWithExit(err.Error(), err, nil, "")
+	i.markFailedWithExit(err.Error(), err, nil, "", false)
 }
 
-// FailureCause returns the typed error retained by a failed run.
+// MarkLoadFailedError retains a served load's cause even when a stop owns its transition.
+func (i *Instance) MarkLoadFailedError(err error) {
+	i.markFailedWithExit(err.Error(), err, nil, "", true)
+}
+
+// FailureCause returns the typed error retained by a failed or stopping run.
 func (i *Instance) FailureCause() error {
 	i.mu.RLock()
 	defer i.mu.RUnlock()

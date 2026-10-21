@@ -435,7 +435,7 @@ func (m *ProviderAppManager) watchServiceReady(name string, state *managedServic
 
 // cancelServiceReady stops a service whose readiness job was cancelled.
 func (m *ProviderAppManager) cancelServiceReady(name string) error {
-	ctx, cancel := context.WithTimeout(m.shutdownCtx, m.stopBudget(name))
+	ctx, cancel := context.WithTimeout(m.shutdownCtx, constants.ShutdownDaemonTimeout)
 	defer cancel()
 	if _, err := m.ControlProviderService(ctx, name, "stop"); err != nil {
 		return fmt.Errorf("cancelled; stopping the service failed: %w", err)
@@ -637,7 +637,7 @@ func (m *ProviderAppManager) controlDaemon(ctx context.Context, name, action str
 	if err != nil {
 		return err
 	}
-	serviceCtx, cancel := context.WithCancel(m.shutdownCtx)
+	serviceCtx, cancel := context.WithCancel(m.daemonsCtx)
 	state.cancel, state.done = cancel, make(chan struct{})
 	state.status.Managed, state.status.Enabled, state.status.Desired = true, cfg.IsEnabled(), true
 	go m.superviseService(serviceCtx, name, binary, args, env, state)
@@ -967,7 +967,7 @@ func (m *ProviderAppManager) reconcileServed(ctx context.Context, provider strin
 		if _, ok := held[strings.ToLower(run.Model)]; ok {
 			down = m.runEngine(run).down
 		}
-		if err := m.endRun(ctx, run, obsruns.StopReasonUser, down); err != nil && !errors.Is(err, instance.ErrStopping) {
+		if err := m.endRun(ctx, run, obsruns.StopReasonUser, down, time.Time{}); err != nil && !errors.Is(err, instance.ErrStopping) {
 			slog.Warn("Failed to stop a served run", "run", run.ID, "error", err)
 		}
 	}

@@ -18,14 +18,12 @@ import (
 //
 // Untracked by design: this goroutine is NOT added to manager.wg. A
 // server shutdown that races with a cancel-job can therefore return
-// before detachedStop finishes. That is safe because the bounded ctx
+// before detachedStop finishes. That is safe because endRun's budget
 // ensures exit, and any orphaned process/port state is reclaimed by
 // process.CleanupOrphans on next server start. Tracking on manager.wg
 // would require restructuring Stop — not worth it for this edge case.
-func (m *ProviderAppManager) detachedStop(instID, provider string) {
-	ctx, cancel := context.WithTimeout(context.Background(), m.stopBudget(provider))
-	defer cancel()
-	if err := m.StopInstance(ctx, instID); err != nil && !errors.Is(err, ErrInstanceNotFound) {
+func (m *ProviderAppManager) detachedStop(instID string) {
+	if err := m.StopInstance(context.Background(), instID); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 		slog.Warn("detachedStop failed",
 			"instance", instID, "error", err)
 	}
@@ -109,7 +107,7 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 			// detached stopper that outlives the watcher; the watcher
 			// exits so inst.wg decrements, StopInstance's wait unblocks,
 			// and the server-Stop drain proceeds cleanly.
-			go m.detachedStop(inst.ID, inst.Provider)
+			go m.detachedStop(inst.ID)
 			result = errors.New("cancelled")
 			return
 

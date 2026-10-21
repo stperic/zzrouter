@@ -9,10 +9,56 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestServedStopWaitsForLoadingModel(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		readiness    string
+		releaseAfter time.Duration
+	}{
+		{"default readiness", "", constants.EngineGracefulTimeout + constants.ShutdownRunTailTimeout + time.Second},
+		{"configured readiness", "3m", defaultReadinessTimeout + constants.ShutdownRunEpilogueTimeout + time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := newServedRig(t)
+				r.edit(t, func(svc *config.ServiceConfig) {
+					svc.Runtime.HealthCheck.ReadinessProbe = &config.ProbeConfig{Timeout: tc.readiness}
+				})
+				r.daemon.holdLoads()
+				t.Cleanup(r.daemon.release)
+				req := EnsureRequest{Provider: "ollama", Model: servedModel}
+				o := collect(t, []<-chan outcome{r.ensure(t.Context(), req)})[0]
+				require.NoError(t, o.err)
+				run := o.result.Run
+				r.daemon.waitEntered(t)
+				stopped := make(chan error, 1)
+				go func() { stopped <- r.m.StopInstance(t.Context(), run.ID) }()
+				synctest.Wait()
+				require.Equal(t, instance.StatusStopping, run.GetStatus())
+				time.Sleep(tc.releaseAfter)
+				select {
+				case err := <-stopped:
+					t.Fatalf("stop abandoned the in-flight load: %v", err)
+				default:
+				}
+				r.daemon.release()
+				require.NoError(t, <-stopped)
+				require.False(t, run.StopUnconfirmed.Load())
+				require.False(t, r.m.instances.Has(run.ID))
+				require.False(t, r.daemon.isLoaded(run.WireModel))
+				next := r.running(t, req)
+				require.NotEqual(t, run.ID, next.ID)
+			})
+		})
+	}
+}
 
 func TestEnsureRunForceStopsAnotherProvidersRun(t *testing.T) {
 	m, err := NewProviderAppManager(aliasTestConfig(t), WithLocalCatalog(func(context.Context, string) (bool, error) { return true, nil }))

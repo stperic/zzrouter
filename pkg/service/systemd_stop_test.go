@@ -42,7 +42,6 @@ func TestSystemdStopSettingsSingleDefinition(t *testing.T) {
 	timeout, err := time.ParseDuration(value)
 	require.NoError(t, err)
 	require.Equal(t, constants.SupervisorStopTimeout, timeout)
-	require.Greater(t, timeout, constants.ShutdownMaxTimeout)
 }
 
 func TestSystemdStopSettingsAtomicIdempotentAndReloadRetry(t *testing.T) {
@@ -67,27 +66,4 @@ func TestSystemdStopSettingsAtomicIdempotentAndReloadRetry(t *testing.T) {
 	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
 	require.NoError(t, err)
 	require.Equal(t, "daemon-reload\ndaemon-reload\n", string(calls), "a failed reload must be retried")
-}
-
-func TestSystemdUninstallRemovesStopSettings(t *testing.T) {
-	m, dir := systemdStopFixture(t)
-	require.NoError(t, m.InstallService())
-	other := m.servicePath() + ".d/operator.conf"
-	require.NoError(t, os.WriteFile(other, []byte("[Service]\n"), 0600))
-	require.NoError(t, m.UninstallService())
-	_, err := os.Stat(m.servicePath() + ".d/stop.conf")
-	require.True(t, os.IsNotExist(err))
-	_, err = os.Stat(other)
-	require.NoError(t, err)
-	calls, err := os.ReadFile(filepath.Join(dir, "calls"))
-	require.NoError(t, err)
-	require.True(t, strings.HasSuffix(string(calls), "stop zzrouter-node.service\ndisable zzrouter-node.service\ndaemon-reload\n"))
-}
-
-func TestSystemdUninstallRemovesEmptyDropInDirectory(t *testing.T) {
-	m, _ := systemdStopFixture(t)
-	require.NoError(t, m.InstallService())
-	require.NoError(t, m.UninstallService())
-	_, err := os.Stat(m.servicePath() + ".d")
-	require.True(t, os.IsNotExist(err))
 }

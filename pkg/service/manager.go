@@ -46,9 +46,6 @@ type ServiceManager interface {
 	// InstallService installs the service into the system service manager
 	InstallService() error
 
-	// UninstallService removes the service from the system service manager
-	UninstallService() error
-
 	// StartService starts the service via the system service manager
 	StartService() error
 

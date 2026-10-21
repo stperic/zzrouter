@@ -159,21 +159,6 @@ func launchdDefinition(exe, homeDir string) LaunchdPlist {
 	}
 }
 
-// UninstallService unloads and removes the launchd plist
-func (m *LaunchdManager) UninstallService() error {
-	plistPath := m.getPlistPath()
-
-	// Unload the service (ignore error when not loaded)
-	_ = host.Command("launchctl", "unload", plistPath).Run()
-
-	// Remove the plist file
-	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove plist file: %w", err)
-	}
-
-	return nil
-}
-
 // StartService starts the service via launchctl
 func (m *LaunchdManager) StartService() error {
 	cmd := host.Command("launchctl", "start", launchdLabel)

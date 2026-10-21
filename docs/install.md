@@ -230,13 +230,19 @@ and reloads systemd before restarting. First installation and `update enable`
 write it through the same function. The drop-in is the sole definition of these
 settings; the base unit carries neither. A write or reload failure is logged and
 reported in `operation.warning`; the update or rollback continues. Recover
-immediately with `sudo zzrouter-node update enable`, or let the next apply or
-rollback retry; an update `check` does not retry the drop-in. The drop-in changes
-only stop settings.
+immediately with `sudo zzrouter-node update enable --restart=false`, or let the next
+apply or rollback retry; an update `check` does not retry the drop-in. The drop-in
+changes only stop settings. The recovery command also rewrites the base unit and relocates
+binaries into the managed layout; `--restart=false` suppresses its default restart.
 
 The updater applying the first update to this release is the old binary, so that
 first update does not install the drop-in. It arrives on the next apply, or
-immediately with `sudo zzrouter-node update enable`. This uses the existing
-privileged installer, with managed layout setup before service installation.
+immediately with `sudo zzrouter-node update enable --restart=false`. This uses the
+existing privileged installer, with managed layout setup before service
+installation.
 Uninstall removes the managed stop drop-in and its directory when empty,
 preserving operator drop-ins.
+
+A rollback to a release older than the drop-in keeps `KillMode=mixed`. That
+release stops runs one at a time within 45 seconds. Runs it has not reached
+when it exits are SIGKILLed by systemd.

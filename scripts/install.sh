@@ -794,6 +794,8 @@ uninstall() {
             systemctl stop zzrouter-node >/dev/null 2>&1 || true
             systemctl disable zzrouter-node >/dev/null 2>&1 || true
             rm -f /etc/systemd/system/zzrouter-node.service
+            rm -f /etc/systemd/system/zzrouter-node.service.d/stop.conf
+            rmdir /etc/systemd/system/zzrouter-node.service.d 2>/dev/null || true
             systemctl daemon-reload >/dev/null 2>&1 || true
             check "Removed systemd service zzrouter-node"
         fi

@@ -664,8 +664,8 @@ func TestReplacementStopFailure(t *testing.T) {
 			if failure == "stop cancellation" {
 				r.old.TrackGoroutine()
 				drained := make(chan struct{})
-				go func() { defer close(drained); <-r.old.Context().Done(); cancel() }()
-				defer func() { r.old.GoroutineDone(); <-drained }()
+				go func() { defer close(drained); defer r.old.GoroutineDone(); <-r.old.Context().Done(); cancel() }()
+				defer func() { <-drained }()
 			} else {
 				r.after[0].FreeMiB = 1000
 				if failure == "recovery cancellation" {
@@ -694,6 +694,10 @@ func TestReplacementStopFailure(t *testing.T) {
 				assert.Equal(t, instance.StatusStopped, r.old.GetStatus())
 			} else {
 				assert.ErrorIs(t, err, context.Canceled)
+			}
+			if failure == "stop cancellation" {
+				assert.Equal(t, instance.StatusStopped, r.old.GetStatus())
+				assert.False(t, r.m.instances.Has(r.old.ID), "cancellation must finish the old stop without launching its replacement")
 			}
 			assert.Equal(t, instance.StatusRunning, r.other.GetStatus())
 			assert.Equal(t, int32(2), r.attempts.Load(), "no replacement reaches process launch")

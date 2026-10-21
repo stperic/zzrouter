@@ -76,9 +76,7 @@ func (m *ProviderAppManager) smokeInstalledRuntime(ctx context.Context, provider
 	}
 	defer func() {
 		// A timed-out smoke must still stop its own run before rollback.
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.stopBudget(provider))
-		defer cancel()
-		if err := m.stopInstance(cleanup, run.ID, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
+		if err := m.stopInstance(context.WithoutCancel(ctx), run.ID, obsruns.StopReasonUser); err != nil && !errors.Is(err, ErrInstanceNotFound) {
 			result = errors.Join(result, fmt.Errorf("%w: %v", errSmokeRollbackBlocked, err))
 		}
 	}()

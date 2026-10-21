@@ -1030,8 +1030,18 @@ paths:
         running, that launch job is terminal and only this route stops
         the instance. On Unix, graceful termination signals its process group once,
         waits the full shutdown_timeout (10 seconds by default, gpu 30 seconds),
-        then force-kills surviving members. Node shutdown bounds each engine's
-        grace by its independent run budget and uses this
+        then force-kills surviving members. Cancellation before the stop claims
+        the run abandons the stop; after the claim, caller disconnects do not
+        shorten grace or abandon instance and port cleanup.
+        Termination and reaper drain share a budget of shutdown_timeout plus
+        force wait and cleanup, including a process launched during its stop.
+        Served models use their load readiness window (120 seconds by default)
+        plus cleanup, allowing an in-flight load to finish before unloading it.
+        A reaper drain that exceeds that whole-stop budget leaves
+        the run registered and its key and port reserved until a confirmed stop.
+        Node shutdown bounds each engine's
+        grace by its independent run budget, caps run cleanup at that deadline
+        plus force wait and epilogue, and uses this
         same termination path in parallel, keeps pin records and leaves served
         models loaded. A concurrent operator stop is joined by node shutdown.
       parameters:

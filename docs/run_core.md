@@ -88,19 +88,40 @@ migrate through the same terminator. Windows keeps stdin shutdown and Job Object
 
 Engines stay up while HTTP drains, for up to 45 seconds. Provider teardown then
 gets its own 40-second budget. The manager stops all runs in parallel through the
-ordinary run stop path, joins a concurrent API stop and reports a join timeout.
+ordinary run stop path before joining idle, replacement or API stops already in
+progress, reports a join timeout, then sweeps for runs registered during teardown.
+The sweep signals new runs without waiting for earlier stops and never retries
+a run already seen, including one whose stop failed. Results are collected once.
 Served models remain loaded and pin records survive shutdown.
 
 On Unix, each process group receives one SIGTERM, waits its configured
 `shutdown_timeout` (default 10 seconds, `gpu` 30 seconds), then receives SIGKILL
-if needed. API stops honor the full configured grace. A node stop bounds each
+if needed. A stop cancelled before signalling leaves the process alone. After
+signalling, caller cancellation cannot shorten its configured grace or abandon
+registry and port cleanup, including API disconnects
+and idle stops already in progress when node shutdown begins. A node stop bounds each
 engine's grace by the shared run budget, then force-kills surviving members.
-A node-started daemon uses the same terminator on lifetime cancellation, with an independent 10-second grace; external daemons are untouched.
-Windows retains stdin signaling, Job Objects and its leader-only wait.
+Termination and reaping share one stop budget: the configured grace, force wait
+and five seconds reserved for cleanup. This also covers an engine whose PID is
+recorded after the stop claims its run. A node-stop claim caps that whole budget
+at the run deadline plus force wait and cleanup. A served provider's stop instead
+waits within its load readiness window (120 seconds by default) plus cleanup,
+so stopping a loading model lets the load finish before unloading it. The same
+node-stop cap applies. An unconfirmed stop keeps its
+registry entry, key and port reserved.
+Background starts and the idle reaper follow server cancellation.
+The manager owns daemon lifetimes separately, keeping them alive through server cancellation
+and the HTTP drain. After runs stop, node-started daemons use the same terminator on lifetime
+cancellation in parallel with a separate 15-second phase budget: 10 seconds of grace and
+5 seconds for escalation. External daemons are untouched.
+Windows retains stdin signaling, Job Objects and its leader-only wait; caller
+cancellation after signaling also preserves grace and cleanup.
 
-The node budget reserves HTTP drain, run teardown, force wait and final teardown.
-The later subsystems get a separate 30-second epilogue context after provider
-teardown. Systemd's stop-only drop-in carries `KillMode=mixed` and a derived
+The node budget reserves HTTP drain, run teardown, force wait and cleanup after
+the run deadline, and final teardown.
+The epilogue reserves separate budgets for daemon shutdown and the remaining
+15 seconds of subsystem teardown. No phase borrows time from another. Systemd's
+stop-only drop-in carries `KillMode=mixed` and a derived
 `TimeoutStopSec`; the unit carries neither setting. Launchd's installed plist
 uses the same derived `ExitTimeOut`.
 Worker refresh admission and its bounded drain belong to Signaler.

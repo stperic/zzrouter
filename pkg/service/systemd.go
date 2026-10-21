@@ -428,31 +428,6 @@ func isSymlink(path string) bool {
 	return err == nil && info.Mode()&os.ModeSymlink != 0
 }
 
-// UninstallService removes the systemd service
-func (m *SystemdManager) UninstallService() error {
-	// Stop the service first
-	_ = host.Command("systemctl", "stop", "zzrouter-node.service").Run() // Best-effort cleanup: remove the unit even if systemctl cannot stop it.
-
-	// Disable the service
-	_ = host.Command("systemctl", "disable", "zzrouter-node.service").Run() // Best-effort cleanup: remove the unit even if systemctl cannot disable it.
-
-	// Remove the service file
-	if err := os.Remove(m.servicePath()); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove service file: %w", err)
-	}
-	if err := os.Remove(m.servicePath() + ".d/stop.conf"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stop settings: %w", err)
-	}
-	_ = os.Remove(m.servicePath() + ".d") // Preserve directories containing operator drop-ins.
-
-	// Reload systemd daemon
-	if err := host.Command("systemctl", "daemon-reload").Run(); err != nil {
-		return fmt.Errorf("failed to reload systemd after uninstall: %w", err)
-	}
-
-	return nil
-}
-
 // StartService starts the zzrouter-node service via systemctl
 func (m *SystemdManager) StartService() error {
 	cmd := host.Command("systemctl", "start", "zzrouter-node.service")

@@ -70,9 +70,9 @@ func TestTerminateWindowsExitedProcessWithRetainedHandle(t *testing.T) {
 
 func TestTerminateWindowsStaleJobHandleFallsBackToLiveProcess(t *testing.T) {
 	pid, startToken, handle, _, wait := startTerminateWindowsHelper(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel() // Exercise forced termination immediately, with a stale Job Object handle.
-	require.NoError(t, Terminate(ctx, TerminateRequest{PID: pid, StartToken: startToken, JobHandle: uintptr(windows.InvalidHandle)}))
+	budget := make(chan struct{})
+	close(budget) // Exercise forced termination immediately, with a stale Job Object handle.
+	require.NoError(t, Terminate(t.Context(), TerminateRequest{PID: pid, StartToken: startToken, JobHandle: uintptr(windows.InvalidHandle), BudgetExpired: budget}))
 	require.Error(t, <-wait)
 	event, err := windows.WaitForSingleObject(handle, 0)
 	require.NoError(t, err)

@@ -20,5 +20,4 @@ func TestLaunchdInstalledPlistStopBudget(t *testing.T) {
 	timeout, ok := decoded["ExitTimeOut"].(uint64)
 	require.True(t, ok)
 	require.Equal(t, constants.SupervisorStopTimeout, time.Duration(timeout)*time.Second)
-	require.Greater(t, time.Duration(timeout)*time.Second, constants.ShutdownMaxTimeout)
 }

@@ -149,9 +149,10 @@ func TestTerminateRechecksIdentityAtEscalation(t *testing.T) {
 			return start + 1, nil
 		},
 	}}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	require.NoError(t, Terminate(ctx, req))
+	budget := make(chan struct{})
+	close(budget)
+	req.BudgetExpired = budget
+	require.NoError(t, Terminate(t.Context(), req))
 	assert.Equal(t, 2, reads, "escalation must inspect identity again")
 }
 
@@ -178,4 +179,13 @@ func TestTerminateConcurrentReap(t *testing.T) {
 	<-done
 	assert.Zero(t, reads.Load())
 	assert.False(t, ProcessExists(int32(pid)))
+}
+
+func TestTerminateCancelledBeforeSignalLeavesProcessAlive(t *testing.T) {
+	pid, start, _, _ := identityChild(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := Terminate(ctx, TerminateRequest{PID: pid, StartToken: start})
+	require.ErrorIs(t, err, context.Canceled)
+	require.True(t, ProcessExists(int32(pid)), "a cancelled stop must leave the process alive")
 }

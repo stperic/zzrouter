@@ -35,10 +35,12 @@ type TerminateRequest struct {
 	StdinPipe      func()  // Windows: close to signal launcher
 	JobHandle      uintptr // Windows: Job Object handle; 0 on Unix
 	Graceful       time.Duration
+	BudgetExpired  <-chan struct{} // Only the node's run budget may shorten grace.
 }
 
 // Terminate gracefully stops a process and its entire process tree, escalating
-// to forced kill if needed.
+// to forced kill if needed. Cancellation abandons an unsignalled stop; afterwards
+// only BudgetExpired may shorten grace.
 //
 // On Unix:  SIGTERM tree → wait → SIGKILL tree → wait.
 // On Windows (with Job Object): close stdin pipe → wait → TerminateJobObject.
@@ -52,6 +54,9 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 	// Identity may change between inspection and signal; the existing narrow race is accepted.
 	if !req.Owns(req.PID, req.StartToken) {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Graceful: platform-specific (SIGTERM on Unix, stdin-pipe close on Windows)
@@ -68,7 +73,7 @@ func Terminate(ctx context.Context, req TerminateRequest) error {
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-req.BudgetExpired:
 			return forceKill(req)
 		case <-gracefulTimer:
 			return forceKill(req)

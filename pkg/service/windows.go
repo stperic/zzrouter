@@ -152,38 +152,6 @@ func (m *WindowsManager) InstallService() error {
 	return nil
 }
 
-// UninstallService removes the Windows service
-func (m *WindowsManager) UninstallService() error {
-	scm, err := mgr.Connect()
-	if err != nil {
-		return fmt.Errorf("failed to connect to service manager: %w", err)
-	}
-	defer scm.Disconnect() //nolint:errcheck // best-effort cleanup in defer
-
-	s, err := scm.OpenService(windowsServiceName)
-	if err != nil {
-		return nil // Service doesn't exist
-	}
-	defer s.Close()
-
-	// Stop the service first — best-effort; waitForServiceStop below handles
-	// the "already stopped" case.
-	_, _ = s.Control(svc.Stop)
-
-	// Wait for service to actually stop (poll status instead of blind sleep)
-	if err := waitForServiceStop(s); err != nil {
-		// Log warning but continue with deletion - service might already be stopped
-		fmt.Printf("Warning: waiting for service stop: %v\n", err)
-	}
-
-	// Delete the service
-	if err := s.Delete(); err != nil {
-		return fmt.Errorf("failed to delete service: %w", err)
-	}
-
-	return nil
-}
-
 // StartService starts the Windows service
 func (m *WindowsManager) StartService() error {
 	scm, err := mgr.Connect()

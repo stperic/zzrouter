@@ -1162,7 +1162,9 @@ func TestEnsureRunContractServed(t *testing.T) {
 			r := newContractRig(t, false)
 			b := newBarrier()
 			r.m.seams.processStarted = func(*process.LaunchResult) {
-				require.Eventually(t, func() bool { _, err := os.Stat(r.engine + ".spawned"); return err == nil }, contractWait, time.Millisecond)
+				if !assert.Eventually(t, func() bool { _, err := os.Stat(r.engine + ".spawned"); return err == nil }, contractWait, time.Millisecond) {
+					return
+				}
 				b.hold()
 			}
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: "late"})})[0]

@@ -456,17 +456,21 @@ func TestRunLifecycleFailedStopKeepsRecord(t *testing.T) {
 	run := startPin(t, r.m, pinRequest("drain"))
 	saved := readPins(t)
 	run.TrackGoroutine()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- r.m.StopInstance(ctx, run.ID) }()
-	<-run.Context().Done()
-	require.Equal(t, instance.StatusStopping, run.GetStatus())
-	cancel()
-	err := <-done
+	run.Cancel()
+	require.NoError(t, r.m.runEngine(run).down(t.Context(), run))
+	budget := r.m.stopBudget
+	r.m.stopBudget = func(string) time.Duration { return -1 }
+	err := r.m.StopInstance(t.Context(), run.ID)
 	run.GoroutineDone()
-	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.ErrorIs(t, run.Context().Err(), context.Canceled)
+	assert.Equal(t, instance.StatusStopping, run.GetStatus())
+	assert.True(t, run.StopUnconfirmed.Load())
+	assert.True(t, r.m.instances.Has(run.ID))
+	assert.True(t, r.m.ports.IsAllocatedForProvider(run.Provider, run.Port))
+	assert.ErrorIs(t, r.m.instances.Register(instance.NewInstance("replacement", run.Provider, run.Model, 0, 0, 0)), instance.ErrModelAlreadyLoaded)
 	assert.Equal(t, saved, readPins(t))
+	r.m.stopBudget = budget
 	require.NoError(t, r.m.StopInstance(t.Context(), run.ID))
 	assert.Empty(t, readPins(t))
 }

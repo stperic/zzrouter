@@ -198,7 +198,6 @@ func TestFinalizeCatalogNotificationDoesNotBlockCallback(t *testing.T) {
 		close(release)
 		<-returned
 		target.cluster.signaler.Stop(context.Background())
-		target.cluster.signaler.Stop(context.Background())
 	})
 	go func() {
 		target.onFinalize.Load().fn("ollama")

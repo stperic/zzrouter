@@ -53,6 +53,31 @@ func TestFailureCauseSurvivesLaterExit(t *testing.T) {
 	assert.Equal(t, StatusStopped, stopped.GetStatus())
 }
 
+func TestServedLoadFailureCauseRetainedDuringStop(t *testing.T) {
+	inst := NewInstance("id", "provider", "model", 0, 0, 0)
+	inst.SetStatus(StatusStopping)
+	cause := errors.New("load cancelled by shutdown")
+	inst.MarkLoadFailedError(cause)
+	inst.MarkLoadFailedError(errors.New("later failure"))
+	assert.ErrorIs(t, inst.FailureCause(), cause)
+	assert.Equal(t, StatusStopping, inst.GetStatus())
+	assert.Nil(t, inst.ToInfo("").Failure, "stop ownership must preserve the terminal transition")
+	inst.SetStatus(StatusStopped)
+	inst.MarkLoadFailedError(errors.New("failure after stop"))
+	assert.ErrorIs(t, inst.FailureCause(), cause)
+	assert.Equal(t, StatusStopped, inst.GetStatus())
+}
+
+func TestStartingFailureDuringStopRemainsRetryable(t *testing.T) {
+	inst := NewInstance("id", "provider", "model", 0, 0, 0)
+	inst.SetStatus(StatusStopping)
+	inst.MarkFailedError(errors.New("launch or admission failed after stop claimed the run"))
+	assert.Nil(t, inst.FailureCause())
+	assert.Nil(t, inst.ToInfo("").Failure)
+	assert.Empty(t, inst.GetErrorMessage())
+	assert.Equal(t, StatusStopping, inst.GetStatus())
+}
+
 func TestFailureSnapshot_PreservesCauseAndExit(t *testing.T) {
 	inst := NewInstance("id", "provider", "arbitrary-model", 8000, 0, 0)
 	inst.LogFilePath = filepath.Join(t.TempDir(), "run.log")

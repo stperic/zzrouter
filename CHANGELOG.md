@@ -56,16 +56,28 @@
   may still refuse, retaining the pin record without claiming a run was kept.
 
 - Stop node-owned engines in parallel with one SIGTERM per process group and a
-  full run budget after HTTP drain. Join concurrent API stops, keep pins and
-  served models, and bound worker refresh shutdown. API stops honor configured
-  grace; node stops bound it by the run budget and give later subsystems a
-  separate epilogue budget. Node-started daemons receive TERM before escalation.
+  full run budget after HTTP drain. Signal runs before joining existing idle or
+  replacement stops, then signal late registrations without waiting for earlier
+  stops or retrying failures. Join concurrent API stops, keep pins and
+  served models, and bound worker refresh shutdown. Cancellation before the stop
+  claims the run abandons the stop; after the claim, caller cancellation
+  preserves grace and registry cleanup. Node stops bound grace by the run budget,
+  including stops already in progress. Termination and reaping share one stop
+  budget, including a process whose PID is recorded during the stop. Node shutdown
+  reserves time for force wait and cleanup after the run deadline. Served-model
+  stops use the load readiness window plus cleanup so a loading model can finish
+  and unload; node shutdown still caps their drain. Failed reaper drains retain
+  the run's key and port. Background starts follow server cancellation;
+  node-started daemons stay up through drain and runs, then stop in parallel with
+  a separate grace and escalation budget, followed by final subsystem teardown.
   Systemd keeps stop settings solely in a drop-in with
   `KillMode=mixed`; the privileged updater installs the drop-in on its next
-  update, or immediately via `sudo zzrouter-node update enable`. Launchd's
-  installed plist carries the derived stop timeout. Drop-in installation failures
-  warn in update status and logs while updates and rollbacks continue. Windows
-  process handling is unchanged.
+  update, or immediately via `sudo zzrouter-node update enable --restart=false`.
+  Launchd's installed plist carries the derived stop timeout. Drop-in installation
+  failures warn in update status and logs while updates and rollbacks continue.
+  Uninstall removes the stop drop-in while preserving operator files. On Windows,
+  caller cancellation after the stop claims the run also preserves grace and
+  cleanup; stdin signalling, Job Objects and the leader-only wait remain.
 
 - Declare new engine flags in an operator-owned `schema:` block without a
   zzRouter release. One parameters PATCH or `zz_params_set` can declare and set

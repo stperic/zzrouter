@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stperic/zzrouter/internal/testproc"
@@ -946,6 +947,25 @@ func TestServiceReadinessJobCancelStopsTheService(t *testing.T) {
 	require.False(t, stopped.Desired)
 	require.Zero(t, stopped.PID)
 	require.Empty(t, stopped.JobID)
+}
+
+type blockedOSControl struct{ testOSService }
+
+func (*blockedOSControl) Control(ctx context.Context, _, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestCancelServiceReadyUsesDaemonStopBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m := newServiceTestManager(t, true, false)
+		m.serviceState("generic-daemon").manager = &blockedOSControl{testOSService{name: "systemd", running: true}}
+		started := utils.Now()
+		err := m.cancelServiceReady("generic-daemon")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Equal(t, constants.ShutdownDaemonTimeout, utils.Now().Sub(started),
+			"a hung daemon control must not wait for the model load window")
+	})
 }
 
 // Disabling a provider stops its daemon, so the wait it leaves behind ends too;
