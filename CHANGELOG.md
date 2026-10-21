@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Record a cancelled served load's shutdown cause before removing its run,
+  including when shutdown has claimed the stop but has not cancelled the run
+  context. Ordinary process starts racing a stop retain the retryable stopping
+  outcome.
+
 - Builds on Go 1.26.10, which distrusts compromised intermediate certificates
   in the standard library's crypto/x509 (GO-2026-6809, reachable through
   cluster certificate verification).

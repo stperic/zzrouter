@@ -11,10 +11,53 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/utils/clock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type servedRegistrationClock struct {
+	clock.Clock
+	barrier *barrier
+	once    sync.Once
+}
+
+func (c *servedRegistrationClock) Now() time.Time {
+	c.once.Do(c.barrier.hold)
+	return c.Clock.Now()
+}
+
+func TestServedShutdownWaitsForRegisteredLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := newBarrier()
+		reg, err := jobs.NewRegistry(jobs.Config{NodeName: "test", Clock: &servedRegistrationClock{Clock: clock.System(), barrier: b}})
+		require.NoError(t, err)
+		t.Cleanup(reg.Stop)
+		r := newServedRig(t, WithJobsRegistry(reg))
+		req := EnsureRequest{Provider: "ollama", Model: servedModel}
+		out := r.ensure(t.Context(), req)
+		b.reached(t)
+		runs := r.m.instances.List()
+		require.Len(t, runs, 1)
+		run := runs[0]
+		stopped := make(chan error, 1)
+		go func() { stopped <- r.m.Stop(context.Background()) }()
+		synctest.Wait()
+		assert.True(t, r.m.instances.Has(run.ID), "a registered load must drain before removal")
+		assert.Equal(t, instance.StatusStopping, run.GetStatus())
+		b.open()
+		o := collect(t, []<-chan outcome{out})[0]
+		require.NoError(t, o.err)
+		require.Same(t, run, o.result.Run)
+		require.NoError(t, <-stopped)
+		assert.ErrorIs(t, run.FailureCause(), ErrShutdown)
+		assert.Equal(t, instance.StatusStopped, run.GetStatus())
+		assert.Empty(t, r.m.instances.List())
+		assert.Zero(t, r.daemon.count(true))
+	})
+}
 
 func TestServedStopWaitsForLoadingModel(t *testing.T) {
 	for _, tc := range []struct {
