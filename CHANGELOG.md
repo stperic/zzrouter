@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Builds on Go 1.26.10, which distrusts compromised intermediate certificates
+  in the standard library's crypto/x509 (GO-2026-6809, reachable through
+  cluster certificate verification).
+
 - Return HTTP 400 for invalid launch parameter keys and control characters in
   parameter or environment values.
 
