@@ -60,6 +60,7 @@ var tagByExactPath = map[string]string{
 	"/openapi.yaml":          "Spec",
 	"/metrics":               "Metrics",
 	"/openapi.json":          "Spec",
+	"/inference/mcp":         "MCP",
 	apipath.Base:             "Spec", // the management-API index
 	"/v1":                    "OpenAICompat",
 	apipath.Base + "/health": "Health",

@@ -48,6 +48,7 @@ var failureTable = []failureRow{
 	{sentinel: prov_apps.ErrInstanceNotFound, status: http.StatusNotFound, code: ""},
 
 	{sentinel: prov_apps.ErrExternalService, status: http.StatusForbidden, code: ""},
+	{sentinel: prov_apps.ErrNoLocalRun, status: http.StatusBadRequest, code: "run_preview_not_applicable"},
 
 	{sentinel: prov_apps.ErrInstallInProgress, status: http.StatusConflict, code: ""},
 	{sentinel: prov_apps.ErrServiceDisabled, status: http.StatusConflict, code: ""},

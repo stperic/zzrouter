@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a coordinator-only `/inference/mcp` endpoint for user keys. Its model,
+  chat and embedding tools call the existing `/v1` handlers, preserving model
+  access, quotas, attribution and routing. The admin MCP remains at
+  `/zzrouter/v1/mcp`; each endpoint accepts only its own key role. MCP forwards
+  only the credential accepted at ingress when clients send multiple key
+  headers. Cloud and external run previews now return 400
+  `run_preview_not_applicable` instead of failing while building a nonexistent
+  local command.
+
 - Record a cancelled served load's shutdown cause before removing its run,
   including when shutdown has claimed the stop but has not cancelled the run
   context. Ordinary process starts racing a stop retain the retryable stopping

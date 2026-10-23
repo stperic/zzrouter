@@ -1185,6 +1185,9 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	if err := svc.ValidateRunTarget(req.Model, string(req.Endpoint)); err != nil {
 		return LaunchPreview{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
+	if Lifecycle(svc) == LifecycleNone {
+		return LaunchPreview{}, ErrNoLocalRun
+	}
 	req.Provider, req.Model = key, m.runModel(key, svc, req.Model)
 	req = m.replay(req, Lifecycle(svc))
 	prepared, err := m.engine(Lifecycle(svc)).prepare(ctx, svc, key, req, port)

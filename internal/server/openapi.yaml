@@ -399,6 +399,47 @@ paths:
         '405': { description: Method not allowed by the MCP transport }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
 
+  /inference/mcp:
+    post:
+      tags: [MCP]
+      operationId: callInferenceMcp
+      summary: User-keyed inference MCP tools
+      description: |
+        Connect with a user API key in X-API-Key or Authorization: Bearer.
+        This coordinator-only stateless endpoint exposes model listing, chat
+        and embeddings. Each tool calls the existing /v1 inference handler,
+        which enforces model access, quotas, attribution and routing.
+        Workers do not mount this endpoint. Request bodies are limited to 1 MiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: MCP JSON-RPC result or actionable tool error
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid MCP request }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { description: Wrong role or cross-origin request refused }
+        '413': { description: Request exceeds 1 MiB }
+    get:
+      tags: [MCP]
+      operationId: getInferenceMcp
+      summary: Stateless inference MCP does not support GET
+      responses:
+        '405': { description: Method not allowed by the MCP transport }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+    delete:
+      tags: [MCP]
+      operationId: deleteInferenceMcp
+      summary: Stateless inference MCP does not support DELETE
+      responses:
+        '405': { description: Method not allowed by the MCP transport }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+
   /zzrouter/v1/health:
     get:
       tags: [Health]
@@ -1335,6 +1376,8 @@ paths:
         command, so an omitted provider is a client error rather than
         something to guess at; `GET /zzrouter/v1/runs/capabilities`
         lists what this cluster can run.
+        Cloud and external providers have no local run to preview; they
+        return 400 `run_preview_not_applicable`. Verify them with inference.
       requestBody:
         required: true
         content:
@@ -1356,7 +1399,8 @@ paths:
             `provider` missing, or a provider that is not configured or
             not enabled on this cluster; an endpoint the provider does not serve;
             a required endpoint runtime that is not installed; or a parameter the
-            provider's schema refuses, with the same errors[] as POST /runs. Endpoint
+            provider's schema refuses, or code `run_preview_not_applicable` for
+            a cloud or external provider, with the same errors[] as POST /runs. Endpoint
             refusals name the provider and endpoint; missing runtimes include the install call.
           content:
             application/problem+json:
@@ -11411,6 +11455,7 @@ components:
       properties:
         provider_models: { type: string, description: Coordinator provider-file operations and pointer to the CLI and agent recipe in docs/comfyui.md. }
         mcp: { type: string, description: Coordinator MCP endpoint, example: POST /zzrouter/v1/mcp }
+        inference_mcp: { type: string, description: Coordinator user-keyed inference MCP endpoint, example: POST /inference/mcp }
         api_version: { type: string, example: v1 }
         authentication:
           type: object
@@ -11422,6 +11467,9 @@ components:
             management_api:
               type: string
               description: What /zzrouter/v1/* requires.
+            inference_mcp:
+              type: string
+              description: What /inference/mcp requires.
             compatible_apis:
               type: string
               description: |
@@ -14031,7 +14079,7 @@ components:
           description: Which API group the route belongs to.
         auth:
           type: string
-          enum: [none, optional, admin, cluster]
+          enum: [none, optional, user, admin, cluster]
           description: Credential tier the route expects.
         streaming:
           type: string

@@ -41,6 +41,9 @@ func TestLifecycleNoneAllRunCallers(t *testing.T) {
 					prov_apps.WithBackendResolver(func(string) (*backend.Resolved, bool) { return &backend.Resolved{Endpoint: upstream.URL}, true }))
 				require.NoError(t, err)
 				t.Cleanup(func() { assert.NoError(t, mgr.Stop(context.Background())) })
+				_, previewErr := mgr.PreviewLaunch(t.Context(), prov_apps.EnsureRequest{Provider: provider, Model: "m"}, 0)
+				require.ErrorIs(t, previewErr, prov_apps.ErrNoLocalRun)
+				assert.Equal(t, http.StatusBadRequest, answeredStatus(previewErr))
 				executor := NewRunsExecutor(mgr, func() string { return "worker" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
 				executor.modelInPool = func(string) bool { return false }
 				executor.deploy = func(context.Context, *DeployRequest) (*Deployment, error) {

@@ -5,10 +5,24 @@ error and HTTP conventions. Tool registration, REST dispatch and authorization
 stay in zzRouter. The [shared MCP plan](plan_shared-mcp.md) records the preserved
 contracts and local dependency setup.
 
-zzRouter exposes `POST /zzrouter/v1/mcp` on the coordinator for Claude Code and
-Codex. Tools call the existing REST handlers with your admin key; validation,
-cluster routing, jobs and errors are the REST contract. Workers do not expose
-this endpoint. Both 2026-07-28 and legacy 2025-06-18 clients are supported.
+zzRouter exposes two Streamable HTTP endpoints on the coordinator for Claude Code
+and Codex. Both use the shared MCP transport and call existing HTTP handlers.
+Workers expose neither endpoint. Both 2026-07-28 and legacy 2025-06-18 clients
+are supported.
+
+| Endpoint | Credential | Tools |
+|---|---|---|
+| `POST /zzrouter/v1/mcp` | Admin key | Cluster, provider, model, run, job and API management |
+| `POST /inference/mcp` | User key | `zzrouter_inference_models`, `zzrouter_chat`, `zzrouter_embeddings` |
+
+The user tools call `/v1/models`, `/v1/chat/completions` and `/v1/embeddings`.
+The inference API owns model access, quotas, attribution and routing. The user
+endpoint accepts static and virtual user keys; an admin key cannot connect to it.
+Tool calls are non-streaming and responses have the same 1 MiB cap as admin MCP.
+Successful user tools return the REST JSON in both text and structured content,
+so clients that read either MCP result form receive the model list or inference result.
+Use the `/v1` API directly for streaming, images, tool calls and other request
+shapes that these three tools do not expose.
 
 `zz_nodes` list/detail and `zz_overview` render the same effective node health
 as REST. Three consecutive transport failures open the node breaker (`down`);
@@ -23,8 +37,8 @@ See [node routing errors](agent_error_codes.md#node-reachability).
 
 ## Connect
 
-Make `ZZROUTER_ADMIN_API_KEY` available to your client through your normal
-credential channel, and replace `<coordinator>` with its hostname.
+Make `ZZROUTER_ADMIN_API_KEY` available to your management client through your
+normal credential channel, and replace `<coordinator>` with its hostname.
 
 Claude Code:
 
@@ -32,6 +46,10 @@ Claude Code:
 claude mcp add --transport http zzrouter \
   http://<coordinator>:9090/zzrouter/v1/mcp \
   --header "X-API-Key: ${ZZROUTER_ADMIN_API_KEY}"
+
+claude mcp add --transport http zzrouter-inference \
+  http://<coordinator>:9090/inference/mcp \
+  --header "X-API-Key: ${ZZROUTER_API_KEY}"
 ```
 
 Codex: add this to `~/.codex/config.toml` (or your project configuration):
@@ -40,6 +58,12 @@ Codex: add this to `~/.codex/config.toml` (or your project configuration):
 [mcp_servers.zzrouter]
 url = "http://<coordinator>:9090/zzrouter/v1/mcp"
 env_http_headers = { "X-API-Key" = "ZZROUTER_ADMIN_API_KEY" }
+tool_timeout_sec = 60
+default_tools_approval_mode = "approve"
+
+[mcp_servers.zzrouter_inference]
+url = "http://<coordinator>:9090/inference/mcp"
+env_http_headers = { "X-API-Key" = "ZZROUTER_API_KEY" }
 tool_timeout_sec = 60
 default_tools_approval_mode = "approve"
 ```
@@ -112,6 +136,9 @@ verification and diagnostics; no probe verdict is saved in the catalog.
 and optional MiB amounts. Only `fit` confirms capacity; `unknown` is uncertainty,
 and `no_fit` is a refusal by the shared memory policy. Preview never launches,
 evicts or reserves memory, and current load can still prevent a later launch.
+Cloud and external providers have no local command or memory budget to preview;
+`zz_run_preview` returns `run_preview_not_applicable` for them. Use `zz_chat`
+to verify their serving path.
 `zz_nodes` reports inventory; comparing file size with its memory does not prove
 fit. Use `zz_api_get` on `/zzrouter/v1/nodes/compatible` with the exact `model`
 and optional `provider`/`registry` to read confirmed nodes and all
@@ -429,6 +456,20 @@ Against a running dev coordinator:
 ```sh
 scripts/mcp-conformance.sh http://127.0.0.1:9091/zzrouter/v1/mcp
 ```
+
+With distinct admin and user keys available in the environment, exercise both
+endpoints through the official Go MCP client:
+
+```sh
+go run ./test/e2e/cmd/mcpsmoke \
+  -admin-url http://127.0.0.1:9090/zzrouter/v1/mcp \
+  -user-url http://127.0.0.1:9090/inference/mcp \
+  -chat-model qwen2.5:0.5b@macbook-pro \
+  -embedding-model all-minilm:latest@macbook-pro
+```
+
+Omit either model flag to skip that inference probe. The command checks admin
+inventory tools and the user catalog, then runs the requested user inference.
 
 The official suite cannot send an API key. Target a local key-injecting proxy
 or a loopback test setup, as described in the script. Preserve the incoming

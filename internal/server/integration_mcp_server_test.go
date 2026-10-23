@@ -204,6 +204,7 @@ func TestMCPOperationBindings(t *testing.T) {
 	require.Equal(t, "admin", authTierForPath("/zzrouter/v1/mcp"))
 	discovery := buildAPIDiscovery(s)
 	require.Equal(t, "POST /zzrouter/v1/mcp", discovery.MCP)
+	require.Equal(t, "POST /inference/mcp", discovery.InferenceMCP)
 }
 
 func TestMCPAccountingOnce(t *testing.T) {

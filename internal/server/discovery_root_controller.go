@@ -23,6 +23,7 @@ var apiDiscoveryHidden = map[string]struct{}{
 type apiDiscoveryResponse struct {
 	Runs                string              `json:"runs"`
 	MCP                 string              `json:"mcp,omitempty"`
+	InferenceMCP        string              `json:"inference_mcp,omitempty"`
 	APIVersion          string              `json:"api_version"`
 	Authentication      apiAuthentication   `json:"authentication"`
 	Inference           apiInference        `json:"inference"`
@@ -135,6 +136,7 @@ func describeInference(s *Server) apiInference {
 type apiAuthentication struct {
 	Schemes        []string `json:"schemes"`
 	ManagementAPI  string   `json:"management_api"`
+	InferenceMCP   string   `json:"inference_mcp,omitempty"`
 	CompatibleAPIs string   `json:"compatible_apis"`
 }
 
@@ -146,11 +148,14 @@ func registerAPIDiscoveryRoute(router *gin.RouterGroup, s *Server) {
 
 func buildAPIDiscovery(s *Server) apiDiscoveryResponse {
 	mcpEndpoint := ""
+	inferenceMCPEndpoint := ""
 	if s.config == nil || !s.config.Cluster.IsWorker() {
 		mcpEndpoint = "POST /zzrouter/v1/mcp"
+		inferenceMCPEndpoint = "POST /inference/mcp"
 	}
 	return apiDiscoveryResponse{
 		MCP:                 mcpEndpoint,
+		InferenceMCP:        inferenceMCPEndpoint,
 		APIVersion:          "v1",
 		ProviderDiagnostics: describeProviderDiagnostics(s),
 		ProviderModels:      "Coordinator admin: GET /providers/{name}/models?node=NAME lists provider files, with optional category. POST that route with node, category, source and optional name starts a download; follow its job_id on the returned node. DELETE with node, category and name removes one file. POST /providers/{name}/models/resolve with node, workflow and download inspects UI model metadata and optionally starts missing downloads. Provider files stay outside the LLM catalog. See docs/comfyui.md for the CLI and zz_api recipe.",
@@ -187,6 +192,7 @@ func describeAuthentication(s *Server) apiAuthentication {
 			"X-API-Key: <key>",
 		},
 		ManagementAPI:  "required: admin key for " + apiDiscoveryPrefix + "/*",
+		InferenceMCP:   "required: user key for /inference/mcp",
 		CompatibleAPIs: describeCompatAuth(s),
 	}
 }

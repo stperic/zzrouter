@@ -65,7 +65,10 @@ func newServer(cfg Config) *mcp.Server {
 
 // New builds a stateless handler serving both supported protocol eras.
 func New(cfg Config) http.Handler {
-	s := newServer(cfg)
+	return httpHandler(newServer(cfg))
+}
+
+func httpHandler(s *mcp.Server) http.Handler {
 	handler := commonmcp.HTTPHandler(s, commonmcp.HTTPOptions{MaxRequestBytes: MaxRequestBytes})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		outer := &outerRequest{requestID: w.Header().Get("X-Request-ID"), ctx: r.Context()}

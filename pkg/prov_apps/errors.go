@@ -58,6 +58,9 @@ var (
 	// ErrExternalService refuses a lifecycle change to a provider zzRouter does not run.
 	ErrExternalService = errors.New("provider is external; zzRouter cannot change its lifecycle")
 
+	// ErrNoLocalRun refuses a command preview for a provider with no local process.
+	ErrNoLocalRun = errors.New("provider has no local run to preview; use inference to verify it")
+
 	// ErrServiceDisabled refuses starting a provider that is disabled.
 	ErrServiceDisabled = errors.New("provider is disabled; enable it before starting")
 

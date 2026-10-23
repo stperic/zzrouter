@@ -130,6 +130,7 @@ func (s *Server) setupRoutes() {
 		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
 		s.registerPublicRoutes(publicAPI)
 		s.registerMCPServer(publicAPI)
+		s.registerInferenceMCPServer()
 
 		// ACCESS CONTROL API — teams, virtual keys, spend reports.
 		// Separate group so operators can later swap in a dedicated

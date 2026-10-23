@@ -32,6 +32,7 @@ var sentinels = map[string]error{
 	"ErrInstanceNotFound":         prov_apps.ErrInstanceNotFound,
 	"ErrInstallInProgress":        prov_apps.ErrInstallInProgress,
 	"ErrExternalService":          prov_apps.ErrExternalService,
+	"ErrNoLocalRun":               prov_apps.ErrNoLocalRun,
 	"ErrServiceDisabled":          prov_apps.ErrServiceDisabled,
 	"ErrInstancesRunning":         prov_apps.ErrInstancesRunning,
 	"ErrProviderNotManaged":       prov_apps.ErrProviderNotManaged,

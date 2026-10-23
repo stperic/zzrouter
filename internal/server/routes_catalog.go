@@ -15,7 +15,7 @@ type RouteSpec struct {
 	Method    string `json:"method"`
 	Path      string `json:"path"`
 	Surface   string `json:"surface"` // health|infra|openai|ollama|admin|internal|nativewire|mcp|other
-	Auth      string `json:"auth"`    // none|optional|admin|cluster
+	Auth      string `json:"auth"`    // none|optional|user|admin|cluster
 	Streaming string `json:"streaming,omitempty"`
 	Async     bool   `json:"async,omitempty"`
 	// Retired marks a route that is mounted but only ever answers 410
@@ -119,7 +119,7 @@ func catalogPathMatch(pattern, path string) (string, bool) {
 
 func surfaceForPath(p string) string {
 	switch {
-	case p == "/zzrouter/v1/mcp" || strings.HasPrefix(p, "/zzrouter/v1/mcp/"):
+	case p == "/zzrouter/v1/mcp" || strings.HasPrefix(p, "/zzrouter/v1/mcp/"), p == "/inference/mcp":
 		return "mcp"
 	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "internal"
@@ -143,6 +143,8 @@ func surfaceForPath(p string) string {
 
 func authTierForPath(p string) string {
 	switch {
+	case p == "/inference/mcp":
+		return "user"
 	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):
 		return "cluster"
 	case p == "/zzrouter/v1" || strings.HasPrefix(p, "/zzrouter/v1/"):
