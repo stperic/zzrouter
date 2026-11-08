@@ -10,9 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
+	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +53,15 @@ func TestIntegration_PairingE2E_RealTLS(t *testing.T) {
 	// reference point. Captured BEFORE we spawn anything.
 	baseline := runtime.NumGoroutine()
 
-	coord := bringUpCoordinator(t)
+	var notices atomic.Int32
+	coord := bringUpCoordinator(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/zzrouter/v1/internal/models/refresh" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		notices.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
 	coordURL := "https://" + coord.Addr().String()
 
 	// Derive the coord's CA SPKI fingerprint for the worker's pin.
@@ -58,7 +69,8 @@ func TestIntegration_PairingE2E_RealTLS(t *testing.T) {
 	sum := sha256.Sum256(caCert.RawSubjectPublicKeyInfo)
 	caFingerprint := hex.EncodeToString(sum[:])
 
-	worker := bringUpUnclaimedWorker(t)
+	worker, observedURL := bringUpUnclaimedWorker(t)
+	require.Equal(t, "https://127.0.0.1:1", worker.CoordinatorURL())
 
 	// Start the admin-accept goroutine: poll for the worker's pending
 	// entry, then accept it. Uses AcceptPairing (the same codepath the
@@ -143,6 +155,24 @@ func TestIntegration_PairingE2E_RealTLS(t *testing.T) {
 	urlData, err := os.ReadFile(filepath.Join(worker.cfg.ClusterDir, "coordinator_url"))
 	require.NoError(t, err)
 	assert.Contains(t, string(urlData), coord.Addr().String())
+	require.Equal(t, coordURL, worker.CoordinatorURL(), "pairing must replace the runtime endpoint without restart")
+	select {
+	case got := <-observedURL:
+		require.Equal(t, coordURL, got, "mode callbacks must observe the accepted coordinator")
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker mode callback did not complete")
+	}
+
+	client, err := worker.DialClient(clusterid.RoleCoordinator.OU())
+	require.NoError(t, err)
+	signaler := clustersignal.New(clustersignal.Config{
+		IsWorker: func() bool { return worker.Mode() == Worker }, MTLSClient: func() *http.Client { return client }, CoordinatorURL: worker.CoordinatorURL,
+	})
+	signaler.Start(t.Context())
+	t.Cleanup(func() { signaler.Stop(context.Background()) })
+	require.NoError(t, signaler.NotifyCacheRefresh(t.Context()), "reverse catalog publication must work immediately after pairing")
+	require.EqualValues(t, 1, notices.Load())
+	require.NoError(t, worker.renewOnce(t.Context()), "renewal must use the accepted coordinator without restart")
 
 	// Clean shutdown. Both nodes must Stop without leaking goroutines.
 	require.NoError(t, worker.Stop(context.Background()))
@@ -162,7 +192,7 @@ func TestIntegration_PairingE2E_RealTLS(t *testing.T) {
 // assigned port with an inference handler pre-wired (not used by this
 // test but required for worker-track modes; Coordinator doesn't
 // actually need it but the constructor is mode-agnostic).
-func bringUpCoordinator(t *testing.T) *Node {
+func bringUpCoordinator(t *testing.T, handler http.Handler) *Node {
 	t.Helper()
 	root := t.TempDir()
 	cfg := Config{
@@ -175,6 +205,7 @@ func bringUpCoordinator(t *testing.T) *Node {
 	}
 	n, err := New(cfg)
 	require.NoError(t, err)
+	require.NoError(t, n.SetAdminAPIHandler(handler))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	t.Cleanup(func() { _ = n.Stop(context.Background()) })
@@ -188,9 +219,11 @@ func bringUpCoordinator(t *testing.T) *Node {
 // handler is the 501-stub; BeginPairing doesn't need it to succeed
 // but completePairing requires it be pre-wired for the post-pairing
 // listener build.
-func bringUpUnclaimedWorker(t *testing.T) *Node {
+func bringUpUnclaimedWorker(t *testing.T) (*Node, <-chan string) {
 	t.Helper()
 	root := t.TempDir()
+	observedURL := make(chan string, 1)
+	var n *Node
 	cfg := Config{
 		Mode:              Unclaimed,
 		Port:              0,
@@ -200,8 +233,15 @@ func bringUpUnclaimedWorker(t *testing.T) *Node {
 		PairingPath:       filepath.Join(root, "pairing.txt"),
 		NodeName:          "worker-e2e",
 		AdvertiseDNSNames: []string{"worker-e2e"},
+		CoordinatorURL:    "https://127.0.0.1:1",
+		OnModeChange: func(to Mode, _ string) {
+			if to == Worker {
+				observedURL <- n.CoordinatorURL()
+			}
+		},
 	}
-	n, err := New(cfg)
+	var err error
+	n, err = New(cfg)
 	require.NoError(t, err)
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotImplemented)
@@ -213,7 +253,7 @@ func bringUpUnclaimedWorker(t *testing.T) *Node {
 	t.Cleanup(func() { _ = n.Stop(context.Background()) })
 	require.NoError(t, n.Start(ctx))
 	require.Nil(t, n.Addr(), "unclaimed worker must be dormant (no bound listener)")
-	return n
+	return n, observedURL
 }
 
 type testAssertionErr struct{ msg string }

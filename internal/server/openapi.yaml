@@ -2137,7 +2137,8 @@ paths:
         provider model files. ComfyUI may be stopped. Search matches IDs, titles and descriptions
         without case. Results use canonical ID order. Select an ID or exact unique title for
         resolveProviderModels with download=true; follow returned owning-node jobs to completion.
-        API-only templates are listed but local model provisioning returns template_unsupported.
+        Catalog model_provisioning is unverified until the selected graph is inspected on the named node.
+        API-only templates are listed with unsupported model_provisioning; local model provisioning returns template_unsupported.
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
@@ -2157,6 +2158,48 @@ paths:
                   total: { type: integer }
                   has_more: { type: boolean }
               example: {data: [{id: image_qwen_image_2_1_turbo_t2i, title: 'Qwen Image 2.1 Turbo: Text to Image', source: 'https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_qwen_image_2_1_turbo_t2i.json', open_source: true}], total: 1, has_more: false}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
+  /zzrouter/v1/providers/{name}/templates/{template}:
+    get:
+      tags: [Providers]
+      operationId: getProviderTemplate
+      summary: Read one official ComfyUI template and its UI workflow
+      description: |
+        Read a canonical catalog ID and return its UI graph, including API-only
+        templates. Uses the same fixed-origin bounded source reader as dependency resolution. This is
+        read-only: it does not download models, start ComfyUI, save files or execute the graph.
+        workflow_sha256 identifies upstream source bytes; JSON serialization can change whitespace and
+        escaping while preserving graph content. Pass the returned workflow object to resolveProviderModels
+        with download=true to provision that exact graph without another upstream lookup. ComfyUI's
+        native frontend owns UI-to-API conversion; only frontend-exported API prompts go to /prompt.
+        Source documents are bounded to 4 MiB. MCP retains its existing response-size limit and can
+        refuse an oversized read without admitting any downloads; use REST or CLI to read larger graphs.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: template, required: true, schema: { type: string, minLength: 1 }, description: Canonical catalog ID. Titles remain supported by POST dependency resolution. }
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
+      responses:
+        '200':
+          description: Current template metadata and UI workflow; model provisioning remains unverified unless API-only.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [provider, node, template, workflow]
+                    properties:
+                      provider: { type: string }
+                      node: { type: string }
+                      template: { $ref: '#/components/schemas/WorkflowTemplate' }
+                      workflow: { type: object, description: UI graph for ComfyUI's native frontend; not an executable API prompt. }
         '400': { $ref: '#/components/responses/ProviderModelProblem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '403': { $ref: '#/components/responses/MgmtForbidden' }
@@ -2185,6 +2228,12 @@ paths:
         earlier job IDs are retained. Returns 202 if any job was accepted, otherwise 200. No parent
         job or rollback. Zero-byte files are missing but admission reports failed/file_exists.
         Follow jobs on the returned node; no provider restart or catalog update.
+        Read getProviderTemplate first when the caller needs the UI graph, then submit that exact
+        workflow object here. Model-provisioning replies do not embed large UI graphs.
+        Template model_provisioning is supported when all declared files are resolvable on this node,
+        otherwise unsupported; supported does not certify custom nodes, installed engine version or
+        execution readiness. Missing metadata returns workflow_model_metadata_missing with
+        model_provisioning=unverified, never an empty successful requirement list.
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -13486,7 +13535,7 @@ components:
 
     WorkflowTemplate:
       type: object
-      required: [id, title, source]
+      required: [id, title, source, model_provisioning]
       properties:
         id: { type: string }
         title: { type: string }
@@ -13495,6 +13544,10 @@ components:
         open_source: { type: boolean }
         source: { type: string, format: uri }
         workflow_sha256: { type: string, minLength: 64, maxLength: 64 }
+        model_provisioning:
+          type: string
+          enum: [unverified, supported, unsupported]
+          description: File provisioning only. Discovery is unverified unless explicitly API-only; resolution inspects declared requirements on the selected node. Does not establish engine/custom-node compatibility or execution readiness.
 
     ProviderModelResolution:
       type: object

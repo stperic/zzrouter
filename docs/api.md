@@ -24,7 +24,7 @@ List providers with `GET /zzrouter/v1/providers` and models with
 Use only inference endpoints advertised for the selected model.
 
 Provider-owned files use `/zzrouter/v1/providers/{name}/models` with a required
-node, plus `/models/resolve` for saved workflow metadata or an official template ID/title. `/providers/{name}/templates` lists the searchable official ComfyUI catalog; `download:true` on resolve starts existing per-file jobs for missing dependencies, including those in nested subgraphs. The discovery document's
+node, plus `/models/resolve` for saved workflow metadata or an official template ID/title. `/providers/{name}/templates` lists the searchable official ComfyUI catalog; `/providers/{name}/templates/{template}` reads one UI graph without provisioning. Submit that received graph as `workflow` to resolve its exact dependencies without refetching upstream. `download:true` on resolve starts existing per-file jobs for missing dependencies, including those in nested subgraphs. Catalog model provisioning remains unverified until inspection; it does not certify execution compatibility. The discovery document's
 `provider_models` field points to the [ComfyUI operator and agent recipe](comfyui.md#model-files-through-the-coordinator).
 
 Installation, downloads and launches may return HTTP 202 with a job ID.

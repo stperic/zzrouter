@@ -675,7 +675,7 @@ func (n *Node) renewOnce(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, renewHTTPTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		n.cfg.CoordinatorURL+"/zzrouter/v1/cluster/renew", bytes.NewReader(body))
+		n.CoordinatorURL()+"/zzrouter/v1/cluster/renew", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("renew request: %w", err)
 	}

@@ -48,6 +48,11 @@ func (f *fakeProviderModelsAPI) ResolveProviderModels(ctx context.Context, provi
 	return map[string]any{"requirements": []any{map[string]any{"status": "failed", "reason": "file_exists"}, map[string]any{"status": "downloading", "job_id": "accepted-job"}}}, f.failed
 }
 
+func (f *fakeProviderModelsAPI) GetProviderTemplate(ctx context.Context, provider, node, template string) (pkgClient.ProviderTemplate, error) {
+	f.record(ctx, provider, node, "", template)
+	return pkgClient.ProviderTemplate{Workflow: json.RawMessage(`{"nodes":[{"widgets_values":[9007199254740993]}]}`)}, f.failed
+}
+
 func TestProviderModelsCommandsAndRequiredFlags(t *testing.T) {
 	group, _, err := NewProvidersCmd().Find([]string{"models"})
 	require.NoError(t, err)
@@ -195,4 +200,20 @@ func TestProviderModelsResolveTemplateFlagsAndRequest(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("node", "worker"))
 	require.NoError(t, runProviderModels(cmd, api, "studio", nil))
 	require.Contains(t, out.String(), "has_more")
+}
+
+func TestProviderModelsTemplateWorkflowRead(t *testing.T) {
+	cmd := newProviderModelCmd("templates")
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	cmd.SetContext(t.Context())
+	require.NoError(t, cmd.Flags().Set("node", "worker"))
+	require.NoError(t, cmd.Flags().Set("template", "image_template"))
+	api := &fakeProviderModelsAPI{}
+	require.NoError(t, runProviderModels(cmd, api, "studio", nil))
+	require.Equal(t, "studio", api.provider)
+	require.Equal(t, "worker", api.node)
+	require.Equal(t, "image_template", api.name)
+	require.Contains(t, out.String(), "9007199254740993", "printing a workflow must preserve full-width seeds")
+	require.Empty(t, api.resolve.Node, "reading a template must not resolve or download models")
 }

@@ -16,6 +16,8 @@ const (
 	CodeTemplateUnsupported RouteErrorCode = "template_unsupported"
 	// CodeTemplateSourceUnavailable identifies a failed official template source read.
 	CodeTemplateSourceUnavailable RouteErrorCode = "template_source_unavailable"
+	// CodeWorkflowModelMetadataMissing means model provisioning cannot be assessed.
+	CodeWorkflowModelMetadataMissing RouteErrorCode = "workflow_model_metadata_missing"
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.

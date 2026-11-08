@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
@@ -18,6 +19,13 @@ type providerModelList struct {
 	Provider   string                        `json:"provider"`
 	Node       string                        `json:"node"`
 	Categories []provapps.ModelStoreCategory `json:"categories"`
+}
+
+type providerTemplate struct {
+	Provider string                     `json:"provider"`
+	Node     string                     `json:"node"`
+	Template *provapps.WorkflowTemplate `json:"template"`
+	Workflow json.RawMessage            `json:"workflow"`
 }
 
 type providerModelDelete struct {
@@ -102,4 +110,19 @@ func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, 
 		}
 	}
 	return filtered, nil
+}
+
+// GetProviderTemplate retrieves a UI graph without provisioning model files.
+func (s *ProvidersService) GetProviderTemplate(ctx context.Context, provider, node, selector string) (*providerTemplate, error) {
+	if _, err := s.ListProviderModels(ctx, provider, node, ""); err != nil {
+		return nil, err
+	}
+	entry, workflow, err := s.templates.Resolve(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	if entry.ID != selector {
+		return nil, httperr.Error{Status: http.StatusNotFound, Code: string(httperr.CodeTemplateNotFound), Message: "read templates by canonical catalog ID"}
+	}
+	return &providerTemplate{Provider: provider, Node: node, Template: entry, Workflow: workflow}, nil
 }

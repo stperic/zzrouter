@@ -331,6 +331,7 @@ type Node struct {
 	renewalCancel   context.CancelFunc
 	renewalClock    renewalClock
 	selfHealStarted bool
+	coordinatorURL  string
 
 	// mode is read on every request via ClusterModeGate — atomic so
 	// reads are lock-free. Writes happen only in completePairing
@@ -390,8 +391,9 @@ func New(cfg Config) (*Node, error) {
 	}
 
 	n := &Node{
-		cfg:      cfg,
-		listenFn: net.Listen,
+		cfg:            cfg,
+		coordinatorURL: cfg.CoordinatorURL,
+		listenFn:       net.Listen,
 	}
 	n.mode.Store(int32(cfg.Mode))
 
@@ -439,7 +441,9 @@ func New(cfg Config) (*Node, error) {
 // target the coord directly — the Endpoints list only carries
 // coord→worker URLs, not the other direction.
 func (n *Node) CoordinatorURL() string {
-	return n.cfg.CoordinatorURL
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.coordinatorURL
 }
 
 // SetAdminAPIHandler installs the handler that serves /zzrouter/v1/internal/*

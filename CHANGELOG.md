@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Update a worker's runtime coordinator endpoint when pairing commits, so reverse catalog publication and certificate renewal work without a node restart. Preserve launch-job failure when publication fails.
+
+- Add read-only ComfyUI template retrieval for passing the exact UI graph to the existing dependency resolver and native frontend. Distinguish unverified, supported and unsupported model provisioning, and report missing model declarations with a closed error code. Large MCP reads retain their response limit without admitting downloads. Execution remains in ComfyUI's native frontend/API.
+
+- Preserve full-width integer and decimal JSON values in generic MCP API replies and ComfyUI workflow reads, avoiding rounded widget seeds during client handoff.
+
 - Allow GitHub release-asset redirects in managed provider installs, fixing blocked Windows llama.cpp downloads while retaining provider origin pins and redirect validation.
 
 - Resolve ComfyUI template dependencies by official ID or title, including nested subgraphs, and download missing models through existing worker jobs. Add searchable template catalog discovery to REST, CLI and generic MCP tools.

@@ -71,6 +71,8 @@ Anthropic errors carry the code in `error.code`; Ollama errors retain their flat
 
 ComfyUI template resolution adds `template_not_found` (404: search with `zz_api_get`), `template_ambiguous` (409: choose an ID from the bounded `templates` array), `template_unsupported` (400: API-only template), and `template_source_unavailable` (502: official source read failed). Invalid upstream documents use `upstream_shape`; timeouts use `upstream_timeout`. Existing dependency failures retain their per-file status and typed reason.
 
+`workflow_model_metadata_missing` (400) means the workflow declares no model sources that zzRouter can inspect. `model_provisioning: unverified` preserves that uncertainty. Supply a UI workflow with model declarations or choose another official template through `zz_api_get`; do not infer that no models are needed. `getProviderTemplate` reads a selected template's UI graph for ComfyUI's native frontend, not an executable API prompt.
+
 
 ### Baseline codes
 

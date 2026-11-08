@@ -115,7 +115,7 @@ func (d dispatcher) apiCall(ctx context.Context, in apiGetInput, req request) (a
 	for key, value := range in.Query {
 		req.query.Set(key, value)
 	}
-	var reply any
+	var reply json.RawMessage
 	if err := d.call(ctx, req, &reply); err != nil {
 		return agentOutput{}, err
 	}

@@ -44,6 +44,9 @@ func TestProviderModelsOpenAPIReferencesAndExamples(t *testing.T) {
 	catalog := paths["/zzrouter/v1/providers/{name}/templates"].(map[string]any)["get"].(map[string]any)
 	walk(catalog)
 	require.Equal(t, "listProviderTemplates", catalog["operationId"])
+	template := paths["/zzrouter/v1/providers/{name}/templates/{template}"].(map[string]any)["get"].(map[string]any)
+	walk(template)
+	require.Equal(t, "getProviderTemplate", template["operationId"])
 	require.Equal(t, "resolveProviderModels", resolve["operationId"])
 	for _, status := range []string{"200", "202"} {
 		response := resolve["responses"].(map[string]any)[status].(map[string]any)

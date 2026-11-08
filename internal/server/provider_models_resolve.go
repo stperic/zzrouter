@@ -105,7 +105,9 @@ func workflowRequirements(raw json.RawMessage) ([]providerModelRequirement, erro
 		items = append(items, providerModelRequirement{Category: model.Directory, Name: model.Name, Source: model.URL})
 	}
 	if len(items) == 0 {
-		return nil, invalidWorkflow("workflow carries no model metadata; supply UI nodes[].properties.models, referenced subgraphs or extra_data.extra_pnginfo.workflow")
+		return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeWorkflowModelMetadataMissing),
+			Message: "workflow carries no model metadata; model provisioning is unverified; supply a UI workflow with declared model sources",
+			Extra:   map[string]any{"model_provisioning": "unverified"}}
 	}
 	return items, nil
 }
@@ -187,6 +189,9 @@ func (s *ProvidersService) ResolveProviderModels(ctx context.Context, provider s
 		if err != nil {
 			return nil, err
 		}
+		if selected.OpenSource != nil && !*selected.OpenSource {
+			return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeTemplateUnsupported), Message: "API-only templates do not install local model files"}
+		}
 	}
 	items, err := workflowRequirements(req.Workflow)
 	if err != nil {
@@ -238,5 +243,15 @@ func (s *ProvidersService) ResolveProviderModels(ctx context.Context, provider s
 			item.Status, item.JobID = "downloading", download.JobID
 		}
 	}
-	return &providerModelResolution{Provider: provider, Node: inventory.Node, Requirements: items, Template: selected}, nil
+	result := &providerModelResolution{Provider: provider, Node: inventory.Node, Requirements: items, Template: selected}
+	if selected != nil {
+		selected.ModelProvisioning = "supported"
+		for _, item := range items {
+			if item.Status == "unresolvable" {
+				selected.ModelProvisioning = "unsupported"
+				break
+			}
+		}
+	}
+	return result, nil
 }

@@ -2,6 +2,7 @@ package clusternode
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +52,16 @@ func unclaimedNodeForLifecycle(t *testing.T) *Node {
 // Tests that don't exercise the actual transport handshake can use it
 // to satisfy BeginPairing's validation.
 const validPin = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestCompletePairingFailureKeepsCoordinatorURL(t *testing.T) {
+	n := unclaimedNodeForLifecycle(t)
+	refused := errors.New("listener refused")
+	n.listenFn = func(string, string) (net.Listener, error) { return nil, refused }
+	err := n.completePairing(nil, nil, "https://new-coordinator:9091")
+	require.ErrorIs(t, err, refused)
+	require.Empty(t, n.CoordinatorURL())
+	require.Equal(t, Unclaimed, n.Mode())
+}
 
 func TestBeginPairing_NewWindow(t *testing.T) {
 	// Hold the real pairing request until cleanup, so network timing cannot close the window.

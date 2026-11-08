@@ -413,6 +413,7 @@ func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string)
 		return errors.New("node stopped during pairing completion")
 	}
 	n.selfHealStarted = false
+	n.coordinatorURL = coordURL
 	n.mode.Store(int32(Worker))
 	newSrv := &http.Server{
 		Handler:           n.buildHandler(),

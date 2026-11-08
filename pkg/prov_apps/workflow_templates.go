@@ -28,6 +28,7 @@ type WorkflowTemplate struct {
 	OpenSource        *bool  `json:"open_source,omitempty"`
 	Source            string `json:"source"`
 	SHA256            string `json:"workflow_sha256,omitempty"`
+	ModelProvisioning string `json:"model_provisioning"`
 }
 
 // WorkflowTemplateCatalog reads official templates without executing their nodes.
@@ -65,6 +66,10 @@ func (c *WorkflowTemplateCatalog) List(ctx context.Context) ([]WorkflowTemplate,
 				return nil, templateSourceShape("invalid template catalog entry")
 			}
 			entry := WorkflowTemplate{ID: item.Name, Title: item.Title, Description: item.Description, MinComfyUIVersion: item.MinVersion, OpenSource: item.OpenSource, Source: workflowTemplateOrigin + item.Name + ".json"}
+			entry.ModelProvisioning = "unverified"
+			if entry.OpenSource != nil && !*entry.OpenSource {
+				entry.ModelProvisioning = "unsupported"
+			}
 			if old, ok := byID[entry.ID]; ok {
 				sameSource := old.OpenSource == nil && entry.OpenSource == nil || old.OpenSource != nil && entry.OpenSource != nil && *old.OpenSource == *entry.OpenSource
 				if old.Title != entry.Title || old.Description != entry.Description || old.MinComfyUIVersion != entry.MinComfyUIVersion || !sameSource {
@@ -114,9 +119,6 @@ func (c *WorkflowTemplateCatalog) Resolve(ctx context.Context, selector string) 
 		return nil, nil, httperr.Error{Status: status, Code: string(code), Message: detail, Extra: map[string]any{"templates": matches[:min(len(matches), 10)]}}
 	}
 	entry := matches[0]
-	if entry.OpenSource != nil && !*entry.OpenSource {
-		return nil, nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeTemplateUnsupported), Message: "API-only templates do not install local model files"}
-	}
 	raw, err := c.read(ctx, entry.ID+".json")
 	if err != nil {
 		return nil, nil, err

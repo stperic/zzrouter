@@ -120,6 +120,11 @@ func TestProviderModelTemplateClientRequests(t *testing.T) {
 			require.Equal(t, "one", body["template"])
 			require.NotContains(t, body, "workflow")
 			_, _ = io.WriteString(w, `{"data":{"requirements":[],"template":{"id":"one"}}}`)
+		case 3:
+			require.Equal(t, http.MethodGet, r.Method)
+			require.Equal(t, "/zzrouter/v1/providers/studio/templates/one", r.URL.Path)
+			require.Equal(t, "worker", r.URL.Query().Get("node"))
+			_, _ = io.WriteString(w, `{"data":{"template":{"id":"one"},"workflow":{"nodes":[{"widgets_values":[9007199254740993,18446744073709551615]}]}}}`)
 		default:
 			t.Fatal("unexpected request")
 		}
@@ -131,5 +136,9 @@ func TestProviderModelTemplateClientRequests(t *testing.T) {
 	resolved, err := c.ResolveProviderModels(t.Context(), "studio", ProviderModelResolveRequest{Node: "worker", Template: "one", Download: true})
 	require.NoError(t, err)
 	require.Contains(t, resolved, "template")
-	require.Equal(t, 2, calls)
+	selected, err := c.GetProviderTemplate(t.Context(), "studio", "worker", "one")
+	require.NoError(t, err)
+	require.Contains(t, string(selected.Workflow), "9007199254740993")
+	require.Contains(t, string(selected.Workflow), "18446744073709551615")
+	require.Equal(t, 3, calls)
 }

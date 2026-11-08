@@ -40,7 +40,7 @@ func TestWorkflowTemplateCatalogSelection(t *testing.T) {
 			_, _ = io.WriteString(w, catalog)
 			return
 		}
-		require.True(t, strings.HasSuffix(r.URL.Path, "edit.json"))
+		require.True(t, strings.HasSuffix(r.URL.Path, "edit.json") || strings.HasSuffix(r.URL.Path, "api.json"))
 		_, _ = io.WriteString(w, `{"nodes":[]}`)
 	}))
 	source := NewWorkflowTemplateCatalog(client)
@@ -48,6 +48,9 @@ func TestWorkflowTemplateCatalogSelection(t *testing.T) {
 	list, err := source.List(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "api", "edit", "z"}, []string{list[0].ID, list[1].ID, list[2].ID, list[3].ID})
+	require.Equal(t, "unverified", list[0].ModelProvisioning)
+	require.Equal(t, "unsupported", list[1].ModelProvisioning)
+	require.Equal(t, "unverified", list[2].ModelProvisioning, "an unknown open_source value does not prove model provisioning")
 	for _, selector := range []string{"edit", "  image EDIT  "} {
 		entry, raw, err := source.Resolve(t.Context(), selector)
 		require.NoError(t, err)
@@ -56,7 +59,11 @@ func TestWorkflowTemplateCatalogSelection(t *testing.T) {
 		require.Equal(t, "0.39.0", entry.MinComfyUIVersion)
 		require.JSONEq(t, `{"nodes":[]}`, string(raw))
 	}
-	for selector, code := range map[string]httperr.RouteErrorCode{"Shared": httperr.CodeTemplateAmbiguous, "../outside": httperr.CodeTemplateNotFound, "API": httperr.CodeTemplateUnsupported} {
+	api, raw, err := source.Resolve(t.Context(), "API")
+	require.NoError(t, err, "reading an API-only workflow does not provision its models")
+	require.Equal(t, "unsupported", api.ModelProvisioning)
+	require.JSONEq(t, `{"nodes":[]}`, string(raw))
+	for selector, code := range map[string]httperr.RouteErrorCode{"Shared": httperr.CodeTemplateAmbiguous, "../outside": httperr.CodeTemplateNotFound} {
 		before := len(paths)
 		_, _, err := source.Resolve(t.Context(), selector)
 		var wire httperr.Error

@@ -14,6 +14,7 @@ import (
 
 type providerModelsAPI interface {
 	ListProviderTemplates(context.Context, string, url.Values) (map[string]any, error)
+	GetProviderTemplate(context.Context, string, string, string) (pkgClient.ProviderTemplate, error)
 	ListProviderModels(context.Context, string, string, string) (map[string]any, error)
 	DownloadProviderModel(context.Context, string, pkgClient.ProviderModelDownloadRequest) (pkgClient.ProviderModelDownload, error)
 	DeleteProviderModel(context.Context, string, string, string, string) (map[string]any, error)
@@ -56,6 +57,7 @@ func newProviderModelCmd(verb string) *cobra.Command {
 	case "templates":
 		cmd.Short = "List official ComfyUI workflow templates"
 		cmd.Flags().String("search", "", "Filter template IDs, titles and descriptions")
+		cmd.Flags().String("template", "", "Read one official template's UI workflow by canonical ID")
 		cmd.Flags().Int("limit", 100, "Maximum entries to return")
 		cmd.Flags().Int("offset", 0, "First entry offset")
 	case "resolve":
@@ -95,6 +97,10 @@ func runProviderModels(cmd *cobra.Command, api providerModelsAPI, provider strin
 	case "delete":
 		result, err = api.DeleteProviderModel(cmd.Context(), provider, node, category, name)
 	case "templates":
+		if selector, _ := cmd.Flags().GetString("template"); selector != "" {
+			result, err = api.GetProviderTemplate(cmd.Context(), provider, node, selector)
+			break
+		}
 		search, _ := cmd.Flags().GetString("search")
 		limit, _ := cmd.Flags().GetInt("limit")
 		offset, _ := cmd.Flags().GetInt("offset")
