@@ -69,6 +69,9 @@ Anthropic errors carry the code in `error.code`; Ollama errors retain their flat
 
 ## Management surface (`/zzrouter/v1/*`)
 
+ComfyUI template resolution adds `template_not_found` (404: search with `zz_api_get`), `template_ambiguous` (409: choose an ID from the bounded `templates` array), `template_unsupported` (400: API-only template), and `template_source_unavailable` (502: official source read failed). Invalid upstream documents use `upstream_shape`; timeouts use `upstream_timeout`. Existing dependency failures retain their per-file status and typed reason.
+
+
 ### Baseline codes
 
 Every management failure carries `code`, so branching on it never needs a

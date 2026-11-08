@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -99,4 +100,36 @@ func TestProviderModelClientPreservesProblemAndCancellation(t *testing.T) {
 	cancel()
 	_, err = c.ListProviderModels(ctx, "studio", "worker", "")
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestProviderModelTemplateClientRequests(t *testing.T) {
+	calls := 0
+	c := &Client{baseURL: "https://coordinator.test", apiKey: "test-key", httpClient: &http.Client{Transport: providerModelsTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		require.Equal(t, "test-key", r.Header.Get("X-API-Key"))
+		w := httptest.NewRecorder()
+		switch calls {
+		case 1:
+			require.Equal(t, "/zzrouter/v1/providers/studio/templates", r.URL.Path)
+			require.Equal(t, "Turbo", r.URL.Query().Get("search"))
+			require.Equal(t, "worker", r.URL.Query().Get("node"))
+			_, _ = io.WriteString(w, `{"data":[{"id":"one"}],"total":1,"has_more":false}`)
+		case 2:
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			require.Equal(t, "one", body["template"])
+			require.NotContains(t, body, "workflow")
+			_, _ = io.WriteString(w, `{"data":{"requirements":[],"template":{"id":"one"}}}`)
+		default:
+			t.Fatal("unexpected request")
+		}
+		return w.Result(), nil
+	})}}
+	catalog, err := c.ListProviderTemplates(t.Context(), "studio", url.Values{"node": {"worker"}, "search": {"Turbo"}})
+	require.NoError(t, err)
+	require.Equal(t, false, catalog["has_more"])
+	resolved, err := c.ResolveProviderModels(t.Context(), "studio", ProviderModelResolveRequest{Node: "worker", Template: "one", Download: true})
+	require.NoError(t, err)
+	require.Contains(t, resolved, "template")
+	require.Equal(t, 2, calls)
 }

@@ -8,6 +8,10 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeTemplateNotFound":          "template_not_found",
+		"CodeTemplateAmbiguous":         "template_ambiguous",
+		"CodeTemplateUnsupported":       "template_unsupported",
+		"CodeTemplateSourceUnavailable": "template_source_unavailable",
 		"CodeModelUnpriced":             "model_unpriced",
 		"CodeModelInUse":                "model_in_use",
 		"CodeModelReferenced":           "model_referenced",

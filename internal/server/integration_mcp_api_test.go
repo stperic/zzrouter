@@ -33,6 +33,8 @@ func TestMCPAPICatalogEligibility(t *testing.T) {
 		{"GET", "/zzrouter/v1/server/routes", "listServerRoutes", true},
 		{"GET", "/zzrouter/v1/server/logs", "listServerLogs", true},
 		{"GET", "/zzrouter/v1/providers/llamacpp/status", "getProviderStatus", true},
+		{"GET", "/zzrouter/v1/providers/comfyui/templates", "listProviderTemplates", true},
+		{"POST", "/zzrouter/v1/providers/comfyui/models/resolve", "resolveProviderModels", true},
 		{"PATCH", "/zzrouter/v1/providers/llamacpp/parameters", "patchProviderParameters", true},
 		{"GET", "/zzrouter/v1/jobs/run_1", "getJob", true},
 		{"PUT", "/zzrouter/v1/providers/llamacpp/parameters", "", false},
@@ -137,6 +139,7 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 		query, id  string
 		parameters []string
 	}{
+		{"listProviderTemplates", "listProviderTemplates", []string{"name", "node", "search", "limit", "offset"}},
 		{"GET getProviderResolvedParameters", "getProviderResolvedParameters", []string{"name", "node", "model", "endpoint"}},
 		{"listRegistriesHuggingfaceVariants", "listRegistriesHuggingfaceVariants", []string{"id", "provider"}},
 		{"getProvidersCatalog", "getProvidersCatalog", []string{"type", "mode", "kind"}},

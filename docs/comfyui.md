@@ -94,6 +94,9 @@ zzrouter providers models list comfyui --node localai
 zzrouter providers models download comfyui --node localai \
   --category diffusion_models \
   --source 'Comfy-Org/flux1-schnell#flux1-schnell-fp8.safetensors' --watch
+zzrouter providers models templates comfyui --node localai --search 'Qwen Image 2.1 Turbo'
+zzrouter providers models resolve comfyui --node localai \
+  --template 'Qwen Image 2.1 Turbo: Text to Image' --download
 zzrouter providers models resolve comfyui --node localai --workflow flux-workflow.json
 zzrouter providers models resolve comfyui --node localai --workflow flux-workflow.json --download
 zzrouter providers models delete comfyui --node localai \
@@ -104,7 +107,9 @@ List accepts an optional `--category`. Download accepts an optional `--name`, de
 
 Sources are exact Hugging Face `org/repo#file` references or HTTPS `/resolve/<revision>/<file>` URLs. The exact query `?download=true` is discarded; other queries and other URL hosts are refused. Gated repositories use the existing HF token on the downloading node. `--watch` follows the existing job stream on the returned owning node and reports a failed job as a command error. Listing, deletion and resolution print the complete response data, including item reasons and job IDs; global `-o json` and `-o yaml` are supported.
 
-Resolution reads only UI `nodes[].properties.models[]` entries `{name,url,directory}`, including a submission envelope's `extra_data.extra_pnginfo.workflow`. It deduplicates `(category,name)`; conflicting sources are reported, never guessed. Raw API prompts without that metadata return 400. A positive-size regular file is `present`. Other items are `missing`, `downloading`, `unresolvable` (with `invalid_model_category`, `source_unsupported`, `conflicting_source` or `missing_source`), or `failed` (the typed problem code from a refused start). An accepted earlier job remains in the response if a later start fails. Resolve returns 202 if it accepted any job, otherwise 200. The request limit is 4 MiB. Downloads can run while ComfyUI is up: ComfyUI rescans folders on request, and zzRouter keeps no model-file cache to invalidate.
+Resolution accepts exactly one `template` selector or `workflow` object. A template selector is a case-sensitive official ComfyUI catalog ID or a unique exact title compared without case. zzRouter fetches the official workflow on the coordinator; callers do not fetch JSON or choose model filenames. `GET /zzrouter/v1/providers/:name/templates?node=<node>&search=<text>` lists IDs, titles and version requirements with limit/offset pagination. API-only templates cannot provision local models. Template results include the selected identity and workflow SHA256.
+
+Both template and workflow inputs use UI `nodes[].properties.models[]` entries `{name,url,directory}`, including a submission envelope's `extra_data.extra_pnginfo.workflow`. The same parser follows referenced subgraphs through nested `definitions.subgraphs`, supports explicit legacy graph IDs and shares equivalent repeated definitions. Unused definitions do not trigger downloads. Conflicting definitions and dangling UUID references are refused before admission. It deduplicates `(category,name)`; conflicting sources are reported, never guessed. Raw API prompts without that metadata return 400. A positive-size regular file is `present`. Other items are `missing`, `downloading`, `unresolvable` (with `invalid_model_category`, `source_unsupported`, `conflicting_source` or `missing_source`), or `failed` (the typed problem code from a refused start). An accepted earlier job remains in the response if a later start fails. Resolve returns 202 if it accepted any job, otherwise 200. The request limit is 4 MiB. Downloads can run while ComfyUI is up: ComfyUI rescans folders on request, and zzRouter keeps no model-file cache to invalidate.
 
 ### Agent recipe
 
@@ -120,7 +125,9 @@ Start one file with `zz_api`:
 {"method":"POST","path":"/zzrouter/v1/providers/comfyui/models","idempotency_key":"flux-schnell-localai","body":{"node":"localai","category":"diffusion_models","source":"Comfy-Org/flux1-schnell#flux1-schnell-fp8.safetensors"}}
 ```
 
-To fetch a workflow's requirements, call `zz_api` on `/zzrouter/v1/providers/comfyui/models/resolve` with `{"node":"localai","workflow":<workflow JSON object>,"download":true}` in `body`. Both POST routes accept `idempotency_key`; retry with the same body and key. Preserve each returned job ID, follow it with `zz_job` using the returned node, and inspect every unresolved or failed item. Verify the resulting inventory before calling `zz_run_start` with provider and node; submit the workflow directly to its `base_url`. For deletion, use `zz_api` with method `DELETE` on the models route and put node, category and name in `query`.
+To install by template name, discover `listProviderTemplates` and `resolveProviderModels` with `zz_api_search`. Call `zz_api_get` on `/zzrouter/v1/providers/comfyui/templates` with `query: {"node":"localai","search":"Qwen Image 2.1 Turbo"}`. Then call `zz_api` with method `POST`, path `/zzrouter/v1/providers/comfyui/models/resolve` and `body: {"node":"localai","template":"image_qwen_image_2_1_turbo_t2i","download":true}`. Existing files are kept, and concurrent requests share existing download jobs.
+
+To fetch a saved workflow's requirements, call `zz_api` on `/zzrouter/v1/providers/comfyui/models/resolve` with `{"node":"localai","workflow":<workflow JSON object>,"download":true}` in `body`. Both POST routes accept `idempotency_key`; retry with the same body and key. Preserve each returned job ID, follow it with `zz_job` using the returned node, and inspect every unresolved or failed item. Verify the resulting inventory before calling `zz_run_start` with provider and node; submit the workflow directly to its `base_url`. For deletion, use `zz_api` with method `DELETE` on the models route and put node, category and name in `query`.
 
 ## Ensure a run
 

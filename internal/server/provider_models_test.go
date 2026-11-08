@@ -79,6 +79,7 @@ type providerModelHarness struct {
 	workerEngine        *gin.Engine
 	worker, coordinator *DeploymentsExecutor
 	cluster             *providerModelCluster
+	service             *ProvidersService
 }
 
 func newProviderModelHarness(t *testing.T) *providerModelHarness {
@@ -126,7 +127,8 @@ func newProviderModelHarness(t *testing.T) *providerModelHarness {
 		return &routing.Response{StatusCode: w.Code, Body: w.Body.Bytes(), Headers: w.Header()}, nil
 	}
 	router := routing.NewClusterAwareRouterWithClient("coordinator", h.cluster, "0", local, http.DefaultClient)
-	ctrl := &ProviderModelsController{service: NewProvidersService(router), nodes: &NodeIdentity{name: "coordinator", endpoints: []string{"worker"}}}
+	h.service = NewProvidersService(router)
+	ctrl := &ProviderModelsController{service: h.service, nodes: &NodeIdentity{name: "coordinator", endpoints: []string{"worker"}}}
 	s := &Server{idempotency: newIdempotencyStore()}
 	h.public = gin.New()
 	h.public.Use(RequestIDMiddleware(), func(c *gin.Context) {

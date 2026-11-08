@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 )
 
 type providerModelsAPI interface {
+	ListProviderTemplates(context.Context, string, url.Values) (map[string]any, error)
 	ListProviderModels(context.Context, string, string, string) (map[string]any, error)
 	DownloadProviderModel(context.Context, string, pkgClient.ProviderModelDownloadRequest) (pkgClient.ProviderModelDownload, error)
 	DeleteProviderModel(context.Context, string, string, string, string) (map[string]any, error)
@@ -19,7 +22,7 @@ type providerModelsAPI interface {
 
 func newProviderModelsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "models", Short: "Manage provider model files on a node", Args: cobra.NoArgs}
-	for _, verb := range []string{"list", "download", "delete", "resolve"} {
+	for _, verb := range []string{"list", "download", "delete", "resolve", "templates"} {
 		cmd.AddCommand(newProviderModelCmd(verb))
 	}
 	return cmd
@@ -36,7 +39,7 @@ func newProviderModelCmd(verb string) *cobra.Command {
 	}
 	cmd.Flags().StringP("node", "n", "", "Named node owning the files (required)")
 	_ = cmd.MarkFlagRequired("node")
-	if verb != "resolve" {
+	if verb != "resolve" && verb != "templates" {
 		cmd.Flags().String("category", "", "Declared model category")
 		if verb != "list" {
 			_ = cmd.MarkFlagRequired("category")
@@ -50,9 +53,16 @@ func newProviderModelCmd(verb string) *cobra.Command {
 		cmd.Flags().Bool("watch", false, "Watch the accepted download job")
 	case "delete":
 		_ = cmd.MarkFlagRequired("name")
+	case "templates":
+		cmd.Short = "List official ComfyUI workflow templates"
+		cmd.Flags().String("search", "", "Filter template IDs, titles and descriptions")
+		cmd.Flags().Int("limit", 100, "Maximum entries to return")
+		cmd.Flags().Int("offset", 0, "First entry offset")
 	case "resolve":
-		cmd.Flags().String("workflow", "", "UI workflow or submission envelope JSON file (required)")
-		_ = cmd.MarkFlagRequired("workflow")
+		cmd.Flags().String("workflow", "", "UI workflow or submission envelope JSON file")
+		cmd.Flags().String("template", "", "Official template ID or exact title")
+		cmd.MarkFlagsOneRequired("workflow", "template")
+		cmd.MarkFlagsMutuallyExclusive("workflow", "template")
 		cmd.Flags().Bool("download", false, "Start downloads for missing resolvable requirements")
 	}
 	return cmd
@@ -84,14 +94,24 @@ func runProviderModels(cmd *cobra.Command, api providerModelsAPI, provider strin
 		return nil
 	case "delete":
 		result, err = api.DeleteProviderModel(cmd.Context(), provider, node, category, name)
+	case "templates":
+		search, _ := cmd.Flags().GetString("search")
+		limit, _ := cmd.Flags().GetInt("limit")
+		offset, _ := cmd.Flags().GetInt("offset")
+		result, err = api.ListProviderTemplates(cmd.Context(), provider, url.Values{"node": {node}, "search": {search}, "limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}})
 	case "resolve":
 		path, _ := cmd.Flags().GetString("workflow")
-		workflow, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return fmt.Errorf("read workflow: %w", readErr)
+		template, _ := cmd.Flags().GetString("template")
+		var workflow json.RawMessage
+		if path != "" {
+			var readErr error
+			workflow, readErr = os.ReadFile(path)
+			if readErr != nil {
+				return fmt.Errorf("read workflow: %w", readErr)
+			}
 		}
 		start, _ := cmd.Flags().GetBool("download")
-		result, err = api.ResolveProviderModels(cmd.Context(), provider, pkgClient.ProviderModelResolveRequest{Node: node, Workflow: workflow, Download: start})
+		result, err = api.ResolveProviderModels(cmd.Context(), provider, pkgClient.ProviderModelResolveRequest{Node: node, Workflow: workflow, Template: template, Download: start})
 	}
 	if err != nil {
 		return err

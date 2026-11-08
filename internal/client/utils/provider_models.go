@@ -32,7 +32,8 @@ type ProviderModelDownload struct {
 // ProviderModelResolveRequest inspects workflow metadata and optionally downloads.
 type ProviderModelResolveRequest struct {
 	Node     string          `json:"node"`
-	Workflow json.RawMessage `json:"workflow"`
+	Workflow json.RawMessage `json:"workflow,omitempty"`
+	Template string          `json:"template,omitempty"`
 	Download bool            `json:"download"`
 }
 
@@ -65,4 +66,14 @@ func providerModelsRequest[T any](ctx context.Context, c *Client, method, provid
 	}
 	err := c.doWith(send, method, withQuery(apipath.Provider(provider)+"/models"+suffix, query), body, &out, "provider models")
 	return out.Data, err
+}
+
+// ListProviderTemplates reads the paginated official template catalog.
+func (c *Client) ListProviderTemplates(ctx context.Context, provider string, query url.Values) (map[string]any, error) {
+	var result map[string]any
+	send := func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}
+	err := c.doWith(send, http.MethodGet, withQuery(apipath.Provider(provider)+"/templates", query), nil, &result, "provider templates")
+	return result, err
 }

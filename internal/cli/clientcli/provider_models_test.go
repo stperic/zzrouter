@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,7 +52,7 @@ func TestProviderModelsCommandsAndRequiredFlags(t *testing.T) {
 	group, _, err := NewProvidersCmd().Find([]string{"models"})
 	require.NoError(t, err)
 	require.Equal(t, "models", group.Name())
-	required := map[string][]string{"list": {"node"}, "download": {"node", "category", "source"}, "delete": {"node", "category", "name"}, "resolve": {"node", "workflow"}}
+	required := map[string][]string{"list": {"node"}, "download": {"node", "category", "source"}, "delete": {"node", "category", "name"}, "resolve": {"node"}, "templates": {"node"}}
 	for verb, flags := range required {
 		cmd, _, err := group.Find([]string{verb})
 		require.NoError(t, err)
@@ -158,3 +159,40 @@ func TestProviderModelsResolveReadError(t *testing.T) {
 }
 
 var _ providerModelsAPI = (*pkgClient.Client)(nil)
+
+func (f *fakeProviderModelsAPI) ListProviderTemplates(ctx context.Context, provider string, query url.Values) (map[string]any, error) {
+	f.record(ctx, provider, query.Get("node"), "", "")
+	return map[string]any{"data": []any{map[string]any{"id": "one"}}, "total": 1, "has_more": false}, f.failed
+}
+
+func TestProviderModelsResolveTemplateFlagsAndRequest(t *testing.T) {
+	for _, set := range [][]string{nil, {"workflow"}, {"template"}, {"workflow", "template"}} {
+		cmd := newProviderModelCmd("resolve")
+		for _, flag := range set {
+			require.NoError(t, cmd.Flags().Set(flag, "value"))
+		}
+		err := cmd.ValidateFlagGroups()
+		if len(set) == 1 {
+			require.NoError(t, err)
+		} else {
+			require.Error(t, err)
+		}
+	}
+	cmd := newProviderModelCmd("resolve")
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetContext(t.Context())
+	require.NoError(t, cmd.Flags().Set("template", "Qwen Image 2.1 Turbo: Text to Image"))
+	require.NoError(t, cmd.Flags().Set("node", "worker"))
+	require.NoError(t, cmd.Flags().Set("download", "true"))
+	api := &fakeProviderModelsAPI{}
+	require.NoError(t, runProviderModels(cmd, api, "studio", func(string, string) error { t.Fatal("unexpected watch"); return nil }))
+	require.Equal(t, "Qwen Image 2.1 Turbo: Text to Image", api.resolve.Template)
+	require.Nil(t, api.resolve.Workflow)
+	require.True(t, api.resolve.Download)
+	cmd = newProviderModelCmd("templates")
+	out := &bytes.Buffer{}
+	cmd.SetOut(out)
+	require.NoError(t, cmd.Flags().Set("node", "worker"))
+	require.NoError(t, runProviderModels(cmd, api, "studio", nil))
+	require.Contains(t, out.String(), "has_more")
+}

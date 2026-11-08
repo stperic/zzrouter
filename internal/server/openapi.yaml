@@ -2126,15 +2126,55 @@ paths:
         '503': { $ref: '#/components/responses/ProviderModelProblem' }
         default: { $ref: '#/components/responses/ProviderModelProblem' }
 
+
+  /zzrouter/v1/providers/{name}/templates:
+    get:
+      tags: [Providers]
+      operationId: listProviderTemplates
+      summary: List official ComfyUI workflow templates for model dependency installation
+      description: |
+        Reads official catalog metadata on the coordinator after checking the named node supports
+        provider model files. ComfyUI may be stopped. Search matches IDs, titles and descriptions
+        without case. Results use canonical ID order. Select an ID or exact unique title for
+        resolveProviderModels with download=true; follow returned owning-node jobs to completion.
+        API-only templates are listed but local model provisioning returns template_unsupported.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
+        - { in: query, name: search, schema: { type: string } }
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Paginated official template metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, total, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/WorkflowTemplate' } }
+                  total: { type: integer }
+                  has_more: { type: boolean }
+              example: {data: [{id: image_qwen_image_2_1_turbo_t2i, title: 'Qwen Image 2.1 Turbo: Text to Image', source: 'https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_qwen_image_2_1_turbo_t2i.json', open_source: true}], total: 1, has_more: false}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
   /zzrouter/v1/providers/{name}/models/resolve:
     post:
       tags: [Providers]
       operationId: resolveProviderModels
-      summary: Resolve workflow model metadata on one node
+      summary: Resolve ComfyUI template or workflow dependencies on one node
       description: |
-        Reads only UI nodes[].properties.models entries (name, url, directory), or the UI workflow
+        Accept exactly one workflow object or official template ID / unique exact title. Template selectors
+        are resolved on the coordinator against the official ComfyUI catalog; URLs are never accepted.
+        Reads UI nodes[].properties.models entries (name, url, directory), including reachable subgraphs, or the UI workflow
         at extra_data.extra_pnginfo.workflow in a submission envelope. Raw API workflows without
-        metadata return 400. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
+        metadata return 400. Subgraph definitions may be nested; equivalent repeated definitions are shared.
+        Conflicting definitions and dangling UUID references are refused before download admission. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
         Deduplicates category/name and merges equivalent HF sources; conflicting nonempty sources
         are unresolvable. Invalid categories are unresolvable. Otherwise regular files with positive
         size are present, including manual copies. Missing/unsupported sources never trigger guesses.
@@ -2155,12 +2195,19 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [node, workflow]
+              required: [node]
+              oneOf:
+                - required: [workflow]
+                  not: { required: [template] }
+                - required: [template]
+                  not: { required: [workflow] }
               properties:
                 node: { type: string, minLength: 1 }
                 workflow: { type: object }
+                template: { type: string, minLength: 1, description: Exact official catalog ID or unique exact title. }
                 download: { type: boolean, default: false }
             examples:
+              template: { value: {node: gpu-worker, template: image_qwen_image_2_1_turbo_t2i, download: true} }
               ui: { value: {node: gpu-worker, workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'org/repo#ae.safetensors', directory: vae}]}}]}} }
               envelope: { value: {node: gpu-worker, download: true, workflow: {prompt: {}, extra_data: {extra_pnginfo: {workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'https://huggingface.co/org/repo/resolve/main/ae.safetensors', directory: vae}]}}]}}}}} }
       responses:
@@ -13437,6 +13484,18 @@ components:
             status: { type: string }
             job_id: { type: string }
 
+    WorkflowTemplate:
+      type: object
+      required: [id, title, source]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        min_comfyui_version: { type: string }
+        open_source: { type: boolean }
+        source: { type: string, format: uri }
+        workflow_sha256: { type: string, minLength: 64, maxLength: 64 }
+
     ProviderModelResolution:
       type: object
       required: [data]
@@ -13447,6 +13506,7 @@ components:
           properties:
             provider: { type: string }
             node: { type: string }
+            template: { $ref: '#/components/schemas/WorkflowTemplate' }
             requirements:
               type: array
               items:

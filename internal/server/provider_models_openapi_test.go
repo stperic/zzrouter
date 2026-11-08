@@ -41,6 +41,9 @@ func TestProviderModelsOpenAPIReferencesAndExamples(t *testing.T) {
 	walk(item)
 	resolve := paths["/zzrouter/v1/providers/{name}/models/resolve"].(map[string]any)["post"].(map[string]any)
 	walk(resolve)
+	catalog := paths["/zzrouter/v1/providers/{name}/templates"].(map[string]any)["get"].(map[string]any)
+	walk(catalog)
+	require.Equal(t, "listProviderTemplates", catalog["operationId"])
 	require.Equal(t, "resolveProviderModels", resolve["operationId"])
 	for _, status := range []string{"200", "202"} {
 		response := resolve["responses"].(map[string]any)[status].(map[string]any)
@@ -53,6 +56,12 @@ func TestProviderModelsOpenAPIReferencesAndExamples(t *testing.T) {
 		require.NoError(t, err)
 		var req providerModelResolveRequest
 		require.NoError(t, json.Unmarshal(body, &req))
+		if len(req.Template) > 0 {
+			var selector string
+			require.NoError(t, json.Unmarshal(req.Template, &selector))
+			require.NotEmpty(t, selector)
+			continue
+		}
 		items, err := workflowRequirements(req.Workflow)
 		require.NoError(t, err)
 		require.Len(t, items, 1)

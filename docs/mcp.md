@@ -427,7 +427,7 @@ parameter merge patches.
 
 Provider model files use these escape-hatch tools; see the
 [ComfyUI inventory, download, delete and workflow recipe](comfyui.md#agent-recipe).
-Their download and resolve POSTs accept `idempotency_key`. Follow each accepted
+Discover `listProviderTemplates` to search the official template catalog. Supply the selected ID or exact title as `template` to `resolveProviderModels` with `download:true`; zzRouter resolves nested model dependencies. Saved workflow JSON remains supported. Their download and resolve POSTs accept `idempotency_key`. Follow each accepted
 job with `zz_job` on its returned node, then verify the filesystem inventory.
 
 ## Tool errors

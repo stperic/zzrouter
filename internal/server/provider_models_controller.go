@@ -17,6 +17,7 @@ type ProviderModelsController struct {
 // RegisterPublicRoutes mounts provider model operations independently of runs.
 func (ctrl *ProviderModelsController) RegisterPublicRoutes(router *gin.RouterGroup, idempotent idempotentRoute) {
 	router.GET("/providers/:name/models", ctrl.List)
+	router.GET("/providers/:name/templates", ctrl.Templates)
 	idempotent(router, http.MethodPost, "/providers/:name/models", nil, ctrl.Download)
 	router.DELETE("/providers/:name/models", ctrl.Delete)
 	idempotent(router.Group("", requestSizeLimitMiddleware(providerWorkflowMaxBytes)), http.MethodPost, "/providers/:name/models/resolve", nil, ctrl.Resolve)
@@ -96,4 +97,23 @@ func (ctrl *ProviderModelsController) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// Templates handles GET /providers/:name/templates.
+func (ctrl *ProviderModelsController) Templates(c *gin.Context) {
+	node := c.Query("node")
+	if !ctrl.validateNode(c, node) {
+		return
+	}
+	pagination, ok := ParsePagination(c)
+	if !ok {
+		return
+	}
+	entries, err := ctrl.service.ListProviderTemplates(c.Request.Context(), c.Param("name"), node, c.Query("search"))
+	if err != nil {
+		RespondToError(c, err)
+		return
+	}
+	page, total, more := ApplyPagination(entries, pagination)
+	respondList(c, page, total, more)
 }

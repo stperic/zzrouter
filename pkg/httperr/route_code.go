@@ -8,6 +8,14 @@ package httperr
 type RouteErrorCode string
 
 const (
+	// CodeTemplateNotFound identifies an absent official workflow template.
+	CodeTemplateNotFound RouteErrorCode = "template_not_found"
+	// CodeTemplateAmbiguous requires a canonical template ID instead of a shared title.
+	CodeTemplateAmbiguous RouteErrorCode = "template_ambiguous"
+	// CodeTemplateUnsupported identifies templates that cannot provision local models.
+	CodeTemplateUnsupported RouteErrorCode = "template_unsupported"
+	// CodeTemplateSourceUnavailable identifies a failed official template source read.
+	CodeTemplateSourceUnavailable RouteErrorCode = "template_source_unavailable"
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.

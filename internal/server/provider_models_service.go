@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -82,4 +83,23 @@ func (s *ProvidersService) DownloadProviderModel(ctx context.Context, provider s
 	}
 	return &providerModelDownload{Provider: provider, Node: result.Node, Category: req.Category, Name: req.Name,
 		Source: req.Source, Revision: download.EffectiveRevision(), Status: result.Status, JobID: result.JobID}, nil
+}
+
+// ListProviderTemplates reads official workflow metadata for a supported node store.
+func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, node, search string) ([]provapps.WorkflowTemplate, error) {
+	if _, err := s.ListProviderModels(ctx, provider, node, ""); err != nil {
+		return nil, err
+	}
+	entries, err := s.templates.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	search = strings.ToLower(strings.TrimSpace(search))
+	filtered := make([]provapps.WorkflowTemplate, 0, len(entries))
+	for _, entry := range entries {
+		if strings.Contains(strings.ToLower(entry.ID+" "+entry.Title+" "+entry.Description), search) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
 }

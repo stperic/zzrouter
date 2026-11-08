@@ -11,3 +11,5 @@ Tests wrap it in the ComfyUI API submission envelope (`prompt`, `client_id`,
 `extra_data.extra_pnginfo.workflow`), and derive deliberate malformed/conflicting
 variations. HF transfer fixtures are synthetic HTTP responses and never download
 the actual upstream models or contact a ComfyUI server.
+
+The `image_qwen_image_2_1_turbo_{t2i,image_edit}.json` fixtures retain node types, subgraph IDs and model declarations from the [official templates](https://github.com/Comfy-Org/workflow_templates/tree/main/templates), retrieved 2026-11-03. Artistic prompts, widget values and layout are omitted. Each declares four model dependencies inside a referenced subgraph.

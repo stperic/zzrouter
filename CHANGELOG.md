@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve ComfyUI template dependencies by official ID or title, including nested subgraphs, and download missing models through existing worker jobs. Add searchable template catalog discovery to REST, CLI and generic MCP tools.
+
 - Add a coordinator-only `/inference/mcp` endpoint for user keys. Its model,
   chat and embedding tools call the existing `/v1` handlers, preserving model
   access, quotas, attribution and routing. The admin MCP remains at
