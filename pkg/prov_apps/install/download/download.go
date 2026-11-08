@@ -76,6 +76,7 @@ var AllowedHosts = []string{
 	"codeload.github.com",
 	"objects.githubusercontent.com",
 	"github-releases.githubusercontent.com",
+	"release-assets.githubusercontent.com",
 	"pypi.org",
 	"files.pythonhosted.org",
 	"ollama.com",

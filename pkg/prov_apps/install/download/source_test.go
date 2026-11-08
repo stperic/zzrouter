@@ -21,8 +21,21 @@ import (
 )
 
 func TestInstallRedirectsValidateBeforeTransport(t *testing.T) {
-	for _, target := range []string{"https://codeload.github.com/Comfy-Org/ComfyUI/tar.gz/v0.40.0", "https://objects.githubusercontent.com/release", "https://evil.test/archive", "http://codeload.github.com/archive", "https://github.com.evil.test/archive"} {
-		t.Run(target, func(t *testing.T) {
+	for _, tt := range []struct {
+		target  string
+		allowed bool
+	}{
+		{"https://codeload.github.com/Comfy-Org/ComfyUI/tar.gz/v0.40.0", true},
+		{"https://objects.githubusercontent.com/release", true},
+		{"https://release-assets.githubusercontent.com/github-production-release-asset/612354784/archive.zip", true},
+		{"https://evil.test/archive", false},
+		{"http://codeload.github.com/archive", false},
+		{"http://release-assets.githubusercontent.com/archive.zip", false},
+		{"https://github.com.evil.test/archive", false},
+		{"https://release-assets.githubusercontent.com.evil.test/archive.zip", false},
+		{"https://evil-release-assets.githubusercontent.com/archive.zip", false},
+	} {
+		t.Run(tt.target, func(t *testing.T) {
 			calls := []string{}
 			client := NewClient(time.Second)
 			client.Transport = resumeTransport(func(req *http.Request) (*http.Response, error) {
@@ -30,15 +43,15 @@ func TestInstallRedirectsValidateBeforeTransport(t *testing.T) {
 				response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: req}
 				if len(calls) == 1 {
 					response.StatusCode = http.StatusFound
-					response.Header.Set("Location", target)
+					response.Header.Set("Location", tt.target)
 				}
 				return response, nil
 			})
 			response, err := client.Get("https://github.com/Comfy-Org/ComfyUI/archive.tar.gz")
-			if strings.HasPrefix(target, "https://codeload.github.com/") || strings.HasPrefix(target, "https://objects.githubusercontent.com/") {
+			if tt.allowed {
 				require.NoError(t, err)
 				require.NoError(t, response.Body.Close())
-				assert.Equal(t, []string{"https://github.com/Comfy-Org/ComfyUI/archive.tar.gz", target}, calls)
+				assert.Equal(t, []string{"https://github.com/Comfy-Org/ComfyUI/archive.tar.gz", tt.target}, calls)
 			} else {
 				require.Error(t, err)
 				require.Len(t, calls, 1, "forbidden redirects must never reach transport")
@@ -56,6 +69,32 @@ func TestInstallRedirectsValidateBeforeTransport(t *testing.T) {
 	}
 	require.ErrorContains(t, err, "redirect limit")
 	assert.Equal(t, 10, calls)
+}
+
+func TestInstallRedirectsRevalidateCDNTargets(t *testing.T) {
+	const origin = "https://github.com/ggml-org/llama.cpp/releases/download/b10549/archive.zip"
+	const cdn = "https://release-assets.githubusercontent.com/github-production-release-asset/612354784/archive.zip"
+	calls := []string{}
+	client := NewClient(time.Second)
+	client.Transport = resumeTransport(func(req *http.Request) (*http.Response, error) {
+		calls = append(calls, req.URL.String())
+		target := cdn
+		if req.URL.String() == cdn {
+			target = "https://evil.test/archive.zip"
+		}
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{target}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})
+	response, err := client.Get(origin)
+	if response != nil {
+		require.NoError(t, response.Body.Close())
+	}
+	require.ErrorContains(t, err, "download host not allowed: evil.test")
+	assert.Equal(t, []string{origin, cdn}, calls, "the forbidden hop must never reach transport")
 }
 
 func TestSourceFetchBoundAndNetworkFailureLeaveNoFiles(t *testing.T) {

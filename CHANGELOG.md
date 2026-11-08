@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow GitHub release-asset redirects in managed provider installs, fixing blocked Windows llama.cpp downloads while retaining provider origin pins and redirect validation.
+
 - Resolve ComfyUI template dependencies by official ID or title, including nested subgraphs, and download missing models through existing worker jobs. Add searchable template catalog discovery to REST, CLI and generic MCP tools.
 
 - Add a coordinator-only `/inference/mcp` endpoint for user keys. Its model,
