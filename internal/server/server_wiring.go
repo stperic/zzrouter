@@ -87,14 +87,14 @@ func (s *Server) knownClusterNodes() map[string]bool {
 	return out
 }
 
-// refreshResourceMetrics returns a closure that forces an
-// immediate resource re-probe. Nil-safe when cluster tracking is
+// refreshResourceMetrics requests a coalesced resource re-probe.
+// Nil-safe when cluster tracking is
 // disabled so the load/unload paths can always call through.
 func (s *Server) refreshResourceMetrics() func() {
 	if s.cluster.resources == nil {
 		return nil
 	}
-	return func() { _ = s.cluster.resources.CollectNow() }
+	return s.cluster.resources.RequestRefresh
 }
 
 // newRunsExecutor wires a RunsExecutor with narrow deps from Server.
@@ -302,8 +302,8 @@ func (s *Server) observeModelStart(ctx context.Context, req prov_apps.EnsureRequ
 			}
 			llm.AddModelLoadResult(span, float64(elapsed.Milliseconds()), id, port)
 			llm.SetSpanOK(span)
-			if refresh := s.refreshResourceMetrics(); refresh != nil { //nolint:contextcheck // detached like triggerResourceRefresh; CollectNow takes no context
-				go refresh()
+			if refresh := s.refreshResourceMetrics(); refresh != nil {
+				refresh()
 			}
 		}
 		if metrics := llm.GetMetrics(); metrics != nil {

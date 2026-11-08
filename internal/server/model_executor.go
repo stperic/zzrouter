@@ -230,7 +230,7 @@ func (e *InternalExecutor) HandleInternalListModels(c *gin.Context) {
 		resp["resources"] = metrics
 	}
 
-	c.JSON(http.StatusOK, resp)
+	writeJSONWithETag(c, resp)
 }
 
 // HandleInternalRescanModels is the INTERNAL endpoint that drops the

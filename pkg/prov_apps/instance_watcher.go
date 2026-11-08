@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -54,12 +55,17 @@ const watcherHeartbeatInterval = 30 * time.Second
 // cosmetic. Any other end of the job (a reap, a registry stop) leaves the
 // run alone. Agents post-readiness should use DELETE /runs/:id directly;
 // DELETE /jobs/:id on a terminal handle is a no-op (clean by pkg/jobs semantics).
-func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h jobs.Handle) {
+func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h jobs.Handle, admissionDone <-chan struct{}) {
 	result := errors.New("instance readiness interrupted")
 	defer func() {
+		// Queued admission may still be recording collateral effects after cancellation.
+		if admissionDone != nil {
+			<-admissionDone
+		}
 		// The job's terminal event is what a caller waits on, so the catalog reflects the run first.
-		if m.publishCatalog != nil && m.shutdownCtx.Err() == nil {
-			result = errors.Join(result, m.publishCatalog())
+		if err := m.publishRunCatalog(inst); err != nil {
+			h.Meta(jobs.Meta{"phase": "catalog-publication-failed", "catalog_publication": "failed", "code": string(httperr.CodeCatalogPublicationFailed), "run_id": inst.ID, "run_status": inst.GetStatus()})
+			result = errors.Join(result, err)
 		}
 		if evicted := inst.EvictedRuns(); len(evicted) > 0 {
 			h.Meta(jobs.Meta{"evicted_runs": evicted})

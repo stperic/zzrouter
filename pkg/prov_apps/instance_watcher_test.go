@@ -57,7 +57,7 @@ func TestClassifiedFailureSurvivesRunAndJob(t *testing.T) {
 			inst.TrackGoroutine()
 			go func() {
 				defer inst.GoroutineDone()
-				m.watchInstanceReadiness(inst, h)
+				m.watchInstanceReadiness(inst, h, nil)
 			}()
 			ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
 			assert.Equal(t, jobs.PhaseFailed, ev.Phase)
@@ -109,7 +109,7 @@ func TestWatcher_ReachesRunning_EmitsDone(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	// Simulate the health monitor reaching a good check after a short
@@ -141,7 +141,7 @@ func TestWatcher_Failed_EmitsFail(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	// Hammer MarkFailed from a background goroutine so -race has every
@@ -180,7 +180,7 @@ func TestWatcher_StoppedBeforeRunning_EmitsFail(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	time.AfterFunc(100*time.Millisecond, func() {
@@ -208,7 +208,7 @@ func TestWatcher_CancelViaHandleCtx_StopsInstance(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	// Let watcher start up, then cancel via registry.
@@ -242,7 +242,7 @@ func TestWatcher_EndedJobLeavesTheRun(t *testing.T) {
 	go func() {
 		defer inst.GoroutineDone()
 		defer close(watched)
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 	h.Fail(errors.New("job reaped: inactivity timeout exceeded"))
 	select {
@@ -274,7 +274,7 @@ func TestWatcher_InitialProgressFires(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	// First event should be pending (handle open) followed by a
@@ -339,7 +339,7 @@ func TestWatcher_QueuedThenAdmitted(t *testing.T) {
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, nil)
 	}()
 
 	next := func(step string) jobs.Event {
@@ -390,7 +390,7 @@ func TestRunJobPublicationPrecedesTerminal(t *testing.T) {
 				require.NoError(t, err)
 				go func() {
 					defer close(finished)
-					m.watchInstanceReadiness(inst, h)
+					m.watchInstanceReadiness(inst, h, nil)
 				}()
 				select {
 				case <-entered:
@@ -426,7 +426,7 @@ func TestRunJobDuringShutdownDoesNotPublish(t *testing.T) {
 	inst := instance.NewInstance("shutdown", "vllm", "model", 0, 0, 0)
 	h, err := reg.StartDetached(jobs.KindRun, "", nil)
 	require.NoError(t, err)
-	m.watchInstanceReadiness(inst, h)
+	m.watchInstanceReadiness(inst, h, nil)
 	ev, err := reg.Get(h.ID())
 	require.NoError(t, err)
 	require.Equal(t, jobs.PhaseFailed, ev.Phase)

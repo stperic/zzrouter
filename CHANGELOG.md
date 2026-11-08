@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Complete isolated node-scoped runs without unrelated model-catalog publication. Preserve publication barriers for model runs and collateral model evictions, including failed or cancelled admission. Publication failures retain run status and job identity.
+
+- Refresh resource evidence through the existing collector and authenticated health cadence, independently of worker callbacks. Add conditional node-inventory reads with full-response ETags and safe reuse of the existing published catalog.
+
 - Update a worker's runtime coordinator endpoint when pairing commits, so reverse catalog publication and certificate renewal work without a node restart. Preserve launch-job failure when publication fails.
 
 - Add read-only ComfyUI template retrieval for passing the exact UI graph to the existing dependency resolver and native frontend. Distinguish unverified, supported and unsupported model provisioning, and report missing model declarations with a closed error code. Large MCP reads retain their response limit without admitting downloads. Execution remains in ComfyUI's native frontend/API.

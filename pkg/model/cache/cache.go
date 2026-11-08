@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,7 @@ type Cache struct {
 	admissionModels            []*CachedModel
 	localSnapshot              localModelSnapshot
 	modelRefusals              map[string]error
+	workerETags                map[string]string
 	generation                 uint64
 	admissionUnavailableLogged bool
 	models                     []*CachedModel
@@ -245,7 +247,6 @@ func (mc *Cache) Stop(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
-
 }
 
 // currentCtx returns the active lifecycle context, or Background if Start
@@ -426,6 +427,7 @@ func (mc *Cache) ReloadConfig(fresh *pkgConfig.AppsConfig) pkgConfig.ReloadDispo
 
 func (mc *Cache) invalidateLocked() {
 	mc.generation++
+	clear(mc.workerETags)
 	mc.admissionUnavailableLogged = false
 	mc.admissionModels = nil
 	mc.localSnapshot = localModelSnapshot{}
@@ -787,19 +789,35 @@ func (mc *Cache) placeItem(item map[string]any, node string) {
 	}
 }
 
-func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[string]any, map[string]*mesh.ResourceMetrics, []InventoryUnavailable) {
-	workerResources := make(map[string]*mesh.ResourceMetrics)
+type workerRead struct {
+	resources  map[string]*mesh.ResourceMetrics
+	validators map[string]string
+	unchanged  map[string]bool
+	startedAt  time.Time
+}
+
+func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[string]any, *workerRead, []InventoryUnavailable) {
+	read := &workerRead{resources: make(map[string]*mesh.ResourceMetrics), validators: make(map[string]string), unchanged: make(map[string]bool), startedAt: utils.Now()}
+	workerResources := read.resources
 	cc := mc.clusterClient()
 	if cc == nil {
-		return nil, workerResources, nil
+		return nil, read, nil
 	}
 
 	ctx, cancel := context.WithTimeout(parent, constants.ClusterQueryTimeout)
 	defer cancel()
 
 	var responses []*mesh.NodeResponse
+	var validator string
 	if node != "" {
-		resp, err := cc.Unicast(ctx, node, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
+		mc.mu.RLock()
+		validator = mc.workerETags[node]
+		mc.mu.RUnlock()
+		headers := make(http.Header)
+		if validator != "" {
+			headers.Set("If-None-Match", validator)
+		}
+		resp, err := cc.Unicast(ctx, node, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET", Headers: headers})
 		responses = []*mesh.NodeResponse{{NodeName: node, Response: resp, Error: err}}
 	} else {
 		broadcastResp, err := cc.Broadcast(ctx, "/zzrouter/v1/internal/models", &mesh.QueryParams{Method: "GET"})
@@ -808,7 +826,7 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 		}
 		if broadcastResp == nil {
 			// A top-level broadcast failure identifies no node; unknown names remain fail-open.
-			return nil, workerResources, []InventoryUnavailable{{Reason: "cluster model inventory could not be read"}}
+			return nil, read, []InventoryUnavailable{{Reason: "cluster model inventory could not be read"}}
 		}
 		responses = broadcastResp.Responses
 	}
@@ -826,6 +844,11 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 				nodeName = resolved
 			}
 		}
+		if nodeResp.Error == nil && nodeResp.Response != nil && nodeResp.Response.StatusCode == http.StatusNotModified && node != "" && validator != "" && nodeResp.Response.Headers.Get("ETag") == validator {
+			read.unchanged[node] = true
+			read.validators[node] = validator
+			continue
+		}
 		if nodeResp.Error != nil || nodeResp.Response == nil || nodeResp.Response.StatusCode != 200 {
 			unavailable = append(unavailable, InventoryUnavailable{Node: nodeName, Reason: "node model inventory could not be read"})
 			continue
@@ -839,6 +862,7 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 			unavailable = append(unavailable, InventoryUnavailable{Node: nodeName, Reason: "node returned an invalid model inventory"})
 			continue
 		}
+		read.validators[nodeName] = nodeResp.Response.Headers.Get("ETag")
 		for _, failure := range body.Unavailable {
 			failure.Node = nodeName
 			unavailable = append(unavailable, failure)
@@ -869,7 +893,7 @@ func (mc *Cache) fetchWorkerData(parent context.Context, node string) ([]map[str
 			}
 		}
 	}
-	return allModels, workerResources, unavailable
+	return allModels, read, unavailable
 }
 
 // populateModelCacheFromItems converts raw map items to CachedModel structs.
@@ -918,16 +942,19 @@ func (mc *Cache) populateModelCacheFromItems(items []map[string]any) {
 	mc.updateModelCache(mc.modelItems(items))
 }
 
-func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable, local localModelSnapshot, node string, resources map[string]*mesh.ResourceMetrics) bool {
+func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, unavailable []InventoryUnavailable, local localModelSnapshot, node string, read *workerRead) bool {
 	models := mc.modelItems(items)
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	if generation != mc.generation {
 		return false
 	}
+	if read != nil && read.unchanged[node] && mc.workerETags[node] != read.validators[node] {
+		return false
+	}
 	if node != "" {
 		for _, failure := range mc.inventoryUnavailable {
-			if !strings.EqualFold(failure.Node, node) {
+			if !strings.EqualFold(failure.Node, node) || (read != nil && read.unchanged[node]) {
 				unavailable = append(unavailable, failure)
 			}
 		}
@@ -944,7 +971,7 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 		if previous.VariantOf != "" {
 			continue
 		}
-		if node != "" && !strings.EqualFold(previous.Node, node) {
+		if node != "" && (!strings.EqualFold(previous.Node, node) || (read != nil && read.unchanged[node])) {
 			retained = append(retained, previous)
 			continue
 		}
@@ -962,13 +989,7 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 	} else {
 		mc.lastAttempt, mc.populateErr = lastAttempt, populateErr
 	}
-	if mc.nodeCache != nil {
-		if node == "" && resources != nil {
-			mc.nodeCache.Update(mc.resources, mc.node.Nodename(), resources)
-		} else if node != "" {
-			mc.nodeCache.Put(node, resources[node])
-		}
-	}
+	mc.acceptWorkerReadLocked(node, read)
 	mc.inventoryUnavailable = make(map[providerNode]InventoryUnavailable, len(unavailable))
 	for _, failure := range unavailable {
 		mc.inventoryUnavailable[providerNode{failure.Node, failure.Provider}] = cloneInventory(failure)
@@ -977,4 +998,31 @@ func (mc *Cache) publishModelItems(items []map[string]any, generation uint64, un
 		}
 	}
 	return true
+}
+
+// acceptWorkerReadLocked binds validators and resource observations to the accepted publication.
+func (mc *Cache) acceptWorkerReadLocked(node string, read *workerRead) {
+	if node == "" {
+		clear(mc.workerETags)
+	}
+	if read != nil {
+		if mc.workerETags == nil {
+			mc.workerETags = make(map[string]string)
+		}
+		if node != "" {
+			delete(mc.workerETags, node)
+		}
+		for name, validator := range read.validators {
+			if validator != "" {
+				mc.workerETags[name] = validator
+			}
+		}
+		if mc.nodeCache != nil {
+			if node == "" {
+				mc.nodeCache.Update(mc.resources, mc.node.Nodename(), read.resources, read.startedAt)
+			} else if !read.unchanged[node] {
+				mc.nodeCache.Put(node, read.resources[node], read.startedAt)
+			}
+		}
+	}
 }

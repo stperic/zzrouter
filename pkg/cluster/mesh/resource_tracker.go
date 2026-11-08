@@ -26,6 +26,7 @@ type ResourceTracker struct {
 	nodeName    string
 	updateFreq  time.Duration
 	stopCh      chan struct{}
+	refreshCh   chan struct{}
 	runningOnce sync.Once
 	stoppedOnce sync.Once
 	started     atomic.Bool
@@ -57,6 +58,7 @@ func NewResourceTracker(nodeName string, updateFrequency time.Duration) *Resourc
 		nodeName:   nodeName,
 		updateFreq: updateFrequency,
 		stopCh:     make(chan struct{}),
+		refreshCh:  make(chan struct{}, 1),
 	}
 }
 
@@ -111,6 +113,14 @@ func (rt *ResourceTracker) CollectNow() *ResourceMetrics {
 	return rt.GetMetrics()
 }
 
+// RequestRefresh coalesces lifecycle updates onto the owned collector.
+func (rt *ResourceTracker) RequestRefresh() {
+	select {
+	case rt.refreshCh <- struct{}{}:
+	default:
+	}
+}
+
 // runCollector runs the periodic collection loop
 func (rt *ResourceTracker) runCollector(ctx context.Context) {
 	ticker := time.NewTicker(rt.updateFreq)
@@ -122,6 +132,8 @@ func (rt *ResourceTracker) runCollector(ctx context.Context) {
 			return
 		case <-rt.stopCh:
 			return
+		case <-rt.refreshCh:
+			rt.collectMetrics()
 		case <-ticker.C:
 			rt.collectMetrics()
 			if rt.tickedCh != nil {

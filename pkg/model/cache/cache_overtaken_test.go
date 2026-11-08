@@ -11,6 +11,7 @@ import (
 
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -167,7 +168,7 @@ func TestRefreshNodePreservesOtherNodes(t *testing.T) {
 		{"name": "local/shared", "node": c.node.Nodename(), "assigned_app": "llamacpp"},
 		{"name": "old", "node": "A", "assigned_app": "llamacpp"},
 		{"name": "kept", "node": "B", "assigned_app": "llamacpp"},
-	}, c.generation, []InventoryUnavailable{{Node: "A", Reason: "old failure"}, {Node: "B", Reason: "kept failure"}, {Reason: "broadcast failure"}}, local, "", map[string]*mesh.ResourceMetrics{"B": bMetrics}))
+	}, c.generation, []InventoryUnavailable{{Node: "A", Reason: "old failure"}, {Node: "B", Reason: "kept failure"}, {Reason: "broadcast failure"}}, local, "", &workerRead{resources: map[string]*mesh.ResourceMetrics{"B": bMetrics}, startedAt: utils.Now()}))
 	attempt, populationErr := c.lastAttempt, errors.New("previous population error")
 	c.lastAttempt = attempt.Add(-2 * inventoryRetryInterval)
 	c.populateErr = populationErr
@@ -353,11 +354,11 @@ func TestRefreshNodeUsesRequestedIdentity(t *testing.T) {
 func TestWarmLocalCachePreservesNodeResources(t *testing.T) {
 	c := newWorkerCache(t)
 	metrics := &mesh.ResourceMetrics{NodeName: "A"}
-	c.nodeCache.Put("A", metrics)
+	c.nodeCache.Put("A", metrics, utils.Now())
 	c.warmLocalCache()
 	require.Same(t, metrics, c.nodeCache.Get("A"))
 	require.NoError(t, c.RefreshCacheSync(t.Context()))
-	require.Nil(t, c.nodeCache.Get("A"), "a full read without workers still replaces resource metrics")
+	require.Same(t, metrics, c.nodeCache.Get("A"), "a partial catalog read must not erase fresh health evidence")
 }
 
 func TestRefreshNodeUnpublishedAndInvalidated(t *testing.T) {

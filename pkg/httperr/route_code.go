@@ -7,6 +7,9 @@ package httperr
 // Code instead of pattern-matching a prose Detail string.
 type RouteErrorCode string
 
+// CodeCatalogPublicationFailed means a run mutation's catalog acknowledgment failed.
+const CodeCatalogPublicationFailed RouteErrorCode = "catalog_publication_failed"
+
 const (
 	// CodeTemplateNotFound identifies an absent official workflow template.
 	CodeTemplateNotFound RouteErrorCode = "template_not_found"

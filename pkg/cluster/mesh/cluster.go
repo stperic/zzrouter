@@ -70,7 +70,7 @@ func NewCluster(cfg *Config, localNodeURL string, localHandler LocalHandler, rec
 		Registry:             registry,
 		CheckInterval:        constants.HealthCheckInterval,
 		ReconnectionCallback: reconnectCallback,
-		NameObserver:         cfg.NameObserver,
+		SnapshotObserver:     cfg.SnapshotObserver,
 	})
 	m.healthMonitor = healthMonitor
 
@@ -123,8 +123,8 @@ func NewCluster(cfg *Config, localNodeURL string, localHandler LocalHandler, rec
 					t := m.state.GetEndpoints().Observe(endpointURL, ProbeResult{
 						OK: true, Quality: conn.Quality, Snapshot: conn,
 					})
-					if cfg.NameObserver != nil && conn.NodeName != "" {
-						cfg.NameObserver(endpointURL, conn.NodeName)
+					if cfg.SnapshotObserver != nil && conn.NodeName != "" {
+						cfg.SnapshotObserver(endpointURL, conn)
 					}
 					// This is the transition reconnectCallback exists
 					// for, arriving at the one moment it cannot be

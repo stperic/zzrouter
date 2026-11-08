@@ -61,9 +61,9 @@ func (m *ProviderAppManager) launchInstanceLocked(ctx context.Context, req Ensur
 	run, err := m.admitRun(ctx, inst, req, selection, declared)
 	if err != nil {
 		m.releaseRun(inst, err)
-		return nil, err
+		return nil, &runStartFailure{run: inst, cause: err}
 	}
-	m.watchRun(inst, req)
+	m.watchRun(inst, req, nil)
 	m.startRun(inst, run)
 	return inst, nil
 }
@@ -321,11 +321,13 @@ func (m *ProviderAppManager) queueRun(inst *instance.Instance, req EnsureRequest
 		return nil, err
 	}
 	inst.SetWaitingOn(decision.Run)
-	m.watchRun(inst, req)
+	admissionDone := make(chan struct{})
+	m.watchRun(inst, req, admissionDone)
 	inst.TrackGoroutine()
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.awaitAdmission")
+		defer close(admissionDone)
 		m.awaitAdmission(inst, req)
 	}()
 	return inst, nil
@@ -404,7 +406,7 @@ func (m *ProviderAppManager) tryAdmit(ctx context.Context, inst *instance.Instan
 }
 
 // watchRun records a detached launch job before callers can reuse the run.
-func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest) {
+func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest, admissionDone <-chan struct{}) {
 	if m.jobsRegistry == nil {
 		return
 	}
@@ -424,7 +426,7 @@ func (m *ProviderAppManager) watchRun(inst *instance.Instance, req EnsureRequest
 	go func() {
 		defer inst.GoroutineDone()
 		defer utils.RecoverAndLog("prov_apps.watchInstanceReadiness")
-		m.watchInstanceReadiness(inst, h)
+		m.watchInstanceReadiness(inst, h, admissionDone)
 	}()
 }
 

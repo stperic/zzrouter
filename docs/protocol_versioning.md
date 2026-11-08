@@ -96,6 +96,8 @@ which preserve maximum 14 / minimum 13. Fields whose absence would be misread,
 or that change a decision, still require a bump under the policy above.
 A bug fix without a wire change does not require a bump.
 
+Internal inventory GETs support HTTP ETag revalidation. The validator covers the complete response, including resource samples; 304 is accepted only against matching retained publication evidence. Unconditional 200 responses remain compatible. Authenticated health replies may include an optional resource sample; absence or malformed data is unknown. These observations do not change required peer bytes or mutation acknowledgments, so protocol 18 remains unchanged.
+
 The ownership receipt and fresh provider-sync evidence gate do not change the
 wire contract or require a protocol bump. Future managed provider fields that
 older schemas reject still require the normal protocol/minimum change. The

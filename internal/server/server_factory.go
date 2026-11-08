@@ -233,6 +233,12 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		prov_apps.WithHTTPClient(s.httpClient),
 		prov_apps.WithJobsRegistry(s.jobs),
 		prov_apps.WithCatalogPublication(s.publishCatalog),
+		prov_apps.WithResourcesChanged(func() {
+			s.publishSelfSnapshot()
+			if refresh := s.refreshResourceMetrics(); refresh != nil {
+				refresh()
+			}
+		}),
 		prov_apps.WithCatalogChanged(func() {
 			if s.model.Cache != nil {
 				s.model.Cache.Invalidate()
@@ -606,14 +612,14 @@ func (s *Server) tryInitClusterCoordinator(cfg *pkgConfig.NodeConfig, connector 
 
 	// Convert config.ClusterConfig to mesh.Config
 	clusterCfg := &mesh.Config{
-		Enabled:       cfg.Cluster.IsMaster(),
-		BindAddr:      cfg.Cluster.BindAddr,
-		BindPort:      cfg.Cluster.BindPort,
-		AdvertisePort: cfg.Cluster.AdvertisePort,
-		Members:       cfg.Cluster.Members,
-		Endpoints:     cfg.Cluster.Endpoints.Addresses(),
-		NodeName:      cfg.Node.Name,
-		NameObserver:  s.cachePeerName,
+		Enabled:          cfg.Cluster.IsMaster(),
+		BindAddr:         cfg.Cluster.BindAddr,
+		BindPort:         cfg.Cluster.BindPort,
+		AdvertisePort:    cfg.Cluster.AdvertisePort,
+		Members:          cfg.Cluster.Members,
+		Endpoints:        cfg.Cluster.Endpoints.Addresses(),
+		NodeName:         cfg.Node.Name,
+		SnapshotObserver: s.observePeerSnapshot,
 	}
 
 	// Copy strategy defaults if present
@@ -899,6 +905,14 @@ func wireRouteEventEmitters(bus *route_events.Bus, cooldowns *fallback.CooldownM
 				Detail:  map[string]string{"health_state": healthState},
 			})
 		})
+	}
+}
+
+// observePeerSnapshot accepts resources from the existing authenticated health cadence.
+func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) {
+	s.cachePeerName(hostURL, snapshot.NodeName)
+	if snapshot.Quality == mesh.QualityFull && snapshot.Resources != nil && s.model.NodeCache != nil {
+		s.model.NodeCache.Put(snapshot.NodeName, snapshot.Resources, snapshot.ResourcesObservedAt)
 	}
 }
 

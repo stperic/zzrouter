@@ -8,6 +8,7 @@ import (
 
 func TestRouteErrorCodeWireValuesAreClosedAndStable(t *testing.T) {
 	require.Equal(t, map[string]string{
+		"CodeCatalogPublicationFailed":     "catalog_publication_failed",
 		"CodeTemplateNotFound":             "template_not_found",
 		"CodeTemplateAmbiguous":            "template_ambiguous",
 		"CodeTemplateUnsupported":          "template_unsupported",

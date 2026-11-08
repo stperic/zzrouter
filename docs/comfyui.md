@@ -2,6 +2,10 @@
 
 zzRouter launches ComfyUI as a node-scoped provider and manages its GPU reservation, idle lifetime and memory-pressure eviction. ComfyUI workflows and checkpoints stay outside the model catalog. Clients call ComfyUI directly using the run's `base_url`; zzRouter does not proxy its API.
 
+An isolated node-scoped launch job completes when the engine becomes healthy and its reservation is admitted. If admission evicts a model-serving run, the job also waits for that model catalog change to reach the coordinator. A failed acknowledgment keeps the job failed even when the engine is healthy: `code: catalog_publication_failed`, `catalog_publication: failed` and `run_status` distinguish the publication failure from an engine failure. Inspect the returned run and existing job before launching again. Later stops consider their own effects, rather than prior launch evictions.
+
+Cluster HTTPS/mTLS still requires both network directions for enrollment, renewal, provider onboarding and model replication. Forward health alone does not establish worker-to-coordinator reachability. Resource samples use the existing collector and coordinator health probes; a callback failure does not suppress collection. Coordinator resource observations expire after two missed health cadences, while its own metrics come directly from its local tracker.
+
 ## Install and enable
 
 The shipped provider starts disabled. Managed installation requires Linux/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.

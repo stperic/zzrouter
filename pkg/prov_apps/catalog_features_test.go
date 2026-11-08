@@ -140,7 +140,7 @@ func TestCatalogLifecycleInvalidation(t *testing.T) {
 		m.auditEvents <- Event{Type: EventInstallProgress}
 	}
 	for _, event := range []EventType{EventInstanceRunning, EventInstanceStopped, EventInstanceFailed} {
-		m.emitEvent(Event{Type: event})
+		m.emitEvent(Event{Type: event, Model: "weights"})
 	}
 	assert.Equal(t, 3, calls)
 	c := m.installs

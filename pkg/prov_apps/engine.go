@@ -186,7 +186,7 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		run.GoroutineDone()
 		return nil, err
 	}
-	m.watchRun(run, req)
+	m.watchRun(run, req, nil)
 	sent := "daemon default"
 	if daemonKeepAlive != nil {
 		sent = instance.FormatKeepAlive(*daemonKeepAlive)

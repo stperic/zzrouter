@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -226,9 +227,8 @@ func (ctrl *ModelGroupsController) GetRoutesSchema(c *gin.Context) {
 
 // writeJSONWithETag marshals body deterministically, computes a
 // content-hash ETag, honors If-None-Match with 304, and writes the
-// body otherwise. The hash source MUST be a configuration projection:
-// don't pass live derived fields (cooldown_seconds, breaker_state, …)
-// in payload or the ETag will flicker on every poll.
+// body otherwise. The hash covers the complete selected representation,
+// including any volatile fields, so a 304 never hides changed evidence.
 func writeJSONWithETag(c *gin.Context, body any) {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -237,7 +237,8 @@ func writeJSONWithETag(c *gin.Context, body any) {
 	}
 	sum := sha256.Sum256(raw)
 	etag := `"sha256:` + hex.EncodeToString(sum[:]) + `"`
-	if c.GetHeader("If-None-Match") == etag {
+	c.Header("Cache-Control", "private, no-cache")
+	if matchesReadETag(c.Request.Header.Values("If-None-Match"), etag) {
 		c.Header("ETag", etag)
 		c.Status(304)
 		return
@@ -245,4 +246,34 @@ func writeJSONWithETag(c *gin.Context, body any) {
 	c.Header("ETag", etag)
 	c.Header("Content-Type", "application/json")
 	_, _ = c.Writer.Write(raw)
+}
+
+// matchesReadETag uses weak comparison for conditional GET, including tag lists.
+func matchesReadETag(headers []string, etag string) bool {
+	for _, header := range headers {
+		for header != "" {
+			header = strings.TrimSpace(header)
+			if header == "*" {
+				return true
+			}
+			header = strings.TrimPrefix(header, "W/")
+			if !strings.HasPrefix(header, `"`) {
+				break
+			}
+			end := strings.IndexByte(header[1:], '"')
+			if end < 0 {
+				break
+			}
+			tag := header[:end+2]
+			rest := strings.TrimSpace(header[end+2:])
+			if rest != "" && !strings.HasPrefix(rest, ",") {
+				break
+			}
+			if tag == strings.TrimPrefix(etag, "W/") {
+				return true
+			}
+			header = strings.TrimPrefix(rest, ",")
+		}
+	}
+	return false
 }

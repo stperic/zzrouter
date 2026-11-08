@@ -23,9 +23,53 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/resolver"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
+	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 	"github.com/stperic/zzrouter/pkg/routing"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRestartPublicationPreservesActualFailure(t *testing.T) {
+	for _, failedLaunchPublication := range []bool{false, true} {
+		t.Run(fmt.Sprint(failedLaunchPublication), func(t *testing.T) {
+			cfg := &config.AppsConfig{}
+			require.NoError(t, cfg.AddApp("generic", config.ServiceConfig{Name: "generic", Enabled: new(true), Mode: "on-demand", Protocol: config.ProtocolOpenAI, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}, Runtime: &config.AppRuntimeConfig{PortRange: []int{8540, 8542}, BasePort: 8540, Execution: config.ExecutionConfig{Type: "cli", Command: "unused-engine"}}}))
+			old := instance.NewInstance("old-run", "generic", "weights", 0, time.Minute, 0)
+			old.Config = instance.Config{Provider: "generic", Model: "weights"}
+			old.MarkRunning(false, nil)
+			preparationErr := errors.New("preparation failed after old stop")
+			manager, err := prov_apps.NewProviderAppManager(cfg, prov_apps.WithParamLocalizer(func(_, _, _ string, params map[string]string, _ map[string]schema.ParamShape) (prov_apps.Localized, error) {
+				if old.GetStatus() == instance.StatusStopped {
+					return prov_apps.Localized{}, preparationErr
+				}
+				return prov_apps.Localized{Params: params}, nil
+			}), prov_apps.WithCatalogPublication(func() error {
+				if failedLaunchPublication {
+					return errors.New("new attempt publication refused")
+				}
+				return nil
+			}))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = manager.Stop(context.Background()) })
+			require.NoError(t, manager.Instances().Register(old))
+			e := NewRunsExecutor(manager, func() string { return "node" }, func() *config.AppsConfig { return cfg }, nil, nil, nil)
+			e.publishCatalog = func() error { return errors.New("handler publication refused") }
+			r := gin.New()
+			r.POST("/runs/:id/restart", e.HandleInternalRestartRun)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/runs/old-run/restart", nil))
+			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			require.Equal(t, instance.StatusStopped, old.GetStatus(), rec.Body.String())
+			require.Contains(t, rec.Body.String(), preparationErr.Error())
+			if failedLaunchPublication {
+				require.Contains(t, rec.Body.String(), `"run_status":"failed"`)
+				require.NotContains(t, rec.Body.String(), `"run_id":"old-run"`)
+			} else {
+				require.Contains(t, rec.Body.String(), `"run_status":"stopped"`)
+				require.Contains(t, rec.Body.String(), `"run_id":"old-run"`)
+			}
+		})
+	}
+}
 
 func textCatalogRun(t *testing.T, target *Server) *instance.Instance {
 	t.Helper()
@@ -35,6 +79,55 @@ func textCatalogRun(t *testing.T, target *Server) *instance.Instance {
 	run.MarkRunning(false, nil)
 	require.NoError(t, target.providers.appMgr.Instances().Register(run))
 	return run
+}
+
+func TestRunMutationPublicationCarriesExistingJob(t *testing.T) {
+	target, _, _ := mutationNodes(t, "coordinator")
+	h, err := target.jobs.StartDetached(jobs.KindRun, "", jobs.Meta{"run_id": "replacement"})
+	require.NoError(t, err)
+	replacement := instance.NewInstance("replacement", "llamacpp", "weights", 0, time.Minute, 0)
+	replacement.StreamJobID = h.ID()
+	e := target.newRunsExecutor()
+	e.publishCatalog = func() error { return errors.New("publication refused") }
+	c, rec := mutationContext(t, http.MethodPost, "/runs/old/restart", nil)
+	require.False(t, e.publishRunMutation(c, "old", instance.InstanceInfo{ID: "old", Model: "weights", Status: instance.StatusStopped}, nil, replacement, nil))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), `"run_id":"replacement"`)
+	require.Contains(t, rec.Body.String(), `"job_id":"`+h.ID()+`"`)
+	_, err = target.jobs.Get(h.ID())
+	require.NoError(t, err)
+}
+
+func TestNodeScopedMutationSkipsModelPublication(t *testing.T) {
+	for _, operation := range []string{"stop", "restart"} {
+		t.Run(operation, func(t *testing.T) {
+			target := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: config.ClusterModeWorker, NodeName: "worker"}, providers: []string{"comfyui"}, enabled: []string{"comfyui"}})
+			run := instance.NewInstance("tenant", "comfyui", "", 0, time.Minute, 0)
+			run.Config = instance.Config{Provider: "comfyui"}
+			run.MarkRunning(false, nil)
+			// A prior admission's victims are not this stop's effects.
+			run.SetEvictedRuns([]instance.EvictedRun{{RunID: "old-model", Model: "weights"}})
+			require.NoError(t, target.providers.appMgr.Instances().Register(run))
+			e := target.newRunsExecutor()
+			e.publishCatalog = func() error {
+				t.Error("node-only mutation tried model publication")
+				return errors.New("reverse blocked")
+			}
+			refreshes := 0
+			e.refreshResourceMetrics = func() { refreshes++ }
+			method, path, pattern, handler, want := http.MethodDelete, "/runs/tenant", "/runs/:id", e.HandleInternalStopRun, http.StatusOK
+			if operation == "restart" {
+				run.Config.Provider = "missing"
+				method, path, pattern, handler, want = http.MethodPost, path+"/restart", "/runs/:id/restart", e.HandleInternalRestartRun, http.StatusNotFound
+			}
+			r := gin.New()
+			r.Handle(method, pattern, handler)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			require.Equal(t, want, rec.Code, rec.Body.String())
+			require.Equal(t, 1, refreshes)
+		})
+	}
 }
 
 func TestRunStopPublishesBeforeImageAdmission(t *testing.T) {
@@ -77,7 +170,12 @@ func TestRunMutationPublicationFailure(t *testing.T) {
 			target, _, _ := mutationNodes(t, "coordinator")
 			run := textCatalogRun(t, target)
 			e := target.newRunsExecutor()
-			e.publishCatalog = func() error { return errors.New("publication refused") }
+			refreshes := 0
+			e.refreshResourceMetrics = func() { refreshes++ }
+			e.publishCatalog = func() error {
+				require.Equal(t, 1, refreshes, "resource refresh must precede publication failures")
+				return errors.New("publication refused")
+			}
 			method, path := http.MethodDelete, "/runs/"+run.ID
 			var body any
 			handler := e.HandleInternalStopRun
@@ -100,6 +198,11 @@ func TestRunMutationPublicationFailure(t *testing.T) {
 			engine.ServeHTTP(rec, req)
 			require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 			require.Contains(t, rec.Body.String(), "publication refused")
+			require.Contains(t, rec.Body.String(), `"code":"catalog_publication_failed"`)
+			require.Contains(t, rec.Body.String(), `"run_id":"`+run.ID+`"`)
+			if operation == "stop" {
+				require.Contains(t, rec.Body.String(), `"run_status":"stopped"`)
+			}
 		})
 	}
 }
