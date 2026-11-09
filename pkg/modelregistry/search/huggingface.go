@@ -171,6 +171,38 @@ func parseLinkHeader(linkHeader string) *CursorInfo {
 
 // SearchModels searches for models on the Hugging Face Hub with flexible parameters and pagination
 func (c *Client) SearchModels(ctx context.Context, params SearchParams) (*SearchResponse[ModelInfo], error) {
+	if params.Provider == "" {
+		params.Provider = ProviderHuggingFace
+	}
+	if err := params.Validate(); err != nil {
+		return nil, err
+	}
+	switch params.Sort {
+	case "date":
+		params.Sort = "createdAt"
+	case "popular":
+		params.Sort = "trendingScore"
+	}
+	// Hub pages use cursors; consume offset pages under the caller's deadline.
+	skip := params.Pagination.Offset
+	params.Pagination.Offset = 0
+	for skip > 0 {
+		page := params
+		page.Pagination.Limit = min(skip, MaxResultsLimit)
+		result, err := c.searchModelsPage(ctx, page)
+		if err != nil {
+			return nil, err
+		}
+		if len(result.Results) == 0 || !result.HasMore {
+			return &SearchResponse[ModelInfo]{Results: []ModelInfo{}, Limit: params.Pagination.Limit}, nil
+		}
+		skip -= len(result.Results)
+		params.Pagination.Cursor = result.Cursor.Next
+	}
+	return c.searchModelsPage(ctx, params)
+}
+
+func (c *Client) searchModelsPage(ctx context.Context, params SearchParams) (*SearchResponse[ModelInfo], error) {
 	// Create the request manually to add authentication headers
 	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL, nil)
 	if err != nil {

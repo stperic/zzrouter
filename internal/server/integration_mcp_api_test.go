@@ -139,7 +139,7 @@ func TestMCPAPISearchServedSpec(t *testing.T) {
 		query, id  string
 		parameters []string
 	}{
-		{"listProviderTemplates", "listProviderTemplates", []string{"name", "node", "search", "limit", "offset"}},
+		{"listProviderTemplates", "listProviderTemplates", []string{"name", "node", "q", "search", "sort", "order", "since", "open_source", "limit", "offset"}},
 		{"GET getProviderResolvedParameters", "getProviderResolvedParameters", []string{"name", "node", "model", "endpoint"}},
 		{"listRegistriesHuggingfaceVariants", "listRegistriesHuggingfaceVariants", []string{"id", "provider"}},
 		{"getProvidersCatalog", "getProvidersCatalog", []string{"type", "mode", "kind"}},

@@ -275,37 +275,12 @@ func parseErrorEnvelope(body []byte) (message, errType string) {
 	return string(body), ""
 }
 
-// SearchModelsWithTags searches for models with custom sort and tag parameters (V2)
-// GET /zzrouter/search?type=models&q=<query>&provider=<provider>&limit=<limit>&sort=<sort>&order=<order>&tags=<tags>&logic=<logic>
-func (c *Client) SearchModelsWithTags(query, provider string, limit int, sort, order, tags, logic string) (map[string]any, error) {
-	if provider == "" {
-		provider = "all"
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	if sort == "" {
-		sort = "trendingScore"
-	}
-	if order == "" {
-		order = "desc"
-	}
-	if logic == "" {
-		logic = "AND"
-	}
-
-	// URL encode query parameters (include full=true to get siblings/variants, enrich=true for pricing-store metadata)
-	path := fmt.Sprintf(apipath.Search+"?type=models&q=%s&provider=%s&limit=%d&sort=%s&order=%s&full=true&enrich=true",
-		url.QueryEscape(query), url.QueryEscape(provider), limit, url.QueryEscape(sort), url.QueryEscape(order))
-
-	// Add tags filter if specified
-	if tags != "" {
-		path += fmt.Sprintf("&tags=%s&logic=%s", url.QueryEscape(tags), url.QueryEscape(logic))
-	}
+// SearchModels forwards ordinary registry query parameters without overriding provider defaults.
+func (c *Client) SearchModels(query url.Values) (map[string]any, error) {
 	var envelope struct {
 		Data map[string]any `json:"data"`
 	}
-	if err := c.doJSON("GET", path, nil, &envelope, "search"); err != nil {
+	if err := c.doJSON("GET", withQuery(apipath.Search, query), nil, &envelope, "search"); err != nil {
 		return nil, err
 	}
 	return envelope.Data, nil

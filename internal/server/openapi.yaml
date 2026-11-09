@@ -2131,18 +2131,27 @@ paths:
     get:
       tags: [Providers]
       operationId: listProviderTemplates
-      summary: List official ComfyUI workflow templates for model dependency installation
+      summary: List ComfyUI templates; newest ten with sort=date&order=desc&limit=10
       description: |
         Reads official catalog metadata on the coordinator after checking the named node supports
         provider model files. ComfyUI may be stopped. Search matches IDs, titles and descriptions
-        without case. Results use canonical ID order. Select an ID or exact unique title for
+        without case. Results use canonical ID order by default. Select an ID or exact unique title for
         resolveProviderModels with download=true; follow returned owning-node jobs to completion.
         Catalog model_provisioning is unverified until the selected graph is inspected on the named node.
         API-only templates are listed with unsupported model_provisioning; local model provisioning returns template_unsupported.
+        Filters and ordering apply to the complete catalog before pagination; total counts matching entries.
+        Request sort=date&order=desc&limit=10 for the latest ten, or limit=1000 and follow has_more with offset.
+        The date is upstream catalog metadata, not a model release or workflow modification timestamp.
+        New sort/order/since/open_source parameters require one nonempty value when supplied.
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
-        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: q, schema: { type: string }, description: Case-insensitive substring of ID, title or description. }
+        - { in: query, name: search, schema: { type: string }, description: Compatibility alias for q; conflicting values are refused. }
+        - { in: query, name: sort, schema: { type: string, enum: [id, title, date], default: id }, description: Date is upstream catalog date; unknown dates sort last in either direction. Title compares without case; ties use ID ascending. }
+        - { in: query, name: order, schema: { type: string, enum: [asc, desc], default: asc } }
+        - { in: query, name: since, schema: { type: string, format: date }, description: Inclusive YYYY-MM-DD catalog date; unknown dates are excluded. }
+        - { in: query, name: open_source, schema: { type: boolean }, description: Match explicit upstream true or false. Omission includes unknown values; does not establish licensing or execution compatibility. }
         - $ref: '#/components/parameters/LimitParam'
         - $ref: '#/components/parameters/OffsetParam'
       responses:
@@ -6862,27 +6871,41 @@ paths:
     get:
       tags: [Search]
       operationId: getSearch
-      summary: Search models across the cluster
+      summary: Search registry models; newest ten with type=models&sort=date&order=desc&limit=10
       description: |
-        Searches the configured upstream registries for models, not this
-        cluster's inventory. Use it to find something to download;
-        `GET /zzrouter/v1/models` is what is already here.
-
-        Narrow with `registry` when a query is slow: each registry is a
-        network call, and one slow upstream holds the whole answer.
+        Search configured upstream catalogs for models to download. This is separate from installed /models.
+        The common list parameters are q (or search), sort, order, limit and offset. Existing defaults remain.
+        Sort and filter before pagination. HuggingFace sorts upstream and numeric offset consumes cursor pages;
+        prefer pagination.cursor.next with cursor and offset=0 for continuation. has_next reflects upstream pages;
+        totals are inexact, and AND tags are checked within each fetched page. provider=all currently searches HuggingFace.
+        date means creation date: HuggingFace createdAt, cloud created/created_at/createdAt when provided.
+        Cloud entries with unknown dates sort last. Ollama exposes approximate updated age, not creation dates;
+        use lastModified there. Unsupported sort or filter combinations return400 rather than ignoring criteria.
+        since and open_source are template-only filters. Source-specific capabilities are listed by type=providers.
+        Cloud catalogs use id/name/date; HuggingFace also supports downloads, likes, lastModified, createdAt,
+        trendingScore, popular (trending) and author; Ollama supports name, downloads, lastModified and size. Omitted sort preserves
+        provider defaults. Supplied sort/order/cursor must have one nonempty value. q/search must not conflict.
+        Cloud and Ollama have exact totals over the retrieved catalog; remote provider completeness depends on its listing.
+      parameters:
+        - { in: query, name: type, required: true, schema: { type: string, enum: [models, providers, popular] } }
+        - { in: query, name: provider, schema: { type: string, default: all } }
+        - { in: query, name: q, schema: { type: string } }
+        - { in: query, name: search, schema: { type: string }, description: Alias for q. }
+        - { in: query, name: sort, schema: { type: string }, description: Provider-supported field; date is creation date. For models searches. }
+        - { in: query, name: order, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { in: query, name: author, schema: { type: string }, description: HuggingFace author or organization. }
+        - { in: query, name: tags, schema: { type: string }, description: Comma-separated HuggingFace tags. }
+        - { in: query, name: logic, schema: { type: string, enum: [AND, OR], default: AND } }
+        - { in: query, name: full, schema: { type: boolean, default: false } }
+        - { in: query, name: enrich, schema: { type: boolean, default: false } }
+        - { in: query, name: cursor, schema: { type: string }, description: HuggingFace continuation; requires offset=0. }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 1000, default: 20 } }
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 } }
       responses:
-        '200': { description: OK }
-        '400':
-          description: Malformed query or an unknown registry.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '200': { description: Search results with total, is_total_exact and pagination. }
+        '400': { description: Malformed query or unsupported provider criteria. }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '502':
-          description: A registry could not be reached.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
+        '500': { description: Upstream search failed. }
 
   /zzrouter/v1/cache/stats:
     get:
@@ -13490,6 +13513,7 @@ components:
         id: { type: string }
         title: { type: string }
         description: { type: string }
+        date: { type: string, format: date, description: Optional upstream catalog date, not a model release timestamp. }
         min_comfyui_version: { type: string }
         open_source: { type: boolean }
         source: { type: string, format: uri }

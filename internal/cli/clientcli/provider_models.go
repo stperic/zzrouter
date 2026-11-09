@@ -57,6 +57,10 @@ func newProviderModelCmd(verb string) *cobra.Command {
 	case "templates":
 		cmd.Short = "List official ComfyUI workflow templates"
 		cmd.Flags().String("search", "", "Filter template IDs, titles and descriptions")
+		cmd.Flags().String("sort", "id", "Sort by id, title or date")
+		cmd.Flags().String("order", "asc", "Sort order: asc or desc")
+		cmd.Flags().String("since", "", "Include catalog dates on or after YYYY-MM-DD")
+		cmd.Flags().Bool("open-source", false, "Filter explicit upstream open_source metadata (true or false)")
 		cmd.Flags().String("template", "", "Read one official template's UI workflow by canonical ID")
 		cmd.Flags().Int("limit", 100, "Maximum entries to return")
 		cmd.Flags().Int("offset", 0, "First entry offset")
@@ -104,7 +108,17 @@ func runProviderModels(cmd *cobra.Command, api providerModelsAPI, provider strin
 		search, _ := cmd.Flags().GetString("search")
 		limit, _ := cmd.Flags().GetInt("limit")
 		offset, _ := cmd.Flags().GetInt("offset")
-		result, err = api.ListProviderTemplates(cmd.Context(), provider, url.Values{"node": {node}, "search": {search}, "limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}})
+		query := url.Values{"node": {node}, "q": {search}, "limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
+		for _, name := range []string{"sort", "order", "since"} {
+			if value, _ := cmd.Flags().GetString(name); value != "" {
+				query.Set(name, value)
+			}
+		}
+		if cmd.Flags().Changed("open-source") {
+			value, _ := cmd.Flags().GetBool("open-source")
+			query.Set("open_source", strconv.FormatBool(value))
+		}
+		result, err = api.ListProviderTemplates(cmd.Context(), provider, query)
 	case "resolve":
 		path, _ := cmd.Flags().GetString("workflow")
 		template, _ := cmd.Flags().GetString("template")

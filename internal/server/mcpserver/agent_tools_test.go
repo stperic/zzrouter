@@ -323,6 +323,20 @@ func TestAgentListBoundsAndPaging(t *testing.T) {
 	}
 }
 
+func TestAgentModelSearchQuery(t *testing.T) {
+	d := testDispatcher(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		for name, value := range map[string]string{"q": "Qwen", "provider": "huggingface", "sort": "date", "order": "desc", "author": "Qwen", "tags": "gguf", "logic": "OR", "limit": "10", "offset": "2"} {
+			require.Equal(t, value, q.Get(name))
+		}
+		writeFixture(t, w, []byte(`{"data":{"results":[{"id":"Qwen/image","createdAt":"2026-11-05T00:00:00Z"}],"total":1,"pagination":{"has_next":true}}}`))
+	})
+	result := callAgentTool(t, d, "zz_model_search", map[string]any{"query": "Qwen", "provider": "huggingface", "sort": "date", "order": "desc", "author": "Qwen", "tags": "gguf", "logic": "OR", "limit": 10, "offset": 2})["structuredContent"].(map[string]any)
+	require.Equal(t, true, result["has_more"])
+	match := result["matches"].([]any)[0].(map[string]any)
+	require.Equal(t, "2026-11-05T00:00:00Z", match["createdAt"])
+}
+
 func TestAgentInvalidInputsNeverDispatch(t *testing.T) {
 	for _, tc := range []struct{ name, args string }{
 		{"zz_nodes", `{"node":"../health"}`}, {"zz_runs", `{"run_id":"a/b"}`},

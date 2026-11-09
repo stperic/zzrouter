@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -102,6 +103,29 @@ func (ctrl *ProviderModelsController) Delete(c *gin.Context) {
 
 // Templates handles GET /providers/:name/templates.
 func (ctrl *ProviderModelsController) Templates(c *gin.Context) {
+	text, ok := searchTextQuery(c)
+	if !ok || !validateSingleQuery(c, "sort", "order", "since", "open_source") {
+		return
+	}
+	params := ValidateParams(c, []ParamRule{
+		{Name: "sort", Source: ParamSourceQuery, Default: "id", AllowedValues: []string{"id", "title", "date"}},
+		{Name: "order", Source: ParamSourceQuery, Default: "asc", AllowedValues: []string{"asc", "desc"}},
+		BoolQueryParam("open_source"),
+	})
+	if params == nil {
+		return
+	}
+	query := providerTemplateQuery{Search: text, Since: c.Query("since"), Sort: params.GetString("sort"), Order: params.GetString("order")}
+	if query.Since != "" {
+		if _, err := time.Parse(time.DateOnly, query.Since); err != nil {
+			BadRequest(c, "since must be a valid YYYY-MM-DD catalog date")
+			return
+		}
+	}
+	if c.Query("open_source") != "" {
+		value := params.GetBool("open_source")
+		query.OpenSource = &value
+	}
 	node := c.Query("node")
 	if !ctrl.validateNode(c, node) {
 		return
@@ -110,7 +134,7 @@ func (ctrl *ProviderModelsController) Templates(c *gin.Context) {
 	if !ok {
 		return
 	}
-	entries, err := ctrl.service.ListProviderTemplates(c.Request.Context(), c.Param("name"), node, c.Query("search"))
+	entries, err := ctrl.service.ListProviderTemplates(c.Request.Context(), c.Param("name"), node, query)
 	if err != nil {
 		RespondToError(c, err)
 		return

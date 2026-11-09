@@ -1,0 +1,248 @@
+[
+  {
+    "moduleName": "default",
+    "category": "Foundation",
+    "title": "Image",
+    "icon": "icon-[lucide--image]",
+    "type": "image",
+    "templates": [
+      {
+        "name": "image_p_h3_image_edit",
+        "title": "P-H3-Image: Image Edit",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "description": "Pruna AI's few-step image model built on MiniMax-H3: edit the source image with a short instruction, up to 9 reference images, 8-step sampling.",
+        "tags": [
+          "Image Edit",
+          "Int8"
+        ],
+        "models": [
+          "P-H3-Image",
+          "MiniMax H3"
+        ],
+        "date": "2026-11-03",
+        "size": 40355148082,
+        "usage": 269,
+        "searchRank": 0,
+        "openSource": true,
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 26,
+              "nodeType": "LoadImage",
+              "file": "image_p_h3_image_edit_atrium_day.png",
+              "mediaType": "image"
+            }
+          ],
+          "outputs": [
+            {
+              "nodeId": 16,
+              "nodeType": "SaveImage",
+              "file": "image_p_h3_image_edit.png",
+              "mediaType": "image"
+            }
+          ]
+        },
+        "thumbnail": [
+          "input/image_p_h3_image_edit_atrium_day.png",
+          "output/image_p_h3_image_edit.png"
+        ],
+        "minComfyUIVersion": "0.44.0",
+        "username": "ComfyUI",
+        "thumbnailVariant": "compareSlider"
+      },
+      {
+        "name": "image_p_h3_t2i",
+        "title": "P-H3-Image: Text to Image",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "description": "Pruna AI's few-step image model built on MiniMax-H3: write a plain-language request and a local prompt upsampler expands it into a detailed scene before an 8-step sample. Pick the aspect ratio and megapixel target on the Resolution Selector to move between square, 4:3, 16:9 and portrait canvases.",
+        "tags": [
+          "Text to Image",
+          "Int8"
+        ],
+        "models": [
+          "P-H3-Image",
+          "MiniMax H3"
+        ],
+        "date": "2026-11-03",
+        "size": 37918538036,
+        "usage": 245,
+        "searchRank": 0,
+        "openSource": true,
+        "io": {
+          "outputs": [
+            {
+              "nodeId": 16,
+              "nodeType": "SaveImage",
+              "file": "image_p_h3_t2i.png",
+              "mediaType": "image"
+            }
+          ]
+        },
+        "thumbnail": [
+          "output/image_p_h3_t2i.png"
+        ],
+        "minComfyUIVersion": "0.44.0",
+        "username": "ComfyUI"
+      },
+      {
+        "name": "image_qwen_image_2_1_turbo_t2i",
+        "title": "Qwen Image 2.1 Turbo: Text to Image",
+        "description": "Generate images from text prompts with Qwen Image 2.1 Turbo, the 8-step accelerated checkpoint, producing a single 1024\u00d71024 image in 8 sampling steps. Same model family with native 2K output, professional typography, and alpha-channel support, plus an optional Qwen 3.5 prompt enhancer. Ideal for poster and layout design, transparent asset creation, and rapid concept visualization.",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "tags": [
+          "Int8",
+          "Text to Image",
+          "Turbo"
+        ],
+        "models": [
+          "Qwen Image 2.1"
+        ],
+        "minComfyUIVersion": "0.39.0",
+        "date": "2026-10-13",
+        "openSource": true,
+        "size": 40984448745,
+        "usage": 1167,
+        "searchRank": 0,
+        "username": "ComfyUI",
+        "io": {
+          "outputs": [
+            {
+              "nodeId": 461,
+              "nodeType": "SaveImageAdvanced",
+              "file": "image_qwen_image_2_1_turbo_t2i.png",
+              "mediaType": "image"
+            }
+          ]
+        }
+      },
+      {
+        "name": "api_openai_gpt_image_26_flare_t2i",
+        "title": "GPT Image 2.6 Flare: Text to Image",
+        "description": "GPT Image 2.6 Flare is OpenAI's speed-first image model: it returns a draft in seconds and holds the layout together on dense posters and product shots. Use it for concept passes, mood boards and typography-heavy drafts, then switch to a higher quality setting for the final image.",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "tags": [
+          "API",
+          "Text to Image"
+        ],
+        "models": [
+          "GPT Image 2.6"
+        ],
+        "logos": [
+          {
+            "provider": "OpenAI"
+          }
+        ],
+        "minComfyUIVersion": "0.44.1",
+        "date": "2026-11-05",
+        "openSource": false,
+        "size": 0,
+        "usage": 0,
+        "searchRank": 0,
+        "username": "ComfyUI",
+        "io": {
+          "outputs": [
+            {
+              "nodeId": 269,
+              "nodeType": "SaveImage",
+              "file": "api_openai_gpt_image_26_flare_t2i.png",
+              "mediaType": "image"
+            }
+          ]
+        },
+        "thumbnail": [
+          "output/api_openai_gpt_image_26_flare_t2i.png"
+        ]
+      }
+    ]
+  },
+  {
+    "moduleName": "default",
+    "category": "Foundation",
+    "title": "Video",
+    "icon": "icon-[lucide--film]",
+    "type": "video",
+    "templates": [
+      {
+        "name": "api_google_gemini_omni_flash_1_2_t2v",
+        "title": "Gemini Omni 1.2 Flash: Text to Video",
+        "description": "Write the shot and get a 5-second 16:9 clip with synchronized audio: ambience, footsteps and UI clicks come out of the same pass. Gemini Omni 1.2 Flash keeps a fixed cast and layout across the clip, so game-lobby key art, product beats and menu shots hold together.",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "tags": [
+          "API",
+          "Text to Video"
+        ],
+        "models": [
+          "Gemini Omni 1.2 Flash"
+        ],
+        "logos": [
+          {
+            "provider": "Google"
+          }
+        ],
+        "minComfyUIVersion": "0.44.1",
+        "date": "2026-11-06",
+        "openSource": false,
+        "size": 0,
+        "usage": 0,
+        "searchRank": 0,
+        "username": "ComfyUI",
+        "io": {
+          "outputs": [
+            {
+              "nodeId": 4,
+              "nodeType": "SaveVideo",
+              "file": "api_google_gemini_omni_flash_1_2_t2v.mp4",
+              "mediaType": "video"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "moduleName": "default",
+    "category": "Foundation",
+    "title": "3D Model",
+    "icon": "icon-[lucide--box]",
+    "type": "3d",
+    "templates": [
+      {
+        "name": "3d_idol_image_to_gaussian_splat",
+        "title": "Idol: Image to Gaussian Splat",
+        "description": "Turn a single image into a 3D Gaussian splat with Idol, Comfy-Org's fine-tune of TripoSplat: BiRefNet removes the backdrop, DINOv3 and the Flux2 VAE encode the view, and one pass decodes a 262k-point splat. Exports a .spz splat, an orbit preview and an experimental .glb mesh. Best on stylized characters and props.",
+        "mediaType": "image",
+        "mediaSubtype": "webp",
+        "tags": [
+          "3D",
+          "Image to 3D"
+        ],
+        "models": [
+          "Idol",
+          "TripoSplat"
+        ],
+        "date": "2026-11-03",
+        "openSource": true,
+        "size": 3758096384,
+        "usage": 20,
+        "searchRank": 0,
+        "username": "ComfyUI",
+        "io": {
+          "inputs": [
+            {
+              "nodeId": 99,
+              "nodeType": "LoadImage",
+              "file": "polar_bear_bass_player.png",
+              "mediaType": "image"
+            }
+          ]
+        },
+        "minComfyUIVersion": "0.23.0"
+      }
+    ]
+  }
+]

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
 )
@@ -24,6 +25,7 @@ type WorkflowTemplate struct {
 	ID                string `json:"id"`
 	Title             string `json:"title"`
 	Description       string `json:"description,omitempty"`
+	Date              string `json:"date,omitempty"`
 	MinComfyUIVersion string `json:"min_comfyui_version,omitempty"`
 	OpenSource        *bool  `json:"open_source,omitempty"`
 	Source            string `json:"source"`
@@ -52,6 +54,7 @@ func (c *WorkflowTemplateCatalog) List(ctx context.Context) ([]WorkflowTemplate,
 			Name        string `json:"name"`
 			Title       string `json:"title"`
 			Description string `json:"description"`
+			Date        string `json:"date"`
 			MinVersion  string `json:"minComfyUIVersion"`
 			OpenSource  *bool  `json:"openSource"`
 		} `json:"templates"`
@@ -65,14 +68,19 @@ func (c *WorkflowTemplateCatalog) List(ctx context.Context) ([]WorkflowTemplate,
 			if !validWorkflowTemplateID(item.Name) || strings.TrimSpace(item.Title) == "" {
 				return nil, templateSourceShape("invalid template catalog entry")
 			}
-			entry := WorkflowTemplate{ID: item.Name, Title: item.Title, Description: item.Description, MinComfyUIVersion: item.MinVersion, OpenSource: item.OpenSource, Source: workflowTemplateOrigin + item.Name + ".json"}
+			if item.Date != "" {
+				if _, err := time.Parse(time.DateOnly, item.Date); err != nil {
+					return nil, templateSourceShape("invalid template catalog date")
+				}
+			}
+			entry := WorkflowTemplate{ID: item.Name, Title: item.Title, Description: item.Description, Date: item.Date, MinComfyUIVersion: item.MinVersion, OpenSource: item.OpenSource, Source: workflowTemplateOrigin + item.Name + ".json"}
 			entry.ModelProvisioning = "unverified"
 			if entry.OpenSource != nil && !*entry.OpenSource {
 				entry.ModelProvisioning = "unsupported"
 			}
 			if old, ok := byID[entry.ID]; ok {
 				sameSource := old.OpenSource == nil && entry.OpenSource == nil || old.OpenSource != nil && entry.OpenSource != nil && *old.OpenSource == *entry.OpenSource
-				if old.Title != entry.Title || old.Description != entry.Description || old.MinComfyUIVersion != entry.MinComfyUIVersion || !sameSource {
+				if old.Title != entry.Title || old.Description != entry.Description || old.Date != entry.Date || old.MinComfyUIVersion != entry.MinComfyUIVersion || !sameSource {
 					return nil, templateSourceShape("conflicting template catalog entries")
 				}
 			}

@@ -1,6 +1,67 @@
 package search
 
-import "strings"
+import (
+	"cmp"
+	"slices"
+	"strings"
+	"time"
+)
+
+// SortCloudResults orders the complete normalized catalog before pagination.
+func SortCloudResults(results []any, key string, direction int) {
+	if key == "" {
+		return
+	}
+	slices.SortStableFunc(results, func(a, b any) int {
+		left, _ := a.(map[string]any)
+		right, _ := b.(map[string]any)
+		leftID, _ := left["api_id"].(string)
+		rightID, _ := right["api_id"].(string)
+		comparison := 0
+		switch key {
+		case "date", "createdAt":
+			ld, rd := cloudCreatedDate(left), cloudCreatedDate(right)
+			if ld.IsZero() != rd.IsZero() {
+				if ld.IsZero() {
+					return 1
+				}
+				return -1
+			}
+			comparison = ld.Compare(rd)
+		case "name", "title":
+			ln, _ := left["display_name"].(string)
+			rn, _ := right["display_name"].(string)
+			comparison = strings.Compare(strings.ToLower(ln), strings.ToLower(rn))
+		default:
+			comparison = strings.Compare(leftID, rightID)
+		}
+		if direction < 0 {
+			comparison = -comparison
+		}
+		if comparison == 0 {
+			return cmp.Compare(leftID, rightID)
+		}
+		return comparison
+	})
+}
+
+func cloudCreatedDate(model map[string]any) time.Time {
+	for _, key := range []string{"created", "created_at", "createdAt"} {
+		switch value := model[key].(type) {
+		case float64:
+			if value > 0 {
+				return time.Unix(int64(value), 0).UTC()
+			}
+		case string:
+			for _, format := range []string{time.RFC3339, time.DateOnly} {
+				if date, err := time.Parse(format, value); err == nil {
+					return date
+				}
+			}
+		}
+	}
+	return time.Time{}
+}
 
 // NormalizeCloudResults sets canonical api_id and display_name fields on each
 // cloud search result. This is the SINGLE place where provider-specific model

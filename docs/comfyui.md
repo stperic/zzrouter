@@ -160,3 +160,34 @@ Observed-busy runs are protected. A direct submission between an idle sample and
 ## Access
 
 ComfyUI has no authentication and custom nodes execute as the host account. Anyone who can reach its port can use the GPU and that account. Use `listen: "127.0.0.1"` for single-host access, or restrict network access at the host boundary. A zzRouter admin key controls the run lifecycle; it does not authenticate direct ComfyUI requests or meter them.
+
+### Catalog queries
+
+Use the existing list endpoint for the newest ten:
+
+```http
+GET /zzrouter/v1/providers/comfyui/templates?node=localai&sort=date&order=desc&limit=10
+```
+
+Combine `q=Qwen` (`search` remains an alias), `since=2026-10-01` and `open_source=true`.
+`since` includes its date; unknown dates are excluded. Omitted `open_source` includes unknown metadata;
+explicit false selects API-only entries. These flags describe upstream metadata, not execution readiness.
+`date` is the catalog date, not a model release timestamp. Unknown dates sort last in either direction;
+equal sort values use ID ascending. `sort=id|title|date`, `order=asc|desc`; defaults remain id/asc.
+Filters and sorting precede pagination. `total` counts matching entries. For the full catalog use
+`limit=1000`, then increase `offset` while `has_more` is true. MCP's separate response-size limit still applies.
+
+```sh
+zzrouter providers models templates comfyui --node localai --sort date --order desc --limit 10
+```
+
+Registry model discovery uses the same `q`, `sort`, `order`, `limit` and `offset` parameters on
+`GET /zzrouter/v1/search?type=models&provider=huggingface&sort=date&order=desc&limit=10`.
+`date` means creation date for models. HuggingFace also accepts `createdAt`, `lastModified` and `popular` (trending);
+Ollama only has approximate updated dates, so use `lastModified` there. Cloud missing dates remain unknown.
+Unsupported sort/filter combinations return400. Author/tags apply to HuggingFace; since/open_source
+are template-specific. HuggingFace numeric offsets consume upstream cursor pages; prefer returned
+`pagination.cursor.next` via `cursor=...&offset=0` for continuation. Its totals remain inexact.
+The existing `zz_model_search` tool accepts sort/order/author/tags/logic, and generic `zz_api_get`
+accepts all documented query parameters. Parameter names are discoverable through `zz_api_search`;
+full schemas and semantics are in `/openapi.yaml`.

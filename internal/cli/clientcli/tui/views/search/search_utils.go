@@ -183,10 +183,14 @@ func applyClientSort(results []searchResult, sortBy string) []searchResult {
 }
 
 // mapSortToAPI translates unified sort names to server API values.
-func mapSortToAPI(sortBy string) string {
+func mapSortToAPI(sortBy string, cfg searchProviderConfig) string {
+	if sortBy == "" {
+		return ""
+	}
+	if cfg.ClientSorts[sortBy] {
+		return ""
+	}
 	switch sortBy {
-	case "", "popular":
-		return "trendingScore"
 	case "newest":
 		return "lastModified"
 	default:

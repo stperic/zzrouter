@@ -152,6 +152,32 @@ func ValidateParams(c *gin.Context, rules []ParamRule) *ValidationResult {
 	return result
 }
 
+// searchTextQuery preserves both public text spellings without choosing between conflicting filters.
+func searchTextQuery(c *gin.Context) (string, bool) {
+	query := c.Request.URL.Query()
+	q, hasQ := query["q"]
+	alias, hasAlias := query["search"]
+	if hasQ && len(q) != 1 || hasAlias && len(alias) != 1 || hasQ && hasAlias && q[0] != alias[0] {
+		BadRequest(c, "supply one text filter using q or search")
+		return "", false
+	}
+	if hasQ {
+		return q[0], true
+	}
+	return query.Get("search"), true
+}
+
+func validateSingleQuery(c *gin.Context, names ...string) bool {
+	query := c.Request.URL.Query()
+	for _, name := range names {
+		if values, present := query[name]; present && (len(values) != 1 || values[0] == "") {
+			BadRequest(c, name+" requires one nonempty value")
+			return false
+		}
+	}
+	return true
+}
+
 // extractAndValidateTyped extracts and validates a parameter, storing it in the typed result.
 func extractAndValidateTyped(c *gin.Context, rule ParamRule, result *ValidationResult) *ValidationError {
 	// Extract raw value based on source
