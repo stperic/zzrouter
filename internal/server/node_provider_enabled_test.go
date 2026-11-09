@@ -92,9 +92,9 @@ func newEnableCluster(t *testing.T, cert *x509.Certificate) enableCluster {
 	coord.clusterMTLSClient = workerSrv.Client()
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerSrv.URL, ClusterURL: workerSrv.URL, NodeName: "worker", Status: mesh.StatusUp}))
 
-	coordSrv := httptest.NewTLSServer(peerCertHandler(cert, buildCoordInternalEngine(coord)))
+	coordSrv := httptest.NewTLSServer(peerCertHandler(cert, buildTestCoordinatorEngine(coord)))
 	t.Cleanup(coordSrv.Close)
-	worker.cluster.signaler = clustersignal.New(clustersignal.Config{
+	worker.cluster.signaler = newTestSignals(t, testSignalConfig{
 		IsWorker:        func() bool { return true },
 		MTLSClient:      coordSrv.Client,
 		CoordinatorURL:  func() string { return coordSrv.URL },
@@ -278,7 +278,7 @@ func TestWorkerEnableDeadlineIncludesConfigMutation(t *testing.T) {
 		c.Params = gin.Params{{Key: "name", Value: "vllm"}}
 		cert := workerCert("worker")
 		c.Request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}, VerifiedChains: [][]*x509.Certificate{{cert}}}
-		go func() { s.handleNodeProviderEnabled(c); close(returned) }()
+		go func() { s.handleTestNodeProviderEnabled(c); close(returned) }()
 		t.Cleanup(func() { close(idle); <-returned })
 		<-mutated
 		synctest.Wait()

@@ -13,7 +13,6 @@ import (
 func TestDialClientBoundsConnectionEstablishmentOnly(t *testing.T) {
 	n, err := New(testConfig(t, Coordinator))
 	require.NoError(t, err)
-	t.Cleanup(n.pairingStore.Stop)
 	client, err := n.DialClient("worker")
 	require.NoError(t, err)
 	transport, ok := client.Transport.(*http.Transport)

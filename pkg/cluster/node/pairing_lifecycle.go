@@ -3,6 +3,7 @@ package clusternode
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base32"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/version"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -43,16 +46,7 @@ func generatePairingCode() (string, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:]), nil
 }
 
-// IsValidPairingCode reports whether code matches the wire format
-// produced by generatePairingCode: exactly pairingCodeLen chars,
-// each in the base32 alphabet A-Z2-7. Single source of truth for
-// format validation — used by both the coord-side /cluster/pairing-
-// request handler (reject poisoned entries at Record time) and the
-// admin-side /pairing/accept handler (reject malformed pastes
-// without scanning the store).
-//
-// Not a secret check; format validation is strictly a noise filter
-// to produce clear 400s on obvious typos.
+// IsValidPairingCode validates the printable enrollment code format.
 func IsValidPairingCode(code string) bool {
 	if len(code) != pairingCodeLen {
 		return false
@@ -109,17 +103,22 @@ type BeginPairingOptions struct {
 	Regenerate     bool
 }
 
-// PairingWindowInfo is the read-only view of an active pairing window.
-// Code is returned here because the operator needs to see it — the
-// redaction in PendingSummary is coord-side, for different reasons.
+// PairingWindowInfo carries the operator inputs needed by coordinator acceptance.
 type PairingWindowInfo struct {
-	Code     string
-	Deadline time.Time
+	Code        string
+	Deadline    time.Time
+	WorkerURL   string
+	Fingerprint string
 }
 
 // pairingWindow is the worker-side record of an active pairing
 // attempt. One at a time; guarded by n.pairingMu.
 type pairingWindow struct {
+	listener net.Listener
+	server   *http.Server
+	request  pairingRequestBody
+	options  BeginPairingOptions
+
 	code     string
 	deadline time.Time
 
@@ -137,21 +136,9 @@ type pairingWindow struct {
 	done chan struct{}
 }
 
-// BeginPairing opens a pairing window and starts the worker-side poll
-// loop. Idempotent unless Regenerate is true: re-invoking on an
-// already-active window returns the existing code + deadline without
-// touching the on-disk file or restarting the loop.
-//
-// On success, the caller gets back (code, deadline, nil). The loop
-// runs until one of:
-//
-//   - Coord returns approved → completePairing fires, mode flips to
-//     Worker, window closes.
-//   - Coord returns expired (or local TTL fires) → window closes,
-//     node remains Unclaimed, pairing.txt removed.
-//   - CancelPairing is invoked → window closes.
-//   - Node.Stop fires → window closes.
-func (n *Node) BeginPairing(opts BeginPairingOptions) (PairingWindowInfo, error) {
+// BeginPairing arms a code-protected TLS listener until enrollment, cancellation or expiry.
+// Admission, regeneration and trust installation serialize through pairingMu.
+func (n *Node) BeginPairing(ctx context.Context, opts BeginPairingOptions) (PairingWindowInfo, error) {
 	if n.Mode() != Unclaimed {
 		return PairingWindowInfo{}, fmt.Errorf("%w: current mode %s", ErrPairingNotUnclaimed, n.Mode())
 	}
@@ -170,13 +157,23 @@ func (n *Node) BeginPairing(opts BeginPairingOptions) (PairingWindowInfo, error)
 
 	n.pairingMu.Lock()
 	defer n.pairingMu.Unlock()
-
-	if n.activePairingWindow != nil && !opts.Regenerate {
-		w := n.activePairingWindow
-		return PairingWindowInfo{Code: w.code, Deadline: w.deadline}, nil
+	if err := ctx.Err(); err != nil {
+		return PairingWindowInfo{}, err
 	}
-	if n.activePairingWindow != nil && opts.Regenerate {
+	if n.Mode() != Unclaimed {
+		return PairingWindowInfo{}, ErrPairingNotUnclaimed
+	}
+
+	if n.activePairingWindow != nil && !opts.Regenerate && n.activePairingWindow.ctx.Err() == nil && utils.Now().Before(n.activePairingWindow.deadline) {
+		w := n.activePairingWindow
+		return n.windowInfo(w), nil
+	}
+	if n.activePairingWindow != nil {
 		n.cancelWindowLocked()
+	}
+	// An expired cluster certificate must not prevent explicit re-enrollment.
+	if err := n.identity.ResetCertificate(); err != nil {
+		return PairingWindowInfo{}, fmt.Errorf("prepare enrollment identity: %w", err)
 	}
 
 	code, err := generatePairingCode()
@@ -193,7 +190,14 @@ func (n *Node) BeginPairing(opts BeginPairingOptions) (PairingWindowInfo, error)
 		return PairingWindowInfo{}, fmt.Errorf("generate CSR: %w", err)
 	}
 
-	loopCtx, cancel := context.WithCancel(context.Background())
+	n.mu.Lock()
+	parent := n.shutdownCtx
+	n.mu.Unlock()
+	if parent == nil {
+		_ = os.Remove(n.cfg.PairingPath)
+		return PairingWindowInfo{}, errors.New("start the node before opening enrollment")
+	}
+	loopCtx, cancel := context.WithCancel(parent)
 	deadline := utils.Now().Add(pairingTTL)
 	timer := time.AfterFunc(pairingTTL, cancel)
 	doneCh := make(chan struct{})
@@ -208,18 +212,35 @@ func (n *Node) BeginPairing(opts BeginPairingOptions) (PairingWindowInfo, error)
 	}
 	n.activePairingWindow = w
 
-	sans := append([]string(nil), n.cfg.advertiseDNSNames()...)
-	go n.runPairingAttempt(loopCtx, doneCh, w, pairingClientOpts{
-		coordURL:      opts.CoordinatorURL,
-		caFingerprint: opts.CAFingerprint,
-		code:          code,
-		nodeName:      n.cfg.NodeName,
-		fingerprint:   n.Fingerprint(),
-		csrPEM:        string(csr),
-		sans:          sans,
-	})
-
-	return PairingWindowInfo{Code: code, Deadline: deadline}, nil
+	w.options = opts
+	w.request = pairingRequestBody{Code: code, NodeName: n.cfg.NodeName, Fingerprint: n.Fingerprint(), CSRPEM: string(csr), SANs: n.cfg.advertiseDNSNames(), ClusterProtocol: version.ClusterProtocolVersion, MinClusterProtocol: version.MinClusterProtocolVersion, CoordinatorCAFingerprint: opts.CAFingerprint}
+	n.mu.Lock()
+	if n.stopped || !n.started || ctx.Err() != nil {
+		n.mu.Unlock()
+		n.cancelWindowLocked()
+		close(doneCh)
+		if err := ctx.Err(); err != nil {
+			return PairingWindowInfo{}, err
+		}
+		return PairingWindowInfo{}, errors.New("start the node before opening enrollment")
+	}
+	ln, err := nodeListen(n, net.JoinHostPort(n.cfg.BindHost, strconv.Itoa(n.cfg.Port)))
+	if err != nil {
+		n.mu.Unlock()
+		n.cancelWindowLocked()
+		close(doneCh)
+		return PairingWindowInfo{}, err
+	}
+	w.listener = ln
+	n.listenerAddr = ln.Addr()
+	tlsConfig := n.buildTLSConfig()
+	tlsConfig.ClientAuth = tls.NoClientCert
+	tlsConfig.VerifyConnection = nil
+	w.server = &http.Server{Handler: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { n.handleEnrollment(w, rw, r) }), TLSConfig: tlsConfig, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, BaseContext: func(net.Listener) context.Context { return w.ctx }}
+	n.wg.Add(1)
+	n.mu.Unlock()
+	go n.serveEnrollment(w) //nolint:gosec // Admitted enrollment belongs to the node lifecycle, independently of this request.
+	return n.windowInfo(w), nil
 }
 
 // CancelPairing cancels the active pairing window (if any) and removes
@@ -246,7 +267,7 @@ func (n *Node) PairingWindowInfoSnapshot() (PairingWindowInfo, bool) {
 		return PairingWindowInfo{}, false
 	}
 	w := n.activePairingWindow
-	return PairingWindowInfo{Code: w.code, Deadline: w.deadline}, true
+	return n.windowInfo(w), true
 }
 
 // ConsumeLastPairingError returns the most recent terminal error
@@ -277,194 +298,84 @@ func (n *Node) cancelWindowLocked() {
 	if w.timer != nil {
 		w.timer.Stop()
 	}
+	if w.listener != nil {
+		_ = w.listener.Close()
+	}
 	w.cancel()
 	_ = os.Remove(n.cfg.PairingPath)
 	n.activePairingWindow = nil
 }
 
-// runPairingAttempt wraps runPairingLoop with the on-success handoff to
-// completePairing and cleanup on every exit path. Spawned by
-// BeginPairing as the pairing-loop goroutine.
-func (n *Node) runPairingAttempt(ctx context.Context, doneCh chan struct{}, w *pairingWindow, opts pairingClientOpts) {
-	defer close(doneCh)
-
-	result, err := runPairingLoop(ctx, opts)
-	if err != nil {
-		// Any non-nil err means we did NOT flip to Worker. Clear
-		// window + on-disk code so the operator can retry. Stash
-		// terminal reasons (strict-mode 403, etc.) so the admin
-		// handler surfaces them on the next poll — otherwise the
-		// operator sees a generic "no active window" and doesn't
-		// learn to re-run with --secure / --ca-fingerprint.
-		n.pairingMu.Lock()
-		if n.activePairingWindow == w {
-			if w.timer != nil {
-				w.timer.Stop()
-			}
-			_ = os.Remove(n.cfg.PairingPath)
-			n.activePairingWindow = nil
-		}
-		// Ctx-canceled is the operator's own doing (Cancel or
-		// Stop); don't pollute the error surface with it.
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			n.lastPairingError = err
-		}
-		n.pairingMu.Unlock()
-		return
+// completePairing installs the coordinator-signed identity and starts the worker listener.
+func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string) error {
+	n.pairingMu.Lock()
+	err := n.installPairingLocked(signedCertPEM, caCertPEM, coordURL)
+	n.pairingMu.Unlock()
+	if err == nil {
+		n.pairingInstalled()
 	}
-
-	if err := n.completePairing(result.signedCertPEM, result.caCertPEM, result.coordinatorURL); err != nil {
-		// completePairing failed after the coord committed (code was
-		// burned on coord side). We're in a broken state: worker
-		// still Unclaimed, coord thinks paired. Operator must
-		// intervene. Clear window state so the CLI doesn't keep
-		// showing a live code that will never resolve.
-		n.pairingMu.Lock()
-		if n.activePairingWindow == w {
-			if w.timer != nil {
-				w.timer.Stop()
-			}
-			_ = os.Remove(n.cfg.PairingPath)
-			n.activePairingWindow = nil
-		}
-		n.pairingMu.Unlock()
-		fmt.Fprintf(os.Stderr, "clusternode: pairing completed on coord but local install failed: %v\n", err)
-		return
-	}
-
-	// completePairing succeeded. Window state already cleared inside
-	// completePairing under the pairing lock.
+	return err
 }
 
-// completePairing binds the mTLS cluster listener, persists the CA +
-// coordinator URL + signed cert, and flips Mode Unclaimed→Worker.
-//
-// An Unclaimed node has NO active cluster listener (it went dormant
-// at boot); this function binds the first listener for the worker-
-// track lifetime. The selfHealStarted gate is reset so the new Worker
-// cycle can revert cleanly if /cluster/leave or a deny-list 403
-// fires later.
-//
-// Ordering (each step rolls back everything prior on failure):
-//
-//  1. Bind the new mTLS listener — cheapest rollback (just Close).
-//  2. Persist CA + coordinator_url to disk.
-//  3. InstallSignedCert — last mutation before mode flip.
-//  4. Under n.mu: flip mode, install server, spawn serve. `go serve`
-//     runs inside the lock so a concurrent Stop → shutdownServer
-//     can't observe (and nil) httpServer between the assignment and
-//     the serve-goroutine spawn.
-//  5. Clear pairing window, fire OnModeChange, start renewal ticker.
-//
-// Step ordering matters: a bind failure in step 1 leaves zero disk
-// mutation. A write failure in step 2 leaves the listener bound but
-// no on-disk state → closed on return. An InstallSignedCert failure
-// in step 3 leaves disk CA+URL but no cert → operator runs
-// `zzrouter cluster pair --regenerate` to retry, identity key and
-// thus fingerprint survive.
-func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string) error {
+// pairingMu precedes mu so cancellation cannot overlap the trust commit.
+func (n *Node) installPairingLocked(signedCertPEM, caCertPEM []byte, coordURL string) error {
 	n.mu.Lock()
-	stopped := n.stopped
-	n.mu.Unlock()
-	if stopped {
-		return errors.New("node stopped during pairing completion")
-	}
-
-	// 1. Bind the mTLS listener first — if this fails nothing else
-	// has mutated and the caller can surface a clean error.
-	addr := net.JoinHostPort(n.cfg.BindHost, strconv.Itoa(n.cfg.Port))
-	newLn, err := nodeListen(n, addr)
-	if err != nil {
-		return fmt.Errorf("mtls listen %s: %w", addr, err)
-	}
-
-	// 2. Persist CA + coordinator URL to disk.
-	if err := os.MkdirAll(n.cfg.ClusterDir, 0o700); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("mkdir cluster dir: %w", err)
-	}
-	caPath := filepath.Join(n.cfg.ClusterDir, "ca.pem")
-	if err := writeClusterFile(caPath, caCertPEM); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("persist CA: %w", err)
-	}
-	urlPath := filepath.Join(n.cfg.ClusterDir, "coordinator_url")
-	if err := writeClusterFile(urlPath, []byte(coordURL)); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("persist coordinator URL: %w", err)
-	}
-
-	// 3. Install the signed cert. InstallSignedCert re-validates
-	// that the cert's public key matches our long-term keypair.
-	if err := n.identity.InstallSignedCert(signedCertPEM); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("install signed cert: %w", err)
-	}
-
-	// 4. Atomic mode flip + listener install + serve-spawn under mu.
-	// Spawning `go serve` WHILE holding mu closes the window where a
-	// concurrent Stop → shutdownServer could observe the new
-	// httpServer, call Shutdown on a server that hasn't yet called
-	// ServeTLS, and leak the listener fd.
-	n.mu.Lock()
+	defer n.mu.Unlock()
 	if n.stopped {
-		n.mu.Unlock()
-		_ = newLn.Close()
-		return errors.New("node stopped during pairing completion")
+		return errors.New("node stopped during enrollment")
+	}
+	port := strconv.Itoa(n.cfg.Port)
+	if w := n.activePairingWindow; w != nil && w.listener != nil {
+		_, port, _ = net.SplitHostPort(w.listener.Addr().String())
+		_ = w.listener.Close()
+	}
+	addr := net.JoinHostPort(n.cfg.BindHost, port)
+	ln, err := nodeListen(n, addr)
+	if err != nil {
+		n.cancelWindowLocked()
+		return fmt.Errorf("mTLS listen: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ln.Close()
+			n.cancelWindowLocked()
+		}
+	}()
+	if err := os.MkdirAll(n.cfg.ClusterDir, 0o700); err != nil {
+		return err
+	}
+	if err := writeClusterFile(filepath.Join(n.cfg.ClusterDir, "ca.pem"), caCertPEM); err != nil {
+		return err
+	}
+	if err := writeClusterFile(filepath.Join(n.cfg.ClusterDir, "coordinator_url"), []byte(coordURL)); err != nil {
+		return err
+	}
+	if err := n.identity.InstallSignedCert(signedCertPEM); err != nil {
+		return err
 	}
 	n.selfHealStarted = false
 	n.coordinatorURL = coordURL
+	n.signals.Reset()
 	n.mode.Store(int32(Worker))
-	newSrv := &http.Server{
-		Handler:           n.buildHandler(),
-		TLSConfig:         n.buildTLSConfig(),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	n.httpServer = newSrv
-	n.listener = newLn
-	n.listenerAddr = newLn.Addr()
+	srv := &http.Server{Handler: n.buildHandler(), TLSConfig: n.buildTLSConfig(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return n.shutdownCtx }}
+	n.httpServer = srv
+	n.listener = ln
+	n.listenerAddr = ln.Addr()
 	n.servingDone = make(chan struct{})
-	servingDone := n.servingDone
 	n.wg.Add(1)
-	go n.serve(newSrv, newLn, servingDone)
-	n.mu.Unlock()
-
-	// 5. Clear the pairing window now that the forward path is
-	// committed.
-	n.pairingMu.Lock()
-	if n.activePairingWindow != nil {
-		if n.activePairingWindow.timer != nil {
-			n.activePairingWindow.timer.Stop()
-		}
-		_ = os.Remove(n.cfg.PairingPath)
-		n.activePairingWindow = nil
-	}
-	n.pairingMu.Unlock()
-
-	n.notifyModeChange(Worker, "pairing succeeded")
-
-	// The renewal ticker was not started at Start on an Unclaimed
-	// node (no Worker mode yet). Start it now that mode has flipped.
-	// Tracked in wg inside startRenewalTickerLocked; bound to the
-	// node's shutdown ctx captured at Start so Stop cleans it up.
-	n.mu.Lock()
-	// Re-check stopped: notifyModeChange above runs callbacks unlocked
-	// and can be slow, opening a window where Stop sets stopped=true
-	// and proceeds to wg.Wait(). startRenewalTickerLocked does
-	// wg.Add(1); a concurrent wg.Wait() with counter==0 panics
-	// ("sync: WaitGroup is reused before previous Wait has returned").
-	if n.stopped {
-		n.mu.Unlock()
-		return nil
-	}
-	shutdownCtx := n.shutdownCtx
-	if shutdownCtx == nil {
-		shutdownCtx = context.Background()
-	}
-	n.startRenewalTickerLocked(shutdownCtx)
-	n.mu.Unlock()
+	go n.serve(srv, ln, n.servingDone)
+	committed = true
+	n.cancelWindowLocked()
 	return nil
+}
+func (n *Node) pairingInstalled() {
+	n.notifyModeChange(Worker, "coordinator enrollment succeeded")
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.stopped && n.shutdownCtx != nil {
+		n.startRenewalTickerLocked(n.shutdownCtx)
+	}
 }
 
 // writePairingCodeFile writes the pairing code durably at

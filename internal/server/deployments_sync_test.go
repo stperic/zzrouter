@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -120,6 +121,8 @@ func TestDispatchSyncDeploy_PopulatesTrackerOnSuccess(t *testing.T) {
 	s := &DeploymentsService{
 		router:         r,
 		tracker:        NewDeploymentTracker(),
+		peerClient:     func() *http.Client { return http.DefaultClient },
+		nodeInfo:       &NodeIdentity{name: "nodeB"},
 		resolveNodeURL: func(node string) string { return "https://" + node + ":9090" },
 	}
 	d := s.tracker.CreateDeployment("m", "gguf", "hf", "", []string{"nodeA", "nodeB"})
@@ -192,6 +195,7 @@ func TestDispatchSyncDeployUncertainAcceptanceNeverStartsAnotherTransfer(t *test
 				body   []byte
 			}{"/zzrouter/v1/internal/sync/deploy": {tc.status, []byte(tc.body)}}}
 			s := NewDeploymentsService(r, nil, nilAppsConfig).WithNodeURLResolver(func(string) string { return "https://source:8080" })
+			s.peerClient = func() *http.Client { return http.DefaultClient }
 			d := s.tracker.CreateDeployment("m", "gguf", "hf", "", []string{"target"})
 			require.NoError(t, s.dispatchDeployTarget(t.Context(), d.ID, "target", "source", &DeployRequest{Model: "m"}, deployPlan{}, []string{"target"}))
 			require.Zero(t, r.RequestsToPath("/zzrouter/v1/internal/deployments"), "uncertain or deduped sync must not trigger a registry pull")

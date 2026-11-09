@@ -41,10 +41,12 @@ type clusterPairRequest struct {
 // the TUI surfaces an actionable message instead of a generic "no
 // active window".
 type clusterPairResponse struct {
-	Status   string    `json:"status"`
-	Code     string    `json:"code,omitempty"`
-	Deadline time.Time `json:"deadline,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Status      string    `json:"status"`
+	Code        string    `json:"code,omitempty"`
+	Deadline    time.Time `json:"deadline,omitempty"`
+	WorkerURL   string    `json:"worker_url,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Error       string    `json:"error,omitempty"`
 	// Mode carries the node's runtime cluster mode ("unclaimed" |
 	// "worker" | "coordinator" | "disabled") so the TUI can detect
 	// successful completion: post-pair, the window closes and mode
@@ -88,9 +90,10 @@ func (h *ClusterHandlers) handleClusterPair(c *gin.Context) {
 	// without digging up the URL + fingerprint again.
 	if info, hadWindow := h.listener.PairingWindowInfoSnapshot(); hadWindow && !req.Regenerate {
 		c.JSON(http.StatusOK, clusterPairResponse{
-			Status:   "existing",
-			Code:     info.Code,
-			Deadline: info.Deadline,
+			Status:    "existing",
+			Code:      info.Code,
+			Deadline:  info.Deadline,
+			WorkerURL: info.WorkerURL, Fingerprint: info.Fingerprint,
 		})
 		return
 	}
@@ -124,15 +127,16 @@ func (h *ClusterHandlers) handleClusterPair(c *gin.Context) {
 		CAFingerprint:  req.CoordinatorCAFingerprint,
 		Regenerate:     req.Regenerate,
 	}
-	info, err := h.listener.BeginPairing(opts)
+	info, err := h.listener.BeginPairing(c.Request.Context(), opts)
 	if err != nil {
 		respondPairBeginError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, clusterPairResponse{
-		Status:   "new",
-		Code:     info.Code,
-		Deadline: info.Deadline,
+		Status:    "new",
+		Code:      info.Code,
+		Deadline:  info.Deadline,
+		WorkerURL: info.WorkerURL, Fingerprint: info.Fingerprint,
 	})
 }
 

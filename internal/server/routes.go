@@ -143,25 +143,12 @@ func (s *Server) setupRoutes() {
 	// Worker-read fallback (plan §5.3) deleted: workers bind admin port
 	// to localhost only. Coord is the single ingress for any state read.
 
-	// Coordinator-only operator endpoints for the cluster lifecycle:
-	//
-	//   /pairing/accept      — admin paste of worker-printed code →
-	//                          signs CSR → wakes worker's long-poll
-	//   /pairing/pending     — list pending pairing requests (code redacted)
-	//   /decommission-worker — Worker → Unclaimed + drop from registry
-	//   /revoke-worker       — append worker SPKI fingerprint to deny list
-	//
-	// Admin-keyed. These call in/out of the mTLS layer and are not
-	// served by mTLS themselves — the pairing accept produces the
-	// credentials via the coord's pending-request store; the
-	// decommission endpoint is an operator action independent of the
-	// worker's own auth state.
+	// Operator lifecycle actions initiate pinned enrollment or authenticated worker requests.
 	if !isWorker {
 		clusterOps := s.engine.Group("/zzrouter/v1/cluster",
 			RequestIDMiddleware(), APIVersionMiddleware(),
 			s.auth.adminAuthMiddleware())
 		clusterOps.POST("/pairing/accept", s.clusterHandlers.handleClusterPairingAccept)
-		clusterOps.GET("/pairing/pending", s.clusterHandlers.handleClusterPairingList)
 		clusterOps.POST("/decommission-worker", s.clusterHandlers.handleClusterDecommissionWorker)
 		clusterOps.POST("/revoke-worker", s.clusterHandlers.handleClusterRevokeWorker)
 	}

@@ -1,277 +1,278 @@
-// Package signal owns worker→coordinator cross-node calls. Workers send
-// a cache-refresh ping after any config mutation (providers changed,
-// models changed), a goodbye POST during graceful shutdown so the coord
-// marks the endpoint DOWN without waiting on the liveness hysteresis,
-// and their own provider enable choices, which only the coordinator's
-// provider tree may hold.
-//
-// Kept separate from pkg/model/cache so the cache stays a data layer
-// (catalog + indexes + lifecycle) and dispatch plumbing lives with
-// the rest of the cluster-networking code.
+// Package signal carries node operations over coordinator-initiated requests.
 package signal
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/google/uuid"
 )
 
-// StatusError is a coordinator refusal, kept whole so the caller can relay
-// its status and closed code rather than flatten it.
+// Hold bounds a parked poll. Clients allow additional transport slack.
+const Hold = 25 * time.Second
+const maxPending = 64
+
+// ErrStopped refuses operations that require a live coordinator exchange.
+var ErrStopped = errors.New("node exchange is stopped")
+
+// Kind identifies a node operation, never an arbitrary remotely supplied route.
+type Kind string
+
+const (
+	// Catalog requests publication of this node's inventory.
+	Catalog Kind = "catalog"
+	// ProviderEnabled requests a coordinator-owned node enable choice.
+	ProviderEnabled Kind = "provider_enabled"
+	// Goodbye reports graceful departure.
+	Goodbye Kind = "goodbye"
+	// Renew requests a certificate for the existing node key.
+	Renew Kind = "renew"
+)
+
+// Operation remains pending until acknowledged or its caller cancels.
+type Operation struct {
+	ID       string `json:"id"`
+	Kind     Kind   `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Enabled  bool   `json:"enabled,omitempty"`
+	CSR      string `json:"csr,omitempty"`
+}
+
+// StatusError preserves the coordinator's refusal status and code.
 type StatusError struct {
-	Status int
-	Code   string
-	Detail string
+	Status int    `json:"status"`
+	Code   string `json:"code,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 func (e *StatusError) Error() string {
-	if e.Detail == "" {
-		return fmt.Sprintf("coord returned status %d", e.Status)
-	}
-	return fmt.Sprintf("coord returned status %d: %s", e.Status, e.Detail)
+	return fmt.Sprintf("coordinator operation: status %d: %s", e.Status, e.Detail)
 }
 
-// errCoordNotWired means the caller can't reach the coordinator yet —
-// pre-pairing, pre-Start, or mid-demote. NotifyCacheRefresh uses it to
-// short-circuit the retry loop; SendGoodbye silently swallows it.
-var errCoordNotWired = errors.New("coordinator dispatch not wired")
-
-// Config bundles Signaler dependencies.
-type Config struct {
-	// IsWorker gates both Notify and Goodbye — only workers signal the
-	// coord. Wrapped as a function so role transitions flip observed
-	// behavior without a Signaler rebuild.
-	IsWorker func() bool
-	// MTLSClient returns the worker's mTLS dispatch client (coordinator
-	// OU). Required; nil returns short-circuit the calls.
-	MTLSClient func() *http.Client
-	// CoordinatorURL returns the paired coordinator's cluster-port URL
-	// (https://host:cluster-port, read from clusterDir at pairing).
-	CoordinatorURL func() string
-	// WorkerPublicURL returns this worker's public URL as the coord has
-	// it registered. Sent in the goodbye payload so the coord can mark
-	// exactly this worker DOWN.
-	WorkerPublicURL func() string
+// Result acknowledges one operation on its original node incarnation.
+type Result struct {
+	ID          string       `json:"id"`
+	Error       *StatusError `json:"error,omitempty"`
+	Certificate string       `json:"certificate,omitempty"`
 }
 
-// Signaler emits worker→coord notifications. Lifecycle-gated via
-// Start/Stop so in-flight notifications drain before server shutdown.
+// Poll identifies operations the coordinator is already processing.
+type Poll struct {
+	Incarnation string   `json:"incarnation,omitempty"`
+	Seen        []string `json:"seen,omitempty"`
+}
+
+// Batch is a replayable snapshot of pending operations.
+type Batch struct {
+	Incarnation string      `json:"incarnation"`
+	Operations  []Operation `json:"operations"`
+}
+
+// Acknowledgment completes operations only on their original incarnation.
+type Acknowledgment struct {
+	Incarnation string   `json:"incarnation"`
+	Results     []Result `json:"results"`
+}
+
+// Config contains the runtime role accessor.
+type Config struct{ IsWorker func() bool }
+type pending struct {
+	op     Operation
+	done   chan struct{}
+	result Result
+}
+
+// Signaler owns node operations and their lifecycle. It never dials.
 type Signaler struct {
-	cfg Config
-
-	lifecycleMu sync.Mutex
-	lifeCtx     context.Context
-	lifeCancel  context.CancelFunc
-	notifyWG    sync.WaitGroup
+	cfg         Config
+	mu          sync.Mutex
+	ctx         context.Context
+	parent      context.Context
+	cancel      context.CancelFunc
+	incarnation string
+	changed     chan struct{}
+	pending     map[string]*pending
 }
 
-// New constructs a Signaler from Config.
+// New constructs a dormant exchange.
 func New(cfg Config) *Signaler {
-	return &Signaler{cfg: cfg}
+	return &Signaler{cfg: cfg, incarnation: uuid.NewString(), changed: make(chan struct{}), pending: make(map[string]*pending)}
 }
 
-// Start installs the lifecycle ctx. Idempotent — a second Start without
-// an intervening Stop is a no-op.
+// Start opens admission; starting an already running exchange is a no-op.
 func (s *Signaler) Start(ctx context.Context) {
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.lifeCancel != nil {
-		return
-	}
-	s.lifeCtx, s.lifeCancel = context.WithCancel(ctx)
-}
-
-// Stop cancels the lifecycle ctx and waits for in-flight notifications
-// to exit. Bounded by ctx. Safe to call repeatedly.
-func (s *Signaler) Stop(ctx context.Context) {
-	s.lifecycleMu.Lock()
-	cancel := s.lifeCancel
-	s.lifeCtx = nil
-	s.lifeCancel = nil
-	s.lifecycleMu.Unlock()
-	if cancel == nil {
-		return
-	}
-	cancel()
-
-	done := make(chan struct{})
-	go func() {
-		s.notifyWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		slog.Warn("signal stop deadline exceeded", "err", ctx.Err())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel == nil {
+		s.parent = ctx
+		s.ctx, s.cancel = context.WithCancel(ctx)
 	}
 }
 
-// NotifyCacheRefresh waits for coordinator catalog publication with
-// bounded retries. No-op on coordinator nodes or pre-Start. Tracked
-// via the wait group so Stop blocks until in-flight notifications exit.
-//
-// The certificate names both the inventory and the endpoint to re-probe.
-func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
-	return s.notify(ctx, false)
-}
-
-// NotifyCacheRefreshAsync admits a notification before spawning so Stop owns its drain.
-func (s *Signaler) NotifyCacheRefreshAsync(ctx context.Context) {
-	_ = s.notify(ctx, true)
-}
-
-func (s *Signaler) notify(ctx context.Context, async bool) error {
-	s.lifecycleMu.Lock()
-	lifeCtx := s.lifeCtx
-	if lifeCtx == nil || s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
-		s.lifecycleMu.Unlock()
-		return nil
+// Stop cancels callers and parked polls without spawning drain goroutines.
+func (s *Signaler) Stop(_ context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+		s.ctx = nil
+		s.incarnation = uuid.NewString()
+		s.pending = make(map[string]*pending)
+		s.wakeLocked()
 	}
-	s.notifyWG.Add(1)
-	s.lifecycleMu.Unlock()
-	if async {
-		go func() {
-			defer utils.RecoverAndLog("signal.NotifyCacheRefresh")
-			_ = s.notifyCacheRefresh(ctx, lifeCtx)
-		}()
-		return nil
-	}
-	return s.notifyCacheRefresh(ctx, lifeCtx)
 }
+func (s *Signaler) wakeLocked() { close(s.changed); s.changed = make(chan struct{}) }
 
-func (s *Signaler) notifyCacheRefresh(ctx, lifeCtx context.Context) error {
-	defer s.notifyWG.Done()
-	ctx, cancel := context.WithCancel(ctx)
+// Wait returns unseen operations, or an empty batch after normal hold expiry.
+func (s *Signaler) Wait(ctx context.Context, poll Poll) (Batch, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, Hold)
 	defer cancel()
-	stop := context.AfterFunc(lifeCtx, cancel)
-	defer stop()
-	if lifeCtx.Err() != nil {
-		cancel()
-	}
-
-	const (
-		maxRetries  = 3
-		perAttempt  = 10 * time.Second
-		initBackoff = 1 * time.Second
-	)
-	backoff := initBackoff
-	var err error
-	for attempt := range maxRetries {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoff):
+	for {
+		s.mu.Lock()
+		batch := Batch{Incarnation: s.incarnation, Operations: []Operation{}}
+		if s.ctx == nil {
+			s.mu.Unlock()
+			return batch, errors.New("node exchange is stopped")
+		}
+		life := s.ctx
+		seen := make(map[string]bool, len(poll.Seen))
+		if poll.Incarnation == s.incarnation {
+			for _, id := range poll.Seen {
+				seen[id] = true
 			}
-			backoff *= 2
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		for id, p := range s.pending {
+			if !seen[id] {
+				batch.Operations = append(batch.Operations, p.op)
+			}
 		}
-		callCtx, cancel := context.WithTimeout(ctx, perAttempt)
-		err = s.doCoordPost(callCtx, "/zzrouter/v1/internal/models/refresh", []byte("{}"))
-		cancel()
-		if err == nil {
-			slog.Info("[Worker] Master cache refresh notification sent successfully")
-			return nil
+		changed := s.changed
+		s.mu.Unlock()
+		if len(batch.Operations) > 0 {
+			return batch, nil
 		}
-		if errors.Is(err, errCoordNotWired) {
-			slog.Debug("[Worker] Skipping master notify", "reason", err)
-			return err
-		}
-		slog.Warn("[Worker] Master notify attempt failed", "attempt", attempt, "err", err)
-		if ctx.Err() != nil {
-			return ctx.Err()
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return batch, ctx.Err()
+			}
+			return batch, nil
+		case <-life.Done():
+			return batch, life.Err()
+		case <-changed:
 		}
 	}
-	slog.Warn("[Worker] Failed to notify master after attempts", "max_retries", maxRetries)
+}
+
+// Acknowledge is idempotent and refuses results for older incarnations.
+func (s *Signaler) Acknowledge(ack Acknowledgment) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ack.Incarnation != s.incarnation {
+		return false
+	}
+	for _, r := range ack.Results {
+		if p := s.pending[r.ID]; p != nil {
+			p.result = r
+			delete(s.pending, r.ID)
+			close(p.done)
+		}
+	}
+	s.wakeLocked()
+	return true
+}
+func (s *Signaler) submit(ctx context.Context, op Operation) (Result, error) {
+	s.mu.Lock()
+	if s.ctx == nil || s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
+		s.mu.Unlock()
+		return Result{}, ErrStopped
+	}
+	life := s.ctx
+	if life.Err() != nil {
+		s.mu.Unlock()
+		return Result{}, life.Err()
+	}
+	if len(s.pending) >= maxPending {
+		s.mu.Unlock()
+		return Result{}, &StatusError{Status: 503, Code: "node_exchange_busy", Detail: "node exchange is at capacity"}
+	}
+	op.ID = uuid.NewString()
+	p := &pending{op: op, done: make(chan struct{})}
+	s.pending[op.ID] = p
+	s.wakeLocked()
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); delete(s.pending, op.ID); s.wakeLocked(); s.mu.Unlock() }()
+	select {
+	case <-p.done:
+		if p.result.Error != nil {
+			return p.result, p.result.Error
+		}
+		return p.result, nil
+	case <-ctx.Done():
+		return Result{}, ctx.Err()
+	case <-life.Done():
+		return Result{}, life.Err()
+	}
+}
+
+// NotifyCacheRefresh waits for publication, rather than just event delivery.
+func (s *Signaler) NotifyCacheRefresh(ctx context.Context) error {
+	s.mu.Lock()
+	active := s.ctx != nil && s.cfg.IsWorker != nil && s.cfg.IsWorker()
+	s.mu.Unlock()
+	if !active {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 33*time.Second)
+	defer cancel()
+	_, err := s.submit(ctx, Operation{Kind: Catalog})
 	return err
 }
 
-// SendGoodbye POSTs a synchronous goodbye to the coord so it can mark
-// this worker DOWN without waiting on the 2-miss liveness hysteresis.
-// Returns silently on any error; a failed goodbye just defers to the
-// normal poll-based DOWN detection.
-func (s *Signaler) SendGoodbye(ctx context.Context) {
-	if s.cfg.IsWorker == nil || !s.cfg.IsWorker() {
+// NotifyCacheRefreshAsync records a best-effort notice without a new goroutine.
+func (s *Signaler) NotifyCacheRefreshAsync(_ context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx == nil || s.ctx.Err() != nil || s.cfg.IsWorker == nil || !s.cfg.IsWorker() || len(s.pending) >= maxPending {
 		return
 	}
-	var workerURL string
-	if s.cfg.WorkerPublicURL != nil {
-		workerURL = s.cfg.WorkerPublicURL()
-	}
-	if workerURL == "" {
-		return
-	}
-	body, err := json.Marshal(map[string]string{"node_url": workerURL})
-	if err != nil {
-		return
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := s.doCoordPost(callCtx, "/zzrouter/v1/internal/goodbye", body); err != nil {
-		slog.Info("[Worker] Goodbye notify failed", "err", err)
-		return
-	}
-	slog.Info("[Worker] Goodbye notify acknowledged")
+	op := Operation{ID: uuid.NewString(), Kind: Catalog}
+	s.pending[op.ID] = &pending{op: op, done: make(chan struct{})}
+	s.wakeLocked()
 }
 
-// RecordProviderEnabled asks the coordinator to record this node's enable
-// choice; nil means the sync carrying it has already reached this node.
+// RecordProviderEnabled waits until the coordinator has delivered the config.
 func (s *Signaler) RecordProviderEnabled(ctx context.Context, provider string, enabled bool) error {
-	body, err := json.Marshal(map[string]bool{"enabled": enabled})
-	if err != nil {
-		return err
-	}
-	return s.doCoord(ctx, http.MethodPut, "/zzrouter/v1/internal/providers/"+url.PathEscape(provider)+"/enabled", body)
+	_, err := s.submit(ctx, Operation{Kind: ProviderEnabled, Provider: provider, Enabled: enabled})
+	return err
 }
 
-func (s *Signaler) doCoordPost(ctx context.Context, path string, body []byte) error {
-	return s.doCoord(ctx, http.MethodPost, path, body)
+// SendGoodbye gives an existing poll a bounded opportunity to observe departure.
+func (s *Signaler) SendGoodbye(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, _ = s.submit(ctx, Operation{Kind: Goodbye})
 }
 
-func (s *Signaler) doCoord(ctx context.Context, method, path string, body []byte) error {
-	if s.cfg.MTLSClient == nil {
-		return errCoordNotWired
+// RenewCertificate waits for a signed certificate without opening a connection.
+func (s *Signaler) RenewCertificate(ctx context.Context, csr string) (string, error) {
+	r, err := s.submit(ctx, Operation{Kind: Renew, CSR: csr})
+	return r.Certificate, err
+}
+
+// Reset discards a prior cluster's operations and wakes their callers.
+func (s *Signaler) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+		s.ctx, s.cancel = context.WithCancel(s.parent)
 	}
-	client := s.cfg.MTLSClient()
-	if client == nil {
-		return errCoordNotWired
-	}
-	var coord string
-	if s.cfg.CoordinatorURL != nil {
-		coord = s.cfg.CoordinatorURL()
-	}
-	if coord == "" {
-		return errCoordNotWired
-	}
-	req, err := http.NewRequestWithContext(ctx, method, coord+path, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		var problem struct {
-			Code   string `json:"code"`
-			Detail string `json:"detail"`
-		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&problem)
-		return &StatusError{Status: resp.StatusCode, Code: problem.Code, Detail: problem.Detail}
-	}
-	return nil
+	s.incarnation = uuid.NewString()
+	s.pending = make(map[string]*pending)
+	s.wakeLocked()
 }

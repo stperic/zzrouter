@@ -17,6 +17,9 @@ permissions differ. A virtual key can be constrained by team, models, requests,
 tokens, concurrency and spend. Workers expose inference only on their cluster
 listener. The coordinator applies client policy before dispatching to workers.
 
+Cluster connection direction, enrollment and replication are described in
+[cluster networking](cluster_networking.md). Only the coordinator initiates cluster connections.
+
 ## Discover, execute, observe
 
 List providers with `GET /zzrouter/v1/providers` and models with

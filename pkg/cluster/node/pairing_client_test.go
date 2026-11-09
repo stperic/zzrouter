@@ -1,7 +1,6 @@
 package clusternode
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,14 +9,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,189 +148,4 @@ func TestCAPinnedClient_RejectsWrongCA(t *testing.T) {
 	// VerifyPeerCertificate callback. Go's TLS stack propagates the
 	// callback err up the client's Get error chain.
 	assert.ErrorIs(t, err, ErrPairingBadCA)
-}
-
-// fakeCoord runs an httptest TLS server with a pairing-request handler
-// that cycles through the provided response sequence. Each incoming
-// POST returns the next response in responses; when exhausted the
-// server returns the last one repeatedly.
-type fakeCoord struct {
-	srv       *httptest.Server
-	url       string
-	ca        *testCA
-	calls     atomic.Int32
-	responses []pairingPollResponse
-}
-
-func newFakeCoord(t *testing.T, ca *testCA, responses []pairingPollResponse) *fakeCoord {
-	t.Helper()
-	fc := &fakeCoord{ca: ca, responses: responses}
-	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		idx := int(fc.calls.Add(1) - 1)
-		if idx >= len(fc.responses) {
-			idx = len(fc.responses) - 1
-		}
-		body, _ := json.Marshal(fc.responses[idx])
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(body)
-	})
-	srv := httptest.NewUnstartedServer(h)
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ca.issueServerCert(t, "127.0.0.1")}}
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	fc.srv = srv
-	fc.url = srv.URL
-	return fc
-}
-
-func TestRunPairingLoop_ApprovedImmediately(t *testing.T) {
-	ca := newTestCA(t, "approver-ca")
-	fc := newFakeCoord(t, ca, []pairingPollResponse{{
-		Status:         "approved",
-		SignedCertPEM:  "signed-cert-pem",
-		CACertPEM:      string(ca.certPEM),
-		CoordinatorURL: "https://coord:9091",
-	}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := runPairingLoop(ctx, pairingClientOpts{
-		coordURL:      fc.url,
-		caFingerprint: ca.spkiHex,
-		code:          "CODE1CODE1CODE1A",
-		nodeName:      "worker",
-		fingerprint:   "sha256:aa",
-		csrPEM:        "csr",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, []byte("signed-cert-pem"), result.signedCertPEM)
-	assert.Equal(t, string(ca.certPEM), string(result.caCertPEM))
-	assert.Equal(t, "https://coord:9091", result.coordinatorURL)
-	assert.Equal(t, int32(1), fc.calls.Load())
-}
-
-func TestRunPairingLoop_RejectsCAMismatch(t *testing.T) {
-	caReal := newTestCA(t, "real-ca")
-	caOther := newTestCA(t, "other-ca")
-	// Transport is pinned to caReal but the returned ca_cert_pem is
-	// caOther — defense-in-depth check fires.
-	fc := newFakeCoord(t, caReal, []pairingPollResponse{{
-		Status:        "approved",
-		SignedCertPEM: "signed",
-		CACertPEM:     string(caOther.certPEM),
-	}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := runPairingLoop(ctx, pairingClientOpts{
-		coordURL:      fc.url,
-		caFingerprint: caReal.spkiHex,
-		code:          "CODE1CODE1CODE1B",
-		nodeName:      "worker",
-		fingerprint:   "sha256:aa",
-		csrPEM:        "csr",
-	})
-	assert.ErrorIs(t, err, ErrPairingBadCA)
-}
-
-func TestRunPairingLoop_Expired(t *testing.T) {
-	ca := newTestCA(t, "exp-ca")
-	fc := newFakeCoord(t, ca, []pairingPollResponse{{Status: "expired"}})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, err := runPairingLoop(ctx, pairingClientOpts{
-		coordURL:      fc.url,
-		caFingerprint: ca.spkiHex,
-		code:          "CODE1CODE1CODE1C",
-		nodeName:      "w",
-		fingerprint:   "f",
-		csrPEM:        "c",
-	})
-	assert.ErrorIs(t, err, ErrPairingWindowExpired)
-}
-
-func TestRunPairingLoop_WaitingThenApproved(t *testing.T) {
-	ca := newTestCA(t, "wait-ca")
-	fc := newFakeCoord(t, ca, []pairingPollResponse{
-		{Status: "waiting_for_operator", PollIntervalSeconds: 0},
-		{Status: "waiting_for_operator", PollIntervalSeconds: 0},
-		{
-			Status:        "approved",
-			SignedCertPEM: "signed",
-			CACertPEM:     string(ca.certPEM),
-		},
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := runPairingLoop(ctx, pairingClientOpts{
-		coordURL:      fc.url,
-		caFingerprint: ca.spkiHex,
-		code:          "CODE1CODE1CODE1D",
-		nodeName:      "w",
-		fingerprint:   "f",
-		csrPEM:        "c",
-		pollInterval:  5 * time.Millisecond,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, []byte("signed"), result.signedCertPEM)
-	assert.Equal(t, int32(3), fc.calls.Load(), "expected three calls total")
-}
-
-func TestRunPairingLoop_CtxCancel(t *testing.T) {
-	ca := newTestCA(t, "cancel-ca")
-	fc := newFakeCoord(t, ca, []pairingPollResponse{
-		{Status: "waiting_for_operator"},
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		cancel()
-	}()
-
-	_, err := runPairingLoop(ctx, pairingClientOpts{
-		coordURL:      fc.url,
-		caFingerprint: ca.spkiHex,
-		code:          "CODE1CODE1CODE1E",
-		nodeName:      "w",
-		fingerprint:   "f",
-		csrPEM:        "c",
-		pollInterval:  time.Second, // long — ensures we're parked in sleep when cancel fires
-	})
-	assert.ErrorIs(t, err, context.Canceled)
-}
-
-func TestRunPairingLoop_TransportErrorBackoff(t *testing.T) {
-	// Point at a closed port. The loop will error repeatedly and
-	// back off. Cancel the ctx quickly to bound the test.
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	defer cancel()
-
-	ca := newTestCA(t, "unreachable-ca")
-
-	start := time.Now()
-	_, err := runPairingLoop(ctx, pairingClientOpts{
-		// 127.0.0.1:1 is "discard protocol"; no TCP listener there
-		// on any sane box, so connect fails fast.
-		coordURL:       "https://127.0.0.1:1",
-		caFingerprint:  ca.spkiHex,
-		code:           "CODE1CODE1CODE1F",
-		nodeName:       "w",
-		fingerprint:    "f",
-		csrPEM:         "c",
-		backoffInitial: 5 * time.Millisecond,
-	})
-	elapsed := time.Since(start)
-	// Ctx deadline should win; we're asserting the loop does not
-	// loop-without-sleep and busy-burn CPU (elapsed should cover at
-	// least one backoff interval) and that it respects ctx cancel.
-	assert.True(t, errors.Is(err, context.DeadlineExceeded),
-		"expected ctx.DeadlineExceeded, got %v", err)
-	assert.True(t, elapsed >= 5*time.Millisecond, "loop exited too fast (%s)", elapsed)
 }

@@ -375,6 +375,19 @@ func (s *Server) handleRoleTransition(t role.Transition) {
 // because the subscriber runs under role.Manager's mutex and cannot
 // safely call role.Current() again (deadlock).
 func (s *Server) startCoordinatorSubsystems() error {
+	if s.cluster.poller != nil {
+		s.cluster.poller.Start(s.shutdownCtx)
+		if s.cluster.coordinator != nil {
+			for _, ep := range s.cluster.coordinator.GetAllEndpoints() {
+				if ep.IsLocal || ep.NodeName == "" {
+					continue
+				}
+				if url := s.resolveNodeToClusterURL(ep.NodeName); url != "" {
+					s.cluster.poller.Observe(url, ep.NodeName)
+				}
+			}
+		}
+	}
 	if s.services.Deployments != nil {
 		s.services.Deployments.Start()
 	}
@@ -541,11 +554,7 @@ func (s *Server) startCommonSubsystems() error {
 			}
 		}
 	}
-	// Signaler.Start tracks worker→coord notify goroutines so Stop
-	// can drain them cleanly.
-	if s.cluster.signaler != nil {
-		s.cluster.signaler.Start(s.shutdownCtx)
-	}
+
 	s.maintenance = newMaintenanceLoop(s.runMaintenance)
 	s.maintenance.Start(s.shutdownCtx)
 	return nil
@@ -567,6 +576,9 @@ func (s *Server) startCommonSubsystems() error {
 //
 //nolint:unparam // symmetric with startCoordinatorSubsystems; reserved for stop-failure aggregation
 func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
+	if s.cluster.poller != nil {
+		s.cluster.poller.Stop(ctx)
+	}
 	s.services.Deployments.Stop(ctx)
 	s.model.Pricing.Stop()
 	s.mcpGateway.Stop()
@@ -647,9 +659,7 @@ func (s *Server) stopCommonSubsystems(ctx context.Context) error {
 	if err := s.cluster.node.Stop(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("cluster node: %w", err))
 	}
-	if s.cluster.signaler != nil {
-		s.cluster.signaler.Stop(ctx)
-	}
+
 	if s.modelsWatcher != nil {
 		s.modelsWatcher.Stop()
 	}

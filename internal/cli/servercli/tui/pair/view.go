@@ -124,7 +124,9 @@ func renderPairing(b *strings.Builder, m *Model) {
 		remaining = 0
 	}
 	b.WriteString(s.HintsBar.Render(fmt.Sprintf("Expires in %s.", remaining)) + "\n")
-	b.WriteString(s.HintsBar.Render("Run 'zzrouter cluster accept <code>' on the coordinator.") + "\n\n")
+	b.WriteString(s.DetailKey.Render("Worker: ") + m.workerURL + "\n")
+	b.WriteString(s.DetailKey.Render("Worker fingerprint: ") + m.workerFingerprint + "\n")
+	b.WriteString(s.HintsBar.Render("Run cluster accept with --worker-url and --worker-fingerprint on the coordinator.") + "\n\n")
 	b.WriteString(s.HintsBar.Render("[c] copy code  [f] write transfer script  [r] regenerate  [q] cancel") + "\n")
 }
 

@@ -17,7 +17,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/stperic/zzrouter/internal/cli/servercli/tui/pair"
-	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/network"
@@ -52,8 +51,8 @@ func newClusterPairCmd() *cobra.Command {
 		Long: `Enter pairing mode on this worker.
 
 Generates an 80-bit pairing code, persists it to pairing.txt, and
-starts a polling loop against the coordinator. The operator reads the
-printed code and runs 'zzrouter cluster accept <code>' on the
+arms a temporary enrollment listener. The operator reads the
+printed code, node URL and fingerprint and runs 'zzrouter cluster accept' on the
 coordinator to complete the handshake.
 
 Supply the coordinator via --coordinator-url and --ca-fingerprint, or
@@ -143,7 +142,7 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 		return runClusterPairTUI(cfg, localPort, adminKey, noMDNS, secure, coordURL, caFingerprint)
 	}
 
-	resolvedURL, resolvedFP, err := resolveCoordinatorInputs(cfg, noMDNS, cancel, regenerate, secure, coordURL, caFingerprint)
+	resolvedURL, resolvedFP, err := resolveCoordinatorInputs(cfg, noMDNS, cancel, secure, coordURL, caFingerprint)
 	if err != nil {
 		return err
 	}
@@ -182,9 +181,11 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 	}
 
 	var out struct {
-		Status   string    `json:"status"`
-		Code     string    `json:"code"`
-		Deadline time.Time `json:"deadline"`
+		Status      string    `json:"status"`
+		Code        string    `json:"code"`
+		Deadline    time.Time `json:"deadline"`
+		WorkerURL   string    `json:"worker_url"`
+		Fingerprint string    `json:"fingerprint"`
 	}
 	if err := json.Unmarshal(respBody, &out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -204,10 +205,12 @@ func runClusterPair(regenerate, cancel, noMDNS, noTUI, secure, reset bool, coord
 		fmt.Printf("Pairing code: %s (valid until %s).\n",
 			formatPairingCode(out.Code),
 			out.Deadline.UTC().Format(time.RFC3339))
-		fmt.Printf("Run 'zzrouter cluster accept %s' on the coordinator.\n",
-			formatPairingCode(out.Code))
+
 	default:
 		fmt.Printf("Pairing status: %s\n", out.Status)
+	}
+	if out.Status == "new" || out.Status == "existing" {
+		fmt.Printf("Run on the coordinator:\n%s\n", pair.AcceptCommand(out.Code, out.WorkerURL, out.Fingerprint))
 	}
 	return nil
 }
@@ -261,7 +264,7 @@ func callResetEndpoint(localPort int, adminKey string) error {
 // resolveCoordinatorInputs fills in missing URL / fingerprint from
 // mDNS and applies the TOFU / --secure policy. Extracted from
 // runClusterPair to keep that function under the gocyclo cap.
-func resolveCoordinatorInputs(cfg *pkgConfig.NodeConfig, noMDNS, cancel, regenerate, secure bool, coordURL, caFingerprint string) (string, string, error) {
+func resolveCoordinatorInputs(cfg *pkgConfig.NodeConfig, noMDNS, cancel, secure bool, coordURL, caFingerprint string) (string, string, error) {
 	needsResolve := !cancel && coordURL == ""
 	if needsResolve && !noMDNS && cfg.MDNSDiscovery {
 		entry, derr := discoverCoordinator(cfg.Cluster.IsCoordinator())
@@ -288,32 +291,7 @@ func resolveCoordinatorInputs(cfg *pkgConfig.NodeConfig, noMDNS, cancel, regener
 	if secure && caFingerprint == "" {
 		return "", "", errors.New("--secure requires a CA fingerprint (flag or mDNS-advertised)")
 	}
-	// Preflight: ask the coord whether it requires secure pairing
-	// before we open a window. Skipped when a pin is already in hand
-	// (nothing to learn) and on cancel/regenerate (not a fresh
-	// window). Preflight failure is fail-closed: without the
-	// response we can't tell whether the coord enforces secure
-	// pairing, so continuing in TOFU risks silently bypassing a
-	// strict-mode coord via MITM. Operators supply --ca-fingerprint
-	// to skip preflight entirely.
-	if !cancel && !regenerate && coordURL != "" && caFingerprint == "" {
-		preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		policy, perr := clusternode.FetchPairingPolicy(preflightCtx, coordURL)
-		preflightCancel()
-		switch {
-		case perr != nil:
-			return "", "", fmt.Errorf(
-				"%s\n  Fix: start the coordinator, or re-run with --ca-fingerprint <fp> (verified out-of-band) to skip preflight",
-				pair.FriendlyPreflightError(coordURL, perr))
-		case policy.RequireSecurePairing:
-			return "", "", fmt.Errorf(
-				"coordinator requires secure pairing; re-run with --ca-fingerprint %s (verify this matches the coordinator's CA out-of-band before trusting)",
-				policy.Fingerprint)
-		}
-	}
-	if !cancel && !regenerate && caFingerprint == "" {
-		fmt.Fprintln(os.Stderr, "WARNING: pairing in TOFU mode. On any untrusted network an active MITM can pin their own CA into this worker's trust store permanently: this is strictly weaker than SSH TOFU. Only safe on a trusted LAN. Use --secure + --ca-fingerprint (verified out-of-band) on anything else.")
-	}
+
 	return coordURL, caFingerprint, nil
 }
 

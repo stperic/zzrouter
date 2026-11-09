@@ -1,40 +1,5 @@
-// Package clusternode is the self-contained cluster-port HTTP server
-// for zzrouter. It owns the identity, the CA (on coordinator nodes),
-// the worker-initiated pairing flow (client loop + coord store), the
-// renewal ticker, and the deny list — in short, the entire
-// cluster-side of the coordinator↔worker relationship.
-//
-// This package imports from pkg/cluster/id and has zero imports from
-// internal/server. The integration seam is the inference handler
-// passed via SetInferenceHandler (a plain http.Handler invoked for
-// /zzrouter/v1/internal/* dispatches on worker nodes).
-//
-// Four modes, persisted in node.yaml as Cluster.Mode:
-//
-//   - Disabled    — standalone; cluster listener does not run.
-//   - Coordinator — owns the CA; serves /cluster/pairing-request,
-//     /cluster/ca-fingerprint, /cluster/renew; accepts
-//     admin POST /cluster/pairing/accept to sign CSRs.
-//   - Unclaimed   — worker-track, dormant on the cluster network. No
-//     cluster listener. Enters pairing mode via
-//     BeginPairing (driven by the admin CLI); the
-//     worker polls the coord's long-poll endpoint under
-//     CA-pinned TLS until approved or expired.
-//   - Worker      — paired, auto-renews. mTLS listener serves
-//     /internal/* dispatches from the coordinator.
-//
-// Runtime transitions: Unclaimed → Worker on successful pairing
-// (completePairing binds the mTLS listener), Worker → Unclaimed on
-// coord-driven decommission / cert expiry / deny-list 403
-// (revertToUnclaimed tears down the mTLS listener and goes dormant).
-// No runtime coordinator↔worker swap.
-//
-// Relationship to pkg/cluster/role: Node.Mode is the authoritative
-// cluster-listener state; role.Role is the server-wide observable
-// the rest of the codebase (route gates, handlers, audit logs) reads.
-// The mapping is one-to-one — see role.RoleFromMode for the
-// translator and internal/server/cluster_mode_mirror.go for the
-// mirror wiring that keeps role.Manager in sync with this Mode.
+// Package clusternode owns cluster identity, coordinator-driven enrollment,
+// certificate renewal and the mTLS listener. Only coordinators dial cluster peers.
 package clusternode
 
 import (
@@ -49,6 +14,7 @@ import (
 	"time"
 
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
+	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 )
 
 // Mode is the runtime cluster mode. Stored atomically on the Node so
@@ -164,7 +130,7 @@ type Config struct {
 	CoordinatorURL string
 
 	// NodeName is a human-readable label shown in logs, the banner, and
-	// the pairing-request payload. Required iff Mode is Unclaimed,
+	// the enrollment CSR. Required iff Mode is Unclaimed,
 	// Worker, or Coordinator. Callers typically set this to the OS
 	// hostname or a configured friendly name.
 	NodeName string
@@ -277,6 +243,8 @@ func (c Config) advertiseIPs() []net.IP {
 // not supported — callers who need a restartable node construct a fresh
 // one via New.
 type Node struct {
+	signals *clustersignal.Signaler
+
 	cfg      Config
 	identity *clusterid.Identity
 	ca       *clusterid.CA // nil on non-coordinator
@@ -295,33 +263,15 @@ type Node struct {
 	workerCompat http.Handler
 
 	// Coordinator-only state. deny is non-nil on Coordinator nodes
-	// and backs the /cluster/renew deny-list check and the Revoke API.
+	// and backs renewal validation and the Revoke API.
 	deny *denyList
 
-	// pairingStore is non-nil on Coordinator nodes and backs the
-	// worker-initiated pairing flow (POST /cluster/pairing-request
-	// plus the admin /cluster/pairing/accept). nil elsewhere; the
-	// route-registration path only mounts the handlers on coord.
-	pairingStore *PairingStore
-
-	// pairingRateLimiter guards /cluster/pairing-request from floods.
-	// Paired with pairingStore — created and torn down together.
 	pairingRateLimiter *pairingRateLimiter
 
-	// Worker-side pairing state. activePairingWindow holds the running
-	// pairing attempt started by BeginPairing; nil when no window is
-	// active. pairingMu serializes Begin/Cancel and the async loop's
-	// teardown so two operators typing `cluster pair` at once don't
-	// race for the on-disk pairing.txt.
+	// Enrollment transitions serialize with cancellation and regeneration.
 	pairingMu           sync.Mutex
 	activePairingWindow *pairingWindow
-	// lastPairingError holds the most recent terminal error returned
-	// by runPairingLoop — primarily strict-mode 403 rejections, but
-	// also approve-side failures. Consumed once via
-	// ConsumeLastPairingError so the admin handler can surface the
-	// root cause to the operator on their next poll. Guarded by
-	// pairingMu.
-	lastPairingError error
+	lastPairingError    error
 
 	// Worker-only renewal state. renewalCancel terminates the loop
 	// on Stop or revert-to-unclaimed. renewalClock is the test hook
@@ -396,6 +346,8 @@ func New(cfg Config) (*Node, error) {
 		listenFn:       net.Listen,
 	}
 	n.mode.Store(int32(cfg.Mode))
+	n.pairingRateLimiter = newPairingRateLimiter()
+	n.signals = clustersignal.New(clustersignal.Config{IsWorker: func() bool { return n.Mode() == Worker }})
 
 	if cfg.Mode != Disabled {
 		id, err := clusterid.LoadOrCreateIdentity(cfg.IdentityDir)
@@ -422,8 +374,6 @@ func New(cfg Config) (*Node, error) {
 			return nil, fmt.Errorf("load deny list: %w", err)
 		}
 		n.deny = deny
-		n.pairingStore = NewPairingStore(defaultPairingTTL)
-		n.pairingRateLimiter = newPairingRateLimiter()
 	}
 	// Renewal clock is wired for any mode that can reach Worker at
 	// runtime: Worker directly on a warm restart, Unclaimed via
@@ -520,10 +470,7 @@ func (n *Node) ensureCoordinatorIdentitySigned() error {
 // Listener binding by mode:
 //
 //   - Disabled:    no-op, no listener runs.
-//   - Coordinator: binds the cluster listener with mTLS; serves /renew,
-//     /leave (deny-list check), /internal/*, plus the
-//     worker-initiated pairing routes (/pairing-request,
-//     /ca-fingerprint).
+//   - Coordinator: binds an authenticated health listener and initiates peer requests.
 //   - Worker:      binds the cluster listener with mTLS; starts the
 //     renewal ticker.
 //   - Unclaimed:   binds NO cluster listener. The node is dormant on
@@ -568,6 +515,7 @@ func (n *Node) Start(ctx context.Context) error {
 	// pair` reaches through. The ctx-watcher is still installed so
 	// Stop semantics are uniform across modes.
 	if n.Mode() == Unclaimed {
+		n.signals.Start(shutdownCtx)
 		n.wg.Add(1)
 		go n.watchCtx(shutdownCtx) //nolint:gosec // shutdownCtx is the node-lifecycle ctx, not request-scoped
 		return nil
@@ -588,10 +536,12 @@ func (n *Node) Start(ctx context.Context) error {
 		TLSConfig:         n.buildTLSConfig(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return shutdownCtx },
 	}
 	n.servingDone = make(chan struct{})
 	servingDone := n.servingDone
 
+	n.signals.Start(shutdownCtx)
 	n.wg.Add(2)
 	go n.serve(n.httpServer, n.listener, servingDone)
 	go n.watchCtx(shutdownCtx) //nolint:gosec // shutdownCtx is the node-lifecycle ctx, not request-scoped
@@ -645,17 +595,11 @@ func (n *Node) Stop(ctx context.Context) error {
 	n.stopped = true
 	n.mu.Unlock()
 
-	if err := n.shutdownServer(ctx); err != nil {
-		return err
-	}
+	n.signals.Stop(ctx)
+	shutdownErr := n.shutdownServer(ctx)
 	n.shutdownFn()
 	n.wg.Wait()
 
-	// Release coord-side pairing state: cancels any parked long-poll
-	// waiters with ErrPairingStoreStopped and joins the GC goroutine.
-	if n.pairingStore != nil {
-		n.pairingStore.Stop()
-	}
 	// Release worker-side pairing state: cancel + JOIN. Capture done
 	// under pairingMu (cancelWindowLocked niles the window), wait
 	// outside the lock — the goroutine takes pairingMu on exit.
@@ -669,7 +613,7 @@ func (n *Node) Stop(ctx context.Context) error {
 	if pairingDone != nil {
 		<-pairingDone
 	}
-	return nil
+	return shutdownErr
 }
 
 // shutdownServer gracefully closes the HTTP server and its listener.
@@ -687,8 +631,11 @@ func (n *Node) shutdownServer(ctx context.Context) error {
 	}
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("server shutdown: %w", err)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		closeErr := srv.Close()
+		if !errors.Is(err, context.Canceled) {
+			return errors.Join(fmt.Errorf("server shutdown: %w", err), closeErr)
+		}
 	}
 	return nil
 }
@@ -746,3 +693,6 @@ func (n *Node) ShortForm() string {
 	}
 	return n.identity.ShortForm()
 }
+
+// Signals returns the node-owned exchange for coordinator-held polls.
+func (n *Node) Signals() *clustersignal.Signaler { return n.signals }

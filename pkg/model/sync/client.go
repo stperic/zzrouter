@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -44,13 +45,8 @@ type ClientConfig struct {
 	RequestTimeout time.Duration // Timeout for requests (0 = 30s default)
 }
 
-// NewClient creates a new sync client. Returns nil when cfg.HTTPClient is
-// nil — sync requires the mTLS dispatch client; non-worker callers must
-// not invoke sync.
+// NewClient creates a transfer materializer. Fetch operations require an HTTP client; uploads do not.
 func NewClient(cfg ClientConfig) *Client {
-	if cfg.HTTPClient == nil {
-		return nil
-	}
 
 	maxFileSize := cfg.MaxFileSize
 	if maxFileSize == 0 {
@@ -99,6 +95,9 @@ type Result struct {
 
 // FetchManifest fetches the model manifest from a source node.
 func (c *Client) FetchManifest(ctx context.Context, sourceURL string, request metadata.DownloadRequest, format string) (*SyncManifest, error) {
+	if c.httpClient == nil {
+		return nil, fmt.Errorf("source client is unavailable")
+	}
 	reqURL := fmt.Sprintf("%s/zzrouter/v1/internal/sync/manifest?model=%s&format=%s",
 		strings.TrimSuffix(sourceURL, "/"), url.QueryEscape(request.Repo), url.QueryEscape(format))
 
@@ -137,27 +136,8 @@ func (c *Client) FetchManifest(ctx context.Context, sourceURL string, request me
 		return nil, fmt.Errorf("failed to parse manifest: %w", err)
 	}
 
-	if err := c.validateManifest(&manifest); err != nil {
-		return nil, fmt.Errorf("invalid manifest: %w", err)
-	}
-	if manifest.Model != request.Repo {
-		return nil, fmt.Errorf("source returned a different model")
-	}
-	if request.Files != nil {
-		if len(manifest.Files) != len(request.Files) {
-			return nil, fmt.Errorf("source returned a different file set")
-		}
-		selected := map[string]metadata.DownloadFile{}
-		for _, f := range request.Files {
-			selected[f.Name] = f
-		}
-		for _, f := range manifest.Files {
-			want, ok := selected[f.Name]
-			if !ok || want.Size != f.Size || want.Feature != f.Feature || (want.SHA256 != "" && !strings.EqualFold(want.SHA256, f.SHA256)) {
-				return nil, fmt.Errorf("source file differs from plan: %s", f.Name)
-			}
-			delete(selected, f.Name)
-		}
+	if err := c.validatePlan(&manifest, request); err != nil {
+		return nil, err
 	}
 
 	return &manifest, nil
@@ -175,6 +155,9 @@ func (c *Client) validateManifest(manifest *SyncManifest) error {
 		}
 		if filepath.IsAbs(file.Name) {
 			return fmt.Errorf("absolute path in manifest: %s", file.Name)
+		}
+		if file.Size < 0 {
+			return fmt.Errorf("negative transfer file size: %s", file.Name)
 		}
 		if file.Size > c.maxFileSize {
 			return fmt.Errorf("file exceeds size limit: %s (%d bytes > %d bytes)",
@@ -206,6 +189,19 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 
 	slog.Info("[sync.Client] manifest received", "files", len(manifest.Files), "total_size", manifest.TotalSize)
 
+	return c.materialize(ctx, sourceURL, request, manifest, callback, func(file FileChecksum, dest string, skip bool, progress func(int64, int64)) (int64, error) {
+		if skip {
+			return 0, nil
+		}
+		return c.downloadFile(ctx, sourceURL, model, format, file, dest, progress)
+	})
+}
+
+func (c *Client) materialize(ctx context.Context, sourceURL string, request metadata.DownloadRequest, manifest *SyncManifest, callback ProgressCallback, store func(FileChecksum, string, bool, func(int64, int64)) (int64, error)) (*Result, error) {
+	model := request.Repo
+	if err := c.validatePlan(manifest, request); err != nil {
+		return nil, err
+	}
 	modelsRoot, err := modelregistry.GetModelsRootDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get models root: %w", err)
@@ -262,7 +258,11 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 			continue
 		}
 
-		if !request.Force && c.fileExistsWithChecksum(destPath, file.SHA256) {
+		if !request.Force && c.fileExistsWithChecksum(ctx, destPath, file.SHA256) {
+			if _, err := store(file, destPath, true, nil); err != nil {
+				result.Success = false
+				return result, err
+			}
 			slog.Info("[sync.Client] Skipping file (already exists)", "name", file.Name)
 			result.FilesSkipped++
 			if callback != nil {
@@ -282,10 +282,11 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 		if err := os.MkdirAll(fileDir, 0755); err != nil {
 			result.FilesFailed++
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: failed to create directory", file.Name))
-			continue
+			result.Success = false
+			return result, err
 		}
 
-		downloaded, err := c.downloadFile(ctx, sourceURL, model, format, file, destPath, func(bytesDownloaded, speed int64) {
+		downloaded, err := store(file, destPath, false, func(bytesDownloaded, speed int64) {
 			if callback != nil {
 				progress := float64(0)
 				if file.Size > 0 {
@@ -308,6 +309,9 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 			result.FilesFailed++
 			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", file.Name, err))
 			result.Success = false
+			if errors.Is(err, errIncomingStream) {
+				return result, err
+			}
 			continue
 		}
 
@@ -344,7 +348,7 @@ func (c *Client) SyncModel(ctx context.Context, sourceURL string, request metada
 }
 
 // fileExistsWithChecksum checks if a file exists and has the expected checksum.
-func (c *Client) fileExistsWithChecksum(path, expectedSHA256 string) bool {
+func (c *Client) fileExistsWithChecksum(ctx context.Context, path, expectedSHA256 string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
@@ -353,7 +357,7 @@ func (c *Client) fileExistsWithChecksum(path, expectedSHA256 string) bool {
 		return false
 	}
 
-	checksum, err := ComputeSHA256(path)
+	checksum, err := integrity.HashFile(ctx, path)
 	if err != nil {
 		return false
 	}
@@ -377,25 +381,9 @@ func (c *Client) downloadFile(
 		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	lastTime, lastBytes := utils.Now(), int64(0)
-	previous := int64(0)
 	result, err := download.Fetch(c.httpClient, req, destPath, download.Options{
 		Hash: true, MaxSize: c.maxFileSize, Exclusive: true,
-		Progress: func(done, _ int64) {
-			now := utils.Now()
-			elapsed := now.Sub(lastTime).Seconds()
-			if progressCallback != nil && (done < previous || elapsed >= 1) {
-				speed := int64(0)
-				if done >= previous && elapsed > 0 {
-					speed = int64(float64(done-lastBytes) / elapsed)
-				}
-				progressCallback(done, speed)
-			}
-			if done < previous || elapsed >= 1 {
-				lastTime, lastBytes = now, done
-			}
-			previous = done
-		},
+		Progress: sampleProgress(progressCallback),
 		Verify: func(result download.Result) error {
 			if !strings.EqualFold(result.SHA256, file.SHA256) {
 				return fmt.Errorf("checksum mismatch: expected %s, got %s", file.SHA256, result.SHA256)
@@ -407,4 +395,54 @@ func (c *Client) downloadFile(
 		},
 	})
 	return result.Size, err
+}
+
+func sampleProgress(callback func(int64, int64)) func(int64, int64) {
+	lastTime, lastBytes := utils.Now(), int64(0)
+	previous := int64(0)
+	return func(done, _ int64) {
+		now := utils.Now()
+		elapsed := now.Sub(lastTime).Seconds()
+		if callback != nil && (done < previous || elapsed >= 1) {
+			speed := int64(0)
+			if done >= previous && elapsed > 0 {
+				speed = int64(float64(done-lastBytes) / elapsed)
+			}
+			callback(done, speed)
+		}
+		if done < previous || elapsed >= 1 {
+			lastTime, lastBytes = now, done
+		}
+		previous = done
+	}
+}
+
+func (c *Client) validatePlan(manifest *SyncManifest, request metadata.DownloadRequest) error {
+	if err := c.validateManifest(manifest); err != nil {
+		return fmt.Errorf("invalid manifest: %w", err)
+	}
+	if request.Repo == "" || filepath.IsAbs(request.Repo) || strings.Contains(request.Repo, "..") {
+		return fmt.Errorf("invalid model path")
+	}
+	if manifest.Model != request.Repo {
+		return fmt.Errorf("source returned a different model")
+	}
+	if request.Files != nil {
+		if len(manifest.Files) != len(request.Files) {
+			return fmt.Errorf("source returned a different file set")
+		}
+		selected := map[string]metadata.DownloadFile{}
+		for _, f := range request.Files {
+			selected[f.Name] = f
+		}
+		for _, f := range manifest.Files {
+			want, ok := selected[f.Name]
+			if !ok || want.Size != f.Size || want.Feature != f.Feature || (want.SHA256 != "" && !strings.EqualFold(want.SHA256, f.SHA256)) {
+				return fmt.Errorf("source file differs from plan: %s", f.Name)
+			}
+			delete(selected, f.Name)
+		}
+	}
+
+	return nil
 }

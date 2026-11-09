@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make all cluster connections coordinator-initiated. Replace worker callbacks with typed held polls, pinned coordinator-driven enrollment and checked coordinator-relayed model uploads. Preserve domain publication barriers and existing jobs. Raise protocol current/minimum from 18 to 19; upgrade all nodes together while retaining CA and identity state.
+
 - Preserve catalog publication when a memory eviction changes a model's serving state but its stop fails. Keep unconfirmed stops separate from successful eviction receipts and reclaimed memory.
 
 - Publish failed install-smoke admission effects after rollback and installer unlock. Preserve cancellation after an earlier busy retry so a later model eviction cannot be hidden as a skipped smoke.

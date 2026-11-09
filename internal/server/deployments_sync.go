@@ -90,7 +90,7 @@ func (s *DeploymentsService) partitionByModelPresence(ctx context.Context, nodes
 // subscribable job_id came back. Callers fall through to the normal
 // registry-pull path on false.
 func (s *DeploymentsService) dispatchSyncDeploy(ctx context.Context, deploymentID, target, source string, req *DeployRequest, plan deployPlan) bool {
-	if s.resolveNodeURL == nil {
+	if s.resolveNodeURL == nil || s.peerClient == nil {
 		return false
 	}
 	sourceURL := s.resolveNodeURL(source)
@@ -130,6 +130,36 @@ func (s *DeploymentsService) dispatchSyncDeploy(ctx context.Context, deploymentI
 		// A definite rejection permits the existing registry fallback.
 		return false
 	}
+	n := syncAcceptance(target, source, resp, err)
+	if resp != nil && resp.StatusCode == http.StatusAccepted && n.JobID != "" && !n.Status.IsTerminal() && !s.localTransferTarget(target) {
+		request := metadata.DownloadRequest{Repo: model}
+		if plan.Download != nil {
+			request = *plan.Download
+		}
+		if !s.startSyncUpload(deploymentID, n, request, formatOrDefault(req.Format)) { //nolint:contextcheck // Accepted uploads belong to the service lifecycle.
+			n.Status = constants.StatusFailed
+			n.Error = "coordinator transfer owner unavailable"
+			s.cancelJob(ctx, n)
+		}
+	}
+	s.acceptNode(ctx, deploymentID, n)
+	return true
+}
+
+// syncStatusLabel is the per-node tracker status that signals "pulling
+// from a peer via /sync/deploy" rather than the normal "downloading
+// from registry." Stays a string literal on the deployment side; the
+// TUI renders both as live/in-flight.
+const syncStatusLabel = "syncing"
+
+func formatOrDefault(f string) string {
+	if f == "" {
+		return "gguf"
+	}
+	return f
+}
+
+func syncAcceptance(target, source string, resp *routing.Response, err error) DeploymentNode {
 	var parsed syncDeployAsyncResponse
 	n := DeploymentNode{Node: target, Source: source, Status: constants.Status(syncStatusLabel)}
 	if err == nil && resp != nil && resp.StatusCode == http.StatusConflict {
@@ -150,19 +180,5 @@ func (s *DeploymentsService) dispatchSyncDeploy(ctx context.Context, deploymentI
 		n.Source = parsed.Source
 	}
 	n.JobID = parsed.LocalJobID
-	s.acceptNode(ctx, deploymentID, n)
-	return true
-}
-
-// syncStatusLabel is the per-node tracker status that signals "pulling
-// from a peer via /sync/deploy" rather than the normal "downloading
-// from registry." Stays a string literal on the deployment side; the
-// TUI renders both as live/in-flight.
-const syncStatusLabel = "syncing"
-
-func formatOrDefault(f string) string {
-	if f == "" {
-		return "gguf"
-	}
-	return f
+	return n
 }

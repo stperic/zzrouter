@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
-	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -66,7 +65,7 @@ func catalogNoticeEngine(t *testing.T, reader, worker *Server) http.Handler {
 	reader.cluster.coordinator = cluster
 	t.Cleanup(cluster.Stop)
 	require.NoError(t, reader.cluster.coordinator.RegisterEndpoint(&mesh.Endpoint{URL: "http://127.0.0.1:1", NodeName: worker.node.Name(), Status: mesh.StatusUp}))
-	return peerCertHandler(workerCert(worker.node.Name()), buildCoordInternalEngine(reader))
+	return peerCertHandler(workerCert(worker.node.Name()), buildTestCoordinatorEngine(reader))
 }
 
 func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
@@ -106,7 +105,7 @@ func TestDeploymentCompletionPublishesImageAdmissionEvidence(t *testing.T) {
 						engine.ServeHTTP(rec, r)
 						return rec.Result(), nil
 					})}
-					target.cluster.signaler = clustersignal.New(clustersignal.Config{
+					target.cluster.signaler = newTestSignals(t, testSignalConfig{
 						IsWorker:        target.node.IsWorker,
 						MTLSClient:      func() *http.Client { return client },
 						CoordinatorURL:  func() string { return "https://coordinator.test" },
@@ -188,7 +187,7 @@ func TestFinalizeCatalogNotificationDoesNotBlockCallback(t *testing.T) {
 		<-release
 		return httptest.NewRecorder().Result(), nil
 	})}
-	target.cluster.signaler = clustersignal.New(clustersignal.Config{
+	target.cluster.signaler = newTestSignals(t, testSignalConfig{
 		IsWorker:       target.node.IsWorker,
 		MTLSClient:     func() *http.Client { return client },
 		CoordinatorURL: func() string { return "https://coordinator.test" },
@@ -220,7 +219,7 @@ func TestFinalizeCatalogNotificationDoesNotBlockCallback(t *testing.T) {
 	}()
 	select {
 	case <-drained:
-		t.Fatal("background notification was not tracked")
-	case <-time.After(50 * time.Millisecond):
+	case <-time.After(time.Second):
+		t.Fatal("local exchange shutdown waited for coordinator-owned work")
 	}
 }

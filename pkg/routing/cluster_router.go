@@ -86,20 +86,7 @@ func NewClusterAwareRouterWithClient(nodeName string, clusterClient mesh.Cluster
 func (r *ClusterAwareRouter) Unicast(ctx context.Context, host, path, method string, body []byte) (*Response, error) {
 	hostID := constants.ParseNodeIdentifier(host)
 
-	// Determine if this request targets the local node.
-	// Local targeting conventions:
-	//   - "" (empty):    no explicit target, defaults to local
-	//   - "@master":     resolved to localhost by ParseNodeIdentifier
-	//   - "localhost":   explicit local targeting
-	//   - r.nodeName:    this node's own hostname (e.g., "gpu-server")
-	//   - local IP:      any IP address bound to a local network interface
-	isLocal := hostID.Nodename == "" ||
-		hostID.IsMaster() ||
-		hostID.Nodename == r.nodeName ||
-		hostID.Nodename == "localhost" ||
-		r.isLocalIP(hostID.Nodename)
-
-	if isLocal {
+	if r.IsLocalNode(host) {
 		utils.LogDebugf("[Router] Unicast → LOCAL: %s %s", method, path)
 		return r.localHTTPCall(ctx, &Request{Method: method, Path: path, Body: body})
 	}
@@ -149,6 +136,12 @@ func (r *ClusterAwareRouter) snapshotLocalIPs() map[string]struct{} {
 		}
 	}
 	return ips
+}
+
+// IsLocalNode applies the same selector rules used by local dispatch.
+func (r *ClusterAwareRouter) IsLocalNode(host string) bool {
+	hostID := constants.ParseNodeIdentifier(host)
+	return hostID.Nodename == "" || hostID.IsMaster() || hostID.Nodename == r.nodeName || hostID.Nodename == "localhost" || r.isLocalIP(hostID.Nodename)
 }
 
 // isLocalIP reports whether the given host (host, host:port, [v6]:port

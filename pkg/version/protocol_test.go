@@ -320,14 +320,14 @@ func TestArchitectureProtocolWindow(t *testing.T) {
 	}
 }
 
-func TestJobRetentionProtocolCutover(t *testing.T) {
+func TestCoordinatorInitiationProtocolCutover(t *testing.T) {
 	window := LocalProtocolWindow()
-	if err := window.Check(18); err != nil {
-		t.Fatalf("retention-aware peer rejected: %v", err)
+	if err := window.Check(19); err != nil {
+		t.Fatalf("coordinator-initiated peer rejected: %v", err)
 	}
-	for _, peer := range []int{17, 19} {
+	for _, peer := range []int{18, 20} {
 		if err := window.Check(peer); err == nil {
-			t.Errorf("peer protocol %d must be refused by the retention cutover", peer)
+			t.Errorf("peer protocol %d must be refused by the coordinator-initiation cutover", peer)
 		}
 	}
 }

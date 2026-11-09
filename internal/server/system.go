@@ -97,18 +97,17 @@ func (s *SystemService) GetSystemInfo(ctx context.Context, req *GetSystemInfoReq
 
 // SystemExecutor handles direct local system operations
 type SystemExecutor struct {
-	node             *NodeIdentity
-	role             *role.Manager
-	appMgr           *prov_apps.ProviderAppManager
-	registry         *modelregistry.Registry
-	getSystemInfo    func() map[string]any
-	getPoolStats     func() *connectivity.ConnectionPoolStats
-	markEndpointDown func(url string) // Coord-side force DOWN; nil on workers
+	node          *NodeIdentity
+	role          *role.Manager
+	appMgr        *prov_apps.ProviderAppManager
+	registry      *modelregistry.Registry
+	getSystemInfo func() map[string]any
+	getPoolStats  func() *connectivity.ConnectionPoolStats
 }
 
 // NewSystemExecutor creates a new system executor
-func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats, markEndpointDown func(url string)) *SystemExecutor {
-	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats, markEndpointDown: markEndpointDown}
+func NewSystemExecutor(node *NodeIdentity, rm *role.Manager, appMgr *prov_apps.ProviderAppManager, registry *modelregistry.Registry, getSystemInfo func() map[string]any, getPoolStats func() *connectivity.ConnectionPoolStats) *SystemExecutor {
+	return &SystemExecutor{node: node, role: rm, appMgr: appMgr, registry: registry, getSystemInfo: getSystemInfo, getPoolStats: getPoolStats}
 }
 
 // HandleInternalGetSystemInfo handles GET /zzrouter/internal/system (internal API)
@@ -128,28 +127,6 @@ func (e *SystemExecutor) HandleInternalGetSystemInfo(c *gin.Context) {
 // `cluster.endpoints` list is the source of truth. Unknown URL 200s
 // (idempotent: a second goodbye, or one from a node that isn't
 // managed here, is a no-op).
-func (e *SystemExecutor) HandleInternalGoodbye(c *gin.Context) {
-	if e.node.IsWorker() {
-		BadRequest(c, "workers don't manage endpoint liveness")
-		return
-	}
-	var req struct {
-		NodeURL string `json:"node_url"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		BadRequest(c, "invalid request body: "+err.Error())
-		return
-	}
-	if req.NodeURL == "" {
-		BadRequest(c, "node_url is required")
-		return
-	}
-	slog.Info("[InternalAPI] Worker goodbye", "node_url", req.NodeURL)
-	if e.markEndpointDown != nil {
-		e.markEndpointDown(req.NodeURL)
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "success"})
-}
 
 // peerCertFromRequest returns the client's leaf certificate if the
 // request was made over mTLS with a verified chain, otherwise nil. The

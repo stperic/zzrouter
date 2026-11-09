@@ -24,7 +24,7 @@ func TestArchGuard_SetProviderEnabled_FunneledThroughFinalize(t *testing.T) {
 		"FinalizeOnboarding":        true,
 		"FinalizeOffboarding":       true,
 		"setProviderEnabled":        true,
-		"handleNodeProviderEnabled": true,
+		"recordNodeProviderEnabled": true,
 	}
 
 	dir := "."

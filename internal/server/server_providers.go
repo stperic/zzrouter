@@ -5,9 +5,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"log/slog"
-	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -156,79 +154,28 @@ func (s *Server) setProviderEnabled(name string, enabled bool) error {
 	return nil
 }
 
-// handleNodeProviderEnabled records a worker's own enable choice, named by
-// its certificate, and answers once that worker has it, so the worker's
-// FinalizeOnboarding returns reconciled. PUT /internal/providers/:name/enabled.
-func (s *Server) handleNodeProviderEnabled(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), providerSyncWaitTimeout)
-	defer cancel()
+func (s *Server) recordNodeProviderEnabled(ctx context.Context, node, name string, enabled bool) error {
 	if s.configStore == nil {
-		ServiceUnavailable(c, "providers config store not ready")
-		return
+		return httperr.Error{Status: 503, Message: "providers config store not ready"}
 	}
-	ep := s.certifiedWorker(peerCertFromRequest(c.Request))
-	if ep == nil {
-		Forbidden(c, "the client certificate does not name a worker of this cluster")
-		return
-	}
-	node := ep.NodeName
-	var req struct {
-		Enabled *bool `json:"enabled"`
-	}
-	if !BindJSONStrict(c, &req) {
-		return
-	}
-	if req.Enabled == nil {
-		BadRequest(c, "enabled is required")
-		return
-	}
-	name := c.Param("name")
 	sc, ok := s.configStore.Config().LookupApp(name)
 	if !ok {
-		NotFound(c, fmt.Sprintf("provider %q not found", name))
-		return
+		return httperr.Error{Status: 404, Message: fmt.Sprintf("provider %q not found", name)}
 	}
-	// A worker records only its entry in a tree it receives; the rest is the coordinator's own.
 	if !sc.SyncedToWorkers() {
-		Forbidden(c, fmt.Sprintf("provider %q is not synced to workers; a worker enables its own copy", name))
-		return
+		return httperr.Error{Status: 403, Message: fmt.Sprintf("provider %q is not synced to workers", name)}
 	}
-	changed, err := s.configStore.SetProviderEnabled(name, node, *req.Enabled)
+	changed, err := s.configStore.SetProviderEnabled(name, node, enabled)
 	if err != nil {
-		respondFinalizeErr(c, "record failed", err)
-		return
+		return err
 	}
-	// A recorded change starts its own sync. A choice the tree already held
-	// starts none, and the worker may be the one an earlier round missed.
 	if !changed {
-		s.reconcileProviderTree("enable choice from " + node)
+		s.reconcileProviderTree("enable choice from " + node) //nolint:contextcheck // Provider sync has its own lifecycle; AwaitWorker uses the caller.
 	}
 	if !s.providers.syncFanOut.AwaitWorker(ctx, node) {
-		RespondToError(c, httperr.Error{Status: http.StatusServiceUnavailable, Code: string(httperr.CodeProviderSyncPending),
-			Message: fmt.Sprintf("recorded on the coordinator, but the provider sync has not reached %s yet; the next sync delivers it", node)})
-		return
+		return httperr.Error{Status: 503, Code: string(httperr.CodeProviderSyncPending), Message: fmt.Sprintf("recorded on the coordinator, but the provider sync has not reached %s yet; the next sync delivers it", node)}
 	}
-	c.JSON(http.StatusOK, gin.H{"name": name, "node": node, "enabled": *req.Enabled})
-}
-
-// handleInternalRefreshCache publishes the inventory named by the worker's certificate.
-func (s *Server) handleInternalRefreshCache(c *gin.Context) {
-	if s.node.IsWorker() {
-		BadRequest(c, "workers don't have cache to refresh")
-		return
-	}
-	ep := s.certifiedWorker(peerCertFromRequest(c.Request))
-	if ep == nil {
-		Forbidden(c, "the client certificate does not name a worker of this cluster")
-		return
-	}
-	slog.Info("Received worker cache refresh notice", "node", ep.NodeName)
-	s.RefreshClusterEndpoint(ep.URL)
-	if err := s.model.Cache.RefreshNode(c.Request.Context(), ep.NodeName); err != nil {
-		ServiceUnavailable(c, err.Error())
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Cache refreshed successfully"})
+	return nil
 }
 
 // certifiedWorker is the endpoint whose name is cert's CN and whose address

@@ -146,7 +146,7 @@ func TestIntegrationUpdateWorkerRouteBoundary(t *testing.T) {
 	coord := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, NodeName: "coord", ClusterMode: config.ClusterModeCoordinator})
 	out := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/zzrouter/v1/internal/update/apply", bytes.NewBufferString(`{"version":"2.0.0"}`))
-	buildCoordInternalEngine(coord).ServeHTTP(out, request)
+	buildTestCoordinatorEngine(coord).ServeHTTP(out, request)
 	require.Equal(t, 404, out.Code)
 }
 

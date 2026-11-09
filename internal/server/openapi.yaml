@@ -3403,7 +3403,9 @@ paths:
         window and prints a code; an operator carries that code to the
         coordinator and posts it to
         `/zzrouter/v1/cluster/pairing/accept`, which signs the node's
-        CSR and wakes its parked long-poll.
+        CSR through a coordinator-initiated request to the pinned worker.
+        The response includes `worker_url` and `fingerprint`, which
+        must accompany the code. The worker never contacts the coordinator.
 
         One endpoint covers the whole window lifecycle, and the body
         selects which:
@@ -3498,73 +3500,36 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
-  /zzrouter/v1/cluster/pairing/pending:
-    get:
-      tags: [Cluster]
-      operationId: listPendingPairings
-      summary: List pairing requests waiting for acceptance
-      description: |
-        Coordinator-only. Shows what is queued for an operator who has
-        lost track of an in-flight pairing.
-
-        The code is deliberately not returned. It is read off the
-        worker, which is what makes it evidence that the operator has
-        access to the machine being admitted; serving it from the
-        coordinator would turn a listing into an admission ticket.
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [pending]
-                properties:
-                  pending:
-                    type: array
-                    items: { $ref: '#/components/schemas/PendingPairing' }
-        '400':
-          description: This node is not a coordinator (the detail names its mode).
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '503':
-          description: Cluster listener not initialized on this node.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
   /zzrouter/v1/cluster/pairing/accept:
     post:
       tags: [Cluster]
       operationId: acceptPairing
       summary: Accept a worker's pairing code
       description: |
-        Coordinator-only. Takes the code an operator read off the
-        worker, signs the CSR that worker stashed with its request,
-        burns the code, and wakes the worker's parked long-poll. The
-        worker is then admitted to cluster membership so dispatch and
-        broadcast start routing to it.
-
-        No certificate material comes back here. It goes to the worker
-        over its own long-poll: the admin who accepts a pairing never
-        handles the key.
-
-        Codes are single-use and time-limited, which is why an already
-        consumed code is a `409` and an expired one a `410`. Both mean
-        "ask the worker for a fresh code", not "retry this one".
+        Coordinator-only. Connects to the explicitly armed worker endpoint,
+        pins its public-key fingerprint, validates and signs its CSR, delivers
+        the certificate and confirms the installed identity over mTLS. The
+        worker is admitted to membership after confirmation. Certificate
+        material travels directly to the worker. Retry after a committed
+        delivery confirms the existing identity without rotating its key.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [code]
+              required: [code, worker_url, worker_fingerprint]
               properties:
                 code:
                   type: string
                   description: The pairing code printed by the worker.
+                worker_url:
+                  type: string
+                  format: uri
+                  description: HTTPS cluster endpoint printed by the worker.
+                worker_fingerprint:
+                  type: string
+                  description: Worker SPKI fingerprint obtained out of band.
       responses:
         '200':
           description: Paired.
@@ -3579,23 +3544,8 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '404':
-          description: No pending request carries that code.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '409':
-          description: Code already consumed.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '410':
-          description: Code expired. Have the worker generate a new one.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Cluster listener not initialized, or the pairing store has stopped.
+          description: Cluster listener not initialized.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13816,6 +13766,13 @@ components:
         code:
           type: string
           description: Pairing code to carry to the coordinator. Absent once the window closes.
+        worker_url:
+          type: string
+          format: uri
+          description: Worker enrollment endpoint to provide to the coordinator.
+        fingerprint:
+          type: string
+          description: Worker public-key fingerprint to pin during acceptance.
         deadline:
           type: string
           format: date-time
@@ -13835,21 +13792,11 @@ components:
             coordinator-side refusal surfaces, rather than as a generic
             "no active window".
 
-    PendingPairing:
-      type: object
-      description: One pairing request awaiting acceptance. The code is not included.
-      required: [node_name, fingerprint, age_seconds]
-      properties:
-        node_name:   { type: string }
-        fingerprint: { type: string, description: SPKI fingerprint of the requesting node. }
-        age_seconds: { type: number, description: How long the request has been queued. }
-
     PairingAcceptance:
       type: object
       description: |
         Confirmation that a pairing was accepted. Carries identity, not
-        credentials: the signed certificate goes to the worker over its
-        own long-poll.
+        credentials: the coordinator delivers the certificate to the pinned worker.
       required: [node_name, fingerprint, short_form]
       properties:
         node_name:   { type: string }

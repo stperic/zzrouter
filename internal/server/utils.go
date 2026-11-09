@@ -16,6 +16,7 @@ import (
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/routing"
 )
 
 // Note: Cluster host validation is now handled by the cluster coordinator
@@ -94,24 +95,36 @@ func (s *Server) coordWorkerMTLSClient() *http.Client {
 // connector hydrates their cluster port. Same fallback pattern as
 // jobs_controller.go.
 func (s *Server) resolveNodeToClusterURL(hostname string) string {
-	if s.cluster.coordinator == nil {
+	ep := s.resolveClusterEndpoint(hostname)
+	if ep == nil {
 		return ""
 	}
-	endpoints := s.cluster.coordinator.GetAllEndpoints()
-	for _, ep := range endpoints {
-		if ep.Name == hostname || strings.Contains(ep.URL, hostname) {
-			if ep.ClusterURL != "" {
-				return ep.ClusterURL
-			}
-			if s.cluster.coordinator != nil && s.config != nil {
-				if derived, err := mesh.DeriveClusterURL(ep.URL, s.config.Cluster.BindPort); err == nil {
-					return derived
-				}
-			}
-			return ""
+	if ep.ClusterURL != "" {
+		return ep.ClusterURL
+	}
+	if s.config != nil {
+		if derived, err := mesh.DeriveClusterURL(ep.URL, s.config.Cluster.BindPort); err == nil {
+			return derived
 		}
 	}
 	return ""
+}
+
+// resolveClusterEndpoint shares routing's local selector rules and the registry's peer indexes.
+func (s *Server) resolveClusterEndpoint(selector string) *mesh.Endpoint {
+	if selector == "" || s.cluster.coordinator == nil {
+		return nil
+	}
+	if s.cluster.routerSwap != nil {
+		if router, ok := s.cluster.routerSwap.Current().(*routing.ClusterAwareRouter); ok && router.IsLocalNode(selector) {
+			selector = s.node.Name()
+		}
+	}
+	matches := s.cluster.coordinator.GetState().GetEndpoints().GetEndpointsForRequest(&mesh.Request{TargetNode: selector})
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	return nil
 }
 
 // resolveEndpointToNodename resolves an IP:port to hostname from cluster registry

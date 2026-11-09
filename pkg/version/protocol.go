@@ -43,9 +43,10 @@ package version
 // Protocol 16 adds architecture capabilities and internal deploy architecture selection.
 // Protocol 17 adds operator schema declarations to strictly decoded provider configs.
 // Protocol 18 requires terminal job expiry and replay-safe retention.
+// Protocol 19 requires coordinator-initiated communication, enrollment and transfer.
 const (
-	ClusterProtocolVersion    = 18
-	MinClusterProtocolVersion = 18
+	ClusterProtocolVersion    = 19
+	MinClusterProtocolVersion = 19
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

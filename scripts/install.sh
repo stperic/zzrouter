@@ -1183,7 +1183,7 @@ print_next_steps() {
         worker)
             echo -e "  ${BOLD}Next: pair this worker with your coordinator.${RESET}"
             info "    Here:         zzrouter-node cluster pair --coordinator-url https://COORDINATOR_HOST:${CLUSTER_PORT}"
-            info "    On the coord: zzrouter-node cluster accept CODE"
+            info "    On the coord: zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:${CLUSTER_PORT} --worker-fingerprint SHA256_FROM_WORKER"
             echo ""
             dim "The coordinator reaches this node at $(reachable_address):${CLUSTER_PORT},"
             dim "so that port must stay open and its cluster.bind_port must match."
@@ -1191,7 +1191,7 @@ print_next_steps() {
         coordinator)
             echo -e "  ${BOLD}This node is a coordinator. To add a worker:${RESET}"
             info "    On the worker: zzrouter-node cluster pair --coordinator-url https://$(reachable_address):${CLUSTER_PORT}"
-            info "    Here:          zzrouter-node cluster accept CODE"
+            info "    Here:          zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:${CLUSTER_PORT} --worker-fingerprint SHA256_FROM_WORKER"
             ;;
         *)
             echo -e "  ${BOLD}Next: run ${RESET}zzrouter quickstart${BOLD} to get started${RESET}"

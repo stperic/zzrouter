@@ -25,7 +25,13 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
-Protocol 18 raises both the current version and minimum from 17 to 18. Terminal
+Protocol 19 raises both the current version and minimum from 18 to 19. Only the
+coordinator initiates cluster connections. Pinned enrollment, typed held polls
+and coordinator-relayed model uploads replace reverse callbacks and peer pulls.
+Upgrade every node together; preserve the CA and node identity keys. There is
+no protocol-18 fallback. See [cluster networking](cluster_networking.md).
+
+Protocol 18 raised both the current version and minimum from 17 to 18. Terminal
 job events, snapshots and lists carry `expires_at` and all peers must enforce
 retention through the idempotency replay window, including a fresh request that
 reuses an older job ID. Every peer is 18, so absence of terminal expiry is not a

@@ -31,13 +31,7 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case stateConfirmCoordinator:
 		switch key {
 		case "y", "Y", "enter":
-			if m.policyInFlight {
-				// Don't let the operator race the preflight — a
-				// late requireSecure=true would be a silent TOFU
-				// downgrade if we opened a pair window first.
-				m.setFlash("verifying coordinator policy…")
-				return m, nil
-			}
+
 			m.reqGen++
 			m.state = stateRequesting
 			return m, tea.Batch(m.pairCmd(m.reqGen, PairRequest{
@@ -163,12 +157,7 @@ func (m *Model) submitManualEntry() (tea.Model, tea.Cmd) {
 	m.manualURL.Blur()
 	m.manualFP.Blur()
 	m.state = stateConfirmCoordinator
-	// Preflight when the operator submitted a URL but no pin —
-	// catches a strict-mode coord before the pair request opens.
-	if fp == "" {
-		m.policyInFlight = true
-		return m, m.policyCmd(normalized)
-	}
+
 	return m, nil
 }
 
@@ -177,13 +166,20 @@ func (m *Model) submitManualEntry() (tea.Model, tea.Cmd) {
 // the cancel response lands — so the window closes cleanly and the
 // cancel HTTP call isn't orphaned by process exit.
 func (m *Model) quit() (tea.Model, tea.Cmd) {
-	m.done = true
-	if m.state == statePairing {
-		m.state = stateCancelled
-		m.result = PairResult{Success: false, FailReason: "cancelled by operator"}
-		return m, m.cancelCmd()
+	if m.quitting {
+		return m, nil
 	}
 	m.result = PairResult{Success: false, FailReason: "cancelled by operator"}
+	if m.state == stateRequesting {
+		m.quitting = true
+		return m, nil
+	}
+	if m.state == statePairing {
+		m.quitting = true
+		m.state = stateCancelled
+		return m, m.cancelCmd()
+	}
+	m.done = true
 	return m, tea.Quit
 }
 
@@ -198,8 +194,8 @@ func (m *Model) cancelCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_, _ = post(ctx, PairRequest{Cancel: true})
-		return cancelDoneMsg{}
+		_, err := post(ctx, PairRequest{Cancel: true})
+		return cancelDoneMsg{err: err}
 	}
 }
 
@@ -233,7 +229,8 @@ func (m *Model) copyCodeCmd() tea.Cmd {
 func (m *Model) writeTransferFileCmd() tea.Cmd {
 	dir := m.cfg.TransferFileDir
 	code := m.code
-	fp := m.caFingerprint
+	fp := m.workerFingerprint
+	workerURL := m.workerURL
 	return func() tea.Msg {
 		if dir == "" {
 			base, err := os.UserCacheDir()
@@ -246,7 +243,7 @@ func (m *Model) writeTransferFileCmd() tea.Cmd {
 			return flashMsg{text: fmt.Sprintf("mkdir: %v", err)}
 		}
 		path := filepath.Join(dir, "pair-"+shortFP(fp)+".sh")
-		script := fmt.Sprintf("#!/bin/sh\nzzrouter cluster accept %s\n", code)
+		script := fmt.Sprintf("#!/bin/sh\n%s\n", AcceptCommand(code, workerURL, fp))
 		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 			return flashMsg{text: fmt.Sprintf("write: %v", err)}
 		}
@@ -269,4 +266,11 @@ func shortFP(fp string) string {
 		return hex
 	}
 	return hex[:8]
+}
+
+func shellWord(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+
+// AcceptCommand formats the coordinator command with shell-safe enrollment inputs.
+func AcceptCommand(code, workerURL, fingerprint string) string {
+	return fmt.Sprintf("zzrouter cluster accept %s --worker-url %s --worker-fingerprint %s", shellWord(code), shellWord(workerURL), shellWord(fingerprint))
 }

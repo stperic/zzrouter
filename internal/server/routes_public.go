@@ -41,6 +41,8 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	}
 	s.services.Deployments = NewDeploymentsService(routingRouter, s.node, s.appsConfig).
 		WithNodeURLResolver(s.resolveNodePublicURL)
+	s.services.Deployments.peerClient = s.coordWorkerMTLSClient
+	s.services.Deployments.peerURL = s.resolveNodeToClusterURL
 	s.services.Deployments.jobs = s.jobAccess()
 	s.services.Deployments.shutdown = func() context.Context { return s.shutdownCtx }
 	s.services.Deployments.repoFiles = s.model.Registry.GetHuggingFaceConnector().GetRepoFiles

@@ -594,7 +594,7 @@ if ($IsLoopback) {
 } elseif ($Role -eq "worker") {
     Write-Host "Next step: pair this worker with your coordinator." -ForegroundColor Cyan
     Write-Host "  Here:            zzrouter-node cluster pair --coordinator-url https://COORDINATOR_HOST:$ClusterPort"
-    Write-Host "  On the coord:    zzrouter-node cluster accept CODE"
+    Write-Host "  On the coord:    zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:$ClusterPort --worker-fingerprint SHA256_FROM_WORKER"
     Write-Host ""
     # $Bind is what this node listens on; 0.0.0.0 is not an address the
     # coordinator can dial. Report a real LAN address instead, because
@@ -604,7 +604,7 @@ if ($IsLoopback) {
 } elseif ($Role -eq "coordinator") {
     Write-Host "This node is a coordinator. To add a worker:" -ForegroundColor Cyan
     Write-Host "  On the worker:   zzrouter-node cluster pair --coordinator-url https://THIS_HOST:$ClusterPort"
-    Write-Host "  Here:            zzrouter-node cluster accept CODE"
+    Write-Host "  Here:            zzrouter-node cluster accept CODE --worker-url https://WORKER_HOST:$ClusterPort --worker-fingerprint SHA256_FROM_WORKER"
 } else {
     Write-Host "This node is not clustered (cluster.mode: disabled)." -ForegroundColor Cyan
     Write-Host "To make it a worker, re-run with -Role worker, then pair:"

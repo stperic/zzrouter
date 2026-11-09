@@ -667,19 +667,8 @@ func (s *Server) GetClusterEndpoints() []*mesh.Endpoint {
 // the empty-string return collapses peer-sync cleanly to the normal
 // registry-pull fallback.
 func (s *Server) resolveNodePublicURL(name string) string {
-	if name == "" {
-		return ""
-	}
-	for _, ep := range s.GetClusterEndpoints() {
-		if ep == nil {
-			continue
-		}
-		// NodeName is the runtime-discovered identifier the deploy
-		// service uses; Name/Alias are the user-visible handles.
-		// Either can match.
-		if ep.NodeName == name || ep.Name == name || ep.Alias == name {
-			return ep.URL
-		}
+	if ep := s.resolveClusterEndpoint(name); ep != nil {
+		return ep.URL
 	}
 	return ""
 }
@@ -721,21 +710,6 @@ func (s *Server) MarkClusterEndpointDown(url string) {
 		return
 	}
 	s.cluster.coordinator.MarkEndpointDown(url, errors.New("peer reported graceful shutdown"))
-}
-
-// workerPublicURL builds the URL this worker publishes for coordinator
-// dispatch: scheme://host:node-port. Resolution is delegated to
-// clusternode.ResolveSelfHost (bind → first non-loopback advertise IP
-// → nodeName). Returns "" on non-worker nodes.
-func (s *Server) workerPublicURL() string {
-	if !s.role.Current().IsWorker() {
-		return ""
-	}
-	scheme := "http"
-	if s.config.Node.IsTLSEnabled() {
-		scheme = "https"
-	}
-	return scheme + "://" + net.JoinHostPort(s.selfHost(), strconv.Itoa(s.config.Node.Port))
 }
 
 // ============================================================================
