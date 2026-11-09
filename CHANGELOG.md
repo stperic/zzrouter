@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the managed ComfyUI source archive from 0.40.0 to 0.44.0 for the existing Linux API upgrade. Preserve SHA256 verification, hashed dependency resolution and transactional payload activation.
+
 - Query ComfyUI templates by catalog date, text and open-source metadata with sort/order and limit/offset pagination. Align registry model search parameters, apply cloud/Ollama sorting before pagination, honor HuggingFace offsets through cursors, and refuse unsupported criteria. Preserve source-specific dates and existing defaults.
 
 - Make all cluster connections coordinator-initiated. Replace worker callbacks with typed held polls, pinned coordinator-driven enrollment and checked coordinator-relayed model uploads. Preserve domain publication barriers and existing jobs. Raise protocol current/minimum from 18 to 19; upgrade all nodes together while retaining CA and identity state.

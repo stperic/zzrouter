@@ -13,9 +13,9 @@ install:
   runtimes:
     comfyui:
       source:
-        version: "0.40.0"
-        url: https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v0.40.0.tar.gz
-        sha256: d82636cc721b8060099cf31b8d9ed40807c2147db438f88321a0396b7894e8e5
+        version: "0.44.0"
+        url: https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v0.44.0.tar.gz
+        sha256: 7d796d74f42fe862eb55d1c217349fee92c2cac5d4ababe06c8b73f90c936dc0
         strip_components: 1
         requirements: requirements.txt
         entrypoint: main.py
