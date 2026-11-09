@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -162,14 +163,22 @@ func (e *ParamsExecutor) checkInstallMutation(ctx context.Context, before *confi
 	}
 	for node := range nodes {
 		affected := false
-		for runtime := range after.Install.Runtimes {
-			old, oldErr := before.ResolveInstall(node, runtime)
-			next, err := after.ResolveInstall(node, runtime)
-			if err != nil {
-				return err
+		platforms := config.KnownPlatformOS
+		if e.nodeOS != nil {
+			if goos := e.nodeOS(node); slices.Contains(config.KnownPlatformOS, goos) {
+				platforms = []string{goos}
 			}
-			if oldErr != nil || install.Fingerprint(old) != install.Fingerprint(next) {
-				affected = true
+		}
+		for runtime := range after.Install.Runtimes {
+			for _, goos := range platforms {
+				old, oldErr := before.ResolveInstallForOS(node, runtime, goos)
+				next, err := after.ResolveInstallForOS(node, runtime, goos)
+				if err != nil {
+					return err
+				}
+				if oldErr != nil || install.Fingerprint(old) != install.Fingerprint(next) {
+					affected = true
+				}
 			}
 		}
 		if !affected {

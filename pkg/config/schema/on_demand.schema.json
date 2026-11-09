@@ -1000,6 +1000,18 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                  "platforms": {
+                    "type": "object",
+                    "propertyNames": {"enum": ["darwin", "linux", "windows"]},
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "primary": {"type": "string"},
+                        "extra": {"type": "array", "maxItems": 4, "items": {"type": "string"}}
+                      }
+                    }
+                  },
                   "primary": {
                     "type": "string"
                   },

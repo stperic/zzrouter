@@ -97,6 +97,7 @@ func validateEnvValue(key, value string) error {
 type ParamsExecutor struct {
 	publishCatalog   func() error
 	installAuthority func(context.Context, string, pkgConfig.ServiceConfig) error
+	nodeOS           func(string) string
 	appsConfig       func() *pkgConfig.AppsConfig
 	configStore      *pkgConfig.AppsConfigStore
 	nodename         func() string

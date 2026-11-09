@@ -321,7 +321,7 @@ func TestArchitectureProtocolWindow(t *testing.T) {
 }
 
 func TestCoordinatorInitiationProtocolCutover(t *testing.T) {
-	window := LocalProtocolWindow()
+	window := ProtocolWindow{Min: 19, Max: 19}
 	if err := window.Check(19); err != nil {
 		t.Fatalf("coordinator-initiated peer rejected: %v", err)
 	}
@@ -329,5 +329,18 @@ func TestCoordinatorInitiationProtocolCutover(t *testing.T) {
 		if err := window.Check(peer); err == nil {
 			t.Errorf("peer protocol %d must be refused by the coordinator-initiation cutover", peer)
 		}
+	}
+}
+
+func TestPlatformIndexesRequireProtocol20(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min < 20 {
+		t.Fatal("platform indexes require strict-loader protocol 20 or later")
+	}
+	if err := window.Check(19); err == nil {
+		t.Fatal("protocol 19 cannot decode platform index declarations")
+	}
+	if err := window.Check(window.Max); err != nil {
+		t.Fatal(err)
 	}
 }

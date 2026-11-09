@@ -174,3 +174,23 @@ func TestShippedRuntimesHaveDefaultVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestGrantAuthorizationUsesSelectedOSIndexes(t *testing.T) {
+	sc := shippedRecipeFixture(t, "vllm")
+	policy, err := ReleasePolicy("linux", "amd64")
+	require.NoError(t, err)
+	grant := policy.Runtimes["vllm/vllm"]
+	override, err := config.MergeInstallPatch(nil, json.RawMessage(`{"runtimes":{"vllm":{"indexes":{"platforms":{"windows":{"extra":["https://unapproved.example.org/simple"]}}}}}}`))
+	require.NoError(t, err)
+	sc.Defaults = &config.AppDefaultsConfig{Install: override}
+	for _, goos := range []string{"linux", "windows"} {
+		resolved, err := sc.ResolveInstallForOS("worker", "vllm", goos)
+		require.NoError(t, err)
+		err = grant.Authorize(RecipeSnapshot{ResolvedInstall: resolved}, nil)
+		if goos == "windows" {
+			require.Error(t, err, "an active ungranted OS index must remain refused")
+		} else {
+			require.NoError(t, err, "inactive indexes must not alter local grant decisions")
+		}
+	}
+}

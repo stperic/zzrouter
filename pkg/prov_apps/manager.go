@@ -1243,7 +1243,7 @@ func (m *ProviderAppManager) InstallPolicyCapabilities(sc config.ServiceConfig, 
 	}
 	result.Grant = &grant
 	result.PolicyFingerprint = fp
-	resolved, err := sc.ResolveInstall(m.localNodename(), runtime)
+	resolved, err := sc.ResolveInstallForOS(m.localNodename(), runtime, fsroot.CurrentPlatform().OS)
 	if err != nil {
 		result.Reason = err.Error()
 		return result

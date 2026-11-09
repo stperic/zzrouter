@@ -39,7 +39,7 @@ func TestShippedSourceReconcilesAndReceivesOnlyReleaseAuthority(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, sc.IsEnabled())
 	assert.Equal(t, "16384", sc.Nodes["worker"].Parameters["gpu-reserve-mib"])
-	assert.Equal(t, []config.InstallPlatform{{OS: "linux", Arch: "amd64"}}, sc.Platforms)
+	assert.Equal(t, []config.InstallPlatform{{OS: "linux", Arch: "amd64"}, {OS: "windows", Arch: "amd64"}}, sc.Platforms)
 	require.NotNil(t, sc.Requirements)
 	assert.Equal(t, "20GB", sc.Requirements.DiskSpace)
 	assert.Equal(t, &config.PythonRequirement{Min: "3.10", Max: "3.15"}, sc.Requirements.Python)

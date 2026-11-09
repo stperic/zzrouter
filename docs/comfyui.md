@@ -8,7 +8,15 @@ Only the coordinator initiates cluster connections, including enrollment, renewa
 
 ## Install and enable
 
-The shipped provider starts disabled. Managed installation requires Linux/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+The shipped provider starts disabled. Managed installation requires Linux/amd64 or Windows/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+
+On Windows, provision a supported 64-bit Python for the service account, including
+pip and venv. The installer discovers PEP 514 registrations for that account and
+machine-wide 64-bit installations without changing PATH. NVIDIA drivers remain a
+host prerequisite. The release selects official CUDA 13.2 PyTorch wheels on
+Windows; Linux keeps its existing PyPI resolution. CPU wheels and mismatched CUDA
+companions fail verification. Choose an explicit node/request GPU reservation
+that fits its available VRAM when the default 8192 MiB reservation cannot fit.
 
 Send one request to the coordinator with an admin key, replacing `<name>` with the target node:
 

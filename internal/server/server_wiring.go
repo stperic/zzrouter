@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,17 @@ func (s *Server) newParamsExecutor() *ParamsExecutor {
 	).WithSyncWait(s.awaitProviderSync).WithCatalog(s.catalogWeights)
 	executor.publishCatalog = s.publishCatalog
 	executor.installAuthority = s.checkNodeInstallAuthority
+	executor.nodeOS = func(node string) string {
+		if node == "" || node == s.node.Nodename() {
+			return runtime.GOOS
+		}
+		for _, endpoint := range s.GetClusterEndpoints() {
+			if endpoint != nil && endpoint.NodeName == node {
+				return goosFromNodeOS(endpoint.Snapshot.OS)
+			}
+		}
+		return ""
+	}
 	return executor
 }
 

@@ -44,9 +44,10 @@ package version
 // Protocol 17 adds operator schema declarations to strictly decoded provider configs.
 // Protocol 18 requires terminal job expiry and replay-safe retention.
 // Protocol 19 requires coordinator-initiated communication, enrollment and transfer.
+// Protocol 20 adds platform-specific managed Python package indexes.
 const (
-	ClusterProtocolVersion    = 19
-	MinClusterProtocolVersion = 19
+	ClusterProtocolVersion    = 20
+	MinClusterProtocolVersion = 20
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.
