@@ -117,6 +117,34 @@ Both template and workflow inputs use UI `nodes[].properties.models[]` entries `
 
 ### Agent recipe
 
+For template discovery and recommendation requests, use this research sequence:
+
+1. Shortlist with `listProviderTemplates`, using `q`, `sort=date`, `order=desc` and
+   `limit=10`. Use `open_source=true` when researching local model workflows.
+   Describe the returned date as a catalog date. A catalog lookup supports a
+   summary of what is new; detailed recommendations require reading the graph.
+2. Fetch each shortlisted ID with `getProviderTemplate`. Retain its metadata,
+   source URL, `workflow_sha256` and complete `workflow` without rounding JSON
+   numbers. Inspect referenced nested subgraphs, links, exposed inputs, modes and
+   switches. Linked values and subgraph instance inputs override stored widget
+   defaults; trace them before reporting effective sampling or model settings.
+   Identify required input assets, model files, prompt processing and outputs.
+3. For local model workflows, pass that exact returned `workflow` to
+   `resolveProviderModels` with `node` and `download:false`. Report each declared
+   file as present, missing or unresolvable, including its reason. Resolve-by-name
+   fetches the source again, so use the already-read graph for this check. An
+   API-only workflow needs its API prerequisites checked instead of local weights.
+4. Check the named node's installed ComfyUI version against the declared minimum.
+   Check required node classes through the native `/object_info` when a ComfyUI
+   run is available. Otherwise leave node availability unverified. Confirm required
+   input images or other assets and API access separately. Files marked present
+   establish inventory presence; they do not establish version compatibility,
+   custom-node availability, valid weights, output quality or execution readiness.
+5. State what was inferred from metadata, inspected in the graph, checked on the
+   node and actually executed. For a requested generation test, use the native
+   frontend's exported API prompt and inspect the resulting output. Keep research
+   read-only unless the task authorizes downloads, upgrades, installs or execution.
+
 There is no additional MCP task tool. Discover `listProviderModels`, `downloadProviderModel`, `deleteProviderModel` and `resolveProviderModels` with `zz_api_search`. Read inventory with `zz_api_get`:
 
 ```json
