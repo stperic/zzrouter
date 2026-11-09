@@ -20,11 +20,11 @@ type PairAcceptResult struct {
 // The code may be supplied with dashes (e.g. ABCD-EFGH-IJKL-MNOP) —
 // dashes and whitespace are stripped, the string is uppercased, and
 // the server validates the final form.
-func (c *Client) AcceptPairingCode(code string) (*PairAcceptResult, error) {
+func (c *Client) AcceptPairingCode(code, workerURL, workerFingerprint string) (*PairAcceptResult, error) {
 	clean := strings.ToUpper(strings.TrimSpace(code))
 	clean = strings.ReplaceAll(clean, "-", "")
 	var out PairAcceptResult
-	if err := c.doJSON("POST", apipath.ClusterPairingAccept, map[string]string{"code": clean}, &out, "accept pairing code"); err != nil {
+	if err := c.doJSON("POST", apipath.ClusterPairingAccept, map[string]string{"code": clean, "worker_url": workerURL, "worker_fingerprint": workerFingerprint}, &out, "accept pairing code"); err != nil {
 		return nil, err
 	}
 	return &out, nil

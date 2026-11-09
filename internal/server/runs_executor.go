@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -102,14 +103,12 @@ func (e *RunsExecutor) WithAutoDeploy(
 	return e
 }
 
-// triggerResourceRefresh fires a ResourceTracker refresh in a
-// goroutine so the unload response path doesn't block on
-// nvidia-smi. Safe to call when the callback is nil.
+// triggerResourceRefresh requests collection on the resource tracker's owned loop.
 func (e *RunsExecutor) triggerResourceRefresh() {
 	if e.refreshResourceMetrics == nil {
 		return
 	}
-	go e.refreshResourceMetrics()
+	e.refreshResourceMetrics()
 }
 
 // requireProviderAppMgr checks if the provider app manager is initialized and returns a 503 error if not.
@@ -199,8 +198,14 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 		return
 	}
 
+	before, lookupErr := e.appMgr.RunInfo(c.Request.Context(), runID, "")
+	original, _ := e.appMgr.GetInstance(runID)
 	err := e.appMgr.StopInstance(c.Request.Context(), runID)
-	if !publishOr503(c, e.publishCatalog) {
+	e.triggerResourceRefresh()
+	if original != nil {
+		before = original.ToInfo("")
+	}
+	if !e.publishRunMutation(c, runID, before, lookupErr, nil, err) {
 		return
 	}
 	if err != nil {
@@ -208,7 +213,6 @@ func (e *RunsExecutor) HandleInternalStopRun(c *gin.Context) {
 		return
 	}
 	utils.LogDebugf("[RunsExecutor] Stopped instance '%s'", runID)
-	e.triggerResourceRefresh()
 	c.JSON(http.StatusOK, gin.H{
 		"id":      runID,
 		"status":  "stopped",
@@ -228,8 +232,14 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		return
 	}
 
+	before, lookupErr := e.appMgr.RunInfo(c.Request.Context(), runID, "")
+	original, _ := e.appMgr.GetInstance(runID)
 	newInst, err := e.appMgr.RestartInstance(c.Request.Context(), runID)
-	if !publishOr503(c, e.publishCatalog) {
+	e.triggerResourceRefresh()
+	if original != nil {
+		before = original.ToInfo("")
+	}
+	if !e.publishRunMutation(c, runID, before, lookupErr, newInst, err) {
 		return
 	}
 	if err != nil {
@@ -253,6 +263,34 @@ func (e *RunsExecutor) HandleInternalRestartRun(c *gin.Context) {
 		Message: fmt.Sprintf("Instance %s restart accepted as %s; follow job_id when present, otherwise inspect zz_runs", runID, newInst.ID),
 		Node:    e.getNodename(),
 	})
+}
+
+func (e *RunsExecutor) publishRunMutation(c *gin.Context, id string, before instance.InstanceInfo, lookupErr error, replacement *instance.Instance, mutationErr error) bool {
+	var publication *prov_apps.CatalogPublicationError
+	if errors.As(mutationErr, &publication) {
+		RespondToError(c, mutationErr)
+		return false
+	}
+	if e.publishCatalog == nil || (lookupErr == nil && !instance.ChangesCatalog(before.Model, nil)) {
+		return true
+	}
+	if err := e.publishCatalog(); err != nil {
+		info := before
+		info.ID = id
+		if current, ok := e.appMgr.GetInstance(id); ok {
+			info = current.ToInfo("")
+		}
+		if replacement != nil {
+			info = replacement.ToInfo("")
+		}
+		jobID := ""
+		if replacement != nil {
+			jobID = e.appMgr.RunJobID(replacement)
+		}
+		RespondToError(c, errors.Join(&prov_apps.CatalogPublicationError{RunID: info.ID, JobID: jobID, Status: info.Status, Cause: err}, mutationErr))
+		return false
+	}
+	return true
 }
 
 // HandleInternalLaunchRun handles POST /zzrouter/internal/runs (internal API)

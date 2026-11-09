@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -403,5 +405,43 @@ func TestContract_PairResponseJSONShape(t *testing.T) {
 		if got := f.Tag.Get("json"); got != tag {
 			t.Errorf("PairResponse.%s json tag = %q, want %q", fname, got, tag)
 		}
+	}
+}
+
+func TestQuitDuringPairRequestClosesLateWindow(t *testing.T) {
+	for _, regenerate := range []bool{false, true} {
+		t.Run(fmt.Sprint(regenerate), func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var armed atomic.Bool
+			m := New(Config{PairPost: func(_ context.Context, req PairRequest) (PairResponse, error) {
+				if req.Cancel {
+					armed.Store(false)
+					return PairResponse{Status: "cancelled"}, nil
+				}
+				close(entered)
+				<-release
+				armed.Store(true)
+				return PairResponse{Status: "new", Code: "ABCDEFGHIJKLMNOP"}, nil
+			}})
+			m.state = stateRequesting
+			m.reqGen = 1
+			command := m.pairCmd(1, PairRequest{Regenerate: regenerate, CoordinatorURL: "https://coordinator:9091"})
+			response := make(chan tea.Msg, 1)
+			go func() { response <- command() }()
+			<-entered
+			_, quit := m.quit()
+			if quit != nil || m.Done() {
+				t.Fatal("wizard exited before its open request resolved")
+			}
+			close(release)
+			_, cancel := m.Update(<-response)
+			if cancel == nil {
+				t.Fatal("late pairing window was not cancelled")
+			}
+			_, quit = m.Update(cancel())
+			if !m.Done() || armed.Load() || quit == nil {
+				t.Fatal("wizard failed to close its late window before exit")
+			}
+		})
 	}
 }

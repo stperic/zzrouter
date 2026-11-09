@@ -13,7 +13,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/discovery/network"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
@@ -57,17 +56,6 @@ type discoveredMsg struct {
 	err   error
 }
 
-// coordPolicyMsg carries the /cluster/ca-fingerprint preflight result.
-// requireSecure drives whether the wizard lets the operator proceed
-// without a pinned fingerprint. The advertised fingerprint from the
-// response is intentionally dropped — it rode an unauthenticated TLS
-// session, so showing it to the operator as an "OOB reference" would
-// be self-contradictory.
-type coordPolicyMsg struct {
-	requireSecure bool
-	err           error
-}
-
 // pairRespMsg carries the pair-endpoint outcome. The gen field pins
 // the response to the request-issuing transition that produced it —
 // Update drops pairRespMsgs whose gen is stale (operator pressed
@@ -88,7 +76,7 @@ type flashMsg struct{ text string }
 // cancelDoneMsg signals that the fire-on-quit cancel POST finished;
 // its arrival returns tea.Quit so the process tears down only after
 // the server-side window is closed.
-type cancelDoneMsg struct{}
+type cancelDoneMsg struct{ err error }
 
 // resetDoneMsg carries the outcome of POST /cluster/reset. Nil err →
 // retry the pair request with the stored coordinator inputs.
@@ -112,22 +100,6 @@ func (m *Model) discoverCmd() tea.Cmd {
 func defaultDiscover(ctx context.Context) (*network.NodeEntry, error) {
 	hd := network.NewNodeDiscovery("", false, 0)
 	return hd.FindCoordinator(ctx)
-}
-
-// policyCmd runs the shared preflight helper in a cmd so the wizard
-// learns the pairing policy before opening a window. Fail-closed on
-// error: onCoordPolicy routes the error to stateFailed rather than
-// silently falling through to TOFU.
-func (m *Model) policyCmd(coordURL string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		policy, err := clusternode.FetchPairingPolicy(ctx, coordURL)
-		if err != nil {
-			return coordPolicyMsg{err: err}
-		}
-		return coordPolicyMsg{requireSecure: policy.RequireSecurePairing}
-	}
 }
 
 // pairCmd POSTs to /zzrouter/v1/cluster/pair. Used both to open a new
@@ -220,10 +192,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case cancelDoneMsg:
+		m.done = true
+		if msg.err != nil {
+			m.err = fmt.Errorf("close enrollment window: %w", msg.err)
+			m.state = stateFailed
+			m.result.FailReason = m.err.Error()
+		}
 		return m, tea.Quit
-
-	case coordPolicyMsg:
-		return m.onCoordPolicy(msg)
 
 	case resetDoneMsg:
 		return m.onResetDone(msg)
@@ -276,11 +251,7 @@ func (m *Model) onDiscovered(msg discoveredMsg) (*Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.focusManualField(1))
 	}
 	m.state = stateConfirmCoordinator
-	// Preflight the coord's policy so a strict coordinator pivots us
-	// to the CA-entry form instead of letting the operator confirm a
-	// pair that'll be rejected.
-	m.policyInFlight = true
-	return m, m.policyCmd(m.coordURL)
+	return m, nil
 }
 
 func (m *Model) onPairResp(msg pairRespMsg) (tea.Model, tea.Cmd) {
@@ -288,6 +259,10 @@ func (m *Model) onPairResp(msg pairRespMsg) (tea.Model, tea.Cmd) {
 	// flight when the operator pressed `r` to regenerate.
 	if msg.gen != m.reqGen {
 		return m, nil
+	}
+	if m.quitting {
+		m.state = stateCancelled
+		return m, m.cancelCmd()
 	}
 	if msg.err != nil {
 		if errors.Is(msg.err, errAlreadyPairedWorker) {
@@ -304,6 +279,8 @@ func (m *Model) onPairResp(msg pairRespMsg) (tea.Model, tea.Cmd) {
 	case "new", "existing":
 		m.seenActive = true
 		m.code = msg.resp.Code
+		m.workerURL = msg.resp.WorkerURL
+		m.workerFingerprint = msg.resp.Fingerprint
 		m.deadline = msg.resp.Deadline
 		m.state = statePairing
 		return m, tickCmd()
@@ -374,46 +351,6 @@ func (m *Model) onTick() (tea.Model, tea.Cmd) {
 func (m *Model) setFlash(s string) {
 	m.flash = s
 	m.flashUntil = m.cfg.Clock().Add(flashTTL)
-}
-
-// onCoordPolicy applies the preflight result. Drops responses that
-// arrive after the wizard has already moved past confirm (e.g. the
-// operator pressed `y` before preflight completed — the policyInFlight
-// flag is supposed to prevent that, but the guard here is a second
-// belt-and-braces). Fail-closed on transport error: without the
-// response we can't tell whether the coord enforces strict mode, so
-// continuing in TOFU would silently bypass strict coords under MITM.
-func (m *Model) onCoordPolicy(msg coordPolicyMsg) (tea.Model, tea.Cmd) {
-	m.policyInFlight = false
-	// Late response arriving after we've moved on: drop it.
-	if m.state != stateConfirmCoordinator && m.state != stateManualEntry {
-		return m, nil
-	}
-	if msg.err != nil {
-		friendly := FriendlyPreflightError(m.coordURL, msg.err)
-		// Bounce back to the manual form with a one-line error so the
-		// operator can correct the URL. Lazy-init the form if the
-		// failure came from a flag-supplied / mDNS-confirmed URL.
-		cmd := m.enterManualEntry()
-		m.manualURL.SetValue(m.coordURL)
-		m.manualErrMsg = friendly
-		return m, cmd
-	}
-	// Preflight data (advertised fingerprint) came over an
-	// unauthenticated TLS session, so we deliberately do NOT surface
-	// it to the operator as an "OOB reference" — that would be a
-	// contradiction. We only record the policy bit.
-	if msg.requireSecure && m.caFingerprint == "" {
-		// Coord rejects TOFU. Force Secure mode + drop back to the
-		// manual form so the operator can paste an OOB-verified
-		// fingerprint. URL is preserved; the fingerprint field gets
-		// focus.
-		m.cfg.Secure = true
-		cmd := m.enterManualEntry()
-		m.manualURL.SetValue(m.coordURL)
-		return m, tea.Batch(cmd, m.focusManualField(1))
-	}
-	return m, nil
 }
 
 // onResetDone handles the POST /cluster/reset outcome. Success →

@@ -68,7 +68,7 @@ func (f *reclaimFixture) admit(t *testing.T) ([]instance.EvictedRun, error) {
 	f.mgr.memoryAdmission <- struct{}{}
 	defer func() { <-f.mgr.memoryAdmission }()
 	_, evicted, err := f.mgr.admitMemory(t.Context(), f.features, false, nil)
-	return evicted, err
+	return evicted.EvictedRuns, err
 }
 
 func (f *reclaimFixture) assertOriginalFit(t *testing.T, err error, skipped map[string]string) {
@@ -251,7 +251,7 @@ func TestMemoryReclaimAggregatesHolders(t *testing.T) {
 		{Run: f.older.ID, Ownership: "zzrouter", MemoryMiB: new(int64(2500))},
 	}}
 	evicted, skipped := f.mgr.reclaimFor(t.Context(), fit)
-	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted)
+	assert.Equal(t, []instance.EvictedRun{{RunID: f.older.ID, Model: f.older.Model, Provider: f.older.Provider, FreedMiB: 4500}}, evicted.EvictedRuns)
 	assert.Empty(t, skipped)
 	assert.Equal(t, instance.StatusStopped, f.older.GetStatus())
 	assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())

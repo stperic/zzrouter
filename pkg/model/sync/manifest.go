@@ -8,6 +8,7 @@
 package sync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -99,7 +100,7 @@ func (s *Security) Holds(request metadata.DownloadRequest) (bool, error) {
 // GenerateManifest generates a SyncManifest for all files in a model
 // directory. The path is validated through the Security instance's
 // containment checks before any files are walked.
-func (s *Security) GenerateManifest(request metadata.DownloadRequest, format string) (*SyncManifest, error) {
+func (s *Security) GenerateManifest(ctx context.Context, request metadata.DownloadRequest, format string) (*SyncManifest, error) {
 	validPath, err := s.ValidateModelDir(request.Repo)
 	if err != nil {
 		return nil, err
@@ -155,7 +156,7 @@ func (s *Security) GenerateManifest(request metadata.DownloadRequest, format str
 		if err != nil {
 			return err
 		}
-		checksum, err := ComputeSHA256(validated)
+		checksum, err := integrity.HashFile(ctx, validated)
 		if err != nil {
 			return fmt.Errorf("checksum %s: %w", relPath, err)
 		}

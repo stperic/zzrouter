@@ -30,6 +30,7 @@ type failureRow struct {
 // failureTable is the decision record every surface reads; error_status_guard_test.go holds it complete.
 var failureTable = []failureRow{
 	{resolve: resolveExplicitWire},
+	{resolve: resolveCatalogPublication},
 	{status: http.StatusNotFound, code: string(httperr.CodeUnknownModel), errType: "invalid_request_error", resolve: resolveCatalogMiss},
 	{title: "GPU memory budget cannot fit", resolve: resolveMemoryFit, extra: memoryFailureExtra},
 	{resolve: resolveEngineFailure},
@@ -81,6 +82,21 @@ var failureTable = []failureRow{
 	{sentinel: errLoadInternal, status: http.StatusInternalServerError, code: "model_load_failed", errType: "server_error", resolve: resolveLoadState},
 	{sentinel: errLoadFailed, status: http.StatusBadGateway, code: "model_load_failed", resolve: resolveLoadState},
 	{status: http.StatusBadRequest, code: "", resolve: resolveInvalidInput},
+}
+
+func resolveCatalogPublication(err error, wire *httperr.Error) bool {
+	var publication *prov_apps.CatalogPublicationError
+	if !errors.As(err, &publication) {
+		return false
+	}
+	wire.Status = http.StatusServiceUnavailable
+	wire.Type = "server_error"
+	wire.Code = string(httperr.CodeCatalogPublicationFailed)
+	wire.Extra = map[string]any{"run_id": publication.RunID, "run_status": publication.Status, "catalog_publication": "failed"}
+	if publication.JobID != "" {
+		wire.Extra["job_id"] = publication.JobID
+	}
+	return true
 }
 
 // knownFailure is the one table lookup for every known run refusal.

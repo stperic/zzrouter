@@ -49,6 +49,8 @@ type DeploymentsService struct {
 	// peer sync is skipped and Deploy falls back to parallel pulls
 	// from the registry on every target.
 	resolveNodeURL func(node string) string
+	peerClient     func() *http.Client
+	peerURL        func(string) string
 }
 
 // NewDeploymentsService creates a DeploymentsService.

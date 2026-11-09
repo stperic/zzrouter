@@ -233,6 +233,12 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		prov_apps.WithHTTPClient(s.httpClient),
 		prov_apps.WithJobsRegistry(s.jobs),
 		prov_apps.WithCatalogPublication(s.publishCatalog),
+		prov_apps.WithResourcesChanged(func() {
+			s.publishSelfSnapshot()
+			if refresh := s.refreshResourceMetrics(); refresh != nil {
+				refresh()
+			}
+		}),
 		prov_apps.WithCatalogChanged(func() {
 			if s.model.Cache != nil {
 				s.model.Cache.Invalidate()
@@ -403,28 +409,6 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 		// Worker→coord signaling is a cluster concern, not a cache one.
 		// Construct here so the factory owns the lazy accessors.
-		s.cluster.signaler = clustersignal.New(clustersignal.Config{
-			IsWorker: func() bool { return s.node.IsWorker() },
-			MTLSClient: func() *http.Client {
-				if s.cluster.listener == nil || s.cluster.listener.Mode() != clusternode.Worker {
-					return nil
-				}
-				client, err := s.cluster.listener.DialClient(clusterid.RoleCoordinator.OU())
-				if err != nil {
-					return nil
-				}
-				return client
-			},
-			CoordinatorURL: func() string {
-				if s.cluster.listener == nil {
-					return ""
-				}
-				return s.cluster.listener.CoordinatorURL()
-			},
-			WorkerPublicURL: func() string {
-				return s.workerPublicURL()
-			},
-		})
 
 		s.model.AutoRoute = autoroute.New(s.model.Groups, s.config.Coordinator.Routing.GetRoutePrefix(), s.model.Cache.GetAllModels)
 		s.model.Cache.SetAutoRoute(s.model.AutoRoute)
@@ -523,14 +507,10 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// (post-setupRoutes) so all executor-backing state is already
 	// wired.
 	if s.cluster.listener != nil && s.cluster.listener.Mode() != clusternode.Disabled {
-		var adminAPI http.Handler
-		if s.cluster.listener.Mode() == clusternode.Coordinator {
-			adminAPI = buildCoordInternalEngine(s)
-		} else {
-			adminAPI = buildInternalEngine(s)
-		}
-		if err := s.cluster.listener.SetAdminAPIHandler(adminAPI); err != nil {
-			return nil, fmt.Errorf("install cluster admin-api handler: %w", err)
+		if s.cluster.listener.Mode() != clusternode.Coordinator {
+			if err := s.cluster.listener.SetAdminAPIHandler(buildInternalEngine(s)); err != nil {
+				return nil, fmt.Errorf("install cluster admin-api handler: %w", err)
+			}
 		}
 		// Worker-track modes additionally serve the OpenAI/Ollama compat
 		// surface on the cluster mTLS port — coord-proxied inference
@@ -606,14 +586,14 @@ func (s *Server) tryInitClusterCoordinator(cfg *pkgConfig.NodeConfig, connector 
 
 	// Convert config.ClusterConfig to mesh.Config
 	clusterCfg := &mesh.Config{
-		Enabled:       cfg.Cluster.IsMaster(),
-		BindAddr:      cfg.Cluster.BindAddr,
-		BindPort:      cfg.Cluster.BindPort,
-		AdvertisePort: cfg.Cluster.AdvertisePort,
-		Members:       cfg.Cluster.Members,
-		Endpoints:     cfg.Cluster.Endpoints.Addresses(),
-		NodeName:      cfg.Node.Name,
-		NameObserver:  s.cachePeerName,
+		Enabled:          cfg.Cluster.IsMaster(),
+		BindAddr:         cfg.Cluster.BindAddr,
+		BindPort:         cfg.Cluster.BindPort,
+		AdvertisePort:    cfg.Cluster.AdvertisePort,
+		Members:          cfg.Cluster.Members,
+		Endpoints:        cfg.Cluster.Endpoints.Addresses(),
+		NodeName:         cfg.Node.Name,
+		SnapshotObserver: s.observePeerSnapshot,
 	}
 
 	// Copy strategy defaults if present
@@ -780,6 +760,10 @@ func (s *Server) initClusterNetworking(cfg *pkgConfig.NodeConfig) error {
 		return fmt.Errorf("cluster listener: %w", err)
 	}
 	s.cluster.listener = clusterListener
+	s.cluster.signaler = s.cluster.listener.Signals()
+	s.cluster.poller = clustersignal.NewCoordinator(clustersignal.CoordinatorConfig{
+		Client: s.coordWorkerMTLSClient, Member: s.signalMember, Handle: s.handleNodeOperation,
+	})
 
 	if cfg.MDNSDiscovery {
 		s.cluster.discovery = network.NewNodeDiscovery(
@@ -899,6 +883,20 @@ func wireRouteEventEmitters(bus *route_events.Bus, cooldowns *fallback.CooldownM
 				Detail:  map[string]string{"health_state": healthState},
 			})
 		})
+	}
+}
+
+// observePeerSnapshot accepts resources from the existing authenticated health cadence.
+func (s *Server) observePeerSnapshot(hostURL string, snapshot *mesh.Connection) {
+	s.cachePeerName(hostURL, snapshot.NodeName)
+	if s.cluster.poller != nil && snapshot.Quality == mesh.QualityFull {
+		clusterURL := s.resolveNodeToClusterURL(snapshot.NodeName)
+		if clusterURL != "" {
+			s.cluster.poller.Observe(clusterURL, snapshot.NodeName)
+		}
+	}
+	if snapshot.Quality == mesh.QualityFull && snapshot.Resources != nil && s.model.NodeCache != nil {
+		s.model.NodeCache.Put(snapshot.NodeName, snapshot.Resources, snapshot.ResourcesObservedAt)
 	}
 }
 

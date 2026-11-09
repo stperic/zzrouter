@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/common/download"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -36,16 +37,16 @@ const maxConcurrentSyncOps = 4
 // allowedSyncFormats is the whitelist of accepted model formats for sync operations
 var allowedSyncFormats = map[string]bool{"gguf": true, "safetensors": true, "mlx": true, "bin": true, "pt": true}
 
-// SyncExecutor handles internal model sync operations over the mTLS
-// cluster-port listener. Worker pulls its mTLS dispatch client from
-// clusternode.Node and rewrites the coordinator-supplied source URL
-// onto the cluster port before dialing.
+// SyncExecutor serves model bytes and materializes coordinator-owned transfers.
 type SyncExecutor struct {
-	mtlsClient     func() *http.Client // Required on workers; nil on non-workers refuses sync.
+	mtlsClient     func() *http.Client // Coordinator-only pull transport.
 	clusterPort    int                 // Worker's cluster port — used to rewrite sourceURL.
 	shutdownCtx    func() context.Context
 	refreshIndex   func() error
 	getEndpoints   func() []*mesh.Endpoint
+	acceptUploads  func() bool
+	sourceURL      func(string) string
+	incoming       map[string]*incomingTransfer
 	jobs           *jobs.Registry // optional; when wired, sync progress fans out on KindSync stream
 	security       *modelsync.Security
 	ensureFeatures func(context.Context, string, string, []string, []string, func(string)) error
@@ -61,11 +62,7 @@ type SyncExecutor struct {
 	inflight   map[string]string // "model|format" → job ID
 }
 
-// NewSyncExecutor creates a new sync executor. mtlsClient must return a
-// Worker-mode mTLS client (from clusternode.Node.DialClient); a nil
-// return refuses the sync request. clusterPort is the worker's own
-// bind port — sourceURLs from the coordinator carry the peer's public
-// port and must be rewritten onto the cluster port before dispatch.
+// NewSyncExecutor binds transfer execution to node lifecycle, storage and catalog owners.
 func NewSyncExecutor(
 	mtlsClient func() *http.Client,
 	clusterPort int,
@@ -80,6 +77,7 @@ func NewSyncExecutor(
 		refreshIndex: refreshIndex,
 		getEndpoints: getEndpoints,
 		security:     modelsync.NewSecurity(),
+		incoming:     make(map[string]*incomingTransfer),
 		sem:          make(chan struct{}, maxConcurrentSyncOps),
 		inflight:     map[string]string{},
 	}
@@ -181,7 +179,7 @@ func (e *SyncExecutor) handleGetManifest(c *gin.Context) {
 	// Build path to model directory
 	// Models are stored as: {models_root}/{org}/{model}/{format}/
 	// Generate manifest with checksums
-	manifest, err := e.security.GenerateManifest(request, format)
+	manifest, err := e.security.GenerateManifest(c.Request.Context(), request, format)
 	if err != nil {
 		slog.Error("[SyncExecutor] GetManifest error", "error", err)
 
@@ -477,9 +475,11 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 		return
 	}
 
-	if err := e.validateSyncSourceURL(req.SourceURL); err != nil {
-		BadRequest(c, "rejected sync source: "+err.Error())
-		return
+	if e.mtlsClient() != nil {
+		if err := e.validateSyncSourceURL(req.SourceURL); err != nil {
+			BadRequest(c, "rejected sync source: "+err.Error())
+			return
+		}
 	}
 
 	// Dedupe retry storms: a second deploy for the same (model, format)
@@ -488,26 +488,25 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	slog.Info("[SyncExecutor] SyncPull: source=", "model", req.Model, "format", req.Format, "source", req.SourceNode, "source_url", req.SourceURL, "job", req.JobID)
 
 	mtls := e.mtlsClient()
-	if mtls == nil {
-		ServiceUnavailable(c, "mTLS dispatch client unavailable: node must be a paired worker")
+	if mtls == nil && (e.acceptUploads == nil || !e.acceptUploads()) {
+		ServiceUnavailable(c, "node cannot receive cluster transfers")
 		return
 	}
-
-	// Rewrite the coordinator-supplied sourceURL onto the cluster port.
-	// The coordinator advertises peers by their public URL; sync runs
-	// over the mTLS cluster port. DeriveClusterURL swaps scheme + port.
-	clusterSourceURL, err := mesh.DeriveClusterURL(req.SourceURL, e.clusterPort)
-	if err != nil {
-		BadRequest(c, fmt.Sprintf("derive cluster URL from %s: %v", req.SourceURL, err))
-		return
-	}
-
-	syncClient := modelsync.NewClient(modelsync.ClientConfig{
-		HTTPClient: mtls,
-	})
-	if syncClient == nil {
-		ServiceUnavailable(c, "sync client unavailable")
-		return
+	clusterSourceURL := ""
+	if mtls != nil {
+		var err error
+		if e.sourceURL != nil {
+			clusterSourceURL = e.sourceURL(req.SourceNode)
+			if clusterSourceURL == "" {
+				err = fmt.Errorf("source cluster endpoint unavailable")
+			}
+		} else {
+			clusterSourceURL, err = mesh.DeriveClusterURL(req.SourceURL, e.clusterPort)
+		}
+		if err != nil {
+			BadRequest(c, err.Error())
+			return
+		}
 	}
 
 	// Open a local KindSync jobs.Handle so subscribers can follow
@@ -542,7 +541,29 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	}
 
 	// Start sync in background using server shutdown context for graceful cleanup
-	go e.executeSyncPull(req, handle, inflightKey, syncClient, clusterSourceURL)
+	if mtls != nil {
+		client := modelsync.NewClient(modelsync.ClientConfig{HTTPClient: mtls, RequestTimeout: download.BodyStallTimeout})
+		go e.executeSyncPull(req, handle, inflightKey, client, clusterSourceURL)
+	} else {
+		transfer := &incomingTransfer{upload: make(chan incomingUpload), done: make(chan struct{}), received: make(chan error, 1), handle: handle}
+		e.inflightMu.Lock()
+		e.incoming[localJobID] = transfer
+		e.inflightMu.Unlock()
+		go func() {
+			defer close(transfer.done)
+			defer close(transfer.received)
+			defer func() { e.inflightMu.Lock(); delete(e.incoming, localJobID); e.inflightMu.Unlock() }()
+			e.executeSync(req, handle, inflightKey, func(ctx context.Context, request metadata.DownloadRequest, progress modelsync.ProgressCallback) (*modelsync.Result, error) {
+				result, err := e.receiveUpload(ctx, transfer, req, request, progress)
+				receiptErr := err
+				if receiptErr == nil && !result.Success {
+					receiptErr = errors.New("transfer files failed validation")
+				}
+				transfer.received <- receiptErr
+				return result, err
+			})
+		}()
+	}
 
 	// Return accepted status immediately. Caller should subscribe to
 	// local_job_id for live progress; req.JobID is echoed for trace
@@ -561,7 +582,7 @@ func (e *SyncExecutor) HandleSyncPull(c *gin.Context) {
 	c.JSON(http.StatusAccepted, response)
 }
 
-func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, inflightKey string, syncClient *modelsync.Client, clusterSourceURL string) {
+func (e *SyncExecutor) executeSync(req SyncPullRequest, handle jobs.Handle, inflightKey string, transfer func(context.Context, metadata.DownloadRequest, modelsync.ProgressCallback) (*modelsync.Result, error)) {
 	defer e.releaseInflightDeploy(inflightKey)
 	// The worker lifecycle and immutable job cancellation both own the transfer.
 	syncCtx, cancel := context.WithCancel(e.shutdownCtx())
@@ -607,7 +628,7 @@ func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, 
 	if req.Download != nil {
 		request = *req.Download
 	}
-	result, err := syncClient.SyncModel(syncCtx, clusterSourceURL, request, req.Format, progressCallback)
+	result, err := transfer(syncCtx, request, progressCallback)
 	if err == nil && result.Success && req.Provider != "" && e.ensureFeatures != nil {
 		root, ferr := modelregistry.GetModelsRootDir()
 		if ferr == nil {
@@ -761,4 +782,10 @@ func resolveAllIPs(host string) []net.IP {
 		return nil
 	}
 	return ips
+}
+
+func (e *SyncExecutor) executeSyncPull(req SyncPullRequest, handle jobs.Handle, key string, client *modelsync.Client, sourceURL string) {
+	e.executeSync(req, handle, key, func(ctx context.Context, request metadata.DownloadRequest, progress modelsync.ProgressCallback) (*modelsync.Result, error) {
+		return client.SyncModel(ctx, sourceURL, request, req.Format, progress)
+	})
 }

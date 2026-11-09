@@ -219,6 +219,11 @@ func (m *ProviderAppManager) fly(ctx context.Context, key instance.Key, prepared
 	defer context.AfterFunc(m.startsCtx, cancel)()
 	defer cancel()
 	result, err := m.decideAndExecuteStart(ctx, prepared)
+	var failed *runStartFailure
+	if errors.As(err, &failed) {
+		// executeStart has released admission, install and catalog permits.
+		err = errors.Join(err, m.publishRunCatalog(failed.run))
+	}
 	if m.startsCtx.Err() != nil && err != nil {
 		err = ErrShutdown // whatever a start cancelled by Stop returned, its callers are told why
 	} else if err == nil && result.Run == nil {

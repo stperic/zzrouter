@@ -1,7 +1,6 @@
 package clusternode
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,12 +8,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -221,62 +218,4 @@ func TestVerifyWorkerPinnedOurCA_EmptyCoordFingerprint(t *testing.T) {
 	err := verifyWorkerPinnedOurCA("sha256:deadbeef", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "coordinator CA not loaded")
-}
-
-// --- FetchPairingPolicy ---------------------------------------------------
-
-// TestFetchPairingPolicy_ReturnsPolicy pins the happy path. Uses the
-// existing testTLSServer helper so the TLS handshake is real (same
-// InsecureSkipVerify path production uses).
-func TestFetchPairingPolicy_ReturnsPolicy(t *testing.T) {
-	ca := newTestCA(t, "policy-ca")
-	srv := testTLSServer(t, ca, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"fingerprint":"sha256:abc","short_form":"sha256:ab…cd","require_secure_pairing":true}`))
-	})
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	policy, err := FetchPairingPolicy(ctx, srv.URL)
-	require.NoError(t, err)
-	require.True(t, policy.RequireSecurePairing, "must propagate require_secure_pairing=true")
-	require.Equal(t, "sha256:abc", policy.Fingerprint)
-}
-
-// TestFetchPairingPolicy_UnreachableErrors pins that the helper
-// returns an error (rather than a zero-value policy) when the coord
-// is unreachable — so callers can fail-closed.
-func TestFetchPairingPolicy_UnreachableErrors(t *testing.T) {
-	// Unused port on loopback — connection refused.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	_, err := FetchPairingPolicy(ctx, "https://127.0.0.1:1")
-	require.Error(t, err)
-}
-
-// TestFetchPairingPolicy_EmptyURLRejected pins the fast-fail on an
-// empty URL input (a class of programming error worth catching
-// rather than returning a mysterious DNS/dial failure).
-func TestFetchPairingPolicy_EmptyURLRejected(t *testing.T) {
-	_, err := FetchPairingPolicy(context.Background(), "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty coordinator url")
-}
-
-// TestFetchPairingPolicy_Non200Errors pins that an unexpected
-// non-200 response surfaces as an error, not a silent zero policy.
-func TestFetchPairingPolicy_Non200Errors(t *testing.T) {
-	ca := newTestCA(t, "policy-ca-500")
-	srv := testTLSServer(t, ca, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`oops`))
-	})
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err := FetchPairingPolicy(ctx, srv.URL)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "500")
 }

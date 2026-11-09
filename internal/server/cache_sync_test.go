@@ -21,7 +21,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
-	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/model/cache"
@@ -245,7 +244,7 @@ func notificationCounter(t *testing.T, s *Server) *atomic.Int32 {
 		calls.Add(1)
 		return httptest.NewRecorder().Result(), nil
 	})}
-	s.cluster.signaler = clustersignal.New(clustersignal.Config{
+	s.cluster.signaler = newTestSignals(t, testSignalConfig{
 		IsWorker: func() bool { return true }, MTLSClient: func() *http.Client { return client },
 		CoordinatorURL: func() string { return "https://coordinator.test" },
 	})
@@ -256,17 +255,16 @@ func notificationCounter(t *testing.T, s *Server) *atomic.Int32 {
 
 func TestCatalogNotificationsDrainCleanly(t *testing.T) {
 	s := createSeededTestNode(t)
-	calls := notificationCounter(t, s)
 	for wave := 1; wave <= 2; wave++ {
+		calls := notificationCounter(t, s)
 		var wg sync.WaitGroup
 		for range 20 {
 			wg.Go(s.notifyCoordinatorAsync)
 		}
 		wg.Wait()
-		require.Eventually(t, func() bool { return calls.Load() == int32(wave*20) }, time.Second, time.Millisecond)
+		require.Eventually(t, func() bool { return calls.Load() == 20 }, time.Second, time.Millisecond)
 		s.cluster.signaler.Stop(context.Background())
-		s.cluster.signaler.Start(t.Context())
-		require.EqualValues(t, wave*20, calls.Load(), "each wave drains before another starts")
+		require.EqualValues(t, 20, calls.Load(), "a stopped node generation admits no more notices")
 	}
 }
 
@@ -347,7 +345,7 @@ func TestHandleInternalRefreshCacheCertifiedScope(t *testing.T) {
 				req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{tc.cert}, VerifiedChains: [][]*x509.Certificate{{tc.cert}}}
 			}
 			rec := httptest.NewRecorder()
-			buildCoordInternalEngine(coord).ServeHTTP(rec, req)
+			buildTestCoordinatorEngine(coord).ServeHTTP(rec, req)
 			require.Equal(t, tc.want, rec.Code, rec.Body.String())
 			require.Zero(t, client.broadcast.Load())
 			if tc.want == http.StatusForbidden {
@@ -379,7 +377,7 @@ func TestProviderSyncNotifiesOnlyForChangedPush(t *testing.T) {
 		engine.ServeHTTP(rec, r)
 		return rec.Result(), nil
 	})}
-	worker.cluster.signaler = clustersignal.New(clustersignal.Config{
+	worker.cluster.signaler = newTestSignals(t, testSignalConfig{
 		IsWorker: worker.node.IsWorker, MTLSClient: func() *http.Client { return client },
 		CoordinatorURL: func() string { return "https://coordinator.test" },
 	})

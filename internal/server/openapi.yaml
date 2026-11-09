@@ -2126,15 +2126,98 @@ paths:
         '503': { $ref: '#/components/responses/ProviderModelProblem' }
         default: { $ref: '#/components/responses/ProviderModelProblem' }
 
+
+  /zzrouter/v1/providers/{name}/templates:
+    get:
+      tags: [Providers]
+      operationId: listProviderTemplates
+      summary: List official ComfyUI workflow templates for model dependency installation
+      description: |
+        Reads official catalog metadata on the coordinator after checking the named node supports
+        provider model files. ComfyUI may be stopped. Search matches IDs, titles and descriptions
+        without case. Results use canonical ID order. Select an ID or exact unique title for
+        resolveProviderModels with download=true; follow returned owning-node jobs to completion.
+        Catalog model_provisioning is unverified until the selected graph is inspected on the named node.
+        API-only templates are listed with unsupported model_provisioning; local model provisioning returns template_unsupported.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
+        - { in: query, name: search, schema: { type: string } }
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Paginated official template metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, total, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/WorkflowTemplate' } }
+                  total: { type: integer }
+                  has_more: { type: boolean }
+              example: {data: [{id: image_qwen_image_2_1_turbo_t2i, title: 'Qwen Image 2.1 Turbo: Text to Image', source: 'https://raw.githubusercontent.com/Comfy-Org/workflow_templates/main/templates/image_qwen_image_2_1_turbo_t2i.json', open_source: true}], total: 1, has_more: false}
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
+  /zzrouter/v1/providers/{name}/templates/{template}:
+    get:
+      tags: [Providers]
+      operationId: getProviderTemplate
+      summary: Read one official ComfyUI template and its UI workflow
+      description: |
+        Read a canonical catalog ID and return its UI graph, including API-only
+        templates. Uses the same fixed-origin bounded source reader as dependency resolution. This is
+        read-only: it does not download models, start ComfyUI, save files or execute the graph.
+        workflow_sha256 identifies upstream source bytes; JSON serialization can change whitespace and
+        escaping while preserving graph content. Pass the returned workflow object to resolveProviderModels
+        with download=true to provision that exact graph without another upstream lookup. ComfyUI's
+        native frontend owns UI-to-API conversion; only frontend-exported API prompts go to /prompt.
+        Source documents are bounded to 4 MiB. MCP retains its existing response-size limit and can
+        refuse an oversized read without admitting any downloads; use REST or CLI to read larger graphs.
+      parameters:
+        - { in: path, name: name, required: true, schema: { type: string } }
+        - { in: path, name: template, required: true, schema: { type: string, minLength: 1 }, description: Canonical catalog ID. Titles remain supported by POST dependency resolution. }
+        - { in: query, name: node, required: true, schema: { type: string, minLength: 1 } }
+      responses:
+        '200':
+          description: Current template metadata and UI workflow; model provisioning remains unverified unless API-only.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [provider, node, template, workflow]
+                    properties:
+                      provider: { type: string }
+                      node: { type: string }
+                      template: { $ref: '#/components/schemas/WorkflowTemplate' }
+                      workflow: { type: object, description: UI graph for ComfyUI's native frontend; not an executable API prompt. }
+        '400': { $ref: '#/components/responses/ProviderModelProblem' }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '404': { $ref: '#/components/responses/ProviderModelProblem' }
+        default: { $ref: '#/components/responses/ProviderModelProblem' }
+
   /zzrouter/v1/providers/{name}/models/resolve:
     post:
       tags: [Providers]
       operationId: resolveProviderModels
-      summary: Resolve workflow model metadata on one node
+      summary: Resolve ComfyUI template or workflow dependencies on one node
       description: |
-        Reads only UI nodes[].properties.models entries (name, url, directory), or the UI workflow
+        Accept exactly one workflow object or official template ID / unique exact title. Template selectors
+        are resolved on the coordinator against the official ComfyUI catalog; URLs are never accepted.
+        Reads UI nodes[].properties.models entries (name, url, directory), including reachable subgraphs, or the UI workflow
         at extra_data.extra_pnginfo.workflow in a submission envelope. Raw API workflows without
-        metadata return 400. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
+        metadata return 400. Subgraph definitions may be nested; equivalent repeated definitions are shared.
+        Conflicting definitions and dangling UUID references are refused before download admission. The entire body is limited to 4 MiB. Loader inputs and widgets are ignored.
         Deduplicates category/name and merges equivalent HF sources; conflicting nonempty sources
         are unresolvable. Invalid categories are unresolvable. Otherwise regular files with positive
         size are present, including manual copies. Missing/unsupported sources never trigger guesses.
@@ -2145,6 +2228,12 @@ paths:
         earlier job IDs are retained. Returns 202 if any job was accepted, otherwise 200. No parent
         job or rollback. Zero-byte files are missing but admission reports failed/file_exists.
         Follow jobs on the returned node; no provider restart or catalog update.
+        Read getProviderTemplate first when the caller needs the UI graph, then submit that exact
+        workflow object here. Model-provisioning replies do not embed large UI graphs.
+        Template model_provisioning is supported when all declared files are resolvable on this node,
+        otherwise unsupported; supported does not certify custom nodes, installed engine version or
+        execution readiness. Missing metadata returns workflow_model_metadata_missing with
+        model_provisioning=unverified, never an empty successful requirement list.
       parameters:
         - { in: path, name: name, required: true, schema: { type: string } }
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2155,12 +2244,19 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [node, workflow]
+              required: [node]
+              oneOf:
+                - required: [workflow]
+                  not: { required: [template] }
+                - required: [template]
+                  not: { required: [workflow] }
               properties:
                 node: { type: string, minLength: 1 }
                 workflow: { type: object }
+                template: { type: string, minLength: 1, description: Exact official catalog ID or unique exact title. }
                 download: { type: boolean, default: false }
             examples:
+              template: { value: {node: gpu-worker, template: image_qwen_image_2_1_turbo_t2i, download: true} }
               ui: { value: {node: gpu-worker, workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'org/repo#ae.safetensors', directory: vae}]}}]}} }
               envelope: { value: {node: gpu-worker, download: true, workflow: {prompt: {}, extra_data: {extra_pnginfo: {workflow: {nodes: [{properties: {models: [{name: ae.safetensors, url: 'https://huggingface.co/org/repo/resolve/main/ae.safetensors', directory: vae}]}}]}}}}} }
       responses:
@@ -3307,7 +3403,9 @@ paths:
         window and prints a code; an operator carries that code to the
         coordinator and posts it to
         `/zzrouter/v1/cluster/pairing/accept`, which signs the node's
-        CSR and wakes its parked long-poll.
+        CSR through a coordinator-initiated request to the pinned worker.
+        The response includes `worker_url` and `fingerprint`, which
+        must accompany the code. The worker never contacts the coordinator.
 
         One endpoint covers the whole window lifecycle, and the body
         selects which:
@@ -3402,73 +3500,36 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
-  /zzrouter/v1/cluster/pairing/pending:
-    get:
-      tags: [Cluster]
-      operationId: listPendingPairings
-      summary: List pairing requests waiting for acceptance
-      description: |
-        Coordinator-only. Shows what is queued for an operator who has
-        lost track of an in-flight pairing.
-
-        The code is deliberately not returned. It is read off the
-        worker, which is what makes it evidence that the operator has
-        access to the machine being admitted; serving it from the
-        coordinator would turn a listing into an admission ticket.
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [pending]
-                properties:
-                  pending:
-                    type: array
-                    items: { $ref: '#/components/schemas/PendingPairing' }
-        '400':
-          description: This node is not a coordinator (the detail names its mode).
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '503':
-          description: Cluster listener not initialized on this node.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-
   /zzrouter/v1/cluster/pairing/accept:
     post:
       tags: [Cluster]
       operationId: acceptPairing
       summary: Accept a worker's pairing code
       description: |
-        Coordinator-only. Takes the code an operator read off the
-        worker, signs the CSR that worker stashed with its request,
-        burns the code, and wakes the worker's parked long-poll. The
-        worker is then admitted to cluster membership so dispatch and
-        broadcast start routing to it.
-
-        No certificate material comes back here. It goes to the worker
-        over its own long-poll: the admin who accepts a pairing never
-        handles the key.
-
-        Codes are single-use and time-limited, which is why an already
-        consumed code is a `409` and an expired one a `410`. Both mean
-        "ask the worker for a fresh code", not "retry this one".
+        Coordinator-only. Connects to the explicitly armed worker endpoint,
+        pins its public-key fingerprint, validates and signs its CSR, delivers
+        the certificate and confirms the installed identity over mTLS. The
+        worker is admitted to membership after confirmation. Certificate
+        material travels directly to the worker. Retry after a committed
+        delivery confirms the existing identity without rotating its key.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [code]
+              required: [code, worker_url, worker_fingerprint]
               properties:
                 code:
                   type: string
                   description: The pairing code printed by the worker.
+                worker_url:
+                  type: string
+                  format: uri
+                  description: HTTPS cluster endpoint printed by the worker.
+                worker_fingerprint:
+                  type: string
+                  description: Worker SPKI fingerprint obtained out of band.
       responses:
         '200':
           description: Paired.
@@ -3483,23 +3544,8 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
-        '404':
-          description: No pending request carries that code.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '409':
-          description: Code already consumed.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
-        '410':
-          description: Code expired. Have the worker generate a new one.
-          content:
-            application/problem+json:
-              schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Cluster listener not initialized, or the pairing store has stopped.
+          description: Cluster listener not initialized.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -13437,6 +13483,22 @@ components:
             status: { type: string }
             job_id: { type: string }
 
+    WorkflowTemplate:
+      type: object
+      required: [id, title, source, model_provisioning]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        min_comfyui_version: { type: string }
+        open_source: { type: boolean }
+        source: { type: string, format: uri }
+        workflow_sha256: { type: string, minLength: 64, maxLength: 64 }
+        model_provisioning:
+          type: string
+          enum: [unverified, supported, unsupported]
+          description: File provisioning only. Discovery is unverified unless explicitly API-only; resolution inspects declared requirements on the selected node. Does not establish engine/custom-node compatibility or execution readiness.
+
     ProviderModelResolution:
       type: object
       required: [data]
@@ -13447,6 +13509,7 @@ components:
           properties:
             provider: { type: string }
             node: { type: string }
+            template: { $ref: '#/components/schemas/WorkflowTemplate' }
             requirements:
               type: array
               items:
@@ -13703,6 +13766,13 @@ components:
         code:
           type: string
           description: Pairing code to carry to the coordinator. Absent once the window closes.
+        worker_url:
+          type: string
+          format: uri
+          description: Worker enrollment endpoint to provide to the coordinator.
+        fingerprint:
+          type: string
+          description: Worker public-key fingerprint to pin during acceptance.
         deadline:
           type: string
           format: date-time
@@ -13722,21 +13792,11 @@ components:
             coordinator-side refusal surfaces, rather than as a generic
             "no active window".
 
-    PendingPairing:
-      type: object
-      description: One pairing request awaiting acceptance. The code is not included.
-      required: [node_name, fingerprint, age_seconds]
-      properties:
-        node_name:   { type: string }
-        fingerprint: { type: string, description: SPKI fingerprint of the requesting node. }
-        age_seconds: { type: number, description: How long the request has been queued. }
-
     PairingAcceptance:
       type: object
       description: |
         Confirmation that a pairing was accepted. Carries identity, not
-        credentials: the signed certificate goes to the worker over its
-        own long-poll.
+        credentials: the coordinator delivers the certificate to the pinned worker.
       required: [node_name, fingerprint, short_form]
       properties:
         node_name:   { type: string }

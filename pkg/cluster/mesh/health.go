@@ -22,13 +22,9 @@ import (
 // boot still gets exactly one call.
 type ReconnectionCallback func(hostURL string)
 
-// NameObserver is called with a peer's own node name each time a probe
-// resolves one. Fires on every successful probe, not only on a status
-// transition, because the name is learned by the FIRST probe — including
-// the startup sweep, which produces no transition to hang a callback on.
-// Implementations must be cheap and idempotent; the common call reports
-// a name that is already on file.
-type NameObserver func(hostURL, nodeName string)
+// SnapshotObserver receives each successful probe, including startup and
+// unchanged liveness. Implementations must be cheap and idempotent.
+type SnapshotObserver func(hostURL string, snapshot *Connection)
 
 // HealthMonitor monitors cluster host health. Liveness hysteresis and
 // status mutation live on the registry; this type only schedules probes
@@ -44,7 +40,7 @@ type HealthMonitor struct {
 	registry             *EndpointRegistry
 	checkInterval        time.Duration
 	reconnectionCallback ReconnectionCallback
-	nameObserver         NameObserver
+	snapshotObserver     SnapshotObserver
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	wg                   sync.WaitGroup
@@ -56,7 +52,7 @@ type HealthMonitorConfig struct {
 	Registry             *EndpointRegistry
 	CheckInterval        time.Duration
 	ReconnectionCallback ReconnectionCallback
-	NameObserver         NameObserver
+	SnapshotObserver     SnapshotObserver
 }
 
 // NewHealthMonitor creates a new health monitor
@@ -70,7 +66,7 @@ func NewHealthMonitor(config *HealthMonitorConfig) *HealthMonitor {
 		registry:             config.Registry,
 		checkInterval:        config.CheckInterval,
 		reconnectionCallback: config.ReconnectionCallback,
-		nameObserver:         config.NameObserver,
+		snapshotObserver:     config.SnapshotObserver,
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -180,8 +176,8 @@ func (hm *HealthMonitor) probe(ctx context.Context, url string) {
 		result = ProbeResult{OK: false, Err: err}
 	} else {
 		result = ProbeResult{OK: true, Quality: conn.Quality, Snapshot: conn}
-		if hm.nameObserver != nil && conn.NodeName != "" {
-			hm.nameObserver(url, conn.NodeName)
+		if hm.snapshotObserver != nil && conn.NodeName != "" {
+			hm.snapshotObserver(url, conn)
 		}
 	}
 

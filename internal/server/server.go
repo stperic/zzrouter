@@ -78,7 +78,8 @@ type Server struct {
 		resources   *mesh.ResourceTracker        // Access handle for wiring; same object Node starts/stops
 		resRouter   *routing.ResourceAwareRouter // Resource-aware model routing
 		discovery   *network.NodeDiscovery       // Access handle for wiring; same object Node starts/stops
-		signaler    *clustersignal.Signaler      // Worker→coord notify + goodbye
+		signaler    *clustersignal.Signaler      // Access to the node-owned operation exchange
+		poller      *clustersignal.Coordinator   // Owns coordinator-held polls
 	}
 
 	inference struct {

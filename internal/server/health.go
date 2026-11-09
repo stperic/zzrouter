@@ -77,6 +77,9 @@ func (s *Server) handleHealth(c *gin.Context) {
 
 	// Add system information
 	maps.Copy(health, systemInfo)
+	if s.cluster.resources != nil {
+		health["resources"] = s.cluster.resources.GetMetrics()
+	}
 
 	respondRetrievalSuccess(c, "Health check", health)
 }

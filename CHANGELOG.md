@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Make all cluster connections coordinator-initiated. Replace worker callbacks with typed held polls, pinned coordinator-driven enrollment and checked coordinator-relayed model uploads. Preserve domain publication barriers and existing jobs. Raise protocol current/minimum from 18 to 19; upgrade all nodes together while retaining CA and identity state.
+
+- Preserve catalog publication when a memory eviction changes a model's serving state but its stop fails. Keep unconfirmed stops separate from successful eviction receipts and reclaimed memory.
+
+- Publish failed install-smoke admission effects after rollback and installer unlock. Preserve cancellation after an earlier busy retry so a later model eviction cannot be hidden as a skipped smoke.
+
+- Complete isolated node-scoped runs without unrelated model-catalog publication. Preserve publication barriers for model runs and collateral model evictions, including failed or cancelled admission. Publication failures retain run status and job identity.
+
+- Refresh resource evidence through the existing collector and authenticated health cadence, independently of worker callbacks. Add conditional node-inventory reads with full-response ETags and safe reuse of the existing published catalog.
+
+- Update a worker's runtime coordinator endpoint when pairing commits, so reverse catalog publication and certificate renewal work without a node restart. Preserve launch-job failure when publication fails.
+
+- Add read-only ComfyUI template retrieval for passing the exact UI graph to the existing dependency resolver and native frontend. Distinguish unverified, supported and unsupported model provisioning, and report missing model declarations with a closed error code. Large MCP reads retain their response limit without admitting downloads. Execution remains in ComfyUI's native frontend/API.
+
+- Preserve full-width integer and decimal JSON values in generic MCP API replies and ComfyUI workflow reads, avoiding rounded widget seeds during client handoff.
+
+- Allow GitHub release-asset redirects in managed provider installs, fixing blocked Windows llama.cpp downloads while retaining provider origin pins and redirect validation.
+
+- Resolve ComfyUI template dependencies by official ID or title, including nested subgraphs, and download missing models through existing worker jobs. Add searchable template catalog discovery to REST, CLI and generic MCP tools.
+
 - Add a coordinator-only `/inference/mcp` endpoint for user keys. Its model,
   chat and embedding tools call the existing `/v1` handlers, preserving model
   access, quotas, attribution and routing. The admin MCP remains at

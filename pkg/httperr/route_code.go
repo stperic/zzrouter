@@ -7,7 +7,20 @@ package httperr
 // Code instead of pattern-matching a prose Detail string.
 type RouteErrorCode string
 
+// CodeCatalogPublicationFailed means a run mutation's catalog acknowledgment failed.
+const CodeCatalogPublicationFailed RouteErrorCode = "catalog_publication_failed"
+
 const (
+	// CodeTemplateNotFound identifies an absent official workflow template.
+	CodeTemplateNotFound RouteErrorCode = "template_not_found"
+	// CodeTemplateAmbiguous requires a canonical template ID instead of a shared title.
+	CodeTemplateAmbiguous RouteErrorCode = "template_ambiguous"
+	// CodeTemplateUnsupported identifies templates that cannot provision local models.
+	CodeTemplateUnsupported RouteErrorCode = "template_unsupported"
+	// CodeTemplateSourceUnavailable identifies a failed official template source read.
+	CodeTemplateSourceUnavailable RouteErrorCode = "template_source_unavailable"
+	// CodeWorkflowModelMetadataMissing means model provisioning cannot be assessed.
+	CodeWorkflowModelMetadataMissing RouteErrorCode = "workflow_model_metadata_missing"
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.

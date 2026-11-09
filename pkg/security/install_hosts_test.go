@@ -23,6 +23,8 @@ func TestValidateInstallHost(t *testing.T) {
 			"https://github.com/ggml-org/llama.cpp/releases/download/b6000/llama-bin.zip", false},
 		{"llamacpp non-https rejected", "llamacpp",
 			"http://github.com/ggml-org/llama.cpp/releases/download/b6000/llama-bin.zip", true},
+		{"llamacpp CDN is not an install origin", "llamacpp",
+			"https://release-assets.githubusercontent.com/llama-bin.zip", true},
 		{"comfyui release origin", "comfyui",
 			"https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v0.40.0.tar.gz", false},
 		{"comfyui unrelated origin rejected", "comfyui",

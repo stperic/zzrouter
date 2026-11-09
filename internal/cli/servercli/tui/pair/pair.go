@@ -48,10 +48,12 @@ type PairRequest struct {
 // returned 403 because require_secure_pairing is set and the worker
 // didn't echo a matching fingerprint.
 type PairResponse struct {
-	Status   string    `json:"status"`
-	Code     string    `json:"code,omitempty"`
-	Deadline time.Time `json:"deadline,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Status      string    `json:"status"`
+	Code        string    `json:"code,omitempty"`
+	Deadline    time.Time `json:"deadline,omitempty"`
+	WorkerURL   string    `json:"worker_url,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Error       string    `json:"error,omitempty"`
 	// Mode is the node's runtime cluster mode. On a no_active_window
 	// response, Mode == "worker" is the authoritative success signal:
 	// the coord consumed the window and the local lifecycle flipped.
@@ -118,10 +120,12 @@ type Model struct {
 	coordName     string // mDNS advertised name; "" for flag-supplied
 
 	// Active pairing window state.
-	code       string
-	deadline   time.Time
-	seenActive bool // true once we've observed status="existing" at least once
-	reqGen     int  // bumped on each request-issuing transition; pins poll responses to the window that produced them
+	workerURL         string
+	workerFingerprint string
+	code              string
+	deadline          time.Time
+	seenActive        bool // true once we've observed status="existing" at least once
+	reqGen            int  // bumped on each request-issuing transition; pins poll responses to the window that produced them
 
 	// Transient UX state.
 	flash      string    // one-line ephemeral status ("code copied", etc.)
@@ -136,16 +140,10 @@ type Model struct {
 	manualErrMsg string
 	manualReady  bool
 
-	// policyInFlight blocks the confirm-screen `y`/`enter` keypress
-	// while a preflight is outstanding. Otherwise a fast operator
-	// could fire a TOFU pair request and have a late coordPolicyMsg
-	// arrive with requireSecure=true after the window already
-	// opened — a silent downgrade path.
-	policyInFlight bool
-
 	// Result for embedded callers.
-	result PairResult
-	done   bool
+	result   PairResult
+	done     bool
+	quitting bool
 
 	termWidth  int
 	termHeight int
@@ -188,12 +186,7 @@ func (m *Model) Init() tea.Cmd {
 		m.coordURL = m.cfg.CoordURL
 		m.caFingerprint = m.cfg.CAFingerprint
 		m.state = stateConfirmCoordinator
-		// Kick preflight only when we don't already have a pin —
-		// with a pin set, the coord's policy doesn't change the flow.
-		if m.caFingerprint == "" {
-			m.policyInFlight = true
-			return m.policyCmd(m.coordURL)
-		}
+
 		return nil
 	}
 	if m.cfg.NoMDNS {
@@ -270,42 +263,6 @@ func FriendlyPairHandlerError(statusCode int, body []byte) string {
 	return fmt.Sprintf("pair endpoint returned HTTP %d", statusCode)
 }
 
-// FriendlyPreflightError turns a verbose wrapped preflight error
-// into a short, operator-actionable message. Classifies the common
-// cases (connection refused, TLS on wrong port, DNS, timeout) and
-// falls through to a generic wording otherwise. Exported so both
-// the CLI and TUI render the same phrasing.
-func FriendlyPreflightError(coordURL string, err error) string {
-	if err == nil {
-		return ""
-	}
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "connection refused"):
-		return fmt.Sprintf("cannot reach coordinator at %s: is zzrouter-node running and listening on the cluster port?", coordURL)
-	case strings.Contains(msg, "no route to host"), strings.Contains(msg, "network is unreachable"):
-		return fmt.Sprintf("cannot reach coordinator at %s: host unreachable (check the IP / network)", coordURL)
-	case strings.Contains(msg, "HTTP request to an HTTPS server"), strings.Contains(msg, "http: server gave HTTP response to HTTPS client"):
-		return fmt.Sprintf("cannot reach coordinator at %s: protocol mismatch (TLS expected). Check the port you typed matches the cluster TLS listener.", coordURL)
-	case strings.Contains(msg, "tls:"), strings.Contains(msg, "TLS handshake"):
-		return fmt.Sprintf("TLS handshake with coordinator at %s failed: is this the mTLS cluster port? (default %d)", coordURL, constants.DefaultClusterPort)
-	case strings.Contains(msg, "no such host"), strings.Contains(msg, "lookup"):
-		return fmt.Sprintf("cannot resolve coordinator hostname in %s: check DNS / /etc/hosts or use an IP", coordURL)
-	case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "i/o timeout"):
-		return fmt.Sprintf("coordinator at %s did not respond in time: check firewall / routing", coordURL)
-	case strings.Contains(msg, "status "):
-		return fmt.Sprintf("coordinator at %s returned an unexpected response (%s)", coordURL, trimPrefix(msg, "preflight: "))
-	}
-	return fmt.Sprintf("preflight to %s failed: %s", coordURL, trimPrefix(msg, "preflight: "))
-}
-
-func trimPrefix(s, prefix string) string {
-	if strings.HasPrefix(s, prefix) {
-		return s[len(prefix):]
-	}
-	return s
-}
-
 // NormalizeCoordinatorURL accepts operator-typed forms like
 // "198.51.100.180", "http://198.51.100.180", "coord.local:9091" and returns a
 // well-formed "https://host:port". Rules:
@@ -315,7 +272,7 @@ func trimPrefix(s, prefix string) string {
 //     mTLS; plain HTTP would fail the handshake — silently correct
 //     rather than force the operator to debug a generic TLS error).
 //   - No port → DefaultClusterPort appended.
-//   - Paths / queries / fragments stripped (the preflight +
+//   - Paths / queries / fragments stripped (the enrollment
 //     pairing endpoints are fixed paths; anything else is operator
 //     error).
 //

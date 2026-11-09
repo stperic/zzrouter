@@ -1,17 +1,13 @@
 package clusternode
 
 import (
-	"net"
-	"net/http"
 	"sync"
 	"time"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Rate limits for the unauthenticated pairing-request endpoint. Values
+// Rate limits for the code-protected enrollment endpoint. Values
 // are settled in the design doc: 5 req/min per source IP, 20 req/min
 // global ceiling. 80-bit pairing code entropy makes brute force
 // infeasible at these rates.
@@ -148,40 +144,5 @@ func (r *pairingRateLimiter) gcLocked() {
 		if idle {
 			delete(r.perIP, ip)
 		}
-	}
-}
-
-// pairingRateLimitMiddleware returns a gin middleware that enforces
-// pairing-request rate limits keyed on the client's source IP.
-//
-// IP extraction: gin's ClientIP honors trusted-proxy config on the
-// engine, so a cluster-port listener running behind a reverse proxy
-// (unusual — the cluster listener is meant to be directly reachable
-// from workers) still attributes to the real client when properly
-// configured. For the common case the coord's cluster port is direct,
-// ClientIP returns RemoteAddr's host.
-func pairingRateLimitMiddleware(rl *pairingRateLimiter) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		if ip == "" {
-			// Fall back to RemoteAddr's host if ClientIP can't resolve.
-			// "can't resolve" here means the engine has no trusted
-			// proxy config AND RemoteAddr is malformed — shouldn't
-			// happen in practice, but fail closed rather than admit
-			// unattributed traffic.
-			host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-			if err != nil || host == "" {
-				c.AbortWithStatusJSON(http.StatusTooManyRequests,
-					gin.H{"error": "cannot attribute source ip"})
-				return
-			}
-			ip = host
-		}
-		if !rl.Allow(ip) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests,
-				gin.H{"error": "rate limit exceeded"})
-			return
-		}
-		c.Next()
 	}
 }

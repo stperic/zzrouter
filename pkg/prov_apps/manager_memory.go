@@ -70,39 +70,44 @@ func (m *ProviderAppManager) reclaimPlan(fit *process.MemoryFitError) (claims []
 }
 
 // reclaimFor executes the shared plan, claiming idle eligibility again before any stop.
-func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) ([]instance.EvictedRun, map[string]string) {
+func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.MemoryFitError) (instance.AdmissionEffects, map[string]string) {
 	claims, sizes, skipped := m.reclaimPlan(fit)
 	if ctx.Err() != nil {
-		return nil, skipped
+		return instance.AdmissionEffects{}, skipped
 	}
 	release, refusal := instance.ClaimIdleStops(claims)
 	if release == nil {
 		if refusal != nil {
 			skipped[refusal.RunID] = refusal.Reason
 		}
-		return nil, skipped
+		return instance.AdmissionEffects{}, skipped
 	}
 	defer release()
 	var freed int64
-	var stopped []instance.EvictedRun
+	var effects instance.AdmissionEffects
 	for _, claim := range claims {
 		if ctx.Err() != nil {
 			break
 		}
 		victim := claim.Instance
 		mib := sizes[victim.ID]
-		if err := m.stopInstance(ctx, victim.ID, obsruns.StopReasonMemoryPressure); err != nil {
+		before := victim.GetStatus()
+		err := m.stopInstance(ctx, victim.ID, obsruns.StopReasonMemoryPressure)
+		if before != victim.GetStatus() && instance.ChangesCatalog(victim.Model, nil) {
+			effects.CatalogChanged = true
+		}
+		if err != nil {
 			slog.Warn("failed to reclaim idle GPU run", "instance", victim.ID, "device", fit.Device, "error", err)
 			continue
 		}
-		stopped = append(stopped, instance.EvictedRun{RunID: victim.ID, Model: victim.Model, Provider: victim.Provider, FreedMiB: mib})
+		effects.EvictedRuns = append(effects.EvictedRuns, instance.EvictedRun{RunID: victim.ID, Model: victim.Model, Provider: victim.Provider, FreedMiB: mib})
 		freed += mib
 		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.ID, "provider", victim.Provider, "model", victim.Model, "device", fit.Device, "held_mib", mib, "shortfall_mib", fit.RequiredMiB-fit.FreeMiB)
 	}
-	if len(stopped) > 0 {
+	if len(effects.EvictedRuns) > 0 {
 		_ = m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
 	}
-	return stopped, skipped
+	return effects, skipped
 }
 
 // waitMemoryRecovery leaves recovery expiry to fresh admission; only caller cancellation returns an error.
@@ -176,10 +181,10 @@ func (c *replacementCheck) simulateStops(devices []gpu.MemoryDevice, owners []pr
 }
 
 // admitMemory assesses capacity or admits a launch, with at most one real or simulated reclaim.
-func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchParameters, capacity bool, replacement *replacementCheck) (process.MemoryAssessment, []instance.EvictedRun, error) {
+func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchParameters, capacity bool, replacement *replacementCheck) (process.MemoryAssessment, instance.AdmissionEffects, error) {
 	settings, err := config.ParseRunSettings(features.Params, m.idleEvictionDefault)
 	if err != nil {
-		return process.MemoryAssessment{}, nil, fmt.Errorf("%w: %w", ErrParameterValidation, err)
+		return process.MemoryAssessment{}, instance.AdmissionEffects{}, fmt.Errorf("%w: %w", ErrParameterValidation, err)
 	}
 	policy := schema.AutoContext{}
 	if features.declared != nil {
@@ -195,7 +200,7 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	assessment.SetUnknown(process.BudgetNotSized, "")
 	budget := launchBudget(features.declared)
 	if budget == nil {
-		return assessment, nil, nil
+		return assessment, instance.AdmissionEffects{}, nil
 	}
 	assessment.BudgetKind = budget.Kind
 	params, environment, commitments := features.Params, features.Environment, features.Commitments
@@ -209,9 +214,9 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	visible, err := visibleDeviceEnvironment(environment)
 	if err != nil {
 		assessment.SetUnknown(process.MemoryEvidenceUnavailable, err.Error())
-		return assessment, nil, err
+		return assessment, instance.AdmissionEffects{}, err
 	}
-	var evicted []instance.EvictedRun
+	var effects instance.AdmissionEffects
 	var skipped map[string]string
 	credits := make(map[string]*int64)
 	var devices []gpu.MemoryDevice
@@ -236,8 +241,8 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 		return err
 	}, func(fit *process.MemoryFitError) bool {
 		if replacement == nil {
-			evicted, skipped = m.reclaimFor(ctx, fit)
-			return len(evicted) > 0
+			effects, skipped = m.reclaimFor(ctx, fit)
+			return len(effects.EvictedRuns) > 0
 		}
 		if memoryNeedsStop(fit, credits) {
 			return false
@@ -274,9 +279,9 @@ func (m *ProviderAppManager) admitMemory(ctx context.Context, features LaunchPar
 	if ctx.Err() != nil {
 		assessment = process.MemoryAssessment{WeightsMiB: need.WeightsMiB, ContextMode: need.ContextMode, ContextTokens: need.ContextTokens}
 		assessment.SetUnknown(process.AssessmentFailed, ctx.Err().Error())
-		return assessment, evicted, ctx.Err()
+		return assessment, effects, ctx.Err()
 	}
-	return assessment, evicted, err
+	return assessment, effects, err
 }
 
 // memoryTotals shares the cached device observation used by reservation preparation.

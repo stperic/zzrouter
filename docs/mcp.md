@@ -427,7 +427,7 @@ parameter merge patches.
 
 Provider model files use these escape-hatch tools; see the
 [ComfyUI inventory, download, delete and workflow recipe](comfyui.md#agent-recipe).
-Their download and resolve POSTs accept `idempotency_key`. Follow each accepted
+Discover `listProviderTemplates` to search the official template catalog. `getProviderTemplate` reads one template's UI graph without downloads; submit that returned object as `workflow` to `resolveProviderModels` to provision the exact graph without a second source fetch. Large reads retain MCP's response-size refusal without provisioning side effects; use REST or CLI for those graphs. ComfyUI's native frontend converts UI graphs to executable API prompts. For model provisioning by name alone, supply the selected ID or exact title as `template` to `resolveProviderModels` with `download:true`; zzRouter resolves nested model dependencies. Saved workflow JSON remains supported. Their download and resolve POSTs accept `idempotency_key`. Follow each accepted
 job with `zz_job` on its returned node, then verify the filesystem inventory.
 
 ## Tool errors

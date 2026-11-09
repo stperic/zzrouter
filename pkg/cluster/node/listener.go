@@ -3,6 +3,7 @@ package clusternode
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,33 +12,18 @@ import (
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 )
 
-// buildTLSConfig returns the *tls.Config for the cluster-port
-// listener. Only called for Coordinator and Worker — Unclaimed binds
-// no cluster listener (see Node.Start). ClientAuth is mode-dependent
-// via clientAuthForMode: Coordinator accepts clientless handshakes
-// (so unpaired workers can reach the pairing endpoints), Worker
-// requires client certs.
-//
-// GetCertificate reads the identity cert lazily on every handshake so
-// a renewal that atomically rewrites node.pem is picked up without a
-// listener rebind. Identity serializes access internally.
-//
-// ClientCAs:
-//   - Coordinator: trusts its own CA (worker client certs chain to it).
-//   - Worker: trusts the CA it stored on pairing completion
-//     (coordinator client certs chain to it).
+// buildTLSConfig authenticates coordinator clients and picks up renewed identities per handshake.
 func (n *Node) buildTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.VerifiedChains) == 0 || len(cs.PeerCertificates) == 0 || !hasOU(cs.PeerCertificates[0], clusterid.RoleCoordinator.OU()) {
+				return errors.New("only coordinator-initiated cluster connections are accepted")
+			}
+			return nil
+		},
 		GetCertificate: func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			cert := n.identity.Certificate()
-			// Present [leaf, CA] where possible so pin-pinned clients
-			// (worker pairing client) can locate the CA in the
-			// presented chain and run stdlib x509.Verify against a
-			// synthesized single-root pool. Worker-mode callers don't
-			// have the CA in-memory (only on disk) and their peer
-			// already trusts the CA via the client-side ClientCAs
-			// pool, so they ship leaf-only.
 			chain := [][]byte{cert.Raw}
 			if n.ca != nil {
 				chain = append(chain, n.ca.Certificate().Raw)
@@ -81,48 +67,15 @@ func (n *Node) clientCAPool() *x509.CertPool {
 	}
 }
 
-// clientAuthForMode returns the ClientAuth to bake into the tls.Config
-// for the current mode. This value is read ONCE at listener build time
-// and captured by the running *http.Server — Go's TLS stack does not
-// consult ClientAuth per handshake.
-//
-//   - Coordinator → VerifyClientCertIfGiven. The pairing endpoints
-//     (/cluster/pairing-request, /cluster/ca-fingerprint) MUST accept
-//     clientless handshakes because unpaired workers have no client
-//     cert to present yet. Every protected handler behind this
-//     listener (/cluster/renew, /internal/*) carries mTLSOUCheck or
-//     wrapInternal, both of which reject len(VerifiedChains)==0 with
-//     401 — those middlewares enforce the mTLS requirement at the
-//     app layer, not the transport layer.
-//
-//   - Worker → RequireAndVerifyClientCert. Workers only accept
-//     coordinator connections, and the coordinator always has a
-//     client cert to present. No unauthenticated entry points.
-//
-//   - Unclaimed / Disabled → never reach here (Start returns early
-//     for Unclaimed, no listener for Disabled).
-//
-// If you add a new route to the coordinator's cluster listener, check
-// it: if the route requires authentication, it MUST apply
-// mTLSOUCheck (or equivalent wrapInternal-style gate). If the route
-// is intentionally unauthenticated (like the pairing endpoints), it
-// must pair with a rate limiter.
-func (n *Node) clientAuthForMode() tls.ClientAuthType {
-	switch n.Mode() {
-	case Coordinator:
-		return tls.VerifyClientCertIfGiven
-	default:
-		return tls.RequireAndVerifyClientCert
-	}
-}
+// clientAuthForMode requires mTLS; the explicitly armed enrollment listener overrides it.
+func (n *Node) clientAuthForMode() tls.ClientAuthType { return tls.RequireAndVerifyClientCert }
 
 // buildHandler composes the top-level handler for the cluster listener.
 // Returns a http.ServeMux that splits traffic between sub-handlers:
 //
 //   - /zzrouter/v1/internal/ → caller-supplied admin-API handler
 //     (models, runs, deployments, providers — admin orchestration).
-//     Registered in Worker mode (coord→worker dispatch, OU=coordinator)
-//     and Coordinator mode (worker→coord notify, OU=worker).
+//     Registered in Worker mode for coordinator dispatches.
 //   - /v1/, /api/, /mcp        → caller-supplied worker-compat handler
 //     (Worker mode only). Coord-proxied inference flows here over mTLS;
 //     workers never expose this surface on the admin port.
@@ -143,8 +96,7 @@ func (n *Node) buildHandler() http.Handler {
 		switch n.Mode() {
 		case Worker:
 			mux.Handle("/zzrouter/v1/internal/", n.wrapInternal(n.adminAPI, clusterid.RoleCoordinator.OU()))
-		case Coordinator:
-			mux.Handle("/zzrouter/v1/internal/", n.wrapInternal(n.adminAPI, clusterid.RoleWorker.OU()))
+
 		}
 	}
 	if n.workerCompat != nil && n.Mode() == Worker {
@@ -193,25 +145,12 @@ func (n *Node) buildClusterEngine() *gin.Engine {
 	engine.GET("/health/ready", n.handleHealth)
 
 	cluster := engine.Group("/zzrouter/v1/cluster")
-	n.registerCoordinatorRoutes(cluster)
 	n.registerWorkerRoutes(cluster)
 
 	return engine
 }
 
-// wrapInternal applies the same mTLS + OU + deny-list gate that
-// mTLSOUCheck enforces on /cluster/renew and /cluster/leave, but at
-// the http.Handler layer so the inference engine can be a plain
-// http.Handler with no knowledge of the cluster trust model.
-//
-// requiredOU is direction-dependent: coord→worker dispatch requires
-// OU=coordinator on the peer cert; worker→coord notify requires
-// OU=worker. Picked by buildHandler from the current mode.
-//
-// Writes a minimal JSON error body on rejection. No logger wired yet —
-// the request was either truly unauthorized (flood-worthy detail) or a
-// misconfigured peer (caller-side debuggable). Matches the existing
-// gin-based mTLSOUCheck's quiet posture.
+// wrapInternal enforces the cluster trust boundary before delegating to worker engines.
 func (n *Node) wrapInternal(h http.Handler, requiredOU string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.VerifiedChains) == 0 {
@@ -246,46 +185,6 @@ func writeJSONErrorRevoked(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte(`{"error":"client cert revoked","revoked":true}`))
-}
-
-// registerCoordinatorRoutes wires the coordinator-only routes:
-//
-//   - /cluster/renew           — worker submits CSR for re-signing (mTLS + OU=worker + deny list).
-//   - /cluster/pairing-request — unpaired worker's long-poll entry point. Unauth at the
-//     app layer (CA-pinned TLS on the worker's side is the trust root); per-IP + global rate-limited.
-//   - /cluster/ca-fingerprint  — returns SPKI hash of the coord's CA cert. Non-secret.
-//
-// The pairing-flow routes are split into their own group so the mTLS
-// middleware only attaches to the renew route — an unpaired worker has
-// no client cert to present.
-func (n *Node) registerCoordinatorRoutes(cluster *gin.RouterGroup) {
-	if n.Mode() != Coordinator {
-		return
-	}
-
-	public := cluster.Group("")
-	public.Use(ClusterModeGate(n, Coordinator))
-	if n.pairingStore != nil && n.pairingRateLimiter != nil {
-		public.POST("/pairing-request",
-			pairingRateLimitMiddleware(n.pairingRateLimiter),
-			n.handlePairingRequest)
-		// Rate-limit the fingerprint endpoint too. It's cheap to
-		// serve but unauthenticated and scanner-fingerprintable —
-		// no reason to hand an attacker a free, unthrottled
-		// enumeration primitive.
-		public.GET("/ca-fingerprint",
-			pairingRateLimitMiddleware(n.pairingRateLimiter),
-			n.handleCAFingerprint)
-	} else {
-		// Test/no-limiter path: mount unthrottled so unit tests
-		// that don't stand up a limiter still see the endpoint.
-		public.GET("/ca-fingerprint", n.handleCAFingerprint)
-	}
-
-	mtls := cluster.Group("")
-	mtls.Use(ClusterModeGate(n, Coordinator))
-	mtls.Use(n.mTLSOUCheck(clusterid.RoleWorker.OU()))
-	mtls.POST("/renew", n.handleRenew)
 }
 
 // registerWorkerRoutes wires the worker-only routes: /cluster/leave

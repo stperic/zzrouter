@@ -177,11 +177,18 @@ func (id *Identity) InstallSignedCert(certPEM []byte) error {
 	return nil
 }
 
+// ResetCertificate prepares an unclaimed identity for enrollment without changing its key.
+func (id *Identity) ResetCertificate() error {
+	_, certPEM, err := id.selfSign()
+	if err != nil {
+		return err
+	}
+	return id.InstallSignedCert(certPEM)
+}
+
 // selfSign issues a minimal self-signed cert used by an Unclaimed
 // node's identity keypair until pairing installs a CA-signed
-// replacement. SANs are localhost only; the cert is never presented
-// on a live listener (Unclaimed is dormant on the cluster network),
-// so SAN matching is not load-bearing.
+// replacement. Enrollment authenticates its public key with an operator-supplied pin.
 func (id *Identity) selfSign() (*x509.Certificate, []byte, error) {
 	serial, err := randomSerial()
 	if err != nil {

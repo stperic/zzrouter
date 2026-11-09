@@ -19,7 +19,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
-	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/jobs"
@@ -105,7 +104,7 @@ func mutationNodes(t *testing.T, location string) (target, reader *Server, dir s
 			engine.ServeHTTP(rec, r)
 			return rec.Result(), nil
 		})}
-		target.cluster.signaler = clustersignal.New(clustersignal.Config{
+		target.cluster.signaler = newTestSignals(t, testSignalConfig{
 			IsWorker:       target.node.IsWorker,
 			MTLSClient:     func() *http.Client { return client },
 			CoordinatorURL: func() string { return "https://coordinator.test" },
@@ -209,7 +208,7 @@ func TestCatalogMutationWorkerWaitsForAcknowledgement(t *testing.T) {
 			return rec.Result(), nil
 		})}
 		target.cluster.signaler.Stop(context.Background())
-		target.cluster.signaler = clustersignal.New(clustersignal.Config{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
+		target.cluster.signaler = newTestSignals(t, testSignalConfig{IsWorker: target.node.IsWorker, MTLSClient: func() *http.Client { return client }, CoordinatorURL: func() string { return "https://coordinator.test" }})
 		signalCtx, cancelSignal := context.WithCancel(context.Background())
 		t.Cleanup(cancelSignal)
 		target.cluster.signaler.Start(signalCtx)

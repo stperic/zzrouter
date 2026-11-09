@@ -27,7 +27,7 @@ func TestStop_JoinsPairingGoroutine(t *testing.T) {
 	// Pairing against a non-routable address — the loop will be parked
 	// in HTTP retry until ctx is cancelled. We only need it to spawn,
 	// not to succeed.
-	_, err := n.BeginPairing(BeginPairingOptions{
+	_, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://127.0.0.1:1/never",
 		CAFingerprint:  validPin,
 	})

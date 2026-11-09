@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,37 +27,27 @@ import (
 // success prints the node's short-form fingerprint so the operator can
 // visually cross-check against the pairing-code display on the worker.
 func newClusterAcceptCmd() *cobra.Command {
-	return &cobra.Command{
+	var workerURL, workerFingerprint string
+	cmd := &cobra.Command{
 		Use:   "accept <code>",
 		Short: "Accept a worker's pairing request",
 		Long: `Accept a pending worker pairing request.
 
 The code is printed by the worker when it enters pairing mode
 (see 'zzrouter cluster pair' on the worker side). Paste it here to
-complete the handshake: the coordinator signs the worker's CSR, stashes
-the signed cert for the worker's long-poll to collect, and the worker
-flips to Worker mode.`,
+complete the handshake. Supply the node URL and fingerprint printed on the
+worker with --worker-url and --worker-fingerprint. The coordinator connects
+to the worker, signs its CSR and delivers its certificate.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runClusterAccept(args[0])
+			return runClusterAccept(args[0], workerURL, workerFingerprint)
 		},
 	}
-}
-
-// newClusterPendingCmd wires `zzrouter cluster pending`. Admin-keyed
-// GET to the coord's /zzrouter/v1/cluster/pairing/pending. Displays
-// pending requests so an operator who lost track of the code can see
-// what's queued — but the code itself is NOT exposed (read it off the
-// worker, not the coordinator).
-func newClusterPendingCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pending",
-		Short: "List pending worker pairing requests",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runClusterPending()
-		},
-	}
+	cmd.Flags().StringVar(&workerURL, "worker-url", "", "Armed worker HTTPS cluster endpoint")
+	cmd.Flags().StringVar(&workerFingerprint, "worker-fingerprint", "", "Worker SPKI fingerprint verified from its local display")
+	_ = cmd.MarkFlagRequired("worker-url")
+	_ = cmd.MarkFlagRequired("worker-fingerprint")
+	return cmd
 }
 
 // newClusterCAFingerprintCmd wires `zzrouter cluster ca-fingerprint`.
@@ -82,7 +71,7 @@ and safe to bake into worker images, Ansible vars, or QR codes.`,
 	}
 }
 
-func runClusterAccept(code string) error {
+func runClusterAccept(code, workerURL, workerFingerprint string) error {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	// Allow operators to paste with dashes for readability; strip
 	// them before sending. The server validates format anyway.
@@ -100,7 +89,7 @@ func runClusterAccept(code string) error {
 	}
 	adminKey, _ := cfg.Auth.GetAdminAPIKey()
 
-	body, err := json.Marshal(map[string]string{"code": code})
+	body, err := json.Marshal(map[string]string{"code": code, "worker_url": workerURL, "worker_fingerprint": workerFingerprint})
 	if err != nil {
 		return fmt.Errorf("marshal body: %w", err)
 	}
@@ -115,7 +104,7 @@ func runClusterAccept(code string) error {
 		req.Header.Set("X-API-Key", adminKey)
 	}
 
-	client := &http.Client{Timeout: constants.ClusterActionTimeout}
+	client := &http.Client{Timeout: constants.HTTPLongTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("local server unreachable (is it running?): %w", err)
@@ -157,17 +146,7 @@ func clusterPortOf(cfg *pkgConfig.NodeConfig) int {
 	return constants.DefaultClusterPort
 }
 
-// confirmWorkerReachable waits for the newly paired worker to report
-// healthy, and says what to check when it does not.
-//
-// Pairing completing is not the same as the worker being usable. The
-// handshake runs from the worker to the coordinator; every call
-// afterwards runs the other way, into the worker's mTLS cluster port. A
-// worker that opens only its admin port, or whose cluster.bind_port
-// differs from this coordinator's, pairs successfully and then sits at
-// health "unknown" indefinitely, with nothing between the two events to
-// connect them. Reporting it here is the difference between a five
-// minute fix and finding out much later from an unrelated symptom.
+// confirmWorkerReachable checks membership and full health after pinned enrollment.
 func confirmWorkerReachable(localPort int, adminKey, nodeName string, clusterPort int) {
 	fmt.Printf("Checking that %s answers on the cluster port...\n", nodeName)
 
@@ -242,68 +221,6 @@ func decodeNodeHealth(r io.Reader, nodeName string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("node %q is not in the registry yet", nodeName)
-}
-
-func runClusterPending() error {
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	cfg, err := cm.LoadNodeConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	localPort := cfg.Node.Port
-	if localPort == 0 {
-		localPort = constants.DefaultZZROUTERPort
-	}
-	adminKey, _ := cfg.Auth.GetAdminAPIKey()
-
-	url := fmt.Sprintf("http://127.0.0.1:%d/zzrouter/v1/cluster/pairing/pending", localPort)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	if adminKey != "" {
-		req.Header.Set("X-API-Key", adminKey)
-	}
-
-	client := &http.Client{Timeout: constants.ClusterQueryTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("local server unreachable (is it running?): %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return clusterAcceptDecodeError(resp.StatusCode, respBody)
-	}
-
-	var out struct {
-		Pending []struct {
-			NodeName    string  `json:"node_name"`
-			Fingerprint string  `json:"fingerprint"`
-			AgeSeconds  float64 `json:"age_seconds"`
-		} `json:"pending"`
-	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-
-	if len(out.Pending) == 0 {
-		fmt.Println("No pending pairing requests.")
-		return nil
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NODE_NAME\tFINGERPRINT\tAGE")
-	_, _ = fmt.Fprintln(w, "---------\t-----------\t---")
-	for _, p := range out.Pending {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%.0fs\n",
-			p.NodeName,
-			clusterid.ShortForm(p.Fingerprint),
-			p.AgeSeconds)
-	}
-	return w.Flush()
 }
 
 func runClusterCAFingerprint() error {

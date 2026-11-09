@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,10 +28,10 @@ const (
 func unclaimedTestServer(t *testing.T) *Server {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	return createTestNode(t, TestNodeConfig{
-		AdminKey:    TestAdminKey,
-		ClusterMode: pkgConfig.ClusterModeWorker,
-	})
+	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: pkgConfig.ClusterModeWorker})
+	require.NoError(t, s.cluster.listener.Start(t.Context()))
+	t.Cleanup(func() { _ = s.cluster.listener.Stop(context.Background()) })
+	return s
 }
 
 // pairBody is the full request body shape including the new pairing

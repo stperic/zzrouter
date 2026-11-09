@@ -2,6 +2,7 @@ package clusternode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -74,7 +76,11 @@ func startNode(t *testing.T, mode Mode) (*Node, string) {
 // stubInferenceHandler returns a 501 for every path. Unit tests only
 // exercise the listener + auth surface; /internal/* hit is out of scope.
 func stubInferenceHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/zzrouter/v1/internal/version" {
+			_ = json.NewEncoder(w).Encode(map[string]int{"cluster_protocol": version.ClusterProtocolVersion})
+			return
+		}
 		w.WriteHeader(http.StatusNotImplemented)
 	})
 }

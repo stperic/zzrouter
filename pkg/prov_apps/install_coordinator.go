@@ -99,17 +99,18 @@ func (c *versionCache) Snapshot() map[string]string {
 // (versions cache, shutdown gate, instances registry) is shared by pointer
 // to a value type, not via interface dispatch.
 type InstallCoordinator struct {
-	dispatcher     *install.Dispatcher
-	progress       *install.ProgressTracker
-	catalogChanged func()
-	audit          chan<- Event       // write-only view of manager.auditEvents
-	shutdown       *atomic.Bool       // shared with manager — single source of truth
-	instances      *instance.Registry // for "refuse upgrade/uninstall if instances running"
-	versions       *versionCache      // shared with manager by pointer
-	appsConfig     func() *config.AppsConfig
-	jobs           *jobs.Registry // optional — nil disables SSE integration
-	serviceControl func(context.Context, string, install.ServiceAction) error
-	smoke          func(context.Context, string, string, string) error
+	dispatcher        *install.Dispatcher
+	progress          *install.ProgressTracker
+	catalogChanged    func()
+	audit             chan<- Event       // write-only view of manager.auditEvents
+	shutdown          *atomic.Bool       // shared with manager — single source of truth
+	instances         *instance.Registry // for "refuse upgrade/uninstall if instances running"
+	versions          *versionCache      // shared with manager by pointer
+	appsConfig        func() *config.AppsConfig
+	jobs              *jobs.Registry // optional — nil disables SSE integration
+	serviceControl    func(context.Context, string, install.ServiceAction) error
+	smoke             func(context.Context, string, string, string) error
+	publishRunCatalog func(*instance.Instance) error
 
 	locks sync.Map // map[string]chan struct{} serializing provider lifecycle
 

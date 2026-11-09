@@ -85,8 +85,12 @@ func (e *Endpoint) Usable() bool {
 // consumer sites (conn.OS, snap.RAMTotalGB) while the type system
 // enforces the probe-produces vs registry-tracks boundary.
 type HealthReport struct {
-	ClusterRole string // "coordinator" | "worker" | "standalone"
-	OS          string
+	// Resources is an optional sample from the existing resource tracker.
+	Resources *ResourceMetrics
+	// ResourcesObservedAt is the local probe start, never a peer clock value.
+	ResourcesObservedAt time.Time
+	ClusterRole         string // "coordinator" | "worker" | "standalone"
+	OS                  string
 
 	UptimeSeconds int
 	Address       string // Worker's self-reported bind address (e.g. "0.0.0.0:9090")
@@ -206,9 +210,9 @@ type Config struct {
 	StrategyDefaults []StrategyDefault
 	NodeName         string // Configured hostname from server config
 
-	// NameObserver receives each peer's own node name as probes resolve
+	// SnapshotObserver receives each peer's snapshot as probes resolve
 	// it, so the caller can cache it across restarts. Optional.
-	NameObserver NameObserver
+	SnapshotObserver SnapshotObserver
 }
 
 // StrategyDefault defines default strategy for path patterns

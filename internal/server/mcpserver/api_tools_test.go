@@ -1,15 +1,55 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAPIRepliesPreserveJSONNumbersOnWire(t *testing.T) {
+	const reply = `{"workflow":{"nodes":[{"widgets_values":[9007199254740993,18446744073709551615,1.234567890123456789]}]}}`
+	for _, name := range []string{"zz_api_get", "zz_api"} {
+		t.Run(name, func(t *testing.T) {
+			d := testDispatcher(func(w http.ResponseWriter, _ *http.Request) { writeFixture(t, w, []byte(reply)) })
+			d.cfg.EligibleAPIRoute = func(string, string) (string, error) { return "getProviderTemplate", nil }
+			args := map[string]any{"path": "/zzrouter/v1/providers/studio/templates/one"}
+			if name == "zz_api" {
+				args["method"] = "POST"
+			}
+			body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+				"name": name, "arguments": args, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}},
+			}})
+			require.NoError(t, err)
+			request := httptest.NewRequest(http.MethodPost, "http://coordinator/zzrouter/v1/mcp", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept", "application/json, text/event-stream")
+			request.Header.Set("MCP-Protocol-Version", "2026-07-28")
+			request.Header.Set("Mcp-Method", "tools/call")
+			request.Header.Set("Mcp-Name", name)
+			request.Header.Set("X-API-Key", testKey)
+			response := httptest.NewRecorder()
+			New(d.cfg).ServeHTTP(response, request)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var envelope struct {
+				Result struct {
+					StructuredContent struct {
+						Response json.RawMessage `json:"response"`
+					} `json:"structuredContent"`
+				} `json:"result"`
+			}
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
+			require.Equal(t, reply, string(envelope.Result.StructuredContent.Response))
+		})
+	}
+}
 
 func TestAPIPathGuardNeverDispatches(t *testing.T) {
 	paths := []string{

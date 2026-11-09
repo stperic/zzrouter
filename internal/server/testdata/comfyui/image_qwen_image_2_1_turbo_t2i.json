@@ -1,0 +1,118 @@
+{
+  "nodes": [
+    {
+      "type": "ResolutionSelector"
+    },
+    {
+      "type": "c291ceec-b98f-4751-9d0b-7bc288f27b30"
+    },
+    {
+      "type": "SaveImageAdvanced"
+    },
+    {
+      "type": "MarkdownNote"
+    },
+    {
+      "type": "MarkdownNote"
+    },
+    {
+      "type": "MarkdownNote"
+    }
+  ],
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "c291ceec-b98f-4751-9d0b-7bc288f27b30",
+        "nodes": [
+          {
+            "type": "UNETLoader",
+            "properties": {
+              "models": [
+                {
+                  "name": "qwen_image_2.1_turbo_int8_convrot.safetensors",
+                  "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+                  "directory": "diffusion_models"
+                }
+              ]
+            }
+          },
+          {
+            "type": "TextEncodeQwenImage21"
+          },
+          {
+            "type": "CLIPLoader",
+            "properties": {
+              "models": [
+                {
+                  "name": "qwen3vl_8b_int8_convrot.safetensors",
+                  "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+                  "directory": "text_encoders"
+                }
+              ]
+            }
+          },
+          {
+            "type": "VAELoader",
+            "properties": {
+              "models": [
+                {
+                  "name": "qwen_image_2.1_vae_bf16.safetensors",
+                  "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors",
+                  "directory": "vae"
+                }
+              ]
+            }
+          },
+          {
+            "type": "EmptyLatentImage"
+          },
+          {
+            "type": "VAEDecode"
+          },
+          {
+            "type": "TextGenerate"
+          },
+          {
+            "type": "PreviewAny"
+          },
+          {
+            "type": "CLIPLoader",
+            "properties": {
+              "models": [
+                {
+                  "name": "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+                  "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors",
+                  "directory": "text_encoders"
+                }
+              ]
+            }
+          },
+          {
+            "type": "ComfySwitchNode"
+          },
+          {
+            "type": "PrimitiveStringMultiline"
+          },
+          {
+            "type": "ManualSigmas"
+          },
+          {
+            "type": "SamplerCustomAdvanced"
+          },
+          {
+            "type": "KSamplerSelect"
+          },
+          {
+            "type": "RandomNoise"
+          },
+          {
+            "type": "CFGGuider"
+          },
+          {
+            "type": "QwenImage21Cache"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -32,8 +32,17 @@ type ProviderModelDownload struct {
 // ProviderModelResolveRequest inspects workflow metadata and optionally downloads.
 type ProviderModelResolveRequest struct {
 	Node     string          `json:"node"`
-	Workflow json.RawMessage `json:"workflow"`
+	Workflow json.RawMessage `json:"workflow,omitempty"`
+	Template string          `json:"template,omitempty"`
 	Download bool            `json:"download"`
+}
+
+// ProviderTemplate preserves an official template's JSON widget values losslessly.
+type ProviderTemplate struct {
+	Provider string          `json:"provider"`
+	Node     string          `json:"node"`
+	Template json.RawMessage `json:"template"`
+	Workflow json.RawMessage `json:"workflow"`
 }
 
 // ListProviderModels lists the named node's files, optionally in one category.
@@ -65,4 +74,26 @@ func providerModelsRequest[T any](ctx context.Context, c *Client, method, provid
 	}
 	err := c.doWith(send, method, withQuery(apipath.Provider(provider)+"/models"+suffix, query), body, &out, "provider models")
 	return out.Data, err
+}
+
+// ListProviderTemplates reads the paginated official template catalog.
+func (c *Client) ListProviderTemplates(ctx context.Context, provider string, query url.Values) (map[string]any, error) {
+	var result map[string]any
+	send := func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}
+	err := c.doWith(send, http.MethodGet, withQuery(apipath.Provider(provider)+"/templates", query), nil, &result, "provider templates")
+	return result, err
+}
+
+// GetProviderTemplate reads one UI workflow without admitting downloads.
+func (c *Client) GetProviderTemplate(ctx context.Context, provider, node, template string) (ProviderTemplate, error) {
+	var result struct {
+		Data ProviderTemplate `json:"data"`
+	}
+	send := func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}
+	err := c.doWith(send, http.MethodGet, withQuery(apipath.Provider(provider)+"/templates/"+url.PathEscape(template), url.Values{"node": {node}}), nil, &result, "provider template")
+	return result.Data, err
 }

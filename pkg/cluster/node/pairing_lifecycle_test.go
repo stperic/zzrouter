@@ -1,14 +1,15 @@
 package clusternode
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,10 @@ func unclaimedNodeForLifecycle(t *testing.T) *Node {
 			<-done
 		}
 	})
+	require.NoError(t, n.SetAdminAPIHandler(stubInferenceHandler()))
+	require.NoError(t, n.SetWorkerCompatHandler(stubInferenceHandler()))
+	require.NoError(t, n.Start(t.Context()))
+	t.Cleanup(func() { _ = n.Stop(context.Background()) })
 	return n
 }
 
@@ -52,32 +57,28 @@ func unclaimedNodeForLifecycle(t *testing.T) *Node {
 // to satisfy BeginPairing's validation.
 const validPin = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+func TestCompletePairingFailureKeepsCoordinatorURL(t *testing.T) {
+	n := unclaimedNodeForLifecycle(t)
+	refused := errors.New("listener refused")
+	n.listenFn = func(string, string) (net.Listener, error) { return nil, refused }
+	err := n.completePairing(nil, nil, "https://new-coordinator:9091")
+	require.ErrorIs(t, err, refused)
+	require.Empty(t, n.CoordinatorURL())
+	require.Equal(t, Unclaimed, n.Mode())
+}
+
 func TestBeginPairing_NewWindow(t *testing.T) {
-	// Hold the real pairing request until cleanup, so network timing cannot close the window.
 	ca := newTestCA(t, "lifecycle")
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	var once sync.Once
-	coordinator := testTLSServer(t, ca, func(w http.ResponseWriter, r *http.Request) {
-		once.Do(func() { close(entered) })
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
-	})
-	t.Cleanup(func() { close(release) })
+	var calls atomic.Int32
+	coordinator := testTLSServer(t, ca, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(http.StatusOK) })
 	n := unclaimedNodeForLifecycle(t)
 
-	info, err := n.BeginPairing(BeginPairingOptions{
+	info, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: coordinator.URL,
 		CAFingerprint:  ca.spkiHex,
 	})
 	require.NoError(t, err)
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("pairing request did not reach the coordinator")
-	}
+
 	assert.Len(t, info.Code, 16)
 	assert.False(t, info.Deadline.IsZero())
 
@@ -98,19 +99,22 @@ func TestBeginPairing_NewWindow(t *testing.T) {
 	got, ok := n.PairingWindowInfoSnapshot()
 	require.True(t, ok)
 	assert.Equal(t, info.Code, got.Code)
+	require.NotEmpty(t, info.WorkerURL)
+	require.NoError(t, n.Stop(context.Background()))
+	require.Zero(t, calls.Load(), "enrollment must not open coordinator connections")
 }
 
 func TestBeginPairing_Idempotent(t *testing.T) {
 	n := unclaimedNodeForLifecycle(t)
 
-	first, err := n.BeginPairing(BeginPairingOptions{
+	first, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 	})
 	require.NoError(t, err)
 
 	// Second call without Regenerate returns the same code.
-	second, err := n.BeginPairing(BeginPairingOptions{
+	second, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 	})
@@ -122,7 +126,7 @@ func TestBeginPairing_Idempotent(t *testing.T) {
 func TestBeginPairing_Regenerate(t *testing.T) {
 	n := unclaimedNodeForLifecycle(t)
 
-	first, err := n.BeginPairing(BeginPairingOptions{
+	first, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 	})
@@ -138,7 +142,7 @@ func TestBeginPairing_Regenerate(t *testing.T) {
 		<-firstWindow.done
 	})
 
-	second, err := n.BeginPairing(BeginPairingOptions{
+	second, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 		Regenerate:     true,
@@ -149,7 +153,7 @@ func TestBeginPairing_Regenerate(t *testing.T) {
 
 func TestBeginPairing_RejectsMissingCoordinatorURL(t *testing.T) {
 	n := unclaimedNodeForLifecycle(t)
-	_, err := n.BeginPairing(BeginPairingOptions{
+	_, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CAFingerprint: validPin,
 	})
 	assert.ErrorIs(t, err, ErrPairingURLMissing)
@@ -157,7 +161,7 @@ func TestBeginPairing_RejectsMissingCoordinatorURL(t *testing.T) {
 
 func TestBeginPairing_RejectsMalformedCAFingerprint(t *testing.T) {
 	n := unclaimedNodeForLifecycle(t)
-	_, err := n.BeginPairing(BeginPairingOptions{
+	_, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  "not-hex",
 	})
@@ -169,7 +173,7 @@ func TestBeginPairing_RejectsWrongMode(t *testing.T) {
 	n, err := New(Config{Mode: Disabled})
 	require.NoError(t, err)
 
-	_, err = n.BeginPairing(BeginPairingOptions{
+	_, err = n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 	})
@@ -185,7 +189,7 @@ func TestCancelPairing_NoActiveWindow(t *testing.T) {
 func TestCancelPairing_ClearsWindow(t *testing.T) {
 	n := unclaimedNodeForLifecycle(t)
 
-	_, err := n.BeginPairing(BeginPairingOptions{
+	_, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  validPin,
 	})
@@ -226,7 +230,7 @@ func TestBeginPairing_AcceptsSHA256Prefix(t *testing.T) {
 	// normalizeCAFingerprint handles "sha256:<hex>" — BeginPairing
 	// should accept that form as well as bare hex.
 	n := unclaimedNodeForLifecycle(t)
-	_, err := n.BeginPairing(BeginPairingOptions{
+	_, err := n.BeginPairing(t.Context(), BeginPairingOptions{
 		CoordinatorURL: "https://coord:9091",
 		CAFingerprint:  "sha256:" + validPin,
 	})

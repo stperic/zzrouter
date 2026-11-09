@@ -30,7 +30,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -67,7 +66,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	}
 
 	hostsExecutor := NewNodesExecutor(s.GetLocalNodeInfo, s.eligibleDeployProviders, s.providers.appMgr.AssessCapacity)
-	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats, s.MarkClusterEndpointDown)
+	systemExecutor := NewSystemExecutor(s.node, s.role, s.providers.appMgr, s.model.Registry, s.GetSystemInfo, s.GetConnectionPoolStats)
 
 	// ========================================================================
 	// SYSTEM - Health and version for cluster monitoring
@@ -86,7 +85,8 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	router.GET("/models/show", modelExecutor.HandleInternalShowModel)
 	router.DELETE("/models", modelExecutor.HandleInternalDeleteModels)
 	router.POST("/models/rescan", modelExecutor.HandleInternalRescanModels) // Drop local registry scan cache (worker-side)
-	router.POST("/models/refresh", s.handleInternalRefreshCache)            // Worker-to-coordinator catalog publication
+	router.POST("/signals/poll", s.handleSignalPoll)
+	router.POST("/signals/ack", s.handleSignalAck)
 
 	// ========================================================================
 	// RUNS - Direct runs manager operations
@@ -219,19 +219,12 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		}
 		return s.cluster.coordinator.GetAllEndpoints()
 	}
-	// Workers dial the coordinator over mTLS for sync. Mode flips at
-	// runtime (Unclaimed→Worker on claim), so resolve on each call.
-	// Returns nil on non-worker modes; SyncExecutor refuses the
-	// request in that case.
+	// Only the coordinator fetches peer data; workers receive uploads.
 	mtlsClientFn := func() *http.Client {
-		if s.cluster.listener == nil || s.cluster.listener.Mode() != clusternode.Worker {
+		if s.cluster.listener == nil || s.cluster.listener.Mode() != clusternode.Coordinator {
 			return nil
 		}
-		client, err := s.cluster.listener.DialClient(clusterid.RoleCoordinator.OU())
-		if err != nil {
-			return nil
-		}
-		return client
+		return s.coordWorkerMTLSClient()
 	}
 	syncExecutor := NewSyncExecutor(
 		mtlsClientFn,
@@ -240,12 +233,15 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 		s.publishCatalog,
 		getEndpoints,
 	).WithJobs(s.jobs)
+	syncExecutor.acceptUploads = s.node.IsWorker
+	syncExecutor.sourceURL = s.resolveNodeToClusterURL
 	syncExecutor.ensureFeatures = s.providers.appMgr.EnsureModelFeatures
 	router.GET("/sync/manifest", syncExecutor.HandleGetManifest) // Get file manifest with checksums
 	router.POST("/sync/manifest", syncExecutor.HandleGetManifest)
 	router.GET("/sync/file", syncExecutor.HandleDownloadFile)       // Download model file (supports Range)
 	router.GET("/sync/exists", syncExecutor.HandleCheckModelExists) // Check if model exists on node
 	router.POST("/sync/exists", syncExecutor.HandleCheckModelExists)
+	router.PUT("/sync/deploy/:id", syncExecutor.HandleSyncUpload)
 	router.POST("/sync/deploy", syncExecutor.HandleSyncPull) // Instruct node to sync from source
 
 	// Provider-tree fan-out (plan §5.2): coordinator pushes updated

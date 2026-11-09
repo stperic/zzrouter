@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"time"
+
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/download"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
@@ -23,12 +26,13 @@ import (
 
 // ProvidersService handles provider lifecycle operations with cluster routing.
 type ProvidersService struct {
-	router routing.Router
+	router    routing.Router
+	templates *prov_apps.WorkflowTemplateCatalog
 }
 
 // NewProvidersService creates a new providers service.
 func NewProvidersService(router routing.Router) *ProvidersService {
-	return &ProvidersService{router: router}
+	return &ProvidersService{router: router, templates: prov_apps.NewWorkflowTemplateCatalog(download.NewClient(30 * time.Second))}
 }
 
 // localIfEmpty returns "localhost" when node is empty, ensuring mutation

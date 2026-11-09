@@ -82,9 +82,10 @@ type ProviderAppManager struct {
 	// auditEvents carries lifecycle events to eventLoop for structured logging.
 	// Buffered, non-blocking sends; events that race past the shutdown gate
 	// are dropped via the default branch in emitEvent.
-	auditEvents    chan Event
-	catalogChanged func()
-	publishCatalog func() error
+	auditEvents      chan Event
+	catalogChanged   func()
+	resourcesChanged func()
+	publishCatalog   func() error
 
 	// reaperDone closes once idle scheduling and stops have drained.
 	reaperDone chan struct{}
@@ -454,6 +455,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	m.installs.catalogChanged = m.catalogChanged
 	m.installs.serviceControl = m.controlInstallService
 	m.installs.smoke = m.smokeInstalledRuntime
+	m.installs.publishRunCatalog = m.publishRunCatalog
 	m.loadPinnedRuns()
 	return m, nil
 }
@@ -538,6 +540,11 @@ func (m *ProviderAppManager) eventLoop() {
 // WithCatalogChanged invalidates serving metadata after lifecycle changes.
 func WithCatalogChanged(fn func()) Option {
 	return func(m *ProviderAppManager) { m.catalogChanged = fn }
+}
+
+// WithResourcesChanged requests collection after a run changes resource usage.
+func WithResourcesChanged(fn func()) Option {
+	return func(m *ProviderAppManager) { m.resourcesChanged = fn }
 }
 
 // WithCatalogPublication supplies the publication a run job completes after.
@@ -1174,7 +1181,12 @@ func (m *ProviderAppManager) enqueueEvent(e Event) {
 func (m *ProviderAppManager) notifyCatalog(e Event) {
 	switch e.Type {
 	case EventInstanceRunning, EventInstanceStopped, EventInstanceFailed:
-		m.refreshCatalog()
+		if m.resourcesChanged != nil {
+			m.resourcesChanged()
+		}
+		if instance.ChangesCatalog(e.Model, nil) {
+			m.refreshCatalog()
+		}
 	}
 }
 

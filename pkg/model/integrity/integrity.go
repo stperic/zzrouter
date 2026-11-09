@@ -1127,3 +1127,8 @@ func HasManifest(modelPath string) bool {
 	manifestPath := getManifestPath(modelPath)
 	return FileExists(manifestPath)
 }
+
+// HashFile computes a file checksum with caller-owned cancellation.
+func HashFile(ctx context.Context, path string) (string, error) {
+	return hashFileWithContext(ctx, path)
+}

@@ -115,7 +115,9 @@ type NodesViewModel struct {
 	detailLoading bool
 	loadTick      int
 
-	pairInput textinput.Model
+	pairInput       textinput.Model
+	pairURL         textinput.Model
+	pairFingerprint textinput.Model
 
 	confirmPending bool
 	confirmTarget  string
@@ -144,13 +146,15 @@ func NewNodesViewModel(client *pkgClient.Client, styles ui.Styles) *NodesViewMod
 		End:      nodesKeys.End,
 	})
 	return &NodesViewModel{
-		client:    client,
-		styles:    styles,
-		loading:   true,
-		list:      list,
-		detail:    detail,
-		confirm:   tui.NewConfirm(),
-		pairInput: newFormInput("ABCD-EFGH-IJKL-MNOP (from worker)", 32),
+		client:          client,
+		styles:          styles,
+		loading:         true,
+		list:            list,
+		detail:          detail,
+		confirm:         tui.NewConfirm(),
+		pairInput:       newFormInput("ABCD-EFGH-IJKL-MNOP (from worker)", 32),
+		pairURL:         newFormInput("https://worker:9091", 256),
+		pairFingerprint: newFormInput("sha256:... (from worker)", 80),
 	}
 }
 
@@ -259,7 +263,8 @@ func (m *NodesViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		// content manually. Trim whitespace so a trailing newline from
 		// the system clipboard doesn't bloat the code.
 		if m.mode == nodesViewPair {
-			m.pairInput.SetValue(m.pairInput.Value() + strings.TrimSpace(msg.Content))
+			input := m.activePairInput()
+			input.SetValue(input.Value() + strings.TrimSpace(msg.Content))
 		}
 		return m, nil
 
@@ -281,39 +286,55 @@ func (m *NodesViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 			// Input.Focused() == false means we're showing the
 			// post-submit result inside the popup. Any key dismisses
 			// the popup and returns to the refreshed list.
-			if !m.pairInput.Focused() {
+			if !m.pairFormFocused() {
 				m.mode = nodesViewList
 				m.statusMsg = ""
 				m.statusErr = false
 				return m, nil
 			}
 			switch {
-			case key.Matches(msg, nodesKeys.Back):
+			case msg.String() == "esc":
 				m.mode = nodesViewList
-				m.pairInput.Blur()
+				m.blurPairForm()
 				m.statusMsg = ""
 				return m, nil
+			case msg.String() == "tab" || msg.String() == "shift+tab" || (key.Matches(msg, nodesKeys.Enter) && !m.pairInput.Focused()):
+				current := 0
+				if m.pairFingerprint.Focused() {
+					current = 1
+				} else if m.pairInput.Focused() {
+					current = 2
+				}
+				step := 1
+				if msg.String() == "shift+tab" {
+					step = 2
+				}
+				m.blurPairForm()
+				inputs := []*textinput.Model{&m.pairURL, &m.pairFingerprint, &m.pairInput}
+				return m, inputs[(current+step)%3].Focus()
 			case key.Matches(msg, nodesKeys.Enter):
 				code := strings.TrimSpace(m.pairInput.Value())
-				if code == "" {
-					m.statusMsg = "Pairing code is required"
+				workerURL, workerFingerprint := strings.TrimSpace(m.pairURL.Value()), strings.TrimSpace(m.pairFingerprint.Value())
+				if code == "" || workerURL == "" || workerFingerprint == "" {
+					m.statusMsg = "Worker URL, fingerprint and code are required"
 					m.statusErr = true
 					return m, nil
 				}
 				// Stay in pair mode so the "Accepting…" + eventual
 				// success/error renders inside the popup, not in the
 				// list view underneath.
-				m.pairInput.Blur()
+				m.blurPairForm()
 				m.statusMsg = "Accepting pairing code..."
 				m.statusErr = false
 				client := m.client
 				return m, func() tea.Msg {
-					res, err := client.AcceptPairingCode(code)
+					res, err := client.AcceptPairingCode(code, workerURL, workerFingerprint)
 					return pairAcceptedMsg{result: res, err: err}
 				}
 			}
 			var cmd tea.Cmd
-			m.pairInput, cmd = m.pairInput.Update(msg)
+			input := m.activePairInput()
+			*input, cmd = input.Update(msg)
 			return m, cmd
 		}
 
@@ -364,7 +385,10 @@ func (m *NodesViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		case key.Matches(msg, nodesKeys.Pair):
 			m.mode = nodesViewPair
 			m.pairInput.SetValue("")
-			m.pairInput.Focus()
+			m.pairURL.SetValue("")
+			m.pairFingerprint.SetValue("")
+			m.blurPairForm()
+			m.pairURL.Focus()
 			m.statusMsg = ""
 			return m, nil
 		case key.Matches(msg, nodesKeys.Delete):
@@ -477,7 +501,9 @@ func (m *NodesViewModel) viewPairFormOverlay(width, height int) string {
 	// HintsBar (Subtext) for supporting copy + action hints — a shade
 	// lighter than Help (Overlay) so the secondary text is readable
 	// against the popup surface.
-	popup.WriteString(m.styles.HintsBar.Render("Read the 16-char code from the worker's screen (dashes OK).") + "\n\n")
+	popup.WriteString(m.styles.HintsBar.Render("Read the URL, fingerprint and code from the worker's screen.") + "\n\n")
+	popup.WriteString(m.styles.Normal.Render("Worker URL: ") + m.pairURL.View() + "\n")
+	popup.WriteString(m.styles.Normal.Render("Fingerprint: ") + m.pairFingerprint.View() + "\n")
 	popup.WriteString(m.styles.Normal.Render("Code: ") + m.pairInput.View() + "\n")
 	if m.statusMsg != "" {
 		style := m.styles.Success
@@ -490,7 +516,7 @@ func (m *NodesViewModel) viewPairFormOverlay(width, height int) string {
 	// result state) so the footer reflects the live action, not the
 	// initial prompt.
 	hint := "Enter confirm   Esc cancel"
-	if !m.pairInput.Focused() {
+	if !m.pairFormFocused() {
 		hint = "Enter continue"
 	}
 	popup.WriteString("\n" + m.styles.HintsBar.Render(hint))
@@ -835,4 +861,22 @@ func formatVRAM(freeGB *float64, totalGB float64) string {
 		return fmt.Sprintf("%.0f GB total, free N/A", totalGB)
 	}
 	return fmt.Sprintf("%.0f GB free / %.0f GB total", *freeGB, totalGB)
+}
+
+func (m *NodesViewModel) pairFormFocused() bool {
+	return m.pairURL.Focused() || m.pairFingerprint.Focused() || m.pairInput.Focused()
+}
+func (m *NodesViewModel) blurPairForm() {
+	m.pairURL.Blur()
+	m.pairFingerprint.Blur()
+	m.pairInput.Blur()
+}
+func (m *NodesViewModel) activePairInput() *textinput.Model {
+	if m.pairURL.Focused() {
+		return &m.pairURL
+	}
+	if m.pairFingerprint.Focused() {
+		return &m.pairFingerprint
+	}
+	return &m.pairInput
 }

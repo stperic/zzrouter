@@ -1,7 +1,6 @@
 package clusternode
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/x509"
@@ -9,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +20,7 @@ import (
 
 	"github.com/stperic/common/retry"
 	clusterid "github.com/stperic/zzrouter/pkg/cluster/id"
+	clustersignal "github.com/stperic/zzrouter/pkg/cluster/signal"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -240,14 +239,6 @@ func (n *Node) Revoke(fingerprint, serial, reason string) error {
 // mTLS middleware — OU check + deny-list lookup for mTLS routes.
 // ---------------------------------------------------------------------
 
-// revokedBodyMarker is the JSON field the coordinator sets when
-// rejecting a client for being on the deny list. Workers treat 403
-// responses as terminal (→ self-heal) ONLY when this marker is
-// present; a bare 403 from a reverse proxy or the coordinator during
-// a transient config reload is treated as transient instead, so an
-// incidental forbidden doesn't permanently wipe the worker's state.
-const revokedBodyMarker = `"revoked":true`
-
 // mTLSOUCheck returns middleware that enforces:
 //
 //  1. A verified client-cert chain.
@@ -255,7 +246,7 @@ const revokedBodyMarker = `"revoked":true`
 //  3. Client cert's SPKI fingerprint is NOT on the coordinator's deny
 //     list (applied only when the node has a deny list; no-op on worker).
 //
-// Wired on /internal/* and /cluster/renew (worker-or-coordinator
+// Wired on worker cluster routes (coordinator
 // specific) and /cluster/leave (coordinator-only).
 func (n *Node) mTLSOUCheck(requiredOU string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -285,82 +276,6 @@ func (n *Node) mTLSOUCheck(requiredOU string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
-}
-
-// ---------------------------------------------------------------------
-// /cluster/renew — coordinator receives a CSR, signs it, returns
-// signed cert + CA. Worker-side renewal ticker is below.
-// ---------------------------------------------------------------------
-
-type renewRequest struct {
-	CSRPEM string `json:"csr_pem"`
-}
-
-// renewResponse carries only the signed cert — the worker ALREADY
-// trusts the coordinator's CA (stored at pairing time) and accepting a
-// CA back from the renew response is an attack surface with no
-// corresponding upside.
-type renewResponse struct {
-	SignedCertPEM string `json:"signed_cert_pem"`
-}
-
-// handleRenew processes a renewal request. Mounted behind mTLSOUCheck
-// with required OU = zzrouter-worker. The worker's client cert serial
-// has already been checked against the deny list by the middleware, so
-// by the time we arrive here the request is authorized.
-//
-// SECURITY: we require the CSR's public key to match the presented
-// client cert's public key. Without this check, a worker authenticated
-// with cert-A could submit a CSR carrying public-key-B and get a new
-// cert binding its identity to key-B — effectively rotating keys to
-// one the original identity-key compromise doesn't cover. Plan §9
-// mandates "same keypair" across renewals; this enforces it at the
-// coordinator.
-func (n *Node) handleRenew(c *gin.Context) {
-	var req renewRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "invalid JSON body"})
-		return
-	}
-	if req.CSRPEM == "" {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "missing csr_pem"})
-		return
-	}
-	// Parse the CSR so we can verify its public key against the
-	// client cert's public key BEFORE asking the CA to sign.
-	csr, err := parseCSRPEM([]byte(req.CSRPEM))
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "invalid CSR: " + err.Error()})
-		return
-	}
-	if c.Request.TLS == nil || len(c.Request.TLS.PeerCertificates) == 0 {
-		// Middleware should have caught this; defense-in-depth.
-		c.AbortWithStatusJSON(http.StatusUnauthorized,
-			gin.H{"error": "no client cert"})
-		return
-	}
-	clientPub := c.Request.TLS.PeerCertificates[0].PublicKey
-	if !samePublicKey(csr.PublicKey, clientPub) {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "CSR public key does not match client cert"})
-		return
-	}
-
-	signed, err := n.ca.Sign([]byte(req.CSRPEM), clusterid.RoleWorker)
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest,
-			gin.H{"error": "sign CSR: " + err.Error()})
-		return
-	}
-	// Do NOT return CACertPEM — the worker already has it. Returning
-	// it opens an attack surface (worker trusts the response's CA)
-	// with no corresponding upside.
-	c.JSON(http.StatusOK, renewResponse{
-		SignedCertPEM: string(signed),
-	})
 }
 
 // parseCSRPEM parses a single CERTIFICATE REQUEST block. Shares intent
@@ -545,6 +460,7 @@ func (n *Node) revertToUnclaimed(reason string) {
 	n.httpServer = nil
 	n.listener = nil
 	n.listenerAddr = nil
+	n.signals.Reset()
 	n.mode.Store(int32(Unclaimed))
 	n.mu.Unlock()
 
@@ -655,54 +571,21 @@ func (n *Node) runRenewalTick(ctx context.Context, transientFails *int) {
 	}
 }
 
-// renewOnce performs a single renewal POST. Generates a fresh CSR
-// against the existing keypair, calls /cluster/renew on the
-// coordinator, InstallSignedCert on success.
+// renewOnce submits a CSR through the held exchange and installs the verified reply.
 func (n *Node) renewOnce(ctx context.Context) error {
 	csr, err := n.identity.CSR(n.cfg.NodeName, n.cfg.advertiseDNSNames(), n.cfg.advertiseIPs())
 	if err != nil {
 		return fmt.Errorf("renew CSR: %w", err)
 	}
-	client, err := n.renewMTLSClient()
-	if err != nil {
-		return fmt.Errorf("renew client: %w", err)
-	}
-	body, err := json.Marshal(renewRequest{CSRPEM: string(csr)})
-	if err != nil {
-		return fmt.Errorf("marshal renew: %w", err)
-	}
-	// Client has no Timeout — bound the POST via ctx deadline instead.
 	reqCtx, cancel := context.WithTimeout(ctx, renewHTTPTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		n.cfg.CoordinatorURL+"/zzrouter/v1/cluster/renew", bytes.NewReader(body))
+	certificate, err := n.signals.RenewCertificate(reqCtx, string(csr))
 	if err != nil {
-		return fmt.Errorf("renew request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrRenewTransient, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-
-	if resp.StatusCode == http.StatusForbidden {
-		// Treat as deny-listed ONLY if the coordinator set the
-		// structured marker. A bare 403 (reverse proxy, transient
-		// coordinator config reload, unexpected middleware) is
-		// transient — do NOT wipe worker state on it.
-		if bytes.Contains(respBody, []byte(revokedBodyMarker)) {
+		var status *clustersignal.StatusError
+		if errors.As(err, &status) && status.Code == "revoked" {
 			return ErrRenewDenyListed
 		}
-		return fmt.Errorf("%w: 403 without revoke marker", ErrRenewTransient)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: status %d", ErrRenewTransient, resp.StatusCode)
-	}
-	var out renewResponse
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return fmt.Errorf("%w: decode: %w", ErrRenewTransient, err)
+		return fmt.Errorf("%w: %w", ErrRenewTransient, err)
 	}
 
 	// Verify the returned cert chains to the CA WE ALREADY TRUST.
@@ -710,11 +593,11 @@ func (n *Node) renewOnce(ctx context.Context) error {
 	// trust pool) could swap our cert for one signed by a different
 	// CA — which would still install successfully via
 	// InstallSignedCert's key-match check.
-	if err := n.verifyRenewedCert([]byte(out.SignedCertPEM)); err != nil {
+	if err := n.verifyRenewedCert([]byte(certificate)); err != nil {
 		return fmt.Errorf("renewed cert chain verify: %w", err)
 	}
 
-	if err := n.identity.InstallSignedCert([]byte(out.SignedCertPEM)); err != nil {
+	if err := n.identity.InstallSignedCert([]byte(certificate)); err != nil {
 		return fmt.Errorf("install renewed cert: %w", err)
 	}
 	return nil
@@ -757,13 +640,6 @@ func (n *Node) verifyRenewedCert(pemBytes []byte) error {
 	return nil
 }
 
-// renewMTLSClient wraps DialClient with the renew-specific peer OU
-// expectation (coordinator). Ctx deadline — not a client-level Timeout
-// — bounds the single renewal POST; see renewOnce.
-func (n *Node) renewMTLSClient() (*http.Client, error) {
-	return n.DialClient(clusterid.RoleCoordinator.OU())
-}
-
 // renewalClock lets tests speed up the hourly tick. Production uses
 // the real monotonic clock.
 type renewalClock interface {
@@ -788,3 +664,38 @@ type realTicker struct{ t *time.Ticker }
 
 func (r realTicker) C() <-chan time.Time { return r.t.C }
 func (r realTicker) Stop()               { r.t.Stop() }
+
+// SignRenewal validates a polled node CSR against its authenticated connection identity.
+func (n *Node) SignRenewal(peer *x509.Certificate, csrPEM string) (string, error) {
+	if err := n.ValidateWorker(peer); err != nil {
+		return "", err
+	}
+	csr, err := parseCSRPEM([]byte(csrPEM))
+	if err != nil {
+		return "", err
+	}
+	if !samePublicKey(csr.PublicKey, peer.PublicKey) || csr.Subject.CommonName != peer.Subject.CommonName {
+		return "", errors.New("renewal CSR does not match node identity")
+	}
+	signed, err := n.ca.Sign([]byte(csrPEM), clusterid.RoleWorker)
+	return string(signed), err
+}
+
+// ValidateWorker applies the current coordinator trust and revocation boundary.
+func (n *Node) ValidateWorker(peer *x509.Certificate) error {
+	if n.Mode() != Coordinator || n.ca == nil {
+		return ErrNotCoordinator
+	}
+	if peer == nil || !hasOU(peer, clusterid.RoleWorker.OU()) {
+		return errors.New("worker certificate required")
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(n.ca.Certificate())
+	if _, err := peer.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, CurrentTime: utils.Now()}); err != nil {
+		return err
+	}
+	if n.deny != nil && n.deny.Contains(clusterid.Fingerprint(peer)) {
+		return ErrRenewDenyListed
+	}
+	return nil
+}

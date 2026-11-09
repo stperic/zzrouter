@@ -186,7 +186,7 @@ func (e servedEngine) up(ctx context.Context, req EnsureRequest, selection launc
 		run.GoroutineDone()
 		return nil, err
 	}
-	m.watchRun(run, req)
+	m.watchRun(run, req, nil)
 	sent := "daemon default"
 	if daemonKeepAlive != nil {
 		sent = instance.FormatKeepAlive(*daemonKeepAlive)
@@ -228,7 +228,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		return
 	}
 	if run.Context().Err() == nil {
-		run.SetEvictedRuns(m.retireDisplaced(ctx, run))
+		run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: m.retireDisplaced(ctx, run)})
 		if m.publishRunning(run, false, "loaded") {
 			return
 		}

@@ -55,7 +55,7 @@ func TestSelectedSyncPreservesRolesAndSkipsWeights(t *testing.T) {
 				http.Error(w, err.Error(), 400)
 				return
 			}
-			manifest, err := security.GenerateManifest(selection, "gguf")
+			manifest, err := security.GenerateManifest(r.Context(), selection, "gguf")
 			if err != nil {
 				http.Error(w, err.Error(), 404)
 				return
@@ -99,7 +99,7 @@ func TestManifestRequiresCompleteSelectedSet(t *testing.T) {
 	require.NoError(t, os.MkdirAll(dir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "weights.gguf"), []byte("weights"), 0600))
 	req := metadata.DownloadRequest{Repo: "org/model", Files: []metadata.DownloadFile{{TreeFileEntry: metadata.TreeFileEntry{Name: "weights.gguf", Size: 7}}, {TreeFileEntry: metadata.TreeFileEntry{Name: "mmproj.gguf", Size: 9}, Feature: "vision"}}}
-	_, err := NewSecurityFromRoot(root).GenerateManifest(req, "gguf")
+	_, err := NewSecurityFromRoot(root).GenerateManifest(t.Context(), req, "gguf")
 	assert.ErrorContains(t, err, "selected files are missing")
 }
 

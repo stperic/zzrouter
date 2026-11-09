@@ -152,7 +152,9 @@ func TestDeployRefusesAmbiguousOrWrongProviderBeforeStarting(t *testing.T) {
 func TestDeployCarriesPlanAndForceBypassesPresence(t *testing.T) {
 	cfg := featureTestConfig(t)
 	router := &deploymentPlanRouter{providers: map[string][]string{"a": {"llamacpp"}, "b": {"llamacpp"}}, fullyPresent: map[string]bool{"a": true}}
-	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg }).WithNodeURLResolver(func(string) string { return "https://peer:9090" })
+	s := NewDeploymentsService(router, nil, func() *pkgConfig.AppsConfig { return cfg }).WithNodeURLResolver(func(node string) string { return "https://" + node + ":9090" })
+	s.peerClient = func() *http.Client { return http.DefaultClient }
+	s.nodeInfo = &NodeIdentity{name: "b"}
 	s.repoFiles = func(context.Context, string) (metadata.RepoFiles, error) {
 		return metadata.RepoFiles{Files: []metadata.TreeFileEntry{{Name: "model.gguf", Size: 7}, {Name: "mmproj-F16.gguf", Size: 9}}}, nil
 	}

@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -17,6 +19,13 @@ type providerModelList struct {
 	Provider   string                        `json:"provider"`
 	Node       string                        `json:"node"`
 	Categories []provapps.ModelStoreCategory `json:"categories"`
+}
+
+type providerTemplate struct {
+	Provider string                     `json:"provider"`
+	Node     string                     `json:"node"`
+	Template *provapps.WorkflowTemplate `json:"template"`
+	Workflow json.RawMessage            `json:"workflow"`
 }
 
 type providerModelDelete struct {
@@ -82,4 +91,38 @@ func (s *ProvidersService) DownloadProviderModel(ctx context.Context, provider s
 	}
 	return &providerModelDownload{Provider: provider, Node: result.Node, Category: req.Category, Name: req.Name,
 		Source: req.Source, Revision: download.EffectiveRevision(), Status: result.Status, JobID: result.JobID}, nil
+}
+
+// ListProviderTemplates reads official workflow metadata for a supported node store.
+func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, node, search string) ([]provapps.WorkflowTemplate, error) {
+	if _, err := s.ListProviderModels(ctx, provider, node, ""); err != nil {
+		return nil, err
+	}
+	entries, err := s.templates.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	search = strings.ToLower(strings.TrimSpace(search))
+	filtered := make([]provapps.WorkflowTemplate, 0, len(entries))
+	for _, entry := range entries {
+		if strings.Contains(strings.ToLower(entry.ID+" "+entry.Title+" "+entry.Description), search) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered, nil
+}
+
+// GetProviderTemplate retrieves a UI graph without provisioning model files.
+func (s *ProvidersService) GetProviderTemplate(ctx context.Context, provider, node, selector string) (*providerTemplate, error) {
+	if _, err := s.ListProviderModels(ctx, provider, node, ""); err != nil {
+		return nil, err
+	}
+	entry, workflow, err := s.templates.Resolve(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	if entry.ID != selector {
+		return nil, httperr.Error{Status: http.StatusNotFound, Code: string(httperr.CodeTemplateNotFound), Message: "read templates by canonical catalog ID"}
+	}
+	return &providerTemplate{Provider: provider, Node: node, Template: entry, Workflow: workflow}, nil
 }

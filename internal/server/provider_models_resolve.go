@@ -5,17 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
+	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	provapps "github.com/stperic/zzrouter/pkg/prov_apps"
 )
 
-const providerWorkflowMaxBytes = 4 << 20
+const providerWorkflowMaxBytes = provapps.MaxWorkflowBytes
 
 type providerModelResolveRequest struct {
 	Node     string          `json:"node" binding:"required"`
-	Workflow json.RawMessage `json:"workflow" binding:"required"`
+	Workflow json.RawMessage `json:"workflow,omitempty"`
+	Template json.RawMessage `json:"template,omitempty"`
 	Download bool            `json:"download"`
 }
 
@@ -23,6 +28,7 @@ type providerModelResolution struct {
 	Provider     string                     `json:"provider"`
 	Node         string                     `json:"node"`
 	Requirements []providerModelRequirement `json:"requirements"`
+	Template     *provapps.WorkflowTemplate `json:"template,omitempty"`
 }
 
 type providerModelRequirement struct {
@@ -34,16 +40,29 @@ type providerModelRequirement struct {
 	JobID    string `json:"job_id,omitempty"`
 }
 
+type workflowModel struct {
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Directory string `json:"directory"`
+}
+
+type workflowNode struct {
+	Type       string `json:"type"`
+	Properties struct {
+		Models []workflowModel `json:"models"`
+	} `json:"properties"`
+}
+
 type modelWorkflow struct {
-	Nodes []struct {
-		Properties struct {
-			Models []struct {
-				Name      string `json:"name"`
-				URL       string `json:"url"`
-				Directory string `json:"directory"`
-			} `json:"models"`
-		} `json:"properties"`
-	} `json:"nodes"`
+	Nodes       []*workflowNode `json:"nodes"`
+	Definitions struct {
+		Subgraphs []workflowSubgraph `json:"subgraphs"`
+	} `json:"definitions"`
+}
+
+type workflowSubgraph struct {
+	ID string `json:"id"`
+	modelWorkflow
 }
 
 func workflowRequirements(raw json.RawMessage) ([]providerModelRequirement, error) {
@@ -56,37 +75,93 @@ func workflowRequirements(raw json.RawMessage) ([]providerModelRequirement, erro
 		} `json:"extra_data"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request", "invalid workflow model metadata")
+		return nil, invalidWorkflow("invalid workflow model metadata")
 	}
 	if doc.Nodes == nil {
 		doc.modelWorkflow = doc.ExtraData.ExtraPNGInfo.Workflow
 	}
+	models, err := workflowModels(&doc.modelWorkflow)
+	if err != nil {
+		return nil, err
+	}
 	var items []providerModelRequirement
 	seen := map[[2]string]int{}
-	for _, node := range doc.Nodes {
-		for _, model := range node.Properties.Models {
-			if err := provapps.ValidateModelFileName(model.Name); err != nil {
-				return nil, err
+	for _, model := range models {
+		if err := provapps.ValidateModelFileName(model.Name); err != nil {
+			return nil, err
+		}
+		key := [2]string{model.Directory, model.Name}
+		if i, exists := seen[key]; exists {
+			item := &items[i]
+			if workflowSourcesConflict(item.Source, model.URL) {
+				item.Reason = "conflicting_source"
 			}
-			key := [2]string{model.Directory, model.Name}
-			if i, exists := seen[key]; exists {
-				item := &items[i]
-				if workflowSourcesConflict(item.Source, model.URL) {
-					item.Reason = "conflicting_source"
-				}
-				if item.Source == "" {
-					item.Source = model.URL
+			if item.Source == "" {
+				item.Source = model.URL
+			}
+			continue
+		}
+		seen[key] = len(items)
+		items = append(items, providerModelRequirement{Category: model.Directory, Name: model.Name, Source: model.URL})
+	}
+	if len(items) == 0 {
+		return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeWorkflowModelMetadataMissing),
+			Message: "workflow carries no model metadata; model provisioning is unverified; supply a UI workflow with declared model sources",
+			Extra:   map[string]any{"model_provisioning": "unverified"}}
+	}
+	return items, nil
+}
+
+func invalidWorkflow(detail string) error {
+	return newProblemError(http.StatusBadRequest, "Bad Request", detail)
+}
+
+func workflowModels(root *modelWorkflow) ([]workflowModel, error) {
+	definitions := map[string]*modelWorkflow{}
+	graphs := []*modelWorkflow{root}
+	for i := 0; i < len(graphs); i++ {
+		for j := range graphs[i].Definitions.Subgraphs {
+			subgraph := &graphs[i].Definitions.Subgraphs[j]
+			if strings.TrimSpace(subgraph.ID) == "" {
+				return nil, invalidWorkflow("invalid workflow subgraph id")
+			}
+			if previous, exists := definitions[subgraph.ID]; exists {
+				if !reflect.DeepEqual(previous, &subgraph.modelWorkflow) {
+					return nil, invalidWorkflow("conflicting workflow subgraph definitions")
 				}
 				continue
 			}
-			seen[key] = len(items)
-			items = append(items, providerModelRequirement{Category: model.Directory, Name: model.Name, Source: model.URL})
+			definitions[subgraph.ID] = &subgraph.modelWorkflow
+			graphs = append(graphs, &subgraph.modelWorkflow)
 		}
 	}
-	if len(items) == 0 {
-		return nil, newProblemError(http.StatusBadRequest, "Bad Request", "workflow carries no model metadata; supply UI nodes[].properties.models or extra_data.extra_pnginfo.workflow")
+	models := []workflowModel{}
+	visited := map[string]bool{}
+	graphs = []*modelWorkflow{root}
+	for i := 0; i < len(graphs); i++ {
+		for _, node := range graphs[i].Nodes {
+			if node == nil {
+				return nil, invalidWorkflow("invalid workflow node")
+			}
+			models = append(models, node.Properties.Models...)
+			subgraph, exists := definitions[node.Type]
+			if !exists {
+				if workflowGraphID(node.Type) {
+					return nil, invalidWorkflow("workflow subgraph reference has no definition")
+				}
+				continue
+			}
+			if !visited[node.Type] {
+				visited[node.Type] = true
+				graphs = append(graphs, subgraph)
+			}
+		}
 	}
-	return items, nil
+	return models, nil
+}
+
+func workflowGraphID(value string) bool {
+	return len(value) == 36 && uuid.Validate(value) == nil
 }
 
 func workflowSourcesConflict(a, b string) bool {
@@ -100,6 +175,24 @@ func workflowSourcesConflict(a, b string) bool {
 
 // ResolveProviderModels inspects one node and admits downloads through the existing service.
 func (s *ProvidersService) ResolveProviderModels(ctx context.Context, provider string, req providerModelResolveRequest) (*providerModelResolution, error) {
+	if (len(req.Workflow) == 0) == (len(req.Template) == 0) {
+		return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeRequired), Message: "supply exactly one workflow object or template selector"}
+	}
+	var selected *provapps.WorkflowTemplate
+	if len(req.Template) != 0 {
+		var selector string
+		if json.Unmarshal(req.Template, &selector) != nil || strings.TrimSpace(selector) == "" {
+			return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeInvalidValue), Message: "template must be a nonempty string"}
+		}
+		var err error
+		selected, req.Workflow, err = s.templates.Resolve(ctx, selector)
+		if err != nil {
+			return nil, err
+		}
+		if selected.OpenSource != nil && !*selected.OpenSource {
+			return nil, httperr.Error{Status: http.StatusBadRequest, Code: string(httperr.CodeTemplateUnsupported), Message: "API-only templates do not install local model files"}
+		}
+	}
 	items, err := workflowRequirements(req.Workflow)
 	if err != nil {
 		return nil, err
@@ -150,5 +243,15 @@ func (s *ProvidersService) ResolveProviderModels(ctx context.Context, provider s
 			item.Status, item.JobID = "downloading", download.JobID
 		}
 	}
-	return &providerModelResolution{Provider: provider, Node: inventory.Node, Requirements: items}, nil
+	result := &providerModelResolution{Provider: provider, Node: inventory.Node, Requirements: items, Template: selected}
+	if selected != nil {
+		selected.ModelProvisioning = "supported"
+		for _, item := range items {
+			if item.Status == "unresolvable" {
+				selected.ModelProvisioning = "unsupported"
+				break
+			}
+		}
+	}
+	return result, nil
 }

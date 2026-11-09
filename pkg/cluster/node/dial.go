@@ -7,39 +7,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 )
 
-// DialClient returns an *http.Client for outbound mTLS dispatches from
-// this node. It presents the node's identity as the client certificate
-// and verifies peer certs chain to the node's trust pool. If
-// expectedPeerOU is non-empty, VerifyConnection additionally asserts
-// the peer leaf's Subject.OrganizationalUnit contains expectedPeerOU —
-// the outbound mirror of mTLSOUCheck on the inbound side.
-//
-// Trust pool resolution:
-//
-//   - Coordinator: the in-memory CA loaded at New (used for dialing
-//     workers; workers present CA-signed certs with OU=worker).
-//   - Worker: the ca.pem persisted in ClusterDir at pairing time (used
-//     for dialing the coordinator; the coordinator presents a CA-signed
-//     cert with OU=coordinator).
-//   - Disabled / Unclaimed: ErrInvalidConfig. Outbound mTLS is only
-//     meaningful once a trust root exists.
-//
-// The returned client has no Timeout — callers bound requests via
-// context deadlines so short health probes and long inference
-// dispatches can share one client without a global ceiling.
-//
-// VerifyConnection (not VerifyPeerCertificate) is used for the OU
-// check: VerifyPeerCertificate fires before the stdlib's chain
-// validation, but VerifyConnection runs after, so by then
-// cs.VerifiedChains[0][0] is a known-good leaf.
+// DialClient returns the coordinator's mTLS dispatch client. Workers never dial peers.
+// Callers own request deadlines so long inference streams have no global ceiling.
 func (n *Node) DialClient(expectedPeerOU string) (*http.Client, error) {
+	if n.Mode() != Coordinator {
+		return nil, fmt.Errorf("%w: only the coordinator initiates cluster connections", ErrInvalidConfig)
+	}
 	if n.identity == nil {
 		return nil, fmt.Errorf("%w: node has no identity", ErrInvalidConfig)
 	}
@@ -82,30 +60,12 @@ func (n *Node) DialClient(expectedPeerOU string) (*http.Client, error) {
 	}, nil
 }
 
-// outboundTrustPool resolves the CA pool this node uses to verify peer
-// certificates on outbound dials. Coordinator uses the in-memory CA;
-// Worker reads the ca.pem stored at pairing time. Other modes have no
-// valid trust root for outbound mTLS.
+// outboundTrustPool resolves the coordinator's trust root.
 func (n *Node) outboundTrustPool() (*x509.CertPool, error) {
-	switch n.Mode() {
-	case Coordinator:
-		if n.ca == nil {
-			return nil, fmt.Errorf("%w: coordinator has no CA", ErrInvalidConfig)
-		}
-		pool := x509.NewCertPool()
-		pool.AddCert(n.ca.Certificate())
-		return pool, nil
-	case Worker:
-		caPEM, err := os.ReadFile(filepath.Join(n.cfg.ClusterDir, "ca.pem"))
-		if err != nil {
-			return nil, fmt.Errorf("read stored CA: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caPEM) {
-			return nil, errors.New("no valid CA cert in stored PEM")
-		}
-		return pool, nil
-	default:
-		return nil, fmt.Errorf("%w: mode %s does not support outbound mTLS", ErrInvalidConfig, n.Mode())
+	if n.Mode() != Coordinator || n.ca == nil {
+		return nil, fmt.Errorf("%w: coordinator CA unavailable", ErrInvalidConfig)
 	}
+	pool := x509.NewCertPool()
+	pool.AddCert(n.ca.Certificate())
+	return pool, nil
 }
