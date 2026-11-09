@@ -3,6 +3,7 @@ package search
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,6 +42,23 @@ func (m SearchTUIModel) fetchProviderConfigs() tea.Cmd {
 	}
 }
 
+// searchQuery keeps local view filters out of the upstream registry request.
+func (m SearchTUIModel) searchQuery() url.Values {
+	provider := m.Provider
+	if provider == "" {
+		provider = "all"
+	}
+	query := url.Values{"type": {"models"}, "q": {m.query}, "provider": {provider}, "limit": {"250"}, "order": {"desc"}, "full": {"true"}, "enrich": {"true"}}
+	if sort := mapSortToAPI(m.sortBy, m.getProviderConfig(m.Provider)); sort != "" {
+		query.Set("sort", sort)
+	}
+	if len(m.tagFilter) > 0 && provider != constants.RepoOllama {
+		query.Set("tags", strings.Join(m.tagFilter, ","))
+		query.Set("logic", m.tagLogic)
+	}
+	return query
+}
+
 // fetchResults performs the search using the unified server API
 func (m SearchTUIModel) fetchResults() tea.Cmd { //nolint:gocyclo,cyclop // Search response decoding handles optional fields from multiple registries together.
 	return func() tea.Msg {
@@ -60,27 +78,7 @@ func (m SearchTUIModel) fetchResults() tea.Cmd { //nolint:gocyclo,cyclop // Sear
 		// Create client
 		client := pkgClient.NewClient(*host)
 
-		// Determine provider parameter
-		providerParam := "all"
-		if m.Provider != "" {
-			providerParam = m.Provider
-		}
-
-		// Map unified sort names to server API values
-		sortBy := mapSortToAPI(m.sortBy)
-		order := "desc"
-
-		// Convert tag filter to comma-separated string for API
-		tagsParam := ""
-		if len(m.tagFilter) > 0 {
-			tagsParam = strings.Join(m.tagFilter, ",")
-		}
-
-		// HuggingFace API supports up to 1000; use 250 for all providers
-		limit := 250
-
-		// Call unified search API with sort and tags
-		searchResponse, err := client.SearchModelsWithTags(m.query, providerParam, limit, sortBy, order, tagsParam, m.tagLogic)
+		searchResponse, err := client.SearchModels(m.searchQuery())
 		if err != nil {
 			return searchCompleteMsg{results: nil, err: fmt.Errorf("search failed: %w", err)}
 		}

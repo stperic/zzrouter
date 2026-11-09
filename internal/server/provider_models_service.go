@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -93,8 +94,13 @@ func (s *ProvidersService) DownloadProviderModel(ctx context.Context, provider s
 		Source: req.Source, Revision: download.EffectiveRevision(), Status: result.Status, JobID: result.JobID}, nil
 }
 
-// ListProviderTemplates reads official workflow metadata for a supported node store.
-func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, node, search string) ([]provapps.WorkflowTemplate, error) {
+type providerTemplateQuery struct {
+	Search, Since, Sort, Order string
+	OpenSource                 *bool
+}
+
+// ListProviderTemplates filters and orders official metadata before pagination.
+func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, node string, query providerTemplateQuery) ([]provapps.WorkflowTemplate, error) {
 	if _, err := s.ListProviderModels(ctx, provider, node, ""); err != nil {
 		return nil, err
 	}
@@ -102,13 +108,40 @@ func (s *ProvidersService) ListProviderTemplates(ctx context.Context, provider, 
 	if err != nil {
 		return nil, err
 	}
-	search = strings.ToLower(strings.TrimSpace(search))
+	text := strings.ToLower(strings.TrimSpace(query.Search))
 	filtered := make([]provapps.WorkflowTemplate, 0, len(entries))
 	for _, entry := range entries {
-		if strings.Contains(strings.ToLower(entry.ID+" "+entry.Title+" "+entry.Description), search) {
-			filtered = append(filtered, entry)
+		if !strings.Contains(strings.ToLower(entry.ID+" "+entry.Title+" "+entry.Description), text) || query.Since != "" && (entry.Date == "" || entry.Date < query.Since) {
+			continue
 		}
+		if query.OpenSource != nil && (entry.OpenSource == nil || *entry.OpenSource != *query.OpenSource) {
+			continue
+		}
+		filtered = append(filtered, entry)
 	}
+	slices.SortFunc(filtered, func(a, b provapps.WorkflowTemplate) int {
+		left, right := a.ID, b.ID
+		switch query.Sort {
+		case "date":
+			if (a.Date == "") != (b.Date == "") {
+				if a.Date == "" {
+					return 1
+				}
+				return -1
+			}
+			left, right = a.Date, b.Date
+		case "title":
+			left, right = strings.ToLower(a.Title), strings.ToLower(b.Title)
+		}
+		comparison := strings.Compare(left, right)
+		if query.Order == "desc" {
+			comparison = -comparison
+		}
+		if comparison == 0 {
+			return strings.Compare(a.ID, b.ID)
+		}
+		return comparison
+	})
 	return filtered, nil
 }
 

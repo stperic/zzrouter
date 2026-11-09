@@ -1,9 +1,9 @@
 package search
 
 import (
-	"fmt"
+	"net/url"
 	sortpkg "sort"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
 
@@ -95,17 +95,15 @@ func (c *SearchCache) Stop() {
 }
 
 // SearchCacheKey builds a deterministic cache key from search parameters.
-func SearchCacheKey(provider, query, sort, order string, tags []string, limit, offset int, enrich bool) string {
-	sortedTags := make([]string, len(tags))
-	copy(sortedTags, tags)
+func SearchCacheKey(params SearchParams, tagLogic string, enrich bool) string {
+	sortedTags := append([]string(nil), params.Filter...)
 	sortpkg.Strings(sortedTags)
-
-	e := "0"
-	if enrich {
-		e = "1"
-	}
-	return fmt.Sprintf("p=%s&q=%s&s=%s&o=%s&t=%s&l=%d&off=%d&e=%s",
-		provider, query, sort, order, strings.Join(sortedTags, ","), limit, offset, e)
+	return url.Values{
+		"provider": {string(params.Provider)}, "q": {params.Search}, "author": {params.Author},
+		"sort": {params.Sort}, "direction": {strconv.Itoa(params.Direction)}, "tags": sortedTags,
+		"logic": {tagLogic}, "full": {strconv.FormatBool(params.Full)}, "enrich": {strconv.FormatBool(enrich)},
+		"limit": {strconv.Itoa(params.Pagination.Limit)}, "offset": {strconv.Itoa(params.Pagination.Offset)}, "cursor": {params.Pagination.Cursor},
+	}.Encode()
 }
 
 func (c *SearchCache) cleanupLoop() {

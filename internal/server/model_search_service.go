@@ -67,18 +67,26 @@ func (s *ModelSearchService) Stop(_ context.Context) {
 // models browse. Parameter validation is centralized here so the
 // dispatchers can assume well-formed input.
 func (s *ModelSearchService) HandleSearchPublic(c *gin.Context) {
+	query, ok := searchTextQuery(c)
+	if !ok || !validateSingleQuery(c, "sort", "order", "cursor", "since", "open_source") {
+		return
+	}
+	if c.Query("since") != "" || c.Query("open_source") != "" {
+		BadRequest(c, "since and open_source filters are supported only by the template catalog")
+		return
+	}
 	// Validate required parameters. `type` uses an enum validator so the
 	// 400 response lists every valid value — agents can parse the allowed
 	// set without a separate schema call.
 	params := ValidateParams(c, []ParamRule{
 		RequiredEnumQueryParam("type", []string{"models", "providers", "popular"}),
-		OptionalQueryParam("q"),
+		OptionalQueryParam("cursor"),
 		OptionalQueryParam("provider"),
 		OptionalQueryParam("author"),
 		OptionalQueryParam("tags"),
 		OptionalQueryParam("logic"),
 		OptionalQueryParam("sort"),
-		OptionalQueryParam("order"),
+		{Name: "order", Source: ParamSourceQuery, Default: "desc", AllowedValues: []string{"asc", "desc"}},
 		BoolQueryParam("full"),
 		IntQueryParam("limit", 20, 1, 1000),
 		IntQueryParam("offset", 0, 0, 1000000),
@@ -88,8 +96,7 @@ func (s *ModelSearchService) HandleSearchPublic(c *gin.Context) {
 	}
 
 	searchType := params.GetString("type")
-	query := params.GetString("q")
-	provider := params.GetString("provider")
+	provider := strings.ToLower(params.GetString("provider"))
 	if provider == "" {
 		provider = "all"
 	}
@@ -100,17 +107,17 @@ func (s *ModelSearchService) HandleSearchPublic(c *gin.Context) {
 		tagLogic = "AND"
 	}
 	sort := params.GetString("sort")
-	// Validate against HuggingFace-supported sort values
-	switch sort {
-	case "downloads", "likes", "lastModified", "createdAt", "trendingScore", "author":
-		// valid
-	default:
-		sort = "trendingScore"
+	if sort == "" {
+		switch provider {
+		case "all", "huggingface", "hf":
+			sort = "trendingScore"
+		case "ollama":
+			if query == "" {
+				sort = "downloads"
+			}
+		}
 	}
 	order := params.GetString("order")
-	if order == "" {
-		order = "desc"
-	}
 	full := params.GetBool("full")
 	limit := params.GetInt("limit")
 	offset := params.GetInt("offset")
@@ -148,7 +155,7 @@ func (s *ModelSearchService) HandleSearchPublic(c *gin.Context) {
 	// default branch is a defensive fallback that should be unreachable.
 	switch searchType {
 	case "models":
-		s.handleModelsSearch(c, ctx, query, provider, author, tags, tagLogic, sort, order, full, enrich, limit, offset)
+		s.handleModelsSearch(c, ctx, query, provider, author, tags, tagLogic, sort, order, full, enrich, limit, offset, params.GetString("cursor"))
 	case "providers":
 		s.handleAppsSearch(c, ctx, query, limit, offset)
 	case "popular":
@@ -158,7 +165,7 @@ func (s *ModelSearchService) HandleSearchPublic(c *gin.Context) {
 	}
 }
 
-func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Context, query, provider, author string, tags []string, tagLogic, sort, order string, full, enrich bool, limit, offset int) {
+func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Context, query, provider, author string, tags []string, tagLogic, sort, order string, full, enrich bool, limit, offset int, cursor string) {
 	// Parse provider
 	searchProvider, err := search.ParseProvider(provider)
 	if err != nil {
@@ -181,6 +188,7 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 		Pagination: search.PaginationParams{
 			Limit:  limit,
 			Offset: offset,
+			Cursor: cursor,
 		},
 	}
 
@@ -190,7 +198,7 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 		return
 	}
 
-	cacheKey := search.SearchCacheKey(string(searchProvider), query, sort, order, tags, limit, offset, enrich)
+	cacheKey := search.SearchCacheKey(params, tagLogic, enrich)
 	if cached := s.searchCache.Get(cacheKey); cached != nil {
 		respondSuccess(c, "Search completed", cached)
 		return
@@ -217,11 +225,12 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 			"provider":       provider,
 			"results":        filteredResults,
 			"total":          len(filteredResults),
-			"is_total_exact": len(tags) == 0,
+			"is_total_exact": false,
 			"pagination": gin.H{
 				"limit":    limit,
 				"offset":   offset,
-				"has_next": len(tags) == 0 && offset+limit < results.Total,
+				"has_next": results.HasMore,
+				"cursor":   results.Cursor,
 				"has_prev": offset > 0,
 			},
 		}
@@ -232,13 +241,16 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 
 	// Cloud search providers (OpenRouter, Cloudflare, etc.) — registry-driven
 	if search.IsCloudSearchProvider(searchProvider) {
-		results, err := search.SearchCloudProvider(ctx, searchProvider, query, limit)
+		results, err := search.SearchCloudProvider(ctx, searchProvider, query, 0)
 		if err != nil {
 			InternalNodeError(c, fmt.Sprintf("%s search failed: %s", searchProvider, err.Error()))
 			return
 		}
 
 		search.NormalizeCloudResults(results)
+		search.SortCloudResults(results, sort, direction)
+		total := len(results)
+		results = results[min(offset, total):min(offset+limit, total)]
 		if enrich {
 			s.enrichCloudResultsWithMetadata(results, string(searchProvider))
 		}
@@ -249,13 +261,13 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 			"query":          query,
 			"provider":       string(searchProvider),
 			"results":        results,
-			"total":          len(results),
+			"total":          total,
 			"is_total_exact": true,
 			"pagination": gin.H{
 				"limit":    limit,
 				"offset":   offset,
-				"has_next": false,
-				"has_prev": false,
+				"has_next": offset+limit < total,
+				"has_prev": offset > 0,
 			},
 		}
 		s.searchCache.Set(cacheKey, resp)
@@ -264,55 +276,18 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 	}
 
 	if searchProvider == search.ProviderOllama {
-		if query != "" {
-			results, err := search.SearchOllamaModelsPaginated(query, search.PaginationParams{
-				Limit:  limit,
-				Offset: offset,
-			})
-			if err != nil {
-				InternalNodeError(c, "Ollama search failed: "+err.Error())
-				return
-			}
-
-			resp := gin.H{
-				"type":           "models",
-				"query":          query,
-				"provider":       "ollama",
-				"results":        results.Results,
-				"total":          results.Total,
-				"is_total_exact": results.IsTotalExact,
-				"pagination": gin.H{
-					"limit":    limit,
-					"offset":   offset,
-					"has_next": offset+limit < results.Total,
-					"has_prev": offset > 0,
-				},
-			}
-			s.searchCache.Set(cacheKey, resp)
-			respondSuccess(c, "Search completed", resp)
-		} else {
-			results, err := search.GetOllamaModelsWithSort(sort, limit)
-			if err != nil {
-				InternalNodeError(c, "Failed to get Ollama models: "+err.Error())
-				return
-			}
-
-			resp := gin.H{
-				"type":           "models",
-				"provider":       "ollama",
-				"results":        results.Results,
-				"total":          results.Total,
-				"is_total_exact": results.IsTotalExact,
-				"pagination": gin.H{
-					"limit":    limit,
-					"offset":   offset,
-					"has_next": false,
-					"has_prev": false,
-				},
-			}
-			s.searchCache.Set(cacheKey, resp)
-			respondSuccess(c, "Search completed", resp)
+		results, err := search.SearchOllamaModelsPaginated(params)
+		if err != nil {
+			InternalNodeError(c, "Ollama search failed: "+err.Error())
+			return
 		}
+		resp := gin.H{
+			"type": "models", "query": query, "provider": "ollama",
+			"results": results.Results, "total": results.Total, "is_total_exact": results.IsTotalExact,
+			"pagination": gin.H{"limit": limit, "offset": offset, "has_next": results.HasMore, "has_prev": offset > 0},
+		}
+		s.searchCache.Set(cacheKey, resp)
+		respondSuccess(c, "Search completed", resp)
 		return
 	}
 

@@ -17,6 +17,7 @@ import (
 type fakeProviderModelsAPI struct {
 	provider, node, category, name string
 	ctx                            context.Context
+	query                          url.Values
 	download                       pkgClient.ProviderModelDownloadRequest
 	resolve                        pkgClient.ProviderModelResolveRequest
 	failed                         error
@@ -167,6 +168,7 @@ var _ providerModelsAPI = (*pkgClient.Client)(nil)
 
 func (f *fakeProviderModelsAPI) ListProviderTemplates(ctx context.Context, provider string, query url.Values) (map[string]any, error) {
 	f.record(ctx, provider, query.Get("node"), "", "")
+	f.query = query
 	return map[string]any{"data": []any{map[string]any{"id": "one"}}, "total": 1, "has_more": false}, f.failed
 }
 
@@ -216,4 +218,28 @@ func TestProviderModelsTemplateWorkflowRead(t *testing.T) {
 	require.Equal(t, "image_template", api.name)
 	require.Contains(t, out.String(), "9007199254740993", "printing a workflow must preserve full-width seeds")
 	require.Empty(t, api.resolve.Node, "reading a template must not resolve or download models")
+}
+
+func TestProviderModelsTemplateQuery(t *testing.T) {
+	for _, source := range []string{"", "true", "false"} {
+		cmd := newProviderModelCmd("templates")
+		cmd.SetOut(&bytes.Buffer{})
+		for name, value := range map[string]string{"node": "worker", "search": "Qwen & Turbo", "sort": "date", "order": "desc", "since": "2026-10-01", "limit": "10", "offset": "2"} {
+			require.NoError(t, cmd.Flags().Set(name, value))
+		}
+		if source != "" {
+			require.NoError(t, cmd.Flags().Set("open-source", source))
+		}
+		api := &fakeProviderModelsAPI{}
+		require.NoError(t, runProviderModels(cmd, api, "studio", nil))
+		require.Equal(t, "Qwen & Turbo", api.query.Get("q"))
+		require.Equal(t, "date", api.query.Get("sort"))
+		require.Equal(t, "desc", api.query.Get("order"))
+		require.Equal(t, "2026-10-01", api.query.Get("since"))
+		require.Equal(t, "10", api.query.Get("limit"))
+		require.Equal(t, "2", api.query.Get("offset"))
+		require.Equal(t, source, api.query.Get("open_source"))
+		_, present := api.query["open_source"]
+		require.Equal(t, source != "", present)
+	}
 }

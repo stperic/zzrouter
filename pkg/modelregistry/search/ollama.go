@@ -209,26 +209,7 @@ func locallyRunnable(all []OllamaModelInfo) []OllamaModelInfo {
 
 // GetOllamaModelsWithSort returns Ollama models sorted by the specified criteria
 func GetOllamaModelsWithSort(sortBy string, limit int) (*SearchResponse[OllamaModelInfo], error) {
-	models, err := GetOllamaModels()
-	if err != nil {
-		return nil, err
-	}
-
-	// Sort by specified criteria (descending by default)
-	sorted := sortOllamaModels(models, sortBy, -1)
-
-	if limit > 0 && limit < len(sorted) {
-		sorted = sorted[:limit]
-	}
-
-	return &SearchResponse[OllamaModelInfo]{
-		Results:      sorted,
-		Total:        len(sorted),
-		Offset:       0,
-		Limit:        len(sorted),
-		HasMore:      false,
-		IsTotalExact: true,
-	}, nil
+	return SearchOllamaModelsPaginated(SearchParams{Provider: ProviderOllama, Sort: sortBy, Direction: -1, Pagination: PaginationParams{Limit: limit}})
 }
 
 // GetOllamaPopularModels returns the most popular Ollama models
@@ -237,13 +218,26 @@ func GetOllamaPopularModels(limit int) (*SearchResponse[OllamaModelInfo], error)
 }
 
 // SearchOllamaModelsPaginated searches Ollama models by name with pagination
-func SearchOllamaModelsPaginated(query string, pagination PaginationParams) (*SearchResponse[OllamaModelInfo], error) {
+func SearchOllamaModelsPaginated(params SearchParams) (*SearchResponse[OllamaModelInfo], error) {
+	if err := params.Validate(); err != nil {
+		return nil, err
+	}
 	models, err := GetOllamaModels()
 	if err != nil {
 		return nil, err
 	}
 
-	filtered := filterOllamaModels(models, query)
+	filtered := filterOllamaModels(models, params.Search)
+	key := params.Sort
+	switch key {
+	case "id", "title":
+		key = "name"
+	case "lastModified":
+		key = "modified"
+	}
+	if key != "" {
+		filtered = sortOllamaModels(filtered, key, params.Direction)
+	}
 
-	return paginateOllamaModels(filtered, pagination), nil
+	return paginateOllamaModels(filtered, params.Pagination), nil
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -84,6 +85,9 @@ func TestWorkflowTemplateCatalogRefusesInvalidSources(t *testing.T) {
 		{"malformed", "[", 200}, {"empty", "[]", 200},
 		{"unsafe-id", `[{"templates":[{"name":"../outside","title":"bad"}]}]`, 200},
 		{"conflict", `[{"templates":[{"name":"a","title":"one"},{"name":"a","title":"two"}]}]`, 200},
+		{"date-conflict", `[{"templates":[{"name":"a","title":"one","date":"2026-11-03"},{"name":"a","title":"one","date":"2026-11-04"}]}]`, 200},
+		{"invalid-date", `[{"templates":[{"name":"a","title":"one","date":"2026-02-30"}]}]`, 200},
+		{"timestamp-date", `[{"templates":[{"name":"a","title":"one","date":"2026-11-03T00:00:00Z"}]}]`, 200},
 		{"oversized", strings.Repeat(" ", MaxWorkflowBytes+1), 200},
 		{"not-found", "", 404}, {"redirect", "", 302},
 	}
@@ -103,6 +107,30 @@ func TestWorkflowTemplateCatalogRefusesInvalidSources(t *testing.T) {
 			require.Equal(t, 1, calls)
 		})
 	}
+}
+
+func TestWorkflowTemplateCatalogRealDates(t *testing.T) {
+	// Six complete official index entries captured 2026-11-09, without rewritten fields.
+	raw, err := os.ReadFile("testdata/workflow_template_catalog.json")
+	require.NoError(t, err)
+	source := NewWorkflowTemplateCatalog(templateTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "index.json") {
+			_, _ = w.Write(raw)
+			return
+		}
+		_, _ = io.WriteString(w, `{"nodes":[]}`)
+	})))
+	list, err := source.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, list, 6)
+	for _, entry := range list {
+		require.NotEmpty(t, entry.Date)
+	}
+	entry, _, err := source.Resolve(t.Context(), "image_qwen_image_2_1_turbo_t2i")
+	require.NoError(t, err)
+	require.Equal(t, "2026-10-13", entry.Date)
+	require.Equal(t, "0.39.0", entry.MinComfyUIVersion)
+	require.Equal(t, true, *entry.OpenSource)
 }
 
 func TestWorkflowTemplateCatalogDuplicateAndCancellation(t *testing.T) {

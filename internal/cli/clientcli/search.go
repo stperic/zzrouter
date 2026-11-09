@@ -2,7 +2,9 @@ package clientcli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -77,6 +79,9 @@ EXAMPLES:
   zzrouter search "*chat*" -l --limit 100            # Show top 100 results (list view)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("sort") {
+				sortBy = ""
+			}
 			query := "" // Default to empty (shows popular models)
 			if len(args) > 0 {
 				query = args[0]
@@ -113,7 +118,7 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 	if tagsStr != "" {
 		fmt.Printf(" with tags: %s (%s)", tagsStr, tagLogic)
 	}
-	if sortBy != "trendingScore" {
+	if sortBy != "" && sortBy != "trendingScore" {
 		fmt.Printf(" (sorted by %s)", sortBy)
 	}
 	fmt.Println("...")
@@ -125,7 +130,13 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 	}
 
 	// Call API endpoint with tags support
-	response, err := client.SearchModelsWithTags(query, provider, limit, sortBy, "desc", tagsStr, tagLogic)
+	values := url.Values{"type": {"models"}, "q": {query}, "provider": {provider}, "limit": {strconv.Itoa(limit)}, "order": {"desc"}, "full": {"true"}, "enrich": {"true"}}
+	for key, value := range map[string]string{"sort": sortBy, "tags": tagsStr, "logic": tagLogic} {
+		if value != "" {
+			values.Set(key, value)
+		}
+	}
+	response, err := client.SearchModels(values)
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}

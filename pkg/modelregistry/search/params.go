@@ -1,6 +1,9 @@
 package search
 
-import "fmt"
+import (
+	"fmt"
+	"slices"
+)
 
 // SearchParams describes a model search request against any Provider.
 type SearchParams struct {
@@ -17,6 +20,22 @@ type SearchParams struct {
 func (sp *SearchParams) Validate() error {
 	if !sp.Provider.IsValid() {
 		return fmt.Errorf("%w: %s", ErrInvalidProvider, sp.Provider)
+	}
+	allowed := []string{"", "id", "name", "title", "date", "createdAt"}
+	switch sp.Provider {
+	case ProviderHuggingFace, ProviderAll:
+		allowed = []string{"", "date", "popular", "downloads", "likes", "lastModified", "createdAt", "trendingScore", "author"}
+	case ProviderOllama:
+		allowed = []string{"", "id", "name", "title", "downloads", "pulls", "popular", "lastModified", "modified", "updated", "newest", "size"}
+	}
+	if !slices.Contains(allowed, sp.Sort) {
+		return fmt.Errorf("unsupported sort %q for %s; allowed: %v", sp.Sort, sp.Provider, allowed)
+	}
+	if sp.Provider != ProviderAll && sp.Provider != ProviderHuggingFace && (sp.Author != "" || len(sp.Filter) > 0) {
+		return fmt.Errorf("author and tags filters require huggingface")
+	}
+	if sp.Pagination.Cursor != "" && (sp.Provider != ProviderAll && sp.Provider != ProviderHuggingFace || sp.Pagination.Offset != 0) {
+		return fmt.Errorf("cursor requires huggingface with offset=0")
 	}
 	return sp.Pagination.Validate()
 }

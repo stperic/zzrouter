@@ -76,6 +76,11 @@ type searchInput struct {
 	pageInput
 	Query    string `json:"query" jsonschema:"Model name or keywords to search for."`
 	Provider string `json:"provider,omitempty" jsonschema:"Search registry, such as huggingface or ollama. Default all."`
+	Sort     string `json:"sort,omitempty" jsonschema:"Sort field. date means creation date; HuggingFace also accepts downloads, likes, lastModified, createdAt, trendingScore, popular and author. Ollama supports name, downloads, lastModified and size; cloud catalogs support id, name and date. Unsupported fields are refused."`
+	Order    string `json:"order,omitempty" jsonschema:"asc or desc. Default desc."`
+	Author   string `json:"author,omitempty" jsonschema:"HuggingFace author or organization filter."`
+	Tags     string `json:"tags,omitempty" jsonschema:"Comma-separated HuggingFace tags."`
+	Logic    string `json:"logic,omitempty" jsonschema:"Tag matching AND or OR. Default AND."`
 }
 type filesInput struct {
 	Model    string `json:"model" jsonschema:"HuggingFace org/repo, a zz_model_search result's model."`
@@ -419,7 +424,13 @@ func (d dispatcher) models(ctx context.Context, in modelsInput) (agentOutput, er
 }
 
 func (d dispatcher) search(ctx context.Context, in searchInput) (agentOutput, error) {
-	return d.list(ctx, searchRoute.path(), in.pageInput, url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}, "results", "id:model name provider size downloads likes pipeline_tag url", "matches")
+	query := url.Values{"type": {"models"}, "q": {in.Query}, "provider": {in.Provider}}
+	for name, value := range map[string]string{"sort": in.Sort, "order": in.Order, "author": in.Author, "tags": in.Tags, "logic": in.Logic} {
+		if value != "" {
+			query.Set(name, value)
+		}
+	}
+	return d.list(ctx, searchRoute.path(), in.pageInput, query, "results", "id:model name provider size downloads likes pipeline_tag createdAt lastModified created created_at url", "matches")
 }
 
 func (d dispatcher) files(ctx context.Context, in filesInput) (agentOutput, error) {

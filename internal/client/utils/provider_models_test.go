@@ -113,7 +113,10 @@ func TestProviderModelTemplateClientRequests(t *testing.T) {
 			require.Equal(t, "/zzrouter/v1/providers/studio/templates", r.URL.Path)
 			require.Equal(t, "Turbo", r.URL.Query().Get("search"))
 			require.Equal(t, "worker", r.URL.Query().Get("node"))
-			_, _ = io.WriteString(w, `{"data":[{"id":"one"}],"total":1,"has_more":false}`)
+			for key, value := range map[string]string{"sort": "date", "order": "desc", "since": "2026-10-01", "open_source": "false", "limit": "10"} {
+				require.Equal(t, value, r.URL.Query().Get(key))
+			}
+			_, _ = io.WriteString(w, `{"data":[{"id":"one","date":"2026-11-05"}],"total":1,"has_more":false}`)
 		case 2:
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
@@ -130,9 +133,10 @@ func TestProviderModelTemplateClientRequests(t *testing.T) {
 		}
 		return w.Result(), nil
 	})}}
-	catalog, err := c.ListProviderTemplates(t.Context(), "studio", url.Values{"node": {"worker"}, "search": {"Turbo"}})
+	catalog, err := c.ListProviderTemplates(t.Context(), "studio", url.Values{"node": {"worker"}, "search": {"Turbo"}, "sort": {"date"}, "order": {"desc"}, "since": {"2026-10-01"}, "open_source": {"false"}, "limit": {"10"}})
 	require.NoError(t, err)
 	require.Equal(t, false, catalog["has_more"])
+	require.Equal(t, "2026-11-05", catalog["data"].([]any)[0].(map[string]any)["date"])
 	resolved, err := c.ResolveProviderModels(t.Context(), "studio", ProviderModelResolveRequest{Node: "worker", Template: "one", Download: true})
 	require.NoError(t, err)
 	require.Contains(t, resolved, "template")
@@ -141,4 +145,26 @@ func TestProviderModelTemplateClientRequests(t *testing.T) {
 	require.Contains(t, string(selected.Workflow), "9007199254740993")
 	require.Contains(t, string(selected.Workflow), "18446744073709551615")
 	require.Equal(t, 3, calls)
+}
+
+func TestSearchQueryClientProviderDefaults(t *testing.T) {
+	for _, sort := range []string{"", "date"} {
+		c := &Client{baseURL: "https://coordinator.test", httpClient: &http.Client{Transport: providerModelsTransport(func(r *http.Request) (*http.Response, error) {
+			q := r.URL.Query()
+			require.Equal(t, "openai", q.Get("provider"))
+			require.Equal(t, "image & edit", q.Get("q"))
+			require.Equal(t, sort, q.Get("sort"))
+			_, present := q["sort"]
+			require.Equal(t, sort != "", present, "omission preserves the provider's default")
+			w := httptest.NewRecorder()
+			_, _ = io.WriteString(w, `{"data":{"results":[]}}`)
+			return w.Result(), nil
+		})}}
+		values := url.Values{"type": {"models"}, "q": {"image & edit"}, "provider": {"openai"}, "limit": {"10"}, "order": {"desc"}}
+		if sort != "" {
+			values.Set("sort", sort)
+		}
+		_, err := c.SearchModels(values)
+		require.NoError(t, err)
+	}
 }
