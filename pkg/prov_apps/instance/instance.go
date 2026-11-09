@@ -115,10 +115,10 @@ type Instance struct {
 
 	// admitted is set once the run's claim on memory is accounted for; a
 	// starting run that is not admitted is queued behind waitingOn.
-	admitted     bool
-	waitingOn    string
-	evictedRuns  []EvictedRun
-	failureCause error
+	admitted         bool
+	waitingOn        string
+	admissionEffects AdmissionEffects
+	failureCause     error
 	// stopClaimed/launchClaimed: which side signalled the process; a stop may retry its own claim.
 	stopClaimed, launchClaimed bool
 	processStartToken          int64
@@ -382,18 +382,26 @@ func (i *Instance) WaitingOn() string {
 	return i.waitingOn
 }
 
-// SetEvictedRuns records the idle runs this launch stopped to be admitted.
-func (i *Instance) SetEvictedRuns(runs []EvictedRun) {
+// SetAdmissionEffects records the completed admission's serving and memory effects.
+func (i *Instance) SetAdmissionEffects(effects AdmissionEffects) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	i.evictedRuns = slices.Clone(runs)
+	effects.EvictedRuns = slices.Clone(effects.EvictedRuns)
+	i.admissionEffects = effects
 }
 
 // EvictedRuns returns the idle runs this launch stopped to be admitted.
 func (i *Instance) EvictedRuns() []EvictedRun {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	return slices.Clone(i.evictedRuns)
+	return slices.Clone(i.admissionEffects.EvictedRuns)
+}
+
+// ChangesCatalog includes serving transitions from unconfirmed eviction attempts.
+func (i *Instance) ChangesCatalog() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.admissionEffects.CatalogChanged || ChangesCatalog(i.Model, i.admissionEffects.EvictedRuns)
 }
 
 // MarkRunning commits readiness before releasing waiters. commit must not reenter
@@ -854,7 +862,7 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 		Pinned:                i.pinned,
 		ErrorMessage:          i.ErrorMessage,
 		WaitingOn:             i.waitingOn,
-		EvictedRuns:           slices.Clone(i.evictedRuns),
+		EvictedRuns:           slices.Clone(i.admissionEffects.EvictedRuns),
 		StartedBy:             i.StartedBy,
 		Failure:               cloneFailure(i.failure),
 		ActiveRequests:        atomic.LoadInt64(&i.activeRequests),

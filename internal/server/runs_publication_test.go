@@ -106,7 +106,7 @@ func TestNodeScopedMutationSkipsModelPublication(t *testing.T) {
 			run.Config = instance.Config{Provider: "comfyui"}
 			run.MarkRunning(false, nil)
 			// A prior admission's victims are not this stop's effects.
-			run.SetEvictedRuns([]instance.EvictedRun{{RunID: "old-model", Model: "weights"}})
+			run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: []instance.EvictedRun{{RunID: "old-model", Model: "weights"}}})
 			require.NoError(t, target.providers.appMgr.Instances().Register(run))
 			e := target.newRunsExecutor()
 			e.publishCatalog = func() error {

@@ -150,6 +150,20 @@ func (c *InstallCoordinator) ExecuteResolvedAsync(ctx context.Context, provider 
 }
 
 func (c *InstallCoordinator) runResolvedPlan(h jobs.Handle, provider string, plan *install.Plan, options install.PlanOptions, step int, finalize func() error) (resultErr error) { //nolint:gocyclo,cyclop // Step execution, install finalization and failure recovery share the provider lock.
+	// Register before the locks so failed smoke effects publish after rollback and unlock.
+	defer func() {
+		var failed *runStartFailure
+		if c.publishRunCatalog == nil || !errors.As(resultErr, &failed) {
+			return
+		}
+		if evicted := failed.run.EvictedRuns(); len(evicted) > 0 {
+			h.Meta(jobs.Meta{"evicted_runs": evicted})
+		}
+		if err := c.publishRunCatalog(failed.run); err != nil {
+			h.Meta(publicationFailureMeta(failed.run))
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 	ctx := h.Context()
 	unlock, err := c.acquireProvider(ctx, plan.Provider)
 	if err != nil {

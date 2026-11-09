@@ -258,8 +258,8 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	}
 	argvFeatures := features
 	argvFeatures.Params = maps.Clone(features.Params)
-	_, evicted, err := m.admitMemory(ctx, argvFeatures, false, nil)
-	inst.SetEvictedRuns(evicted)
+	_, effects, err := m.admitMemory(ctx, argvFeatures, false, nil)
+	inst.SetAdmissionEffects(effects)
 	var prepared preparedLaunch
 	if err == nil {
 		prepared, err = m.prepareLaunchFeatures(features, argvFeatures.Params, selection.key, endpoint, inst.Port)

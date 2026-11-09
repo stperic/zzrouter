@@ -455,6 +455,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	m.installs.catalogChanged = m.catalogChanged
 	m.installs.serviceControl = m.controlInstallService
 	m.installs.smoke = m.smokeInstalledRuntime
+	m.installs.publishRunCatalog = m.publishRunCatalog
 	m.loadPinnedRuns()
 	return m, nil
 }

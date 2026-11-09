@@ -228,7 +228,7 @@ func (e servedEngine) load(run *instance.Instance, keepAlive *time.Duration, bud
 		return
 	}
 	if run.Context().Err() == nil {
-		run.SetEvictedRuns(m.retireDisplaced(ctx, run))
+		run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: m.retireDisplaced(ctx, run)})
 		if m.publishRunning(run, false, "loaded") {
 			return
 		}

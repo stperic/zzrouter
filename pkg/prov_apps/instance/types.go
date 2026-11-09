@@ -144,6 +144,12 @@ type EvictedRun struct {
 	FreedMiB int64 `json:"freed_mib"`
 }
 
+// AdmissionEffects separates serving transitions from successfully reclaimed memory.
+type AdmissionEffects struct {
+	EvictedRuns    []EvictedRun
+	CatalogChanged bool
+}
+
 // Resolved is what one launch computed from config: the values its
 // process was given, before node-local paths replace asset names.
 type Resolved struct {

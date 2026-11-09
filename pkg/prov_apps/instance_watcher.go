@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -64,7 +63,7 @@ func (m *ProviderAppManager) watchInstanceReadiness(inst *instance.Instance, h j
 		}
 		// The job's terminal event is what a caller waits on, so the catalog reflects the run first.
 		if err := m.publishRunCatalog(inst); err != nil {
-			h.Meta(jobs.Meta{"phase": "catalog-publication-failed", "catalog_publication": "failed", "code": string(httperr.CodeCatalogPublicationFailed), "run_id": inst.ID, "run_status": inst.GetStatus()})
+			h.Meta(publicationFailureMeta(inst))
 			result = errors.Join(result, err)
 		}
 		if evicted := inst.EvictedRuns(); len(evicted) > 0 {

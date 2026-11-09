@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve catalog publication when a memory eviction changes a model's serving state but its stop fails. Keep unconfirmed stops separate from successful eviction receipts and reclaimed memory.
+
+- Publish failed install-smoke admission effects after rollback and installer unlock. Preserve cancellation after an earlier busy retry so a later model eviction cannot be hidden as a skipped smoke.
+
 - Complete isolated node-scoped runs without unrelated model-catalog publication. Preserve publication barriers for model runs and collateral model evictions, including failed or cancelled admission. Publication failures retain run status and job identity.
 
 - Refresh resource evidence through the existing collector and authenticated health cadence, independently of worker callbacks. Add conditional node-inventory reads with full-response ETags and safe reuse of the existing published catalog.

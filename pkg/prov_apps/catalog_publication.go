@@ -3,6 +3,8 @@ package prov_apps
 import (
 	"fmt"
 
+	"github.com/stperic/zzrouter/pkg/httperr"
+	"github.com/stperic/zzrouter/pkg/jobs"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
@@ -29,8 +31,12 @@ func (e *CatalogPublicationError) Error() string {
 // Unwrap preserves transport and coordinator refusal causes.
 func (e *CatalogPublicationError) Unwrap() error { return e.Cause }
 
+func publicationFailureMeta(run *instance.Instance) jobs.Meta {
+	return jobs.Meta{"phase": "catalog-publication-failed", "catalog_publication": "failed", "code": string(httperr.CodeCatalogPublicationFailed), "run_id": run.ID, "run_status": run.GetStatus()}
+}
+
 func (m *ProviderAppManager) publishRunCatalog(run *instance.Instance) error {
-	if m.publishCatalog == nil || !instance.ChangesCatalog(run.Model, run.EvictedRuns()) {
+	if m.publishCatalog == nil || !run.ChangesCatalog() {
 		return nil
 	}
 	select {

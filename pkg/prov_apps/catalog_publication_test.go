@@ -130,7 +130,7 @@ func TestCanceledQueuedWatcherWaitsForAdmissionEffects(t *testing.T) {
 		t.Fatal("watcher skipped in-flight admission evidence")
 	case <-time.After(50 * time.Millisecond):
 	}
-	run.SetEvictedRuns([]instance.EvictedRun{{RunID: "victim", Model: "weights"}})
+	run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: []instance.EvictedRun{{RunID: "victim", Model: "weights"}}})
 	close(done)
 	ev := subscribeTerminal(t, reg, h.ID(), 3*time.Second)
 	require.Equal(t, string(httperr.CodeCatalogPublicationFailed), ev.Meta["code"])
@@ -230,7 +230,7 @@ func TestNodeRunJobCatalogEffects(t *testing.T) {
 				m.publishCatalog = func() error { calls++; return errors.New("reverse connection unavailable") }
 				run := instance.NewInstance("run", "any-provider", tc.model, 0, 0, 0)
 				if tc.name != "isolated node" {
-					run.SetEvictedRuns([]instance.EvictedRun{{RunID: "victim", Model: tc.victim}})
+					run.SetAdmissionEffects(instance.AdmissionEffects{EvictedRuns: []instance.EvictedRun{{RunID: "victim", Model: tc.victim}}})
 				}
 				run.SetStatus(status)
 				h, err := reg.StartDetached(jobs.KindRun, "", jobs.Meta{"run_id": run.ID})
