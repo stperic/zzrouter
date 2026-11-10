@@ -282,12 +282,12 @@ func TestSourceRequirementsAreStrictApprovedRoots(t *testing.T) {
 	roots, err = parseSourceRequirements([]byte("engine>=1\n"))
 	require.NoError(t, err)
 	report := `{"version":"1","install":[{"metadata":{"name":"engine","version":"1.5"},"requested":true,"download_info":{"url":"https://files.pythonhosted.org/engine.whl","archive_info":{"hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}]}`
-	inventory, err := ParsePipReport([]byte(report), roots)
+	inventory, err := ResolvePipReport(t.Context(), []byte(report), roots, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "engine==1.5 --hash=sha256:"+strings.Repeat("a", 64)+"\n", InventoryRequirements(inventory))
-	_, err = ParsePipReport([]byte(strings.Replace(report, `"name":"engine"`, `"name":"other"`, 1)), roots)
+	_, err = ResolvePipReport(t.Context(), []byte(strings.Replace(report, `"name":"engine"`, `"name":"other"`, 1)), roots, nil)
 	require.ErrorContains(t, err, "unexpected root")
-	_, err = ParsePipReport([]byte(strings.Replace(report, strings.Repeat("a", 64), "", 1)), roots)
+	_, err = ResolvePipReport(t.Context(), []byte(strings.Replace(report, strings.Repeat("a", 64), "", 1)), roots, nil)
 	require.ErrorContains(t, err, "missing SHA256")
 }
 

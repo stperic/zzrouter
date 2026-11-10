@@ -96,7 +96,7 @@ func TestAcceptedAuthorityRechecksWithoutUsingPatchedDesiredRecipe(t *testing.T)
 func TestDependencyReportProvenance(t *testing.T) {
 	fixture := `{"version":"1","install":[{"metadata":{"name":"engine","version":"1.0"},"requested":true,"is_direct":false,"download_info":{"url":"https://files.pythonhosted.org/packages/engine.whl","archive_info":{"hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}]}`
 	roots := map[string]string{"engine": "==1.0"}
-	inventory, err := ParsePipReport([]byte(fixture), roots)
+	inventory, err := ResolvePipReport(t.Context(), []byte(fixture), roots, nil)
 	require.NoError(t, err)
 	require.Len(t, inventory, 1)
 	assert.Contains(t, InventoryRequirements(inventory), "engine==1.0 --hash=sha256:")
@@ -106,19 +106,19 @@ func TestDependencyReportProvenance(t *testing.T) {
 	entry["is_direct"] = true
 	raw, err := json.Marshal(data)
 	require.NoError(t, err)
-	_, err = ParsePipReport(raw, roots)
+	_, err = ResolvePipReport(t.Context(), raw, roots, nil)
 	assert.Error(t, err)
 	entry["is_direct"] = false
 	entry["download_info"].(map[string]any)["url"] = "http://untrusted.test/engine.whl"
 	raw, err = json.Marshal(data)
 	require.NoError(t, err)
-	_, err = ParsePipReport(raw, roots)
+	_, err = ResolvePipReport(t.Context(), raw, roots, nil)
 	assert.Error(t, err)
 	url := "https://download.pytorch.org/whl/cu130/engine-1.0%2Bcu130-cp311-cp311-linux_x86_64.whl"
 	entry["download_info"].(map[string]any)["url"] = url
 	raw, err = json.Marshal(data)
 	require.NoError(t, err)
-	inventory, err = ParsePipReport(raw, roots)
+	inventory, err = ResolvePipReport(t.Context(), raw, roots, nil)
 	require.NoError(t, err)
 	assert.Equal(t, url, inventory[0].ArtifactURL)
 	assert.NotContains(t, InventoryRequirements(inventory), url, "artifact URLs are provenance, never command input")

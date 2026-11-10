@@ -1,6 +1,7 @@
 package install
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -14,8 +15,11 @@ import (
 // ResolvedPackage is resolver evidence, not permission to add a new root package.
 type ResolvedPackage = fsroot.ManifestPackage
 
-// ParsePipReport refuses direct references and unhashed artifacts before installation.
-func ParsePipReport(data []byte, roots map[string]string) ([]ResolvedPackage, error) {
+// ResolvePipReport validates resolver evidence before obtaining missing wheel hashes.
+func ResolvePipReport(ctx context.Context, data []byte, roots map[string]string, hashMissing func(context.Context, string) (string, error)) ([]ResolvedPackage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(data) > 8<<20 {
 		return nil, fmt.Errorf("dependency report exceeds bound")
 	}
@@ -60,7 +64,7 @@ func ParsePipReport(data []byte, roots map[string]string) ([]ResolvedPackage, er
 			return nil, fmt.Errorf("artifact provenance for %s: %w", name, err)
 		}
 		hash := entry.Download.Archive.Hashes["sha256"]
-		if len(hash) != 64 || strings.IndexFunc(hash, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) >= 0 {
+		if !resolvableInventoryHash(hash, entry.Download.URL, hashMissing != nil) {
 			return nil, fmt.Errorf("missing SHA256 for %s", name)
 		}
 		if entry.Requested {
@@ -84,7 +88,38 @@ func ParsePipReport(data []byte, roots map[string]string) ([]ResolvedPackage, er
 		}
 	}
 	slices.SortFunc(inventory, func(a, b ResolvedPackage) int { return strings.Compare(a.Name, b.Name) })
+	for index := range inventory {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pkg := &inventory[index]
+		if pkg.SHA256 != "" {
+			continue
+		}
+		hash, err := hashMissing(ctx, pkg.ArtifactURL)
+		if err != nil {
+			return nil, fmt.Errorf("resolve SHA256 for %s: %w", pkg.Name, err)
+		}
+		if !validInventoryHash(hash) {
+			return nil, fmt.Errorf("missing SHA256 for %s", pkg.Name)
+		}
+		pkg.SHA256 = hash
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return inventory, nil
+}
+
+func resolvableInventoryHash(hash, artifactURL string, canFetch bool) bool {
+	if hash != "" {
+		return validInventoryHash(hash)
+	}
+	return canFetch && strings.HasSuffix(artifactURL, ".whl")
+}
+
+func validInventoryHash(hash string) bool {
+	return len(hash) == 64 && strings.IndexFunc(hash, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) < 0
 }
 
 // InventoryRequirements pins the accepted resolution without exposing executable input.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Complete missing wheel hashes during managed dependency resolution, including metadata-only PyTorch index results. Preserve complete plan validation, hash-required installation and cancellation cleanup.
+
 - Support managed ComfyUI on Windows/amd64 through existing install, upgrade and run APIs. Add service-visible Python discovery, Windows CUDA library observations and safe console launcher relocation. Select platform-specific package indexes before tier merging, preserving Linux effective recipes. Raise protocol current/minimum from 19 to 20; upgrade all nodes together.
 
 - Refresh the managed ComfyUI source archive from 0.40.0 to 0.44.0 for the existing Linux API upgrade. Preserve SHA256 verification, hashed dependency resolution and transactional payload activation.

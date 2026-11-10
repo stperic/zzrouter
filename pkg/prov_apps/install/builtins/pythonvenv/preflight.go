@@ -2,6 +2,8 @@ package pythonvenv
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -59,7 +61,65 @@ func resolvePackages(ctx context.Context, directory, interpreter string, environ
 	if len(data) > 8<<20 {
 		return nil, fmt.Errorf("dependency report exceeds bound")
 	}
-	return install.ParsePipReport(data, roots)
+	python := venvPython(filepath.Join(scratch, "venv"))
+	return install.ResolvePipReport(ctx, data, roots, func(ctx context.Context, artifactURL string) (string, error) {
+		return resolveWheelHash(ctx, scratch, python, environment, artifactURL)
+	})
+}
+
+// resolverWheelLimit bounds accepted hashless wheels, including multi-GiB CUDA wheels.
+// Pip's download is bounded by the resolver deadline, not this post-download limit.
+const resolverWheelLimit int64 = 8 << 30
+
+func resolveWheelHash(ctx context.Context, scratch, python string, environment []string, artifactURL string) (string, error) {
+	directory, err := os.MkdirTemp(scratch, "wheel-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	if err := runPython(ctx, python, "", environment, "-I", "-m", "pip", "--disable-pip-version-check", "download", "--no-input", "--no-index", "--no-deps", "--only-binary=:all:", "--no-cache-dir", "--dest", directory, artifactURL); err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) != 1 || !entries[0].Type().IsRegular() || !strings.HasSuffix(entries[0].Name(), ".whl") {
+		return "", fmt.Errorf("resolver must download exactly one regular wheel")
+	}
+	file, err := os.Open(filepath.Join(directory, entries[0].Name()))
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > resolverWheelLimit {
+		return "", fmt.Errorf("resolved wheel exceeds size bound or is empty")
+	}
+	hash := sha256.New()
+	buffer := make([]byte, 64<<10)
+	var size int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		n, readErr := file.Read(buffer)
+		size += int64(n)
+		if size > resolverWheelLimit {
+			return "", fmt.Errorf("resolved wheel exceeds size bound")
+		}
+		_, _ = hash.Write(buffer[:n])
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func runPython(ctx context.Context, python, directory string, environment []string, args ...string) error {
