@@ -120,7 +120,7 @@ func ensureSourceData(runtime *config.AppRuntimeConfig, directory string, create
 	if err != nil {
 		return err
 	}
-	children := []string{"."}
+	children := append([]string{"."}, runtime.DataSubdirs...)
 	if runtime.ModelStore != nil {
 		for _, child := range append([]string{"."}, runtime.ModelStore.Categories...) {
 			children = append(children, filepath.Join(runtime.ModelStore.Directory, child))
@@ -130,7 +130,14 @@ func ensureSourceData(runtime *config.AppRuntimeConfig, directory string, create
 		if err := fsroot.VerifyProviderPath(directory, filepath.Join(runtime.DataDir, child)); err != nil {
 			return err
 		}
-		if create {
+		if info, err := os.Stat(filepath.Join(data, child)); err == nil && !info.IsDir() {
+			return fmt.Errorf("data path %q must be a directory", child)
+		} else if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if create {
+		for _, child := range children {
 			if err := os.MkdirAll(filepath.Join(data, child), 0700); err != nil {
 				return err
 			}

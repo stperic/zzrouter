@@ -51,6 +51,7 @@ func TestShippedSourceReconcilesAndReceivesOnlyReleaseAuthority(t *testing.T) {
 	assert.Nil(t, snapshot.Policy)
 	assert.Equal(t, "0.44.0", snapshot.PinnedVersion)
 	assert.Equal(t, "source", snapshot.WorkingDir)
+	assert.Equal(t, []string{"custom_nodes"}, snapshot.DataRuntime.DataSubdirs)
 	assert.Equal(t, &config.InstallSource{Version: "0.44.0", URL: "https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v0.44.0.tar.gz", SHA256: "7d796d74f42fe862eb55d1c217349fee92c2cac5d4ababe06c8b73f90c936dc0", StripComponents: 1, Requirements: "requirements.txt", Entrypoint: "main.py"}, snapshot.Recipe.Source)
 	require.NoError(t, snapshot.Recheck(t.Context()))
 	changed, err = templates.ReconcileManagedSpine(directory)

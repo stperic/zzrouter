@@ -41,6 +41,7 @@ defaults:
     keep-alive: "5m"
 runtime:
   data_dir: data
+  data_subdirs: [custom_nodes]
   model_store:
     directory: models
     categories: [diffusion_models, text_encoders, vae, loras, checkpoints, controlnet, clip_vision, upscale_models, embeddings, audio_encoders, model_patches, latent_upscale_models]

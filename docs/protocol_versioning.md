@@ -27,7 +27,7 @@ push that the worker refuses.
 
 Protocol 20 raises both the current version and minimum from 19 to 20. Managed
 Python index declarations carry OS-specific `indexes.platforms` branches, which
-older strict config loaders reject. Upgrade coordinator and workers together,
+older strict config loaders reject. The completed protocol-20 build also declares required mutable folders with `runtime.data_subdirs`. Upgrade coordinator and workers together,
 preserving CA and identity state. Install routes and jobs are unchanged. Existing
 Linux ComfyUI payloads need no reinstall because their effective recipe is unchanged.
 

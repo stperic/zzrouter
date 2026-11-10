@@ -16,7 +16,8 @@ func modelStoreProvider() *OnDemandProvider {
 		Name: "studio", RunScope: RunScopeNode,
 		Runtime: OnDemandRuntime{
 			DataDir: "data", ModelStore: &ModelStoreConfig{Directory: "models", Categories: []string{"vae", "text_encoders"}},
-			PortRange: []int{8188, 8188}, BasePort: 8188,
+			DataSubdirs: []string{"custom_nodes"},
+			PortRange:   []int{8188, 8188}, BasePort: 8188,
 			Execution: ExecutionConfig{Type: "python", Command: "python", WorkingDir: "source", Args: []string{"--base-directory", PlaceholderDataDir}},
 		},
 	}
@@ -152,7 +153,7 @@ func TestModelStoreUpdateSaveReconcileAndSync(t *testing.T) {
 	require.NoError(t, cfg.UpdateApp("comfyui", func(s *ServiceConfig) error {
 		s.Enabled = new(true)
 		s.Defaults.Parameters["gpu-reserve-mib"] = "16384"
-		s.Runtime.DataDir, s.Runtime.ModelStore = "", nil
+		s.Runtime.DataDir, s.Runtime.DataSubdirs, s.Runtime.ModelStore = "", nil, nil
 		s.Runtime.Execution.Args = []string{"main.py", "--port", PlaceholderPort, "--base-directory", "../data"}
 		return nil
 	}))
@@ -164,11 +165,13 @@ func TestModelStoreUpdateSaveReconcileAndSync(t *testing.T) {
 	require.NoError(t, err)
 	studio := fresh.GetOnDemand(p.Name)
 	require.Equal(t, "storage/nested", studio.Runtime.DataDir)
+	require.Equal(t, p.Runtime.DataSubdirs, studio.Runtime.DataSubdirs)
 	require.Equal(t, p.Runtime.ModelStore, studio.Runtime.ModelStore)
 	comfy := fresh.GetOnDemand("comfyui")
 	require.True(t, *comfy.Enabled)
 	require.Equal(t, "16384", comfy.Defaults.Parameters["gpu-reserve-mib"])
 	require.Equal(t, "data", comfy.Runtime.DataDir)
+	require.Equal(t, []string{"custom_nodes"}, comfy.Runtime.DataSubdirs)
 	require.Equal(t, []string{"diffusion_models", "text_encoders", "vae", "loras", "checkpoints", "controlnet", "clip_vision", "upscale_models", "embeddings", "audio_encoders", "model_patches", "latent_upscale_models"}, comfy.Runtime.ModelStore.Categories)
 
 	body, err := os.ReadFile(filepath.Join(dir, "on-demand", p.Name, "config.yaml"))

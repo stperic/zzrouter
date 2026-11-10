@@ -503,3 +503,43 @@ func TestSourcePairHonorsDisabledHardeningPolicy(t *testing.T) {
 		require.NotZero(t, info.Mode().Perm()&0200)
 	}
 }
+
+func TestSourceDeclaredDataSubdirectories(t *testing.T) {
+	directory := t.TempDir()
+	runtime := &config.AppRuntimeConfig{DataDir: "data", DataSubdirs: []string{"custom_nodes", "workflows"}}
+	require.NoError(t, ensureSourceData(runtime, directory, false))
+	require.NoDirExists(t, filepath.Join(directory, "data"), "preview must not initialize folders")
+	require.NoError(t, ensureSourceData(runtime, directory, true))
+	for _, subdir := range runtime.DataSubdirs {
+		require.DirExists(t, filepath.Join(directory, "data", subdir))
+	}
+	marker := filepath.Join(directory, "data", "custom_nodes", "operator.py")
+	require.NoError(t, os.WriteFile(marker, []byte("operator code"), 0600))
+	before := savedTree(t, filepath.Join(directory, "data"))
+	require.NoError(t, ensureSourceData(runtime, directory, true))
+	require.Equal(t, before, savedTree(t, filepath.Join(directory, "data")))
+}
+
+func TestSourceDataRefusesAllInvalidTargetsBeforeCreation(t *testing.T) {
+	for _, collision := range []string{"file", "symlink"} {
+		t.Run(collision, func(t *testing.T) {
+			directory := t.TempDir()
+			data := filepath.Join(directory, "data")
+			require.NoError(t, os.Mkdir(data, 0700))
+			target := filepath.Join(data, "custom_nodes")
+			if collision == "file" {
+				require.NoError(t, os.WriteFile(target, []byte("keep"), 0600))
+			} else {
+				if err := os.Symlink(t.TempDir(), target); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			runtime := &config.AppRuntimeConfig{DataDir: "data", DataSubdirs: []string{"workflows", "custom_nodes"}}
+			before := savedTree(t, data)
+			for _, create := range []bool{false, true} {
+				require.Error(t, ensureSourceData(runtime, directory, create))
+				require.Equal(t, before, savedTree(t, data), "a later refusal cannot initialize an earlier target")
+			}
+		})
+	}
+}

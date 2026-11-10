@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Declare required mutable data subfolders through runtime config and create them in the existing managed installer. Initialize ComfyUI custom_nodes on fresh installs and upgrades without changing model ownership or dependency recipes.
+
 - Keep launcher lifecycle pipes out of child stdin, preventing native Windows Python startup from blocking while preserving file and terminal input.
 
 - Let provider installs use their operation deadlines without a competing 30-minute job silence limit. Preserve explicit cancellation, shutdown, custom inactivity policies and terminal retention.

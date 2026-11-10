@@ -376,6 +376,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 	return &AppRuntimeConfig{
 		DataDir:               rt.DataDir,
+		DataSubdirs:           rt.DataSubdirs,
 		ModelStore:            rt.ModelStore,
 		ActivityProbe:         rt.ActivityProbe,
 		PortRange:             rt.PortRange,
