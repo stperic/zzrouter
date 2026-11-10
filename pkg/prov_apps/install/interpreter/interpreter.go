@@ -172,7 +172,7 @@ func InstallHint(req *config.PythonRequirement) string {
 // stare at bare 3s in the range logic wondering what the magic number means.
 const pythonMajor = 3
 
-// probeTimeout caps each `--version` call. 3s is generous — Python
+// probeTimeout caps each interpreter probe. 3s is generous — Python
 // startup on macOS is sub-100ms cold — but safe against a pathologically
 // slow NFS mount or a misconfigured interpreter that hangs on import.
 const probeTimeout = 3 * time.Second
@@ -235,7 +235,7 @@ func describeRange(req *config.PythonRequirement) string {
 // runVersionDefault is the production --version runner. Isolated so the
 // Options.RunVersion seam can swap the whole thing out under test.
 func runVersionDefault(ctx context.Context, path string) (string, error) {
-	out, err := host.CommandContext(ctx, path, "--version").CombinedOutput()
+	out, err := host.CommandContext(ctx, path, versionProbeArgs()...).CombinedOutput()
 	if err != nil {
 		return "", err
 	}

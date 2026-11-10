@@ -16,6 +16,8 @@ import (
 //
 // "python3" stays at the end as a fallback for minimal Docker images
 // and stripped Linux distros where only the unversioned name exists.
+func versionProbeArgs() []string { return []string{"--version"} }
+
 func defaultCandidates() []string {
 	return []string{
 		"python3.13",

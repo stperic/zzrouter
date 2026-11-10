@@ -9,6 +9,16 @@ and build expectations, startup imports, fixed verification checks, wheel-only
 mode, a bounded timeout and a release-owned toolkit layout. They contain no
 commands, hooks, URLs to scripts, host package actions or executable paths.
 
+`indexes.platforms` accepts shallow `darwin`, `linux` and `windows` primary/extra
+URL overrides. The executing node chooses its OS within each tier before merging
+release, defaults and node settings. A generic node `extra: []` therefore clears a
+release's Windows extras. All branches are validated; inactive branches do not
+enter execution fingerprints or demand operator authority. Configuration GET/PATCH
+views retain the tier-merged declaration and its OS branches. Install plans and
+environment observations report the executing node's selected indexes. Mutation
+checks use a known target OS; an unknown OS conservatively checks every supported
+OS before requesting authority acknowledgment.
+
 The shipped vLLM, MLX and MLX vision recipes all use the same Python installer.
 Base installs use the provider pin when no version is supplied. Other pip runtimes
 use their recipe's `pinned_version` as the fresh-install seed. Upgrades without a

@@ -33,8 +33,32 @@ type InstallRecipe struct {
 
 // InstallIndexes names pip sources; extra is a pointer to preserve an explicit empty array.
 type InstallIndexes struct {
+	Primary   *string                           `yaml:"primary,omitempty" json:"primary,omitempty"`
+	Extra     *[]string                         `yaml:"extra,omitempty" json:"extra,omitempty"`
+	Platforms map[string]InstallPlatformIndexes `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+}
+
+// InstallPlatformIndexes overrides index URLs within one configuration tier.
+type InstallPlatformIndexes struct {
 	Primary *string   `yaml:"primary,omitempty" json:"primary,omitempty"`
 	Extra   *[]string `yaml:"extra,omitempty" json:"extra,omitempty"`
+}
+
+// ForOS selects this tier's index URLs without retaining inactive OS branches.
+func (i InstallIndexes) ForOS(goos string) *InstallIndexes {
+	if platform, ok := i.Platforms[goos]; ok {
+		if platform.Primary != nil {
+			i.Primary = platform.Primary
+		}
+		if platform.Extra != nil {
+			i.Extra = platform.Extra
+		}
+	}
+	i.Platforms = nil
+	if i.Primary == nil && i.Extra == nil {
+		return nil
+	}
+	return &i
 }
 
 // InstallCompanion is another approved root in the same resolver operation.
@@ -58,6 +82,18 @@ type ResolvedInstall struct {
 
 // ResolveInstall merges base, defaults, and the exact node without model tiers.
 func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, error) {
+	return s.resolveInstall(node, runtime, "")
+}
+
+// ResolveInstallForOS selects indexes on the named OS before merging configuration tiers.
+func (s ServiceConfig) ResolveInstallForOS(node, runtime, goos string) (ResolvedInstall, error) {
+	if !slices.Contains(KnownPlatformOS, goos) {
+		return ResolvedInstall{}, fmt.Errorf("install: unknown platform %q", goos)
+	}
+	return s.resolveInstall(node, runtime, goos)
+}
+
+func (s ServiceConfig) resolveInstall(node, runtime, goos string) (ResolvedInstall, error) {
 	out := ResolvedInstall{Provenance: map[string]string{}}
 	merged := map[string]any{}
 	tiers := []struct {
@@ -84,6 +120,14 @@ func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, er
 		}
 		if i > 0 && (recipe.Source != nil || s.Install != nil && s.Install.Runtimes[runtime].Source != nil) {
 			return out, fmt.Errorf("source runtime %q is release-owned; install overrides are forbidden", runtime)
+		}
+		if recipe.Indexes != nil {
+			if err := recipe.Indexes.validate(); err != nil {
+				return out, err
+			}
+			if goos != "" {
+				recipe.Indexes = recipe.Indexes.ForOS(goos)
+			}
 		}
 		data, err := json.Marshal(recipe)
 		if err != nil {
@@ -208,9 +252,31 @@ func (r InstallRecipe) validateIndexes() error {
 	if r.Indexes == nil || r.Indexes.Primary == nil {
 		return fmt.Errorf("indexes.primary: HTTPS index required")
 	}
-	indexes := []string{*r.Indexes.Primary}
-	if r.Indexes.Extra != nil {
-		indexes = append(indexes, *r.Indexes.Extra...)
+	return r.Indexes.validate()
+}
+
+func (i InstallIndexes) validate() error {
+	if err := validateIndexURLs(i.Primary, i.Extra); err != nil {
+		return err
+	}
+	for goos, platform := range i.Platforms {
+		if !slices.Contains(KnownPlatformOS, goos) {
+			return fmt.Errorf("indexes.platforms: unknown OS %q", goos)
+		}
+		if err := validateIndexURLs(platform.Primary, platform.Extra); err != nil {
+			return fmt.Errorf("indexes.platforms.%s: %w", goos, err)
+		}
+	}
+	return nil
+}
+
+func validateIndexURLs(primary *string, extra *[]string) error {
+	var indexes []string
+	if primary != nil {
+		indexes = append(indexes, *primary)
+	}
+	if extra != nil {
+		indexes = append(indexes, *extra...)
 	}
 	if len(indexes) > 5 {
 		return fmt.Errorf("indexes: at most five sources")
@@ -383,6 +449,11 @@ func (s ServiceConfig) ValidateInstall() error {
 		for _, node := range nodes {
 			if _, err := s.ResolveInstall(node, runtime); err != nil {
 				return fmt.Errorf("install.runtimes.%s: %w", runtime, err)
+			}
+			for _, goos := range KnownPlatformOS {
+				if _, err := s.ResolveInstallForOS(node, runtime, goos); err != nil {
+					return fmt.Errorf("install.runtimes.%s (%s): %w", runtime, goos, err)
+				}
 			}
 		}
 	}

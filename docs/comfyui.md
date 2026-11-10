@@ -8,7 +8,15 @@ Only the coordinator initiates cluster connections, including enrollment, renewa
 
 ## Install and enable
 
-The shipped provider starts disabled. Managed installation requires Linux/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+The shipped provider starts disabled. Managed installation requires Linux/amd64 or Windows/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+
+On Windows, provision a supported 64-bit Python for the service account, including
+pip and venv. The installer discovers PEP 514 registrations for that account and
+machine-wide 64-bit installations without changing PATH. NVIDIA drivers remain a
+host prerequisite. The release selects official CUDA 13.2 PyTorch wheels on
+Windows; Linux keeps its existing PyPI resolution. CPU wheels and mismatched CUDA
+companions fail verification. Choose an explicit node/request GPU reservation
+that fits its available VRAM when the default 8192 MiB reservation cannot fit.
 
 Send one request to the coordinator with an admin key, replacing `<name>` with the target node:
 
@@ -21,11 +29,15 @@ The response returns HTTP 202 with `job_id` and the owning `node`. Watch `GET /z
 
 zzRouter installs the release-pinned ComfyUI 0.44.0 archive into `<install_dir>/comfyui/source/` and its dependencies into `comfyui/venv/`, where `<install_dir>` comes from `providers.install_dir`. It verifies the shipped archive SHA256 before extraction, resolves the archive's requirements through PyPI and installs the accepted inventory with `--require-hashes --no-deps --only-binary=:all:`. Reproducibility follows vLLM's current standard: the source bytes are pinned, and the dependency resolution is hashed at install time. Dependency versions can change between resolutions as PyPI changes. Launch does not fetch or install dependencies.
 
+The accepted dependency step allows 90 minutes. Provider install jobs follow the [shared job lifecycle](api.md), including cancellation and shutdown.
+
+If an index supplies wheel metadata without an artifact SHA256, planning downloads that exact selected wheel without dependencies and computes its digest. Supplied hashes remain unchanged. Only complete, validated inventories can become install plans. Hashless source archives remain refused. The resolver deadline bounds acquisition time; an 8 GiB post-download size limit bounds accepted hashless wheels. These downloads stay inside the disposable resolver directory.
+
 Source and venv are staged, checked with the installed interpreter and activated together. A failed install or upgrade restores the previous payload and records. Installed version comes from the managed completion record. A new zzRouter release with a new source pin supplies the upgrade target; use the existing upgrade or force-install flow after stopping ComfyUI. The source declaration cannot be overridden through install requests or node configuration, and disposable source installs and launches are refused. After a source pin changes, installed verification and environment imports of the older recipe are refused until upgrade completes. Payload rollback preserves the older runtime for ordinary launches, but does not restore diagnostic authority under the newer release.
 
 An incomplete managed record reports `managed installation record is incomplete; reinstall with force`. Force can repair a managed payload with valid, matching recorded ownership. A different recorded working directory refuses install even with force: uninstall first. Uninstall uses the source directory recorded by the installation, keeps data and preserves unrelated directories. Missing or unsafe recorded ownership cannot authorize deletion or be inferred from a stray version file.
 
-Mutable files stay under `comfyui/data/`. The existing `runtime.data_dir: data` expands `--base-directory ${DATA_DIR}` to that absolute path; `model_store.directory: models` selects the model root. The installer creates only a missing data root and declared model-store categories. ComfyUI creates its input, output, user and temp folders itself. Install, upgrade and uninstall preserve existing data, including models, custom nodes and workflow files; uninstall removes only the managed payload and records and also keeps any operator `python/` directory. No data purge is implied.
+Mutable files stay under `comfyui/data/`. The existing `runtime.data_dir: data` expands `--base-directory ${DATA_DIR}` to that absolute path; `model_store.directory: models` selects the model root. The installer creates a missing data root, declared model-store categories and the required empty folders listed in `runtime.data_subdirs` (`custom_nodes` for ComfyUI). ComfyUI creates its input, output, user and temp folders itself. Install, upgrade and uninstall preserve existing data, including models, custom nodes and workflow files; uninstall removes only the managed payload and records and also keeps any operator `python/` directory. No data purge is implied.
 
 Managed source and venv belong to the service account; existing data keeps its ownership and permissions and must be writable by that account. With the default `harden_venv` policy, source and venv are read-only, so ordinary extension pip installs at runtime fail; data remains writable. This preserves the existing provider permission model: the same owner can change permissions, so hardening is not a separate privilege boundary. Custom nodes remain operator-managed in `data/custom_nodes/`; their Python dependencies can be approved through the protected install policy below. The installer does not install custom-node code or ComfyUI-Manager.
 

@@ -39,6 +39,19 @@ func (p *OnDemandProvider) validateDataDirectory() error {
 			}
 		}
 	}
+	if len(rt.DataSubdirs) > 0 && (p.RunScope != RunScopeNode || rt.DataDir == "") {
+		return fmt.Errorf("runtime.data_subdirs requires node run_scope and runtime.data_dir")
+	}
+	if len(rt.DataSubdirs) > 64 {
+		return fmt.Errorf("runtime.data_subdirs must contain at most 64 directories")
+	}
+	seenSubdirs := make(map[string]bool, len(rt.DataSubdirs))
+	for _, subdir := range rt.DataSubdirs {
+		if len(subdir) > 128 || !validModelCategory(subdir) || seenSubdirs[subdir] {
+			return fmt.Errorf("runtime.data_subdirs must contain unique lowercase directory identifiers of at most 128 characters")
+		}
+		seenSubdirs[subdir] = true
+	}
 	if rt.ModelStore == nil {
 		return nil
 	}

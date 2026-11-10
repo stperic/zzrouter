@@ -10852,6 +10852,13 @@ components:
           properties:
             primary: { type: string, format: uri }
             extra: { type: array, maxItems: 4, items: { type: string, format: uri } }
+            platforms:
+              type: object
+              additionalProperties: false
+              properties:
+                darwin: { $ref: '#/components/schemas/InstallPlatformIndexes' }
+                linux: { $ref: '#/components/schemas/InstallPlatformIndexes' }
+                windows: { $ref: '#/components/schemas/InstallPlatformIndexes' }
         companions:
           type: object
           maxProperties: 24
@@ -10867,6 +10874,13 @@ components:
           properties:
             imports: { type: array, maxItems: 32, items: { type: string } }
             checks: { type: array, maxItems: 8, items: { type: string, enum: [pip_check, imports, cuda_companions, cuda_available, metal_available, managed_toolkit] } }
+
+    InstallPlatformIndexes:
+      type: object
+      additionalProperties: false
+      properties:
+        primary: { type: string, format: uri }
+        extra: { type: array, maxItems: 4, items: { type: string, format: uri } }
 
     InstallOverrides:
       type: object
@@ -13297,6 +13311,9 @@ components:
         the tier each value came from. Served by
         `GET /providers/{name}/resolved` and returned by the merge-patch
         route so a writer sees the result without a follow-up read.
+        The install member is the tier-merged declaration, retaining OS index
+        branches. Install plans and environment observations select indexes on
+        the executing node's OS before merging tiers.
       required: [parameters, environment]
       properties:
         install: { type: object, additionalProperties: { $ref: '#/components/schemas/ResolvedInstall' } }

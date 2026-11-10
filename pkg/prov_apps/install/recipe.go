@@ -80,7 +80,7 @@ var ErrInstallPolicy = fmt.Errorf("protected install policy required")
 
 // ResolveRecipe validates syntax and checks release templates or protected node policy.
 func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, installed *fsroot.InstallManifest) (RecipeSnapshot, error) {
-	resolved, err := sc.ResolveInstall(node, runtime)
+	resolved, err := sc.ResolveInstallForOS(node, runtime, fsroot.CurrentPlatform().OS)
 	if err != nil {
 		return RecipeSnapshot{}, err
 	}
@@ -192,7 +192,7 @@ func releaseRecipeValue(recipe config.InstallRecipe) config.InstallRecipe {
 		recipe.Companions = nil
 	}
 	if recipe.Indexes != nil {
-		indexes := *recipe.Indexes
+		indexes := *recipe.Indexes.ForOS(fsroot.CurrentPlatform().OS)
 		if indexes.Extra != nil && len(*indexes.Extra) == 0 {
 			indexes.Extra = nil
 		}

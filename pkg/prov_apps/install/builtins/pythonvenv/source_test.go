@@ -347,3 +347,19 @@ func TestSourcePrerequisitesUseThePlanInterpreter(t *testing.T) {
 	require.True(t, report.AllOK, "%v", report.Results)
 	require.Equal(t, filepath.Base(i.chosen.Path), "deleted-python", "checking the plan must not mutate the installer's interpreter cache")
 }
+
+func TestSourcePlanBindsRequiredDataDirectories(t *testing.T) {
+	fsroot.SetProviderRootOverride(t.TempDir())
+	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
+	snapshot := sourceSnapshot()
+	snapshot.DataRuntime = &config.AppRuntimeConfig{DataDir: "data"}
+	i := New(Config{Name: snapshot.Runtime, Recipe: func(string, string) (install.RecipeSnapshot, error) { return snapshot, nil }})
+	before, err := i.InstallPlan(t.Context(), "1.0.0")
+	require.NoError(t, err)
+	snapshot.DataRuntime.DataSubdirs = []string{"custom_nodes"}
+	after, err := i.InstallPlan(t.Context(), "1.0.0")
+	require.NoError(t, err)
+	require.NotEqual(t, before.PlanID, after.PlanID, "changed data initialization requires a new accepted preview")
+	require.Equal(t, before.Recipe.Fingerprint, after.Recipe.Fingerprint, "data initialization does not change dependency recipe")
+	require.NoDirExists(t, filepath.Join(fsroot.ProviderDir(snapshot.Runtime), "data"))
+}

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Declare required mutable data subfolders through runtime config and create them in the existing managed installer. Initialize ComfyUI custom_nodes on fresh installs and upgrades without changing model ownership or dependency recipes.
+
+- Keep launcher lifecycle pipes out of child stdin, preventing native Windows Python startup from blocking while preserving file and terminal input.
+
+- Let provider installs use their operation deadlines without a competing 30-minute job silence limit. Preserve explicit cancellation, shutdown, custom inactivity policies and terminal retention.
+
+- Complete missing wheel hashes during managed dependency resolution, including metadata-only PyTorch index results. Preserve complete plan validation, hash-required installation and cancellation cleanup.
+
+- Support managed ComfyUI on Windows/amd64 through existing install, upgrade and run APIs. Add service-visible Python discovery, Windows CUDA library observations and safe console launcher relocation. Select platform-specific package indexes before tier merging, preserving Linux effective recipes. Raise protocol current/minimum from 19 to 20; upgrade all nodes together.
+
 - Refresh the managed ComfyUI source archive from 0.40.0 to 0.44.0 for the existing Linux API upgrade. Preserve SHA256 verification, hashed dependency resolution and transactional payload activation.
 
 - Query ComfyUI templates by catalog date, text and open-source metadata with sort/order and limit/offset pagination. Align registry model search parameters, apply cloud/Ollama sorting before pagination, honor HuggingFace offsets through cursors, and refuse unsupported criteria. Preserve source-specific dates and existing defaults.

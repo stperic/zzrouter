@@ -948,9 +948,8 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 	}
 
 	// Drain any in-flight async installs BEFORE flipping the shutdown
-	// gate. On ctx timeout we warn + orphan — force-killing a pip
-	// install halfway leaves a dirty venv; pkg/jobs' inactivity-gated
-	// TTL reaps the stale handle on next startup.
+	// gate. A drain timeout is reported; subsequent registry shutdown cancels
+	// job contexts. Unfinished installs are not persisted across a restart.
 	if m.installs != nil {
 		if err := m.installs.WaitForInstalls(ctx); err != nil {
 			slog.Warn("async install goroutines did not drain before shutdown deadline",

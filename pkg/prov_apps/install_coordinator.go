@@ -412,8 +412,8 @@ func (c *InstallCoordinator) releaseJob(provider, jobID string) {
 // WaitForInstalls blocks until every detached install/upgrade/uninstall
 // goroutine exits, or ctx expires. Called from ProviderAppManager.Stop so
 // graceful shutdown drains the installs. On ctx timeout, returns ctx.Err()
-// and logs a warn (callers are expected to force-exit; orphaned installs
-// will be reaped by pkg/jobs' inactivity-gated TTL on next startup).
+// and logs a warning. Registry shutdown cancels job contexts; the in-memory
+// registry does not persist or resume unfinished installs after a restart.
 func (c *InstallCoordinator) WaitForInstalls(ctx context.Context) error {
 	done := make(chan struct{})
 	go func() {

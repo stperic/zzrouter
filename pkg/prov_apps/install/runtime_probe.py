@@ -171,15 +171,44 @@ def library_path_details(paths):
     return details
 
 
+def windows_cuda_modules():
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel.K32EnumProcessModulesEx.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32]
+    kernel.K32EnumProcessModulesEx.restype = ctypes.c_int
+    kernel.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    kernel.GetModuleFileNameW.restype = ctypes.c_uint32
+    modules = (ctypes.c_void_p * 2048)()
+    needed = ctypes.c_uint32()
+    if not kernel.K32EnumProcessModulesEx(kernel.GetCurrentProcess(), modules, ctypes.sizeof(modules), ctypes.byref(needed), 3):
+        raise RuntimeError("loaded module enumeration failed: " + str(ctypes.get_last_error()))
+    if needed.value > ctypes.sizeof(modules) or needed.value % ctypes.sizeof(ctypes.c_void_p):
+        raise RuntimeError("loaded module enumeration exceeds observation limit")
+    result = {}
+    for module in modules[:needed.value // ctypes.sizeof(ctypes.c_void_p)]:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel.GetModuleFileNameW(module, buffer, len(buffer))
+        if not length or length >= len(buffer):
+            raise RuntimeError("loaded module path unavailable or truncated")
+        name = os.path.basename(buffer.value).lower()
+        if name.startswith("cudart64_") and name.endswith(".dll"):
+            result[os.path.realpath(buffer.value)] = module
+    return result
+
+
 def loaded_cuda_runtime():
     # Force lazy CUDA initialization before inspecting the mapped libraries.
     importlib.import_module("torch").cuda.init()
-    with open("/proc/self/maps") as maps:
-        data = maps.read((4 << 20) + 1)
-    if len(data) > 4 << 20:
-        raise RuntimeError("loaded library map exceeds observation limit")
-    paths = sorted({os.path.realpath(line.split(maxsplit=5)[-1])
-                    for line in data.splitlines() if "/libcudart.so" in line})
+    modules = windows_cuda_modules() if os.name == "nt" else None
+    if modules is None:
+        with open("/proc/self/maps") as maps:
+            data = maps.read((4 << 20) + 1)
+        if len(data) > 4 << 20:
+            raise RuntimeError("loaded library map exceeds observation limit")
+        paths = sorted({os.path.realpath(line.split(maxsplit=5)[-1])
+                        for line in data.splitlines() if "/libcudart.so" in line})
+    else:
+        paths = sorted(modules)
     if not paths or len(paths) > 32:
         raise RuntimeError(f"loaded CUDA runtime library observation has {len(paths)} candidates")
     managed = os.path.realpath(sys.prefix)
@@ -190,7 +219,8 @@ def loaded_cuda_runtime():
     versions = set()
     path_versions = []
     for path in paths:
-        library = ctypes.CDLL(path, mode=os.RTLD_LOCAL | os.RTLD_NOLOAD)
+        library = (ctypes.WinDLL(path, handle=modules[path]) if modules is not None
+                   else ctypes.CDLL(path, mode=os.RTLD_LOCAL | os.RTLD_NOLOAD))
         version = ctypes.c_int()
         query = library.cudaRuntimeGetVersion
         query.argtypes = [ctypes.POINTER(ctypes.c_int)]

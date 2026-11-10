@@ -45,6 +45,7 @@ type OnDemandProvider struct {
 // during the bridge.
 type OnDemandRuntime struct {
 	DataDir               string             `yaml:"data_dir,omitempty" json:"data_dir,omitempty"`
+	DataSubdirs           []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore            *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`

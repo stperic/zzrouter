@@ -75,7 +75,12 @@ func run(startChild func(*exec.Cmd) error) int {
 	cmd := host.Command(args[0], args[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	stdinInfo, stdinErr := os.Stdin.Stat()
+	controlPipe := stdinErr == nil && stdinInfo.Mode()&os.ModeNamedPipe != 0
+	// The lifecycle pipe belongs to the launcher; sharing it can block child startup.
+	if !controlPipe {
+		cmd.Stdin = os.Stdin
+	}
 	nodeOwned := setupProcessGroup(cmd, *nodeOwnedFlag)
 
 	// A node-owned launcher must die on a stop before its child starts.
@@ -119,7 +124,7 @@ func run(startChild func(*exec.Cmd) error) int {
 	// Stdin EOF requests shutdown on Windows and means the node died on Unix.
 	// Only pipes are monitored: standalone launchers can use /dev/null or a terminal.
 	stdinClosed := make(chan struct{}, 1)
-	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeNamedPipe != 0) {
+	if controlPipe {
 		go func() {
 			buf := make([]byte, 1)
 			// Blocks until pipe closes or EOF. Real read errors (rare given the

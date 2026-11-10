@@ -12,17 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func retentionRegistry(t *testing.T) (*Registry, *clocktest.FakeClock) {
+func retentionRegistry(t *testing.T, inactivity map[Kind]time.Duration) (*Registry, *clocktest.FakeClock) {
 	t.Helper()
 	fc := clocktest.NewFakeClock(time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC))
-	r, err := NewRegistry(Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow})
+	r, err := NewRegistry(Config{NodeName: "node", Clock: fc, JanitorInterval: 2 * constants.IdempotencyReplayWindow, KindInactivity: inactivity})
 	require.NoError(t, err)
 	t.Cleanup(r.Stop)
 	return r, fc
 }
 
 func TestDefaultRetentionSweep(t *testing.T) {
-	r, fc := retentionRegistry(t)
+	r, fc := retentionRegistry(t, nil)
 	h, err := r.StartDetached(KindDownload, "", nil)
 	require.NoError(t, err)
 	h.Done()
@@ -38,7 +38,7 @@ func TestDefaultRetentionSweep(t *testing.T) {
 func TestTerminalExpiryAcrossReadSurfaces(t *testing.T) {
 	for _, terminal := range []string{"done", "failed", "inactive"} {
 		t.Run(terminal, func(t *testing.T) {
-			r, fc := retentionRegistry(t)
+			r, fc := retentionRegistry(t, map[Kind]time.Duration{KindInstall: time.Minute})
 			h, err := r.StartDetached(KindInstall, "", nil)
 			require.NoError(t, err)
 			checkLive := func() {
@@ -58,7 +58,7 @@ func TestTerminalExpiryAcrossReadSurfaces(t *testing.T) {
 			case "failed":
 				h.Fail(errors.New("refused"))
 			case "inactive":
-				fc.Advance(KindInstall.DefaultInactivityTimeout() + time.Nanosecond)
+				fc.Advance(time.Minute + time.Nanosecond)
 				r.sweep()
 			}
 			ev, err := r.Get(h.ID())
@@ -89,7 +89,7 @@ func TestTerminalExpiryAcrossReadSurfaces(t *testing.T) {
 }
 
 func TestHandOutMovesExpiryAndTerminalReplay(t *testing.T) {
-	r, fc := retentionRegistry(t)
+	r, fc := retentionRegistry(t, nil)
 	h, err := r.StartDetached(KindRun, "", nil)
 	require.NoError(t, err)
 	fc.Advance(time.Hour)
@@ -111,7 +111,7 @@ func TestHandOutMovesExpiryAndTerminalReplay(t *testing.T) {
 }
 
 func TestRetentionConcurrentTerminalReadSubscribe(t *testing.T) {
-	r, fc := retentionRegistry(t)
+	r, fc := retentionRegistry(t, nil)
 	h, err := r.StartDetached(KindRun, "", nil)
 	require.NoError(t, err)
 	var wg sync.WaitGroup
@@ -148,7 +148,7 @@ func TestKindFromID(t *testing.T) {
 }
 
 func TestReuseRenewsLiveJobAndRejectsGoneJob(t *testing.T) {
-	r, fc := retentionRegistry(t)
+	r, fc := retentionRegistry(t, nil)
 	h, err := r.StartDetached(KindDownload, "", Meta{"source": "worker"})
 	require.NoError(t, err)
 	h.Done()
@@ -169,7 +169,7 @@ func TestReuseRenewsLiveJobAndRejectsGoneJob(t *testing.T) {
 func TestTerminalCompactionPreservesReplay(t *testing.T) {
 	for _, terminal := range []string{"done", "failed", "inactive"} {
 		t.Run(terminal, func(t *testing.T) {
-			r, fc := retentionRegistry(t)
+			r, fc := retentionRegistry(t, map[Kind]time.Duration{KindInstall: time.Minute})
 			h, err := r.StartDetached(KindInstall, "", Meta{"provider": "engine"})
 			require.NoError(t, err)
 			h.Progress(42, "installing", Bytes{Done: 10, Total: 20})
@@ -181,7 +181,7 @@ func TestTerminalCompactionPreservesReplay(t *testing.T) {
 			case "failed":
 				h.Fail(errors.New("install refused"))
 			case "inactive":
-				fc.Advance(KindInstall.DefaultInactivityTimeout() + time.Nanosecond)
+				fc.Advance(time.Minute + time.Nanosecond)
 				r.sweep()
 			}
 			live := drain(sub.Events())

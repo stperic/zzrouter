@@ -143,7 +143,7 @@ func (e *ProvidersExecutor) HandleInternalProviderEnvironment(c *gin.Context) {
 	}
 	var toolkit install.ToolkitSelection
 	if cfg.Install != nil {
-		desired, err := cfg.ResolveInstall(e.nodeName, runtime)
+		desired, err := cfg.ResolveInstallForOS(e.nodeName, runtime, fsroot.CurrentPlatform().OS)
 		if err != nil {
 			BadRequest(c, err.Error())
 			return

@@ -605,18 +605,6 @@ func shellCommand(ctx context.Context, command string) (*exec.Cmd, error) {
 }
 
 func executeStep(ctx context.Context, step Step) error {
-	if step.Verify.Type == "runtime_checks" && step.PreExec == nil && step.PostExec == nil {
-		result := VerifyStepContext(ctx, step)
-		if !result.Passed {
-			for _, check := range result.Checks {
-				if !check.Passed {
-					return fmt.Errorf("%s: %s (%s)", check.Name, check.Reason, check.Actual)
-				}
-			}
-			return fmt.Errorf("runtime prerequisites failed: %s", result.Message)
-		}
-		return nil
-	}
 	// Per-step timeout
 	if step.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -635,8 +623,18 @@ func executeStep(ctx context.Context, step Step) error {
 		}
 	}
 
-	// Execute shell command
-	if step.Command != "" {
+	// Typed probes bypass the shell; hook-only activation still owns its checks.
+	if step.Verify.Type == "runtime_checks" && (step.Command != "" || step.PostExec == nil) {
+		result := VerifyStepContext(ctx, step)
+		if !result.Passed {
+			for _, check := range result.Checks {
+				if !check.Passed {
+					return fmt.Errorf("%s: %s (%s)", check.Name, check.Reason, check.Actual)
+				}
+			}
+			return fmt.Errorf("runtime prerequisites failed: %s", result.Message)
+		}
+	} else if step.Command != "" {
 		cmd, cmdErr := shellCommand(ctx, step.Command)
 		if cmdErr != nil {
 			return fmt.Errorf("command setup: %w", cmdErr)

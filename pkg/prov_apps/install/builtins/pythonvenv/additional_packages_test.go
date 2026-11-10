@@ -86,7 +86,7 @@ func extensionReport(t *testing.T, inventory []install.ResolvedPackage, roots ma
 	}
 	data, err := json.Marshal(map[string]any{"version": "1", "install": entries})
 	require.NoError(t, err)
-	resolved, err := install.ParsePipReport(data, roots)
+	resolved, err := install.ResolvePipReport(t.Context(), data, roots, nil)
 	require.NoError(t, err)
 	return resolved
 }

@@ -4,6 +4,7 @@ enabled: false
 run_scope: node
 platforms:
   - {os: linux, arch: amd64}
+  - {os: windows, arch: amd64}
 requirements:
   disk_space: "20GB"
   # ComfyUI at the pinned version declares requires-python >=3.10; its README reports 3.14 working.
@@ -19,7 +20,12 @@ install:
         strip_components: 1
         requirements: requirements.txt
         entrypoint: main.py
-      indexes: {primary: https://pypi.org/simple, extra: []}
+      indexes:
+        primary: https://pypi.org/simple
+        extra: []
+        platforms:
+          windows:
+            extra: [https://download.pytorch.org/whl/cu132]
       companions:
         torch: {constraint: "", build: cuda}
         torchvision: {constraint: "", build: cuda}
@@ -35,6 +41,7 @@ defaults:
     keep-alive: "5m"
 runtime:
   data_dir: data
+  data_subdirs: [custom_nodes]
   model_store:
     directory: models
     categories: [diffusion_models, text_encoders, vae, loras, checkpoints, controlnet, clip_vision, upscale_models, embeddings, audio_encoders, model_patches, latent_upscale_models]

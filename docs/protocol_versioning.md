@@ -25,6 +25,12 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 20 raises both the current version and minimum from 19 to 20. Managed
+Python index declarations carry OS-specific `indexes.platforms` branches, which
+older strict config loaders reject. The completed protocol-20 build also declares required mutable folders with `runtime.data_subdirs`. Upgrade coordinator and workers together,
+preserving CA and identity state. Install routes and jobs are unchanged. Existing
+Linux ComfyUI payloads need no reinstall because their effective recipe is unchanged.
+
 Protocol 19 raises both the current version and minimum from 18 to 19. Only the
 coordinator initiates cluster connections. Pinned enrollment, typed held polls
 and coordinator-relayed model uploads replace reverse callbacks and peer pulls.

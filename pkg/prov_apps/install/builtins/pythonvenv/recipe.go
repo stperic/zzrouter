@@ -1,6 +1,7 @@
 package pythonvenv
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -656,6 +657,17 @@ func relocateScripts(candidate, live string) error {
 			return err
 		}
 		if strings.Contains(string(data), "\x00") {
+			if fsroot.CurrentPlatform().OS == "windows" && strings.EqualFold(filepath.Ext(path), ".exe") {
+				relocated, err := relocateWindowsLauncher(data, candidate, live)
+				if err != nil {
+					return err
+				}
+				if !bytes.Equal(data, relocated) {
+					if err := os.WriteFile(path, relocated, info.Mode()); err != nil {
+						return err
+					}
+				}
+			}
 			continue
 		}
 		text := strings.ReplaceAll(string(data), candidate, live)

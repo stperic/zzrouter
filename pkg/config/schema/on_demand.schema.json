@@ -10,7 +10,7 @@
   "if": {"properties": {"run_scope": {"const": "node"}}, "required": ["run_scope"]},
   "else": {"required": ["protocol"]},
   "allOf": [{
-    "if": {"properties": {"runtime": {"required": ["model_store"]}}},
+    "if": {"properties": {"runtime": {"anyOf": [{"required": ["model_store"]}, {"required": ["data_subdirs"]}]}}},
     "then": {"required": ["run_scope"], "properties": {
       "run_scope": {"const": "node"},
       "runtime": {"required": ["data_dir"]}
@@ -161,6 +161,8 @@
       "additionalProperties": false,
       "properties": {
         "data_dir": {"type": "string", "minLength": 1},
+        "data_subdirs": {"type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9_]*$"}},
         "model_store": {
           "type": "object", "additionalProperties": false,
           "required": ["directory", "categories"],
@@ -1000,6 +1002,18 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                  "platforms": {
+                    "type": "object",
+                    "propertyNames": {"enum": ["darwin", "linux", "windows"]},
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "primary": {"type": "string"},
+                        "extra": {"type": "array", "maxItems": 4, "items": {"type": "string"}}
+                      }
+                    }
+                  },
                   "primary": {
                     "type": "string"
                   },
