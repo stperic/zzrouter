@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -19,10 +18,6 @@ import (
 )
 
 func TestQueuedRunLogsContract(t *testing.T) {
-	bin := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "nvidia-smi"), []byte("#!/bin/sh\necho 'GPU-A, 0, 10000, 6000'\n"), 0o700))
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("CUDA_VISIBLE_DEVICES", "0")
 	r := newReadinessRig(t, prov_apps.WithProviderSchema(func(string) (*schema.ProviderSchema, error) {
 		return &schema.ProviderSchema{Parameters: map[string]schema.ParamShape{"budget": {}}, Diagnostics: &schema.Diagnostics{Memory: &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}}}, nil
 	}))
@@ -32,13 +27,14 @@ func TestQueuedRunLogsContract(t *testing.T) {
 	fresh := &config.AppsConfig{}
 	require.NoError(t, fresh.AddApp("fake", svc))
 	r.mgr.ReloadConfig(fresh)
-	first, err := r.mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "fake", Model: "first"})
-	require.NoError(t, err)
-	require.True(t, first.Run.Admitted())
+	first := instance.NewInstance("starting-blocker", "fake", "first", 0, 0, 0)
+	require.True(t, first.Admit())
+	require.NoError(t, r.mgr.Instances().Register(first))
 	second, err := r.mgr.EnsureRun(t.Context(), prov_apps.EnsureRequest{Provider: "fake", Model: "queued"})
 	require.NoError(t, err)
 	queued := second.Run
 	require.False(t, queued.Admitted())
+	assert.Equal(t, first.ID, queued.WaitingOn())
 	assert.Zero(t, queued.GetProcessID())
 	assert.Equal(t, instance.StatusStarting, queued.GetStatus())
 	l := &LogsHandlers{

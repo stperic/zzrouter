@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"regexp"
@@ -18,17 +19,63 @@ type InstallConfig struct {
 
 // InstallRecipe uses pointers so an omitted field inherits and an empty value replaces.
 type InstallRecipe struct {
-	PinnedVersion     *string                     `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
-	Source            *InstallSource              `yaml:"source,omitempty" json:"source,omitempty"`
-	Package           *string                     `yaml:"package,omitempty" json:"package,omitempty"`
-	VersionConstraint *string                     `yaml:"version_constraint,omitempty" json:"version_constraint,omitempty"`
-	Indexes           *InstallIndexes             `yaml:"indexes,omitempty" json:"indexes,omitempty"`
-	Companions        map[string]InstallCompanion `yaml:"companions,omitempty" json:"companions,omitempty"`
-	Verify            *InstallVerify              `yaml:"verify,omitempty" json:"verify,omitempty"`
-	StartupImport     *string                     `yaml:"startup_import,omitempty" json:"startup_import,omitempty"`
-	OnlyBinary        *bool                       `yaml:"only_binary,omitempty" json:"only_binary,omitempty"`
-	Timeout           *string                     `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	Toolkit           *string                     `yaml:"toolkit,omitempty" json:"toolkit,omitempty"`
+	PinnedVersion     *string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
+	Source            *InstallSource                   `yaml:"source,omitempty" json:"source,omitempty"`
+	Package           *string                          `yaml:"package,omitempty" json:"package,omitempty"`
+	VersionConstraint *string                          `yaml:"version_constraint,omitempty" json:"version_constraint,omitempty"`
+	Indexes           *InstallIndexes                  `yaml:"indexes,omitempty" json:"indexes,omitempty"`
+	Companions        map[string]InstallCompanion      `yaml:"companions,omitempty" json:"companions,omitempty"`
+	Verify            *InstallVerify                   `yaml:"verify,omitempty" json:"verify,omitempty"`
+	StartupImport     *string                          `yaml:"startup_import,omitempty" json:"startup_import,omitempty"`
+	OnlyBinary        *bool                            `yaml:"only_binary,omitempty" json:"only_binary,omitempty"`
+	Timeout           *string                          `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Toolkit           *string                          `yaml:"toolkit,omitempty" json:"toolkit,omitempty"`
+	Platforms         map[string]InstallPlatformRecipe `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+}
+
+// InstallPlatformRecipe varies companion builds and fixed probes within one tier.
+type InstallPlatformRecipe struct {
+	Companions map[string]InstallCompanion `yaml:"companions,omitempty" json:"companions,omitempty"`
+	Verify     *InstallVerify              `yaml:"verify,omitempty" json:"verify,omitempty"`
+}
+
+// ForOS selects this tier's platform fields without changing its declaration.
+func (r InstallRecipe) ForOS(goos string) InstallRecipe {
+	if r.Indexes != nil {
+		r.Indexes = r.Indexes.ForOS(goos)
+	}
+	platform := r.Platforms[goos]
+	if len(platform.Companions) > 0 {
+		r.Companions = maps.Clone(r.Companions)
+		if r.Companions == nil {
+			r.Companions = map[string]InstallCompanion{}
+		}
+		for name, companion := range platform.Companions {
+			base := r.Companions[name]
+			if companion.Constraint == nil {
+				companion.Constraint = base.Constraint
+			}
+			if companion.Build == nil {
+				companion.Build = base.Build
+			}
+			r.Companions[name] = companion
+		}
+	}
+	if platform.Verify != nil {
+		verify := InstallVerify{}
+		if r.Verify != nil {
+			verify = *r.Verify
+		}
+		if platform.Verify.Imports != nil {
+			verify.Imports = platform.Verify.Imports
+		}
+		if platform.Verify.Checks != nil {
+			verify.Checks = platform.Verify.Checks
+		}
+		r.Verify = &verify
+	}
+	r.Platforms = nil
+	return r
 }
 
 // InstallIndexes names pip sources; extra is a pointer to preserve an explicit empty array.
@@ -85,7 +132,7 @@ func (s ServiceConfig) ResolveInstall(node, runtime string) (ResolvedInstall, er
 	return s.resolveInstall(node, runtime, "")
 }
 
-// ResolveInstallForOS selects indexes on the named OS before merging configuration tiers.
+// ResolveInstallForOS selects platform fields before merging configuration tiers.
 func (s ServiceConfig) ResolveInstallForOS(node, runtime, goos string) (ResolvedInstall, error) {
 	if !slices.Contains(KnownPlatformOS, goos) {
 		return ResolvedInstall{}, fmt.Errorf("install: unknown platform %q", goos)
@@ -121,13 +168,16 @@ func (s ServiceConfig) resolveInstall(node, runtime, goos string) (ResolvedInsta
 		if i > 0 && (recipe.Source != nil || s.Install != nil && s.Install.Runtimes[runtime].Source != nil) {
 			return out, fmt.Errorf("source runtime %q is release-owned; install overrides are forbidden", runtime)
 		}
+		if err := recipe.validatePlatformFields(); err != nil {
+			return out, err
+		}
 		if recipe.Indexes != nil {
 			if err := recipe.Indexes.validate(); err != nil {
 				return out, err
 			}
-			if goos != "" {
-				recipe.Indexes = recipe.Indexes.ForOS(goos)
-			}
+		}
+		if goos != "" {
+			recipe = recipe.ForOS(goos)
 		}
 		data, err := json.Marshal(recipe)
 		if err != nil {
@@ -195,7 +245,7 @@ func MergeInstallPatch(current *InstallConfig, raw []byte) (*InstallConfig, erro
 
 // Validate checks a complete resolved recipe without granting execution authority.
 func (r InstallRecipe) Validate() error {
-	for _, validate := range []func() error{r.validateRuntime, r.validateIndexes, r.validateCompanions, r.validateChecks} {
+	for _, validate := range []func() error{r.validateRuntime, r.validateIndexes, r.validateCompanions, r.validateChecks, r.validatePlatformFields} {
 		if err := validate(); err != nil {
 			return err
 		}
@@ -290,11 +340,15 @@ func validateIndexURLs(primary *string, extra *[]string) error {
 }
 
 func (r InstallRecipe) validateCompanions() error {
-	if len(r.Companions) > 24 {
+	return validateCompanionFields(r.Package, r.Companions, true)
+}
+
+func validateCompanionFields(packageName *string, companions map[string]InstallCompanion, complete bool) error {
+	if len(companions) > 24 {
 		return fmt.Errorf("companions: at most 24 packages")
 	}
-	for name, c := range r.Companions {
-		if !ValidDistribution(name) || r.Package != nil && name == *r.Package {
+	for name, c := range companions {
+		if !ValidDistribution(name) || packageName != nil && name == *packageName {
 			return fmt.Errorf("companions.%s: distinct normalized package required", name)
 		}
 		if c.Constraint != nil {
@@ -302,7 +356,7 @@ func (r InstallRecipe) validateCompanions() error {
 				return fmt.Errorf("companions.%s.constraint: %w", name, err)
 			}
 		}
-		if c.Build == nil || !slices.Contains([]string{"cuda", "metal", "none"}, *c.Build) {
+		if complete && c.Build == nil || c.Build != nil && !slices.Contains([]string{"cuda", "metal", "none"}, *c.Build) {
 			return fmt.Errorf("companions.%s.build: cuda, metal or none required", name)
 		}
 	}
@@ -313,21 +367,14 @@ func (r InstallRecipe) validateChecks() error {
 	if r.Verify == nil || r.Verify.Imports == nil || r.Verify.Checks == nil {
 		return fmt.Errorf("verify: imports and checks required")
 	}
-	if len(*r.Verify.Imports) == 0 || len(*r.Verify.Imports) > 32 || len(*r.Verify.Checks) > 8 {
+	if len(*r.Verify.Imports) == 0 {
 		return fmt.Errorf("verify: probe limits exceeded")
 	}
-	for _, module := range *r.Verify.Imports {
-		if !ValidInstallModule(module) {
-			return fmt.Errorf("verify.imports: invalid module %q", module)
-		}
+	if err := r.Verify.validateFields(); err != nil {
+		return err
 	}
 	if r.StartupImport != nil && !slices.Contains(*r.Verify.Imports, *r.StartupImport) {
 		return fmt.Errorf("verify.imports: required startup import %q missing", *r.StartupImport)
-	}
-	for _, check := range *r.Verify.Checks {
-		if !slices.Contains([]string{"pip_check", "imports", "cuda_companions", "cuda_available", "metal_available", "managed_toolkit"}, check) {
-			return fmt.Errorf("verify.checks: unknown check %q", check)
-		}
 	}
 	for _, check := range []string{"pip_check", "imports"} {
 		if !slices.Contains(*r.Verify.Checks, check) {
@@ -344,6 +391,47 @@ func (r InstallRecipe) validateChecks() error {
 		}
 		if required != "" && !slices.Contains(*r.Verify.Checks, required) {
 			return fmt.Errorf("verify.checks: %s is mandatory for companion builds", required)
+		}
+	}
+	return nil
+}
+
+func (v InstallVerify) validateFields() error {
+	if v.Imports != nil {
+		if len(*v.Imports) > 32 {
+			return fmt.Errorf("verify: probe limits exceeded")
+		}
+		for _, module := range *v.Imports {
+			if !ValidInstallModule(module) {
+				return fmt.Errorf("verify.imports: invalid module %q", module)
+			}
+		}
+	}
+	if v.Checks != nil {
+		if len(*v.Checks) > 8 {
+			return fmt.Errorf("verify: probe limits exceeded")
+		}
+		for _, check := range *v.Checks {
+			if !slices.Contains([]string{"pip_check", "imports", "cuda_companions", "cuda_available", "metal_available", "mps_available", "managed_toolkit"}, check) {
+				return fmt.Errorf("verify.checks: unknown check %q", check)
+			}
+		}
+	}
+	return nil
+}
+
+func (r InstallRecipe) validatePlatformFields() error {
+	for goos, platform := range r.Platforms {
+		if !slices.Contains(KnownPlatformOS, goos) {
+			return fmt.Errorf("platforms: unknown OS %q", goos)
+		}
+		if err := validateCompanionFields(r.Package, platform.Companions, false); err != nil {
+			return fmt.Errorf("platforms.%s: %w", goos, err)
+		}
+		if platform.Verify != nil {
+			if err := platform.Verify.validateFields(); err != nil {
+				return fmt.Errorf("platforms.%s: %w", goos, err)
+			}
 		}
 	}
 	return nil

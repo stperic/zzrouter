@@ -344,3 +344,16 @@ func TestPlatformIndexesRequireProtocol20(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPlatformRecipesRequireProtocol21(t *testing.T) {
+	window := LocalProtocolWindow()
+	if window.Min < 21 {
+		t.Fatal("platform recipes and MPS checks require strict-loader protocol 21 or later")
+	}
+	if err := window.Check(20); err == nil {
+		t.Fatal("protocol 20 cannot decode platform recipe and GPU vendor declarations")
+	}
+	if err := window.Check(window.Max); err != nil {
+		t.Fatal(err)
+	}
+}

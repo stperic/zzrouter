@@ -81,6 +81,15 @@ def check(name, packages=("torch", "torchaudio", "torchvision")):
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA GPU unavailable to this runtime")
         return f"CUDA {torch.version.cuda}; {torch.cuda.device_count()} visible device(s)"
+    if name == "mps_available":
+        torch = importlib.import_module("torch")
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("MPS GPU unavailable to this runtime")
+        value = torch.ones(1, device="mps").add_(1)
+        torch.mps.synchronize()
+        if value.device.type != "mps" or value.item() != 2:
+            raise RuntimeError("MPS tensor execution failed")
+        return "MPS tensor execution verified"
     if name == "managed_toolkit":
         root = os.environ.get("CUDA_MANAGED_ROOT")
         if not root or os.environ.get("CUDA_HOME") != root or os.environ.get("CUDA_PATH") != root:
@@ -241,7 +250,7 @@ def loaded_cuda_runtime():
 def environment(profile):
     result = dict(packages={}, cuda_runtime=dict(build_version="", loaded_version="", library_path="", reason=""),
                   toolkit=toolkit(), cpp_compiler=dict(path="", version="", source="PATH", reason=""),
-                  devices=[], metal_available=None, metal_reason="")
+                  devices=[], metal_available=None, metal_reason="", mps_available=None, mps_reason="")
     if "managed_toolkit" in profile.get("checks", []):
         compiler = shutil.which("c++")
         result["cpp_compiler"]["path"] = compiler or ""
@@ -279,6 +288,11 @@ def environment(profile):
             result["metal_available"] = mx.metal.is_available()
         except Exception as error:
             result["metal_reason"] = (type(error).__name__ + ": " + str(error))[:LIMIT]
+    if "mps_available" in profile.get("checks", []):
+        try:
+            result["mps_available"] = importlib.import_module("torch").backends.mps.is_available()
+        except Exception as error:
+            result["mps_reason"] = (type(error).__name__ + ": " + str(error))[:LIMIT]
     return result
 
 

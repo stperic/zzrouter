@@ -51,6 +51,7 @@ func TestMemoryAdmissionRefusesBeforeProcessAndReleasesResources(t *testing.T) {
 	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
+	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
 	_, err = mgr.EnsureRun(t.Context(), EnsureRequest{Provider: "generic", Model: "arbitrary", Parameters: map[string]string{"budget": "0.95"}})
 	var failure *process.MemoryFitError
 	require.ErrorAs(t, err, &failure)
@@ -112,6 +113,7 @@ func newQueueFixture(t *testing.T) queueFixture {
 	})))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
+	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
 	return queueFixture{mgr: mgr, engine: engine, setFree: setFree}
 }
 

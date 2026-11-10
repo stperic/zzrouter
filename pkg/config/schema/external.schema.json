@@ -341,7 +341,12 @@
           "additionalProperties": false,
           "properties": {
             "vendor": { "enum": ["nvidia", "amd", "apple", ""] },
-            "policy": { "enum": ["advisory", "required", ""] }
+            "policy": { "enum": ["advisory", "required", ""] },
+            "platforms": {
+              "type": "object",
+              "propertyNames": {"enum": ["darwin", "linux", "windows"]},
+              "additionalProperties": {"enum": ["nvidia", "amd", "apple"]}
+            }
           }
         }
       }

@@ -62,7 +62,7 @@ func TestMemorySnapshotQueriesUsedMemory(t *testing.T) {
 	script := "#!/bin/sh\ncase \"$1\" in\n--query-gpu=uuid,index,memory.total,memory.free,memory.used) echo 'GPU-A, 0, 97887, 97248, 0' ;;\n--query-compute-apps=*) ;;\n*) exit 1 ;;\nesac\n"
 	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte(script), 0o700))
 	t.Setenv("PATH", root)
-	devices, err := MemorySnapshotContext(t.Context())
+	devices, err := NVIDIAMemorySnapshotContext(t.Context())
 	require.NoError(t, err)
 	require.Len(t, devices, 1)
 	assert.Equal(t, int64(97887), devices[0].TotalMiB)
@@ -83,7 +83,7 @@ func TestMemorySnapshotPropagatesCancelledAttribution(t *testing.T) {
 	t.Setenv("PATH", root)
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
-	devices, err := MemorySnapshotContext(ctx)
+	devices, err := NVIDIAMemorySnapshotContext(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Nil(t, devices)
 	_, err = os.Stat(marker)

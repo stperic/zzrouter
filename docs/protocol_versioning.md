@@ -25,6 +25,14 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 21 raises both the current version and minimum from 20 to 21. Managed
+Python recipes select OS-specific companion builds and verification checks;
+GPU prerequisites can select their vendor by OS. Older strict loaders reject
+these fields and the fixed PyTorch MPS check. Upgrade coordinator and workers
+together, preserving CA and identity state. Existing Linux and Windows ComfyUI
+effective recipes remain unchanged and need no reinstall. Install routes and
+jobs remain unchanged.
+
 Protocol 20 raises both the current version and minimum from 19 to 20. Managed
 Python index declarations carry OS-specific `indexes.platforms` branches, which
 older strict config loaders reject. The completed protocol-20 build also declares required mutable folders with `runtime.data_subdirs`. Upgrade coordinator and workers together,

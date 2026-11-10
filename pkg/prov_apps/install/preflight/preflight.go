@@ -169,7 +169,7 @@ func GPU(ctx context.Context, req *config.GPURequirement) (Result, bool) {
 		return Result{}, false
 	}
 
-	vendor, err := gpu.ParseVendor(req.Vendor)
+	vendor, err := requirementVendor(req, fsroot.CurrentPlatform().OS)
 	if err != nil {
 		return Result{
 			Check:   "gpu",
@@ -213,6 +213,29 @@ func GPU(ctx context.Context, req *config.GPURequirement) (Result, bool) {
 	}
 
 	return gpuDetectionToResult(det, policy), true
+}
+
+func requirementVendor(req *config.GPURequirement, goos string) (gpu.Vendor, error) {
+	vendor, err := gpu.ParseVendor(req.Vendor)
+	if err != nil {
+		return "", err
+	}
+	for platform, name := range req.Platforms {
+		if !slices.Contains(config.KnownPlatformOS, platform) {
+			return "", fmt.Errorf("requirements.gpu.platforms: unknown OS %q", platform)
+		}
+		selected, err := gpu.ParseVendor(name)
+		if err != nil {
+			return "", fmt.Errorf("requirements.gpu.platforms.%s: %w", platform, err)
+		}
+		if selected == "" {
+			return "", fmt.Errorf("requirements.gpu.platforms.%s: vendor required", platform)
+		}
+		if platform == goos {
+			vendor = selected
+		}
+	}
+	return vendor, nil
 }
 
 // gpuDetectionToResult applies the provider's policy to the tri-

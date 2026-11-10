@@ -615,6 +615,7 @@ func TestEnsureRunContract(t *testing.T) {
 		r := newContractRig(t, true, WithJobsRegistry(reg), WithProviderSchema(memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 			return &schema.MemoryBudget{Kind: "fraction_total", Parameter: "budget"}, nil
 		})))
+		r.m.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
 		budgeted := func(model string) *instance.Instance {
 			t.Helper()
 			o := collect(t, []<-chan outcome{r.ensure(t.Context(), EnsureRequest{Provider: "generic", Model: model})})[0]

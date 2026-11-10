@@ -222,8 +222,9 @@ func (p PythonRequirement) MarshalJSON() ([]byte, error) {
 // config authors use one vocabulary for both install selection and
 // preflight gating.
 type GPURequirement struct {
-	Vendor string `yaml:"vendor,omitempty" json:"vendor,omitempty"` // "nvidia", "amd", "apple". Empty defaults to "nvidia".
-	Policy string `yaml:"policy,omitempty" json:"policy,omitempty"` // "advisory" | "required". Empty defaults to "required".
+	Vendor    string            `yaml:"vendor,omitempty" json:"vendor,omitempty"`       // "nvidia", "amd", "apple". Empty defaults to "nvidia".
+	Policy    string            `yaml:"policy,omitempty" json:"policy,omitempty"`       // "advisory" | "required". Empty defaults to "required".
+	Platforms map[string]string `yaml:"platforms,omitempty" json:"platforms,omitempty"` // GOOS-specific vendors; policy is shared.
 }
 
 // AppInstallVariant describes a single downloadable install artifact targeting

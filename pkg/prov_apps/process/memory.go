@@ -97,6 +97,9 @@ func (e *MemoryFitError) Error() string {
 		}
 		if h.UnusedCommitmentMiB > 0 {
 			detail = fmt.Sprintf("%d MiB unused commitment", h.UnusedCommitmentMiB)
+			if h.MemoryMiB == nil {
+				detail = fmt.Sprintf("%d MiB commitment; usage unknown", h.UnusedCommitmentMiB)
+			}
 		}
 		if h.ReclaimSkippedReason != "" {
 			detail += "; reclaim skipped: " + h.ReclaimSkippedReason
@@ -391,6 +394,7 @@ func admitReserved(budget schema.MemoryBudget, parameters, environment map[strin
 		if required, selected := reserved[device.UUID]; selected {
 			fit := memoryFitError(budget.Parameter, device, required, owners)
 			if required > fit.FreeMiB {
+				fit.CommitmentOnly = device.Unified && required <= device.FreeMiB
 				return fit
 			}
 		}
@@ -407,15 +411,22 @@ func memoryFitError(parameter string, device gpu.MemoryDevice, required int64, o
 	failure := &MemoryFitError{Parameter: parameter, Device: device.UUID, RequiredMiB: required, FreeMiB: device.FreeMiB, Holders: holders, AttributionReason: device.ProcessReason}
 	for _, run := range owners {
 		usage := used[run.ID]
-		if device.ProcessReason != "" {
+		if device.ProcessReason != "" && !device.Unified {
 			usage = max(0, device.TotalMiB-device.FreeMiB)
+		}
+		if device.Unified && device.ProcessReason != "" {
+			usage = 0 // Shared RAM usage cannot be attributed to any particular run.
 		}
 		unused := max(0, run.Commitments[device.UUID]-usage)
 		if unused == 0 {
 			continue
 		}
 		failure.FreeMiB -= unused
-		failure.Holders = append(failure.Holders, MemoryHolder{MemoryMiB: &unused, Run: run.ID, Model: run.Model, Provider: run.Provider, Ownership: "zzrouter", UnusedCommitmentMiB: unused})
+		holder := MemoryHolder{Run: run.ID, Model: run.Model, Provider: run.Provider, Ownership: "zzrouter", UnusedCommitmentMiB: unused}
+		if !device.Unified || device.ProcessReason == "" {
+			holder.MemoryMiB = &unused
+		}
+		failure.Holders = append(failure.Holders, holder)
 	}
 	failure.FreeMiB = max(0, failure.FreeMiB)
 	return failure
@@ -487,6 +498,9 @@ func memoryDevicesForLaunch(devices []gpu.MemoryDevice, environment map[string]s
 			return nil, fmt.Errorf("%w: invalid device count", ErrMemoryBudgetInvalid)
 		}
 	}
+	if len(devices) == 1 && devices[0].Unified && count == 1 {
+		return devices, nil
+	}
 	visible, configured := environment["CUDA_VISIBLE_DEVICES"]
 	if !configured {
 		if allVisible && len(devices) > 0 && len(devices) <= maxMemoryDevices {
@@ -542,7 +556,7 @@ func PrepareMemoryBudget(budget schema.MemoryBudget, params, env map[string]stri
 	if err != nil || amount <= 0 || amount > device.TotalMiB {
 		return nil, fmt.Errorf("%w: %s must be positive MiB and at most device total (%d MiB)", ErrMemoryBudgetInvalid, budget.Parameter, device.TotalMiB)
 	}
-	if env != nil {
+	if env != nil && !device.Unified {
 		env["CUDA_VISIBLE_DEVICES"] = device.UUID
 	}
 	if budget.ComplementParameter != "" {

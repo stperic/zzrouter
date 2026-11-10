@@ -45,9 +45,10 @@ package version
 // Protocol 18 requires terminal job expiry and replay-safe retention.
 // Protocol 19 requires coordinator-initiated communication, enrollment and transfer.
 // Protocol 20 adds platform-specific managed Python package indexes.
+// Protocol 21 adds platform-specific companion builds, GPU requirements and MPS verification.
 const (
-	ClusterProtocolVersion    = 20
-	MinClusterProtocolVersion = 20
+	ClusterProtocolVersion    = 21
+	MinClusterProtocolVersion = 21
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

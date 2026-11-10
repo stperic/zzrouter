@@ -174,6 +174,7 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	})
 	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
 	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, errors.New("measurement missing") }
+	m.memorySystem = func(context.Context) *hardware.HardwareInfo { return nil }
 	assessment = m.AssessCapacity(t.Context(), req)
 	assert.Equal(t, "unknown", assessment.Status)
 	assert.Equal(t, process.MemoryEvidenceUnavailable, assessment.UnknownCause)
@@ -181,6 +182,10 @@ func TestCapacityUnknownPreparationAndObservation(t *testing.T) {
 	assert.Equal(t, int64(2048), assessment.ContextTokens)
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
 		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
+	}
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		device, err := gpu.UnifiedMemoryDevice(512*1024*1024, 512*1024*1024)
+		return []gpu.MemoryDevice{device}, err
 	}
 	m.providerSchema = memoryBudgetSchema(func(string) (*schema.MemoryBudget, error) {
 		return &schema.MemoryBudget{Kind: schema.MemoryUnified}, nil
@@ -332,7 +337,10 @@ func TestCapacityLayersUseUnifiedPool(t *testing.T) {
 	}
 	m, req, _ := capacityFixture(t)
 	m.memoryInventory = func(context.Context) []gpu.CardMetrics { return nil }
-	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) { return nil, process.ErrMemoryObservation }
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		device, err := gpu.UnifiedMemoryDevice(512*1024*1024, 512*1024*1024)
+		return []gpu.MemoryDevice{device}, err
+	}
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
 		return &hardware.HardwareInfo{TotalRAM: 512 * 1024 * 1024}
 	}
@@ -465,6 +473,10 @@ func TestUnifiedProviderMetadataFraction(t *testing.T) {
 	}
 	m.memorySystem = func(context.Context) *hardware.HardwareInfo {
 		return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
+	}
+	m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+		device, err := gpu.UnifiedMemoryDevice(10000*1024*1024, 10000*1024*1024)
+		return []gpu.MemoryDevice{device}, err
 	}
 	req.EnvVars = map[string]string{"CUDA_VISIBLE_DEVICES": "unified"}
 	var originalEnvironment map[string]string
@@ -630,6 +642,10 @@ func TestHybridAssessmentMatchesPreviewAndAdmission(t *testing.T) {
 				return []gpu.CardMetrics{{UUID: "GPU-A", TotalMemoryMiB: total}}
 			}
 			m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
+				if kind == schema.MemoryUnified {
+					device, err := gpu.UnifiedMemoryDevice(total*1024*1024, total*1024*1024)
+					return []gpu.MemoryDevice{device}, err
+				}
 				return []gpu.MemoryDevice{{UUID: "GPU-A", TotalMiB: total, FreeMiB: total}}, nil
 			}
 			m.memorySystem = func(context.Context) *hardware.HardwareInfo {
