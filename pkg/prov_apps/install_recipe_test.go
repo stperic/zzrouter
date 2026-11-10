@@ -106,6 +106,44 @@ func TestTypedUpgradeRequiresExistingManagedRuntime(t *testing.T) {
 	assert.ErrorIs(t, err, ErrProviderNotFound)
 }
 
+func TestAcceptedRecipeStepDeadlineRollsBackBeforeJobFailure(t *testing.T) {
+	isolateProviderRoot(t)
+	coord, _, reg, cleanup := newAsyncTestCoord(t, "vllm")
+	defer cleanup()
+	candidate := filepath.Join(t.TempDir(), "candidate")
+	stepError := make(chan error, 1)
+	var finalized atomic.Bool
+	plan := &install.Plan{Provider: "vllm", Action: "install", Recipe: &install.RecipeSnapshot{}}
+	plan.Steps = []install.Step{{Number: 1, Timeout: 50 * time.Millisecond, PostExec: func(ctx context.Context) error {
+		if err := os.WriteFile(candidate, []byte("partial candidate"), 0600); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		stepError <- ctx.Err()
+		return ctx.Err()
+	}}}
+	plan.Rollback = func() error { return os.Remove(candidate) }
+	id, err := coord.ExecuteResolvedAsync(t.Context(), "vllm", plan, install.PlanOptions{Force: true}, -1, func() error { finalized.Store(true); return nil })
+	require.NoError(t, err)
+	sub, err := reg.Subscribe(id, jobs.SubscribeOptions{})
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+	terminal := waitTerminal(t, sub.Events(), 2*time.Second)
+	require.Equal(t, jobs.PhaseFailed, terminal.Phase)
+	select {
+	case err := <-stepError:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	default:
+		t.Fatal("the step did not observe its own deadline")
+	}
+	_, err = os.Stat(candidate)
+	require.ErrorIs(t, err, os.ErrNotExist, "terminal failure must follow candidate cleanup")
+	rollback, ok := terminal.Meta["rollback"].(jobs.Meta)
+	require.True(t, ok, terminal.Meta)
+	require.Equal(t, true, rollback["completed"])
+	require.False(t, finalized.Load())
+}
+
 func TestPanicRollbackReportsPreviousRuntimeAndRestoration(t *testing.T) {
 	for _, previous := range []bool{false, true} {
 		for _, rollbackFails := range []bool{false, true} {

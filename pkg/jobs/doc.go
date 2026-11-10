@@ -21,7 +21,7 @@
 // a terminal transition are no-ops (the producer may lose a race with
 // its own defer-Fail path). An inactivity-gated janitor flips silently
 // stalled jobs to failed after the kind's idle timeout, bounding memory.
-// Downloads have no default idle timeout because transfers own their deadline.
+// Downloads and installs have no default idle timeout: their owners govern execution deadlines.
 // Detached jobs outlive requests; every terminal transition cancels their context.
 //
 // Subscribe-after-terminal contract (load-bearing for clients that

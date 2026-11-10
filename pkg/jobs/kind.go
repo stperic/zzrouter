@@ -116,7 +116,7 @@ func (k Kind) DefaultRingPolicy() RingPolicy {
 // Inactivity timeouts bound stalled producers unless their kind owns a separate deadline.
 const (
 	inactivityDownload     = 0 // transfers have their own deadline; silence is not failure
-	inactivityInstall      = 30 * time.Minute
+	inactivityInstall      = 0 // installers own operation deadlines; quiet work can take hours
 	inactivityUpdate       = 30 * time.Minute
 	inactivitySync         = 10 * time.Minute
 	inactivityInferenceLog = 0 // firehose has no idle concept; never reaped

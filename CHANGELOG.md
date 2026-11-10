@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Let provider installs use their operation deadlines without a competing 30-minute job silence limit. Preserve explicit cancellation, shutdown, custom inactivity policies and terminal retention.
+
 - Complete missing wheel hashes during managed dependency resolution, including metadata-only PyTorch index results. Preserve complete plan validation, hash-required installation and cancellation cleanup.
 
 - Support managed ComfyUI on Windows/amd64 through existing install, upgrade and run APIs. Add service-visible Python discovery, Windows CUDA library observations and safe console launcher relocation. Select platform-specific package indexes before tier merging, preserving Linux effective recipes. Raise protocol current/minimum from 19 to 20; upgrade all nodes together.

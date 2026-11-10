@@ -41,6 +41,10 @@ the job afterward: a cancelled download is `failed` with
 Use `DELETE /zzrouter/v1/deployments/:id` to cancel all deployment nodes, or
 `DELETE /zzrouter/v1/deployments/:id/nodes/:node` for one node.
 
+Provider installs have no default job silence limit. Their owner controls operation
+timeouts; steps without a declared timeout keep their parent-context behavior.
+Explicit inactivity overrides, cancellation, shutdown and terminal retention still apply.
+
 Downloads outlive the accepting request, with a 10-minute body-read stall
 deadline and a 48-hour overall cap. Every successful byte read resets the stall
 deadline; ten minutes without a byte fails the transfer with
