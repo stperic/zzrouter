@@ -5,6 +5,7 @@ package interpreter
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"testing"
 
@@ -49,7 +50,7 @@ func TestRegisteredInterpreterPathsAreBoundedAndAbsolute(t *testing.T) {
 	key, err := registry.OpenKey(root, `PythonCore\3.13\InstallPath`, registry.ALL_ACCESS)
 	require.NoError(t, err)
 	defer key.Close()
-	require.NoError(t, key.SetStringValue("oversized", string(make([]rune, 32769))))
+	require.NoError(t, key.SetStringValue("oversized", strings.Repeat("x", 32769)))
 	_, err = registryString(key, "oversized")
 	require.Error(t, err)
 }

@@ -55,7 +55,8 @@ with tempfile.TemporaryDirectory(prefix="cuda-é-") as root:
         return types.SimpleNamespace(cudaRuntimeGetVersion=Function(query))
     ctypes.WinDLL = library
     ctypes.get_last_error = lambda: 5
-    first, second = root + "/cudart64_13.dll", root + "/wheel/cudart64_13.dll"
+    first = os.path.realpath(os.path.join(root, "cudart64_13.dll"))
+    second = os.path.realpath(os.path.join(root, "wheel", "cudart64_13.dll"))
     answers = []
     for case in ("unicode_one", "two", "conflicting", "external", "missing", "overflow", "unaligned", "enumeration_failed", "truncated", "path_failed"):
         initialized, seen, versions = False, [], {}

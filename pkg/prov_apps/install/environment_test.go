@@ -41,7 +41,11 @@ func TestToolkitFindingsArchitectureRequirement(t *testing.T) {
 func TestEnvironmentSeparatesLoadedRuntimeAndHostToolkit(t *testing.T) {
 	libraryRoot, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
-	libraryPath := filepath.Join(libraryRoot, "managed", "lib", "libcudart.so.13")
+	libraryName := "libcudart.so.13"
+	if runtime.GOOS == "windows" {
+		libraryName = "cudart64_13.dll"
+	}
+	libraryPath := filepath.Join(libraryRoot, "managed", "lib", libraryName)
 	// The synthetic /proc map uses Linux separators even on a Windows test host.
 	mappedPath := filepath.ToSlash(libraryPath)
 	python, err := exec.LookPath("python3")
@@ -65,7 +69,15 @@ class Query:
     def __call__(self, pointer):
         pointer._obj.value = 13000
         return 0
-ctypes.CDLL = lambda path, **kwargs: types.SimpleNamespace(cudaRuntimeGetVersion=Query())
+def loaded_library(path, **kwargs):
+    assert path == os.path.realpath(sys.argv[2])
+    if os.name == "nt":
+        assert kwargs == dict(handle=1 << 40), "must reuse the observed module handle"
+    else:
+        assert kwargs["mode"] & os.RTLD_NOLOAD, "must not load a new library"
+    return types.SimpleNamespace(cudaRuntimeGetVersion=Query())
+ctypes.CDLL = ctypes.WinDLL = loaded_library
+scope["windows_cuda_modules"] = lambda: {os.path.realpath(sys.argv[2]): 1 << 40}
 print(json.dumps(scope["environment"]({"checks": ["cuda_available"], "packages": ["torch"]})))
 `
 	output, err := host.CommandContext(t.Context(), python, "-I", "-B", "-c", script, string(data), mappedPath).CombinedOutput()
