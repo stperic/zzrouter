@@ -104,7 +104,7 @@ func (m *ProviderAppManager) reclaimFor(ctx context.Context, fit *process.Memory
 		freed += mib
 		slog.Info("stopped idle run for GPU memory pressure", "instance", victim.ID, "provider", victim.Provider, "model", victim.Model, "device", fit.Device, "held_mib", mib, "shortfall_mib", fit.RequiredMiB-fit.FreeMiB)
 	}
-	if len(effects.EvictedRuns) > 0 {
+	if freed > 0 {
 		_ = m.waitMemoryRecovery(ctx, fit.Device, fit.FreeMiB+freed-memoryRecoveryToleranceMiB)
 	}
 	return effects, skipped
@@ -297,7 +297,15 @@ func (m *ProviderAppManager) memoryTotals(ctx context.Context) ([]gpu.MemoryDevi
 		}
 	}
 	if len(devices) == 0 {
-		return nil, fmt.Errorf("%w: NVIDIA GPU totals unavailable", process.ErrMemoryObservation)
+		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+			if memory := m.memorySystem(ctx); memory != nil {
+				device, err := gpu.UnifiedMemoryDevice(memory.TotalRAM, memory.TotalRAM)
+				if err == nil {
+					return []gpu.MemoryDevice{device}, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("%w: GPU memory totals unavailable", process.ErrMemoryObservation)
 	}
 	return devices, nil
 }
@@ -311,18 +319,22 @@ func (m *ProviderAppManager) memoryDevices(ctx context.Context, kind string, cap
 	}
 	var devices []gpu.MemoryDevice
 	var err error
-	if kind != schema.MemoryUnified {
-		if capacity {
-			devices, err = m.memoryTotals(ctx)
-		} else {
-			devices, err = m.memorySnapshot(ctx)
+	if kind == schema.MemoryUnified && capacity {
+		device, observationErr := gpu.UnifiedMemoryDevice(systemMiB*1024*1024, systemMiB*1024*1024)
+		if observationErr != nil {
+			return nil, systemMiB, fmt.Errorf("%w: %v", process.ErrMemoryObservation, observationErr)
 		}
+		return []gpu.MemoryDevice{device}, systemMiB, nil
 	}
-	if kind == schema.MemoryUnified || (err != nil && kind == schema.MemoryLayers && runtime.GOOS == "darwin" && runtime.GOARCH == "arm64") {
-		if systemMiB <= 0 {
-			return nil, systemMiB, process.ErrMemoryObservation
+	if capacity {
+		devices, err = m.memoryTotals(ctx)
+	} else {
+		devices, err = m.memorySnapshot(ctx)
+	}
+	if kind == schema.MemoryUnified && err == nil {
+		if len(devices) != 1 || !devices[0].Unified {
+			return nil, systemMiB, fmt.Errorf("%w: unified memory pool unavailable", process.ErrMemoryObservation)
 		}
-		devices, err = []gpu.MemoryDevice{{UUID: "unified", TotalMiB: systemMiB, FreeMiB: systemMiB, UsedMiB: new(int64(0)), Unified: true}}, nil
 	}
 	return devices, systemMiB, err
 }

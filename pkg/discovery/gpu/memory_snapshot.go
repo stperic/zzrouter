@@ -3,10 +3,12 @@ package gpu
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/stperic/zzrouter/pkg/host"
 )
 
@@ -31,6 +33,42 @@ type MemoryDevice struct {
 
 // MemorySnapshotContext queries memory for admission without using cached metrics.
 func MemorySnapshotContext(ctx context.Context) ([]MemoryDevice, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		memory, err := mem.VirtualMemoryWithContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("unified memory observation: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		device, err := UnifiedMemoryDevice(int64(memory.Total), int64(memory.Available))
+		if err != nil {
+			return nil, err
+		}
+		return []MemoryDevice{device}, nil
+	}
+	return NVIDIAMemorySnapshotContext(ctx)
+}
+
+// UnifiedMemoryDevice builds a shared RAM pool; driver usage and attribution stay unknown.
+func UnifiedMemoryDevice(total, available int64) (MemoryDevice, error) {
+	const mib = 1024 * 1024
+	if total < mib || available < 0 || available > total {
+		return MemoryDevice{}, fmt.Errorf("unified memory observation incomplete; no safe admission budget")
+	}
+	return MemoryDevice{
+		UUID: "unified", Unified: true, TotalMiB: total / mib, FreeMiB: available / mib,
+		Processes: []MemoryProcess{}, ProcessReason: "unified memory has no per-process GPU attribution",
+	}, nil
+}
+
+// NVIDIAMemorySnapshotContext observes dedicated memory and driver process attribution.
+func NVIDIAMemorySnapshotContext(ctx context.Context) ([]MemoryDevice, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	fields := []string{nvidiaFieldUUID, nvidiaFieldIndex, nvidiaFieldMemoryTotalMiB, nvidiaFieldMemoryFreeMiB, nvidiaFieldMemoryUsedMiB}

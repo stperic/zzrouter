@@ -457,8 +457,7 @@ func (m *ProviderAppManager) disposableLaunch(ctx context.Context, svc config.Se
 	return toolkit, executable, nil
 }
 
-// reservedCommitments sizes a reserve_mib budget against the visible NVIDIA
-// devices and pins that visibility into env.
+// reservedCommitments sizes a reserve_mib budget against the node's memory pool.
 func (m *ProviderAppManager) reservedCommitments(ctx context.Context, budget schema.MemoryBudget, params, env map[string]string) (map[string]int64, error) {
 	devices, err := m.memoryTotals(ctx)
 	if err != nil {

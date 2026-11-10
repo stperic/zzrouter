@@ -128,8 +128,8 @@ func TestReplacementUnifiedRefusalKeepsOldRunServing(t *testing.T) {
 		return &hardware.HardwareInfo{TotalRAM: 10000 * 1024 * 1024}
 	}
 	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
-		t.Error("unified admission must use system totals")
-		return nil, process.ErrMemoryObservation
+		device, err := gpu.UnifiedMemoryDevice(10000*1024*1024, 10000*1024*1024)
+		return []gpu.MemoryDevice{device}, err
 	}
 	req := EnsureRequest{Provider: "generic", Model: "shared", Parameters: map[string]string{"keep-alive": "-1"}}
 	started, err := r.m.EnsureRun(t.Context(), req)

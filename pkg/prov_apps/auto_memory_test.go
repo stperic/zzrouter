@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/discovery/gpu"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/prov_apps/process"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
@@ -65,6 +66,8 @@ func TestAutoMemoryNativeLaunchReceivesNumericArgument(t *testing.T) {
 	}, "parameters:\n  dtype: {}\n")))
 	require.NoError(t, err)
 	cleanupProviderManager(t, mgr)
+	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+	mgr.memoryInventory = gpu.LiveCardMetricsContext
 	preview, err := processEngine{mgr}.prepare(t.Context(), svc, "generic", EnsureRequest{Provider: "generic", Model: "registry-model"}, 8640)
 	require.NoError(t, err)
 	assert.Equal(t, "auto", preview.resolved.Parameters["memory-fraction"])
@@ -114,6 +117,8 @@ func TestAutoMemoryPrepareRunUsesModelNeedInArgv(t *testing.T) {
 	}
 	isolateProviderRoot(t)
 	mgr, svc, dir := featureLaunchFixture(t)
+	mgr.memorySnapshot = gpu.NVIDIAMemorySnapshotContext
+	mgr.memoryInventory = gpu.LiveCardMetricsContext
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("#!/bin/sh\ncase \"$1\" in\n--query-gpu=*) echo 'GPU-A, 0, 10000, 9500' ;;\nesac\n"), 0700))
 	t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))

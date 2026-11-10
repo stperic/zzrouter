@@ -8,7 +8,13 @@ Only the coordinator initiates cluster connections, including enrollment, renewa
 
 ## Install and enable
 
-The shipped provider starts disabled. Managed installation requires Linux/amd64 or Windows/amd64, Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following upstream), a working NVIDIA GPU and at least 20 GB of free space. Allow additional space for models and outputs. A run uses one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`. On a node with multiple GPUs, set that environment value to the full device UUID through the provider's node parameter tree.
+The shipped provider starts disabled. Managed installation supports Linux/amd64
+and Windows/amd64 with NVIDIA GPUs, and macOS/darwin/arm64 with Apple Silicon.
+It requires Python 3.10 to 3.14 (the declared range is `>=3.10,<3.15`, following
+upstream) and at least 20 GB of free space. Allow additional space for models and
+outputs. NVIDIA runs use one GPU, pinned by UUID in `CUDA_VISIBLE_DEVICES`.
+On a node with multiple NVIDIA GPUs, set that environment value to the full
+device UUID through the provider's node parameter tree.
 
 On Windows, provision a supported 64-bit Python for the service account, including
 pip and venv. The installer discovers PEP 514 registrations for that account and
@@ -17,6 +23,14 @@ host prerequisite. The release selects official CUDA 13.2 PyTorch wheels on
 Windows; Linux keeps its existing PyPI resolution. CPU wheels and mismatched CUDA
 companions fail verification. Choose an explicit node/request GPU reservation
 that fits its available VRAM when the default 8192 MiB reservation cannot fit.
+
+On Apple Silicon, provision a supported native Python with pip and venv for the
+node account. The same managed source installer resolves macOS wheels from PyPI
+and verifies a small tensor operation on PyTorch MPS. Environment observations
+report `mps_available` and `mps_reason`; the separate `metal_available` observation
+retains its MLX meaning. The existing API installs, upgrades, verifies and runs
+this payload. CUDA visibility selectors do not select Apple's unified pool.
+Workflow and custom-node compatibility still require testing on MPS.
 
 Send one request to the coordinator with an admin key, replacing `<name>` with the target node:
 
@@ -191,7 +205,20 @@ Port 8188 is a firm singleton pool pin. An occupied port fails because the pool 
 
 `gpu-reserve-mib` defaults to 8192 and must be positive and no larger than the selected GPU. zzRouter keeps that commitment after readiness. Other launches see driver free memory minus each live reservation's unused portion. Memory-fit errors report tracked holders, including unused commitments; unpinned idle holders can be reclaimed when `evict-idle-on-memory-pressure` is enabled. Untracked processes are never stopped. Served Ollama model runs do not expose per-model process ownership to driver accounting; their daemon memory cannot currently be reclaimed reliably by this admission path. Stop or unload those models explicitly when they block a ComfyUI reservation.
 
+Apple Silicon uses the shared `unified` RAM pool also used by MLX and unified
+layer admission. Capacity previews use total RAM; launches use freshly available
+RAM. Per-process GPU attribution and driver usage remain unknown. Existing
+commitments are preserved in full when their usage cannot be attributed, which
+can conservatively count allocated RAM twice. A commitment-only idle reclaim
+releases the claim, reports zero driver-attributed freed MiB and rechecks current
+availability after the stop drains. It does not wait for an invented physical
+RAM increase. An actual RAM shortage requires fresh evidence of enough memory.
+
 The reservation parameter stays out of argv. Shared launch, preview and staleness preparation derives `--reserve-vram` as (device total minus reservation) / 1024 in GiB, preserving the exact fractional value. ComfyUI treats it as an allocator limit: in the lab (ComfyUI 0.39.2) a 16 GiB reservation held a Qwen Image render that peaks near 29 GB unreserved to about the reserved amount, offloading instead. It is not an OS-enforced limit, so retest after ComfyUI upgrades. Accounting retains the reservation independently of that hint. Engines whose memory footprint cannot be measured refuse to consume unused reservations until those unpinned idle tenants are reclaimed.
+
+For MPS, the complement uses total system RAM, matching the pinned engine's
+memory accounting. This is an engine memory-management hint; exercise the chosen
+workflow to establish its actual memory use on that backend.
 
 The existing health scheduler samples `queue_running` and `queue_pending`. Observed-busy runs hold idle exclusion without consuming request slots. Every busy sample refreshes the idle clock, and busy-to-idle resets it. Failed, timed-out or malformed queue samples retain the previous state until they reach the health check's retry count (`runtime.health_check.retries`, or the monitor default). Reaching that threshold releases the busy hold and resets the idle clock. A successful sample resets that failure count. This bounds stale busy evidence even while `/system_stats` remains healthy. Stop cancels and drains sampling.
 

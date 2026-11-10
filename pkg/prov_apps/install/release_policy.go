@@ -16,13 +16,17 @@ const shippedOnDemandDir = "files/providers/on-demand"
 // providers that install on goos/goarch, so a root installer can bootstrap
 // override authority without inventing grants.
 func ReleasePolicy(goos, goarch string) (InstallPolicy, error) {
+	return releasePolicy(templates.AppsFS, goos, goarch)
+}
+
+func releasePolicy(source fs.FS, goos, goarch string) (InstallPolicy, error) {
 	policy := InstallPolicy{Runtimes: map[string]RuntimePolicy{}}
-	entries, err := fs.ReadDir(templates.AppsFS, shippedOnDemandDir)
+	entries, err := fs.ReadDir(source, shippedOnDemandDir)
 	if err != nil {
 		return policy, err
 	}
 	for _, entry := range entries {
-		data, err := templates.AppsFS.ReadFile(shippedOnDemandDir + "/" + entry.Name() + "/config.yaml")
+		data, err := fs.ReadFile(source, shippedOnDemandDir+"/"+entry.Name()+"/config.yaml")
 		if err != nil {
 			return policy, err
 		}

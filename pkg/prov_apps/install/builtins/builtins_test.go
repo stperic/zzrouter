@@ -53,7 +53,7 @@ func TestManagedRuntimeOwnPlatformGuards(t *testing.T) {
 		platforms []fsroot.Platform
 	}{
 		{"vllm", []fsroot.Platform{{OS: "linux", Arch: "amd64"}}},
-		{"comfyui", []fsroot.Platform{{OS: "linux", Arch: "amd64"}, {OS: "windows", Arch: "amd64"}}},
+		{"comfyui", []fsroot.Platform{{OS: "linux", Arch: "amd64"}, {OS: "windows", Arch: "amd64"}, {OS: "darwin", Arch: "arm64"}}},
 		{"mlx", []fsroot.Platform{{OS: "darwin", Arch: "arm64"}}},
 		{"mlx-vlm", []fsroot.Platform{{OS: "darwin", Arch: "arm64"}}},
 	} {
