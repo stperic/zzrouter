@@ -155,7 +155,11 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 							return nil, req.Context().Err()
 						}
 					} else {
-						observed <- run.ToInfo("node").EngineBusy
+						select {
+						case observed <- run.ToInfo("node").EngineBusy:
+						case <-req.Context().Done():
+							return nil, req.Context().Err()
+						}
 					}
 					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
 				})}})
