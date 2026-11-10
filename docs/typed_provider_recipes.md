@@ -19,6 +19,22 @@ environment observations report the executing node's selected indexes. Mutation
 checks use a known target OS; an unknown OS conservatively checks every supported
 OS before requesting authority acknowledgment.
 
+Recipe-level `platforms` accepts shallow `darwin`, `linux` and `windows`
+overrides of `companions` and `verify`. Companion fields inherit individually;
+verification arrays replace when present, including explicit empty arrays that
+must still satisfy the effective recipe's mandatory checks. The same selector
+applies these fields and `indexes.platforms` within each tier before merging.
+Source declarations, package selection, commands and recursive overrides are
+not accepted in these platform branches. All declarations are validated even
+when inactive or shadowed by another tier. Execution authority and plan identity
+use only the selected recipe.
+
+`requirements.gpu.platforms` maps these same OS names to GPU vendors, for example
+`darwin: apple`. The policy remains shared. All declared vendors are validated
+before preflight probes the executing node's selected vendor. Fixed
+`mps_available` verification checks PyTorch MPS availability and a small tensor
+operation on the Apple GPU; `metal_available` retains its MLX meaning.
+
 The shipped vLLM, MLX and MLX vision recipes all use the same Python installer.
 Base installs use the provider pin when no version is supplied. Other pip runtimes
 use their recipe's `pinned_version` as the fresh-install seed. Upgrades without a

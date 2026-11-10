@@ -112,6 +112,7 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, in
 	trusted := false
 	if readErr == nil && shipped.Install != nil {
 		release, ok := shipped.Install.Runtimes[runtime]
+		release = release.ForOS(fsroot.CurrentPlatform().OS)
 		trusted = ok && !resolved.Overridden && reflect.DeepEqual(releaseRecipeValue(resolved.Recipe), releaseRecipeValue(release))
 		if ok {
 			for _, module := range *release.Verify.Imports {
@@ -188,11 +189,12 @@ func (s RecipeSnapshot) recheckPolicy(policy InstallPolicy, fingerprint string, 
 }
 
 func releaseRecipeValue(recipe config.InstallRecipe) config.InstallRecipe {
+	recipe = recipe.ForOS(fsroot.CurrentPlatform().OS)
 	if len(recipe.Companions) == 0 {
 		recipe.Companions = nil
 	}
 	if recipe.Indexes != nil {
-		indexes := *recipe.Indexes.ForOS(fsroot.CurrentPlatform().OS)
+		indexes := *recipe.Indexes
 		if indexes.Extra != nil && len(*indexes.Extra) == 0 {
 			indexes.Extra = nil
 		}

@@ -51,6 +51,8 @@ type RuntimeEnvironment struct {
 	Devices        []RuntimeDevice           `json:"devices"`
 	MetalAvailable *bool                     `json:"metal_available"`
 	MetalReason    string                    `json:"metal_reason"`
+	MPSAvailable   *bool                     `json:"mps_available"`
+	MPSReason      string                    `json:"mps_reason"`
 }
 
 // InspectRuntime observes a managed interpreter under its effective launch environment.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Select OS-specific companion builds and fixed verification checks through managed Python recipes. Add PyTorch MPS verification and environment observations while retaining existing platform index settings. GPU prerequisites can select a vendor per OS. Raise cluster current/minimum from 20 to 21; upgrade coordinator and workers together.
+
 - Declare required mutable data subfolders through runtime config and create them in the existing managed installer. Initialize ComfyUI custom_nodes on fresh installs and upgrades without changing model ownership or dependency recipes.
 
 - Keep launcher lifecycle pipes out of child stdin, preventing native Windows Python startup from blocking while preserving file and terminal input.

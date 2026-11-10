@@ -133,7 +133,7 @@ func (r RuntimeChecks) validateChecks() error {
 	seen := make(map[string]bool, len(r.Checks))
 	for _, check := range r.Checks {
 		switch check {
-		case "pip_check", "imports", "cuda_companions", "cuda_available", "metal_available", "managed_toolkit":
+		case "pip_check", "imports", "cuda_companions", "cuda_available", "metal_available", "mps_available", "managed_toolkit":
 		default:
 			return fmt.Errorf("unknown diagnostic check %q", check)
 		}

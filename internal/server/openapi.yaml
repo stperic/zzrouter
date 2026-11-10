@@ -10859,21 +10859,40 @@ components:
                 darwin: { $ref: '#/components/schemas/InstallPlatformIndexes' }
                 linux: { $ref: '#/components/schemas/InstallPlatformIndexes' }
                 windows: { $ref: '#/components/schemas/InstallPlatformIndexes' }
-        companions:
-          type: object
-          maxProperties: 24
-          additionalProperties:
-            type: object
-            additionalProperties: false
-            properties:
-              constraint: { type: string, maxLength: 256 }
-              build: { type: string, enum: [cuda, metal, none] }
-        verify:
+        companions: { $ref: '#/components/schemas/InstallCompanions' }
+        verify: { $ref: '#/components/schemas/InstallVerify' }
+        platforms:
           type: object
           additionalProperties: false
           properties:
-            imports: { type: array, maxItems: 32, items: { type: string } }
-            checks: { type: array, maxItems: 8, items: { type: string, enum: [pip_check, imports, cuda_companions, cuda_available, metal_available, managed_toolkit] } }
+            darwin: { $ref: '#/components/schemas/InstallPlatformRecipe' }
+            linux: { $ref: '#/components/schemas/InstallPlatformRecipe' }
+            windows: { $ref: '#/components/schemas/InstallPlatformRecipe' }
+
+    InstallPlatformRecipe:
+      type: object
+      additionalProperties: false
+      description: Companion and verification overrides selected within each configuration tier before tier merging.
+      properties:
+        companions: { $ref: '#/components/schemas/InstallCompanions' }
+        verify: { $ref: '#/components/schemas/InstallVerify' }
+
+    InstallCompanions:
+      type: object
+      maxProperties: 24
+      additionalProperties:
+        type: object
+        additionalProperties: false
+        properties:
+          constraint: { type: string, maxLength: 256 }
+          build: { type: string, enum: [cuda, metal, none] }
+
+    InstallVerify:
+      type: object
+      additionalProperties: false
+      properties:
+        imports: { type: array, maxItems: 32, items: { type: string } }
+        checks: { type: array, maxItems: 8, items: { type: string, enum: [pip_check, imports, cuda_companions, cuda_available, metal_available, mps_available, managed_toolkit] } }
 
     InstallPlatformIndexes:
       type: object
@@ -13995,7 +14014,7 @@ components:
         packages: { type: array, maxItems: 32, items: { type: string } }
         checks:
           type: array
-          items: { type: string, enum: [pip_check, imports, cuda_companions, cuda_available, metal_available, managed_toolkit] }
+          items: { type: string, enum: [pip_check, imports, cuda_companions, cuda_available, metal_available, mps_available, managed_toolkit] }
         kernels: { type: string, enum: [prebuilt, jit, prebuilt_or_jit, external, unknown] }
         toolkit_minimum: { type: object, additionalProperties: { type: string } }
         workaround: { type: object, additionalProperties: { type: string, enum: ['0', '1'] } }
@@ -14074,6 +14093,8 @@ components:
                   capability: { type: string }
             metal_available: { type: boolean, nullable: true }
             metal_reason: { type: string }
+            mps_available: { type: boolean, nullable: true }
+            mps_reason: { type: string }
         findings:
           type: array
           items:

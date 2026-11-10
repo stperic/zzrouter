@@ -379,6 +379,11 @@
                 "required",
                 ""
               ]
+            },
+            "platforms": {
+              "type": "object",
+              "propertyNames": {"enum": ["darwin", "linux", "windows"]},
+              "additionalProperties": {"enum": ["nvidia", "amd", "apple"]}
             }
           }
         }
@@ -1077,6 +1082,36 @@
                   "",
                   "cuda13"
                 ]
+              },
+              "platforms": {
+                "type": "object",
+                "propertyNames": {"enum": ["darwin", "linux", "windows"]},
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "companions": {
+                      "type": "object",
+                      "maxProperties": 24,
+                      "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "constraint": {"type": "string"},
+                          "build": {"enum": ["cuda", "metal", "none"]}
+                        }
+                      }
+                    },
+                    "verify": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "imports": {"type": "array", "maxItems": 32, "items": {"type": "string"}},
+                        "checks": {"type": "array", "maxItems": 8, "items": {"type": "string"}}
+                      }
+                    }
+                  }
+                }
               }
             }
           }
