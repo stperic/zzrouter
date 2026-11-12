@@ -109,7 +109,7 @@ USAGE:
 
 			// Pass model string through unchanged. The server parser
 			// handles #file, @node, and registry detection.
-			return runDeploy(modelIdentifier, repo, file, node, toNodes, toAll, force, watch)
+			return runDeploy(cmd.Context(), modelIdentifier, repo, file, node, toNodes, toAll, force, watch)
 		},
 	}
 
@@ -154,21 +154,21 @@ func newDeployVariantsCmd() *cobra.Command {
 		Short: "List GGUF quantization variants available in a HuggingFace repo",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDeployVariants(args[0])
+			return runDeployVariants(cmd.Context(), args[0])
 		},
 	}
 }
 
-func runDeployVariants(modelID string) error {
+func runDeployVariants(ctx context.Context, modelID string) error {
 	renderer := ui.NewRenderer(ui.RendererOptions{Adaptive: true, MinWidth: 80})
 	defer func() { _ = renderer.Close() }()
 
-	client, err := EnsureConnected()
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
 
-	resp, err := client.GetHuggingFaceVariants(modelID)
+	resp, err := client.GetHuggingFaceVariants(ctx, modelID, "")
 	if err != nil {
 		return fmt.Errorf("%s", shared.ExtractUserFriendlyError(err))
 	}
@@ -244,9 +244,9 @@ func newDeployStopCmd() *cobra.Command {
 
 // runDeploy is the single unified path for all deploy invocations. It
 // resolves Nodes client-side (via --node/--to/--to-all or interactive
-// selectCompatibleNode) so the server never needs to infer targets.
-func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []string, toAll, force, watch bool) error {
-	client, err := EnsureConnected()
+// selectDownloadNode) so the server never needs to infer targets.
+func runDeploy(ctx context.Context, modelIdentifier, repository, file, singleNode string, toNodes []string, toAll, force, watch bool) error {
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -254,14 +254,14 @@ func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []s
 	var nodes []string
 	switch {
 	case toAll:
-		compatibleNodes, err := client.GetCompatibleNodes(modelIdentifier, repository, "")
+		compatibleNodes, err := client.GetCompatibleNodes(ctx, modelIdentifier, repository, "")
 		if err != nil {
 			return fmt.Errorf("failed to fetch compatible nodes: %w", err)
 		}
-		if len(compatibleNodes) == 0 {
+		if len(compatibleNodes.Data) == 0 {
 			return fmt.Errorf("no confirmed capacity fit for model '%s'; unknown capacity is not a refusal to download, select a node explicitly", modelIdentifier)
 		}
-		for _, host := range compatibleNodes {
+		for _, host := range compatibleNodes.Data {
 			nodes = append(nodes, host.Name)
 		}
 		fmt.Printf("Found %d compatible nodes: %s\n\n", len(nodes), strings.Join(nodes, ", "))
@@ -280,14 +280,14 @@ func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []s
 	case singleNode != "":
 		nodes = []string{singleNode}
 	default:
-		selected, err := selectCompatibleNode(client, modelIdentifier, repository)
+		selected, err := selectDownloadNode(ctx, client, modelIdentifier, repository)
 		if err != nil {
 			return err
 		}
 		nodes = []string{selected}
 	}
 
-	resp, err := client.Deploy(modelIdentifier, repository, file, nodes, force)
+	resp, err := client.Deploy(ctx, pkgClient.DeployRequest{Model: modelIdentifier, Registry: repository, File: file, Nodes: nodes, Force: force})
 	if err != nil {
 		return fmt.Errorf("%s", shared.ExtractUserFriendlyError(err))
 	}
@@ -324,7 +324,7 @@ func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []s
 			return nil
 		}
 		label := fmt.Sprintf("Deploying %s to %s", resp.Model, target.Node)
-		return RenderJobProgress(context.Background(), client, target.JobID, target.Node, label)
+		return RenderJobProgress(ctx, client, target.JobID, target.Node, label)
 	}
 
 	_ = renderer.ShowMessage(fmt.Sprintf("Use 'zzrouter deploy status %s' to monitor progress", resp.ID), ui.LevelInfo)
@@ -332,27 +332,21 @@ func runDeploy(modelIdentifier, repository, file, singleNode string, toNodes []s
 	return nil
 }
 
-// selectCompatibleNode shows compatible hosts and prompts user to select one.
-func selectCompatibleNode(client *pkgClient.Client, modelName, repository string) (string, error) {
+// selectDownloadNode lists inventory for an explicit download choice.
+func selectDownloadNode(ctx context.Context, client *pkgClient.Client, modelName, repository string) (string, error) {
 	renderer := ui.NewRenderer(ui.RendererOptions{
 		Adaptive: true,
 		MinWidth: 80,
 	})
 	defer func() { _ = renderer.Close() }()
 
-	compatibleNodes, err := client.GetCompatibleNodes(modelName, repository, "")
+	nodes, err := client.GetNodeInventory(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch compatible nodes: %w", err)
+		return "", fmt.Errorf("failed to fetch nodes: %w", err)
 	}
 
-	if len(compatibleNodes) == 0 {
-		return "", fmt.Errorf("no confirmed capacity fit for model '%s'; unknown capacity is not a refusal to download, select a node explicitly", modelName)
-	}
-
-	if len(compatibleNodes) == 1 {
-		selectedNode := compatibleNodes[0].Name
-		fmt.Printf("Auto-selected node: %s (only compatible node)\n\n", selectedNode)
-		return selectedNode, nil
+	if len(nodes) == 0 {
+		return "", fmt.Errorf("no download nodes available for model '%s'", modelName)
 	}
 
 	fmt.Printf("\nModel: %s\n", modelName)
@@ -362,6 +356,15 @@ func selectCompatibleNode(client *pkgClient.Client, modelName, repository string
 	}
 	fmt.Printf("Format: %s | Repository: %s\n\n", detectFormat(modelName), repositoryDisplay)
 	fmt.Printf("Select download destination:\n\n")
+	assessments, assessmentErr := client.GetCompatibleNodes(ctx, modelName, repository, "")
+	if assessmentErr != nil {
+		fmt.Println("Capacity is unknown. The server checks download admission.")
+	}
+	if assessments != nil {
+		for _, assessment := range assessments.Metadata.Assessments {
+			fmt.Printf("%s / %s: %s. %s\n", assessment.Node, assessment.Provider, assessment.Status, assessment.Reason)
+		}
+	}
 
 	tableData := ui.TableData{
 		Columns: []ui.TableColumn{
@@ -374,7 +377,7 @@ func selectCompatibleNode(client *pkgClient.Client, modelName, repository string
 		Rows:       [][]string{},
 	}
 
-	for i, host := range compatibleNodes {
+	for i, host := range nodes {
 		providerTypes := make([]string, len(host.Providers))
 		for j, p := range host.Providers {
 			providerTypes[j] = p.Type
@@ -401,18 +404,18 @@ func selectCompatibleNode(client *pkgClient.Client, modelName, repository string
 		return "", fmt.Errorf("failed to render table: %w", err)
 	}
 
-	input := readLine(fmt.Sprintf("\nSelect node (1-%d) or press Enter to cancel: ", len(compatibleNodes)))
+	input := readLine(fmt.Sprintf("\nSelect node (1-%d) or press Enter to cancel: ", len(nodes)))
 	if input == "" {
 		return "", fmt.Errorf("download cancelled")
 	}
 
 	var selection int
 	_, err = fmt.Sscanf(input, "%d", &selection)
-	if err != nil || selection < 1 || selection > len(compatibleNodes) {
-		return "", fmt.Errorf("invalid selection: %s (must be 1-%d)", input, len(compatibleNodes))
+	if err != nil || selection < 1 || selection > len(nodes) {
+		return "", fmt.Errorf("invalid selection: %s (must be 1-%d)", input, len(nodes))
 	}
 
-	selectedNode := compatibleNodes[selection-1].Name
+	selectedNode := nodes[selection-1].Name
 	fmt.Printf("Selected: %s\n\n", selectedNode)
 	return selectedNode, nil
 }

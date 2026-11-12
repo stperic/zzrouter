@@ -16,7 +16,7 @@ import (
 )
 
 // View implements tea.Model for standalone use.
-func (m SearchTUIModel) View() tea.View {
+func (m *SearchTUIModel) View() tea.View {
 	titleBar := shared.RenderTitleBar(m.styles, m.TermWidth)
 	v := shared.NewAltScreenView(titleBar+"\n"+m.ViewContent(), m.styles.Theme)
 	v.MouseMode = tea.MouseModeCellMotion
@@ -24,7 +24,7 @@ func (m SearchTUIModel) View() tea.View {
 }
 
 // selectedModelName returns the selected model's name, or "model" as a fallback.
-func (m SearchTUIModel) selectedModelName() string {
+func (m *SearchTUIModel) selectedModelName() string {
 	if m.selectedItem != nil {
 		return m.selectedItem.Name
 	}
@@ -32,31 +32,31 @@ func (m SearchTUIModel) selectedModelName() string {
 }
 
 // breadcrumb returns navigation segments for the breadcrumb bar.
-func (m SearchTUIModel) Breadcrumb() []string {
+func (m *SearchTUIModel) Breadcrumb() []string {
 	cfg := m.getProviderConfig(m.Provider)
 	prov := cfg.DisplayName
 
 	switch m.State {
 	case StateDetail, statePulling:
-		return []string{"Model Hub", prov, m.selectedModelName()}
+		return []string{"Discover", prov, m.selectedModelName()}
 	case stateVariantSelect:
-		return []string{"Model Hub", prov, m.selectedModelName(), "Quantization"}
+		return []string{"Discover", prov, m.selectedModelName(), "Quantization"}
 	case stateProviderSelect:
-		return []string{"Model Hub", "Select Provider"}
+		return []string{"Discover", "Select Provider"}
 	case stateFilterEdit:
-		return []string{"Model Hub", prov, "Filter"}
+		return []string{"Discover", prov, "Filter"}
 	case stateNodeSelect:
-		return []string{"Model Hub", prov, m.selectedModelName(), "Select Node"}
+		return []string{"Discover", prov, m.selectedModelName(), "Select Node"}
 	case stateDirectPull:
-		return []string{"Model Hub", prov, "Direct Deploy"}
+		return []string{"Discover", prov, "Direct Deploy"}
 	default:
-		return []string{"Model Hub", prov}
+		return []string{"Discover", prov}
 	}
 }
 
 // viewContent returns the view body without the title bar.
 // The parent TUI renders the shared title bar and breadcrumb; this just returns the child content.
-func (m SearchTUIModel) ViewContent() string {
+func (m *SearchTUIModel) ViewContent() string {
 	content := m.viewContentInner()
 	if m.errorPopup != nil {
 		// Overlay covers the child content area. termHeight is already the
@@ -71,7 +71,7 @@ func (m SearchTUIModel) ViewContent() string {
 	return content
 }
 
-func (m SearchTUIModel) viewContentInner() string {
+func (m *SearchTUIModel) viewContentInner() string {
 	switch m.State {
 	case StateLoading:
 		return m.viewLoading()
@@ -100,7 +100,7 @@ func (m SearchTUIModel) viewContentInner() string {
 }
 
 // prerenderDescription renders the model description with glamour once (cached).
-func (m SearchTUIModel) prerenderDescription() string {
+func (m *SearchTUIModel) prerenderDescription() string {
 	if m.selectedItem == nil || m.selectedItem.Description == "" {
 		return ""
 	}
@@ -139,12 +139,12 @@ func (m SearchTUIModel) prerenderDescription() string {
 }
 
 // viewLoading renders loading state
-func (m SearchTUIModel) viewLoading() string {
+func (m *SearchTUIModel) viewLoading() string {
 	return m.styles.Title.Render(fmt.Sprintf("Searching for '%s'...", m.query)) + "\n"
 }
 
 // viewList renders the results list
-func (m SearchTUIModel) viewList() string { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+func (m *SearchTUIModel) viewList() string { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
 	var b strings.Builder
 	cfg := m.getProviderConfig(m.Provider)
 
@@ -327,7 +327,7 @@ func (m SearchTUIModel) viewList() string { //nolint:gocyclo,cyclop // The expli
 // 🔍 Type to filter ...
 // ─── separator ───
 // ↑/↓ navigate  PgUp/Dn page  Enter details ...
-func (m SearchTUIModel) renderFooter(pageInfo string) string {
+func (m *SearchTUIModel) renderFooter(pageInfo string) string {
 	var f strings.Builder
 	w := m.TermWidth
 	if w <= 0 {
@@ -365,7 +365,7 @@ func (m SearchTUIModel) renderFooter(pageInfo string) string {
 
 // padToBottom takes content and footer strings and pads the content area
 // so the footer is always pinned to the bottom of the terminal.
-func (m SearchTUIModel) padToBottom(content, footer string) string {
+func (m *SearchTUIModel) padToBottom(content, footer string) string {
 	if m.TermHeight <= 0 {
 		return content + footer
 	}
@@ -385,7 +385,7 @@ func (m SearchTUIModel) padToBottom(content, footer string) string {
 }
 
 // viewDetail renders the model detail view with scrolling support
-func (m SearchTUIModel) viewDetail() string { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+func (m *SearchTUIModel) viewDetail() string { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
 	if m.selectedItem == nil {
 		return ""
 	}
@@ -514,7 +514,7 @@ func (m SearchTUIModel) viewDetail() string { //nolint:gocyclo,cyclop // The exp
 }
 
 // viewVariantSelect renders variant selection view
-func (m SearchTUIModel) viewVariantSelect() string {
+func (m *SearchTUIModel) viewVariantSelect() string {
 	var b strings.Builder
 
 	isOllama := m.selectedItem != nil && m.selectedItem.Provider == constants.RepoOllama
@@ -570,7 +570,7 @@ func (m SearchTUIModel) viewVariantSelect() string {
 }
 
 // viewProviderSelect renders provider selection view
-func (m SearchTUIModel) viewProviderSelect() string {
+func (m *SearchTUIModel) viewProviderSelect() string {
 	var b strings.Builder
 
 	modelName := "model"
@@ -599,7 +599,7 @@ func (m SearchTUIModel) viewProviderSelect() string {
 }
 
 // viewDeploying renders pulling state
-func (m SearchTUIModel) viewDeploying() string {
+func (m *SearchTUIModel) viewDeploying() string {
 	modelName := "model"
 	if m.selectedItem != nil {
 		modelName = m.selectedItem.Name
@@ -608,7 +608,7 @@ func (m SearchTUIModel) viewDeploying() string {
 }
 
 // viewFilterEdit renders the filter edit overlay
-func (m SearchTUIModel) viewFilterEdit() string {
+func (m *SearchTUIModel) viewFilterEdit() string {
 	var b strings.Builder
 
 	// Show input box
@@ -622,7 +622,7 @@ func (m SearchTUIModel) viewFilterEdit() string {
 }
 
 // viewNodeSelect renders the multi-select node picker with resource info.
-func (m SearchTUIModel) viewNodeSelect() string {
+func (m *SearchTUIModel) viewNodeSelect() string {
 	var b strings.Builder
 
 	// Model info line
@@ -660,18 +660,25 @@ func (m SearchTUIModel) viewNodeSelect() string {
 		displayCursor = len(m.availableNodes) - 1
 	}
 
+	headers := []string{"NODE", "CAPACITY", "ROLE", "STORAGE", "RAM", "VRAM"}
+	compact := m.TermWidth < 70
+	if compact {
+		headers = []string{"NODE", "CAPACITY"}
+	}
+	visible := m.nodePageSize()
+	start, end := shared.TableSliceBounds(m.hostOffset, visible, len(m.availableNodes))
 	t := shared.NewScrollTable(shared.ScrollTableConfig{
-		Headers:   []string{"NODE", "ROLE", "STORAGE", "RAM", "VRAM"},
+		Headers:   headers,
 		ColWidths: nil,
 		Width:     m.TermWidth,
-		Vis:       len(m.availableNodes),
+		Vis:       visible,
 		Cursor:    displayCursor,
-		Offset:    0,
+		Offset:    m.hostOffset,
 		Styles:    m.styles,
 		StatusCol: -1,
 	})
 
-	for _, host := range m.availableNodes {
+	for _, host := range m.availableNodes[start:end] {
 		check := "[ ] "
 		if m.selectedNodes[host.name] {
 			check = "[x] "
@@ -695,12 +702,27 @@ func (m SearchTUIModel) viewNodeSelect() string {
 		vram := shared.EmptyValue
 		if host.vramTotalGB > 0 {
 			vram = fmt.Sprintf("%.0f / %.0f GB [%d]", host.vramAvailableGB, host.vramTotalGB, host.gpuCount)
+			if !host.vramAvailableKnown {
+				vram = fmt.Sprintf("unknown / %.0f GB", host.vramTotalGB)
+			}
 		}
 
-		t.Row(check+host.name, role, disk, ram, vram)
+		if compact {
+			t.Row(check+host.name, host.capacity)
+		} else {
+			t.Row(check+host.name, host.capacity, role, disk, ram, vram)
+		}
 	}
 
 	b.WriteString(t.Render() + "\n")
+	b.WriteString(shared.WrapIndent("Capacity is advisory. Admission is checked on deploy.", " ", m.TermWidth) + "\n")
+	for _, assessment := range m.availableNodes[displayCursor].assessments {
+		reason := assessment.Reason
+		if reason == "" {
+			reason = assessment.UnknownCause
+		}
+		b.WriteString(shared.WrapIndent(assessment.Provider+": "+reason, " ", m.TermWidth) + "\n")
+	}
 
 	selected := 0
 	for _, v := range m.selectedNodes {
@@ -708,7 +730,7 @@ func (m SearchTUIModel) viewNodeSelect() string {
 			selected++
 		}
 	}
-	status := fmt.Sprintf("Compatible Nodes (%d)  %d selected", len(m.availableNodes), selected)
+	status := fmt.Sprintf("Download targets (%d)  %d selected", len(m.availableNodes), selected)
 	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, m.TermWidth, status, tui.JoinHints(
 		tui.Hint(tui.SearchSubKeys.Up, "navigate"),
 		tui.Hint(tui.SearchSubKeys.Space, "toggle"),
@@ -721,7 +743,7 @@ func (m SearchTUIModel) viewNodeSelect() string {
 
 // renderPopupOverList renders a styled popup box centered over the list view.
 // popupContent is the rendered content inside the box; popupWidth is the desired box width.
-func (m SearchTUIModel) renderPopupOverList(popupContent string, popupWidth int) string {
+func (m *SearchTUIModel) renderPopupOverList(popupContent string, popupWidth int) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(m.styles.Theme.Primary).
@@ -734,7 +756,7 @@ func (m SearchTUIModel) renderPopupOverList(popupContent string, popupWidth int)
 }
 
 // viewPickerOverlay renders a centered popup over the dimmed list view.
-func (m SearchTUIModel) viewPickerOverlay() string {
+func (m *SearchTUIModel) viewPickerOverlay() string {
 	// Build the popup content
 	var popup strings.Builder
 
@@ -787,7 +809,7 @@ func (m SearchTUIModel) viewPickerOverlay() string {
 }
 
 // viewTagAdd renders the add-tag text input popup over the list view.
-func (m SearchTUIModel) viewTagAdd() string {
+func (m *SearchTUIModel) viewTagAdd() string {
 	var popup strings.Builder
 	popup.WriteString(m.styles.Title.Render("Add Tag Filter") + "\n\n")
 	popup.WriteString(" " + m.styles.DetailKey.Render("Tag:") + " " + m.tagAddInput + "█\n")
@@ -805,7 +827,7 @@ func (m SearchTUIModel) viewTagAdd() string {
 }
 
 // viewDirectDeploy renders the direct deploy overlay popup.
-func (m SearchTUIModel) viewDirectDeploy() string {
+func (m *SearchTUIModel) viewDirectDeploy() string {
 	var popup strings.Builder
 
 	cfg := m.getProviderConfig(m.Provider)
@@ -843,3 +865,5 @@ func (m SearchTUIModel) viewDirectDeploy() string {
 
 	return m.renderPopupOverList(popup.String(), popupWidth)
 }
+
+func (m *SearchTUIModel) nodePageSize() int { return max(1, m.TermHeight-13) }

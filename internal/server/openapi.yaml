@@ -73,6 +73,12 @@ security:
 # segment (cluster-capable, unlike the node-local /server family).
 # Pinned to the live routing table by TestOpenAPITags in internal/server.
 tags:
+  - name: Session
+    description: Browser sign-in, bootstrap and logout.
+  - name: Me
+    description: Current identity and owned MCP grants.
+  - name: OAuth
+    description: Optional coordinator browser authorization and client connections.
   - name: Spec
     description: The API describing itself. Start here.
   - name: System
@@ -114,6 +120,881 @@ tags:
   - name: OllamaCompat
 
 paths:
+  "/zzrouter/v1/session":
+    get:
+      tags: ["Session"]
+      operationId: "getBrowserSession"
+      summary: "Bootstrap a browser session and CSRF proof"
+      description: "Available when coordinator OAuth is enabled. Sets host-only HttpOnly cookies. Returns safe state only; session and refresh credentials are never returned in JSON. Cache-Control is no-store."
+      security: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "403":
+          description: "Ambiguous browser cookies."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Protected state unavailable."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+    post:
+      tags: ["Session"]
+      operationId: "loginBrowserSession"
+      summary: "Sign in using an existing zzRouter key"
+      description: "Call GET /session first. Requires exact Origin and the matching CSRF header/cookie, including before authentication. Rotates the browser session without changing the key's role. Maximum request body is 8192 bytes."
+      security: []
+      parameters:
+        - in: "header"
+          name: "Origin"
+          required: true
+          schema:
+            type: "string"
+          description: "Exact configured OAuth issuer."
+        - in: "header"
+          name: "X-CSRF-Token"
+          required: true
+          schema:
+            type: "string"
+          description: "CSRF value returned by GET /session, with its browser cookie."
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required: ["key"]
+              additionalProperties: false
+              properties:
+                key:
+                  type: "string"
+                  writeOnly: true
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserSessionState"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "429":
+          description: "Credential login rate or session limit reached."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Protected state unavailable."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      tags: ["Session"]
+      operationId: "logoutBrowserSession"
+      summary: "Revoke the browser session"
+      description: "Requires browser origin and CSRF proof. Persists revocation before clearing root and legacy cookies."
+      security:
+        - BrowserSession: []
+      parameters:
+        - in: "header"
+          name: "Origin"
+          required: true
+          schema:
+            type: "string"
+          description: "Exact configured OAuth issuer."
+        - in: "header"
+          name: "X-CSRF-Token"
+          required: true
+          schema:
+            type: "string"
+          description: "CSRF value returned by GET /session, with its browser cookie."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "503":
+          description: "Protected state unavailable."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/me":
+    get:
+      tags: ["Me"]
+      operationId: "getCurrentIdentity"
+      summary: "Read the current user or administrator"
+      security:
+        - IdentityKey: []
+        - BrowserSession: []
+      description: "Resolves current key and team policy. Invalid explicit headers never fall back to a browser session. MCP OAuth access tokens cannot authenticate this route."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/BrowserIdentity"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+  "/zzrouter/v1/me/connections":
+    get:
+      tags: ["Me"]
+      operationId: "listMyMCPConnections"
+      summary: "List this identity's MCP grants"
+      security:
+        - IdentityKey: []
+        - BrowserSession: []
+      description: "Owner-scoped metadata only. Administrators do not gain access to another identity's grants."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ListEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        type: "array"
+                        items:
+                          $ref: "#/components/schemas/MCPConnection"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "503":
+          description: "Protected state unavailable."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/me/connections/{id}":
+    parameters:
+      - in: "path"
+        name: "id"
+        required: true
+        schema:
+          type: "string"
+    delete:
+      tags: ["Me"]
+      operationId: "revokeMyMCPConnection"
+      summary: "Revoke one owned MCP grant"
+      description: "Cookie-authenticated calls require exact Origin and X-CSRF-Token. Unknown and unowned IDs produce the same idempotent result. Revokes access and refresh authority for that grant."
+      security:
+        - IdentityKey: []
+        - BrowserSession: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                $ref: "#/components/schemas/SuccessEnvelope"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "503":
+          description: "Protected state unavailable."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/providers/{name}/connection":
+    parameters:
+      - in: "path"
+        name: "name"
+        required: true
+        schema:
+          type: "string"
+    get:
+      tags: ["Providers"]
+      operationId: "getProviderConnection"
+      summary: "Read connection schema and safe status"
+      description: "Coordinator administrator only. Includes all declared fields, nonsecret values, presence flags and ownership mode. Stored secrets are never readable. A node query parameter is rejected. Cache-Control is no-store."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProviderConnectionStatus"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "404":
+          description: "Provider is absent or has no declared connection (provider_connection_unsupported)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "This is not the coordinator (provider_connection_scope)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: "Request exceeds 65536 bytes."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Configuration or protected connection state is unavailable (provider_connection_unavailable)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+    put:
+      tags: ["Providers"]
+      operationId: "saveProviderConnection"
+      summary: "Replace a complete protected provider connection"
+      description: "Requires an expected revision, complete candidate values and a startup encryption key source. Saving does not perform a network test. activate requests existing onboarding after persistence; inspect saved, durable, active and published separately. Browser calls require exact Origin and X-CSRF-Token. Changes are node-local and never distribute cloud credentials to workers."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required: ["expected_revision","values"]
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  format: "int64"
+                  minimum: 0
+                values:
+                  type: "object"
+                  additionalProperties:
+                    type: "string"
+                    maxLength: 16384
+                  description: "Complete candidate fields, including explicit replacement secrets. Never merge hidden stored secrets into a new destination."
+                activate:
+                  type: "boolean"
+                  default: false
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProviderConnectionApply"
+        "400":
+          description: "Malformed request or invalid complete candidate (invalid_provider_connection)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "404":
+          description: "Provider is absent or has no declared connection (provider_connection_unsupported)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Revision changed (provider_connection_conflict) or this is not the coordinator (provider_connection_scope)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: "Request exceeds 65536 bytes."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Configuration/protected state is unavailable (provider_connection_unavailable), startup protection is missing (managed_credentials_unavailable), or persistence failed before saving (provider_connection_persistence_failed)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      tags: ["Providers"]
+      operationId: "removeProviderConnection"
+      summary: "Remove managed values and disable credential fallback"
+      description: "Persists a disabled tombstone; an old environment or Hugging Face cache token cannot silently return. Browser calls require exact Origin and X-CSRF-Token."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required: ["expected_revision"]
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  format: "int64"
+                  minimum: 0
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProviderConnectionApply"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "404":
+          description: "Provider is absent or has no declared connection (provider_connection_unsupported)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Revision changed (provider_connection_conflict) or this is not the coordinator (provider_connection_scope)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: "Request exceeds 65536 bytes."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Configuration/protected state is unavailable (provider_connection_unavailable), startup protection is missing (managed_credentials_unavailable), or persistence failed before saving (provider_connection_persistence_failed)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/providers/{name}/connection/test":
+    parameters:
+      - in: "path"
+        name: "name"
+        required: true
+        schema:
+          type: "string"
+    post:
+      tags: ["Providers"]
+      operationId: "testProviderConnection"
+      summary: "Test a candidate without saving or activating it"
+      description: "Uses only submitted candidate fields. Does not change stored state, enable a provider or publish configuration. Redirects are refused and upstream response bodies are not returned. Browser calls require exact Origin and X-CSRF-Token."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required: ["values"]
+              additionalProperties: false
+              properties:
+                values:
+                  type: "object"
+                  additionalProperties:
+                    type: "string"
+                    maxLength: 16384
+                  description: "Complete candidate fields, including explicit replacement secrets. Never merge hidden stored secrets into a new destination."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProviderConnectionTest"
+        "400":
+          description: "Malformed request or invalid complete candidate (invalid_provider_connection)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "404":
+          description: "Provider is absent or has no declared connection (provider_connection_unsupported)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "This is not the coordinator (provider_connection_scope)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: "Request exceeds 65536 bytes."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Configuration or protected connection state is unavailable (provider_connection_unavailable)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/providers/{name}/connection/use-external":
+    parameters:
+      - in: "path"
+        name: "name"
+        required: true
+        schema:
+          type: "string"
+    post:
+      tags: ["Providers"]
+      operationId: "useExternalProviderConnection"
+      summary: "Explicitly restore external credential ownership"
+      description: "Clears managed values and resumes declared server environment/cache resolution. Uses revision checks. Browser calls require exact Origin and X-CSRF-Token."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      requestBody:
+        required: true
+        content:
+          "application/json":
+            schema:
+              type: "object"
+              required: ["expected_revision"]
+              additionalProperties: false
+              properties:
+                expected_revision:
+                  type: "integer"
+                  format: "int64"
+                  minimum: 0
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/ProviderConnectionApply"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "404":
+          description: "Provider is absent or has no declared connection (provider_connection_unsupported)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: "Revision changed (provider_connection_conflict) or this is not the coordinator (provider_connection_scope)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: "Request exceeds 65536 bytes."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "503":
+          description: "Configuration/protected state is unavailable (provider_connection_unavailable), startup protection is missing (managed_credentials_unavailable), or persistence failed before saving (provider_connection_persistence_failed)."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  "/zzrouter/v1/registries/ollama/tags":
+    get:
+      tags: ["Registries"]
+      operationId: "listRegistriesOllamaTags"
+      summary: "Read Ollama catalog versions through the coordinator"
+      description: "Returns catalog tags, sizes, context and cloud flags from the fixed Ollama library origin. The client does not scrape upstream HTML. The request follows the caller's cancellation."
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      parameters:
+        - in: "query"
+          name: "id"
+          required: true
+          schema:
+            type: "string"
+          description: "One Ollama library model name, for example llama3.2. Full URLs and traversal are refused."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            "application/json":
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/SuccessEnvelope"
+                  - type: "object"
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/OllamaTags"
+        "400":
+          description: "Invalid request."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          $ref: "#/components/responses/MgmtUnauthorized"
+        "403":
+          $ref: "#/components/responses/MgmtForbidden"
+        "502":
+          description: "Ollama catalog could not be reached."
+          content:
+            "application/problem+json":
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [OAuth]
+      operationId: getOAuthAuthorizationMetadata
+      summary: Discover OAuth authorization metadata
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '200':
+          description: Discover OAuth authorization metadata
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /.well-known/oauth-protected-resource/zzrouter/v1/mcp:
+    get:
+      tags: [OAuth]
+      operationId: getAdminMcpResourceMetadata
+      summary: Discover OAuth authorization metadata
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '200':
+          description: Discover OAuth authorization metadata
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /.well-known/oauth-protected-resource/inference/mcp:
+    get:
+      tags: [OAuth]
+      operationId: getInferenceMcpResourceMetadata
+      summary: Discover OAuth authorization metadata
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '200':
+          description: Discover OAuth authorization metadata
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/authorize:
+    get:
+      tags: [OAuth]
+      operationId: getOAuthAuthorize
+      summary: Review an MCP client authorization
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '200':
+          description: Review an MCP client authorization
+          content:
+            text/html:
+              schema: { type: string }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+    post:
+      tags: [OAuth]
+      operationId: approveOAuthClient
+      summary: Approve or cancel client authorization
+      description: Browser action requiring the matching Origin, browser cookie and CSRF form value. Authenticate with an existing zzRouter key when no browser session exists.
+      security: []
+      responses:
+        '303':
+          description: Approve or cancel client authorization
+          content:
+            text/html:
+              schema: { type: string }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/connections:
+    get:
+      tags: [OAuth]
+      operationId: getOAuthConnections
+      summary: Review authorized MCP clients
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '200':
+          description: Review authorized MCP clients
+          content:
+            text/html:
+              schema: { type: string }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+    post:
+      tags: [OAuth]
+      operationId: updateOAuthConnections
+      summary: Sign in or revoke a client connection
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '303':
+          description: Sign in or revoke a client connection
+          content:
+            text/html:
+              schema: { type: string }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/logout:
+    post:
+      tags: [OAuth]
+      operationId: logoutOAuthBrowser
+      summary: Sign out of the browser session
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '303':
+          description: Sign out of the browser session
+          content:
+            text/html:
+              schema: { type: string }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/token:
+    post:
+      tags: [OAuth]
+      operationId: exchangeOAuthToken
+      summary: Exchange a code or rotate refresh credentials
+      description: POST form fields include grant_type, client_id and resource. Code exchange additionally requires code, redirect_uri and code_verifier. Refresh requires refresh_token. Only S256 PKCE and public clients are supported; refresh retains the original client, resource and scope.
+      security: []
+      responses:
+        '200':
+          description: Exchange a code or rotate refresh credentials
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+    options:
+      tags: [OAuth]
+      operationId: optionsOAuthToken
+      summary: Discover OAuth token CORS methods
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '204':
+          description: Discover OAuth token CORS methods
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/register:
+    post:
+      tags: [OAuth]
+      operationId: registerOAuthClient
+      summary: Register a public OAuth client
+      description: JSON metadata requires client_name and redirect_uris. Only public clients using token_endpoint_auth_method none are supported. Callback URLs must use HTTPS or HTTP loopback. Client ID Metadata Documents are also supported.
+      security: []
+      responses:
+        '201':
+          description: Register a public OAuth client
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+    options:
+      tags: [OAuth]
+      operationId: optionsOAuthRegister
+      summary: Discover OAuth registration CORS methods
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '204':
+          description: Discover OAuth registration CORS methods
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+  /oauth/revoke:
+    post:
+      tags: [OAuth]
+      operationId: revokeOAuthToken
+      summary: Revoke an MCP client authorization
+      description: POST token and client_id as form data. A matching access or refresh token revokes the entire connection. Unknown credentials return success.
+      security: []
+      responses:
+        '200':
+          description: Revoke an MCP client authorization
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+    options:
+      tags: [OAuth]
+      operationId: optionsOAuthRevoke
+      summary: Discover OAuth revocation CORS methods
+      description: Enabled by default on coordinators; auth.oauth.enabled false disables this route. Workers do not mount it.
+      security: []
+      responses:
+        '204':
+          description: Discover OAuth revocation CORS methods
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { description: Invalid OAuth request }
+        '401': { description: Browser sign-in required }
+        '403': { description: Browser request or permission refused }
+        '429': { description: Authorization state or rate limit reached }
+        '503': { description: Authorization state could not be saved }
+
   /openapi.yaml:
     get:
       tags: [Spec]
@@ -345,6 +1226,7 @@ paths:
   /zzrouter/v1/mcp:
     post:
       tags: [MCP]
+      security: [{AdminKey: []}, {MCPOAuth: ["zzrouter:manage"]}]
       operationId: callMcp
       summary: Stateless MCP tools for coding agents
       description: |
@@ -377,6 +1259,7 @@ paths:
         '413': { description: Request exceeds 1 MiB }
     get:
       tags: [MCP]
+      security: [{AdminKey: []}, {MCPOAuth: ["zzrouter:manage"]}]
       operationId: getMcp
       summary: Stateless MCP does not support GET
       description: |
@@ -388,6 +1271,7 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
     delete:
       tags: [MCP]
+      security: [{AdminKey: []}, {MCPOAuth: ["zzrouter:manage"]}]
       operationId: deleteMcp
       summary: Stateless MCP does not support DELETE
       description: |
@@ -402,6 +1286,7 @@ paths:
   /inference/mcp:
     post:
       tags: [MCP]
+      security: [{InferenceBearer: []}, {InferenceKey: []}, {MCPOAuth: ["zzrouter:inference"]}]
       operationId: callInferenceMcp
       summary: User-keyed inference MCP tools
       description: |
@@ -427,6 +1312,7 @@ paths:
         '413': { description: Request exceeds 1 MiB }
     get:
       tags: [MCP]
+      security: [{InferenceBearer: []}, {InferenceKey: []}, {MCPOAuth: ["zzrouter:inference"]}]
       operationId: getInferenceMcp
       summary: Stateless inference MCP does not support GET
       responses:
@@ -434,6 +1320,7 @@ paths:
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
     delete:
       tags: [MCP]
+      security: [{InferenceBearer: []}, {InferenceKey: []}, {MCPOAuth: ["zzrouter:inference"]}]
       operationId: deleteInferenceMcp
       summary: Stateless inference MCP does not support DELETE
       responses:
@@ -1642,7 +2529,10 @@ paths:
 
         Registries are search-only and excluded by default. `kind=registry`
         returns just those, `kind=all` returns everything, and `type` narrows
-        to cloud or local providers.
+        to cloud or local providers. `connection_supported` identifies entries
+        with a declared editable connection schema; use the entry key to read
+        `/providers/{name}/connection`. An unavailable configuration returns 503;
+        a validated empty configuration returns an empty list.
       parameters:
         - in: query
           name: type
@@ -1684,6 +2574,11 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '503':
+          description: Provider configuration is unavailable (provider_configuration_unavailable).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /zzrouter/v1/providers/{name}:
     parameters:
@@ -5358,14 +6253,30 @@ paths:
         installed still has a card. `provider` is a search provider
         (`huggingface`, `ollama`, a cloud catalog), and the rest of the path
         is the model id, slashes and all.
+        The data object retains native provider fields and adds typed
+        discovery metadata. Unknown byte size is not inferred from parameter count.
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/SuccessEnvelope' }
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DiscoveryResult' }
         '400':
           description: Unknown search provider, or an unparseable model id.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '503':
+          description: The provider connection is unavailable. Code provider_connection_unavailable and errors[].hint identify the coordinator connection recovery workflow.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404':
           description: The registry has no such model.
           content:
@@ -6816,22 +7727,53 @@ paths:
     get:
       tags: [Search]
       operationId: getSearch
-      summary: Search models across the cluster
+      summary: Search models and available upstream catalogs
+      parameters:
+        - { in: query, name: type, required: true, schema: { type: string, enum: [models, providers, popular] } }
+        - { in: query, name: q, schema: { type: string } }
+        - { in: query, name: provider, schema: { type: string, default: all } }
+        - { in: query, name: author, schema: { type: string } }
+        - { in: query, name: tags, schema: { type: string }, description: Comma-separated registry tags. }
+        - { in: query, name: logic, schema: { type: string, enum: [AND, OR], default: AND } }
+        - { in: query, name: sort, schema: { type: string } }
+        - { in: query, name: order, schema: { type: string, default: desc } }
+        - { in: query, name: full, schema: { type: boolean, default: false } }
+        - { in: query, name: enrich, schema: { type: boolean, default: false } }
+        - { in: query, name: cursor, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 1000, default: 20 } }
+        - { in: query, name: offset, schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 } }
       description: |
         Searches the configured upstream registries for models, not this
         cluster's inventory. Use it to find something to download;
         `GET /zzrouter/v1/models` is what is already here.
 
-        Narrow with `registry` when a query is slow: each registry is a
-        network call, and one slow upstream holds the whole answer.
+        Select a catalog with `provider`; `all` currently resolves to Hugging
+        Face. Model/popular results retain native provider fields and add
+        `discovery`. Provider results declare supported sort/filter behavior
+        and current configuration/enablement. Authenticated results are cached
+        by effective connection revision, and requests follow cancellation.
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: '#/components/schemas/SuccessEnvelope' }
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SearchResultPage' }
         '400':
           description: Malformed query or an unknown registry.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '503':
+          description: The provider connection is unavailable. Code provider_connection_unavailable and errors[].hint identify the coordinator connection recovery workflow.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '502':
           description: A registry could not be reached.
           content:
@@ -10337,6 +11279,29 @@ paths:
 
 components:
   securitySchemes:
+    BrowserSession:
+      type: apiKey
+      in: cookie
+      name: __Host-zzrouter_oauth_session
+      description: >-
+        Host-only HttpOnly browser session on opted-in routes. HTTPS uses this Secure,
+        root-scoped cookie; explicitly configured loopback HTTP uses zzrouter_oauth_session.
+        Mutations require exact Origin and X-CSRF-Token. Never accepted as MCP or compatibility credentials.
+    IdentityKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Existing user or administrator key for owner-scoped self routes.
+    MCPOAuth:
+      type: oauth2
+      description: Default-enabled coordinator-local OAuth. Tokens are restricted to their MCP resource.
+      flows:
+        authorizationCode:
+          authorizationUrl: /oauth/authorize
+          tokenUrl: /oauth/token
+          scopes:
+            zzrouter:manage: Management MCP access under the original admin key.
+            zzrouter:inference: Inference MCP access under the original user key.
     AdminKey:
       type: apiKey
       in: header
@@ -10665,6 +11630,316 @@ components:
           schema: { $ref: '#/components/schemas/OllamaError' }
 
   schemas:
+    BrowserSessionState:
+      type: "object"
+      required: ["authenticated","csrf","issuer","node_name"]
+      properties:
+        authenticated:
+          type: "boolean"
+        csrf:
+          type: "string"
+          description: "In-memory mutation proof; not an authentication credential."
+        expires_at:
+          type: "string"
+          format: "date-time"
+        issuer:
+          type: "string"
+          format: "uri"
+          description: "Fixed configured browser origin, never derived from request headers. Open the console at this exact origin."
+        node_name:
+          type: "string"
+          description: "Coordinator display name."
+    BrowserIdentity:
+      type: "object"
+      description: "Safe current identity and existing policy projection. No credential fingerprint, key metadata or installation configuration. Does not calculate a new permission policy."
+      required: ["id","name","role","is_virtual","limits","team","usage"]
+      properties:
+        id:
+          type: "string"
+        name:
+          type: "string"
+        role:
+          type: "string"
+          enum: ["admin","user"]
+        team_id:
+          type: "string"
+        is_virtual:
+          type: "boolean"
+          description: "True for a managed key; false for a startup key."
+        expires_at:
+          type: "string"
+          format: "date-time"
+        limits:
+          $ref: "#/components/schemas/BrowserLimits"
+        team:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/BrowserTeam"
+        usage:
+          nullable: true
+          description: "Own managed-key usage from KeysService, or null when unavailable. Never another key's usage."
+          allOf:
+            - $ref: "#/components/schemas/KeyUsage"
+    BrowserLimits:
+      type: "object"
+      description: "Existing key or team policy. A zero rate, parallel or spend limit means unenforced at this scope. Both key and team policies still apply."
+      required: ["rpm_limit","tpm_limit","max_parallel_requests","spend_limit","reset_period","default_max_tokens"]
+      properties:
+        rpm_limit: { type: integer, minimum: 0 }
+        tpm_limit: { type: integer, minimum: 0 }
+        max_parallel_requests: { type: integer, minimum: 0 }
+        spend_limit: { type: number, minimum: 0 }
+        reset_period: { type: string }
+        default_max_tokens:
+          type: integer
+          minimum: 0
+          description: "Budget reservation estimate, with zero selecting the server default. Not an output-token cap."
+    BrowserTeam:
+      type: "object"
+      required: ["id","name","allowed_models","limits"]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        allowed_models:
+          type: array
+          description: "Existing allowed model/group names. Empty means all models; normal role and quota enforcement remains authoritative."
+          items: { type: string }
+        limits:
+          $ref: "#/components/schemas/BrowserLimits"
+    MCPConnection:
+      type: "object"
+      required: ["id","client","scope","resource","created_at","expires_at"]
+      properties:
+        id:
+          type: "string"
+        client:
+          type: "string"
+        scope:
+          type: "string"
+        resource:
+          type: "string"
+          format: "uri"
+        created_at:
+          type: "string"
+          format: "date-time"
+        expires_at:
+          type: "string"
+          format: "date-time"
+    ConnectionField:
+      type: "object"
+      required: ["id","label","type","secret","required","env"]
+      properties:
+        id:
+          type: "string"
+        label:
+          type: "string"
+        type:
+          type: "string"
+          enum: ["text","endpoint","identifier"]
+        secret:
+          type: "boolean"
+        required:
+          type: "boolean"
+        env:
+          type: "string"
+          description: "Declared environment variable name, never its value."
+        env_aliases:
+          type: "array"
+          items:
+            type: "string"
+        default:
+          type: "string"
+          description: "Only nonsecret defaults are allowed."
+    ProviderConnectionStatus:
+      type: "object"
+      required: ["provider","scope","mode","revision","configured","enabled","fields","values","present","managed_available"]
+      properties:
+        provider:
+          type: "string"
+        scope:
+          type: "string"
+          enum: ["coordinator"]
+        mode:
+          type: "string"
+          enum: ["external","managed","disabled"]
+        revision:
+          type: "integer"
+          format: "int64"
+          minimum: 0
+        configured:
+          type: "boolean"
+        enabled:
+          type: "boolean"
+        fields:
+          type: "array"
+          items:
+            $ref: "#/components/schemas/ConnectionField"
+        values:
+          type: "object"
+          additionalProperties:
+            type: "string"
+          description: "Nonsecret values only."
+        present:
+          type: "array"
+          items:
+            type: "string"
+          description: "IDs of fields with values, including secret presence."
+        managed_available:
+          type: "boolean"
+    ProviderConnectionTest:
+      type: "object"
+      required: ["status","code"]
+      properties:
+        status:
+          type: "string"
+          enum: ["ok","failed"]
+        code:
+          type: "string"
+          enum: ["accepted","invalid_endpoint","unreachable","upstream_rejected","authentication_failed","redirect_refused","rate_limited"]
+        http_status:
+          type: "integer"
+    ProviderConnectionApply:
+      type: "object"
+      required: ["connection","saved","durable","active","published","outcome"]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ProviderConnectionStatus"
+        saved:
+          type: "boolean"
+        durable:
+          type: "boolean"
+        active:
+          type: "boolean"
+        published:
+          type: "boolean"
+        outcome:
+          type: "string"
+          enum: ["saved","saved_activation_failed","saved_publication_failed","saved_durability_uncertain"]
+    OllamaTags:
+      type: "object"
+      required: ["model_id","tags"]
+      properties:
+        model_id:
+          type: "string"
+        tags:
+          type: "array"
+          items:
+            type: "object"
+            required: ["name","size","context","input","digest","is_cloud"]
+            properties:
+              name:
+                type: "string"
+              size:
+                type: "string"
+              context:
+                type: "string"
+              input:
+                type: "string"
+              digest:
+                type: "string"
+              is_cloud:
+                type: "boolean"
+    ModelDiscovery:
+      type: "object"
+      required: ["provider","api_id","display_name"]
+      description: "Server-normalized metadata. Missing size_bytes means unknown; parameter_count is never storage size. Native provider fields remain beside discovery."
+      properties:
+        provider:
+          type: "string"
+        api_id:
+          type: "string"
+        display_name:
+          type: "string"
+        description:
+          type: "string"
+        readme:
+          type: "string"
+        created_at:
+          type: "string"
+        modified_at:
+          type: "string"
+        url:
+          type: "string"
+        price_prompt:
+          type: "string"
+        price_complete:
+          type: "string"
+        downloads:
+          type: "integer"
+          format: "int64"
+        likes:
+          type: "integer"
+          format: "int64"
+        size_bytes:
+          type: "integer"
+          format: "int64"
+        parameter_count:
+          type: "integer"
+          format: "int64"
+        variant_count:
+          type: "integer"
+          format: "int64"
+        context_length:
+          type: "integer"
+          format: "int64"
+        tags:
+          type: "array"
+          items:
+            type: "string"
+        trending_score:
+          type: "number"
+        has_cloud:
+          type: "boolean"
+        is_cloud:
+          type: "boolean"
+    DiscoveryResult:
+      type: "object"
+      required: ["discovery"]
+      properties:
+        discovery:
+          $ref: "#/components/schemas/ModelDiscovery"
+      additionalProperties: true
+      description: "Original provider model fields with an additive typed discovery projection."
+    SearchResultPage:
+      type: object
+      required: [type, results, total, is_total_exact, pagination]
+      properties:
+        type: { type: string, enum: [models, providers, popular] }
+        query: { type: string }
+        provider: { type: string }
+        results:
+          type: array
+          items:
+            oneOf:
+              - { $ref: '#/components/schemas/DiscoveryResult' }
+              - { $ref: '#/components/schemas/SearchProvider' }
+        total: { type: integer }
+        is_total_exact: { type: boolean }
+        pagination:
+          type: object
+          properties:
+            limit: { type: integer }
+            offset: { type: integer }
+            has_next: { type: boolean }
+            has_prev: { type: boolean }
+            cursor: { description: Opaque upstream cursor when available. }
+    SearchProvider:
+      type: object
+      required: [name, display_name, configured, enabled]
+      properties:
+        name: { type: string }
+        display_name: { type: string }
+        description: { type: string }
+        base_url: { type: string }
+        model_url_fmt: { type: string }
+        icon: { type: string }
+        sort_options: { type: array, nullable: true, items: { type: string } }
+        client_sorts: { type: array, nullable: true, items: { type: string } }
+        client_filter: { type: boolean }
+        has_tags: { type: boolean }
+        is_cloud: { type: boolean }
+        configured: { type: boolean }
+        enabled: { type: boolean }
     ProviderServiceStatus:
       type: object
       required: [provider, node, supervisor, managed, enabled, desired_running, running, healthy, manager]
@@ -11893,7 +13168,7 @@ components:
         `mode` and `kind` carry the same discriminator , `kind` is the
         canonical name, `mode` is retained for older clients during
         the split arc.
-      required: [key, name, mode, kind, protocol, is_cloud, installed, enabled, available]
+      required: [key, name, mode, kind, protocol, is_cloud, installed, available, connection_supported]
       properties:
         key:         { type: string }
         name:        { type: string }
@@ -11907,10 +13182,12 @@ components:
         protocol:   { type: string, example: openai }
         is_cloud:   { type: boolean }
         installed:  { type: boolean }
-        enabled:    { type: boolean }
         available:
           type: boolean
           description: Cloud providers are available once credentials are set; local providers once enabled.
+        connection_supported:
+          type: boolean
+          description: True when this provider declares an editable connection schema, including disabled providers and registries. Does not imply configuration or protected storage is currently available.
         required_env_vars:
           type: array
           items: { type: string }

@@ -11,10 +11,11 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/stperic/common/atomicfile"
+
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -403,7 +404,7 @@ func updateNodenameInConfig(configPath, hostname string) error {
 	// applies the mode on file creation — for the upgrade case where
 	// a previously-loose file is being overwritten, the helper's
 	// chmod-then-rename forces the new mode regardless of prior state.
-	return utils.AtomicWriteFile(configPath, output, 0o600)
+	return atomicfile.WriteFile(configPath, output, 0o600)
 }
 
 // createConfigFileWithNodename creates the host config file with a custom hostname
@@ -425,7 +426,7 @@ func createConfigFileWithNodename(path string, hostname string) error {
 
 	// 0o600: same loader gate as updateNodenameInConfig above. The
 	// helper makes the perm idempotent across re-runs of init.
-	return utils.AtomicWriteFile(path, []byte(content), 0o600)
+	return atomicfile.WriteFile(path, []byte(content), 0o600)
 }
 
 func createGitignore(path string) error {

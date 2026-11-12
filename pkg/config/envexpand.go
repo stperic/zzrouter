@@ -11,9 +11,14 @@ import (
 // If VAR is unset or empty with no default, it expands to "".
 // Uses os.Expand with a custom mapping, avoiding regex entirely.
 func ExpandEnv(s string) string {
+	return ExpandEnvWith(s, os.Getenv)
+}
+
+// ExpandEnvWith expands a declaration against one captured connection snapshot.
+func ExpandEnvWith(s string, lookup func(string) string) string {
 	return os.Expand(s, func(key string) string {
 		name, defaultVal, hasDefault := parseVarWithDefault(key)
-		if val := os.Getenv(name); val != "" {
+		if val := lookup(name); val != "" {
 			return val
 		}
 		if hasDefault {
@@ -28,7 +33,12 @@ func ExpandEnv(s string) string {
 // (e.g., https://...azure.com/openai/v1/) but zzRouter's request paths already
 // include "/v1/", so we normalize to avoid double "/v1/v1/" in proxied URLs.
 func NormalizeEndpoint(endpoint string) string {
-	endpoint = strings.TrimRight(ExpandEnv(endpoint), "/")
+	return NormalizeEndpointWith(endpoint, os.Getenv)
+}
+
+// NormalizeEndpointWith normalizes an endpoint from one credential snapshot.
+func NormalizeEndpointWith(endpoint string, lookup func(string) string) string {
+	endpoint = strings.TrimRight(ExpandEnvWith(endpoint, lookup), "/")
 	endpoint = strings.TrimSuffix(endpoint, "/v1")
 	return endpoint
 }

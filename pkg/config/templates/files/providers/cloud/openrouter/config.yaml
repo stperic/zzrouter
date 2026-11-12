@@ -2,6 +2,14 @@
 # Edit on the coordinator, never here.
 description: "Cloud inference gateway with 300+ models"
 enabled: false
+connection:
+  fields:
+    - id: api_key
+      label: API key
+      type: text
+      env: OPENROUTER_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://openrouter.ai/api
   model_url: "https://openrouter.ai/models/%s"

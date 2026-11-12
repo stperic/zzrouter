@@ -2,6 +2,14 @@
 # Edit on the coordinator, never here.
 description: "GPT and reasoning models"
 enabled: false
+connection:
+  fields:
+    - id: api_key
+      label: API key
+      type: text
+      env: OPENAI_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://api.openai.com
   model_url: "https://platform.openai.com/docs/models#%s"

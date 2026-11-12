@@ -110,7 +110,8 @@ func (d dispatcher) call(ctx context.Context, input request, out any) error {
 	if d.outer.ctx.Err() != nil {
 		cancel()
 	}
-	req = req.WithContext(context.WithValue(inner, dispatchKey, true)) //nolint:contextcheck // Decision 2 permits only the accounting marker in the value-free context.
+	req = req.WithContext(context.WithValue(inner, dispatchKey, true))                       //nolint:contextcheck // Decision 2 permits only the accounting marker in the value-free context.
+	req = req.WithContext(context.WithValue(req.Context(), resourceKey, d.cfg.ResourcePath)) //nolint:contextcheck // The value-free inner context receives only the configured MCP audience.
 	req.RemoteAddr = d.requestInfo.RemoteAddr
 	observability.InjectTraceContext(d.outer.ctx, req.Header) //nolint:contextcheck // Serialize only the HTTP trace parent into the value-free request.
 	for _, name := range append(append([]string(nil), d.cfg.KeyHeaders...), "X-Forwarded-For", "X-Real-IP") {

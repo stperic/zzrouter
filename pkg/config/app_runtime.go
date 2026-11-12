@@ -102,10 +102,15 @@ type APIConfig struct {
 // on h, resolving ${ENV_VAR} references. backend.Upstream.Header is its
 // caller; a request takes its credential from there.
 func (ac *APIConfig) ApplyAuthHeaders(h http.Header) {
+	ac.ApplyAuthHeadersWith(h, os.Getenv)
+}
+
+// ApplyAuthHeadersWith applies declared authentication from a captured connection.
+func (ac *APIConfig) ApplyAuthHeadersWith(h http.Header, lookup func(string) string) {
 	if ac == nil {
 		return
 	}
-	token := os.ExpandEnv(ac.Token)
+	token := ExpandEnvWith(ac.Token, lookup)
 	if token != "" {
 		header := ac.AuthHeader
 		if header == "" {
@@ -118,7 +123,7 @@ func (ac *APIConfig) ApplyAuthHeaders(h http.Header) {
 		h.Set(header, prefix+token)
 	}
 	for k, v := range ac.CustomHeaders {
-		h.Set(k, os.ExpandEnv(v))
+		h.Set(k, ExpandEnvWith(v, lookup))
 	}
 }
 
@@ -153,15 +158,20 @@ func (ac *APIConfig) Validate() error {
 // custom header with an env var reference resolves to a non-empty value.
 // Static headers (like "anthropic-version: 2023-06-01") are not credentials.
 func (ac *APIConfig) HasCredentials() bool {
+	return ac.HasCredentialsWith(os.Getenv)
+}
+
+// HasCredentialsWith checks a captured connection instead of process state.
+func (ac *APIConfig) HasCredentialsWith(lookup func(string) string) bool {
 	if ac == nil {
 		return false
 	}
-	if ac.Token != "" && os.ExpandEnv(ac.Token) != "" {
+	if ac.Token != "" && ExpandEnvWith(ac.Token, lookup) != "" {
 		return true
 	}
 	for _, v := range ac.CustomHeaders {
 		// Only headers that reference env vars (contain $) are credentials
-		if strings.Contains(v, "$") && os.ExpandEnv(v) != "" {
+		if strings.Contains(v, "$") && ExpandEnvWith(v, lookup) != "" {
 			return true
 		}
 	}

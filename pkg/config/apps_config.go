@@ -11,11 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/stperic/common/atomicfile"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"gopkg.in/yaml.v3"
 )
 
 // ErrProviderExists is returned by AddApp when a provider with the given
@@ -72,7 +73,9 @@ func (c *AppsConfig) Fingerprint() [32]byte {
 	}
 	// Providers in sorted name order so a benign map-iteration reorder
 	// produces the same digest.
-	for _, name := range c.AppNames() {
+	names := c.AppNames()
+	slices.Sort(names)
+	for _, name := range names {
 		sc, ok := c.LookupApp(name)
 		if !ok {
 			continue
@@ -565,7 +568,8 @@ func (c *AppsConfig) SaveToDir(dir string) error {
 				return fmt.Errorf("create %s: %w", subdir, err)
 			}
 		}
-		for name, data := range bodies {
+		for _, name := range slices.Sorted(maps.Keys(bodies)) {
+			data := bodies[name]
 			providerDir := filepath.Join(subdir, name)
 			if err := os.MkdirAll(providerDir, 0755); err != nil {
 				return fmt.Errorf("create %s: %w", providerDir, err)
@@ -672,7 +676,7 @@ func writeYAMLIfChanged(path string, data []byte) error {
 // the parent directory and handles the Windows rename-over-existing
 // edge.
 func atomicWriteYAML(path string, data []byte) error {
-	return utils.AtomicWriteFile(path, data, 0o600)
+	return atomicfile.WriteFile(path, data, 0o600)
 }
 
 // ensureParameterQuotes preserves YAML escapes and block scalars while quoting strings.

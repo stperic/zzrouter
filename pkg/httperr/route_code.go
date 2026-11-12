@@ -8,6 +8,9 @@ package httperr
 type RouteErrorCode string
 
 const (
+	// CodeProviderConnectionUnavailable requires repairing a discovery connection.
+	CodeProviderConnectionUnavailable RouteErrorCode = "provider_connection_unavailable"
+
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.

@@ -26,6 +26,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/model/cache"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -120,8 +121,9 @@ type seededTestNodeConfig struct {
 	prepareProviders func(string)
 }
 
-// createSeededTestNode owns seeded fixtures without changing BuildTestServer's
-// exported contract. Cleanup drains the server before restoring its home.
+// createSeededTestNode isolates seeded config and provider installs without
+// changing BuildTestServer's exported contract. Cleanup drains the server before
+// restoring the enclosing fixture's paths.
 func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server {
 	t.Helper()
 	cfg := seededTestNodeConfig{TestNodeConfig: DefaultTestNodeConfig()}
@@ -137,6 +139,8 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("ZZROUTER_TEST_HOME", home)
+	previousInstallRoot := fsroot.ProviderRootDir()
+	t.Cleanup(func() { fsroot.SetProviderRootOverride(previousInstallRoot) })
 	providersDir := filepath.Join(home, "providers")
 	seedTestProviders(t, providersDir, cfg.providers, cfg.enabled)
 	if cfg.prepareProviders != nil {
@@ -147,9 +151,10 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 		name = "test-host"
 	}
 	hostCfg := &pkgConfig.NodeConfig{
-		Node:    pkgConfig.ServeConfig{Bind: "localhost", Port: getNextTestPort(), Name: name},
-		Cluster: pkgConfig.ClusterConfig{Mode: cfg.ClusterMode},
-		Auth:    pkgConfig.AuthConfig{AdminKey: cfg.AdminKey, UserKey: cfg.UserKey, ClusterNetworkKey: cfg.ClusterKey},
+		Node:      pkgConfig.ServeConfig{Bind: "localhost", Port: getNextTestPort(), Name: name},
+		Cluster:   pkgConfig.ClusterConfig{Mode: cfg.ClusterMode},
+		Auth:      pkgConfig.AuthConfig{AdminKey: cfg.AdminKey, UserKey: cfg.UserKey, ClusterNetworkKey: cfg.ClusterKey},
+		Providers: pkgConfig.ProvidersConfig{InstallDir: filepath.Join(home, "installed-providers")},
 	}
 	s, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)

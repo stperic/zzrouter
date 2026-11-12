@@ -232,7 +232,7 @@ func TestServiceManagerNoneIsRefused(t *testing.T) {
 }
 
 func TestManagedServiceConfigRemovalStopsSupervision(t *testing.T) {
-	for _, change := range []string{"provider", "endpoint", "nil"} {
+	for _, change := range []string{"provider", "endpoint", "empty"} {
 		t.Run(change, func(t *testing.T) {
 			m := newServiceTestManager(t, true, false)
 			m.Start(context.Background())
@@ -242,8 +242,8 @@ func TestManagedServiceConfigRemovalStopsSupervision(t *testing.T) {
 				svc, _ := fresh.LookupApp("vllm")
 				require.NoError(t, fresh.AddApp("generic-daemon", svc))
 			}
-			if change == "nil" {
-				fresh = nil
+			if change == "empty" {
+				fresh = &config.AppsConfig{}
 			}
 			m.ReloadConfig(fresh)
 			state := m.serviceState("generic-daemon")

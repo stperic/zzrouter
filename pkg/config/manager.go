@@ -35,6 +35,9 @@ func NewConfigManager(appName string) *ConfigManager {
 
 // GetClientConfigDir returns the client-specific config directory.
 func (cm *ConfigManager) GetClientConfigDir() string {
+	if root := os.Getenv(envTestHomeOverride); root != "" {
+		return root
+	}
 	return configdir.LocalConfig(cm.appName)
 }
 

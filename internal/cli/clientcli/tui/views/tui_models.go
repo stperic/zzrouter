@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -63,6 +64,9 @@ type modelRow struct {
 
 func (r *modelRow) isRoute() bool { return r.Kind == rowKindRoute }
 func (r *modelRow) isChild() bool { return r.Kind == rowKindDeployChild }
+func (r *modelRow) isRunning() bool {
+	return r.instance != nil && !r.instance.RecordOnly && r.instance.Status == "running"
+}
 
 // modelsViewMode tracks what the view is showing
 type modelsViewMode int
@@ -77,9 +81,12 @@ const (
 )
 
 type modelsLoadedMsg struct {
+	ctx         context.Context
 	rows        []modelRow
+	catalog     []pkgClient.ModelMetadata
 	groups      []pkgClient.ModelGroupResponse
 	routePrefix string
+	localNode   string
 	err         error
 	warnings    []string // non-fatal errors (e.g. groups fetch failed)
 }
@@ -94,12 +101,14 @@ type modelsAutoRefreshMsg struct{ epoch int }
 
 // deploymentsRefreshedMsg is sent when only the pulls data is refreshed (auto-refresh tick)
 type deploymentsRefreshedMsg struct {
+	ctx   context.Context
 	pulls []shared.DeploymentInfo
 	err   error
 }
 
 // modelsActionMsg is returned after an async action (start/stop/delete) completes
 type modelsActionMsg struct {
+	ctx             context.Context
 	action          string // "start", "stop", "delete", "cancel"
 	err             error
 	alreadyFinished bool
@@ -124,19 +133,22 @@ var modelsSortOptions = []string{"status", "model", "app", "node"}
 type ModelsViewModel struct {
 	tui.ViewContext
 
-	client     *pkgClient.Client
-	styles     ui.Styles
-	rows       []modelRow
-	list       tui.List
-	detail     tui.Detail
-	termWidth  int
-	termHeight int
-	loading    bool
-	err        error
-	hasActive  bool   // true if any downloads are in progress
-	fetching   bool   // true while a fetch is in flight
-	ticking    bool   // true while a pull-refresh tick timer is running
-	sortBy     string // current sort column (default: "status")
+	client      *pkgClient.Client
+	styles      ui.Styles
+	rows        []modelRow
+	list        tui.List
+	detail      tui.Detail
+	termWidth   int
+	termHeight  int
+	loading     bool
+	err         error
+	hasActive   bool   // true if any downloads are in progress
+	fetching    bool   // true while a fetch is in flight
+	ticking     bool   // true while a pull-refresh tick timer is running
+	sortBy      string // current sort column (default: "status")
+	runningOnly bool
+	loadContext context.Context
+	loadCancel  context.CancelFunc
 
 	// View mode
 	mode modelsViewMode
@@ -152,7 +164,8 @@ type ModelsViewModel struct {
 	modelUsageIdle bool
 
 	// Status message (shown briefly after actions)
-	statusMsg string
+	statusMsg       string
+	operationStatus string
 
 	// Ping slot for the detail panel's Test section
 	ping pingState
@@ -167,6 +180,8 @@ type ModelsViewModel struct {
 	NodeHealth     map[string]string              // node name → "online"/"offline"
 	groups         []pkgClient.ModelGroupResponse // cached groups for route operations
 	routePrefix    string                         // prefix for route names (from server config)
+	localNode      string                         // coordinator identity for replicas with an omitted node
+	activeRoute    string                         // named route being viewed or edited, independent of projection
 
 	// Route detail .View: selected deployment within the route detail panel.
 	// This is a sub-list cursor distinct from the main list cursor — small
@@ -213,14 +228,11 @@ func NewModelsViewModel(client *pkgClient.Client, styles ui.Styles) *ModelsViewM
 	}
 }
 
-// syncListItems builds tui.Item entries from m.rows. Call after any change
-// to m.rows (data load, sort, expand/collapse, in-place mutation).
-func (m *ModelsViewModel) syncListItems() {
-	items := make([]tui.Item, len(m.rows))
-	for i := range m.rows {
-		items[i] = modelRowItem{row: &m.rows[i]}
-	}
-	m.list.SetItems(items)
+// NewRunningModelsViewModel opens the model view with only live running instances.
+func NewRunningModelsViewModel(client *pkgClient.Client, styles ui.Styles) *ModelsViewModel {
+	m := NewModelsViewModel(client, styles)
+	m.runningOnly = true
+	return m
 }
 
 // Init implements tea.Model.
@@ -270,12 +282,19 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 		return m, nil
 
 	case modelsLoadedMsg:
+		if msg.ctx == nil || msg.ctx != m.loadContext || msg.ctx.Err() != nil {
+			return m, nil
+		}
 		m.loading = false
 		m.fetching = false
 		// A failed background reload must not swap populated content for an
 		// error page: keep what is on screen and report in the status line.
 		if msg.err != nil && len(m.rows) > 0 {
-			m.statusMsg = fmt.Sprintf("Refresh failed: %v", msg.err)
+			m.statusMsg = m.operationStatus
+			if m.statusMsg != "" {
+				m.statusMsg += ". "
+			}
+			m.statusMsg += fmt.Sprintf("Refresh failed: %v", msg.err)
 			return m, nil
 		}
 		// The reload re-sorts by status, so a model that just started moves.
@@ -287,29 +306,27 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 		}
 		if msg.groups != nil {
 			m.groups = msg.groups
+			m.localNode = msg.localNode
 		}
 		if msg.routePrefix != "" {
 			m.routePrefix = msg.routePrefix
 		}
 		m.err = msg.err
-		if len(msg.warnings) > 0 {
-			m.statusMsg = strings.Join(msg.warnings, "; ")
+		if msg.err != nil && m.operationStatus != "" {
+			m.err = fmt.Errorf("%s; refresh failed: %w", m.operationStatus, msg.err)
 		}
+		m.statusMsg = strings.Join(append([]string{m.operationStatus}, msg.warnings...), "; ")
+		m.statusMsg = strings.TrimPrefix(m.statusMsg, "; ")
 		m.rows = m.buildDisplayRows(msg.rows, m.groups)
 		m.applySortBy()
 		m.syncListItems()
 		m.restoreCursor(selected, hadSelection)
-		// Populate picker from fetched registry models (avoids redundant API call)
-		if !m.routeForm.pickerLoaded && len(msg.rows) > 0 {
-			var pickerModels []pkgClient.ModelMetadata
-			for _, r := range msg.rows {
-				if r.registry != nil {
-					pickerModels = append(pickerModels, *r.registry)
-				}
-			}
-			m.routeForm.availableModels = pickerModels
+		// Keep the picker tied to catalog inventory, independent of instance projection.
+		if !m.routeForm.pickerLoaded && msg.catalog != nil {
+			m.routeForm.availableModels = msg.catalog
 			m.routeForm.pickerLoaded = true
 		}
+
 		m.hasActive = false
 		for _, r := range m.rows {
 			if r.sortPriority == 0 {
@@ -319,11 +336,12 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 		}
 		// Handle pending navigation to route detail after creation
 		if m.pendingRouteName != "" {
-			for i, r := range m.rows {
-				if r.isRoute() && r.route.Name == m.pendingRouteName {
-					m.list.SetCursor(i)
+			for _, group := range m.groups {
+				if group.Name == m.pendingRouteName {
+					m.activeRoute = group.Name
 					m.mode = modelsViewRouteDetail
 					m.detailDepCursor = 0
+					m.restoreCursor(rowID{kind: rowKindRoute, model: group.Name}, true)
 					break
 				}
 			}
@@ -364,6 +382,9 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 		return m, m.fetchDeploymentsOnly()
 
 	case deploymentsRefreshedMsg:
+		if msg.ctx == nil || msg.ctx != m.loadContext || msg.ctx.Err() != nil {
+			return m, nil
+		}
 		// Discard stale auto-refresh if a manual full refresh is in flight
 		if m.loading {
 			return m, nil
@@ -407,6 +428,9 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 			m.pendingRouteName = msg.group.Name
 		}
 		if msg.fromMode == modelsViewEditRoute || msg.fromMode == modelsViewAddDeploy || msg.fromMode == modelsViewRouteDetail {
+			if msg.group != nil {
+				m.activeRoute = msg.group.Name
+			}
 			m.mode = modelsViewRouteDetail
 		} else {
 			m.mode = modelsViewList
@@ -429,17 +453,20 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 		return m, nil
 
 	case modelsActionMsg:
-		m.confirmKind, m.confirmMessage = confirmNone, ""
+		if msg.ctx == nil || msg.ctx != m.Context() || msg.ctx.Err() != nil {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error: %v", msg.err)
+			m.operationStatus = m.statusMsg
 			return m, nil
 		}
 		m.statusMsg = msg.action + " completed"
 		if msg.alreadyFinished {
 			m.statusMsg = "Download already finished"
 		}
-		m.applyActionResult(msg.action)
-		return m, nil
+		m.operationStatus = m.statusMsg
+		return m, m.Refresh()
 
 	case tea.KeyPressMsg:
 		// Confirmation dialog takes priority
@@ -467,6 +494,7 @@ func (m *ModelsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:go
 func (m *ModelsViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
 	if m.list.UpdateKey(msg) {
 		m.statusMsg = ""
+		m.operationStatus = ""
 		return nil
 	}
 
@@ -478,6 +506,7 @@ func (m *ModelsViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd { //nolint:goc
 			return nil
 		}
 		if r.isRoute() {
+			m.activeRoute = r.RawModel
 			m.mode = modelsViewRouteDetail
 			m.detailDepCursor = 0
 			return nil
@@ -516,6 +545,10 @@ func (m *ModelsViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd { //nolint:goc
 		return nil
 
 	case key.Matches(msg, tui.ModelsKeys.Sort):
+		var selected rowID
+		if r != nil {
+			selected = r.id()
+		}
 		// Cycle through sort options
 		current := m.sortBy
 		if current == "" {
@@ -529,7 +562,7 @@ func (m *ModelsViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd { //nolint:goc
 		}
 		m.applySortBy()
 		m.syncListItems()
-		m.list.SetCursor(0)
+		m.restoreCursor(selected, r != nil)
 		return nil
 
 	case key.Matches(msg, tui.ModelsKeys.Refresh):
@@ -636,7 +669,11 @@ func (m *ModelsViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 		if m.confirmKind == confirmDeleteRoute {
 			// Determine route name from context (route row, child row, or detail view)
 			var routeName string
-			if r := m.selectedRow(); r != nil {
+			if m.targetsRoute() {
+				if g := m.selectedRouteGroup(); g != nil {
+					routeName = g.Name
+				}
+			} else if r := m.selectedRow(); r != nil {
 				if r.isRoute() {
 					routeName = r.RawModel
 				} else if r.isChild() {
@@ -711,25 +748,30 @@ func (m *ModelsViewModel) handleMouseWheel(msg tea.MouseWheelMsg) {
 }
 
 func (m *ModelsViewModel) Breadcrumb() []string {
+	base := []string{"Models", m.listLabel()}
 	switch m.mode {
 	case modelsViewDetail:
 		if r := m.selectedRow(); r != nil {
-			return []string{"Models", r.RawModel}
+			label := r.RawModel
+			if label == "" {
+				label = r.Provider
+			}
+			return append(base, label)
 		}
-		return []string{"Models", "Details"}
+		return append(base, "Details")
 	case modelsViewRouteDetail:
 		if g := m.selectedRouteGroup(); g != nil {
-			return []string{"Models", g.Name}
+			return append(base, g.Name)
 		}
-		return []string{"Models", "Route"}
+		return append(base, "Route")
 	case modelsViewNewRoute:
-		return []string{"Models", "New Route"}
+		return append(base, "New Route")
 	case modelsViewEditRoute:
-		return []string{"Models", "Edit Route"}
+		return append(base, "Edit Route")
 	case modelsViewAddDeploy:
-		return []string{"Models", "Add Deployment"}
+		return append(base, "Add Deployment")
 	default:
-		return []string{"Models"}
+		return base
 	}
 }
 

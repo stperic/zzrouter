@@ -71,6 +71,7 @@ var failureTable = []failureRow{
 	{sentinel: prov_apps.ErrDangerousEnvVar, status: http.StatusBadRequest, code: ""},
 
 	{sentinel: prov_apps.ErrProviderUnavailable, status: http.StatusServiceUnavailable, code: "provider_unavailable"},
+	{sentinel: prov_apps.ErrConfigUnavailable, status: http.StatusServiceUnavailable, code: "provider_config_unavailable"},
 	// The daemon dropped the model: the next request loads it again.
 	{sentinel: prov_apps.ErrModelDropped, status: http.StatusServiceUnavailable, code: ""},
 	{sentinel: prov_apps.ErrShutdown, status: http.StatusServiceUnavailable, code: ""},

@@ -24,12 +24,13 @@ func (m *ModelsViewModel) actionStartStop() tea.Cmd {
 	if r.sortPriority == 2 {
 		// Idle — start the model
 		client := m.client
+		ctx := m.Context()
 		node := r.Node
 		model := r.RawModel
 		provider := r.Provider
 		return func() tea.Msg {
 			_, err := client.LoadModelWithProviderForceParamsAndEnv(node, model, provider, false, nil, nil)
-			return modelsActionMsg{action: "start", err: err}
+			return modelsActionMsg{ctx: ctx, action: "start", err: err}
 		}
 	}
 
@@ -69,7 +70,9 @@ func (m *ModelsViewModel) executeConfirmedAction() tea.Cmd {
 	}
 
 	client := m.client
+	ctx := m.Context()
 	action := m.confirmKind
+	m.confirmKind, m.confirmMessage = confirmNone, ""
 
 	switch action {
 	case confirmStopModel:
@@ -78,7 +81,7 @@ func (m *ModelsViewModel) executeConfirmedAction() tea.Cmd {
 			inst := r.instance
 			return func() tea.Msg {
 				err := client.StopInstance(inst.ID, inst.Node)
-				return modelsActionMsg{action: "stop", err: err}
+				return modelsActionMsg{ctx: ctx, action: "stop", err: err}
 			}
 		}
 	case confirmDeleteModel:
@@ -87,21 +90,21 @@ func (m *ModelsViewModel) executeConfirmedAction() tea.Cmd {
 			reg := r.registry
 			return func() tea.Msg {
 				if err := client.StopInstance(inst.ID, inst.Node); err != nil {
-					return modelsActionMsg{action: "delete", err: fmt.Errorf("failed to stop before delete: %w", err)}
+					return modelsActionMsg{ctx: ctx, action: "delete", err: fmt.Errorf("failed to stop before delete: %w", err)}
 				}
 				if reg != nil {
 					regCopy := *reg
 					if _, err := client.DeleteModelsFromRegistry([]pkgClient.ModelMetadata{regCopy}); err != nil {
-						return modelsActionMsg{action: "delete", err: err}
+						return modelsActionMsg{ctx: ctx, action: "delete", err: err}
 					}
 				}
-				return modelsActionMsg{action: "delete", err: nil}
+				return modelsActionMsg{ctx: ctx, action: "delete", err: nil}
 			}
 		} else if r.registry != nil {
 			reg := *r.registry
 			return func() tea.Msg {
 				_, err := client.DeleteModelsFromRegistry([]pkgClient.ModelMetadata{reg})
-				return modelsActionMsg{action: "delete", err: err}
+				return modelsActionMsg{ctx: ctx, action: "delete", err: err}
 			}
 		}
 	case confirmDeleteDownload:
@@ -109,14 +112,13 @@ func (m *ModelsViewModel) executeConfirmedAction() tea.Cmd {
 			jobID := r.deploy.JobID
 			if jobID == "" {
 				return func() tea.Msg {
-					return modelsActionMsg{action: "cancel",
+					return modelsActionMsg{ctx: ctx, action: "cancel",
 						err: fmt.Errorf("this download is no longer cancellable")}
 				}
 			}
-			ctx := m.Context()
 			return func() tea.Msg {
 				accepted, err := client.CancelJob(ctx, jobID)
-				return modelsActionMsg{action: "cancel", err: err, alreadyFinished: !accepted}
+				return modelsActionMsg{ctx: ctx, action: "cancel", err: err, alreadyFinished: !accepted}
 			}
 		}
 	}

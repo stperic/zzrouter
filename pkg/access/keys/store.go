@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
@@ -129,11 +131,11 @@ func (s *FileKeyStore) loadFromBytes(data []byte) error {
 	return nil
 }
 
-// Get returns a virtual key by ID, or nil if not found.
+// Get returns an isolated virtual-key snapshot, or nil if not found.
 func (s *FileKeyStore) Get(id string) *VirtualKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.keys[id]
+	return cloneKey(s.keys[id])
 }
 
 // List returns all virtual keys (copies to prevent mutation).
@@ -141,7 +143,9 @@ func (s *FileKeyStore) List() map[string]*VirtualKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make(map[string]*VirtualKey, len(s.keys))
-	maps.Copy(result, s.keys)
+	for id, key := range s.keys {
+		result[id] = cloneKey(key)
+	}
 	return result
 }
 
@@ -157,7 +161,7 @@ func (s *FileKeyStore) ListByTeam(teamID string) map[string]*VirtualKey {
 	}
 	for id, vk := range s.keys {
 		if vk.TeamID == teamID {
-			result[id] = vk
+			result[id] = cloneKey(vk)
 		}
 	}
 	return result
@@ -174,14 +178,14 @@ func (s *FileKeyStore) ValidateRawKey(rawKey string) (string, *VirtualKey) {
 		if vk.KeyEnv != "" {
 			envVal := os.Getenv(vk.KeyEnv)
 			if envVal != "" && envVal == rawKey {
-				return id, vk
+				return id, cloneKey(vk)
 			}
 			continue
 		}
 
 		// Hashed keys: Argon2id verify
 		if vk.HashedKey != "" && VerifyKey(rawKey, vk.HashedKey) {
-			return id, vk
+			return id, cloneKey(vk)
 		}
 	}
 
@@ -227,7 +231,7 @@ func (s *FileKeyStore) Create(id string, key *VirtualKey) (rawKey string, err er
 	now := utils.NowUTC()
 	key.CreatedAt = now
 	key.UpdatedAt = now
-	s.keys[id] = key
+	s.keys[id] = cloneKey(key)
 
 	return rawKey, nil
 }
@@ -259,7 +263,7 @@ func (s *FileKeyStore) Update(id string, key *VirtualKey) (err error) {
 	key.CreatedAt = existing.CreatedAt
 	key.CreatedBy = existing.CreatedBy
 	key.UpdatedAt = utils.NowUTC()
-	s.keys[id] = key
+	s.keys[id] = cloneKey(key)
 
 	return nil
 }
@@ -317,6 +321,25 @@ func (s *FileKeyStore) Reload() error {
 	return s.Load()
 }
 
+// cloneKey prevents callers and rotations from mutating each other's snapshots.
+// Copy reference fields as well as the record; policy edits must use Update.
+func cloneKey(key *VirtualKey) *VirtualKey {
+	if key == nil {
+		return nil
+	}
+	copy := *key
+	copy.Metadata = maps.Clone(key.Metadata)
+	if key.ExpiresAt != nil {
+		expires := *key.ExpiresAt
+		copy.ExpiresAt = &expires
+	}
+	if key.SuspendedAt != nil {
+		suspended := *key.SuspendedAt
+		copy.SuspendedAt = &suspended
+	}
+	return &copy
+}
+
 // Save persists the current state to disk using atomic temp-file + rename.
 func (s *FileKeyStore) Save() error {
 	s.mu.RLock()
@@ -334,7 +357,7 @@ func (s *FileKeyStore) Save() error {
 		return fmt.Errorf("failed to marshal keys: %w", err)
 	}
 
-	return utils.AtomicWriteFile(s.path, data, 0o600)
+	return atomicfile.WriteFile(s.path, data, 0o600)
 }
 
 // fromYAML converts the on-disk format to VirtualKey.

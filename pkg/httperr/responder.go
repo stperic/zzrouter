@@ -181,5 +181,7 @@ const AuthenticateChallenge = `Bearer realm="zzrouter", charset="UTF-8"`
 // must carry. Shared by the dialect responders so all three advertise
 // an identical challenge.
 func SetAuthenticateChallenge(c *gin.Context) {
-	c.Header("WWW-Authenticate", AuthenticateChallenge)
+	if c.Writer.Header().Get("WWW-Authenticate") == "" {
+		c.Header("WWW-Authenticate", AuthenticateChallenge)
+	}
 }

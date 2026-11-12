@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -84,7 +86,7 @@ func (h *History) saveLocked(history *UpdateHistory) error {
 		return fmt.Errorf("failed to marshal history: %w", err)
 	}
 
-	if err := utils.AtomicWriteFile(h.filePath, data, h.mode); err != nil {
+	if err := atomicfile.WriteFile(h.filePath, data, h.mode); err != nil {
 		return fmt.Errorf("save update history: %w", err)
 	}
 	return nil

@@ -38,7 +38,7 @@ func TestParseQuant(t *testing.T) {
 }
 
 func TestMarkRecommended_PrefersQ4_K_M(t *testing.T) {
-	vs := []GGUFVariant{
+	vs := []metadata.GGUFVariant{
 		{File: "a.Q8_0.gguf", Quantization: "Q8_0", Bits: 8, SizeBytes: 200},
 		{File: "b.Q4_K_M.gguf", Quantization: "Q4_K_M", Bits: 4, SizeBytes: 100},
 		{File: "c.F16.gguf", Quantization: "F16", Bits: 16, SizeBytes: 400},
@@ -51,7 +51,7 @@ func TestMarkRecommended_PrefersQ4_K_M(t *testing.T) {
 }
 
 func TestMarkRecommended_FallsBackToSmallestGe4Bits(t *testing.T) {
-	vs := []GGUFVariant{
+	vs := []metadata.GGUFVariant{
 		{File: "a.Q2_K.gguf", Quantization: "Q2_K", Bits: 2, SizeBytes: 50},
 		{File: "b.Q5_K_M.gguf", Quantization: "Q5_K_M", Bits: 5, SizeBytes: 150},
 		{File: "c.Q8_0.gguf", Quantization: "Q8_0", Bits: 8, SizeBytes: 300},
@@ -63,7 +63,7 @@ func TestMarkRecommended_FallsBackToSmallestGe4Bits(t *testing.T) {
 }
 
 func TestMarkRecommended_AllSub4Bits(t *testing.T) {
-	vs := []GGUFVariant{
+	vs := []metadata.GGUFVariant{
 		{File: "a.Q2_K.gguf", Quantization: "Q2_K", Bits: 2, SizeBytes: 50},
 		{File: "b.Q3_K_M.gguf", Quantization: "Q3_K_M", Bits: 3, SizeBytes: 75},
 	}
@@ -107,7 +107,7 @@ func TestBuildVariantsResponse_GroupsShardsAndFeatures(t *testing.T) {
 	resp := buildVariantsResponse("org/m", files, map[string][]string{"vision": {"mmproj-F16.gguf", "mmproj-*.gguf"}})
 
 	require.Len(t, resp.Variants, 2, "the incomplete q8_0 set is not a choice")
-	byFile := map[string]GGUFVariant{}
+	byFile := map[string]metadata.GGUFVariant{}
 	for _, v := range resp.Variants {
 		byFile[v.File] = v
 	}
@@ -116,7 +116,7 @@ func TestBuildVariantsResponse_GroupsShardsAndFeatures(t *testing.T) {
 	assert.Equal(t, int64(5), split.SizeBytes)
 	assert.Equal(t, "Q5_K_M", split.Quantization)
 	assert.Equal(t, 1, byFile["m-q2_k.gguf"].Shards)
-	assert.Equal(t, []FeatureFile{{Feature: "vision", File: "mmproj-F16.gguf", SizeBytes: 6, SizeHuman: "6 B"}}, resp.Features)
+	assert.Equal(t, []metadata.FeatureFile{{Feature: "vision", File: "mmproj-F16.gguf", SizeBytes: 6, SizeHuman: "6 B"}}, resp.Features)
 }
 
 func TestHumanizeBytes(t *testing.T) {

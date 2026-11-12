@@ -10,6 +10,13 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+func (m *ModelsViewModel) listLabel() string {
+	if m.runningOnly {
+		return "Running"
+	}
+	return "Available"
+}
+
 // withRefreshHint appends a spinner to the footer hints while a background
 // reload is in flight. Appended rather than given its own status line so the
 // body does not shift by two rows every time the view reloads — which means
@@ -27,12 +34,19 @@ func (m *ModelsViewModel) withRefreshHint(hints string, width int) string {
 }
 
 func (m *ModelsViewModel) viewList(width, height int) string { //nolint:unparam // Render helpers share width and height with the view dispatcher.
+	emptyText := "No models available. Set up Providers, then use Models > Discover."
+	if m.runningOnly {
+		emptyText = "No instances are running. Open Models > Available to start one."
+	}
+	if m.statusMsg != "" {
+		emptyText = m.statusMsg + "\n\n" + emptyText
+	}
 	if out, done := tui.RenderListPrelude(m.styles, width, tui.ListPrelude{
 		Loading:   m.loading,
 		LoadTick:  m.loadTick,
 		Err:       m.err,
 		Empty:     len(m.rows) == 0,
-		EmptyText: "No models found",
+		EmptyText: emptyText,
 		BackHint:  tui.Hint(tui.ListKeys.Back, "back"),
 	}); done {
 		return out
@@ -89,7 +103,7 @@ func (m *ModelsViewModel) viewList(width, height int) string { //nolint:unparam 
 	if sortLabel == "" {
 		sortLabel = "status"
 	}
-	status := shared.TableStatus("Models", len(m.rows), m.list.Offset(), vis) + " | Sort: " + sortLabel
+	status := shared.TableStatus(m.listLabel(), len(m.rows), m.list.Offset(), vis) + " | Sort: " + sortLabel
 	if m.statusMsg != "" {
 		status += "  " + m.statusMsg
 	}
@@ -197,7 +211,8 @@ func (m *ModelsViewModel) viewDetail(width, height int) string {
 	if m.confirmKind != confirmNone {
 		extraLines = shared.TuiConfirmLines
 	}
-	result, _ := shared.RenderDetailView(m.styles, allLines, m.detail.Scroll(), height, footer, "", extraLines)
+	status := m.styles.Help.Render(shared.TruncateText(m.statusMsg, width))
+	result, _ := shared.RenderDetailView(m.styles, allLines, m.detail.Scroll(), height, footer, status, extraLines)
 
 	// Insert confirmation dialog after the header if pending
 	if m.confirmKind != confirmNone {

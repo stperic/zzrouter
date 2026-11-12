@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
@@ -268,7 +270,7 @@ func (s *Store) saveOverrides() error {
 	if err != nil {
 		return fmt.Errorf("encode pricing overrides: %w", err)
 	}
-	if err := utils.AtomicWriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write pricing overrides: %w", err)
 	}
 	return nil

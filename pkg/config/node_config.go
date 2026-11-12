@@ -347,6 +347,9 @@ func (c *NodeConfig) Validate() error {
 		return fmt.Errorf("%w: node.tls_cert and node.tls_key must both be set (or both empty)", ErrInvalidConfig)
 	}
 
+	if err := c.Auth.OAuth.Validate(); err != nil {
+		return err
+	}
 	if err := c.Security.CORS.Validate(); err != nil {
 		return err
 	}

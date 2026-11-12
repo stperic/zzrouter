@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -51,5 +53,5 @@ func SaveSpend(path string, file *SpendFile) error {
 		return fmt.Errorf("marshal spend state: %w", err)
 	}
 
-	return utils.AtomicWriteFile(path, data, 0o600)
+	return atomicfile.WriteFile(path, data, 0o600)
 }

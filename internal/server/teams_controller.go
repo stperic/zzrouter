@@ -93,8 +93,8 @@ func (ctrl *TeamsController) UpdateTeam(c *gin.Context) {
 		return
 	}
 	if len(req.Members) > 0 {
-		BadRequest(c, "members is not a team field: a key belongs to exactly one team, so membership is set on the key: "+
-			"PATCH /zzrouter/v1/keys/{id} with {\"team_id\": \"<team>\"} to move a key into this team")
+		BadRequest(c, "members is not a team field: membership is immutable after key creation. "+
+			"POST /zzrouter/v1/keys with the intended shared team_id to create a replacement key, then revoke the old key")
 		return
 	}
 	resp, err := ctrl.service.UpdateTeam(c.Param("id"), &req.UpdateTeamRequest, callerKeyID(c))

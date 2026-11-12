@@ -49,6 +49,9 @@ var (
 	// ErrProviderNotFound is returned when a requested provider does not exist.
 	ErrProviderNotFound = errors.New("provider not found")
 
+	// ErrConfigUnavailable refuses new work while provider state cannot be loaded.
+	ErrConfigUnavailable = errors.New("provider configuration is unavailable")
+
 	// ErrPortUnavailable is returned when no ports are available for allocation.
 	ErrPortUnavailable = errors.New("no available ports")
 

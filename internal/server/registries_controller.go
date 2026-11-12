@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/layout"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+	"github.com/stperic/zzrouter/pkg/modelregistry/search"
 )
 
 // RegistriesController surfaces registry-discovery endpoints intended for
@@ -34,41 +35,7 @@ func NewRegistriesController(reg func() *modelregistry.Registry, apps func() *pk
 // RegisterPublicRoutes wires the /registries/* surface.
 func (ctrl *RegistriesController) RegisterPublicRoutes(router *gin.RouterGroup) {
 	router.GET("/registries/huggingface/variants", ctrl.ListHuggingFaceVariants)
-}
-
-// GGUFVariant is one loadable set of GGUF weights in a HuggingFace repo: a
-// single file, or every shard of a split one, grouped the way downloads and
-// launches group them. `File` is the exact string to pass as a deployment's
-// `file`; it fetches every shard.
-type GGUFVariant struct {
-	File                 string `json:"file"`
-	Shards               int    `json:"shards"`
-	Quantization         string `json:"quantization"`
-	Bits                 int    `json:"bits"`
-	SizeBytes            int64  `json:"size_bytes"`
-	SizeHuman            string `json:"size_human"`
-	Recommended          bool   `json:"recommended,omitempty"`
-	RecommendationReason string `json:"recommendation_reason,omitempty"`
-}
-
-// FeatureFile is the file a deployment requesting Feature would fetch beside
-// the weights (a vision projector, say). It is never a weights choice.
-type FeatureFile struct {
-	Feature   string `json:"feature"`
-	File      string `json:"file"`
-	SizeBytes int64  `json:"size_bytes"`
-	SizeHuman string `json:"size_human"`
-}
-
-// HuggingFaceVariantsResponse is the response envelope. Counts (not lists)
-// for non-GGUF files keeps the payload focused on the decision-making
-// surface while still signalling "this repo has docs/configs too".
-type HuggingFaceVariantsResponse struct {
-	ModelID        string        `json:"model_id"`
-	Variants       []GGUFVariant `json:"variants"`
-	Features       []FeatureFile `json:"features"`
-	NonGGUFFiles   int           `json:"non_gguf_files"`
-	TotalSizeBytes int64         `json:"total_size_bytes"`
+	router.GET("/registries/ollama/tags", ctrl.ListOllamaTags)
 }
 
 // ListHuggingFaceVariants handles GET /registries/huggingface/variants?id=<org/repo>.
@@ -81,7 +48,7 @@ func (ctrl *RegistriesController) ListHuggingFaceVariants(c *gin.Context) {
 		BadRequest(c, "query parameter 'id' is required (e.g., unsloth/SmolLM2-135M-Instruct-GGUF)")
 		return
 	}
-	if !strings.Contains(modelID, "/") {
+	if !metadata.ValidHuggingFaceID(modelID) {
 		BadRequest(c, fmt.Sprintf("HuggingFace model id must be in 'org/repo' form, got %q", modelID))
 		return
 	}
@@ -110,8 +77,8 @@ func (ctrl *RegistriesController) ListHuggingFaceVariants(c *gin.Context) {
 
 // buildVariantsResponse is pure — no HTTP, no registry — for easy testing.
 // features maps a feature name to its declared file globs, in preference order.
-func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry, features map[string][]string) HuggingFaceVariantsResponse {
-	out := HuggingFaceVariantsResponse{ModelID: modelID, Variants: []GGUFVariant{}, Features: []FeatureFile{}}
+func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry, features map[string][]string) metadata.HuggingFaceVariantsResponse {
+	out := metadata.HuggingFaceVariantsResponse{ModelID: modelID, Variants: []metadata.GGUFVariant{}, Features: []metadata.FeatureFile{}}
 	var all, weights []layout.File
 	var featureGlobs []string
 	for _, globs := range features {
@@ -131,7 +98,7 @@ func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry, featu
 	}
 	for _, v := range layout.GGUFVariants(weights) {
 		quant, bits := parseQuant(path.Base(v.Files[0].Path))
-		out.Variants = append(out.Variants, GGUFVariant{
+		out.Variants = append(out.Variants, metadata.GGUFVariant{
 			File:         v.Files[0].Path,
 			Shards:       len(v.Files),
 			Quantization: quant,
@@ -142,7 +109,7 @@ func buildVariantsResponse(modelID string, files []metadata.TreeFileEntry, featu
 	}
 	for _, name := range slices.Sorted(maps.Keys(features)) {
 		if f, ok := layout.FirstMatch(all, features[name]); ok {
-			out.Features = append(out.Features, FeatureFile{Feature: name, File: f.Path, SizeBytes: f.Size, SizeHuman: humanizeBytes(f.Size)})
+			out.Features = append(out.Features, metadata.FeatureFile{Feature: name, File: f.Path, SizeBytes: f.Size, SizeHuman: humanizeBytes(f.Size)})
 		}
 	}
 	markRecommended(out.Variants)
@@ -214,7 +181,7 @@ func parseQuant(filename string) (tag string, bits int) {
 // fall back to the smallest file at bits >= 4 to avoid quality cliffs
 // of Q2/Q3; fall back to the largest non-F32 variant if nothing else
 // qualifies. Only ever sets one variant's Recommended=true.
-func markRecommended(variants []GGUFVariant) {
+func markRecommended(variants []metadata.GGUFVariant) {
 	if len(variants) == 0 {
 		return
 	}
@@ -268,4 +235,19 @@ func humanizeBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+// ListOllamaTags serves the catalog through the authenticated registry surface.
+func (ctrl *RegistriesController) ListOllamaTags(c *gin.Context) {
+	id := strings.TrimSpace(c.Query("id"))
+	if !search.ValidOllamaModelName(id) {
+		BadRequest(c, "id must be one Ollama library model name")
+		return
+	}
+	tags, err := search.GetOllamaModelTags(c.Request.Context(), id)
+	if err != nil {
+		RespondToError(c, newProblemError(http.StatusBadGateway, "Bad Gateway", "unable to fetch Ollama tags"))
+		return
+	}
+	respondSuccess(c, "Ollama tags retrieved", metadata.OllamaTags{ModelID: id, Tags: tags})
 }

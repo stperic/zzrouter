@@ -159,7 +159,7 @@ func (m *DeploysViewModel) Refresh() tea.Cmd { return m.fetchAndSubscribe() }
 //
 // This reads /jobs rather than /deployments so installs, upgrades and
 // uninstalls appear alongside downloads. Deployment state itself belongs
-// to the Model Deployments view, which renders transfer rate and ETA that
+// to the Models view, which renders transfer rate and ETA that
 // a job snapshot does not carry; this view answers "what is running right
 // now, and can I stop it".
 func (m *DeploysViewModel) fetchAndSubscribe() tea.Cmd {

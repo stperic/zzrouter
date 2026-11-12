@@ -2,6 +2,7 @@ package backend
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/stperic/zzrouter/pkg/config"
 )
@@ -10,8 +11,9 @@ import (
 // caller's request travels with it. Every forward is built from one. The
 // zero value is Engine, which sends no credential.
 type Upstream struct {
-	hop hop
-	api *config.APIConfig
+	hop     hop
+	api     *config.APIConfig
+	headers http.Header
 }
 
 type hop uint8
@@ -35,7 +37,7 @@ func CallerKey() Upstream { return Upstream{hop: hopCallerKey} }
 // Credential is an endpoint given the provider's own credential in place
 // of the caller's.
 func Credential(api *config.APIConfig) Upstream {
-	return Upstream{hop: hopCredential, api: api}
+	return credentialWithLookup(api, os.Getenv)
 }
 
 // Cluster is a worker's cluster engine, reached over mTLS. Everything
@@ -70,7 +72,11 @@ func (u Upstream) API() *config.APIConfig { return u.api }
 // empty when it is sent none. Every request zzRouter sends upstream
 // takes its credential from here.
 func (u Upstream) Header() http.Header {
+	return u.headers.Clone()
+}
+
+func credentialWithLookup(api *config.APIConfig, lookup func(string) string) Upstream {
 	h := http.Header{}
-	u.api.ApplyAuthHeaders(h)
-	return h
+	api.ApplyAuthHeadersWith(h, lookup)
+	return Upstream{hop: hopCredential, api: api, headers: h}
 }

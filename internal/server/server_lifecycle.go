@@ -132,6 +132,14 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 
 	stopErr := errors.Join(coordStopErr, s.stopCommonSubsystems(ctx))
 
+	// Durable authority belongs to the server, not the restartable coordinator
+	// group. A demotion may be followed by promotion before final shutdown.
+	if s.access != nil && s.access.oauth != nil {
+		stopErr = errors.Join(stopErr, s.access.oauth.Close())
+	}
+	if s.providers.connectionStore != nil {
+		stopErr = errors.Join(stopErr, s.providers.connectionStore.Close())
+	}
 	slog.Info("Node stopped gracefully")
 	return errors.Join(httpErr, stopErr)
 }
@@ -387,7 +395,7 @@ func (s *Server) startCoordinatorSubsystems() error {
 		// reaper runs under its own cancel so role-demote stops it
 		// without waiting for the global shutdownCtx — otherwise a
 		// re-promote would stack a second reaper on the same store.
-		reaperCtx, cancel := context.WithCancel(s.shutdownCtx) //nolint:gosec // The lifecycle owner stores and calls cancel during teardown.
+		reaperCtx, cancel := context.WithCancel(s.shutdownCtx) // The lifecycle owner stores and calls cancel during teardown.
 		s.providers.groupReaperCancel = cancel
 		s.providers.groupReaperDone = s.model.Groups.StartReaper(reaperCtx, modelgroup.DefaultReaperInterval)
 	}

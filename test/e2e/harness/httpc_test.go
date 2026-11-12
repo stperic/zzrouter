@@ -300,7 +300,7 @@ func TestClient_POSTMultipart(t *testing.T) {
 			w.WriteHeader(500)
 			return
 		}
-		gotPurpose = r.FormValue("purpose") //nolint:gosec // In-process test sends a bounded synthetic multipart body.
+		gotPurpose = r.FormValue("purpose") // In-process test sends a bounded synthetic multipart body.
 		f, fh, err := r.FormFile("file")
 		if err != nil {
 			t.Errorf("FormFile: %v", err)

@@ -29,7 +29,15 @@ func (m *SearchTUIModel) rebuildTagPickerItems() {
 }
 
 // Update handles messages
-func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+func (m *SearchTUIModel) Update(msg tea.Msg) (model tea.Model, command tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+	defer func() {
+		if len(m.preferenceCommands) > 0 {
+			// Any command drains the shared FIFO, including changes from earlier
+			// Updates whose commands have not started yet.
+			command = tea.Batch(command, m.preferenceCommands[0])
+			m.preferenceCommands = nil
+		}
+	}()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		// In embedded mode the parent already set termHeight to the child area
@@ -40,23 +48,35 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 			m.TermHeight = msg.Height - shared.TuiTitleBarLines
 		}
 
+		if m.hostCursor < m.hostOffset {
+			m.hostOffset = m.hostCursor
+		}
+		if m.hostCursor >= m.hostOffset+m.nodePageSize() {
+			m.hostOffset = max(0, m.hostCursor-m.nodePageSize()+1)
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
 		// Right-click = go back one level
 		if msg.Button == tea.MouseRight {
+			if m.State == stateDirectPull {
+				return m.updateDirectDeploy(tea.KeyPressMsg{Code: tea.KeyEscape})
+			}
+			m.invalidateSelection()
 			switch m.State {
 			case StateDetail:
 				if m.prevState == stateVariantSelect && len(m.variants) > 1 {
 					m.State = stateVariantSelect
 				} else {
+					m.invalidateSelection()
 					m.State = StateList
+					m.selectedItem = nil
 				}
-				m.selectedItem = nil
 				m.selectedVariant = nil
 				m.renderedDesc = ""
 				m.PullStatus = ""
 			case stateVariantSelect:
+				m.invalidateSelection()
 				m.State = StateList
 				m.variantCursor = 0
 				m.variantOffset = 0
@@ -93,7 +113,7 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 				return m, m.fetchModelDetails()
 			}
 		case stateNodeSelect:
-			enter, ok := shared.TableClick(msg, &m.hostCursor, 0, len(m.availableNodes), shared.TuiTableClickY)
+			enter, ok := shared.TableClick(msg, &m.hostCursor, m.hostOffset, len(m.availableNodes), shared.TuiTableClickY)
 			if ok && enter {
 				name := m.availableNodes[m.hostCursor].name
 				m.selectedNodes[name] = !m.selectedNodes[name]
@@ -108,7 +128,7 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		case stateVariantSelect:
 			shared.MouseWheel(msg, &m.variantCursor, &m.variantOffset, len(m.variants), m.variantPageSize())
 		case stateNodeSelect:
-			shared.MouseWheel(msg, &m.hostCursor, new(int), len(m.availableNodes), len(m.availableNodes))
+			shared.MouseWheel(msg, &m.hostCursor, &m.hostOffset, len(m.availableNodes), m.nodePageSize())
 		case StateDetail:
 			shared.DetailMouseWheel(msg, &m.detailScroll)
 		}
@@ -148,7 +168,7 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 
 	case debounceSearchMsg:
 		// Only fire if no newer keystrokes happened since this was scheduled
-		if msg.query == m.inlineFilter {
+		if m.active && m.State == StateList && msg.activation == m.activation && msg.sequence == m.debounceSeqNo && msg.query == m.inlineFilter {
 			m.broadSearch = isBroadSearch(m.inlineFilter)
 			m.query = convertWildcard(m.inlineFilter)
 			m.cursor = 0
@@ -174,11 +194,16 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		return m, nil
 
 	case searchCompleteMsg:
+		if !m.accepts(msg.stamp, false) {
+			return m, nil
+		}
+		m.invalidateSelection()
 		m.State = StateList
 		m.allResults = msg.results // Cache full results for client-side filtering
-		m.results = msg.results
+		m.results = filterResultsByName(msg.results, msg.filter)
 		m.err = msg.err
 		if m.err != nil {
+			m.invalidateSelection()
 			m.State = StateList // Show error in list view
 		}
 		// Apply default client-side sort if needed (e.g., Ollama defaults to downloads)
@@ -203,6 +228,9 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		return m, nil
 
 	case providerLoadedMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.State = StateDetail
 			m.PullStatus = formatErrorMessage("Failed to load providers: %v", msg.err)
@@ -213,16 +241,12 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		}
 
 	case hostsLoadedMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.State = StateDetail
-			// Compatibility failures get a modal popup with install guidance;
-			// everything else stays in the status bar.
-			if strings.Contains(msg.err.Error(), "no compatible provider") {
-				m.errorPopup = buildIncompatPopup(msg.err.Error())
-				m.PullStatus = ""
-			} else {
-				m.PullStatus = formatErrorMessage("%v", msg.err)
-			}
+			m.PullStatus = formatErrorMessage("%v", msg.err)
 		} else if len(msg.hosts) == 0 {
 			m.State = StateDetail
 			m.PullStatus = formatErrorMessage("No nodes available for download")
@@ -233,21 +257,19 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		} else {
 			m.availableNodes = msg.hosts
 			m.hostCursor = 0
+			m.hostOffset = 0
 			m.selectedNodes = make(map[string]bool)
 			for _, h := range msg.hosts {
-				m.selectedNodes[h.name] = true
+				m.selectedNodes[h.name] = false
 			}
-			// Single-node cluster with a compatible .Provider: skip the picker
-			// and deploy directly — less friction for new users. Multi-node
-			// clusters always see the picker so users know where it landed.
-			if m.NodeCount == 1 && len(msg.hosts) == 1 {
-				m.State = statePulling
-				return m, m.deployModelToNodes([]string{msg.hosts[0].name})
-			}
+
 			m.State = stateNodeSelect
 		}
 
 	case deployValidateMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
 		m.directPullLoading = false
 		if msg.err != nil {
 			// Validation failed — show error in overlay (if still in overlay) or detail view
@@ -269,9 +291,9 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		}
 
 		// Cloud variant or cloud provider → register directly
-		if isOllamaCloudTag(msg.modelName) || m.isCloudVariantSelected() || m.getProviderConfig(msg.provider).IsCloud {
-			if isOllamaCloudTag(msg.modelName) {
-				m.selectedVariant = &ModelVariant{Filename: "cloud"}
+		if msg.cloud || m.isCloudVariantSelected() || m.getProviderConfig(msg.provider).IsCloud {
+			if msg.cloud && msg.provider == constants.RepoOllama {
+				m.selectedVariant = &ModelVariant{Filename: "cloud", IsCloud: true}
 			}
 			m.PullStatus = "Registering cloud model..."
 			m.State = StateDetail
@@ -286,14 +308,27 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		return m, m.loadAvailableNodes()
 
 	case deployCompleteMsg:
+		if msg.deployment != nil {
+			m.LastDeployment = msg.deployment
+		}
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
 		m.State = StateDetail
-		if msg.success {
-			m.PullStatus = fmt.Sprintf("%s Deploy started! Press m to go to Models view.", ui.GetCheckEmoji())
+		if msg.err == nil && msg.deployment != nil {
+			m.PullStatus = fmt.Sprintf("%s Deployment %s started. See Activity for progress.", ui.GetCheckEmoji(), msg.deployment.ID)
 		} else {
 			m.PullStatus = formatErrorMessage("Deploy failed: %v", msg.err)
 		}
 
 	case modelDetailsMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.PullStatus = formatErrorMessage("Unable to load model details: %v", msg.err)
+			return m, nil
+		}
 		if msg.err == nil && m.selectedItem != nil {
 			if msg.description != "" {
 				m.selectedItem.Description = msg.description
@@ -308,11 +343,15 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		}
 
 	case variantsLoadedMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
+		m.availableFeatures = msg.features
 		if msg.err != nil {
-			// No variants or error - go directly to detail view
 			m.prevState = StateList
 			m.State = StateDetail
-			return m, m.fetchModelDetails()
+			m.PullStatus = formatErrorMessage("Unable to load variants: %v", msg.err)
+			return m, nil
 		} else if len(msg.variants) > 1 {
 			// Multiple variants - show selection
 			m.variants = msg.variants
@@ -334,9 +373,22 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		}
 
 	case providerConfigsLoadedMsg:
+		if !m.active || msg.stamp.activation != m.activation {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
 		if len(msg.keys) > 0 && len(msg.configs) > 0 {
 			m.providerKeys = msg.keys
 			m.providerConfigs = msg.configs
+
+			// Metadata may arrive after a model or overlay was opened. Keep it for
+			// display, but never restart list work over a newer selection.
+			if (m.State != StateList && m.State != StateLoading) || m.selectionID != "" {
+				return m, nil
+			}
 
 			// If current provider is no longer enabled, reset to first available
 			if m.Provider != "" {
@@ -362,6 +414,9 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 		}
 
 	case cloudModelAddedMsg:
+		if !m.accepts(msg.stamp, true) {
+			return m, nil
+		}
 		m.State = StateDetail
 		if msg.err != nil {
 			m.PullStatus = formatErrorMessage("Failed to add .Model: %v", msg.err)
@@ -384,7 +439,7 @@ func (m SearchTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocy
 // updateList handles list view key presses
 // All printable characters go to the inline filter (fzf pattern).
 // Shortcuts use Ctrl+ modifiers to avoid clashing with filter input.
-func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+func (m *SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { //nolint:cyclop // The explicit key, message and rendering cases keep the view flow together.
 	switch {
 	case key.Matches(msg, tui.SearchKeys.Quit):
 		return m, m.quitOrBack()
@@ -405,6 +460,8 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 	// Direct deploy — always available, even on search error
 	case key.Matches(msg, tui.SearchKeys.DirectPull):
 		if m.Provider == constants.RepoOllama || m.Provider == constants.RepoHuggingFace {
+			m.invalidateSearch()
+			m.invalidateSelection()
 			m.directPullInput = ""
 			m.prevState = m.State
 			m.State = stateDirectPull
@@ -420,9 +477,7 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 		switch {
 		case key.Matches(msg, tui.SearchKeys.Provider):
 			allKeys := m.providerKeys
-			if len(allKeys) == 0 {
-				allKeys = defaultProviderKeys
-			}
+
 			// Filter: show only enabled providers
 			var keys []string
 			var items []string
@@ -435,7 +490,7 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 				keys = append(keys, k)
 				items = append(items, label)
 			}
-			m.pickerTitle = "Select a Model Hub Registry"
+			m.pickerTitle = "Select a Registry"
 			m.pickerItems = items
 			m.pickerKeys = keys
 			m.pickerCursor = 0
@@ -450,6 +505,8 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 				}
 			}
 			m.pickerAction = "provider"
+			m.invalidateSearch()
+			m.invalidateSelection()
 			m.prevState = m.State
 			m.State = statePickerOverlay
 
@@ -482,6 +539,8 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 			m.pickerKeys = keys
 			m.pickerCursor = max(m.tagPresetIndex+1, 0)
 			m.pickerAction = "tags"
+			m.invalidateSearch()
+			m.invalidateSelection()
 			m.prevState = m.State
 			m.State = statePickerOverlay
 
@@ -498,6 +557,8 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 				}
 			}
 			m.pickerAction = "sort"
+			m.invalidateSearch()
+			m.invalidateSelection()
 			m.prevState = m.State
 			m.State = statePickerOverlay
 
@@ -513,7 +574,6 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 		case key.Matches(msg, tui.SearchKeys.Backspace):
 			if len(m.inlineFilter) > 0 {
 				m.inlineFilter = m.inlineFilter[:len(m.inlineFilter)-1]
-				m.debounceSeqNo++
 				return m, m.scheduleDebounceSearch()
 			}
 
@@ -522,7 +582,6 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 			ch := msg.String()
 			if len(ch) == 1 && ch[0] >= 32 && ch[0] < 127 {
 				m.inlineFilter += ch
-				m.debounceSeqNo++
 				return m, m.scheduleDebounceSearch()
 			}
 		}
@@ -532,10 +591,13 @@ func (m SearchTUIModel) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { /
 }
 
 // scheduleDebounceSearch schedules a debounced search after 500ms
-func (m SearchTUIModel) scheduleDebounceSearch() tea.Cmd {
+func (m *SearchTUIModel) scheduleDebounceSearch() tea.Cmd {
+	m.invalidateSearch()
+	m.invalidateSelection()
+	sequence, activation := m.debounceSeqNo, m.activation
 	currentFilter := m.inlineFilter
 	return tea.Tick(500*time.Millisecond, func(_ time.Time) tea.Msg {
-		return debounceSearchMsg{query: currentFilter}
+		return debounceSearchMsg{query: currentFilter, sequence: sequence, activation: activation}
 	})
 }
 
@@ -601,17 +663,19 @@ func isBroadSearch(filter string) bool {
 }
 
 // updateDetail handles detail view key presses
-func (m SearchTUIModel) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		if m.prevState == stateVariantSelect && len(m.variants) > 1 {
 			m.State = stateVariantSelect
 			m.selectedVariant = nil
 			m.PullStatus = ""
 		} else {
+			m.invalidateSelection()
 			m.State = StateList
 			m.selectedItem = nil
 			m.selectedVariant = nil
@@ -645,12 +709,14 @@ func (m SearchTUIModel) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateVariantSelect handles variant selection view
-func (m SearchTUIModel) updateVariantSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateVariantSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
+		m.invalidateSelection()
 		m.State = StateList
 		m.variantCursor = 0
 		m.variantOffset = 0
@@ -697,12 +763,13 @@ func (m SearchTUIModel) updateVariantSelect(msg tea.KeyPressMsg) (tea.Model, tea
 }
 
 // updateProviderSelect handles provider selection view
-func (m SearchTUIModel) updateProviderSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateProviderSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		m.State = StateDetail
 		m.providerCursor = 0
 
@@ -733,7 +800,7 @@ func (m SearchTUIModel) updateProviderSelect(msg tea.KeyPressMsg) (tea.Model, te
 }
 
 // updateDeploying handles pulling state
-func (m SearchTUIModel) updateDeploying(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateDeploying(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, tui.SearchSubKeys.Quit) {
 		return m, m.quitOrBack()
 	}
@@ -741,12 +808,14 @@ func (m SearchTUIModel) updateDeploying(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 }
 
 // updateFilterEdit handles filter edit state
-func (m SearchTUIModel) updateFilterEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateFilterEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
+		m.invalidateSelection()
 		m.State = StateList
 		return m, nil
 
@@ -773,7 +842,7 @@ func (m SearchTUIModel) updateFilterEdit(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 }
 
 // updateNodeSelect handles host selection state
-func (m SearchTUIModel) updateNodeSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateNodeSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if len(m.availableNodes) == 0 {
 		if key.Matches(msg, tui.SearchSubKeys.Quit) {
 			return m, m.quitOrBack()
@@ -785,24 +854,20 @@ func (m SearchTUIModel) updateNodeSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 		return m, nil
 	}
 
+	nav := shared.ListNav{Cursor: &m.hostCursor, Offset: &m.hostOffset, Total: len(m.availableNodes), Vis: m.nodePageSize()}
+	if nav.Navigate(msg, tui.SearchKeys.Up, tui.SearchKeys.Down, tui.SearchKeys.PageUp, tui.SearchKeys.PageDown, tui.SearchKeys.Home, tui.SearchKeys.End) {
+		return m, nil
+	}
+
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		m.State = StateDetail
 		m.PullStatus = ""
 		return m, nil
-
-	case key.Matches(msg, tui.SearchSubKeys.Up):
-		if m.hostCursor > 0 {
-			m.hostCursor--
-		}
-
-	case key.Matches(msg, tui.SearchSubKeys.Down):
-		if m.hostCursor < len(m.availableNodes)-1 {
-			m.hostCursor++
-		}
 
 	case key.Matches(msg, tui.SearchSubKeys.Space):
 		if m.hostCursor >= 0 && m.hostCursor < len(m.availableNodes) {
@@ -834,12 +899,13 @@ func (m SearchTUIModel) updateNodeSelect(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 }
 
 // updatePickerOverlay handles input in the picker popup.
-func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+func (m *SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		m.State = m.prevState
 
 	case key.Matches(msg, tui.SearchSubKeys.Up):
@@ -863,6 +929,7 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 			m.listOffset = 0
 			m.State = m.prevState
 			cfg := m.getProviderConfig(m.Provider)
+			m.queueSearchPreferences()
 			if cfg.ClientSorts[m.sortBy] {
 				m.results = applyClientSort(m.results, m.sortBy)
 				m.allResults = applyClientSort(m.allResults, m.sortBy)
@@ -870,8 +937,6 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 				m.State = StateLoading
 				return m, m.fetchResults()
 			}
-			go saveSearchPrefs(m.Provider, m.sortBy, m.tagFilter)
-
 		case "provider":
 			m.Provider = m.pickerKeys[m.pickerCursor]
 			m.allResults = nil // clear cache for new provider
@@ -883,11 +948,11 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 			m.tagFilter = nil
 			m.tagPresetIndex = -1
 			m.tagLogic = m.tagDefaultLogic
-			if prefs := loadRegistryPrefs(m.Provider); prefs != nil {
+			if prefs, ok := m.registryPrefs[m.Provider]; ok {
 				m.sortBy = prefs.Sort
 				m.tagFilter = prefs.Tags
 			}
-			go saveSearchPrefs(m.Provider, m.sortBy, m.tagFilter)
+			m.queueSearchPreferences()
 			return m, m.fetchResults()
 
 		case "tags":
@@ -919,7 +984,7 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 			m.State = StateLoading
 			m.cursor = 0
 			m.listOffset = 0
-			go saveSearchPrefs(m.Provider, m.sortBy, m.tagFilter)
+			m.queueSearchPreferences()
 			return m, m.fetchResults()
 
 		case "variant-sort":
@@ -958,7 +1023,7 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 				presetIdx := m.pickerCursor - 1 - builtinCount
 				if presetIdx >= 0 && presetIdx < len(m.tagPresets) {
 					m.tagPresets = append(m.tagPresets[:presetIdx], m.tagPresets[presetIdx+1:]...)
-					go saveTagPresets(m.tagPresets)
+					m.queueTagPreferences()
 					m.rebuildTagPickerItems()
 					if m.pickerCursor >= len(m.pickerItems) {
 						m.pickerCursor = len(m.pickerItems) - 1
@@ -982,22 +1047,22 @@ func (m SearchTUIModel) updatePickerOverlay(msg tea.KeyPressMsg) (tea.Model, tea
 
 // updateDirectDeploy handles the direct deploy overlay (Ctrl+D).
 // User types a full model name and presses Enter to validate, then deploy.
-func (m SearchTUIModel) updateDirectDeploy(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.directPullLoading {
-		return m, nil // Ignore input while validating
-	}
-
+func (m *SearchTUIModel) updateDirectDeploy(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Quit):
 		return m, m.quitOrBack()
 
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		m.State = m.prevState
 		m.directPullInput = ""
 		m.directPullError = ""
 		return m, nil
 
 	default:
+		if m.directPullLoading {
+			return m, nil
+		}
 		ch := msg.String()
 		switch ch {
 		case "enter":
@@ -1006,7 +1071,6 @@ func (m SearchTUIModel) updateDirectDeploy(msg tea.KeyPressMsg) (tea.Model, tea.
 				break
 			}
 			m.directPullError = ""
-			m.directPullLoading = true
 			return m, m.validateModelForDeploy(m.Provider, modelName)
 
 		case "backspace":
@@ -1025,9 +1089,10 @@ func (m SearchTUIModel) updateDirectDeploy(msg tea.KeyPressMsg) (tea.Model, tea.
 }
 
 // updateTagAdd handles text input for adding a new tag preset.
-func (m SearchTUIModel) updateTagAdd(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m *SearchTUIModel) updateTagAdd(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, tui.SearchSubKeys.Back):
+		m.invalidateSelection()
 		// Cancel — return to picker
 		m.State = statePickerOverlay
 		m.tagAddInput = ""
@@ -1036,7 +1101,7 @@ func (m SearchTUIModel) updateTagAdd(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		tag := strings.TrimSpace(m.tagAddInput)
 		if tag != "" {
 			m.tagPresets = append(m.tagPresets, TagPreset{Tags: []string{tag}, Logic: m.tagDefaultLogic})
-			go saveTagPresets(m.tagPresets)
+			m.queueTagPreferences()
 			m.rebuildTagPickerItems()
 			m.pickerCursor = len(m.pickerItems) - 1 // select the newly added tag
 		}
@@ -1054,44 +1119,4 @@ func (m SearchTUIModel) updateTagAdd(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
-}
-
-// isOllamaCloudTag returns true if the model name contains a cloud tag suffix.
-func isOllamaCloudTag(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasSuffix(lower, ":cloud") || strings.Contains(lower, ":cloud-")
-}
-
-// buildIncompatPopup constructs a ui.Popup for an "no compatible provider"
-// error returned by modelregistry.FormatIncompatibleError. The copy points
-// users at the Providers menu in the TUI — the only supported managed path.
-func buildIncompatPopup(errMsg string) *ui.Popup {
-	return &ui.Popup{
-		Title:    "Provider not installed",
-		Message:  friendlyIncompatMessage(errMsg),
-		Severity: ui.PopupError,
-		Hints:    "Esc/Enter dismiss",
-	}
-}
-
-// friendlyIncompatMessage rewrites FormatIncompatibleError into user-facing
-// copy that names the runtime and directs the user to the Providers menu.
-// Falls back to a generic message if the detected format isn't recognized.
-func friendlyIncompatMessage(errMsg string) string {
-	lower := strings.ToLower(errMsg)
-	switch {
-	case strings.Contains(lower, "detected format: mlx"):
-		return "This model needs the MLX runtime, and no node in the cluster has it installed yet. " +
-			"Open the Providers menu in the TUI to install MLX on a node."
-	case strings.Contains(lower, "detected format: gguf"):
-		return "This model needs a GGUF-compatible runtime (llama.cpp or Ollama), " +
-			"and no node in the cluster has one installed yet. " +
-			"Open the Providers menu in the TUI to install one on a node."
-	case strings.Contains(lower, "detected format: safetensors"):
-		return "This model needs a safetensors-compatible runtime (vLLM), " +
-			"and no node in the cluster has it installed yet. " +
-			"Open the Providers menu in the TUI to install vLLM on a node."
-	}
-	return "No installed provider on any node can serve this model. " +
-		"Open the Providers menu in the TUI to install one."
 }

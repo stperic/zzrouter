@@ -8,8 +8,9 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/stperic/common/atomicfile"
+
 	route_events "github.com/stperic/zzrouter/pkg/observability/route_events"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -325,7 +326,7 @@ func (s *GroupStore) SaveToFile(path string) error {
 		return fmt.Errorf("failed to marshal model groups: %w", err)
 	}
 
-	return utils.AtomicWriteFile(path, data, 0o644)
+	return atomicfile.WriteFile(path, data, 0o644)
 }
 
 // validateGroup checks that a model group definition is valid.

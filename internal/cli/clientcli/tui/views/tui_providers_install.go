@@ -11,12 +11,10 @@ import (
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/jobstream"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -47,12 +45,6 @@ type providersInstallPlanMsg struct {
 type providersStepVerifyMsg struct {
 	step   int
 	result *pkgClient.StepResultResponse
-	err    error
-}
-
-// providersVerifyMsg carries the result of a provider connectivity check.
-type providersVerifyMsg struct {
-	result *pkgClient.VerifyProviderResponse
 	err    error
 }
 
@@ -641,160 +633,4 @@ func renderCommandBox(b *strings.Builder, styles ui.Styles, cmd string, width in
 	for line := range strings.SplitSeq(box, "\n") {
 		b.WriteString(margin + line + "\n")
 	}
-}
-
-// ============================================================================
-// API Key Input — enter API key for cloud providers
-// ============================================================================
-
-// currentEnvVar returns the env var name currently being prompted.
-func (m *ProvidersViewModel) currentEnvVar() string {
-	if m.keyEnvIndex < len(m.keyEnvVars) {
-		return m.keyEnvVars[m.keyEnvIndex]
-	}
-	return ""
-}
-
-// isSensitiveVar returns true if the env var contains a secret that should be masked.
-func isSensitiveVar(envVar string) bool {
-	upper := strings.ToUpper(envVar)
-	return strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN")
-}
-
-// newEnvVarInput creates a textinput configured for the given env var.
-// Sensitive vars (keys, secrets, tokens) are masked with EchoPassword.
-func newEnvVarInput(envVar string) textinput.Model {
-	ti := textinput.New()
-	ti.Prompt = ""
-	ti.CharLimit = 512
-	if isSensitiveVar(envVar) {
-		ti.EchoMode = textinput.EchoPassword
-		ti.EchoCharacter = '*'
-	}
-	// Use white text for both focused and blurred states
-	s := ti.Styles()
-	s.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	s.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	ti.SetStyles(s)
-	return ti
-}
-
-func (m *ProvidersViewModel) updateEnterKey(msg tea.Msg) tea.Cmd {
-	// Forward all messages to textinput (for cursor blink, etc.)
-	var tiCmd tea.Cmd
-	m.keyInput, tiCmd = m.keyInput.Update(msg)
-
-	keyMsg, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return tiCmd
-	}
-
-	switch {
-	case key.Matches(keyMsg, tui.ProvidersKeys.Back):
-		if m.keyEnvIndex > 0 {
-			m.keyEnvIndex--
-			m.keyInput = newEnvVarInput(m.currentEnvVar())
-			m.actionStatus = ""
-			return m.keyInput.Focus()
-		}
-		m.mode = providersViewPickProvider
-		m.actionStatus = ""
-		m.keyInput.Blur()
-		m.buildProviderPicker()
-		return nil
-
-	case key.Matches(keyMsg, tui.ProvidersKeys.Enter):
-		value := strings.TrimSpace(m.keyInput.Value())
-		if value == "" {
-			return tiCmd
-		}
-		envVar := m.currentEnvVar()
-		if err := pkgConfig.SetEnvVar(envVar, value); err != nil {
-			m.actionStatus = fmt.Sprintf("✗ Failed to save %s: %v", envVar, err)
-			m.mode = providersViewList
-			m.keyInput.Blur()
-			return nil
-		}
-
-		// More env vars to prompt?
-		if m.keyEnvIndex+1 < len(m.keyEnvVars) {
-			m.actionStatus = fmt.Sprintf("✓ %s saved", envVar)
-			m.keyEnvIndex++
-			m.keyInput = newEnvVarInput(m.currentEnvVar())
-			return m.keyInput.Focus()
-		}
-
-		// All env vars saved — verify
-		m.actionStatus = fmt.Sprintf("✓ Saved to %s: verifying...", pkgConfig.GetEnvFilePath())
-		m.mode = providersViewList
-		m.loading = true
-		m.keyInput.Blur()
-		client := m.client
-		provider := m.installProvider
-		return tea.Batch(func() tea.Msg {
-			result, err := client.VerifyProvider(provider)
-			return providersVerifyMsg{result: result, err: err}
-		}, shared.SpinnerTickCmd())
-	}
-
-	return tiCmd
-}
-
-func (m *ProvidersViewModel) viewEnterKey(width, height int) string { //nolint:unparam // Render helpers share width and height with the view dispatcher.
-	var b strings.Builder
-
-	envVar := m.currentEnvVar()
-
-	b.WriteString("\n")
-
-	// Progress indicator for multi-var flows
-	if len(m.keyEnvVars) > 1 {
-		b.WriteString(fmt.Sprintf(" %s\n",
-			m.styles.Normal.Render(fmt.Sprintf("Step %d of %d", m.keyEnvIndex+1, len(m.keyEnvVars)))))
-	}
-
-	b.WriteString(" " + m.styles.Normal.Render("This provider requires "+envVar+" to connect.") + "\n")
-	b.WriteString("\n")
-	d := shared.NewDetail(m.styles, width)
-	d.Field("Config file", pkgConfig.GetEnvFilePath())
-
-	// Show node info from client
-	if m.client != nil {
-		nodeDisplay := m.client.Name()
-		if nodeDisplay != "" {
-			nodeDisplay += " (" + m.client.BaseURL() + ")"
-		} else {
-			nodeDisplay = m.client.BaseURL()
-		}
-		d.Field("Node", nodeDisplay)
-	}
-	b.WriteString(d.String())
-
-	b.WriteString("\n")
-	b.WriteString(" " + m.styles.Help.Render("You can either:") + "\n")
-	b.WriteString(" " + m.styles.Help.Render("  • Set "+envVar+" manually and restart the server") + "\n")
-	b.WriteString(" " + m.styles.Help.Render("  • Paste the value below to save it now") + "\n")
-	b.WriteString("\n")
-
-	b.WriteString(fmt.Sprintf(" %s %s\n", m.styles.DetailKey.Render(envVar+":"), m.keyInput.View()))
-
-	// Show action status (verification result, errors)
-	if m.actionStatus != "" {
-		b.WriteString("\n")
-		maxWidth := max(width-4, 40)
-		if strings.HasPrefix(m.actionStatus, "✓") {
-			b.WriteString(" " + m.styles.Success.Width(maxWidth).Render(m.actionStatus) + "\n")
-		} else {
-			b.WriteString(" " + m.styles.Error.Width(maxWidth).Render(m.actionStatus) + "\n")
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(shared.RenderViewFooter(m.styles, width, tui.JoinHints(
-		"Ctrl+V paste",
-		tui.Hint(tui.ProvidersKeys.Enter, "save"),
-		tui.Hint(tui.ProvidersKeys.Back, "cancel"),
-	)))
-
-	return b.String()
 }

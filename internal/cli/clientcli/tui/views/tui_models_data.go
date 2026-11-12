@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
@@ -9,12 +10,23 @@ import (
 	"time"
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
+	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 
 	tea "charm.land/bubbletea/v2"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
+
+// syncListItems rebuilds list items after loading, sorting or projecting rows.
+func (m *ModelsViewModel) syncListItems() {
+	items := make([]tui.Item, len(m.rows))
+	for i := range m.rows {
+		items[i] = modelRowItem{row: &m.rows[i]}
+	}
+	m.list.SetItems(items)
+}
 
 // buildDisplayRows merges route folders and model rows into a single display list.
 // Route folders appear at the top, then standalone models.
@@ -23,23 +35,37 @@ func (m *ModelsViewModel) buildDisplayRows(modelRows []modelRow, groups []pkgCli
 
 	var rows []modelRow
 
-	// Build lookup index: (model, node) → modelRow for O(1) child row matching.
-	// Key is "model\x00node"; entries with empty node also indexed as "model\x00".
-	type modelKey struct{ model, node string }
-	modelIndex := make(map[modelKey]*modelRow, len(modelRows))
+	// A replica names provider, model and node. Several actual instances can
+	// serve that identity (for example separate chat and embeddings endpoints).
+	type modelKey struct{ model, node, provider string }
+	modelIndex := make(map[modelKey][]*modelRow, len(modelRows))
+	downloadIndex := make(map[modelKey][]*modelRow)
 	for k := range modelRows {
 		mr := &modelRows[k]
-		modelIndex[modelKey{mr.RawModel, mr.Node}] = mr
-	}
-
-	// lookupModel finds the best matching modelRow for a deployment.
-	lookupModel := func(model, node string) *modelRow {
-		if mr := modelIndex[modelKey{model, node}]; mr != nil {
-			return mr
+		if mr.deploy != nil {
+			key := modelKey{model: mr.RawModel, node: mr.Node}
+			downloadIndex[key] = append(downloadIndex[key], mr)
+			continue
 		}
-		// Fallback: node-agnostic match (for cloud deployments with empty node)
-		if node != "" {
-			return modelIndex[modelKey{model, ""}]
+		key := modelKey{mr.RawModel, mr.Node, mr.Provider}
+		modelIndex[key] = append(modelIndex[key], mr)
+	}
+	lookupModels := func(d *pkgClient.ReplicaResponse) []*modelRow {
+		node := d.Node
+		if node == "" {
+			node = m.localNode
+		}
+		if matches := modelIndex[modelKey{d.Model, node, d.App}]; len(matches) > 0 {
+			return matches
+		}
+		if !m.runningOnly {
+			if downloads := downloadIndex[modelKey{model: d.Model, node: node}]; len(downloads) > 0 {
+				return downloads
+			}
+		}
+		// Cloud replicas may have no node, but must still match the provider.
+		if d.Node != "" {
+			return modelIndex[modelKey{d.Model, "", d.App}]
 		}
 		return nil
 	}
@@ -54,17 +80,34 @@ func (m *ModelsViewModel) buildDisplayRows(modelRows []modelRow, groups []pkgCli
 			icon = "▶ "
 		}
 
-		// Aggregate status from matched model rows
+		type child struct {
+			deployment *pkgClient.ReplicaResponse
+			model      *modelRow
+		}
+		var children []child
 		statusStr := "idle"
+		running := false
 		if total == 0 {
 			statusStr = "inactive"
-		} else {
-			for _, d := range g.Replicas {
-				if mr := lookupModel(d.Model, d.Node); mr != nil && strings.HasPrefix(mr.Status, "running") {
-					statusStr = "running"
-					break
+		}
+		for j := range g.Replicas {
+			d := &g.Replicas[j]
+			matches := lookupModels(d)
+			if len(matches) == 0 && !m.runningOnly {
+				children = append(children, child{deployment: d})
+			}
+			for _, mr := range matches {
+				if mr.isRunning() {
+					statusStr, running = "running", true
+				}
+				if !m.runningOnly || mr.isRunning() {
+					children = append(children, child{deployment: d, model: mr})
 				}
 			}
+		}
+
+		if m.runningOnly && !running {
+			continue
 		}
 
 		rows = append(rows, modelRow{
@@ -78,40 +121,15 @@ func (m *ModelsViewModel) buildDisplayRows(modelRows []modelRow, groups []pkgCli
 
 		// If expanded, add child deployment rows showing same info as standalone models
 		if m.expandedRoutes[g.Name] {
-			for j := range g.Replicas {
-				d := &g.Replicas[j]
+			for childIndex, match := range children {
+				d := match.deployment
 
 				connector := "  ├ "
-				if j == len(g.Replicas)-1 {
+				if childIndex == len(children)-1 {
 					connector = "  └ "
 				}
 
-				childRow := modelRow{
-					Kind:         rowKindDeployChild,
-					Node:         d.Node,
-					Model:        connector + d.Model,
-					RawModel:     d.Model,
-					Provider:     d.App,
-					Size:         shared.EmptyValue,
-					Status:       "idle",
-					sortPriority: -1,
-					routeName:    g.Name,
-					deployment:   d,
-				}
-
-				if mr := lookupModel(d.Model, d.Node); mr != nil {
-					childRow.Model = connector + d.Model
-					childRow.Provider = mr.Provider
-					childRow.SourceRepo = mr.SourceRepo
-					childRow.Node = mr.Node
-					childRow.Size = mr.Size
-					childRow.Status = mr.Status
-					childRow.registry = mr.registry
-					childRow.instance = mr.instance
-					childRow.IsCloud = mr.IsCloud
-				}
-
-				rows = append(rows, childRow)
+				rows = append(rows, routeChildRow(g.Name, connector, d, match.model))
 			}
 		}
 	}
@@ -128,16 +146,45 @@ func (m *ModelsViewModel) buildDisplayRows(modelRows []modelRow, groups []pkgCli
 	}
 
 	// 2. Standalone model rows (downloads, running, idle)
-	rows = append(rows, modelRows...)
+	for _, row := range modelRows {
+		if !m.runningOnly || row.isRunning() {
+			rows = append(rows, row)
+		}
+	}
 
 	return rows
 }
 
+// routeChildRow retains the replica's identity while displaying its current source.
+func routeChildRow(routeName, connector string, replica *pkgClient.ReplicaResponse, source *modelRow) modelRow {
+	row := modelRow{
+		Kind: rowKindDeployChild, Node: replica.Node, Model: connector + replica.Model,
+		RawModel: replica.Model, Provider: replica.App, Size: shared.EmptyValue, Status: "idle",
+		sortPriority: -1, routeName: routeName, deployment: replica,
+	}
+	if source == nil {
+		return row
+	}
+	row.SourceRepo, row.Node, row.Size, row.Status = source.SourceRepo, source.Node, source.Size, source.Status
+	if source.deploy != nil {
+		row.deploy = source.deploy
+	} else {
+		row.Provider, row.registry, row.instance, row.IsCloud = source.Provider, source.registry, source.instance, source.IsCloud
+	}
+	return row
+}
+
 // rebuildDisplayRows re-merges routes and models after expand/collapse changes.
 func (m *ModelsViewModel) rebuildDisplayRows() {
+	var selected rowID
+	r := m.selectedRow()
+	if r != nil {
+		selected = r.id()
+	}
 	m.rows = m.buildDisplayRows(m.rawModelRows, m.groups)
 	m.applySortBy()
 	m.syncListItems()
+	m.restoreCursor(selected, r != nil)
 }
 
 // applySortBy sorts m.rows according to the current sortBy field.
@@ -166,8 +213,20 @@ func (m *ModelsViewModel) applySortBy() {
 	})
 }
 
-// selectedRouteGroup returns the ModelGroupResponse for the currently selected route row.
+func (m *ModelsViewModel) targetsRoute() bool {
+	return m.mode == modelsViewRouteDetail || m.mode == modelsViewEditRoute || m.mode == modelsViewAddDeploy
+}
+
+// selectedRouteGroup resolves the active route independently of filtered rows.
 func (m *ModelsViewModel) selectedRouteGroup() *pkgClient.ModelGroupResponse {
+	if m.targetsRoute() && m.activeRoute != "" {
+		for i := range m.groups {
+			if m.groups[i].Name == m.activeRoute {
+				return &m.groups[i]
+			}
+		}
+		return nil
+	}
 	r := m.selectedRow()
 	if r == nil || !r.isRoute() {
 		return nil
@@ -182,11 +241,24 @@ func (m *ModelsViewModel) selectedRouteGroup() *pkgClient.ModelGroupResponse {
 }
 
 func (m *ModelsViewModel) fetchDeploymentsOnly() tea.Cmd {
+	ctx := m.beginLoad()
 	client := m.client
 	return func() tea.Msg {
+		if err := ctx.Err(); err != nil {
+			return deploymentsRefreshedMsg{ctx: ctx, err: err}
+		}
 		pulls, err := shared.FetchDeployments(client)
-		return deploymentsRefreshedMsg{pulls: pulls, err: err}
+		return deploymentsRefreshedMsg{ctx: ctx, pulls: pulls, err: err}
 	}
+}
+
+func (m *ModelsViewModel) beginLoad() context.Context {
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	m.loadContext, m.loadCancel = context.WithCancel(m.Context())
+	m.fetching = true
+	return m.loadContext
 }
 
 func (m *ModelsViewModel) fetchAll() tea.Cmd {
@@ -225,20 +297,48 @@ func (m *ModelsViewModel) Refresh() tea.Cmd {
 // route is part of the key because two groups can list the same replica,
 // giving their child rows an otherwise identical kind/node/model.
 type rowID struct {
-	kind  rowKind
-	node  string
-	model string
-	route string
+	kind     rowKind
+	node     string
+	model    string
+	provider string
+	route    string
+	replica  string
+	instance string
+	download string
+	job      string
 }
 
 func (r *modelRow) id() rowID {
-	return rowID{kind: r.Kind, node: r.Node, model: r.RawModel, route: r.routeName}
+	id := rowID{kind: r.Kind, node: r.Node, model: r.RawModel, provider: r.Provider, route: r.routeName}
+	if r.deployment != nil {
+		id.replica = r.deployment.Name
+	}
+	if r.instance != nil {
+		id.instance = r.instance.ID
+	}
+	if r.deploy != nil {
+		id.download = r.deploy.DownloadID
+		id.job = r.deploy.JobID
+	}
+	return id
 }
 
 // restoreCursor moves the cursor back onto id if that row still exists, so a
 // reload never retargets the detail panel at whichever row sorted into the
 // old slot. have reports whether id came from a real selection.
 func (m *ModelsViewModel) restoreCursor(id rowID, have bool) {
+	if m.targetsRoute() {
+		if m.activeRoute == "" && id.kind == rowKindRoute {
+			m.activeRoute = id.model
+		}
+		if group := m.selectedRouteGroup(); group != nil {
+			id, have = rowID{kind: rowKindRoute, model: group.Name}, true
+		} else {
+			m.mode, m.activeRoute = modelsViewList, ""
+			m.routeForm.cancel()
+			m.confirmKind, m.confirmMessage = confirmNone, ""
+		}
+	}
 	if !have {
 		return
 	}
@@ -248,17 +348,63 @@ func (m *ModelsViewModel) restoreCursor(id rowID, have bool) {
 			return
 		}
 	}
+	// Only row-owned state retires with the row. A draft or configured route
+	// can remain open while its background row is filtered out.
+	if m.mode == modelsViewDetail {
+		m.mode = modelsViewList
+	}
+	m.confirmKind, m.confirmMessage = confirmNone, ""
+	m.modelUsage, m.modelUsageIdle = nil, false
+	m.ping = pingState{}
 }
 
 func (m *ModelsViewModel) fetchAllWithGroups(refresh bool, includeGroups bool) tea.Cmd {
+	ctx := m.beginLoad()
 	client := m.client
+	runningOnly := m.runningOnly
 	return func() tea.Msg {
-		rows, groups, routePrefix, warnings, err := fetchCombinedModels(client, refresh, includeGroups)
-		return modelsLoadedMsg{rows: rows, groups: groups, routePrefix: routePrefix, warnings: warnings, err: err}
+		if err := ctx.Err(); err != nil {
+			return modelsLoadedMsg{ctx: ctx, err: err}
+		}
+		rows, catalog, groups, routePrefix, warnings, err := fetchCombinedModels(ctx, client, refresh, includeGroups, runningOnly)
+		var localNode string
+		if err == nil && includeGroups {
+			var nodeErr error
+			localNode, nodeErr = localRouteNode(ctx, client, groups)
+			if nodeErr != nil {
+				warnings = append(warnings, "Could not identify local route node")
+			}
+		}
+		return modelsLoadedMsg{ctx: ctx, rows: rows, catalog: catalog, groups: groups, routePrefix: routePrefix, localNode: localNode, warnings: warnings, err: err}
 	}
 }
 
-func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups bool) ([]modelRow, []pkgClient.ModelGroupResponse, string, []string, error) {
+// localRouteNode resolves an omitted replica node without guessing from workers.
+func localRouteNode(ctx context.Context, client *pkgClient.Client, groups []pkgClient.ModelGroupResponse) (string, error) {
+	needsLocal := false
+	for _, group := range groups {
+		for _, replica := range group.Replicas {
+			if replica.Node == "" {
+				needsLocal = true
+			}
+		}
+	}
+	if !needsLocal {
+		return "", nil
+	}
+	nodes, err := client.GetNodeInventory(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, node := range nodes {
+		if node.Name != "" && (node.ClusterRole == string(config.ClusterModeCoordinator) || node.ClusterRole == string(config.ClusterModeStandalone)) {
+			return node.Name, nil
+		}
+	}
+	return "", fmt.Errorf("coordinator identity is unavailable")
+}
+
+func fetchCombinedModels(ctx context.Context, client *pkgClient.Client, refresh bool, includeGroups bool, runningOnly bool) ([]modelRow, []pkgClient.ModelMetadata, []pkgClient.ModelGroupResponse, string, []string, error) {
 	var (
 		models       []pkgClient.ModelMetadata
 		modelsErr    error
@@ -281,7 +427,7 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 		defer wg.Done()
 		models, modelsErr = shared.FetchModels(client, &shared.ModelQueryParams{Node: "*", Provider: "*", SortBy: "date"}, refresh)
 	}()
-	go func() { defer wg.Done(); instances, instancesErr = shared.FetchInstances(client, "", "") }()
+	go func() { defer wg.Done(); instances, instancesErr = client.ListInstancesCtx(ctx) }()
 	go func() { defer wg.Done(); pulls, pullsErr = shared.FetchDeployments(client) }()
 	wg.Wait()
 
@@ -301,17 +447,15 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 	}
 
 	if modelsErr != nil {
-		return nil, groups, routePrefix, warnings, modelsErr
+		return nil, models, groups, routePrefix, warnings, modelsErr
+	}
+	if runningOnly && instancesErr != nil {
+		return nil, models, groups, routePrefix, warnings, instancesErr
 	}
 
-	runningByModel := make(map[string]*pkgClient.Instance, len(instances))
-	for i := range instances {
-		runningByModel[instances[i].Model] = &instances[i]
-	}
-
-	downloadByModel := make(map[string]*shared.DeploymentInfo, len(pulls))
-	for i := range pulls {
-		downloadByModel[pulls[i].Model] = &pulls[i]
+	if runningOnly {
+		// A simultaneous transfer must not hide the instance already serving this model.
+		pulls = nil
 	}
 
 	covered := make(map[string]bool)
@@ -352,12 +496,9 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 		registryByModel[models[i].Name] = &models[i]
 	}
 
-	// 2. Running instances (priority 1)
+	// 2. Every instance keeps its own identity. Covered only suppresses catalog rows.
 	for i := range instances {
 		inst := &instances[i]
-		if inst.Model != "" && covered[coveredKey(inst.Model, inst.Node)] {
-			continue
-		}
 		name := utils.FormatRunName(inst.Model, inst.App)
 		reg := registryByModel[inst.Model]
 		diskSize := int64(0)
@@ -419,7 +560,7 @@ func fetchCombinedModels(client *pkgClient.Client, refresh bool, includeGroups b
 		})
 	}
 
-	return rows, groups, routePrefix, warnings, nil
+	return rows, models, groups, routePrefix, warnings, nil
 }
 
 func formatDeploymentStatus(p *shared.DeploymentInfo) string {
@@ -534,37 +675,15 @@ func (m *ModelsViewModel) selectedRow() *modelRow {
 	return nil
 }
 
-// applyActionResult updates rows locally after a successful action.
-func (m *ModelsViewModel) applyActionResult(action string) {
-	r := m.selectedRow()
-	if r == nil {
-		return
-	}
-	switch action {
-	case "stop":
-		r.Status = "idle"
-		r.instance = nil
-		if r.registry != nil {
-			r.Size = shared.FormatSize(r.registry.Size)
-		} else {
-			r.Size = shared.EmptyValue
-		}
-	case "delete":
-		c := m.list.Cursor()
-		m.rows = append(m.rows[:c], m.rows[c+1:]...)
-		m.syncListItems()
-		if c >= len(m.rows) && len(m.rows) > 0 {
-			m.list.SetCursor(len(m.rows) - 1)
-		}
-	}
-}
-
 // updateDeploymentRows updates download rows in-place from fresh deploy data.
 // Existing download rows are updated, finished ones removed, new ones prepended.
 func (m *ModelsViewModel) updateDeploymentRows(pulls []shared.DeploymentInfo) {
+	if m.runningOnly {
+		return
+	}
 	// Index current deploy rows by key for fast lookup
-	pullIdx := make(map[string]int) // key → index in m.rows
-	for i, r := range m.rows {
+	pullIdx := make(map[string]int) // key → index in rawModelRows
+	for i, r := range m.rawModelRows {
 		if r.deploy != nil {
 			pullIdx[r.deploy.DownloadID] = i
 		}
@@ -580,7 +699,7 @@ func (m *ModelsViewModel) updateDeploymentRows(pulls []shared.DeploymentInfo) {
 			// Completed: transition to idle in-place. Provider stays "-" until
 			// the next full refresh replaces this with a real registry row.
 			if idx, exists := pullIdx[p.DownloadID]; exists {
-				m.rows[idx] = modelRow{
+				m.rawModelRows[idx] = modelRow{
 					Node:         p.Node,
 					Model:        shared.FormatModelWithRegistry(p.Provider, utils.FormatModelName(p.Model)),
 					RawModel:     p.Model,
@@ -609,26 +728,24 @@ func (m *ModelsViewModel) updateDeploymentRows(pulls []shared.DeploymentInfo) {
 
 		if idx, exists := pullIdx[p.DownloadID]; exists {
 			// Update existing row in-place
-			m.rows[idx] = newRow
+			m.rawModelRows[idx] = newRow
 		} else {
 			// New download — prepend (downloads go first)
-			m.rows = append([]modelRow{newRow}, m.rows...)
-			c := m.list.Cursor()
-			if c > 0 {
-				m.list.SetCursor(c + 1)
+			m.rawModelRows = append([]modelRow{newRow}, m.rawModelRows...)
+			for id, idx := range pullIdx {
+				pullIdx[id] = idx + 1
 			}
 		}
 	}
 
 	// Remove download rows that are no longer in the pulls list (cancelled externally)
-	filtered := m.rows[:0]
-	for _, r := range m.rows {
+	filtered := m.rawModelRows[:0]
+	for _, r := range m.rawModelRows {
 		if r.deploy != nil && !seen[r.deploy.DownloadID] {
 			continue
 		}
 		filtered = append(filtered, r)
 	}
-	m.rows = filtered
-
-	m.syncListItems()
+	m.rawModelRows = filtered
+	m.rebuildDisplayRows()
 }

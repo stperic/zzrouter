@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/common/retry"
@@ -43,7 +45,7 @@ func writeClusterFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	return utils.AtomicWriteFile(path, data, 0o600)
+	return atomicfile.WriteFile(path, data, 0o600)
 }
 
 // Renewal knobs. Plan §9 locks the TTL + renew-at + check-cadence:
@@ -643,6 +645,9 @@ func (n *Node) runRenewalTick(ctx context.Context, transientFails *int) {
 	switch {
 	case err == nil:
 		*transientFails = 0
+	case errors.Is(err, atomicfile.ErrPostRenameDurability):
+		*transientFails = 0
+		fmt.Fprintf(os.Stderr, "clusternode: renewed certificate committed with uncertain durability: %v\n", err)
 	case errors.Is(err, ErrRenewDenyListed):
 		// Coordinator told us we're revoked. Revert immediately.
 		n.tryStartRevert("deny-listed")

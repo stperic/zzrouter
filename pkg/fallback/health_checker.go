@@ -81,7 +81,7 @@ func NewHealthChecker(targets []HealthTarget) *HealthChecker {
 // probe lifecycle — cancelling it stops all probes and tears down
 // in-flight HTTP requests.
 func (h *HealthChecker) Start(ctx context.Context) {
-	h.ctx, h.cancel = context.WithCancel(ctx) //nolint:gosec // cancel stored on h.cancel and invoked by Stop
+	h.ctx, h.cancel = context.WithCancel(ctx) // cancel stored on h.cancel and invoked by Stop
 	for _, t := range h.targets {
 		h.wg.Add(1)
 		//nolint:contextcheck // probeLoop reads h.ctx, derived from Start's ctx above; reported on this line, so annotated here

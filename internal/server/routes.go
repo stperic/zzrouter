@@ -114,6 +114,8 @@ func (s *Server) setupRoutes() {
 	}
 
 	if !isWorker {
+		s.registerOAuthRoutes()
+		s.registerBrowserConsole()
 		// Compat surface (OpenAI /v1/*, Ollama /api/*, NativeWire mounts)
 		// is mounted on the admin port for COORDINATORS only — that's the
 		// surface external clients hit. Workers expose compat exclusively
@@ -126,10 +128,11 @@ func (s *Server) setupRoutes() {
 
 	if !isWorker {
 		// PUBLIC API — general management (models, runs, providers, pricing, …).
-		// Security: admin key (ZZROUTER_ADMIN_API_KEY).
-		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
+		// Security: live admin identity via an API key or protected browser session.
+		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.browserAuthMiddleware(RoleAdmin))
 		s.registerPublicRoutes(publicAPI)
-		s.registerMCPServer(publicAPI)
+		mcpAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
+		s.registerMCPServer(mcpAPI)
 		s.registerInferenceMCPServer()
 
 		// ACCESS CONTROL API — teams, virtual keys, spend reports.

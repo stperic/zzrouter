@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/common/secrets"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
@@ -47,14 +48,16 @@ type Server struct {
 	// === Domain groups ===
 
 	providers struct {
-		appMgr         *prov_apps.ProviderAppManager // Unified provider lifecycle manager
-		cooldowns      *fallback.CooldownSet         // Deployment + provider cooldown pair
-		rateTracker    *fallback.RateLimitTracker    // Last-seen rate limit headers per provider
-		fallback       *chain.Proxy                  // Deployment-chain proxy with pre-stream fallback
-		loadTracker    *fallback.LoadTracker         // In-flight per replica (read by /state)
-		latencyTracker *fallback.LatencyTracker      // EWMA latency per replica (read by /state)
-		healthChecker  *fallback.HealthChecker       // Background health probes (read by /state)
-		routeEvents    *route_events.Bus             // Lifecycle event fan-out → /model-groups/events SSE
+		connectionStore *secrets.Store
+		connections     *ProviderConnectionService
+		appMgr          *prov_apps.ProviderAppManager // Unified provider lifecycle manager
+		cooldowns       *fallback.CooldownSet         // Deployment + provider cooldown pair
+		rateTracker     *fallback.RateLimitTracker    // Last-seen rate limit headers per provider
+		fallback        *chain.Proxy                  // Deployment-chain proxy with pre-stream fallback
+		loadTracker     *fallback.LoadTracker         // In-flight per replica (read by /state)
+		latencyTracker  *fallback.LatencyTracker      // EWMA latency per replica (read by /state)
+		healthChecker   *fallback.HealthChecker       // Background health probes (read by /state)
+		routeEvents     *route_events.Bus             // Lifecycle event fan-out → /model-groups/events SSE
 		// groupReaperDone closes when the reaper goroutine exits.
 		// groupReaperCancel terminates the reaper independent of shutdownCtx
 		// so role-demote (coord → worker) stops the reaper without waiting

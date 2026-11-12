@@ -630,3 +630,37 @@ func TestReconcilePreservesOperatorSchema(t *testing.T) {
 	assert.Equal(t, before["schema"], after["schema"])
 	assert.Equal(t, "engine", after["runtime"].(map[string]any)["execution"].(map[string]any)["command"])
 }
+
+func TestConnectionMetadataSeedsNewAuthWithoutReplacingOperatorAuth(t *testing.T) {
+	template := []byte(`connection:
+  fields:
+    - id: token
+      label: Token
+      type: text
+      env: HF_TOKEN
+      secret: true
+runtime:
+  endpoint: https://huggingface.co
+  api:
+    auth_type: bearer
+    token: ${HF_TOKEN}
+`)
+	for _, auth := range []string{"", "  api:\n    auth_type: none\n"} {
+		live := []byte("enabled: false\nruntime:\n  endpoint: https://private.example\n" + auth)
+		merged, changed, err := mergeManagedSpine(live, template, nil)
+		require.NoError(t, err)
+		require.True(t, changed)
+		var body map[string]any
+		require.NoError(t, yaml.Unmarshal(merged, &body))
+		runtime := body["runtime"].(map[string]any)
+		require.Equal(t, "https://private.example", runtime["endpoint"])
+		require.Equal(t, false, body["enabled"])
+		api := runtime["api"].(map[string]any)
+		if auth == "" {
+			require.Equal(t, "${HF_TOKEN}", api["token"])
+		} else {
+			require.Equal(t, "none", api["auth_type"])
+		}
+		require.NotNil(t, body["connection"])
+	}
+}

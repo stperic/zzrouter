@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/stperic/common/httpclient"
+
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -78,6 +80,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	if err := cfg.Observability.ValidateForMode(cfg.Cluster.Mode); err != nil {
 		return nil, err
 	}
+	if err := cfg.Auth.OAuth.Validate(); err != nil {
+		return nil, err
+	}
 	if err := pkgConfig.ValidateConfiguredKeys(cfg); err != nil {
 		return nil, err
 	}
@@ -106,12 +111,19 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s := &Server{
 		nodeConfigStore:     nodeStore,
 		config:              cfg,
-		httpClient:          connMgr.GetHTTPClient(),
-		httpStreamingClient: connMgr.GetStreamingClient(),
+		httpClient:          httpclient.SameOrigin(connMgr.GetHTTPClient()),
+		httpStreamingClient: httpclient.SameOrigin(connMgr.GetStreamingClient()),
 		connManager:         connMgr, // Store reference for metrics
 		listenerReady:       make(chan struct{}),
 		idempotency:         newIdempotencyStore(),
 	}
+	constructed := false
+	defer func() {
+		if !constructed {
+			s.cleanupConstruction()
+		}
+	}()
+
 	s.shutdownCtx, s.shutdownCancel = context.WithCancel(context.Background())
 	s.node = NewNodeIdentity(cfg)
 
@@ -128,7 +140,20 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.role = roleMgr
 	normalizers.CleanChatUsage = func() bool { return !s.IsWorker() }
 
-	s.backend = backend.NewResolver(s.appsConfig)
+	connectionStore, err := openProviderConnectionStore(cfg.Security.Credentials, pkgConfig.NewConfigManager("zzrouter").GetNodeConfigDir())
+	if err != nil {
+		return nil, err
+	}
+	s.providers.connectionStore = connectionStore
+	if connectionStore != nil {
+		s.backend = backend.NewResolver(s.appsConfig, connectionStore)
+	} else {
+		s.backend = backend.NewResolver(s.appsConfig)
+	}
+	s.providers.connections = &ProviderConnectionService{resolver: s.backend, client: s.httpClient, registrar: s, coordinator: s.IsCoordinator, publish: s.publishCatalog, changed: s.connectionChanged}
+	if connectionStore != nil {
+		s.providers.connections.store = connectionStore
+	}
 	s.inference.normalizers = normalizers
 	s.proxy = NewProxyClient(s.httpStreamingClient, s.coordWorkerMTLSClient, normalizers, s.trackProviderRateLimit,
 		func() bool { return s.config.Coordinator.Routing.InjectUsageMetadata },
@@ -225,7 +250,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	}
 
 	// Register cloud search providers from config (OpenAI-compatible /v1/models)
-	search.RegisterCloudProvidersFromConfig(s.appsConfig)
+	search.RegisterCloudProvidersFromConfig(s.appsConfig, s.backend)
 
 	// Initialize ProviderAppManager (prov_apps — unified lifecycle for providers)
 	providerAppMgr, err := prov_apps.NewProviderAppManager(
@@ -252,7 +277,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		prov_apps.WithModelValidator(s.checkCatalogModelAdmission),
 		prov_apps.WithModelSource(s.modelSource),
 		prov_apps.WithLocalCatalog(s.localCatalogContains),
-		prov_apps.WithBackendResolver(s.backend.Resolve),
+		prov_apps.WithConnectionResolver(s.backend),
 		prov_apps.WithStartObserver(s.observeModelStart),
 		prov_apps.WithParamLocalizer(assetParamLocalizer(s.configStore)),
 		prov_apps.WithRuntimeChecks(providerRuntimeChecks(s.configStore)),
@@ -290,7 +315,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	// AppsConfig via ReloadConfig — the same hook subscribeConfigStore
 	// wires up for runtime changes, so initial boot and post-install
 	// reloads share a single code path.
-	modelRegistry, err := modelregistry.NewRegistry(s.appsConfig)
+	modelRegistry, err := modelregistry.NewRegistry(s.appsConfig, s.backend)
 	if err != nil {
 		logger.Warn("Failed to create model registry", "error", err)
 	} else {
@@ -505,6 +530,10 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 	s.initFallbackProxy()
 
+	if err := s.initOAuth(); err != nil {
+		return nil, err
+	}
+
 	// Auth handlers (used by route registration)
 	s.auth = &AuthHandlers{
 		access:          s.access,
@@ -575,6 +604,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		}
 	}
 
+	constructed = true
 	return s, nil
 }
 

@@ -3,7 +3,6 @@ package clientcli
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/views"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/views/chat"
@@ -11,7 +10,6 @@ import (
 
 	shared "github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 
-	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
@@ -41,6 +39,7 @@ func (m *tuiModel) dispatchBreadcrumbClick(x int) tea.Cmd {
 	if idx == 0 {
 		// Root segment: leave the current pane back to menu.
 		if m.pane == paneSearch {
+			m.search.Deactivate()
 			m.pane = paneMenu
 			return nil
 		}
@@ -60,69 +59,23 @@ func (m *tuiModel) dispatchBreadcrumbClick(x int) tea.Cmd {
 type tuiView = tui.View
 
 const (
-	tuiViewMenu       tuiView = tui.ViewMenu
-	tuiViewSearch     tuiView = tui.ViewSearch
-	tuiViewModels     tuiView = tui.ViewModels
-	tuiViewNodes      tuiView = tui.ViewNodes
-	tuiViewProviders  tuiView = tui.ViewProviders
-	tuiViewChat       tuiView = tui.ViewChat
-	tuiViewLogs       tuiView = tui.ViewLogs
-	tuiViewRunLogs    tuiView = tui.ViewRunLogs
-	tuiViewParams     tuiView = tui.ViewParams
-	tuiViewVkeys      tuiView = tui.ViewVkeys
-	tuiViewTeams      tuiView = tui.ViewTeams
-	tuiViewQuickstart tuiView = tui.ViewQuickstart
-	tuiViewDeploys    tuiView = tui.ViewDeploys
-	tuiViewPricing    tuiView = tui.ViewPricing
-	tuiViewUpdate     tuiView = tui.ViewUpdate
+	tuiViewMenu          tuiView = tui.ViewMenu
+	tuiViewSearch        tuiView = tui.ViewSearch
+	tuiViewModels        tuiView = tui.ViewModels
+	tuiViewRunningModels tuiView = tui.ViewRunningModels
+	tuiViewNodes         tuiView = tui.ViewNodes
+	tuiViewProviders     tuiView = tui.ViewProviders
+	tuiViewChat          tuiView = tui.ViewChat
+	tuiViewLogs          tuiView = tui.ViewLogs
+	tuiViewRunLogs       tuiView = tui.ViewRunLogs
+	tuiViewParams        tuiView = tui.ViewParams
+	tuiViewVkeys         tuiView = tui.ViewVkeys
+	tuiViewTeams         tuiView = tui.ViewTeams
+	tuiViewQuickstart    tuiView = tui.ViewQuickstart
+	tuiViewDeploys       tuiView = tui.ViewDeploys
+	tuiViewPricing       tuiView = tui.ViewPricing
+	tuiViewUpdate        tuiView = tui.ViewUpdate
 )
-
-type menuItem struct {
-	name        string
-	description string
-	view        tuiView
-	// Group fields — only used when isGroup is true
-	isGroup  bool
-	children []menuItem
-}
-
-var mainMenuItems = []menuItem{
-	{name: "Quick Start", description: "Guided setup: hardware, providers, models", view: tuiViewQuickstart},
-	{name: "Model Hub", description: "Search & deploy models from model hub", view: tuiViewSearch},
-	{name: "Activity", description: "Running jobs across the cluster: installs, upgrades, downloads", view: tuiViewDeploys},
-	{name: "Model Deployments", description: "Deployed models, routes, and running providers", view: tuiViewModels},
-	{name: "Providers", description: "Inference local and cloud providers", view: tuiViewProviders},
-	{name: "Advanced", description: "Cluster management, keys, and diagnostics", isGroup: true, children: []menuItem{
-		{name: "Keys", description: "Virtual API keys, budgets, and rate limits", view: tuiViewVkeys},
-		{name: "Teams", description: "Team membership, shared budgets, and rate limits", view: tuiViewTeams},
-		{name: "Nodes", description: "Cluster nodes and resources", view: tuiViewNodes},
-		{name: "Logs", description: "Inference logs", view: tuiViewLogs},
-		{name: "Pricing", description: "Token rates: operator overrides and un-priced models", view: tuiViewPricing},
-		{name: "Software Update", description: "This node's zzRouter version: check, install, roll back", view: tuiViewUpdate},
-	}},
-}
-
-// visibleMenuItems returns the flat list of menu items currently visible,
-// accounting for expanded/collapsed groups.
-func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
-	var items []visibleMenuItem
-	for i, item := range mainMenuItems {
-		items = append(items, visibleMenuItem{item: item, topIndex: i, childIndex: -1})
-		if item.isGroup && expanded[i] {
-			for j, child := range item.children {
-				items = append(items, visibleMenuItem{item: child, topIndex: i, childIndex: j})
-			}
-		}
-	}
-	return items
-}
-
-// visibleMenuItem tracks which top-level and child index a visible row maps to.
-type visibleMenuItem struct {
-	item       menuItem
-	topIndex   int // index in mainMenuItems
-	childIndex int // -1 for top-level items, >=0 for children
-}
 
 // tuiPane identifies which UI rail is currently active. The host renders
 // and routes input differently for each pane.
@@ -145,15 +98,14 @@ type tuiModel struct {
 	chatSettings pkgConfig.ChatSettings
 
 	pane         tuiPane
-	cursor       int          // menu cursor
+	menu         tui.List
 	menuExpanded map[int]bool // group indices that are expanded
 
 	root *tui.Root
 
 	// search is a sibling singleton: persistent across nav and receives
 	// nodeCount updates from tuiNodesMsg even when not the active pane.
-	search            search.SearchTUIModel
-	searchInitialized bool
+	search *search.SearchTUIModel
 
 	nodeCount  int
 	nodeHealth map[string]string // node name → health status
@@ -179,6 +131,7 @@ type tuiOption func(*tuiModel)
 // withQuickstart starts the TUI in quickstart wizard mode.
 func withQuickstart() tuiOption {
 	return func(m *tuiModel) {
+		m.search.Deactivate()
 		m.pane = paneRoot
 		updated, _ := m.root.Update(tui.NavToMsg{View: views.NewQuickstartViewModel(m.styles)})
 		m.root, _ = updated.(*tui.Root)
@@ -207,7 +160,7 @@ func runTUI(opts ...tuiOption) error {
 		chatSettings: chatSettings,
 		pane:         paneMenu,
 		menuExpanded: make(map[int]bool),
-		search:       search.NewSearchTUIModel(styles, "", "", "", "", "", true),
+		search:       search.NewSearchTUIModel(client, styles, "", "", "", "", "", true),
 		root:         tui.NewEmptyRoot(),
 	}
 
@@ -222,6 +175,7 @@ func runTUI(opts ...tuiOption) error {
 	// explicitly here so long-running subscriptions (jobstream SSE,
 	// log tails) close their HTTP reads before the process exits.
 	defer m.root.TeardownAll()
+	defer m.search.Deactivate()
 
 	defer func() {
 		fmt.Print("\033[?25h")
@@ -263,6 +217,10 @@ func (m *tuiModel) Init() tea.Cmd {
 //  3. Detection of an empty root stack (last view popped) so the host can
 //     fall back to the menu.
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.search.OwnsMessage(msg) {
+		_, cmd := m.search.Update(msg)
+		return m, cmd
+	}
 	// --- View-switching messages from children. These construct the
 	// target view and push it onto root, regardless of current pane. ---
 	switch msg := msg.(type) {
@@ -273,6 +231,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.View == nil {
 			return m, nil
 		}
+		m.search.Deactivate()
 		m.pane = paneRoot
 		updated, cmd := m.root.Update(msg)
 		m.root, _ = updated.(*tui.Root)
@@ -309,6 +268,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+		m.search.Deactivate()
 		m.pane = paneMenu
 		return m, tea.Batch(cmds...)
 
@@ -316,6 +276,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// classic tuiBackMsg; host catches it and switches pane. ---
 	case tui.TuiBackMsg:
 		if m.pane == paneSearch {
+			m.search.Deactivate()
 			m.pane = paneMenu
 		}
 		return m, nil
@@ -346,7 +307,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// stuck on its "not ready" placeholder until the terminal is
 		// resized.
 		updated, searchCmd := m.search.Update(msg)
-		m.search = updated.(search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
+		m.search = updated.(*search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
 		// Forward directly to root (not via forwardToRoot) so an empty
 		// root stack doesn't flip the active pane back to paneMenu —
 		// paneSearch uses the search singleton while root is empty.
@@ -394,7 +355,7 @@ func (m *tuiModel) forwardToActive(msg tea.Msg) tea.Cmd {
 	switch m.pane {
 	case paneSearch:
 		updated, cmd := m.search.Update(msg)
-		m.search = updated.(search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
+		m.search = updated.(*search.SearchTUIModel) //nolint:errcheck // bubbletea Update contract always returns same model type
 		return cmd
 	case paneRoot:
 		return m.forwardToRoot(msg)
@@ -408,6 +369,7 @@ func (m *tuiModel) forwardToRoot(msg tea.Msg) tea.Cmd {
 	updated, cmd := m.root.Update(msg)
 	m.root = updated.(*tui.Root) //nolint:errcheck // bubbletea Update contract always returns same model type
 	if m.root.Depth() == 0 {
+		m.search.Deactivate()
 		m.pane = paneMenu
 	}
 	return cmd
@@ -418,6 +380,7 @@ func (m *tuiModel) pushOnRoot(view tea.Model) tea.Cmd {
 	if view == nil {
 		return nil
 	}
+	m.search.Deactivate()
 	m.pane = paneRoot
 	updated, cmd := m.root.Update(tui.NavToMsg{View: view})
 	m.root = updated.(*tui.Root) //nolint:errcheck // bubbletea Update contract always returns same model type
@@ -431,6 +394,7 @@ func (m *tuiModel) popRoot() tea.Cmd {
 	updated, cmd := m.root.Update(tui.NavBackMsg{})
 	m.root = updated.(*tui.Root) //nolint:errcheck // bubbletea Update contract always returns same model type
 	if m.root.Depth() == 0 {
+		m.search.Deactivate()
 		m.pane = paneMenu
 	}
 	return cmd
@@ -470,6 +434,10 @@ func (m *tuiModel) viewForKind(view tuiView) tea.Model {
 		return nil
 	case tuiViewModels:
 		return m.newModelsView()
+	case tuiViewRunningModels:
+		v := views.NewRunningModelsViewModel(m.client, m.styles)
+		v.NodeHealth = m.nodeHealth
+		return v
 	case tuiViewNodes:
 		return views.NewNodesViewModel(m.client, m.styles)
 	case tuiViewProviders:
@@ -499,31 +467,6 @@ func (m *tuiModel) newModelsView() *views.ModelsViewModel {
 	return v
 }
 
-// toggleMenuGroup toggles a group's expanded state and clamps the cursor.
-func (m *tuiModel) toggleMenuGroup(topIndex int) {
-	m.menuExpanded[topIndex] = !m.menuExpanded[topIndex]
-	if !m.menuExpanded[topIndex] {
-		visible := visibleMenuItems(m.menuExpanded)
-		if m.cursor >= len(visible) {
-			m.cursor = len(visible) - 1
-		}
-	}
-}
-
-// menuActivate handles Enter/click on the item at the given visible index.
-// Returns the cmd to dispatch (nil for group toggles or out-of-range).
-func (m *tuiModel) menuActivate(visible []visibleMenuItem, idx int) tea.Cmd {
-	if idx < 0 || idx >= len(visible) {
-		return nil
-	}
-	vi := visible[idx]
-	if vi.item.isGroup {
-		m.toggleMenuGroup(vi.topIndex)
-		return nil
-	}
-	return m.enterMenuItem(vi.item.view)
-}
-
 // enterMenuItem switches to the appropriate pane for a menu selection and
 // pushes the view (or activates the singleton).
 func (m *tuiModel) enterMenuItem(view tuiView) tea.Cmd {
@@ -533,14 +476,9 @@ func (m *tuiModel) enterMenuItem(view tuiView) tea.Cmd {
 		sizeCmd := func() tea.Msg {
 			return tea.WindowSizeMsg{Width: m.termWidth, Height: m.termHeight}
 		}
-		if !m.searchInitialized {
-			m.searchInitialized = true
-			return tea.Batch(m.search.Init(), sizeCmd)
-		}
-		// Reset to list view when re-entering from menu (don't show stale detail).
 		m.search.State = search.StateList
 		m.search.PullStatus = ""
-		return sizeCmd
+		return tea.Batch(m.search.Activate(), sizeCmd)
 	}
 	// All other views go on the root stack.
 	target := m.viewForKind(view)
@@ -548,61 +486,6 @@ func (m *tuiModel) enterMenuItem(view tuiView) tea.Cmd {
 		return nil
 	}
 	return m.pushOnRoot(target)
-}
-
-func (m *tuiModel) updateMenu(msg tea.KeyPressMsg) tea.Cmd {
-	visible := visibleMenuItems(m.menuExpanded)
-	switch {
-	case key.Matches(msg, tui.MenuKeys.Quit):
-		return tea.Quit
-	case key.Matches(msg, tui.MenuKeys.Up):
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case key.Matches(msg, tui.MenuKeys.Down):
-		if m.cursor < len(visible)-1 {
-			m.cursor++
-		}
-	case key.Matches(msg, tui.MenuKeys.Enter):
-		return m.menuActivate(visible, m.cursor)
-	}
-	return nil
-}
-
-func (m *tuiModel) menuMouseClick(msg tea.MouseClickMsg) tea.Cmd {
-	if msg.Button != tea.MouseLeft {
-		return nil
-	}
-	visible := visibleMenuItems(m.menuExpanded)
-	// Menu items start at row 4 (title bar(2) + blank(1) + first item at row 3).
-	// Each item takes 2 lines (name + description).
-	row := msg.Y - 3
-	if row < 0 {
-		return nil
-	}
-	idx := row / 2
-	if idx >= 0 && idx < len(visible) {
-		if m.cursor == idx {
-			return m.menuActivate(visible, idx)
-		}
-		m.cursor = idx
-	}
-	return nil
-}
-
-func (m *tuiModel) menuMouseWheel(msg tea.MouseWheelMsg) tea.Cmd { //nolint:unparam // Mouse dispatch returns tea.Cmd even when scrolling only updates the cursor.
-	visible := visibleMenuItems(m.menuExpanded)
-	switch msg.Button {
-	case tea.MouseWheelUp:
-		if m.cursor > 0 {
-			m.cursor--
-		}
-	case tea.MouseWheelDown:
-		if m.cursor < len(visible)-1 {
-			m.cursor++
-		}
-	}
-	return nil
 }
 
 // tuiMinWidth and tuiMinHeight are the minimum terminal dimensions for usable rendering.
@@ -630,64 +513,4 @@ func (m *tuiModel) View() tea.View {
 		}
 	}
 	return m.renderMenu()
-}
-
-func (m *tuiModel) renderMenu() tea.View {
-	var b strings.Builder
-
-	b.WriteString(shared.RenderTitleBar(m.styles, m.termWidth))
-	b.WriteString("\n\n")
-
-	visible := visibleMenuItems(m.menuExpanded)
-	for i, vi := range visible {
-		isChild := vi.childIndex >= 0
-		selected := i == m.cursor
-
-		// Build the prefix: cursor marker + indent level
-		var cursor string
-		switch {
-		case selected && isChild:
-			cursor = "  > "
-		case selected:
-			cursor = "> "
-		case isChild:
-			cursor = "    "
-		default:
-			cursor = "  "
-		}
-
-		// Group header: show expand/collapse indicator
-		label := vi.item.name
-		if vi.item.isGroup {
-			if m.menuExpanded[vi.topIndex] {
-				label = "▼ " + label
-			} else {
-				label = "▶ " + label
-			}
-		}
-
-		if selected {
-			b.WriteString(m.styles.Selected.Render(cursor + label))
-		} else {
-			b.WriteString(m.styles.Normal.Render(cursor + label))
-		}
-		b.WriteString("\n")
-
-		// Description line
-		descIndent := "    "
-		if isChild {
-			descIndent = "      "
-		}
-		b.WriteString(descIndent)
-		b.WriteString(m.styles.Help.Render(vi.item.description))
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n")
-	b.WriteString(shared.RenderViewFooter(m.styles, m.termWidth, tui.MenuKeys.HintsString()))
-	b.WriteString("\n")
-
-	v := shared.NewAltScreenView(b.String(), m.styles.Theme)
-	v.MouseMode = tea.MouseModeCellMotion
-	return v
 }

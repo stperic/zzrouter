@@ -332,7 +332,7 @@ func (s *Server) maybeAutoEnableOllama() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), constants.HTTPShortTimeout)
 	defer cancel()
-	if _, ok := detect.ProbeOllama(ctx, &svc); !ok {
+	if _, ok := detect.ProbeOllama(ctx, &svc, s.backend); !ok {
 		return
 	}
 	if err := s.FinalizeOnboarding("ollama"); err != nil {

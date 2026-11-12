@@ -10,6 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/common/httpclient"
+
+	"github.com/stperic/zzrouter/pkg/config/backend"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,45 +43,11 @@ type ModelCard struct {
 	Siblings    []hfSibling `json:"siblings,omitempty"` // Files in the repository
 }
 
-// GetModelCard retrieves the model card for a specific model by ID,
-// dispatching to the per-provider card fetcher and caching the result.
-func GetModelCard(provider Provider, modelID string) (*ModelCard, error) {
-	if cached, exists := getCachedModelCard(provider, modelID); exists {
-		return cached, nil
-	}
-
-	var card *ModelCard
-	var err error
-
-	switch provider {
-	case ProviderHuggingFace:
-		card, err = getHuggingFaceModelCard(modelID)
-	case ProviderOllama:
-		card, err = getOllamaModelCard(modelID)
-	default:
-		if IsCloudSearchProvider(provider) {
-			card, err = getCloudModelCard(provider, modelID)
-		} else {
-			return nil, fmt.Errorf("unsupported provider: %s", provider.String())
-		}
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	setCachedModelCard(provider, modelID, card)
-	return card, nil
-}
-
 // GetCloudModelRaw returns the raw provider response for a cloud model as a
 // map, preserving provider-specific fields (Anthropic capabilities,
 // created_at, etc.) that the ModelCard struct drops.
-func GetCloudModelRaw(provider Provider, modelID string) (map[string]any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	results, err := SearchCloudProvider(ctx, provider, modelID, 100)
+func GetCloudModelRaw(ctx context.Context, provider Provider, modelID string, target *backend.Resolved) (map[string]any, error) {
+	results, err := SearchCloudTarget(ctx, target, modelID, 100)
 	if err != nil {
 		return nil, fmt.Errorf("cloud model lookup failed: %w", err)
 	}
@@ -97,13 +68,13 @@ func GetCloudModelRaw(provider Provider, modelID string) (map[string]any, error)
 		}
 	}
 
-	return nil, fmt.Errorf("model %s not found in %s", modelID, provider)
+	return nil, fmt.Errorf("%w: %s in %s", ErrModelNotFound, modelID, provider)
 }
 
 // getCloudModelCard builds a ModelCard from the raw cloud-provider response.
 // Callers wanting full provider detail should use GetCloudModelRaw.
-func getCloudModelCard(provider Provider, modelID string) (*ModelCard, error) {
-	raw, err := GetCloudModelRaw(provider, modelID)
+func getCloudModelCard(ctx context.Context, provider Provider, modelID string, target *backend.Resolved) (*ModelCard, error) {
+	raw, err := GetCloudModelRaw(ctx, provider, modelID, target)
 	if err != nil {
 		return nil, err
 	}
@@ -136,24 +107,23 @@ func getCloudModelCard(provider Provider, modelID string) (*ModelCard, error) {
 }
 
 // getHuggingFaceModelCard retrieves a model card from Hugging Face Hub.
-func getHuggingFaceModelCard(modelID string) (*ModelCard, error) {
-	client := NewDefaultClient()
-	ctx := context.Background()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", huggingFaceAPIBase+modelID+"?full=true", nil)
+func (c *Client) getHuggingFaceModelCard(ctx context.Context, modelID string) (*ModelCard, error) {
+	if !metadata.ValidHuggingFaceID(modelID) {
+		return nil, fmt.Errorf("invalid Hugging Face repository identifier")
+	}
+	req, err := c.newRequest(ctx, huggingFaceAPIBase+modelID+"?full=true")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	if client.apiToken != "" {
-		req.Header.Set("Authorization", "Bearer "+client.apiToken)
-	}
-
-	resp, err := doRequestWithRetry(ctx, client.httpClient, req, defaultRetryConfig())
+	resp, err := doRequestWithRetry(ctx, c.httpClient, req, defaultRetryConfig())
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch model info: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrModelNotFound, modelID)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("hugging Face API returned status %d for model %s", resp.StatusCode, modelID)
 	}
@@ -165,12 +135,9 @@ func getHuggingFaceModelCard(modelID string) (*ModelCard, error) {
 
 	// README is best-effort; a failure to fetch it is not fatal.
 	var readmeContent string
-	readmeReq, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("https://huggingface.co/%s/resolve/main/README.md", modelID), nil)
+	readmeReq, err := c.newRequest(ctx, fmt.Sprintf("https://huggingface.co/%s/resolve/main/README.md", modelID))
 	if err == nil {
-		if client.apiToken != "" {
-			readmeReq.Header.Set("Authorization", "Bearer "+client.apiToken)
-		}
-		readmeResp, err := doRequestWithRetry(ctx, client.httpClient, readmeReq, defaultRetryConfig())
+		readmeResp, err := doRequestWithRetry(ctx, c.httpClient, readmeReq, defaultRetryConfig())
 		if err == nil && readmeResp.StatusCode == http.StatusOK {
 			readmeBytes, err := io.ReadAll(readmeResp.Body)
 			_ = readmeResp.Body.Close()
@@ -257,8 +224,8 @@ func getHuggingFaceModelCard(modelID string) (*ModelCard, error) {
 // in the library index — strip the suffix before lookup, but pass the
 // original (untagged) base to the scraper since ollama.com/library only
 // hosts family pages, not per-tag pages.
-func getOllamaModelCard(modelName string) (*ModelCard, error) {
-	models, err := GetOllamaModels()
+func getOllamaModelCard(ctx context.Context, modelName string) (*ModelCard, error) {
+	models, err := GetOllamaModels(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch Ollama models: %w", err)
 	}
@@ -276,10 +243,10 @@ func getOllamaModelCard(modelName string) (*ModelCard, error) {
 		}
 	}
 	if foundModel == nil {
-		return nil, fmt.Errorf("model %s not found in Ollama registry", modelName)
+		return nil, fmt.Errorf("%w: %s in Ollama registry", ErrModelNotFound, modelName)
 	}
 
-	description, capabilities, _, modelURL := scrapeOllamaModelPage(baseName)
+	description, capabilities, _, modelURL := scrapeOllamaModelPage(ctx, baseName)
 
 	return &ModelCard{
 		Provider:    ProviderOllama,
@@ -296,11 +263,15 @@ func getOllamaModelCard(modelName string) (*ModelCard, error) {
 // scrapeOllamaModelPage fetches the Ollama library page and pulls out the
 // description, capability badges, inferred input types, and canonical URL.
 // Best-effort — returns empty values if anything goes wrong.
-func scrapeOllamaModelPage(modelName string) (description string, capabilities []string, inputTypes []string, modelURL string) {
+func scrapeOllamaModelPage(ctx context.Context, modelName string) (description string, capabilities []string, inputTypes []string, modelURL string) {
 	url := fmt.Sprintf("https://ollama.com/library/%s", modelName)
-	client := &http.Client{Timeout: httpTimeout}
+	client := httpclient.SameOrigin(&http.Client{Timeout: httpTimeout})
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, nil, ""
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", nil, nil, ""
 	}

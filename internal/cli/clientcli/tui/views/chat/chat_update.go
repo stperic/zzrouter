@@ -373,7 +373,7 @@ func (m *ChatModel) startStreamCmd() tea.Cmd {
 	ch := make(chan tea.Msg, 64)
 	st.ch = ch
 
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored on st.cancelStream and invoked by stopStream
+	ctx, cancel := context.WithCancel(context.Background()) // cancel stored on st.cancelStream and invoked by stopStream
 	st.cancelStream = cancel
 
 	go func() {

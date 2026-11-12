@@ -2,6 +2,20 @@
 # Edit on the coordinator, never here.
 description: "Serverless inference with global edge network"
 enabled: false
+connection:
+  fields:
+    - id: account_id
+      label: Account ID
+      type: identifier
+      env: CLOUDFLARE_ACCOUNT_ID
+      required: true
+      secret: false
+    - id: api_key
+      label: API key
+      type: text
+      env: CLOUDFLARE_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai
   model_url: "https://developers.cloudflare.com/workers-ai/models/%s/"

@@ -1,9 +1,10 @@
 package search
 
 import (
-	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	sortpkg "sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -95,17 +96,17 @@ func (c *SearchCache) Stop() {
 }
 
 // SearchCacheKey builds a deterministic cache key from search parameters.
-func SearchCacheKey(provider, query, sort, order string, tags []string, limit, offset int, enrich bool) string {
-	sortedTags := make([]string, len(tags))
-	copy(sortedTags, tags)
-	sortpkg.Strings(sortedTags)
-
-	e := "0"
-	if enrich {
-		e = "1"
-	}
-	return fmt.Sprintf("p=%s&q=%s&s=%s&o=%s&t=%s&l=%d&off=%d&e=%s",
-		provider, query, sort, order, strings.Join(sortedTags, ","), limit, offset, e)
+func SearchCacheKey(params SearchParams, logic string, enrich bool, revision string) string {
+	params.Filter = append([]string(nil), params.Filter...)
+	sortpkg.Strings(params.Filter)
+	encoded, _ := json.Marshal(struct {
+		Params   SearchParams
+		Logic    string
+		Enrich   bool
+		Revision string
+	}{params, logic, enrich, revision})
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func (c *SearchCache) cleanupLoop() {

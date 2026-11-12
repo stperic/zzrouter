@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -127,10 +128,14 @@ type ProvidersViewModel struct {
 	// the contradiction unexplained.
 	actionUnconfirmed bool
 
-	// API key/env var input
-	keyEnvVars  []string        // env vars to prompt for (e.g., ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY"])
-	keyEnvIndex int             // current index into keyEnvVars
-	keyInput    textinput.Model // text input with cursor and masking
+	// Coordinator connection form. Candidate secrets live only until save/exit.
+	connection        *pkgClient.ProviderConnection
+	connectionValues  map[string]string
+	connectionField   int
+	connectionContext context.Context
+	connectionCancel  context.CancelFunc
+	connectionBusy    bool
+	keyInput          textinput.Model
 
 	// Upgrade prompt state
 	upgradeProvider string          // provider being upgraded
@@ -218,6 +223,7 @@ func (m *ProvidersViewModel) hasRunningStep() bool {
 // buffer is full at the moment ctx cancellation races with a pending
 // send. ViewContext.Cancel alone cancels the ctx but can't drain.
 func (m *ProvidersViewModel) Cancel() {
+	m.cancelConnection()
 	if m.installJobRow != nil {
 		m.installJobRow.Cancel()
 		m.installJobRow = nil
@@ -263,6 +269,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
+		m.keyInput.SetWidth(max(msg.Width-4, 1))
 		m.termHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
 		vis := shared.VisibleRows(m.termHeight, shared.StdListFooter(m.styles))
 		m.list.SetVisible(vis)
@@ -278,7 +285,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 
 	case tea.PasteMsg:
 		// Handle paste in key input mode
-		if m.mode == providersViewEnterKey {
+		if m.mode == providersViewEnterKey && !m.connectionBusy {
 			pasted := strings.TrimSpace(msg.Content)
 			m.keyInput.SetValue(m.keyInput.Value() + pasted)
 		}
@@ -509,41 +516,6 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 			return providersLoadedMsg{providers: apps, err: err}
 		}, shared.SpinnerTickCmd())
 
-	case providersVerifyMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.actionStatus = fmt.Sprintf("✗ Verification failed: %v", msg.err)
-			m.mode = providersViewEnterKey
-			m.keyInput.SetValue("")
-		} else if msg.result != nil && msg.result.Status == "ok" {
-			if m.installType == constants.AppModeCloud {
-				// Cloud provider — show success on key screen, wait 3s, then go to list
-				m.actionStatus = fmt.Sprintf("✓ %s is verified and ready to use", m.installProvider)
-				m.mode = providersViewEnterKey
-				m.keyInput.SetValue("")
-				return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-					return providersVerifySuccessTimerMsg{}
-				})
-			}
-			// Local provider — run preflight checks first
-			m.actionStatus = ""
-			m.installPlan = nil
-			m.loading = true
-			return m, tea.Batch(
-				fetchPreflight(m.client, m.installProvider, m.installNode),
-				shared.SpinnerTickCmd(),
-			)
-		} else {
-			message := "unknown error"
-			if msg.result != nil {
-				message = msg.result.Message
-			}
-			m.actionStatus = fmt.Sprintf("✗ Verification failed: %s", message)
-			m.mode = providersViewEnterKey // Let user retry with a different key
-			m.keyInput.SetValue("")
-		}
-		return m, nil
-
 	case providersUpgradeJobSubscribedMsg:
 		if msg.err != nil {
 			return m, func() tea.Msg {
@@ -658,6 +630,9 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
 			return providersVerifySuccessTimerMsg{}
 		})
+
+	case providerConnectionMsg:
+		return m, m.handleConnectionResult(msg)
 
 	case providersConnectResultMsg:
 		return m, m.handleConnectResult(msg)
@@ -902,6 +877,9 @@ func (m *ProvidersViewModel) Breadcrumb() []string {
 
 // navigateToBreadcrumb navigates to the state matching breadcrumb level.
 func (m *ProvidersViewModel) navigateToBreadcrumb(level int) {
+	if m.mode == providersViewEnterKey {
+		m.cancelConnection()
+	}
 	switch level {
 	case 1:
 		// Level 1 is detail or install — go back to list

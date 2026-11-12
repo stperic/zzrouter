@@ -145,7 +145,7 @@ func goJSONTypeMap(t reflect.Type) map[string]string {
 		f := t.Field(i)
 		if f.Anonymous {
 			ft := f.Type
-			if ft.Kind() == reflect.Ptr {
+			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
@@ -169,7 +169,7 @@ func goJSONTypeMap(t reflect.Type) map[string]string {
 }
 
 func goKindToSchemaType(t reflect.Type) string {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
@@ -219,7 +219,7 @@ func jsonFieldsOf(t reflect.Type) []string {
 		f := t.Field(i)
 		if f.Anonymous {
 			ft := f.Type
-			if ft.Kind() == reflect.Ptr {
+			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
@@ -246,7 +246,7 @@ func requiredJSONFields(t reflect.Type) []string {
 		f := t.Field(i)
 		if f.Anonymous {
 			ft := f.Type
-			if ft.Kind() == reflect.Ptr {
+			if ft.Kind() == reflect.Pointer {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {

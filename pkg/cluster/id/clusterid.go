@@ -1,5 +1,5 @@
 // Package clusterid provides identity and certificate authority primitives
-// for the zzrouter cluster. It is stdlib-only (no HTTP, no gin, no config)
+// for the zzrouter cluster. It has no HTTP, gin, or configuration dependencies
 // and is safe to import from pkg/clusternode without pulling in the rest of
 // the server.
 //
@@ -29,6 +29,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/stperic/common/atomicfile"
 )
 
 // Role distinguishes the two kinds of identity certs issued by the CA. The
@@ -159,74 +161,12 @@ func randomSerial() (*big.Int, error) {
 	return n, nil
 }
 
-// writeAtomic writes data to path via a sibling tempfile + rename.
-//
-// Intentionally NOT migrated to pkg/utils.AtomicWriteFile: this package
-// is stdlib-only (see package doc) and pulling in pkg/utils would
-// transitively import pkg/observability/logger, breaking that
-// invariant. The implementation here is the same fsync-then-rename-
-// then-dirfsync sequence the helper provides; if the package's
-// stdlib-only constraint is ever relaxed, this collapses to a one-line
-// delegation.
-//
-// Durability semantics:
-//   - os.CreateTemp creates the tempfile at 0600 on Unix (stdlib-hardcoded),
-//     so key material is never world-readable even transiently; we still
-//     Chmod to the requested perm as belt-and-suspenders.
-//   - tmp.Sync() flushes file contents to disk before rename, so a crash
-//     between rename and write-flush can't leave a zero-length file at the
-//     destination on ext4 with data=writeback or similar.
-//   - A separate fsync on the parent directory makes the rename itself
-//     durable on crash — without it, ext4 can lose the rename even though
-//     the file contents hit disk.
-//
-// These matter for CA keys and long-term identity material; for less-
-// critical writes they're cheap insurance.
-//
-//nolint:unparam // perm is always 0o600 today but the helper matches utils.AtomicWriteFile's signature for future consistency
-func writeAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
+// writeIdentityFile creates the private identity directory before durable replacement.
+func writeIdentityFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create identity directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp: %w", err)
-	}
-	name := tmp.Name()
-	cleanup := func() { _ = os.Remove(name) }
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod temp: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("sync temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close temp: %w", err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename temp to %s: %w", path, err)
-	}
-	// fsync the parent directory so the rename itself is durable.
-	// Best-effort: some filesystems return EINVAL on directory fsync,
-	// in which case we silently drop — the rename is already at worst
-	// as durable as before this change.
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
+	return atomicfile.WriteFile(path, data, 0o600)
 }
 
 // encodePEM wraps der bytes in a PEM block of the given type.

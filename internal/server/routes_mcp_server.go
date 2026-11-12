@@ -8,12 +8,12 @@ import (
 )
 
 func (s *Server) registerMCPServer(router *gin.RouterGroup) {
-	handler := mcpserver.New(mcpserver.Config{Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed, SearchAPI: searchOpenAPI, EligibleAPIRoute: s.eligibleAPIRoute})
+	handler := mcpserver.New(mcpserver.Config{ResourcePath: adminMCPPath, Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed, SearchAPI: searchOpenAPI, EligibleAPIRoute: s.eligibleAPIRoute})
 	s.mountMCP(router, "/mcp", handler)
 }
 
 func (s *Server) registerInferenceMCPServer() {
-	handler := mcpserver.NewInference(mcpserver.Config{Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed})
+	handler := mcpserver.NewInference(mcpserver.Config{ResourcePath: inferenceMCPPath, Engine: s.engine, KeyHeaders: callerKeyHeaders, Streaming: streamingForPath, SnapshotAllowed: snapshotAllowed})
 	router := s.engine.Group("/inference", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.AuthMiddleware(RoleUser))
 	s.mountMCP(router, "/mcp", handler)
 }
@@ -36,11 +36,15 @@ func (s *Server) mountMCP(router *gin.RouterGroup, path string, handler http.Han
 // APIs otherwise select different headers when a client sends both schemes.
 func (s *Server) canonicalMCPKey() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		key := extractCredential(c, s.config).key
+		cred := extractCredential(c, s.config)
 		for _, name := range nodeAPIKeyHeaders {
 			c.Request.Header.Del(name)
 		}
-		c.Request.Header.Set("X-API-Key", key)
+		if isOAuthRequest(c.Request.Context()) {
+			c.Request.Header.Set(authorizationHeader, bearerScheme+" "+cred.key)
+		} else {
+			c.Request.Header.Set("X-API-Key", cred.key)
+		}
 		c.Next()
 	}
 }

@@ -18,7 +18,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/common/atomicfile"
 )
 
 const (
@@ -401,7 +401,7 @@ func (d Dir) writeFile(name string, data []byte) error {
 	if err := os.MkdirAll(d.path, dirMode); err != nil {
 		return fmt.Errorf("create asset directory: %w", err)
 	}
-	if err := utils.AtomicWriteFile(filepath.Join(d.path, name), data, fileMode); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(d.path, name), data, fileMode); err != nil {
 		return fmt.Errorf("write asset %q: %w", name, err)
 	}
 	return nil

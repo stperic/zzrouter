@@ -2,6 +2,14 @@
 # Edit on the coordinator, never here.
 description: "Frontier multimodal AI models"
 enabled: false
+connection:
+  fields:
+    - id: api_key
+      label: API key
+      type: text
+      env: GEMINI_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://generativelanguage.googleapis.com/v1beta/openai
   model_url: "https://aistudio.google.com/app/prompts/new_chat?model=%s"

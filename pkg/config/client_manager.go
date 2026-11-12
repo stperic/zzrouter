@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"gopkg.in/yaml.v3"
@@ -78,7 +79,7 @@ func (cm *ConfigManager) SaveClientConfig(config *ClientConfig) error {
 		return fmt.Errorf("failed to marshal client config: %w", err)
 	}
 
-	return os.WriteFile(configFile, data, 0600)
+	return atomicfile.WriteFile(configFile, data, 0o600)
 }
 
 // mergeWithDefaults merges loaded config with defaults for any missing fields

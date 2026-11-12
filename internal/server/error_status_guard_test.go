@@ -27,6 +27,7 @@ var sentinels = map[string]error{
 	"ErrPinRunActive":             prov_apps.ErrPinRunActive,
 	"ErrFeatureEvidence":          prov_apps.ErrFeatureEvidence,
 	"ErrProviderUnavailable":      prov_apps.ErrProviderUnavailable,
+	"ErrConfigUnavailable":        prov_apps.ErrConfigUnavailable,
 	"ErrModelDropped":             prov_apps.ErrModelDropped,
 	"ErrProviderNotFound":         prov_apps.ErrProviderNotFound,
 	"ErrInstanceNotFound":         prov_apps.ErrInstanceNotFound,

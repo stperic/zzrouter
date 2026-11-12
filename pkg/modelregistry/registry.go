@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/huggingface"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
@@ -34,6 +35,7 @@ import (
 //   - filter.go              — ModelFilter + GetStats + RegistryStats.
 //   - pattern.go             — MatchPattern wildcard implementation.
 type Registry struct {
+	connections          *backend.Resolver
 	modelsRoot           string
 	ollamaConnector      *ollama.Connector
 	huggingfaceConnector *huggingface.Connector
@@ -68,16 +70,20 @@ type Registry struct {
 // no "first time is special" branch anywhere. Pass a non-nil
 // appsConfigFn: an unconfigured accessor yields an inactive Ollama
 // source, which is safe but surprising.
-func NewRegistry(appsConfigFn func() *config.AppsConfig) (*Registry, error) {
+func NewRegistry(appsConfigFn func() *config.AppsConfig, resolvers ...*backend.Resolver) (*Registry, error) {
 	modelsRoot, err := GetModelsRootDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get models root: %w", err)
 	}
 
-	r := &Registry{
+	connections := backend.NewResolver(appsConfigFn)
+	if len(resolvers) > 0 {
+		connections = resolvers[0]
+	}
+	r := &Registry{connections: connections,
 		modelsRoot:           modelsRoot,
-		ollamaConnector:      ollama.NewConnector(),
-		huggingfaceConnector: huggingface.NewConnector(modelsRoot),
+		ollamaConnector:      ollama.NewConnector(connections),
+		huggingfaceConnector: huggingface.NewConnector(modelsRoot, connections),
 		appsConfigFn:         appsConfigFn,
 	}
 	if appsConfigFn != nil {
@@ -149,4 +155,11 @@ func (r *Registry) Stop() {
 	r.stopped = true
 	r.stopMu.Unlock()
 	r.wg.Wait()
+}
+
+func (r *Registry) backendResolver() *backend.Resolver {
+	if r.connections != nil {
+		return r.connections
+	}
+	return backend.NewResolver(r.appsConfigFn)
 }

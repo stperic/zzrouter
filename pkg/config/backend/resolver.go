@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/stperic/common/secrets"
 	"github.com/stperic/zzrouter/pkg/config"
 )
 
@@ -19,11 +20,16 @@ import (
 // sees the latest provider config state.
 type Resolver struct {
 	appsConfig func() *config.AppsConfig
+	records    ConnectionRecords
 }
 
 // NewResolver constructs a Resolver.
-func NewResolver(appsConfig func() *config.AppsConfig) *Resolver {
-	return &Resolver{appsConfig: appsConfig}
+func NewResolver(appsConfig func() *config.AppsConfig, sources ...ConnectionRecords) *Resolver {
+	r := &Resolver{appsConfig: appsConfig}
+	if len(sources) > 0 {
+		r.records = sources[0]
+	}
+	return r
 }
 
 // Resolved is the result of looking up a provider for pass-through
@@ -32,9 +38,14 @@ func NewResolver(appsConfig func() *config.AppsConfig) *Resolver {
 // of the caller's request travels there. Cloud marks a hosted API, where
 // no node of the cluster serves the request.
 type Resolved struct {
-	Endpoint string
-	Upstream Upstream
-	Cloud    bool
+	Endpoint          string
+	Upstream          Upstream
+	Cloud             bool
+	Configured        bool
+	Revision          string
+	ModelsPath        string
+	ModelsResponseKey string
+	TestPath          string
 }
 
 // NewRequest builds a request zzRouter makes on its own to path on the
@@ -53,31 +64,31 @@ func (r *Resolved) NewRequest(ctx context.Context, method, path string, body io.
 // forwarding. Returns (nil, false) when the provider is not registered,
 // not enabled, or has no endpoint.
 func (r *Resolver) Resolve(providerKey string) (*Resolved, bool) {
-	cfg := r.appsConfig()
-	if cfg == nil || providerKey == "" {
+	svc, record, values, err := r.connection(providerKey)
+	if err != nil || !svc.IsEnabled() {
 		return nil, false
 	}
-	providerCfg, exists := cfg.LookupApp(providerKey)
-	if !exists || !providerCfg.IsEnabled() {
+	target := connectionTarget(svc, record, values)
+	if target == nil || target.Cloud && !target.Configured {
 		return nil, false
 	}
-	return Target(&providerCfg)
+	return target, true
 }
 
 // Target is Resolve for a provider config in hand, enabled or not, for
 // the calls zzRouter makes before or regardless of enabling it.
 func Target(svc *config.ServiceConfig) (*Resolved, bool) {
-	if svc == nil || !svc.HasEndpoint() || svc.Runtime == nil || svc.Runtime.Endpoint == "" {
+	if svc == nil {
 		return nil, false
 	}
-	if svc.IsCloudProvider() {
-		return &Resolved{
-			Endpoint: config.NormalizeEndpoint(svc.Runtime.Endpoint),
-			Upstream: Credential(svc.Runtime.API),
-			Cloud:    true,
-		}, true
+	values := map[string]string{}
+	if svc.Connection != nil {
+		for _, f := range svc.Connection.Fields {
+			values[f.ID] = externalValue(f)
+		}
 	}
-	return &Resolved{Endpoint: svc.Runtime.Endpoint, Upstream: ForProvider(svc.Runtime.API)}, true
+	target := connectionTarget(svc, secrets.Record{Mode: secrets.External}, values)
+	return target, target != nil
 }
 
 // PassthroughTarget composes the upstream URL for a pass-through proxy hop:

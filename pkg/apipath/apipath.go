@@ -37,6 +37,9 @@ const (
 	Search        = Base + "/search"
 	SpendReport   = Base + "/spend/report"
 	ServerRoutes  = Base + "/server/routes"
+	Session       = Base + "/session"
+	Me            = Base + "/me"
+	MeConnections = Me + "/connections"
 
 	Keys            = Base + "/keys"
 	Teams           = Base + "/teams"
@@ -75,6 +78,7 @@ const (
 	ClusterPairingAccept = Base + "/cluster/pairing/accept"
 
 	RegistriesHuggingFaceVariants = Base + "/registries/huggingface/variants"
+	RegistriesOllamaTags          = Base + "/registries/ollama/tags"
 )
 
 // seg escapes one path segment. Identifiers reach these builders from
@@ -98,6 +102,9 @@ func Key(id string) string           { return join(Keys, id) }
 func KeyRotate(id string) string     { return join(Keys, id, "rotate") }
 func KeyUsage(id string) string      { return join(Keys, id, "usage") }
 func KeyUsageReset(id string) string { return join(Keys, id, "usage", "reset") }
+
+// MeConnection identifies a grant owned by the current identity.
+func MeConnection(id string) string { return join(MeConnections, id) }
 
 // Teams.
 func Team(id string) string           { return join(Teams, id) }
@@ -165,6 +172,13 @@ func ProviderInstallExecuteStep(n string) string {
 
 // Providers.
 func Provider(name string) string { return join(Providers, name) }
+
+// Provider connections are coordinator-owned; these paths accept no node selector.
+func ProviderConnection(name string) string     { return join(Providers, name, "connection") }
+func ProviderConnectionTest(name string) string { return join(Providers, name, "connection", "test") }
+func ProviderConnectionUseExternal(name string) string {
+	return join(Providers, name, "connection", "use-external")
+}
 
 // Provider parameters: three tiers, one shape.
 func ProviderParameters(n string) string       { return join(Providers, n, "parameters") }

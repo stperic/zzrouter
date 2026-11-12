@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -345,7 +347,7 @@ func (n *Node) runPairingAttempt(ctx context.Context, doneCh chan struct{}, w *p
 // cycle can revert cleanly if /cluster/leave or a deny-list 403
 // fires later.
 //
-// Ordering (each step rolls back everything prior on failure):
+// Ordering (pre-commit errors close the listener; files already written remain):
 //
 //  1. Bind the new mTLS listener — cheapest rollback (just Close).
 //  2. Persist CA + coordinator_url to disk.
@@ -357,11 +359,9 @@ func (n *Node) runPairingAttempt(ctx context.Context, doneCh chan struct{}, w *p
 //  5. Clear pairing window, fire OnModeChange, start renewal ticker.
 //
 // Step ordering matters: a bind failure in step 1 leaves zero disk
-// mutation. A write failure in step 2 leaves the listener bound but
-// no on-disk state → closed on return. An InstallSignedCert failure
-// in step 3 leaves disk CA+URL but no cert → operator runs
-// `zzrouter cluster pair --regenerate` to retry, identity key and
-// thus fingerprint survive.
+// mutation. A pre-commit write failure closes the listener and requires a new
+// pairing attempt. A post-rename durability warning means the file committed;
+// report it and continue activation so runtime agrees with the installed state.
 func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string) error {
 	n.mu.Lock()
 	stopped := n.stopped
@@ -385,20 +385,29 @@ func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string)
 	}
 	caPath := filepath.Join(n.cfg.ClusterDir, "ca.pem")
 	if err := writeClusterFile(caPath, caCertPEM); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("persist CA: %w", err)
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			_ = newLn.Close()
+			return fmt.Errorf("persist CA: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing CA committed with uncertain durability: %v\n", err)
 	}
 	urlPath := filepath.Join(n.cfg.ClusterDir, "coordinator_url")
 	if err := writeClusterFile(urlPath, []byte(coordURL)); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("persist coordinator URL: %w", err)
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			_ = newLn.Close()
+			return fmt.Errorf("persist coordinator URL: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing coordinator URL committed with uncertain durability: %v\n", err)
 	}
 
 	// 3. Install the signed cert. InstallSignedCert re-validates
 	// that the cert's public key matches our long-term keypair.
 	if err := n.identity.InstallSignedCert(signedCertPEM); err != nil {
-		_ = newLn.Close()
-		return fmt.Errorf("install signed cert: %w", err)
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			_ = newLn.Close()
+			return fmt.Errorf("install signed cert: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing certificate committed with uncertain durability: %v\n", err)
 	}
 
 	// 4. Atomic mode flip + listener install + serve-spawn under mu.
@@ -472,5 +481,5 @@ func writePairingCodeFile(path, code string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("pairing mkdir: %w", err)
 	}
-	return utils.AtomicWriteFile(path, []byte(code+"\n"), pairingFilePerm)
+	return atomicfile.WriteFile(path, []byte(code+"\n"), pairingFilePerm)
 }

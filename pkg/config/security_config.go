@@ -4,6 +4,8 @@ import "fmt"
 
 // SecurityConfig holds security-related configuration
 type SecurityConfig struct {
+	// Credentials selects an externally provisioned encryption key at startup.
+	Credentials CredentialsConfig `mapstructure:"credentials" yaml:"credentials,omitempty"`
 	// LogAuthAttempts logs authentication attempts for debugging
 	LogAuthAttempts bool `mapstructure:"log_auth_attempts" yaml:"log_auth_attempts,omitempty"`
 
@@ -49,4 +51,9 @@ func (c CORSConfig) Validate() error {
 		return fmt.Errorf("security.cors.max_age_seconds must be >= 0, got %d", c.MaxAgeSeconds)
 	}
 	return nil
+}
+
+// CredentialsConfig locates the service-owned encryption key, never its value.
+type CredentialsConfig struct {
+	KeyFile string `mapstructure:"key_file" yaml:"key_file,omitempty"`
 }

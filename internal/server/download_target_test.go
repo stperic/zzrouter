@@ -59,6 +59,8 @@ func downloadTargetExecutor(t *testing.T) *DeploymentsExecutor {
 	fsroot.SetProviderRootOverride(t.TempDir())
 	t.Cleanup(func() { fsroot.SetProviderRootOverride("") })
 	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("huggingface", config.ServiceConfig{Mode: constants.AppModeRegistry, Enabled: new(true),
+		Runtime: &config.AppRuntimeConfig{Endpoint: "https://huggingface.co"}}))
 	require.NoError(t, cfg.AddApp("studio", config.ServiceConfig{Name: "studio", Mode: constants.AppModeOnDemand, RunScope: config.RunScopeNode,
 		Runtime: &config.AppRuntimeConfig{DataDir: "data", ModelStore: &config.ModelStoreConfig{Directory: "models", Categories: []string{"vae"}},
 			BasePort: 8188, PortRange: []int{8188, 8188}, Execution: config.ExecutionConfig{Type: "python", Command: "python", WorkingDir: "source"}}}))

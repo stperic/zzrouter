@@ -1,6 +1,7 @@
 package search
 
 import (
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/cursor"
@@ -10,7 +11,7 @@ import (
 
 // NewSearchTUIModel creates a new SearchTUIModel with all tag-preset loading logic.
 // When embedded is true, ctrl+c and esc-at-root return tuiBackMsg instead of tea.Quit.
-func NewSearchTUIModel(styles ui.Styles, query, provider, tagsStr, tagLogic, sortBy string, embedded bool) SearchTUIModel {
+func NewSearchTUIModel(client discoveryClient, styles ui.Styles, query, provider, tagsStr, tagLogic, sortBy string, embedded bool) *SearchTUIModel {
 	// Load client config to get search tag presets (non-fatal if it fails)
 	clientConfig, cfgErr := pkgConfig.LoadClientConfig("zzrouter")
 	var tagPresets []TagPreset
@@ -79,7 +80,16 @@ func NewSearchTUIModel(styles ui.Styles, query, provider, tagsStr, tagLogic, sor
 	fc := cursor.New()
 	fc.SetChar(" ")
 
-	return SearchTUIModel{
+	registryPrefs := make(map[string]pkgConfig.SearchRegistryPrefs)
+	if clientConfig != nil {
+		for key, prefs := range clientConfig.Preferences.Search.RegistryPrefs {
+			prefs.Tags = slices.Clone(prefs.Tags)
+			registryPrefs[key] = prefs
+		}
+	}
+	return &SearchTUIModel{
+		registryPrefs:   registryPrefs,
+		client:          client,
 		styles:          styles,
 		embedded:        embedded,
 		query:           query,

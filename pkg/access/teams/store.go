@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
@@ -196,5 +198,5 @@ func (s *FileTeamStore) Save() error {
 		return fmt.Errorf("failed to marshal teams: %w", err)
 	}
 
-	return utils.AtomicWriteFile(s.path, data, 0o600)
+	return atomicfile.WriteFile(s.path, data, 0o600)
 }

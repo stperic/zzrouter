@@ -79,4 +79,5 @@ const (
 	ViewDeploys
 	ViewPricing
 	ViewUpdate
+	ViewRunningModels
 )

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Add an embedded coordinator browser console at `/console/` for provider and
+  Hugging Face credentials, named keys, shared teams, owned MCP grants and
+  effective settings. User keys see their own access and usage. The console
+  reuses existing services and declared connection fields, distinguishes Test
+  from Save and reports partial outcomes. Session/form lifetimes, same-origin
+  CSP and session-bound CSRF protect browser changes; no frontend build service
+  or browser credential storage is introduced. Unchanged focus checks preserve
+  credential forms and one-time keys, while pending writes guard navigation and
+  interrupted writes retain a generic outcome warning.
+
+- Share protected credential storage, OAuth/session/grant mechanics and durable
+  file ownership through the common Go library. Add coordinator connection
+  operations for all supported clouds and optional Hugging Face tokens, with
+  declared forms, revision checks, explicit external ownership and safe status.
+  Managed storage requires a separately provisioned startup encryption key.
+  Add browser session and owner-scoped connection APIs without extending MCP
+  token audiences. Browser cookies are removed before upstream forwarding.
+
+- Move discovery normalization, Ollama tags and Hugging Face variant grouping
+  behind typed coordinator contracts. Terminal search uses cancellable requests
+  and generation checks; multi-node downloads retain deployment and job IDs.
+
+- Add default-enabled self-contained OAuth browser login for coordinator MCP clients.
+  Codex, Claude Code and other OAuth-capable clients can configure a server URL
+  and authorize in the browser. Connections retain live key/team permissions
+  and quotas, survive restarts, rotate refresh tokens and can be revoked
+  individually. Localhost works without configuration at the node port. Set
+  `auth.oauth.issuer_url` for remote HTTPS access, or `auth.oauth.enabled: false`
+  to opt out; existing API keys remain supported. OAuth tokens are restricted to their MCP resource and never sent
+  to providers or workers.
+
 - Add a coordinator-only `/inference/mcp` endpoint for user keys. Its model,
   chat and embedding tools call the existing `/v1` handlers, preserving model
   access, quotas, attribution and routing. The admin MCP remains at

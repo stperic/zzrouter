@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stperic/common/httpclient"
+
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
@@ -30,7 +32,7 @@ func ListModels(ctx context.Context, daemon *backend.Resolved, provider string) 
 	if err != nil {
 		return nil, fmt.Errorf("create model-list request: %w", err)
 	}
-	client := &http.Client{Timeout: listTimeout}
+	client := httpclient.SameOrigin(&http.Client{Timeout: listTimeout})
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request model list: %w", err)

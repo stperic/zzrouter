@@ -1,52 +1,35 @@
 package client
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
+	"context"
 	"net/url"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
-// GGUFVariant mirrors the server's HuggingFaceVariantsResponse entry.
-type GGUFVariant struct {
-	File                 string `json:"file"`
-	Quantization         string `json:"quantization"`
-	Bits                 int    `json:"bits"`
-	SizeBytes            int64  `json:"size_bytes"`
-	SizeHuman            string `json:"size_human"`
-	Recommended          bool   `json:"recommended,omitempty"`
-	RecommendationReason string `json:"recommendation_reason,omitempty"`
-}
-
-// HuggingFaceVariantsResponse mirrors the server's response envelope.
-type HuggingFaceVariantsResponse struct {
-	ModelID        string        `json:"model_id"`
-	Variants       []GGUFVariant `json:"variants"`
-	NonGGUFFiles   int           `json:"non_gguf_files"`
-	TotalSizeBytes int64         `json:"total_size_bytes"`
-}
-
-// GetHuggingFaceVariants fetches the GGUF variant catalog for a HuggingFace repo.
-func (c *Client) GetHuggingFaceVariants(modelID string) (*HuggingFaceVariantsResponse, error) {
-	path := apipath.RegistriesHuggingFaceVariants + "?id=" + url.QueryEscape(modelID)
-
-	resp, err := c.makeRequest("GET", path, nil)
-	if err != nil {
+// GetHuggingFaceVariants fetches grouped weights and declared companion features.
+func (c *Client) GetHuggingFaceVariants(ctx context.Context, modelID, provider string) (*metadata.HuggingFaceVariantsResponse, error) {
+	q := url.Values{"id": {modelID}}
+	if provider != "" {
+		q.Set("provider", provider)
+	}
+	var envelope struct {
+		Data metadata.HuggingFaceVariantsResponse `json:"data"`
+	}
+	if err := c.doContextJSON(ctx, "GET", apipath.RegistriesHuggingFaceVariants+"?"+q.Encode(), nil, &envelope, "get variants"); err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	return &envelope.Data, nil
+}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get variants failed with status %d: %s", resp.StatusCode, parseErrorResponse(body))
+// GetOllamaTags fetches the server-owned Ollama catalog.
+func (c *Client) GetOllamaTags(ctx context.Context, modelID string) (*metadata.OllamaTags, error) {
+	var envelope struct {
+		Data metadata.OllamaTags `json:"data"`
 	}
-
-	var out HuggingFaceVariantsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := c.doContextJSON(ctx, "GET", apipath.RegistriesOllamaTags+"?id="+url.QueryEscape(modelID), nil, &envelope, "get Ollama tags"); err != nil {
+		return nil, err
 	}
-	return &out, nil
+	return &envelope.Data, nil
 }

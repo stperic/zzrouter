@@ -411,7 +411,7 @@ func TestWriteAtomicPreservesMode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "file")
-	require.NoError(t, writeAtomic(path, []byte("hello"), 0o600))
+	require.NoError(t, writeIdentityFile(path, []byte("hello")))
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
