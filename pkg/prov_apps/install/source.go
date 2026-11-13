@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -23,7 +25,12 @@ const sourceExpandedLimit, sourceFileLimit, sourceEntryLimit = 512 << 20, 64 << 
 
 // ReadSource verifies the archive before reading entries and returns its declared roots.
 // A nonempty candidate also extracts into a fresh, confined directory beneath it.
-func ReadSource(ctx context.Context, archive, candidate, directory string, source config.InstallSource) (roots map[string]string, resultErr error) {
+func ReadSource(ctx context.Context, archive, candidate, directory string, source config.InstallSource, components ...string) (roots map[string]string, resultErr error) {
+	files := append([]string{source.Requirements}, components...)
+	members, err := sourceMembers(files)
+	if err != nil {
+		return nil, err
+	}
 	info, err := os.Lstat(archive)
 	if err != nil {
 		return nil, err
@@ -71,7 +78,6 @@ func ReadSource(ctx context.Context, archive, candidate, directory string, sourc
 	}
 	limited := &io.LimitedReader{R: sourceReader{ctx, zipped}, N: sourceExpandedLimit + 1}
 	reader := tar.NewReader(limited)
-	var data []byte
 	top := ""
 	for count := 0; ; count++ {
 		h, err := reader.Next()
@@ -87,14 +93,15 @@ func ReadSource(ctx context.Context, archive, candidate, directory string, sourc
 		}
 		top = first
 		var body io.Reader = reader
-		if relative == source.Requirements {
+		if data, selected := members[relative]; selected {
 			if h.Typeflag != tar.TypeReg || h.Size > 64<<10 || data != nil {
-				return nil, fmt.Errorf("invalid requirements member")
+				return nil, fmt.Errorf("invalid requirements member %q", relative)
 			}
 			data, err = io.ReadAll(reader)
 			if err != nil {
 				return nil, err
 			}
+			members[relative] = data
 			body = bytes.NewReader(data)
 		}
 		if root == nil || relative == "" {
@@ -104,7 +111,48 @@ func ReadSource(ctx context.Context, archive, candidate, directory string, sourc
 			return nil, err
 		}
 	}
-	return parseSourceRequirements(data)
+	return mergeSourceRoots(files, members)
+}
+
+func sourceMembers(files []string) (map[string][]byte, error) {
+	if len(files) > 17 {
+		return nil, fmt.Errorf("source requirements: too many members")
+	}
+	members := make(map[string][]byte, len(files))
+	for _, file := range files {
+		if _, duplicate := members[file]; duplicate || len(file) > 256 || !fs.ValidPath(file) || strings.ContainsAny(file, "\\:") {
+			return nil, fmt.Errorf("source requirements: invalid or duplicate member %q", file)
+		}
+		members[file] = nil
+	}
+	return members, nil
+}
+
+func mergeSourceRoots(files []string, members map[string][]byte) (map[string]string, error) {
+	roots := map[string]string{}
+	for _, file := range files {
+		data := members[file]
+		if data == nil {
+			return nil, fmt.Errorf("source requirements: missing member %q", file)
+		}
+		memberRoots, err := parseSourceRequirements(data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
+		}
+		for _, name := range slices.Sorted(maps.Keys(memberRoots)) {
+			constraint := memberRoots[name]
+			if previous := roots[name]; previous != "" && constraint != "" {
+				constraint = previous + "," + constraint
+			} else if constraint == "" {
+				constraint = previous
+			}
+			roots[name] = constraint
+		}
+		if len(roots) > 512 {
+			return nil, fmt.Errorf("source requirements: at most 512 roots")
+		}
+	}
+	return roots, nil
 }
 
 // writeSourceEntry creates one archive member under root; files are owner-only

@@ -102,6 +102,7 @@ func RegisterInternalAPIRoutes(router *gin.RouterGroup, s *Server) {
 	router.DELETE("/runs/:id", runsExecutor.HandleInternalStopRun)
 	router.POST("/runs/:id/restart", runsExecutor.HandleInternalRestartRun)
 	router.GET("/runs/:id/health", runsExecutor.HandleInternalGetRunHealth)
+	router.Any("/runs/:id/browser/*path", s.handleInternalProviderBrowser)
 	router.GET("/runs/:id/logs", runsExecutor.HandleInternalGetRunLogs)
 	// Coord's public /runs/:id/probes?node=W dispatches here via
 	// s.cluster.router.Unicast. Local-only handler; never calls

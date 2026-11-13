@@ -337,7 +337,7 @@ func TestReservationArgvFilteringKeepsResolvedParameters(t *testing.T) {
 		params["argv-only"] = "localized"
 		return Localized{Params: params}, nil
 	}
-	prepared, err := r.m.prepareLaunchFeatures(features, features.Params, "generic", "", 8740)
+	prepared, err := r.m.prepareLaunchFeatures(t.Context(), features, features.Params, "generic", "", 8740)
 	require.NoError(t, err)
 	require.Equal(t, before, features.Params)
 	require.Equal(t, before, prepared.resolved.Parameters)
@@ -413,11 +413,14 @@ func TestComfyUITemplatePreviewArgv(t *testing.T) {
 	}
 	preview, err := manager.PreviewLaunch(t.Context(), EnsureRequest{Provider: "comfyui"}, 8188)
 	require.NoError(t, err)
-	require.Len(t, preview.Args, 9)
+	require.Len(t, preview.Args, 10)
 	dataDir, err := svc.Runtime.DataPath(fsroot.ProviderDir("comfyui"))
 	require.NoError(t, err)
 	require.Equal(t, []string{"main.py", "--port", "8188", "--base-directory", dataDir}, preview.Args[:5])
-	require.ElementsMatch(t, [][]string{{"--listen", "0.0.0.0"}, {"--reserve-vram", "16"}}, [][]string{preview.Args[5:7], preview.Args[7:9]})
+	require.Equal(t, []string{"--disable-all-custom-nodes", "--listen", "127.0.0.1", "--reserve-vram", "16"}, preview.Args[5:])
+	for _, flag := range []string{"--enable-manager", "--enable-manager-legacy-ui", "--enable-agent", "--whitelist-custom-nodes"} {
+		require.NotContains(t, preview.Args, flag)
+	}
 	require.NotContains(t, preview.Args, "--gpu-reserve-mib")
 	require.NotContains(t, preview.Args, "--keep-alive")
 	require.Equal(t, "8192", preview.Params["gpu-reserve-mib"])

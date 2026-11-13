@@ -48,6 +48,7 @@ type OnDemandRuntime struct {
 	DataSubdirs           []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore            *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe         *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
+	Browser               *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns       httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	PortRange             []int              `yaml:"port_range" json:"port_range"`
 	BasePort              int                `yaml:"base_port" json:"base_port"`
@@ -103,6 +104,9 @@ func (p *OnDemandProvider) Validate() error {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if err := p.Runtime.ActivityProbe.Validate(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
+	if err := p.validateBrowser(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}
 	if p.RunScope != RunScopeNode && p.Protocol != ProtocolOpenAI && p.Protocol != ProtocolOllama {

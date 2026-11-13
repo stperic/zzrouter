@@ -34,6 +34,9 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 	if err != nil {
 		return nil, err
 	}
+	if err := i.selectComponents(ctx, &snapshot, install.OptionsFromContext(ctx).Components); err != nil {
+		return nil, err
+	}
 	recipe := snapshot.Recipe
 	if recipe.Source != nil {
 		if install.OptionsFromContext(ctx).Disposable {
@@ -106,7 +109,7 @@ func (i *Installer) recipePlan(ctx context.Context, version string) (*install.Pl
 	if !*recipe.OnlyBinary {
 		plan.SupplyChainNotice += " Authorized source builds also execute resolver-selected PEP 517 build dependencies; those are outside the hash-pinned runtime inventory."
 	}
-	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks, WorkingDir, Data string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks), snapshot.WorkingDir, install.Fingerprint(snapshot.DataRuntime)})
+	baseID := install.Fingerprint(struct{ Recipe, Policy, Node, Runtime, Version, Interpreter, Environment, RuntimeEnvironment, Checks, WorkingDir, Data, Components string }{snapshot.Fingerprint, snapshot.PolicyFingerprint, snapshot.Node, snapshot.Runtime, version, chosen.Path + ":" + chosen.Realpath + ":" + chosen.Version, install.Fingerprint(environment), install.Fingerprint(runtimeEnv), install.Fingerprint(checks), snapshot.WorkingDir, install.Fingerprint(snapshot.DataRuntime), install.Fingerprint(snapshot.SelectedComponents)})
 	plan.PlanID = baseID
 	guard := func(ctx context.Context) error { return install.CheckRecipeAuthority(ctx, snapshot, i.cfg.Recipe) }
 
@@ -252,7 +255,7 @@ func (i *Installer) configureRecipePlan(plan *install.Plan, chosen *interpreter.
 					return err
 				}
 				archive := filepath.Join(directory, config.SubdirCandidate, recipe.Source.SHA256, filepath.Base(recipe.Source.URL))
-				if _, err := install.ReadSource(ctx, archive, stage, snapshot.WorkingDir, *recipe.Source); err != nil {
+				if _, err := install.ReadSource(ctx, archive, stage, snapshot.WorkingDir, *recipe.Source, snapshot.ComponentRequirements()...); err != nil {
 					return err
 				}
 			}
@@ -557,7 +560,7 @@ func (t *runtimeTransaction) activate(ctx context.Context, checks schema.Runtime
 	if err := os.WriteFile(fsroot.ProviderVersionFile(snapshot.Runtime), []byte(version+"\n"), 0600); err != nil {
 		return t.fail(err)
 	}
-	manifest := &fsroot.InstallManifest{AdditionalPackages: maps.Clone(snapshot.AdditionalPackages), WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
+	manifest := &fsroot.InstallManifest{SelectedComponents: slices.Clone(snapshot.SelectedComponents), AdditionalPackages: maps.Clone(snapshot.AdditionalPackages), WorkingDir: snapshot.WorkingDir, Version: version, InstalledAt: utils.NowUTC().Format(time.RFC3339), Interpreter: &fsroot.ManifestInterpreter{Path: interpreter, Realpath: realpath, Version: pythonVersion}, RecipeFingerprint: snapshot.Fingerprint, PolicyFingerprint: snapshot.PolicyFingerprint, Recipe: &snapshot.Recipe, PlanID: identity, Inventory: inventory}
 	if err := fsroot.WriteInstallManifest(snapshot.Runtime, manifest); err != nil {
 		return t.fail(err)
 	}

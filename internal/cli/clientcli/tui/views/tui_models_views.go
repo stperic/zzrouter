@@ -6,6 +6,7 @@ import (
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
+	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 
 	"charm.land/lipgloss/v2"
 )
@@ -167,29 +168,7 @@ func (m *ModelsViewModel) viewDetail(width, height int) string {
 		}
 	}
 
-	if r.instance != nil {
-		inst := r.instance
-		d.Section("Runtime")
-		d.Field("Instance ID", inst.ID)
-		if inst.SizeBytes > 0 {
-			d.Field("Memory", shared.FormatSize(inst.SizeBytes))
-		}
-		if inst.Port > 0 {
-			d.Field("Port", fmt.Sprintf("%d", inst.Port))
-		}
-		if inst.StartedAt != "" && inst.StartedAt != "0001-01-01T00:00:00Z" {
-			d.Field("Started", inst.StartedAt)
-		}
-		if until := formatCompactUntil(inst.KeepAlive, inst.LastActivity, inst.StartedAt); until != "" {
-			d.Field("Expires", until+" left")
-		}
-		if inst.Processor != "" {
-			d.Field("Processor", inst.Processor)
-		}
-		if inst.ContextLength > 0 {
-			d.Field("Context", fmt.Sprintf("%d", inst.ContextLength))
-		}
-	}
+	appendRunDetail(d, r.instance)
 
 	m.appendPingSection(d, r)
 
@@ -264,4 +243,34 @@ func modelsDetailHints(row *modelRow) string {
 		tui.Hint(tui.ModelsKeys.Back, "back"),
 	)
 	return tui.JoinHints(hints...)
+}
+
+func appendRunDetail(d *shared.DetailBuilder, inst *pkgClient.Instance) {
+	if inst == nil {
+		return
+	}
+	d.Section("Runtime")
+	d.Field("Instance ID", inst.ID)
+	if inst.Browser != nil && inst.Browser.URL != "" {
+		d.Field("Browser", inst.Browser.Name)
+		d.Field("Browser URL", inst.Browser.URL)
+	}
+	if inst.SizeBytes > 0 {
+		d.Field("Memory", shared.FormatSize(inst.SizeBytes))
+	}
+	if inst.Port > 0 {
+		d.Field("Port", fmt.Sprintf("%d", inst.Port))
+	}
+	if inst.StartedAt != "" && inst.StartedAt != "0001-01-01T00:00:00Z" {
+		d.Field("Started", inst.StartedAt)
+	}
+	if until := formatCompactUntil(inst.KeepAlive, inst.LastActivity, inst.StartedAt); until != "" {
+		d.Field("Expires", until+" left")
+	}
+	if inst.Processor != "" {
+		d.Field("Processor", inst.Processor)
+	}
+	if inst.ContextLength > 0 {
+		d.Field("Context", fmt.Sprintf("%d", inst.ContextLength))
+	}
 }

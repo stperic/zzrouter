@@ -98,7 +98,7 @@ func (ctrl *ProvidersController) RegisterPublicRoutes(router *gin.RouterGroup, i
 		idempotent(router, "POST", "/providers/:name/install", nil, ctrl.InstallProvider)
 		router.GET("/providers/:name/install/status", ctrl.GetStepStatus)
 		idempotent(router, "POST", "/providers/:name/install/preflight", nil, ctrl.PreflightInstall)
-		router.POST("/providers/:name/install/plan", ctrl.GetInstallPlan)
+		idempotent(router, "POST", "/providers/:name/install/plan", nil, ctrl.GetInstallPlan)
 		router.POST("/providers/:name/install/verify", ctrl.VerifyInstall)
 		router.POST("/providers/:name/install/verify-step", ctrl.VerifyInstallStep)
 		router.POST("/providers/:name/install/execute-step", ctrl.ExecuteInstallStep)

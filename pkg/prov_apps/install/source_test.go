@@ -324,6 +324,43 @@ func TestSourceRequirementsUseWholeVerifiedArchive(t *testing.T) {
 	}
 }
 
+func TestSourceComponentsIntersectReleaseRequirements(t *testing.T) {
+	entries := []sourceEntry{
+		{name: "release/requirements.txt", body: "torch>=2\nnumpy\n"},
+		{name: "release/manager_requirements.txt", body: "torch<3\nGitPython==3.2.1\n"},
+		{name: "release/audio/requirements.txt", body: "numpy>=2\n"},
+	}
+	archive, source, parent := extractFixture(t, sourceArchive(t, entries...))
+	roots, err := ReadSource(t.Context(), archive, parent, "source", source, "manager_requirements.txt", "audio/requirements.txt")
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"torch": ">=2,<3", "numpy": ">=2", "gitpython": "==3.2.1"}, roots)
+	data, err := os.ReadFile(filepath.Join(parent, "source", "manager_requirements.txt"))
+	require.NoError(t, err)
+	require.Equal(t, entries[1].body, string(data))
+	base, err := ReadSource(t.Context(), archive, "", "", source)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"torch": ">=2", "numpy": ""}, base, "unselected components do not add roots")
+}
+
+func TestSourceComponentMembersAreVerifiedAndBounded(t *testing.T) {
+	base := sourceEntry{name: "release/requirements.txt", body: "torch\n"}
+	for name, entries := range map[string][]sourceEntry{
+		"missing":        {},
+		"duplicate":      {{name: "release/manager.txt", body: "gitpython\n"}, {name: "release/manager.txt", body: "gitpython\n"}},
+		"directory":      {{name: "release/manager.txt", typeflag: tar.TypeDir}},
+		"oversized":      {{name: "release/manager.txt", size: (64 << 10) + 1}},
+		"invalid root":   {{name: "release/manager.txt", body: "-r custom_nodes/requirements.txt\n"}},
+		"duplicate root": {{name: "release/manager.txt", body: "GitPython\ngitpython\n"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive, source, parent := extractFixture(t, sourceArchive(t, append([]sourceEntry{base}, entries...)...))
+			_, err := ReadSource(t.Context(), archive, parent, "source", source, "manager.txt")
+			require.Error(t, err)
+			require.NoDirExists(t, filepath.Join(parent, "source"), "refused component must clean the candidate")
+		})
+	}
+}
+
 func TestSourceExtractionRefusesSparseExpansionBeforeWriting(t *testing.T) {
 	var raw bytes.Buffer
 	writer := tar.NewWriter(&raw)

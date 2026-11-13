@@ -24,6 +24,10 @@ install:
         strip_components: 1
         requirements: requirements.txt
         entrypoint: main.py
+      components:
+        manager:
+          description: Manager libraries from the ComfyUI release. Manager stays inactive in shared-user mode.
+          requirements: manager_requirements.txt
       indexes:
         primary: https://pypi.org/simple
         extra: []
@@ -48,9 +52,23 @@ install:
 defaults:
   parameters:
     gpu-reserve-mib: "8192"
-    listen: "0.0.0.0"
+    listen: "127.0.0.1"
+    enable-manager: "false"
+    enable-manager-legacy-ui: "false"
+    disable-all-custom-nodes: "true"
+    whitelist-custom-nodes: "false"
+    enable-agent: "false"
     keep-alive: "5m"
 runtime:
+  browser:
+    name: ComfyUI
+    required_parameters:
+      listen: "127.0.0.1"
+      enable-manager: "false"
+      enable-manager-legacy-ui: "false"
+      disable-all-custom-nodes: "true"
+      whitelist-custom-nodes: "false"
+      enable-agent: "false"
   data_dir: data
   data_subdirs: [custom_nodes]
   model_store:

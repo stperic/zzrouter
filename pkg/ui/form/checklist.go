@@ -95,6 +95,12 @@ func (f *ChecklistField) SetSelected(values []string) {
 	}
 }
 
+// SetViewportSize keeps the focused option visible when its containing view resizes.
+func (f *ChecklistField) SetViewportSize(rows int) {
+	f.viewportSize = max(1, rows)
+	f.clampCursor()
+}
+
 // Selected returns the selected options in the original option order.
 func (f *ChecklistField) Selected() []string {
 	var out []string

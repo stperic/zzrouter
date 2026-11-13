@@ -39,6 +39,7 @@ type RecipeSnapshot struct {
 	Authority          string                   `json:"authority"`
 	Policy             *RuntimePolicy           `json:"-"`
 	AdditionalPackages map[string]string        `json:"additional_packages,omitempty"`
+	SelectedComponents []string                 `json:"selected_components"`
 	Requirements       *config.AppRequirements  `json:"-"`
 	PinnedVersion      string                   `json:"-"`
 	WorkingDir         string                   `json:"-"`
@@ -94,6 +95,7 @@ func ResolveRecipe(sc config.ServiceConfig, node, runtime, policyPath string, in
 		out.DataRuntime = sc.Runtime
 		if installed != nil {
 			out.AdditionalPackages = maps.Clone(installed.AdditionalPackages)
+			out.SelectedComponents = slices.Clone(installed.SelectedComponents)
 		}
 	} else if err := validateServingImport(sc, runtime, *resolved.Recipe.StartupImport); err != nil {
 		return out, err
@@ -223,9 +225,10 @@ func validateServingImport(sc config.ServiceConfig, runtime, module string) erro
 	return fmt.Errorf("python runtime must declare its serving module with -m")
 }
 
-// RecipeFingerprint excludes the fresh-install seed, which does not change an installed runtime.
+// RecipeFingerprint excludes discovery choices; the selected components and inventory bind the plan.
 func RecipeFingerprint(recipe config.InstallRecipe) string {
 	recipe.PinnedVersion = nil
+	recipe.Components = nil
 	return Fingerprint(recipe)
 }
 

@@ -29,6 +29,18 @@ not accepted in these platform branches. All declarations are validated even
 when inactive or shadowed by another tier. Execution authority and plan identity
 use only the selected recipe.
 
+Source recipes may declare `components`, each with a description and a contained
+requirements member from the same checksum-pinned release archive. These choices
+are release-owned. Plan/install requests select their IDs with `components`:
+omitted preserves the installed selection, and `[]` removes all optional roots.
+An installed ID absent from the new release requires an explicit new selection.
+The existing archive traversal reads all selected members, intersects constraints
+with base roots and uses one resolver and activation transaction. The effective
+selection and inventory bind the plan and are recorded in the install manifest.
+Merely adding available choices does not change the installed recipe fingerprint.
+Installed verification uses its recorded selection; it does not require that a
+current release still advertises the same optional choices.
+
 `requirements.gpu.platforms` maps these same OS names to GPU vendors, for example
 `darwin: apple`. The policy remains shared. All declared vendors are validated
 before preflight probes the executing node's selected vendor. Fixed

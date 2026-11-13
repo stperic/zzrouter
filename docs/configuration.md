@@ -468,3 +468,42 @@ remains available. Workers expose neither native MCP nor OAuth routes.
 See [client setup](mcp.md#connect-with-browser-login) and the
 [security model](security.md#mcp-browser-authorization) for persistence, expiry
 and revocation. These settings are read at startup.
+
+### Native provider browser access
+
+Eligible managed providers can expose their native interface through a separate,
+authenticated coordinator listener. This gateway is disabled unless an origin is
+configured. Give provider content a different hostname from the administrative
+OAuth issuer, including when both hosts use the same reverse proxy:
+
+```yaml
+auth:
+  oauth:
+    issuer_url: https://router.example.com
+coordinator:
+  provider_browser:
+    origin: https://comfy.example.com
+    listen: 127.0.0.1:9092
+```
+
+The listener binds only a canonical loopback IP and port. The default bind is
+`127.0.0.1:9092`. Route the provider hostname to that listener and preserve its
+Host header. Origins must be canonical HTTPS origins; explicit loopback HTTP is
+also supported, using a different hostname from the issuer. Authentication must
+be enabled. Workers ignore this coordinator-only section. Restart to apply it.
+
+Run replies expose `browser.name` after the owning node validates the managed
+installation and actual safe launch. `browser.url` appears only while the
+coordinator gateway serves that node. Each URL identifies its node and run;
+stopping the run invalidates access. Sign-in and consent remain on the trusted
+administrative hostname. Provider requests carry an opaque session cookie;
+OAuth tokens stay in server memory and credentials do not reach the engine.
+
+Pending sign-ins allow four concurrent requests per transport peer. Reverse
+proxies share that budget; per-client admission belongs at the ingress.
+
+Administrators manage installations. Authorized users can use approved native
+provider interfaces. Keys with model allow-lists, spend limits or token-per-minute
+limits cannot use this opaque surface. Request and concurrency limits apply to
+HTTP requests and open connections; they do not meter asynchronous GPU jobs.
+See [ComfyUI access](comfyui.md#access) for the shared launch contract.

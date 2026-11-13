@@ -117,6 +117,44 @@ runtime:
 	assert.NotContains(t, changed, pathpkg.Join("on-demand", "mlx", "config.yaml"))
 }
 
+func TestReconcileManagedSpineUpdatesExistingComfyBrowserContract(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		dir := t.TempDir()
+		require.NoError(t, InstallDefaults(dir))
+		path := filepath.Join(dir, "on-demand", "comfyui", "config.yaml")
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		var live map[string]any
+		require.NoError(t, yaml.Unmarshal(data, &live))
+		runtime := live["runtime"].(map[string]any)
+		delete(runtime, "browser")
+		if stale {
+			runtime["browser"] = map[string]any{"name": "Old browser", "required_parameters": map[string]any{"listen": "0.0.0.0"}}
+		}
+		live["enabled"] = false
+		live["defaults"].(map[string]any)["parameters"].(map[string]any)["listen"] = "0.0.0.0"
+		data, err = yaml.Marshal(live)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(path, data, 0600))
+		changed, err := ReconcileManagedSpine(dir)
+		require.NoError(t, err)
+		require.Contains(t, changed, "on-demand/comfyui/config.yaml")
+		data, err = os.ReadFile(path)
+		require.NoError(t, err)
+		var updated map[string]any
+		require.NoError(t, yaml.Unmarshal(data, &updated))
+		browser := updated["runtime"].(map[string]any)["browser"].(map[string]any)
+		require.Equal(t, "ComfyUI", browser["name"])
+		require.Equal(t, "127.0.0.1", browser["required_parameters"].(map[string]any)["listen"])
+		require.Equal(t, "false", browser["required_parameters"].(map[string]any)["enable-manager"])
+		require.Equal(t, false, updated["enabled"])
+		require.Equal(t, "0.0.0.0", updated["defaults"].(map[string]any)["parameters"].(map[string]any)["listen"], "operator tiers remain explicit and BrowserRun must reject unsafe effective values")
+		changed, err = ReconcileManagedSpine(dir)
+		require.NoError(t, err)
+		require.NotContains(t, changed, "on-demand/comfyui/config.yaml")
+	}
+}
+
 func TestMergeManagedSpineCarriesVersionSource(t *testing.T) {
 	const tmpl = `description: "engine"
 version_source:

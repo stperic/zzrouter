@@ -67,8 +67,8 @@ func (c *InstallCoordinator) PrepareInstallPlan(ctx context.Context, provider, v
 	if err != nil {
 		return nil, err
 	}
-	if options.Smoke != nil && plan.Recipe == nil {
-		return nil, fmt.Errorf("smoke requires a typed runtime recipe")
+	if plan.Recipe == nil && options.RequiresRecipe() {
+		return nil, fmt.Errorf("smoke and components require a typed runtime recipe")
 	}
 	if plan.Preflight != nil {
 		if err := plan.Preflight(ctx); err != nil {

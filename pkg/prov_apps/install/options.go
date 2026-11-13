@@ -7,11 +7,12 @@ import (
 
 // PlanOptions select a declared runtime and bind execution to its preview.
 type PlanOptions struct {
-	Runtime        string `json:"runtime,omitempty"`
-	Action         string `json:"action,omitempty"`
-	Force          bool   `json:"force,omitempty"`
-	ExpectedPlanID string `json:"expected_plan_id,omitempty"`
-	Disposable     bool   `json:"disposable,omitempty"`
+	Runtime        string    `json:"runtime,omitempty"`
+	Action         string    `json:"action,omitempty"`
+	Force          bool      `json:"force,omitempty"`
+	ExpectedPlanID string    `json:"expected_plan_id,omitempty"`
+	Disposable     bool      `json:"disposable,omitempty"`
+	Components     *[]string `json:"components,omitempty"`
 
 	Smoke *SmokeOptions `json:"smoke,omitempty"`
 }
@@ -19,6 +20,11 @@ type PlanOptions struct {
 // SmokeOptions requests a short inference check of a registry model after verify.
 type SmokeOptions struct {
 	Model string `json:"model"`
+}
+
+// RequiresRecipe reports options that cannot be interpreted by an untyped installer.
+func (o PlanOptions) RequiresRecipe() bool {
+	return o.Smoke != nil || o.Components != nil
 }
 
 // ErrStalePlan requires a fresh preview before numbered execution.

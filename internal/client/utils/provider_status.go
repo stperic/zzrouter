@@ -1,11 +1,14 @@
 package client
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/config"
 )
 
 // ProviderStatusResponse is the client representation of a provider's status.
@@ -144,13 +147,55 @@ func (c *Client) GetPreflight(name, node string) (*PreflightResponse, error) {
 
 // InstallPlanResponse is the client representation of an install plan.
 type InstallPlanResponse struct {
-	PlanID       string              `json:"plan_id,omitempty"`
-	Provider     string              `json:"provider"`
-	Version      string              `json:"version"`
-	Action       string              `json:"action"`
-	InstallDir   string              `json:"install_dir"`
-	Steps        []InstallStepInfo   `json:"steps"`
-	CurrentState []StepStateResponse `json:"current_state,omitempty"`
+	ResolvedInstall *InstallRecipeResponse `json:"resolved_install,omitempty"`
+	Force           bool                   `json:"-"`
+	PlanID          string                 `json:"plan_id,omitempty"`
+	Provider        string                 `json:"provider"`
+	Version         string                 `json:"version"`
+	Action          string                 `json:"action"`
+	InstallDir      string                 `json:"install_dir"`
+	Steps           []InstallStepInfo      `json:"steps"`
+	CurrentState    []StepStateResponse    `json:"current_state,omitempty"`
+}
+
+// InstallRecipeResponse carries component discovery and the effective accepted selection.
+type InstallRecipeResponse struct {
+	Recipe struct {
+		Components map[string]config.InstallComponent `json:"components,omitempty"`
+	} `json:"recipe"`
+	SelectedComponents []string `json:"selected_components"`
+}
+
+// InstallPlanOptions selects optional release components and replacement semantics.
+type InstallPlanOptions struct {
+	Components *[]string `json:"components,omitempty"`
+	Force      bool      `json:"force,omitempty"`
+}
+
+// ProviderEnvironmentResponse exposes desired choices and recorded selection before planning.
+type ProviderEnvironmentResponse struct {
+	DesiredInstall    *config.ResolvedInstall `json:"desired_install,omitempty"`
+	InstalledManifest *struct {
+		SelectedComponents []string `json:"selected_components,omitempty"`
+	} `json:"installed_manifest,omitempty"`
+}
+
+// GetProviderEnvironmentContext reads the existing node-owned environment observations.
+func (c *Client) GetProviderEnvironmentContext(ctx context.Context, name, node string) (*ProviderEnvironmentResponse, error) {
+	path := apipath.Provider(name) + "/environment"
+	if node != "" {
+		path += "?node=" + url.QueryEscape(node)
+	}
+	var envelope struct {
+		Data ProviderEnvironmentResponse `json:"data"`
+	}
+	send := func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}
+	if err := c.doWith(send, "GET", path, nil, &envelope, "get provider environment"); err != nil {
+		return nil, err
+	}
+	return &envelope.Data, nil
 }
 
 // InstallStepInfo represents a single step in an install plan.
@@ -185,7 +230,12 @@ type StepResultResponse struct {
 
 // GetInstallPlan retrieves the install plan for a provider.
 // POST /zzrouter/v1/providers/:name/install/plan?node=<node>
-func (c *Client) GetInstallPlan(name, node string) (*InstallPlanResponse, error) {
+func (c *Client) GetInstallPlan(name, node string, options ...InstallPlanOptions) (*InstallPlanResponse, error) {
+	return c.GetInstallPlanContext(context.Background(), name, node, options...)
+}
+
+// GetInstallPlanContext previews a plan for the lifetime of the caller's install view.
+func (c *Client) GetInstallPlanContext(ctx context.Context, name, node string, options ...InstallPlanOptions) (*InstallPlanResponse, error) {
 	path := apipath.ProviderInstallPlan(name)
 	if node != "" {
 		path += "?node=" + url.QueryEscape(node)
@@ -193,10 +243,31 @@ func (c *Client) GetInstallPlan(name, node string) (*InstallPlanResponse, error)
 	var envelope struct {
 		Data InstallPlanResponse `json:"data"`
 	}
-	if err := c.doJSON("POST", path, nil, &envelope, "get install plan"); err != nil {
+	var body any
+	if len(options) > 0 {
+		body = options[0]
+	}
+	send := func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}
+	if err := c.doWith(send, "POST", path, body, &envelope, "get install plan"); err != nil {
 		return nil, err
 	}
+	if len(options) > 0 {
+		envelope.Data.Force = options[0].Force
+	}
 	return &envelope.Data, nil
+}
+
+func (p *InstallPlanResponse) acceptedOptions() map[string]any {
+	body := map[string]any{"expected_plan_id": p.PlanID, "version": p.Version, "runtime": p.Provider, "action": p.Action}
+	if p.Force {
+		body["force"] = true
+	}
+	if p.ResolvedInstall != nil && p.ResolvedInstall.SelectedComponents != nil {
+		body["components"] = append([]string{}, p.ResolvedInstall.SelectedComponents...)
+	}
+	return body
 }
 
 // ExecuteStepAcceptedResponse is the 202 body for async execute-step:
@@ -226,10 +297,8 @@ func (c *Client) ExecuteInstallStep(name, node string, step int, plans ...*Insta
 	}
 	body := map[string]any{"step": step}
 	if len(plans) > 0 && plans[0] != nil {
-		body["expected_plan_id"] = plans[0].PlanID
-		body["version"] = plans[0].Version
-		body["action"] = plans[0].Action
-		body["runtime"] = plans[0].Provider
+		body = plans[0].acceptedOptions()
+		body["step"] = step
 	}
 	if err := c.doJSON("POST", path, body, &envelope, "execute install step"); err != nil {
 		return nil, err
@@ -249,10 +318,8 @@ func (c *Client) VerifyInstallStep(name, node string, step int, plans ...*Instal
 	}
 	body := map[string]any{"step": step}
 	if len(plans) > 0 && plans[0] != nil {
-		body["expected_plan_id"] = plans[0].PlanID
-		body["version"] = plans[0].Version
-		body["action"] = plans[0].Action
-		body["runtime"] = plans[0].Provider
+		body = plans[0].acceptedOptions()
+		body["step"] = step
 	}
 	if err := c.doJSON("POST", path, body, &envelope, "verify install step"); err != nil {
 		return nil, err
@@ -305,7 +372,7 @@ func (c *Client) InstallProvider(name, node string, plans ...*InstallPlanRespons
 	}
 	var body any
 	if len(plans) > 0 && plans[0] != nil {
-		body = map[string]any{"expected_plan_id": plans[0].PlanID, "version": plans[0].Version, "runtime": plans[0].Provider, "action": plans[0].Action}
+		body = plans[0].acceptedOptions()
 	}
 	if err := c.doJSON("POST", path, body, &envelope, "install provider"); err != nil {
 		return nil, err

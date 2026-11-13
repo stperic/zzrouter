@@ -21,7 +21,33 @@ type InstallSource struct {
 var (
 	sourceVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 	sourceSHA256Pattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	componentIDPattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,47}$`)
 )
+
+func (r InstallRecipe) validateComponents() error {
+	if len(r.Components) == 0 {
+		return nil
+	}
+	if r.Source == nil || len(r.Components) > 16 {
+		return fmt.Errorf("components: at most 16 components on a source recipe")
+	}
+	members := map[string]bool{r.Source.Requirements: true}
+	for _, id := range slices.Sorted(maps.Keys(r.Components)) {
+		component := r.Components[id]
+		if !componentIDPattern.MatchString(id) {
+			return fmt.Errorf("components.%s: lowercase component ID required", id)
+		}
+		if strings.TrimSpace(component.Description) == "" || len(component.Description) > 256 || strings.ContainsAny(component.Description, "\r\n\x00") {
+			return fmt.Errorf("components.%s.description: bounded single-line description required", id)
+		}
+		file := component.Requirements
+		if len(file) > 256 || !validProviderDirectory(file) || members[file] {
+			return fmt.Errorf("components.%s.requirements: distinct contained requirements file required", id)
+		}
+		members[file] = true
+	}
+	return nil
+}
 
 func (s InstallSource) validate() error {
 	if len(s.Version) > 128 || !sourceVersionPattern.MatchString(s.Version) {

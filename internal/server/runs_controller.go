@@ -22,6 +22,7 @@ type RunsController struct {
 	utility     *RunsUtilityService
 	nodes       NodeValidator
 	logs        RunLogHandler
+	browserURL  func(string, string) string
 }
 
 // NewRunsController creates a new runs controller.
@@ -31,6 +32,7 @@ func NewRunsController(
 	utility *RunsUtilityService,
 	nodes NodeValidator,
 	logs RunLogHandler,
+	browserURL func(string, string) string,
 ) *RunsController {
 	return &RunsController{
 		service:     service,
@@ -38,6 +40,7 @@ func NewRunsController(
 		utility:     utility,
 		nodes:       nodes,
 		logs:        logs,
+		browserURL:  browserURL,
 	}
 }
 
@@ -100,6 +103,9 @@ func (ctrl *RunsController) ListRuns(c *gin.Context) {
 		return
 	}
 
+	for i := range resp.Data {
+		ctrl.annotateBrowserURL(&resp.Data[i])
+	}
 	respondList(c, resp.Data, resp.Total, resp.HasMore)
 }
 
@@ -120,7 +126,18 @@ func (ctrl *RunsController) GetRun(c *gin.Context) {
 		return
 	}
 
+	ctrl.annotateBrowserURL(resp)
 	respondSuccess(c, "Run retrieved", resp)
+}
+
+func (ctrl *RunsController) annotateBrowserURL(info *instance.InstanceInfo) {
+	if info.Browser == nil {
+		return
+	}
+	info.Browser.URL = ""
+	if ctrl.browserURL != nil {
+		info.Browser.URL = ctrl.browserURL(info.Node, info.ID)
+	}
 }
 
 // GetRunLogs handles GET /zzrouter/runs/:id/logs.

@@ -29,14 +29,16 @@ type Subscriber func(Transition)
 //
 // Transitions are idempotent-by-equality (Set to the current role is
 // a no-op) and serialized under an internal mutex (concurrent Set
-// calls process one at a time). Subscribers run in registration
-// order, synchronously, while the mutex is held.
+// calls process one at a time). The new role is visible during callbacks;
+// Transitioning distinguishes it from completed subsystem readiness.
 type Manager struct {
-	mu      sync.Mutex
-	current Role
-	subs    []subscription
-	nextID  uint64
-	now     func() time.Time // injectable for tests
+	transitionMu  sync.Mutex
+	mu            sync.RWMutex
+	current       Role
+	transitioning bool
+	subs          []subscription
+	nextID        uint64
+	now           func() time.Time // injectable for tests
 }
 
 type subscription struct {
@@ -61,9 +63,20 @@ func (m *Manager) Current() Role {
 	if m == nil {
 		return RoleDisabled
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.current
+}
+
+// Transitioning reports whether subscribers are still applying the published role.
+// Reads never wait for subsystem teardown, which may itself need the current role.
+func (m *Manager) Transitioning() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.transitioning
 }
 
 // Set transitions to next. If next equals the current role, Set is a
@@ -85,10 +98,15 @@ func (m *Manager) Set(ctx context.Context, next Role, reason string) error {
 		return fmt.Errorf("role.Set: %w", err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("role.Set: %w", err)
+	}
 
+	m.mu.Lock()
 	if m.current == next {
+		m.mu.Unlock()
 		return nil
 	}
 
@@ -99,8 +117,16 @@ func (m *Manager) Set(ctx context.Context, next Role, reason string) error {
 		At:     m.now(),
 	}
 	m.current = next
+	m.transitioning = true
+	subs := append([]subscription(nil), m.subs...)
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.transitioning = false
+		m.mu.Unlock()
+	}()
 
-	for _, s := range m.subs {
+	for _, s := range subs {
 		m.runSubscriber(s.fn, t)
 	}
 	return nil
@@ -109,7 +135,8 @@ func (m *Manager) Set(ctx context.Context, next Role, reason string) error {
 // Subscribe registers fn to receive every transition. Returns an
 // unsubscribe function that is safe to call multiple times and from
 // any goroutine. Subscribers registered after a transition do not
-// see historical events.
+// see historical events. Unsubscribe affects later transitions; a callback
+// already captured by the current transition may still run.
 func (m *Manager) Subscribe(fn Subscriber) func() {
 	if m == nil || fn == nil {
 		return func() {}

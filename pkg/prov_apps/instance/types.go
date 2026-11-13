@@ -73,6 +73,7 @@ type Config struct {
 // InstanceInfo is a read-only snapshot of an instance for API responses.
 // Public APIs return this instead of a mutable *Instance pointer.
 type InstanceInfo struct {
+	Browser           *BrowserInfo     `json:"browser,omitempty"`
 	RecordOnly        bool             `json:"record_only,omitempty"`
 	Refusal           error            `json:"-"`
 	LastRefusal       *httperr.Refusal `json:"last_refusal,omitempty"`
@@ -125,6 +126,13 @@ type InstanceInfo struct {
 	ParametersStatus *ParametersStatus `json:"parameters_status,omitempty"`
 }
 
+// BrowserInfo describes native browser access validated by the owning node.
+// URL is added by the coordinator only while its separate-origin gateway is serving.
+type BrowserInfo struct {
+	Name string `json:"name"`
+	URL  string `json:"url,omitempty"`
+}
+
 // CacheCapacity holds engine reports only; tokens are per pool, never an inferred aggregate.
 type CacheCapacity struct {
 	KVTokens       int64   `json:"kv_tokens,omitempty"`
@@ -153,6 +161,7 @@ type AdmissionEffects struct {
 // Resolved is what one launch computed from config: the values its
 // process was given, before node-local paths replace asset names.
 type Resolved struct {
+	Browser     *BrowserReceipt
 	Features    map[string]string
 	FeatureHTTP map[string]config.FeatureHTTP
 	WorkingDir  string
@@ -168,8 +177,25 @@ type Resolved struct {
 	Files map[string]string
 }
 
+// BrowserReceipt records the approved source and execution captured by canonical launch preparation.
+type BrowserReceipt struct {
+	Endpoint          string
+	Name              string
+	InstallPlanID     string
+	SourceSHA256      string
+	RecipeFingerprint string
+	Contract          string
+	Execution         string
+}
+
 func (r Resolved) clone() Resolved {
+	var browser *BrowserReceipt
+	if r.Browser != nil {
+		copy := *r.Browser
+		browser = &copy
+	}
 	return Resolved{
+		Browser:  browser,
 		Features: maps.Clone(r.Features), FeatureHTTP: maps.Clone(r.FeatureHTTP),
 		Runtime: r.Runtime, WorkingDir: r.WorkingDir, Commitments: maps.Clone(r.Commitments),
 		Execution: r.Execution, WireEndpoints: slices.Clone(r.WireEndpoints),

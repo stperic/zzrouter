@@ -177,6 +177,15 @@ Merge this into an existing `[features]` table rather than declaring it twice.
 | Updates | `zz_update_status`, `zz_update_check`, `zz_update_apply` |
 | Other REST tasks | `zz_api_search`, `zz_api_get`, `zz_api` |
 
+For a source provider, `zz_provider_install` with `plan_only: true` returns the
+available release-owned `resolved_install.recipe.components`, effective
+`selected_components`, complete hash-pinned inventory and `plan_id`. Pass the
+same `components` and `force` options with `expected_plan_id` to install that
+preview. Omitting `components` preserves the installed selection; `[]` removes
+optional libraries. ComfyUI's `manager` component installs its release-pinned
+Manager libraries. It does not enable Manager. Host prerequisites remain the
+separate `preflight_only: true` check.
+
 Start with `zz_overview` and `zz_providers`. Provider inventory includes disabled
 inference providers and excludes model registries. `managed=false` means no
 installed copy is owned by zzRouter; it does not forbid installation.

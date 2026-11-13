@@ -48,12 +48,24 @@ func (m *metricsRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 
 	// Wrap the body so the active count is decremented on Close,
 	// not when headers arrive. This tracks streaming duration accurately.
-	resp.Body = &trackingBody{
+	body := &trackingBody{
 		ReadCloser: resp.Body,
 		active:     m.activeRequests,
 	}
+	if duplex, ok := resp.Body.(io.ReadWriteCloser); ok {
+		resp.Body = &trackingDuplexBody{trackingBody: body, writer: duplex}
+	} else {
+		resp.Body = body
+	}
 	return resp, nil
 }
+
+type trackingDuplexBody struct {
+	*trackingBody
+	writer io.Writer
+}
+
+func (t *trackingDuplexBody) Write(data []byte) (int, error) { return t.writer.Write(data) }
 
 // trackingBody wraps a response body to decrement the active request counter on Close.
 type trackingBody struct {

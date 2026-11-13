@@ -30,7 +30,7 @@ func TestGetRunNotFoundExplainsEndedRun(t *testing.T) {
 		c.JSON(http.StatusOK, live)
 	})
 	public := gin.New()
-	ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+	ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
 	public.GET("/runs/:id", ctrl.GetRun)
 	get := func(id string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

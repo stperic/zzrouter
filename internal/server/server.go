@@ -70,6 +70,8 @@ type Server struct {
 		syncFanOut *providerSyncFanOut
 		// readinessWoken runs after a readiness waiter wakes, so tests can order it; nil in production.
 		readinessWoken func()
+		// browserAdmitted orders the lookup/forward boundary in tests; nil in production.
+		browserAdmitted func()
 	}
 
 	cluster struct {
@@ -151,6 +153,13 @@ type Server struct {
 
 	// MCP stdio bridge serialization
 	mcpGateway *MCPGateway
+
+	providerBrowser struct {
+		sync.RWMutex
+		gateway   *providerBrowserGateway
+		authority providerBrowserAuthority
+	}
+	servingErrors chan error
 
 	// idempotency is shared by every route that honours Idempotency-Key; the key scopes by method and path.
 	idempotency *idempotencyStore

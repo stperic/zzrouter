@@ -25,6 +25,14 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 22 raises both the current version and minimum from 21 to 22. Source
+recipes declare release-curated optional dependency components. Their selected
+IDs travel through install requests, accepted plans and activation manifests.
+Older strict loaders reject the new declarations. Upgrade coordinator and
+workers together, preserving CA and identity state. Existing installations
+without selected components remain valid; adding available choices alone does
+not require a reinstall.
+
 Protocol 21 raises both the current version and minimum from 20 to 21. Managed
 Python recipes select OS-specific companion builds and verification checks;
 GPU prerequisites can select their vendor by OS. Older strict loaders reject

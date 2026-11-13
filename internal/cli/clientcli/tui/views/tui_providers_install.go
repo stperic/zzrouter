@@ -119,6 +119,7 @@ func installWizardHints() string {
 		tui.Hint(installWizardKeys.Verify, "verify"),
 		tui.Hint(installWizardKeys.CopyCmd, "copy cmd"),
 		tui.Hint(installWizardKeys.CopyScript, "copy script (all)"),
+		tui.Hint(tui.ProvidersKeys.Dependencies, "dependencies"),
 		tui.Hint(installWizardKeys.Back, "back"),
 	)
 }
@@ -152,11 +153,19 @@ func (m *ProvidersViewModel) ownsInstallRequest(ctx context.Context) bool {
 	return ctx != nil && ctx == m.installContext && ctx.Err() == nil
 }
 
-func fetchInstallPlan(ctx context.Context, client *pkgClient.Client, name, node string) tea.Cmd {
+func fetchInstallPlan(ctx context.Context, client *pkgClient.Client, name, node string, options ...pkgClient.InstallPlanOptions) tea.Cmd {
 	return func() tea.Msg {
-		plan, err := client.GetInstallPlan(name, node)
+		plan, err := client.GetInstallPlanContext(ctx, name, node, options...)
 		return providersInstallPlanMsg{ctx: ctx, plan: plan, err: err}
 	}
+}
+
+func (m *ProvidersViewModel) fetchInstallPlan(options ...pkgClient.InstallPlanOptions) tea.Cmd {
+	ctx := m.beginInstallRequest()
+	m.installLoading = true
+	m.installPlan = nil
+	m.mode = providersViewInstallSteps
+	return fetchInstallPlan(ctx, m.client, m.installProvider, m.installNode, options...)
 }
 
 func fetchPreflight(ctx context.Context, client *pkgClient.Client, name, node string) tea.Cmd {
@@ -287,11 +296,13 @@ func (m *ProvidersViewModel) viewPreflightFail(width, height int) string { //nol
 // ============================================================================
 
 func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
+	if m.installComponents != nil {
+		return m.updateInstallComponents(msg)
+	}
 	if m.installPlan == nil {
 		// Still loading
 		if key.Matches(msg, installWizardKeys.Back) {
-			m.retireInstallRequest()
-			m.mode = providersViewList
+			return m.leaveInstallWizard()
 		}
 		return nil
 	}
@@ -299,29 +310,13 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 	steps := m.installPlan.Steps
 
 	switch {
+	case key.Matches(msg, tui.ProvidersKeys.Dependencies):
+		if !m.installInFlight {
+			m.openInstallComponents()
+		}
+		return nil
 	case key.Matches(msg, installWizardKeys.Back):
-		m.retireInstallRequest()
-		// Check if any steps completed — if so, refresh the provider list
-		hadActivity := false
-		for _, s := range m.installStepStatus {
-			if s == stepDone || s == stepVerified {
-				hadActivity = true
-				break
-			}
-		}
-
-		m.mode = providersViewList
-		m.installPlan = nil
-		m.installStepStatus = nil
-		if hadActivity {
-			m.loading = true
-			m.actionStatus = ""
-			client := m.client
-			return tea.Batch(func() tea.Msg {
-				apps, err := shared.FetchProviders(client, "", "", true)
-				return providersLoadedMsg{providers: apps, err: err}
-			}, shared.SpinnerTickCmd())
-		}
+		return m.leaveInstallWizard()
 
 	case key.Matches(msg, installWizardKeys.Up):
 		if m.installStepCursor > 0 {
@@ -412,6 +407,24 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 	return nil
 }
 
+func (m *ProvidersViewModel) leaveInstallWizard() tea.Cmd {
+	m.retireInstallRequest()
+	hadActivity := slices.Contains(m.installStepStatus, stepDone) || slices.Contains(m.installStepStatus, stepVerified)
+	m.mode = providersViewList
+	m.installPlan = nil
+	m.installStepStatus = nil
+	if !hadActivity {
+		return nil
+	}
+	m.loading = true
+	m.actionStatus = ""
+	client := m.client
+	return tea.Batch(func() tea.Msg {
+		apps, err := shared.FetchProviders(client, "", "", true)
+		return providersLoadedMsg{providers: apps, err: err}
+	}, shared.SpinnerTickCmd())
+}
+
 // startInstallJobCmd POSTs /install and subscribes to the returned
 // job_id in one shot. Returns a tea.Cmd whose message is
 // providersInstallJobSubscribedMsg (on success, carries the Row + the
@@ -493,6 +506,9 @@ func buildInstallScript(plan *pkgClient.InstallPlanResponse) (string, error) {
 // ============================================================================
 
 func (m *ProvidersViewModel) viewInstallWizard(width, height int) string { //nolint:unparam // Render helpers share width and height with the view dispatcher.
+	if m.installComponents != nil {
+		return m.viewInstallComponents(width, height)
+	}
 	var b strings.Builder
 
 	if m.installPlan == nil {
@@ -522,6 +538,13 @@ func (m *ProvidersViewModel) viewInstallWizard(width, height int) string { //nol
 	gap := max(width-titleW-progressW-2, 1)
 	b.WriteString(title + strings.Repeat(" ", gap) + progress + " \n")
 	b.WriteString(sep + "\n")
+	if m.installPlan.ResolvedInstall != nil {
+		selected := strings.Join(m.installPlan.ResolvedInstall.SelectedComponents, ", ")
+		if selected == "" {
+			selected = "none"
+		}
+		b.WriteString(shared.TruncateText(" Optional dependencies: "+selected, max(1, width-1)) + "\n")
+	}
 
 	// Step list
 	for i, step := range m.installPlan.Steps {

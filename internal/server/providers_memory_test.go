@@ -119,7 +119,7 @@ func TestPinnedRunExplicitDELETE(t *testing.T) {
 	internal := gin.New()
 	internal.DELETE("/zzrouter/v1/internal/runs/:id", executor.HandleInternalStopRun)
 	public := gin.New()
-	controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+	controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
 	public.DELETE("/runs/:id", controller.StopRun)
 	response := httptest.NewRecorder()
 	public.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/runs/"+run.ID, nil))

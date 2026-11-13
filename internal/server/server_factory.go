@@ -115,6 +115,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		httpStreamingClient: httpclient.SameOrigin(connMgr.GetStreamingClient()),
 		connManager:         connMgr, // Store reference for metrics
 		listenerReady:       make(chan struct{}),
+		servingErrors:       make(chan error, 1),
 		idempotency:         newIdempotencyStore(),
 	}
 	constructed := false

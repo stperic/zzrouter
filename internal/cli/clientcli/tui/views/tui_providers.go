@@ -18,6 +18,7 @@ import (
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/ui"
+	"github.com/stperic/zzrouter/pkg/ui/form"
 )
 
 // providersViewMode tracks what the view is showing.
@@ -153,12 +154,15 @@ type ProvidersViewModel struct {
 	preflightReport *pkgClient.PreflightResponse
 
 	// Install wizard state
-	installLoading    bool
-	installContext    context.Context
-	installCancel     context.CancelFunc
-	installPlan       *pkgClient.InstallPlanResponse
-	installStepCursor int
-	installStepStatus []string // per-.Step: "pending", "running", "done", "failed", "verified"
+	installLoading         bool
+	installContext         context.Context
+	installCancel          context.CancelFunc
+	installPlan            *pkgClient.InstallPlanResponse
+	installStepCursor      int
+	installStepStatus      []string // per-.Step: "pending", "running", "done", "failed", "verified"
+	installComponents      *form.ChecklistField
+	installComponentRecipe *pkgClient.InstallRecipeResponse
+	installComponentForce  bool
 
 	// installInFlight is true while an install request is running — either
 	// the run-all path (/install, async+SSE) or a single-step Enter (sync).
@@ -280,6 +284,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		m.termWidth = msg.Width
 		m.keyInput.SetWidth(max(msg.Width-4, 1))
 		m.termHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
+		m.resizeInstallComponents()
 		vis := shared.VisibleRows(m.termHeight, shared.StdListFooter(m.styles))
 		m.list.SetVisible(vis)
 		m.detail.SetVisible(vis)
@@ -411,9 +416,10 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		} else {
 			// Preflight passed — proceed to install plan
 			m.installPlan = nil
+			m.installComponents = nil
 			m.mode = providersViewInstallSteps
 			return m, tea.Batch(
-				fetchInstallPlan(m.beginInstallRequest(), m.client, m.installProvider, m.installNode),
+				m.fetchInstallPlan(),
 				shared.SpinnerTickCmd(),
 			)
 		}
@@ -423,6 +429,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		if m.mode != providersViewInstallSteps || m.installPlan != nil || !m.ownsInstallRequest(msg.ctx) {
 			return m, nil
 		}
+		m.installLoading = false
 		if msg.err != nil {
 			m.actionStatus = fmt.Sprintf("✗ Failed to get install plan: %v", msg.err)
 			m.mode = providersViewList
@@ -448,6 +455,10 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 			}
 			m.mode = providersViewInstallSteps
 		}
+		return m, nil
+
+	case providersInstallComponentsMsg:
+		m.applyInstallComponents(msg)
 		return m, nil
 
 	case providersStepExecuteMsg:
@@ -707,6 +718,9 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 }
 
 func (m *ProvidersViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd {
+	if key.Matches(msg, tui.ProvidersKeys.Dependencies) {
+		return m.openSelectedProviderComponents()
+	}
 	// If a sub-view (install/breadcrumb) flagged a refresh, trigger it now
 	if m.needsRefresh && !m.loading {
 		m.needsRefresh = false
@@ -822,6 +836,8 @@ func (m *ProvidersViewModel) updateDetail(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 	switch {
+	case key.Matches(msg, tui.ProvidersKeys.Dependencies):
+		return m.openSelectedProviderComponents()
 	case key.Matches(msg, tui.ProvidersKeys.Edit):
 		if app := m.selectedProvider(); app != nil {
 			appName := app.Name

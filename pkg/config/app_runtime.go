@@ -21,6 +21,7 @@ type AppRuntimeConfig struct {
 	DataSubdirs     []string           `yaml:"data_subdirs,omitempty" json:"data_subdirs,omitempty"`
 	ModelStore      *ModelStoreConfig  `yaml:"model_store,omitempty" json:"model_store,omitempty"`
 	ActivityProbe   *ActivityProbe     `yaml:"activity_probe,omitempty" json:"activity_probe,omitempty"`
+	Browser         *ProviderBrowser   `yaml:"browser,omitempty" json:"browser,omitempty"`
 	FailurePatterns httperr.Classifier `yaml:"failure_patterns,omitempty" json:"failure_patterns,omitempty"`
 	Endpoint        string             `yaml:"endpoint"`
 	PortRange       []int              `yaml:"port_range,omitempty"` // Port range for on-demand apps [start, end]
