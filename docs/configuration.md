@@ -460,11 +460,34 @@ auth:
     issuer_url: https://router.example.com
 ```
 
-The reverse proxy must preserve the MCP endpoint paths and route `/oauth/*` and
-`/.well-known/*` to the coordinator. Restrict a plaintext node listener behind
-the TLS proxy. Existing admin/user keys remain the browser login credentials.
+Route these public paths unchanged to the coordinator's client listener:
+
+| Use | Required paths |
+| --- | --- |
+| MCP browser login | `/.well-known/*`, `/oauth/*`, `/zzrouter/v1/mcp`, `/inference/mcp` |
+| Browser console | Also `/console/`, `/console/*`, public `/zzrouter/v1/*` APIs and `/health` |
+
+Publish only the necessary routes listed above. A hostname-only catch-all also
+forwards `/v1/*` and `/api/*`; loopback installations may have compatibility
+authentication disabled. Before exposing either compatibility API, set
+`auth.require_compat_auth: true` in `node.yaml` and restart the coordinator.
+
+Keep worker, cluster mTLS and internal routes private. Preserve the public Host,
+including a nondefault port, and query strings. Forward Authorization, native
+API-key headers when used, Cookie, X-CSRF-Token, Origin, Accept and Content-Type.
+Preserve `MCP-Protocol-Version`, `Mcp-Method`, applicable `Mcp-Name` and any `Mcp-Param-*`
+headers; see [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+Pass through response status, WWW-Authenticate, Set-Cookie and Cache-Control.
+Do not strip a public prefix, rewrite cookie scope or cache authorization/session
+responses. Restrict a plaintext node listener behind the TLS proxy. The fixed
+issuer determines discovery URLs and HTTPS cookie policy even when the proxy's
+origin connection uses HTTP; forwarded scheme/host hints do not configure it.
+
+Existing admin/user keys remain the browser login credentials.
 Set `auth.oauth.enabled: false` to disable browser OAuth; key-authenticated MCP
 remains available. Workers expose neither native MCP nor OAuth routes.
-See [client setup](mcp.md#connect-with-browser-login) and the
+Follow the [remote HTTPS checklist](mcp.md#remote-https-checklist) for preflight
+requests and client acceptance. See [client setup](mcp.md#connect-with-browser-login)
+and the
 [security model](security.md#mcp-browser-authorization) for persistence, expiry
 and revocation. These settings are read at startup.
