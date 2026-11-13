@@ -9,10 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestRootProbe_ContentNegotiation pins both halves of the root
-// contract: the Ollama CLI handshake must keep receiving the daemon's
-// exact plain-text body (it sends Accept: */*), while a caller that
-// explicitly asks for JSON gets the node identity document.
+// Root probes preserve Ollama handshakes and explicit JSON identity.
+// Browsers receive the same identity when the console is disabled.
 func TestRootProbe_ContentNegotiation(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -25,6 +23,9 @@ func TestRootProbe_ContentNegotiation(t *testing.T) {
 		{name: "text/plain", accept: "text/plain", wantString: ollamaRootProbeBody},
 		{name: "explicit json", accept: "application/json", wantJSON: true},
 		{name: "json among several", accept: "application/json, text/plain;q=0.9", wantJSON: true},
+		{name: "json after plain", accept: "text/plain, application/json", wantJSON: true},
+		{name: "json after wildcard", accept: "*/*, application/json", wantJSON: true},
+		{name: "html without console", accept: "text/html", wantJSON: true},
 	}
 
 	for _, tc := range cases {
@@ -38,8 +39,12 @@ func TestRootProbe_ContentNegotiation(t *testing.T) {
 			}
 			c.Request = req
 
-			handleOllamaRootProbe(c)
+			s := &Server{access: &AccessControl{}}
+			s.handleRoot(c)
 
+			if w.Header().Get("Vary") != "Accept" || w.Header().Get("Cache-Control") != "no-store" {
+				t.Error("negotiated root must vary by Accept and prevent caching")
+			}
 			if w.Code != http.StatusOK {
 				t.Fatalf("status: got %d, want 200", w.Code)
 			}

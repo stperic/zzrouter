@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Open the zzRouter console when browsing the server root. Preserve Ollama
+  client handshakes and JSON discovery without showing compatibility text to browsers.
+
 - Use Go 1.26.11 and patched shared-library networking dependencies. Keep caller
   credentials off internal log forwarding, acknowledge committed token/key
   writes on directory durability warnings, and isolate OAuth admission budgets

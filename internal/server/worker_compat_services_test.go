@@ -1,12 +1,41 @@
 package server
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWorkerCompatRootHandshake(t *testing.T) {
+	s := createTestNode(t, TestNodeConfig{AdminKey: TestAdminKey, ClusterMode: pkgConfig.ClusterModeWorker})
+	endpoint := httptest.NewTLSServer(buildWorkerCompatEngine(s))
+	defer endpoint.Close()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		req, err := http.NewRequestWithContext(t.Context(), method, endpoint.URL+"/", nil)
+		require.NoError(t, err)
+		req.Header.Set("Accept", "*/*")
+		resp, err := endpoint.Client().Do(req)
+		require.NoError(t, err)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Contains(t, resp.Header.Get("Content-Type"), "text/plain")
+		if method == http.MethodHead {
+			assert.Empty(t, body)
+		} else {
+			assert.Equal(t, ollamaRootProbeBody, string(body))
+		}
+		rec := httptest.NewRecorder()
+		s.engine.ServeHTTP(rec, httptest.NewRequest(method, "/", nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	}
+}
 
 // A worker registers no management API, and building that API is what used
 // to construct the services the compat handlers call. So the worker's mTLS

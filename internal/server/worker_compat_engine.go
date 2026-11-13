@@ -45,6 +45,7 @@ func buildWorkerCompatEngine(s *Server) *gin.Engine {
 	prevEngine := s.engine
 	s.engine = engine
 	defer func() { s.engine = prevEngine }()
+	s.registerRootRoutes()
 	s.registerCompatibilityRoutes()
 	// Without this the handlers registered above hold nil services: the
 	// worker never registers the management API that builds them.

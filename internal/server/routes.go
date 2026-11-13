@@ -116,6 +116,7 @@ func (s *Server) setupRoutes() {
 	if !isWorker {
 		s.registerOAuthRoutes()
 		s.registerBrowserConsole()
+		s.registerRootRoutes()
 		// Compat surface (OpenAI /v1/*, Ollama /api/*, NativeWire mounts)
 		// is mounted on the admin port for COORDINATORS only — that's the
 		// surface external clients hit. Workers expose compat exclusively

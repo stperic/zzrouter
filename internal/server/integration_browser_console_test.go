@@ -58,6 +58,51 @@ func TestIntegrationBrowserConsoleFixedAssetsAndRoleGate(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestIntegrationBrowserRootOpensConsole(t *testing.T) {
+	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
+	client := *endpoint.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), method, endpoint.URL+"/", nil)
+			require.NoError(t, err)
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+			resp, err := client.Do(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+			assert.Equal(t, "/console/", resp.Header.Get("Location"))
+			assert.Equal(t, "Accept", resp.Header.Get("Vary"))
+			assert.Equal(t, "no-store", resp.Header.Get("Cache-Control"))
+			assert.NotContains(t, string(body), ollamaRootProbeBody)
+			if method == http.MethodHead {
+				assert.Empty(t, body)
+			}
+		})
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint.URL+"/", nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept", "text/html")
+	resp, err := endpoint.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, "/console/", resp.Request.URL.Path)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), "zzRouter")
+	assert.NotContains(t, string(body), ollamaRootProbeBody)
+
+	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "root gate fixture"))
+	rec := httptest.NewRecorder()
+	s.engine.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Empty(t, rec.Header().Get("Location"))
+}
+
 func TestIntegrationBrowserConsoleUnavailableWithoutAuthority(t *testing.T) {
 	for _, cfg := range []TestNodeConfig{
 		{AdminKey: TestAdminKey, OAuthEnabled: new(false)},
@@ -68,6 +113,20 @@ func TestIntegrationBrowserConsoleUnavailableWithoutAuthority(t *testing.T) {
 			rec := httptest.NewRecorder()
 			s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 			assert.Equal(t, http.StatusNotFound, rec.Code)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Accept", "text/html")
+		s.engine.ServeHTTP(rec, req)
+		assert.Empty(t, rec.Header().Get("Location"))
+		assert.NotContains(t, rec.Body.String(), ollamaRootProbeBody)
+		if cfg.ClusterMode == config.ClusterModeWorker {
+			assert.Equal(t, http.StatusNotFound, rec.Code)
+		} else {
+			assert.Equal(t, http.StatusOK, rec.Code)
+			var identity struct{ Service string }
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &identity))
+			assert.Equal(t, "zzrouter", identity.Service)
 		}
 	}
 }

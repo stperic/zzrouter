@@ -1,7 +1,7 @@
 # Browser console
 
-Open `/console/` at the coordinator's configured OAuth issuer. The default is
-`http://localhost:9090/console/`. Use the exact configured hostname, scheme and
+Open the coordinator's root URL in a browser to reach `/console/`. The default is
+`http://localhost:9090/`. Direct links to `/console/` also work. Use the exact configured hostname, scheme and
 port: `localhost` and `127.0.0.1` are different browser origins. The sign-in page
 links to the configured origin when the current address differs.
 For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)

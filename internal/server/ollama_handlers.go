@@ -22,7 +22,6 @@ import (
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/version"
 )
 
 // OllamaHandlers groups all Ollama compatibility HTTP handlers.
@@ -69,46 +68,6 @@ func (h *OllamaHandlers) ollamaManagementHandler(endpoint string, modelLookup bo
 			RespondToErrorOllama(c, err)
 		}
 	}
-}
-
-// ollamaRootProbeBody is the daemon's exact root response. The Ollama
-// CLI matches on it, so it is a fixed wire string, not a message.
-const ollamaRootProbeBody = "Ollama is running"
-
-// handleOllamaRootProbe answers GET / and HEAD /.
-//
-// Plain text is the default, including for the "*/*" that both the
-// Ollama CLI and curl send: the CLI v0.20+ uses this as a pre-flight
-// connectivity check and aborts with a generic error if the body is not
-// the daemon's own.
-//
-// A caller that explicitly asks for JSON gets a node identity document
-// instead. The root is the first thing anything probes, and answering
-// only "Ollama is running" names the wrong product and offers nowhere
-// to go next.
-func handleOllamaRootProbe(c *gin.Context) {
-	if !clientAcceptsJSON(c) {
-		c.Header("Content-Type", "text/plain; charset=utf-8")
-		c.String(http.StatusOK, ollamaRootProbeBody)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"service":     "zzrouter",
-		"version":     version.Current.String(),
-		"api_version": "v1",
-		"links": gin.H{
-			"health":    "/health",
-			"discovery": apiDiscoveryPrefix,
-			"openapi":   "/openapi.json",
-		},
-	})
-}
-
-// clientAcceptsJSON reports whether the caller named application/json
-// in Accept. A wildcard does not count: the Ollama CLI sends "*/*" and
-// must keep getting the plain-text body.
-func clientAcceptsJSON(c *gin.Context) bool {
-	return strings.Contains(c.GetHeader("Accept"), "application/json")
 }
 
 // handleOllamaVersion proxies to the real Ollama daemon. The /api/*

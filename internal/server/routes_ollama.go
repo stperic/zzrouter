@@ -34,16 +34,6 @@ func (s *Server) registerOllamaRoutes() {
 	// Stash for routes_internal.go and late-bind of OllamaService
 	s.ollamaHandlers = h
 
-	// Root probe — Ollama CLI on Windows v0.20+ sends `HEAD /` (and
-	// some clients `GET /`) as a connectivity handshake BEFORE making
-	// any /api/* call. Without a 200 here the CLI aborts with a generic
-	// "Error: something went wrong" and never reaches the rest of the
-	// surface. Match the real daemon's response shape exactly: 200 with
-	// "Ollama is running" plain-text body. Registered on the engine
-	// root, not under /api/*, because that's where the CLI sends it.
-	s.engine.GET("/", handleOllamaRootProbe)
-	s.engine.HEAD("/", handleOllamaRootProbe)
-
 	ollama := s.engine.Group("/api",
 		httperr.AttachResponder(s.responders.ollama),
 		RequestIDMiddleware(),
