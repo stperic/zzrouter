@@ -63,7 +63,7 @@ func (s *Server) handleRealtimeUpgrade(c *gin.Context) {
 		return
 	}
 
-	if !s.admitOpaqueForward(c, "/v1/realtime", resolved.Cloud) {
+	if !s.admitOpaqueForward(c, "/v1/realtime", backendKey, resolved.Cloud) {
 		return
 	}
 	_, release, ok := s.enforceAndAttribute(c, "realtime /v1/realtime", nil, nil)

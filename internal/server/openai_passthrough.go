@@ -87,6 +87,9 @@ func (s *Server) forwardBufferedToDefaultBackend(c *gin.Context, body []byte) {
 		return
 	}
 
+	if !s.admitOpaqueForward(c, "provider passthrough", backendKey, resolved.Cloud) {
+		return
+	}
 	target := backend.PassthroughTarget(resolved.Endpoint, c.Request.URL.Path, c.Request.URL.RawQuery)
 	s.proxy.ForwardToBackend(c.Writer, c.Request, backendKey, target, resolved.Upstream, body)
 }

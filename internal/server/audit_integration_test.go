@@ -52,8 +52,9 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 
 	// 1. Create a shared team.
 	_, err = teamsSvc.CreateTeam(&CreateTeamRequest{
-		ID:   "eng",
-		Name: "Engineering",
+		ID:             "eng",
+		Name:           "Engineering",
+		ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}},
 	}, "static:admin")
 	require.NoError(t, err)
 
@@ -88,6 +89,7 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 
 	// Subject checks pin the specific objects.
 	require.Equal(t, "eng", events[0].Subject)
+	require.Equal(t, map[string]any{"mode": "selected", "providers": []any{"ollama"}}, events[0].Metadata["provider_access"])
 	require.Equal(t, "alice", events[1].Subject)
 	require.Equal(t, "alice", events[2].Subject)
 }

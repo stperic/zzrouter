@@ -189,6 +189,7 @@ func routesSchema() routesSchemaResponse {
 			// Preview body — POST /model-groups/preview and
 			// POST /:name/preview share this input vocabulary. None
 			// of these are mutators; they describe a dry-run request.
+			"preview.team_id":           {Type: "string", Description: "Preview current team permissions and budget without changing usage. Individual key, rate, concurrency, endpoint/input, readiness and capacity checks are not performed."},
 			"preview.route":             {Type: "string", Description: "Route name (single-route preview); URL :name overrides this."},
 			"preview.require_tags":      {Type: "string[]", Description: "Hard tag filter; every replica must carry every tag."},
 			"preview.exclude_replicas":  {Type: "string[]", Description: "Per-request replica blocklist."},
@@ -200,6 +201,7 @@ func routesSchema() routesSchemaResponse {
 			"strategy":            strategyEnum(),
 			"cooldown_reason":     cooldownReasonEnum(),
 			"attempt_skip_reason": attemptSkipReasonEnum(),
+			"preview_skip_reason": append(attemptSkipReasonEnum(), "provider_access_denied", "model_access_denied", "model_unpriced"),
 			"attempt_outcome":     attemptOutcomeEnum(),
 			"breaker_state":       breakerStateEnum(),
 			"health_state":        healthStateEnum(),

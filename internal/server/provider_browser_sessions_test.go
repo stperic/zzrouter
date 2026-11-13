@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
@@ -24,6 +25,7 @@ type browserAuthorityFixture struct {
 	created, retired   int
 	retireErr, authErr error
 	constrained        bool
+	providerAccess     *teams.ProviderAccess
 }
 
 func (a *browserAuthorityFixture) CreateClient(context.Context) (string, error) {
@@ -60,9 +62,15 @@ func (a *browserAuthorityFixture) Authenticate(context.Context, string) (*Access
 		return nil, a.authErr
 	}
 	ac := &AccessContext{Key: &KeyPrincipal{ID: "user", Role: RoleUser}}
-	if a.constrained {
+	if a.constrained || a.providerAccess != nil {
 		ac.Key.IsVirtual = true
-		ac.Team = &TeamPrincipal{AllowedModels: []string{"approved"}}
+		ac.Team = &TeamPrincipal{}
+		if a.constrained {
+			ac.Team.AllowedModels = []string{"approved"}
+		}
+		if a.providerAccess != nil {
+			ac.Team.ProviderAccess = a.providerAccess.Clone()
+		}
 	}
 	return ac, nil
 }
@@ -286,6 +294,51 @@ func TestProviderBrowserRevocationAndNewOpaqueLimitsCloseSession(t *testing.T) {
 			w = httptest.NewRecorder()
 			g.ServeHTTP(w, r)
 			require.Equal(t, http.StatusUnauthorized, w.Code)
+			require.ErrorIs(t, session.ctx.Err(), context.Canceled)
+			require.Empty(t, authority.clients)
+		})
+	}
+}
+
+func TestProviderBrowserRevalidatesTeamProviderPolicy(t *testing.T) {
+	policy := func(mode string, providers ...string) *teams.ProviderAccess {
+		return &teams.ProviderAccess{Mode: mode, Providers: providers}
+	}
+	for _, test := range []struct {
+		name          string
+		before, after *teams.ProviderAccess
+		changed       bool
+	}{
+		{"missing to all", nil, policy("all"), false},
+		{"missing to selected", nil, policy("selected", "ollama"), true},
+		{"all to selected", policy("all"), policy("selected", "ollama"), true},
+		{"selected to none", policy("selected", "comfyui"), policy("none"), true},
+		{"selected replaced", policy("selected", "comfyui"), policy("selected", "ollama"), true},
+		{"selected reordered", policy("selected", "comfyui", "ollama"), policy("selected", "ollama", "comfyui"), false},
+		{"unchanged", policy("selected", "comfyui"), policy("selected", "comfyui"), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			g, authority := browserGatewayFixture(t, http.HandlerFunc(successfulBrowserToken))
+			authority.providerAccess = test.before
+			location, proof := beginBrowserAuthorization(t, g)
+			response := browserCallback(g, location, proof)
+			require.Equal(t, http.StatusSeeOther, response.Code)
+			request := httptest.NewRequest(http.MethodGet, g.origin.String()+"/runs/local/run-a/prompt", nil)
+			request.AddCookie(response.Result().Cookies()[0])
+			session := g.session(request)
+			require.NotNil(t, session)
+			authority.mu.Lock()
+			authority.providerAccess = test.after
+			authority.mu.Unlock()
+			if !test.changed {
+				_, err := g.authenticate(session)
+				require.NoError(t, err)
+				require.NoError(t, session.ctx.Err())
+				return
+			}
+			result := httptest.NewRecorder()
+			g.ServeHTTP(result, request)
+			require.Equal(t, http.StatusUnauthorized, result.Code)
 			require.ErrorIs(t, session.ctx.Err(), context.Canceled)
 			require.Empty(t, authority.clients)
 		})

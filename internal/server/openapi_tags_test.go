@@ -24,6 +24,7 @@ import (
 // live-coverage check below fails on any new segment nobody placed.
 var tagBySegment = map[string]string{
 	"cache":          "Cache",
+	"clients":        "Clients",
 	"cluster":        "Cluster",
 	"config":         "Config",
 	"deployments":    "Deployments",

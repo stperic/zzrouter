@@ -16,6 +16,8 @@ import (
 
 // Reference carries the client's model spelling and separately trusted routing hints.
 type Reference struct {
+	// AllowProvider narrows catalog selection before node/provider preference.
+	AllowProvider func(string) bool
 	// Inference opts direct requests into local target binding before wire selection.
 	Inference bool
 	SourceID  string

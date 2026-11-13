@@ -58,6 +58,9 @@ func (s *Server) dispatchOllamaInference(c *gin.Context, body []byte, modelName,
 
 	resolved, release, ok := s.enforceAndAttribute(c, modelName, recorder, func() (*resolver.Resolved, bool) {
 		target, ok := s.resolveTarget(c, modelName, nodeHint, func(target *resolver.Resolved) bool {
+			if target.Provider == "" && !target.IsRemote() {
+				target.Provider = constants.AppOllama
+			}
 			original := len(target.Candidates)
 			target.Candidates = filterCandidatesByProvider(target.Candidates, constants.AppOllama)
 			if original > 0 && len(target.Candidates) == 0 || original == 0 && target.Provider != "" && target.Provider != constants.AppOllama {

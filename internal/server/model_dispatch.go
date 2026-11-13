@@ -342,7 +342,7 @@ func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string, scope
 		writeModelAdmissionError(c.Writer, c.Request, err)
 		return nil, false
 	}
-	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true})
+	resolved, err := s.model.Resolver.Resolve(c.Request.Context(), resolver.Reference{Model: modelName, Provider: c.GetHeader(constants.HeaderServingProvider), Node: nodeHint, Inference: true, AllowProvider: providerSelector(c)})
 	if err != nil {
 		llm.SetSpanError(trace.SpanFromContext(c.Request.Context()), err)
 		routing.RecordDecision(c.Request.Context(),
@@ -352,6 +352,9 @@ func (s *Server) resolveTarget(c *gin.Context, modelName, nodeHint string, scope
 		return nil, false
 	}
 	if scope != nil && !scope(resolved) {
+		return nil, false
+	}
+	if !s.admitAccessTargets(c, resolved) {
 		return nil, false
 	}
 	return resolved, s.admitResolvedModels(c, resolved, nodeHint)

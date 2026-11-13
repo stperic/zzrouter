@@ -11,7 +11,9 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +21,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/model/cache"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
@@ -26,6 +29,7 @@ import (
 
 // OllamaHandlers groups all Ollama compatibility HTTP handlers.
 type OllamaHandlers struct {
+	access                catalogAccess
 	ollama                OllamaService
 	ollamaDaemon          func() (*backend.Resolved, error)
 	proxyToOllamaProvider func(*gin.Context, *backend.Resolved, string, []byte, func() error)
@@ -77,6 +81,10 @@ func (h *OllamaHandlers) ollamaManagementHandler(endpoint string, modelLookup bo
 // problem (worker unreachable, endpoint not yet stamped) and a 503
 // is the honest answer.
 func (h *OllamaHandlers) handleOllamaVersion(c *gin.Context) {
+	if err := ollamaAccessError(c); err != nil {
+		RespondToErrorOllama(c, err)
+		return
+	}
 	daemon, err := h.ollamaDaemon()
 	if err != nil {
 		OllamaError(c, http.StatusServiceUnavailable,
@@ -94,6 +102,10 @@ func (h *OllamaHandlers) handleOllamaVersion(c *gin.Context) {
 // we have no per-host keypair to anchor it) — that's enough to satisfy
 // the CLI's "endpoint exists" check without claiming an account state.
 func (h *OllamaHandlers) handleOllamaMe(c *gin.Context) {
+	if err := ollamaAccessError(c); err != nil {
+		RespondToErrorOllama(c, err)
+		return
+	}
 	daemon, err := h.ollamaDaemon()
 	if err != nil {
 		OllamaError(c, http.StatusUnauthorized, "unauthorized")
@@ -115,6 +127,7 @@ func (h *OllamaHandlers) handleOllamaTags(c *gin.Context) {
 		return
 	}
 
+	models = slices.DeleteFunc(slices.Clone(models), func(m *cache.CachedModel) bool { return !h.access.permits(c, m.Name, m.Provider) })
 	// Count replicas per name so single-replica entries stay bare and
 	// multi-replica entries get the @node suffix. Same disambiguation
 	// rule as /api/ps:HandleOllamaPsLocal.
@@ -124,6 +137,7 @@ func (h *OllamaHandlers) handleOllamaTags(c *gin.Context) {
 	}
 
 	entries := make([]any, 0, len(models))
+	seen := make(map[string]bool, len(models))
 	for _, m := range models {
 		entry := h.adapter.ListEntry(m)
 		if replicaCount[m.Name] >= 2 && m.Node != "" {
@@ -133,20 +147,29 @@ func (h *OllamaHandlers) handleOllamaTags(c *gin.Context) {
 			}
 		}
 		entries = append(entries, entry)
+		if e, ok := entry.(OllamaTagEntry); ok {
+			seen[e.Name] = true
+		}
 	}
 
+	if h.groups != nil {
+		for name, group := range h.groups.List() {
+			if seen[name] || !group.Available() {
+				continue
+			}
+			for _, replica := range h.access.replicas(c, name, group.Replicas) {
+				if replica.App == constants.AppOllama {
+					entries = append(entries, OllamaTagEntry{Name: name, Model: name})
+					break
+				}
+			}
+		}
+	}
 	c.JSON(http.StatusOK, h.adapter.ListEnvelope(entries))
 }
 
-// handleOllamaShow answers POST /api/show by pulling the canonical details
-// via ModelService.ShowModel (which routes to the node hosting the model
-// and returns the raw provider response), then enriches with auto-route
-// metadata if the model is part of a multi-replica group.
-//
-// The /api/show body accepts both `model` (upstream primary) and its
-// `name` alias. /api/copy, /api/push, /api/delete, /api/create remain on the
-// direct-proxy path via OllamaService.ManagementCommand; they move to
-// ModelService in a later milestone once matching canonical methods exist.
+// handleOllamaShow returns authorized topology for a group alias, or delegates
+// physical-model metadata to ModelService. Both model and name are accepted.
 func (h *OllamaHandlers) handleOllamaShow(c *gin.Context) {
 	var req OllamaManagementRequest
 	if !BindJSON(c, &req) {
@@ -158,39 +181,35 @@ func (h *OllamaHandlers) handleOllamaShow(c *gin.Context) {
 		return
 	}
 
-	// The show owner resolves the provider and node, including uncataloged native requests.
-	modelName, nodeHint := splitOllamaAddr(rawName)
+	// A route has no single weight file or template. Return its authorized
+	// topology without arbitrarily querying one physical replica for metadata.
+	if h.groups != nil && c.GetHeader("X-Node") == "" {
+		if group := h.groups.Get(rawName); group != nil && group.Available() {
+			replicas := h.access.replicas(c, rawName, group.Replicas)
+			nodes := make([]string, 0, len(replicas))
+			for _, rep := range replicas {
+				if rep.App == constants.AppOllama {
+					nodes = append(nodes, rep.Node)
+				}
+			}
+			if len(nodes) > 0 {
+				c.JSON(http.StatusOK, h.adapter.ShowResponse(&ShowModelResponse{Name: rawName, Route: &ModelRouteInfo{
+					Group: rawName, Strategy: strategyName(group.Strategy), Replicas: len(nodes), Nodes: nodes,
+				}}))
+				return
+			}
+		}
+	}
 
+	// The show owner resolves physical models, including uncataloged requests.
+	modelName, nodeHint := splitOllamaAddr(rawName)
 	resp, err := h.modelService.ShowModel(c.Request.Context(), &ShowModelRequest{
-		ModelName:        modelName,
-		Node:             nodeHint,
-		Verbose:          req.Verbose,
-		AllowUncataloged: true,
+		ModelName: modelName, Node: nodeHint, Verbose: req.Verbose, AllowUncataloged: true,
+		Admit: func(model, provider string) bool { return h.access.permits(c, model, provider) },
 	})
 	if err != nil {
 		RespondToErrorOllama(c, err)
 		return
-	}
-
-	// Enrich with route metadata when the model is in an auto-route group
-	// with ≥2 replicas. Single-deployment models omit the field entirely.
-	if h.groups != nil {
-		if group := h.groups.Get(modelName); group != nil && len(group.Replicas) >= 2 {
-			nodes := make([]string, 0, len(group.Replicas))
-			for _, rep := range group.Replicas {
-				nodes = append(nodes, rep.Node)
-			}
-			strategy := string(group.Strategy)
-			if strategy == "" {
-				strategy = string(modelgroup.StrategyPriority)
-			}
-			resp.Route = &ModelRouteInfo{
-				Strategy: strategy,
-				Replicas: len(group.Replicas),
-				Nodes:    nodes,
-				Group:    modelName,
-			}
-		}
 	}
 
 	c.JSON(http.StatusOK, h.adapter.ShowResponse(resp))
@@ -252,6 +271,17 @@ func (h *OllamaHandlers) handleOllamaPs(c *gin.Context) {
 		Endpoint:     "/zzrouter/v1/internal/ollama/ps",
 		ArrayField:   "models",
 		LocalHandler: h.HandleOllamaPsLocal,
+		Transform: func(body []byte) ([]byte, error) {
+			var response OllamaPsResponse
+			if err := json.Unmarshal(body, &response); err != nil {
+				return nil, err
+			}
+			response.Models = slices.DeleteFunc(response.Models, func(entry OllamaPsEntry) bool { return !h.access.permits(c, entry.Model, entry.Provider) })
+			for i := range response.Models {
+				response.Models[i].Provider = ""
+			}
+			return json.Marshal(response)
+		},
 	})
 }
 
@@ -282,7 +312,7 @@ func (h *OllamaHandlers) HandleOllamaPsLocal(c *gin.Context) {
 			}
 			loaded := run.Loaded()
 			entries = append(entries, OllamaPsEntry{
-				Name: run.Model + nodeSuffix, Model: run.Model,
+				Name: run.Model + nodeSuffix, Model: run.Model, Provider: run.Provider,
 				Size: loaded.Size, SizeVRAM: loaded.VRAM, ContextLength: loaded.ContextLength, ExpiresAt: loaded.ExpiresAt, Digest: loaded.Digest,
 				Details: OllamaModelDetails{Format: loaded.Format, Family: loaded.Family, ParameterSize: loaded.ParameterSize, QuantLevel: loaded.QuantLevel},
 			})
@@ -307,6 +337,10 @@ func (h *OllamaHandlers) handleOllamaPull(c *gin.Context) {
 }
 
 func (h *OllamaHandlers) handleOllamaBlobsHead(c *gin.Context) {
+	if err := ollamaAccessError(c); err != nil {
+		RespondToErrorOllama(c, err)
+		return
+	}
 	digest := c.Param("digest")
 	if digest == "" {
 		c.Status(http.StatusBadRequest)
@@ -333,7 +367,7 @@ func (h *OllamaHandlers) handleOllamaDelete(c *gin.Context) {
 		OllamaError(c, 400, "invalid model deletion request")
 		return
 	}
-	_, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: req.ModelName(), Node: c.GetHeader("X-Node"), DefaultProvider: constants.AppOllama})
+	_, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: req.ModelName(), Node: c.GetHeader("X-Node"), DefaultProvider: constants.AppOllama, Admit: func(model, provider string) bool { return h.access.permits(c, model, provider) }})
 	if err != nil {
 		RespondToErrorOllama(c, err)
 		return

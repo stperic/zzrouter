@@ -97,6 +97,8 @@ func teamsSchema() accessSchemaResponse {
 			"id":                    {Type: "string", Required: true, Description: "Unique team ID; immutable after creation."},
 			"name":                  {Type: "string", Required: true, Description: "Human-readable display name."},
 			"allowed_models":        {Type: "array<string>", Description: allowedModelsDescription},
+			"provider_access":       {Type: "object", Description: providerAccessDescription},
+			"route_access":          {Type: "object", Description: "Request access: mode direct preserves direct models and routes; selected permits only exact names in routes; none denies inference. Selected requires a nonempty unique route list. PATCH replaces this policy; omission retains it. Provider and model ceilings apply to destinations."},
 			"max_parallel_requests": {Type: "int", Min: 0, Description: "Concurrent in-flight cap across all team members; 0 = unenforced."},
 			"rpm_limit":             {Type: "int", Min: 0, Description: "Requests per minute across team; 0 = unenforced."},
 			"tpm_limit":             {Type: "int", Min: 0, Description: "Tokens per minute across team; 0 = unenforced."},
@@ -108,6 +110,8 @@ func teamsSchema() accessSchemaResponse {
 		Update: map[string]accessFieldDTO{
 			"name":                  {Type: "string"},
 			"allowed_models":        {Type: "array<string>", Description: "Replaces the prior list; send [] to clear. " + allowedModelsDescription},
+			"provider_access":       {Type: "object", Description: providerAccessDescription},
+			"route_access":          {Type: "object", Description: "Request access: mode direct preserves direct models and routes; selected permits only exact names in routes; none denies inference. Selected requires a nonempty unique route list. PATCH replaces this policy; omission retains it. Provider and model ceilings apply to destinations."},
 			"suspended":             {Type: "bool", Description: "Block all team members from authenticating when true."},
 			"max_parallel_requests": {Type: "int", Min: 0},
 			"rpm_limit":             {Type: "int", Min: 0},
@@ -128,6 +132,8 @@ func teamsSchema() accessSchemaResponse {
 // node or the variant — worth saying outright, because an operator
 // writing "repo:tag#Q4_K_M" is plainly trying to narrow the grant and
 // would otherwise never learn it did not.
+const providerAccessDescription = "Provider policy object: mode is all, selected or none; selected requires a nonempty providers array of exact provider keys. Other modes require no providers. Omission preserves existing policy (all for legacy teams). Applies in addition to model access, including fallback targets; not a per-node grant."
+
 const allowedModelsDescription = "Model allowlist for every key on this team; empty = all models. " +
 	"Accepts catalog ids or bare model names. Matching is on model identity, so an \"@node\" suffix " +
 	"or a \"#file\" variant selector is ignored: an entry grants the model on every node and in every " +

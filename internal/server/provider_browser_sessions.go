@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"golang.org/x/oauth2"
 )
@@ -46,6 +47,7 @@ type providerBrowserAuthorization struct {
 	ctx                                     context.Context
 	cancel                                  context.CancelFunc
 	tokens                                  oauth2.TokenSource
+	providerAccess                          *teams.ProviderAccess
 }
 
 type providerBrowserGateway struct {
@@ -158,7 +160,16 @@ func (g *providerBrowserGateway) serve(c *gin.Context) {
 		return
 	}
 	setAccessContext(c, ac)
-	if !g.server.admitOpaqueForward(c, "provider browser", false) {
+	provider := ""
+	if ac.Team != nil && ac.Team.ProviderAccess.Restricted() {
+		run, err := g.server.services.Runs.GetRun(r.Context(), &GetRunRequest{RunID: destination.run, Node: destination.node})
+		if err != nil {
+			RespondToError(c, err)
+			return
+		}
+		provider = run.Provider
+	}
+	if !g.server.admitOpaqueForward(c, "provider browser", provider, false) {
 		return
 	}
 	_, release, allowed := g.server.enforceAndAttribute(c, "provider browser", nil, nil)
@@ -339,6 +350,17 @@ func (g *providerBrowserGateway) authenticate(a *providerBrowserAuthorization) (
 	}
 	if why := opaqueForwardLimit(ac); why != "" {
 		return nil, errors.New(why)
+	}
+	policy := teams.ProviderAccess{}
+	if ac.Team != nil {
+		policy = ac.Team.ProviderAccess
+	}
+	if a.providerAccess != nil && !a.providerAccess.Equal(policy) {
+		return nil, errors.New("team provider policy changed")
+	}
+	if a.providerAccess == nil {
+		snapshot := policy.Clone()
+		a.providerAccess = &snapshot
 	}
 	return ac, nil
 }

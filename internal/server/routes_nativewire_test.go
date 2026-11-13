@@ -321,7 +321,7 @@ func TestAdmitNativeWire_KeylessCloud(t *testing.T) {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = routedRequest(httptest.NewRequest(http.MethodPost, "/vendor/x", nil))
-		return server.admitOpaqueForward(c, "/vendor", cloud), w.Code
+		return server.admitOpaqueForward(c, "/vendor", "", cloud), w.Code
 	}
 
 	ok, code := admit(true)

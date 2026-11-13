@@ -11,6 +11,12 @@ Engine failure declarations, model features and typed provider install recipes r
 provider configuration on every node. Upgrade incompatible peers
 in one maintenance window before rejoining them.
 
+The internal Ollama process-list response also carries optional `provider`
+metadata for coordinator access filtering. This additive response field does
+not change the protocol version or provider-sync schema. A restricted team does
+not see entries from a worker that omits provider identity; unrestricted callers
+retain existing visibility. Public `/api/ps` responses strip this internal field.
+
 Before each provider-sync round sends bytes to a worker, the coordinator obtains
 fresh protocol evidence through the existing mTLS internal version query and
 applies its local protocol window. Cached UP status, pairing success and a probe
@@ -24,6 +30,14 @@ strict validation remains the backstop: incompatible bytes are refused before
 config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
+
+Protocol 23 raises the minimum from 22 to 23. A worker rejects a model's
+provider qualifier when it conflicts with the coordinator's trusted provider
+binding. Older workers can reinterpret that model as a different provider,
+bypassing the destination policy admitted by the coordinator. This applies to
+both routes and direct model forwarding. Upgrade all peers together using the
+maintenance procedure below; a new coordinator must not route to protocol-22
+workers. Public request shapes are unchanged.
 
 Protocol 22 raises both the current version and minimum from 21 to 22. Source
 recipes declare release-curated optional dependency components. Their selected

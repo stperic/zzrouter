@@ -5,7 +5,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -38,9 +37,8 @@ type RoutingConfig struct {
 	// LocalHandler is the function to call for local requests
 	LocalHandler LocalHandlerFunc
 
-	// AggregationCallback is called with aggregated results before returning (optional)
-	// Used for caching aggregated results
-	AggregationCallback func(items []map[string]any)
+	// Transform projects a successful routed response before publishing it.
+	Transform func([]byte) ([]byte, error)
 
 	// Timeout for operations (default: 10s)
 	Timeout time.Duration
@@ -52,7 +50,7 @@ type RoutingConfig struct {
 // This is a Gin-specific wrapper that:
 // - Handles Gin context and response writing
 // - Aggregates array responses from multiple hosts
-// - Supports caching callbacks
+// - Projects successful responses before writing
 //
 // Usage:
 //
@@ -95,19 +93,11 @@ func (s *Server) HandleRoute(c *gin.Context, config RoutingConfig) {
 		return
 	}
 
-	// For broadcast, apply aggregation callback if provided
-	if (host == "" || host == "*") && config.AggregationCallback != nil {
-		var data map[string]any
-		if json.Unmarshal(resp.Body, &data) == nil {
-			if items, ok := data[config.ArrayField].([]any); ok {
-				itemMaps := make([]map[string]any, 0, len(items))
-				for _, item := range items {
-					if m, ok := item.(map[string]any); ok {
-						itemMaps = append(itemMaps, m)
-					}
-				}
-				config.AggregationCallback(itemMaps)
-			}
+	if resp.StatusCode < 400 && config.Transform != nil {
+		resp.Body, err = config.Transform(resp.Body)
+		if err != nil {
+			BadGateway(c, "Invalid routed response")
+			return
 		}
 	}
 

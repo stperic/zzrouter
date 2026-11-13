@@ -1,48 +1,111 @@
-import { Lifetime, applySummary } from './api.mjs';
-import { el, text, button, leaveButton, badge, actions, message, card, heading, field, input, facts, clearSecrets, problem } from './dom.mjs';
+import { details, readAfterWrite } from './details.mjs';
+import { applySummary } from './api.mjs';
+import { el, text, button, leaveButton, badge, actions, message, card, heading, field, input, facts, clearSecrets, problem, markSelection, editorActions } from './dom.mjs';
+import { providerCategory, readInventory, nodeInventory } from './inventory.mjs';
+import { providerName } from './provider-icons.mjs';
 
-export async function providers(p) {
-  p.root.append(heading('Providers', 'Connect cloud services and model registries. Credentials stay on this coordinator.'), message('Loading provider catalog…'));
-  const catalog = await p.api.list('/providers/catalog?kind=all', { signal: p.scope.signal });
-  if (!p.current()) return;
-  const list = el('div', { class: 'item-list', 'aria-label': 'Providers' });
-  const detail = el('div');
-  const lifetime = new Lifetime();
-  p.scope.signal.addEventListener('abort', () => { lifetime.end(); clearSecrets(detail); }, { once: true });
-  const choose = async entry => {
-    if (!p.current() || !p.api.canLeave()) return;
-    clearSecrets(detail);
-    const scope = lifetime.next();
-    const current = () => p.current() && scope.current();
-    const signal = AbortSignal.any([p.scope.signal, scope.signal]);
-    for (const item of list.children) item.setAttribute('aria-current', String(item.dataset.provider === entry.key));
-    detail.replaceChildren(card(entry.name, text(entry.description || entry.key, 'provider-description')));
-    if (!entry.connection_supported) {
-      detail.firstChild.append(message('This provider has no editable connection fields. Use Providers in the terminal client for installation and local runtime setup.'));
-      return;
-    }
-    detail.append(message('Reading connection status…'));
-    try {
-      const status = await p.api.data(`/providers/${encodeURIComponent(entry.key)}/connection`, { signal });
-      if (!current()) return;
-      detail.replaceChildren(connectionForm({ ...p, current, scope: { signal } }, entry, status, () => choose(entry)));
-    } catch (error) {
-      if (current()) detail.replaceChildren(card(entry.name, problem(error), leaveButton('Reload connection', () => choose(entry), p.api)));
-    } finally { p.syncActivity(); }
+export async function providers(p, category = 'local', selectedKey) {
+  const categories = [['local', 'Local providers'], ['cloud', 'Cloud providers'], ['registries', 'Model registries']];
+  if (!categories.some(([id]) => id === category)) category = 'local';
+  let catalog, inventory, drawer;
+  const list = el('div', { class: 'node-grid provider-grid', 'aria-label': 'Providers' });
+  const listing = el('div', { class: 'entity-list' }, list);
+  const workspace = el('div', { class: 'entity-workspace' }, listing);
+  const choose = async section => {
+    const [, ...key] = (section || category).split('/');
+    selectedKey = key.join('/');
+    drawer?.dispose(!selectedKey); drawer = undefined;
+    markSelection(list, selectedKey);
+    if (!selectedKey) return;
+    const entry = catalog.find(item => item.key === selectedKey && providerCategory(item) === category);
+    drawer = details({ ...p, root: workspace }, 'Provider details', () => p.go('providers', category));
+    if (!entry) { drawer.root.append(message('This provider is not defined on the coordinator. Providers reported only by a worker are configured on that node.', 'warning')); return; }
+    await showProvider(drawer, entry, inventory, async status => {
+      await read();
+      if (!p.current()) return;
+      const item = [...list.children].find(item => item.dataset.provider === entry.key);
+      if (category === 'cloud' && item) item.children[0].children[1].textContent = status.configured ? 'Configured' : 'Not configured';
+    });
   };
-  for (const entry of catalog) {
-    const item = leaveButton('', () => choose(entry), p.api);
-    item.dataset.provider = entry.key;
-    item.append(el('span', {}, entry.name), badge(entry.is_cloud ? 'Cloud' : entry.kind === 'registry' ? 'Registry' : 'Local'));
-    list.append(item);
-  }
-  p.root.replaceChildren(heading('Providers', 'Connect cloud services and model registries. Credentials stay on this coordinator.'), el('div', { class: 'split' }, list, detail));
-  if (!catalog.length) p.root.append(message('No provider definitions are installed. Add provider configuration on the coordinator, then reload.'));
-  else await choose(catalog.find(entry => entry.connection_supported) || catalog[0]);
+  const read = async () => {
+    const fresh = await Promise.all([p.api.list('/providers/catalog?kind=all', { signal: p.scope.signal }), category !== 'registries' ? readInventory(p) : null]);
+    if (!p.current()) return;
+    [catalog, inventory] = fresh;
+    const entries = catalog.filter(entry => providerCategory(entry) === category);
+    list.replaceChildren(...entries.map(entry => {
+      const item = leaveButton('', () => p.go('providers', `${category}/${entry.key}`), p.api, 'network-item');
+      item.setAttribute('data-selection', entry.key);
+      item.dataset.provider = entry.key;
+      item.append(el('span', { class: 'network-item-title' }, providerName(entry.key, entry.name), badge(category === 'cloud' ? entry.available ? 'Configured' : 'Not configured' : category === 'registries' ? 'Registry' : 'Local')),
+        text(entry.description || (category === 'local' ? 'Inspect provider instances on your nodes.' : 'Inspect connection settings.'), 'muted'));
+      return item;
+    }));
+    if (!entries.length) list.append(message('No provider definitions in this category. Add provider configuration on the coordinator, then refresh.'));
+    markSelection(list, selectedKey);
+  };
+  const refresh = async () => {
+    if (!(p.canLeave?.() ?? p.api.canLeave())) return;
+    const panel = drawer; const revision = panel?.panel.revision;
+    const unchanged = () => p.current() && p.api.canLeave() && drawer === panel && drawer?.panel.revision === revision;
+    try { await read(); if (unchanged()) await choose(selectedKey ? `${category}/${selectedKey}` : category); }
+    catch (error) { if (p.current()) listing.prepend(problem(error)); }
+  };
+  const tabs = el('nav', { class: 'actions tabs', 'aria-label': 'Provider categories' }, categories.map(([id, label]) => {
+    const item = leaveButton(label, () => p.go('providers', id), p.api);
+    item.setAttribute('aria-current', String(id === category)); return item;
+  }));
+  p.root.append(heading('Providers', 'Local providers on your nodes, cloud providers and model registries.', leaveButton('Refresh', refresh, p.api)), tabs, workspace);
+  list.append(message('Loading provider catalog…'));
+  await read();
+  if (!p.current()) return;
+  p.handleSelection?.(choose, section => (section || 'local').split('/')[0] === category);
+  if (selectedKey) await choose(`${category}/${selectedKey}`);
 }
 
-function connectionForm(p, entry, status, reload) {
-  const form = el('form', { autocomplete: 'off' });
+// Used by both the map and provider list; credentials remain coordinator-scoped.
+export async function showProvider(p, entry, inventory, onSaved) {
+  const load = async (notice, tone) => {
+    const revision = p.panel.revision;
+    const current = () => p.panel.current() && p.panel.revision === revision && p.api.canLeave();
+    const status = entry.connection_supported ? await p.api.data(`/providers/${encodeURIComponent(entry.key)}/connection`, { signal: p.panel.signal }) : null;
+    if (!current()) return;
+    if (notice && onSaved) await onSaved(status);
+    if (!current()) return;
+    const show = () => {
+      const reader = p.panel.view('Provider details');
+      reader.root.append(el('div', { class: 'detail-heading' }, providerName(entry.key, entry.name, 'h2'), status ? leaveButton(status.configured ? 'Edit' : 'Connect', edit, p.api, 'primary') : null),
+        notice ? message(notice, tone) : '', text(entry.description || (providerCategory(entry) === 'cloud' ? 'Cloud provider connection' : 'Local provider'), 'muted'));
+      if (status) reader.root.append(actions(badge(status.configured ? 'Configured' : 'Not configured', status.configured ? 'good' : 'warn'), badge(status.enabled ? 'Enabled' : 'Disabled')),
+        facts([['Configured on', p.state.node_name], ['Credential source', status.mode === 'managed' ? 'Protected store' : status.mode === 'external' ? 'Installation configuration' : status.mode],
+          ...status.fields.map(spec => [spec.label, spec.secret ? status.present?.includes(spec.id) ? 'Present' : 'Not set' : status.values?.[spec.id] || spec.default || 'Not set'])]),
+        text('Configuration is not a live provider health check. These connection settings apply to the coordinator only.', 'muted'));
+      if (inventory && providerCategory(entry) === 'cloud') {
+        const locations = new Set([...(inventory[1].value || []).filter(row => row.name === entry.key && row.enabled).map(row => row.node), ...(inventory[0].value || []).filter(node => node.providers?.some(provider => provider.key === entry.key)).map(node => node.name)]);
+        reader.root.append(facts([['Configuration', status ? status.configured ? 'Configured' : 'Not configured' : entry.available ? 'Configured' : 'Not configured'], ['Reported on', [...locations].join(', ') || (inventory.some(result => result.status === 'rejected') ? 'Node enablement unavailable' : 'No enabled node reported')]]));
+      }
+      if (inventory && providerCategory(entry) === 'local') reader.root.append(el('section', { class: 'access-section' }, el('h3', {}, 'Compute nodes'), nodeInventory(reader, inventory, entry)));
+      if (!status) reader.root.append(message(providerCategory(entry) === 'local' ? 'Use the terminal client for installation and runtime setup. Select a node to manage its enabled local providers.' : 'No editable connection fields are declared. Configure this connection on the coordinator.'));
+    };
+    const edit = () => {
+      const editor = p.panel.view(status.configured ? 'Edit provider' : 'Connect provider');
+      editor.root.append(connectionForm(editor, entry, status, async (notice, tone) => {
+        // Read both summaries before replacing the editor. No write is retried.
+        if (inventory) inventory = await readInventory(editor);
+        await load(notice, tone);
+      }, show));
+      editor.root.querySelector?.('input')?.focus({ preventScroll: true });
+      p.syncActivity();
+    };
+    show();
+  };
+  p.root.append(message('Loading provider details…'));
+  try { await load(); }
+  catch (error) { if (p.current()) p.root.replaceChildren(providerName(entry.key, entry.name, 'h2'), problem(error), leaveButton('Reload details', () => showProvider(p, entry, inventory, onSaved), p.api), inventory ? nodeInventory(p, inventory, entry) : ''); }
+}
+
+function connectionForm(p, entry, status, reload, cancel) {
+  const form = el('form', { autocomplete: 'off', class: 'entity-editor' });
+  const draft = p.trackDraft?.(form);
   const controls = el('fieldset', { 'data-protected-actions': true });
   const feedback = el('div', { 'aria-live': 'polite' });
   const diagnostic = el('div', { 'aria-live': 'polite' });
@@ -99,33 +162,28 @@ function connectionForm(p, entry, status, reload) {
       if (!p.current()) return;
       clearSecrets(form);
       blocked = true;
-      feedback.replaceChildren(message(applySummary(result), result.outcome === 'saved' && result.durable && result.published ? '' : 'warning'), text('Saving does not perform a network test. Reload the connection to see the current ownership and revision.', 'muted'));
-      diagnostic.replaceChildren();
-      tested = false;
+      draft?.clean();
+      await readAfterWrite(p, reload, applySummary(result), result.outcome === 'saved' && result.durable && result.published ? '' : 'warning');
     } catch (error) {
       if (!p.current()) return;
       blocked = error.uncertain || error.status === 409;
       if (error.uncertain) clearSecrets(form);
       feedback.replaceChildren(problem(error));
-      if (blocked) feedback.append(message('Reload this connection before another change. Your previous revision will not be retried.', 'warning'));
+      if (blocked) feedback.append(message('Reload this connection before another change. Your previous revision will not be retried.', 'warning'), leaveButton('Reload details', () => { draft?.clean(); void readAfterWrite(p, reload, 'Reloading connection state.'); }, p.api));
     } finally { if (p.current()) resetBusy(); }
   };
-  const save = button('Save credentials', () => change('save'), 'primary');
-  const connect = entry.is_cloud ? button('Save and connect', () => change('save', true), 'primary') : null;
-  const remove = button('Remove', () => change('remove'), 'danger');
-  const external = button('Use external values', () => change('external'));
-  writeButtons.push(save, remove, external, ...(connect ? [connect] : []));
-  controls.append(actions(button('Test candidate', test), save, connect), el('hr'), actions(remove, external));
-  form.append(controls);
-  form.addEventListener('submit', event => event.preventDefault());
+  const activate = input('activate', '', { type: 'checkbox' });
+  const save = el('button', { type: 'submit', class: 'primary' }, 'Save changes');
+  const remove = button('Remove connection', () => change('remove'), 'danger');
+  const external = button('Use installation values', () => change('external'));
+  writeButtons.push(save, remove, external);
+  controls.prepend(providerName(entry.key, entry.name, 'h2'),
+    !status.managed_available ? message('Saving is unavailable. Configure security.credentials.key_file on the coordinator and restart it. Candidate tests remain available.', 'warning') : text('Enter a complete replacement, including each required secret. Saved secrets are never filled into this form.', 'muted'));
+  if (entry.is_cloud) controls.append(el('label', { class: 'model-choice' }, activate, 'Connect after saving'));
+  controls.append(actions(button('Test candidate', test)), diagnostic,
+    el('details', { class: 'access-section danger-zone' }, el('summary', {}, 'Connection management'), actions(remove, external)));
+  form.append(controls, feedback, editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api));
+  form.addEventListener('submit', event => { event.preventDefault(); void change('save', entry.is_cloud && activate.checked); });
   resetBusy();
-  return card(entry.name,
-    text(entry.description || entry.key, 'provider-description'),
-    actions(badge(status.configured ? 'Configured' : 'Not configured', status.configured ? 'good' : 'warn'), badge(status.enabled ? 'Enabled' : 'Disabled'), badge(status.mode)),
-    facts([['Scope', status.scope], ['Revision', status.revision]]),
-    !status.managed_available ? message('Saving is unavailable. Configure security.credentials.key_file on the coordinator and restart it. Candidate tests remain available.', 'warning') : null,
-    entry.key === 'huggingface' ? text('A token is optional for public models. Testing an empty token can be rejected even when anonymous browsing works. Gated repositories may also require access approval.', 'muted') : null,
-    text('Enter a complete replacement, including each required secret. Saved secret values are never filled into this form.', 'muted'),
-    form, diagnostic, feedback, actions(leaveButton('Reload connection', reload, p.api)),
-  );
+  return form;
 }

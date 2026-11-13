@@ -67,11 +67,21 @@ func (h *OpenAIModelHandlers) handleModelInfo(c *gin.Context) {
 
 	cfg := h.appsConfig()
 	data := make([]OpenAIModelInfoEntry, 0, len(modelsResp))
+	seen := make(map[string]bool, len(modelsResp))
 	for _, m := range modelsResp {
+		if !h.access.permits(c, m.Name, m.Provider) {
+			if m.SourceID == "" || !h.access.permits(c, m.SourceID, m.Provider) {
+				continue
+			}
+			alias := *m
+			alias.Name = m.SourceID
+			m = &alias
+		}
 		created := utils.Now().Unix()
 		if !m.Modified.IsZero() {
 			created = m.Modified.Unix()
 		}
+		seen[m.Name] = true
 		data = append(data, OpenAIModelInfoEntry{
 			ModelName: m.Name,
 			Routing: OpenAIZZRouterVendor{
@@ -87,5 +97,15 @@ func (h *OpenAIModelHandlers) handleModelInfo(c *gin.Context) {
 		})
 	}
 
+	for _, entry := range h.routeCatalog(c, modelsResp) {
+		if seen[entry.ID] {
+			continue
+		}
+		info := OpenAIModelInfoEntry{ModelName: entry.ID, ModelInfo: OpenAIModelInfoInnerBody{ID: entry.ID, Created: entry.Created}}
+		if entry.Capabilities != nil {
+			info.ModelInfo.Capabilities = *entry.Capabilities
+		}
+		data = append(data, info)
+	}
 	c.JSON(http.StatusOK, OpenAIModelInfoResponse{Data: data})
 }

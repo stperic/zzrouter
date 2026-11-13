@@ -79,6 +79,12 @@ func updateTeamChangedFields(req *UpdateTeamRequest) map[string]any {
 	if req.Name != nil {
 		out["name_changed"] = true
 	}
+	if !req.RouteAccess.IsZero() {
+		out["route_access"] = req.RouteAccess.Clone()
+	}
+	if req.ProviderAccess.Mode != "" {
+		out["provider_access"] = req.ProviderAccess.Clone()
+	}
 	if req.AllowedModels != nil {
 		out["allowed_models_count"] = len(*req.AllowedModels)
 	}

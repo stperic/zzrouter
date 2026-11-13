@@ -54,8 +54,7 @@ func (a *OllamaAdapter) ListEnvelope(entries []any) any {
 // map (which, for Ollama-backed models, already matches Ollama's native
 // /api/show shape: modelfile / parameters / template / details / ...).
 //
-// When r.Route is populated (model has ≥2 replicas in an auto-route
-// group), the adapter additionally emits a `zzrouter_route` extension
+// When r.Route is populated, the adapter emits a `zzrouter_route` extension
 // field. Vanilla Ollama clients tolerate unknown fields; dashboards that
 // know about the extension can surface cluster topology.
 func (a *OllamaAdapter) ShowResponse(r *ShowModelResponse) any {

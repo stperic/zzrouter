@@ -39,11 +39,13 @@ type Team struct {
 	ID   string `yaml:"-"` // from YAML map key
 	Name string `yaml:"name"`
 
-	Kind          TeamKind   `yaml:"kind"` // "personal" | "shared" — immutable
-	AllowedModels []string   `yaml:"allowed_models,omitempty"`
-	Suspended     bool       `yaml:"suspended,omitempty"`
-	SuspendedAt   *time.Time `yaml:"suspended_at,omitempty"`
-	SuspendedBy   string     `yaml:"suspended_by,omitempty"`
+	Kind           TeamKind       `yaml:"kind"` // "personal" | "shared" — immutable
+	AllowedModels  []string       `yaml:"allowed_models,omitempty"`
+	RouteAccess    RouteAccess    `yaml:"route_access,omitempty"`
+	ProviderAccess ProviderAccess `yaml:"provider_access,omitempty"`
+	Suspended      bool           `yaml:"suspended,omitempty"`
+	SuspendedAt    *time.Time     `yaml:"suspended_at,omitempty"`
+	SuspendedBy    string         `yaml:"suspended_by,omitempty"`
 
 	quota.QuotaConfig `yaml:",inline"`
 
@@ -64,7 +66,7 @@ type TeamStore interface {
 	Reload() error
 	Save() error
 
-	// HasGatedTeam reports whether any team has AllowedModels set.
+	// HasGatedTeam reports whether any team restricts models or providers.
 	// Read on the anonymous compat hot path — must be lock-free.
 	HasGatedTeam() bool
 }

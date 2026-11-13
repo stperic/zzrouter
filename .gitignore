@@ -35,6 +35,7 @@ coverage.html
 # vendored into the repo. If you need reproducible offline builds, run
 # `go mod vendor` locally : the resulting vendor/ directory is gitignored.
 vendor/
+!internal/server/web/console/vendor/
 
 # Go workspace files
 go.work

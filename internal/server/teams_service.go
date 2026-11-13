@@ -76,55 +76,61 @@ func (s *TeamsService) SetAuditSink(sink audit.Sink) {
 // Only shared teams can be created via the API — personal teams are
 // auto-created by KeysService and never accept a caller-supplied request.
 type CreateTeamRequest struct {
-	ID                  string            `json:"id" binding:"required"`
-	Name                string            `json:"name" binding:"required"`
-	AllowedModels       []string          `json:"allowed_models,omitempty"`
-	MaxParallelRequests int               `json:"max_parallel_requests,omitempty"`
-	RPMLimit            int               `json:"rpm_limit,omitempty"`
-	TPMLimit            int               `json:"tpm_limit,omitempty"`
-	SpendLimit          float64           `json:"spend_limit,omitempty"`
-	ResetPeriod         string            `json:"reset_period,omitempty"`
-	DefaultMaxTokens    int               `json:"default_max_tokens,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
+	ID                  string               `json:"id" binding:"required"`
+	Name                string               `json:"name" binding:"required"`
+	AllowedModels       []string             `json:"allowed_models,omitempty"`
+	RouteAccess         teams.RouteAccess    `json:"route_access,omitzero"`
+	ProviderAccess      teams.ProviderAccess `json:"provider_access,omitzero"`
+	MaxParallelRequests int                  `json:"max_parallel_requests,omitempty"`
+	RPMLimit            int                  `json:"rpm_limit,omitempty"`
+	TPMLimit            int                  `json:"tpm_limit,omitempty"`
+	SpendLimit          float64              `json:"spend_limit,omitempty"`
+	ResetPeriod         string               `json:"reset_period,omitempty"`
+	DefaultMaxTokens    int                  `json:"default_max_tokens,omitempty"`
+	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
 // UpdateTeamRequest is the payload for PATCH /zzrouter/v1/teams/:id.
 // Kind is not mutable; nil fields are left untouched.
 type UpdateTeamRequest struct {
-	Name                *string           `json:"name,omitempty"`
-	AllowedModels       *[]string         `json:"allowed_models,omitempty"`
-	Suspended           *bool             `json:"suspended,omitempty"`
-	MaxParallelRequests *int              `json:"max_parallel_requests,omitempty"`
-	RPMLimit            *int              `json:"rpm_limit,omitempty"`
-	TPMLimit            *int              `json:"tpm_limit,omitempty"`
-	SpendLimit          *float64          `json:"spend_limit,omitempty"`
-	ResetPeriod         *string           `json:"reset_period,omitempty"`
-	DefaultMaxTokens    *int              `json:"default_max_tokens,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
+	Name                *string              `json:"name,omitempty"`
+	AllowedModels       *[]string            `json:"allowed_models,omitempty"`
+	RouteAccess         teams.RouteAccess    `json:"route_access,omitzero"`
+	ProviderAccess      teams.ProviderAccess `json:"provider_access,omitzero"`
+	Suspended           *bool                `json:"suspended,omitempty"`
+	MaxParallelRequests *int                 `json:"max_parallel_requests,omitempty"`
+	RPMLimit            *int                 `json:"rpm_limit,omitempty"`
+	TPMLimit            *int                 `json:"tpm_limit,omitempty"`
+	SpendLimit          *float64             `json:"spend_limit,omitempty"`
+	ResetPeriod         *string              `json:"reset_period,omitempty"`
+	DefaultMaxTokens    *int                 `json:"default_max_tokens,omitempty"`
+	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
 // TeamResponse is the safe API representation of a team. Members are no
 // longer embedded — clients hit GET /teams/:id/keys for the member list.
 type TeamResponse struct {
-	ID                  string            `json:"id"`
-	UUID                string            `json:"uuid"`
-	Name                string            `json:"name"`
-	Kind                string            `json:"kind"`
-	AllowedModels       []string          `json:"allowed_models,omitempty"`
-	Suspended           bool              `json:"suspended"`
-	SuspendedAt         *string           `json:"suspended_at,omitempty"`
-	SuspendedBy         string            `json:"suspended_by,omitempty"`
-	MaxParallelRequests int               `json:"max_parallel_requests,omitempty"`
-	RPMLimit            int               `json:"rpm_limit,omitempty"`
-	TPMLimit            int               `json:"tpm_limit,omitempty"`
-	SpendLimit          float64           `json:"spend_limit,omitempty"`
-	ResetPeriod         string            `json:"reset_period,omitempty"`
-	DefaultMaxTokens    int               `json:"default_max_tokens,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
-	CreatedAt           string            `json:"created_at,omitempty"`
-	UpdatedAt           string            `json:"updated_at,omitempty"`
-	CreatedBy           string            `json:"created_by,omitempty"`
-	UpdatedBy           string            `json:"updated_by,omitempty"`
+	ID                  string               `json:"id"`
+	UUID                string               `json:"uuid"`
+	Name                string               `json:"name"`
+	Kind                string               `json:"kind"`
+	AllowedModels       []string             `json:"allowed_models,omitempty"`
+	RouteAccess         teams.RouteAccess    `json:"route_access"`
+	ProviderAccess      teams.ProviderAccess `json:"provider_access"`
+	Suspended           bool                 `json:"suspended"`
+	SuspendedAt         *string              `json:"suspended_at,omitempty"`
+	SuspendedBy         string               `json:"suspended_by,omitempty"`
+	MaxParallelRequests int                  `json:"max_parallel_requests,omitempty"`
+	RPMLimit            int                  `json:"rpm_limit,omitempty"`
+	TPMLimit            int                  `json:"tpm_limit,omitempty"`
+	SpendLimit          float64              `json:"spend_limit,omitempty"`
+	ResetPeriod         string               `json:"reset_period,omitempty"`
+	DefaultMaxTokens    int                  `json:"default_max_tokens,omitempty"`
+	Metadata            map[string]string    `json:"metadata,omitempty"`
+	CreatedAt           string               `json:"created_at,omitempty"`
+	UpdatedAt           string               `json:"updated_at,omitempty"`
+	CreatedBy           string               `json:"created_by,omitempty"`
+	UpdatedBy           string               `json:"updated_by,omitempty"`
 }
 
 // TeamKeysResponse is the response for GET /zzrouter/v1/teams/:id/keys.
@@ -142,17 +148,8 @@ type TeamKeyItem struct {
 
 // TeamUsageResponse is the response for GET /zzrouter/v1/teams/:id/usage.
 type TeamUsageResponse struct {
-	TeamID       string  `json:"team_id"`
-	SpendUSD     float64 `json:"spend_usd"`
-	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
-	TokensIn     int64   `json:"tokens_in"`
-	TokensOut    int64   `json:"tokens_out"`
-	RequestCount int64   `json:"request_count"`
-	PeriodStart  string  `json:"period_start,omitempty"`
-	Period       string  `json:"period,omitempty"`
-	SpendLimit   float64 `json:"spend_limit,omitempty"`
-	RPMLimit     int     `json:"rpm_limit,omitempty"`
-	TPMLimit     int     `json:"tpm_limit,omitempty"`
+	TeamID string `json:"team_id"`
+	quota.Usage
 }
 
 // ============================================================================
@@ -167,6 +164,12 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 	}
 	if req.Name == "" {
 		return nil, invalidInputf("name is required")
+	}
+	if err := s.validateRoutes(req.RouteAccess); err != nil {
+		return nil, err
+	}
+	if err := req.ProviderAccess.Validate(); err != nil {
+		return nil, invalidInputf("%w", err)
 	}
 	if err := validateResetPeriod(req.ResetPeriod); err != nil {
 		return nil, err
@@ -183,12 +186,14 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 	defer s.mu.Unlock()
 
 	team := &teams.Team{
-		Name:          req.Name,
-		Kind:          teams.KindShared,
-		AllowedModels: slices.Clone(req.AllowedModels),
-		Metadata:      maps.Clone(req.Metadata),
-		CreatedBy:     createdBy,
-		UpdatedBy:     createdBy,
+		Name:           req.Name,
+		Kind:           teams.KindShared,
+		AllowedModels:  slices.Clone(req.AllowedModels),
+		ProviderAccess: req.ProviderAccess.Clone(),
+		RouteAccess:    req.RouteAccess.Clone(),
+		Metadata:       maps.Clone(req.Metadata),
+		CreatedBy:      createdBy,
+		UpdatedBy:      createdBy,
 	}
 	team.QuotaConfig = quota.QuotaConfig{
 		MaxParallelRequests: req.MaxParallelRequests,
@@ -211,8 +216,10 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 		Actor:   resolveActor(createdBy),
 		Subject: req.ID,
 		Metadata: map[string]any{
-			"name": req.Name,
-			"kind": string(teams.KindShared),
+			"name":            req.Name,
+			"kind":            string(teams.KindShared),
+			"provider_access": team.ProviderAccess.Clone(),
+			"route_access":    team.RouteAccess.Clone(),
 		},
 	})
 
@@ -258,7 +265,21 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 		return nil, fmt.Errorf("team %q: %w", id, ErrPersonalTeamImmutable)
 	}
 
+	if err := s.validateRoutes(req.RouteAccess); err != nil {
+		return nil, err
+	}
+	if err := req.ProviderAccess.Validate(); err != nil {
+		return nil, invalidInputf("%w", err)
+	}
 	updated := *existing
+	updated.RouteAccess = existing.RouteAccess.Clone()
+	if !req.RouteAccess.IsZero() {
+		updated.RouteAccess = req.RouteAccess.Clone()
+	}
+	updated.ProviderAccess = existing.ProviderAccess.Clone()
+	if req.ProviderAccess.Mode != "" {
+		updated.ProviderAccess = req.ProviderAccess.Clone()
+	}
 	updated.AllowedModels = slices.Clone(existing.AllowedModels)
 	updated.Metadata = maps.Clone(existing.Metadata)
 
@@ -368,29 +389,11 @@ func (s *TeamsService) GetTeamUsage(id string) (*TeamUsageResponse, error) {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 
-	resp := &TeamUsageResponse{
-		TeamID:     id,
-		RPMLimit:   team.RPMLimit,
-		TPMLimit:   team.TPMLimit,
-		SpendLimit: team.SpendLimit,
-		Period:     team.ResetPeriod,
-	}
-
+	var state *quota.SpendState
 	if s.access != nil {
-		if state := s.access.GetTeamSpend(id); state != nil {
-			resp.SpendUSD = state.SpendUSD()
-			resp.ReservedUSD = quota.MicroToUSD(state.ReservedMicro)
-			resp.TokensIn = state.TokensIn
-			resp.TokensOut = state.TokensOut
-			resp.RequestCount = state.RequestCount
-			if !state.PeriodStart.IsZero() {
-				resp.PeriodStart = state.PeriodStart.Format(time.RFC3339)
-			}
-			if state.Period != "" {
-				resp.Period = string(state.Period)
-			}
-		}
+		state = s.access.GetTeamSpend(id)
 	}
+	resp := &TeamUsageResponse{TeamID: id, Usage: quota.CurrentUsage(team.QuotaConfig, state)}
 	return resp, nil
 }
 
@@ -570,6 +573,8 @@ func toTeamResponse(t *teams.Team) *TeamResponse {
 		Name:                t.Name,
 		Kind:                string(t.Kind),
 		AllowedModels:       t.AllowedModels,
+		ProviderAccess:      t.ProviderAccess.Clone(),
+		RouteAccess:         t.RouteAccess.Clone(),
 		Suspended:           t.Suspended,
 		SuspendedBy:         t.SuspendedBy,
 		MaxParallelRequests: t.MaxParallelRequests,
@@ -593,4 +598,18 @@ func toTeamResponse(t *teams.Team) *TeamResponse {
 		resp.UpdatedAt = t.UpdatedAt.Format(time.RFC3339)
 	}
 	return resp
+}
+
+func (s *TeamsService) validateRoutes(policy teams.RouteAccess) error {
+	if err := policy.Validate(); err != nil {
+		return invalidInputf("%w", err)
+	}
+	if s.access != nil {
+		if err := s.access.core.ValidateRoutes(policy); err != nil {
+			return invalidInputf("%w", err)
+		}
+	} else if policy.Mode == "selected" {
+		return invalidInputf("route catalog unavailable")
+	}
+	return nil
 }

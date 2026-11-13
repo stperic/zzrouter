@@ -47,9 +47,10 @@ package version
 // Protocol 20 adds platform-specific managed Python package indexes.
 // Protocol 21 adds platform-specific companion builds, GPU requirements and MPS verification.
 // Protocol 22 adds release-curated source components and shared provider browser declarations.
+// Protocol 23 binds forwarded models to the trusted provider hint, rejecting conflicting qualifiers.
 const (
-	ClusterProtocolVersion    = 22
-	MinClusterProtocolVersion = 22
+	ClusterProtocolVersion    = 23
+	MinClusterProtocolVersion = 23
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

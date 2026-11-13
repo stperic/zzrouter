@@ -101,17 +101,20 @@ type UpdateKeyRequest struct {
 
 // KeyUsageResponse is the client-side usage/spend data for a key.
 type KeyUsageResponse struct {
-	KeyID        string  `json:"key_id"`
-	SpendUSD     float64 `json:"spend_usd"`
-	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
-	TokensIn     int64   `json:"tokens_in"`
-	TokensOut    int64   `json:"tokens_out"`
-	RequestCount int64   `json:"request_count"`
-	PeriodStart  string  `json:"period_start,omitempty"`
-	Period       string  `json:"period,omitempty"`
-	SpendLimit   float64 `json:"spend_limit,omitempty"`
-	RPMLimit     int     `json:"rpm_limit,omitempty"`
-	TPMLimit     int     `json:"tpm_limit,omitempty"`
+	KeyID        string   `json:"key_id"`
+	SpendUSD     float64  `json:"spend_usd"`
+	ReservedUSD  float64  `json:"reserved_usd,omitempty"`
+	RemainingUSD *float64 `json:"remaining_usd,omitempty"`
+	Tracked      bool     `json:"tracked"`
+	ResetAt      string   `json:"reset_at,omitempty"`
+	TokensIn     int64    `json:"tokens_in"`
+	TokensOut    int64    `json:"tokens_out"`
+	RequestCount int64    `json:"request_count"`
+	PeriodStart  string   `json:"period_start,omitempty"`
+	Period       string   `json:"period,omitempty"`
+	SpendLimit   float64  `json:"spend_limit,omitempty"`
+	RPMLimit     int      `json:"rpm_limit,omitempty"`
+	TPMLimit     int      `json:"tpm_limit,omitempty"`
 }
 
 // KeyUsageDetailResponse is the envelope for GET /keys/:id/usage.

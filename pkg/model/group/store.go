@@ -160,7 +160,11 @@ func (s *GroupStore) Len() int {
 // Set adds or replaces a model group. Validates and sorts replicas by priority.
 // Publishes route_created or route_updated (whichever matches the pre-image)
 // when an event bus is wired.
-func (s *GroupStore) Set(name string, group ModelGroup) error {
+func (s *GroupStore) Set(name string, group ModelGroup) error { return s.SetChecked(name, group, nil) }
+
+// SetChecked checks the prior value under the write lock before replacing it.
+// A nil prior value denotes creation; check must not call back into the store.
+func (s *GroupStore) SetChecked(name string, group ModelGroup, check func(*ModelGroup) error) error {
 	if err := validateGroup(name, &group); err != nil {
 		return err
 	}
@@ -179,7 +183,17 @@ func (s *GroupStore) Set(name string, group ModelGroup) error {
 	})
 
 	s.mu.Lock()
-	_, existed := s.groups[name]
+	prior, existed := s.groups[name]
+	if check != nil {
+		var current *ModelGroup
+		if existed {
+			current = &prior
+		}
+		if err := check(current); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
 	s.groups[name] = group
 	s.mu.Unlock()
 
@@ -279,15 +293,31 @@ func (s *GroupStore) expireGroup(name string) bool {
 }
 
 func (s *GroupStore) deleteWithEvent(name string, et route_events.EventType) bool {
+	return s.deleteChecked(name, et, nil) == nil
+}
+
+// DeleteChecked validates the current route under the same lock as deletion.
+func (s *GroupStore) DeleteChecked(name string, check func(*ModelGroup) error) error {
+	return s.deleteChecked(name, route_events.EventRouteDeleted, check)
+}
+
+func (s *GroupStore) deleteChecked(name string, et route_events.EventType, check func(*ModelGroup) error) error {
 	s.mu.Lock()
-	if _, ok := s.groups[name]; !ok {
+	prior, ok := s.groups[name]
+	if !ok {
 		s.mu.Unlock()
-		return false
+		return ErrGroupNotFound
+	}
+	if check != nil {
+		if err := check(&prior); err != nil {
+			s.mu.Unlock()
+			return err
+		}
 	}
 	delete(s.groups, name)
 	s.mu.Unlock()
 	s.publish(et, name, nil)
-	return true
+	return nil
 }
 
 // Path returns the configured file path.

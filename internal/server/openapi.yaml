@@ -92,6 +92,8 @@ tags:
   - name: Cache
   - name: Runs
   - name: Providers
+  - name: Clients
+    description: Observed authenticated client activity on the coordinator.
   - name: Nodes
   - name: Deployments
   - name: Jobs
@@ -3532,6 +3534,51 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
 
+  /zzrouter/v1/clients:
+    get:
+      tags: [Clients]
+      operationId: listClientActivity
+      summary: Observe authenticated client request activity
+      security:
+        - AdminKey: []
+        - BrowserSession: []
+      description: |
+        Coordinator administrator only. In-memory observations grouped by key
+        source, key ID, protocol and authentication method, not physical client
+        instances. Active requests count admitted HTTP requests still in progress;
+        last activity does not imply a connected session or current authorization.
+        Console, internal cluster and nested MCP dispatch traffic are excluded.
+        Inactive observations expire after 24 hours. Restart clears all observations.
+        At most 1024 groups are retained; active groups are never evicted. Capacity
+        omissions set metadata.truncated. Contains no credentials or request content.
+        Cache-Control is no-store.
+      responses:
+        '200':
+          description: Observed activity and its collection window.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ListEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ClientObservation' }
+                      metadata:
+                        type: object
+                        properties:
+                          observed_since: { type: string, format: date-time }
+                          retention_seconds: { type: number, example: 86400 }
+                          truncated: { type: boolean }
+                          grouped_by: { type: string, enum: [key_source_key_id_protocol_authentication] }
+        '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '403': { $ref: '#/components/responses/MgmtForbidden' }
+        '421':
+          description: This node is not the browser coordinator.
+        '503':
+          description: Client observations are unavailable.
+
   /zzrouter/v1/nodes:
     get:
       tags: [Nodes]
@@ -4409,6 +4456,9 @@ paths:
       tags: [Cluster]
       operationId: acceptPairing
       summary: Accept a worker's pairing code
+      security:
+        - AdminKey: []
+        - BrowserSession: []
       description: |
         Coordinator-only. Connects to the explicitly armed worker endpoint,
         pins its public-key fingerprint, validates and signs its CSR, delivers
@@ -4416,6 +4466,12 @@ paths:
         worker is admitted to membership after confirmation. Certificate
         material travels directly to the worker. Retry after a committed
         delivery confirms the existing identity without rotating its key.
+        Browser calls require an administrator session, exact Origin and
+        X-CSRF-Token. Only pairing acceptance opts into browser authority;
+        decommission and revocation remain API-key-only.
+        Certificate delivery may continue after a request is canceled. An error
+        can follow commitment; inspect nodes before retrying. A successful response
+        confirms pairing, while healthy membership must be checked using /nodes.
       requestBody:
         required: true
         content:
@@ -6578,8 +6634,21 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ModelGroup' }
       parameters:
+        - in: header
+          name: If-None-Match
+          schema: { type: string, enum: ["*"] }
+          description: Create only when no route with this name exists.
+        - in: header
+          name: If-Match
+          schema: { type: string }
+          description: Configuration ETag from GET; stale writes return 412.
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        '412':
+          description: The route changed or already exists. Reload its current configuration before writing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: OK
           content:
@@ -6633,8 +6702,17 @@ paths:
               description: Subset of `ModelGroup`; `null` clears a key.
               additionalProperties: true
       parameters:
+        - in: header
+          name: If-Match
+          schema: { type: string }
+          description: Configuration ETag from GET; stale writes return 412.
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        '412':
+          description: The route changed or already exists. Reload its current configuration before writing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200':
           description: OK
           content:
@@ -6681,15 +6759,30 @@ paths:
       summary: Delete a model group
       description: |
         Deletes a group. An auto-generated route cannot be deleted this way:
-        the generator would recreate it. Release it first with
-        `DELETE /zzrouter/v1/model-groups/{name}/owner`, or remove the
-        underlying model.
+        the generator would recreate it. Claim it by updating its configuration
+        before deleting, or remove the underlying model. Remove explicit team
+        assignments first; assigned routes return 409. The assignment guard is
+        best effort across stores; missing assigned names still fail closed at inference.
       parameters:
+        - in: header
+          name: If-Match
+          schema: { type: string }
+          description: Configuration ETag from GET; stale writes return 412.
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
+        '412':
+          description: The route changed or already exists. Reload its current configuration before writing.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '200': { description: OK }
         '204': { description: No content }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
+        '409':
+          description: The route is automatic or has explicit team assignments.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404':
           description: Not found
           content:
@@ -11786,6 +11879,8 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
+        provider_access: { $ref: "#/components/schemas/ProviderAccess" }
+        route_access: { $ref: "#/components/schemas/RouteAccess" }
         allowed_models:
           type: array
           description: "Existing allowed model/group names. Empty means all models; normal role and quota enforcement remains authoritative."
@@ -13362,6 +13457,20 @@ components:
           enum: [ok, failed]
         message: { type: string, description: Human-readable outcome or remediation hint. }
 
+    ClientObservation:
+      type: object
+      required: [key_id, name, source, protocol, authentication, active_requests, request_count, first_seen_at, last_seen_at]
+      properties:
+        key_id: { type: string }
+        name: { type: string }
+        source: { type: string, enum: [startup, managed] }
+        protocol: { type: string, enum: [management-mcp, inference-mcp, management-api, inference-api] }
+        authentication: { type: string, enum: [api-key, oauth] }
+        active_requests: { type: integer, minimum: 0 }
+        request_count: { type: integer, minimum: 1 }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+
     Node:
       type: object
       description: |
@@ -13897,12 +14006,15 @@ components:
     KeyUsage:
       type: object
       description: |
-        Rolling-window usage for a virtual key. Mirrors
+        Current calendar-period usage for a virtual key. Mirrors
         `internal/server/keys_service.go:KeyUsageResponse`. `reserved_usd`
         reflects in-flight budget reservations that have not yet been
         settled by the inference log bridge.
-      required: [key_id, spend_usd, tokens_in, tokens_out, request_count]
+      required: [key_id, spend_usd, tokens_in, tokens_out, request_count, tracked]
       properties:
+        tracked: { type: boolean, description: Whether this scope has a configured budget and a recorded ledger window. }
+        remaining_usd: { type: number, minimum: 0, description: Budget less current spending and reservations. Omitted when untracked. }
+        reset_at: { type: string, format: date-time, description: Next calendar reset in UTC. }
         key_id:       { type: string }
         spend_usd:    { type: number, minimum: 0 }
         reserved_usd: { type: number, minimum: 0 }
@@ -13912,7 +14024,7 @@ components:
         period_start: { type: string, format: date-time }
         period:
           type: string
-          description: Window duration string (e.g. 1h, 30d).
+          enum: [daily, weekly, monthly]
         spend_limit:  { type: number, minimum: 0 }
         rpm_limit:    { type: integer, minimum: 0 }
         tpm_limit:    { type: integer, minimum: 0 }
@@ -13943,10 +14055,12 @@ components:
         kind:
           type: string
           enum: [personal, shared]
+        provider_access: { $ref: "#/components/schemas/ProviderAccess" }
+        route_access: { $ref: "#/components/schemas/RouteAccess" }
         allowed_models:
           type: array
           items: { type: string }
-          description: Whitelist intersected with per-key access. Empty means no model access gate.
+          description: Allowed model or group names, also subject to provider access. Empty means all models.
         suspended:    { type: boolean }
         suspended_at: { type: string, format: date-time, nullable: true }
         suspended_by: { type: string }
@@ -13964,12 +14078,51 @@ components:
         created_by: { type: string }
         updated_by: { type: string }
 
+    RouteAccess:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      description: >
+        Direct mode preserves direct model and route access. Selected mode permits
+        only exact assigned route names, with no node/provider pin or direct-model
+        bypass. None denies inference and model discovery. Omission retains the
+        current policy on PATCH and defaults to direct on creation. PATCH replaces
+        the entire policy. Selected requires nonempty unique available names;
+        direct and none reject a nonempty list. Deleted or expired names remain
+        denied; recreating a name restores its assignments. Provider and model
+        ceilings still apply to every concrete destination.
+      properties:
+        mode: { type: string, enum: [direct, selected, none] }
+        routes:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+
+    ProviderAccess:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      description: >
+        Provider identities allowed across all nodes, including fallback routes.
+        Omission preserves legacy all-provider access on creation and retains the
+        current policy on PATCH. PATCH replaces the entire policy. Selected
+        requires a nonempty unique list; all and none require no provider list.
+        Unknown destinations are refused for restricted policies.
+      properties:
+        mode: { type: string, enum: [all, selected, none] }
+        providers:
+          type: array
+          uniqueItems: true
+          items: { type: string, minLength: 1 }
+
     CreateTeamRequest:
       type: object
       required: [id, name]
       properties:
         id:   { type: string, description: Stable identifier. Must not begin with the personal-team prefix. }
         name: { type: string }
+        provider_access: { $ref: "#/components/schemas/ProviderAccess" }
+        route_access: { $ref: "#/components/schemas/RouteAccess" }
         allowed_models:
           type: array
           items: { type: string }
@@ -13986,11 +14139,12 @@ components:
     UpdateTeamRequest:
       type: object
       description: |
-        PATCH semantics: nil fields are left untouched. `kind` is
-        immutable. Member mutations use the separate merge-patch
-        syntax documented on PATCH /teams/{id}.
+        PATCH semantics: omitted fields are left untouched. Kind and key
+        membership are immutable. Provider access is replaced as one policy.
       properties:
         name: { type: string }
+        provider_access: { $ref: "#/components/schemas/ProviderAccess" }
+        route_access: { $ref: "#/components/schemas/RouteAccess" }
         allowed_models:
           type: array
           items: { type: string }
@@ -14027,10 +14181,13 @@ components:
     TeamUsage:
       type: object
       description: |
-        Rolling-window usage aggregated across every key in a team.
+        Current calendar-period usage aggregated across every key in a team.
         Mirrors `internal/server/teams_service.go:TeamUsageResponse`.
-      required: [team_id, spend_usd, tokens_in, tokens_out, request_count]
+      required: [team_id, spend_usd, tokens_in, tokens_out, request_count, tracked]
       properties:
+        tracked: { type: boolean, description: Whether this scope has a configured budget and a recorded ledger window. }
+        remaining_usd: { type: number, minimum: 0, description: Budget less current spending and reservations. Omitted when untracked. }
+        reset_at: { type: string, format: date-time, description: Next calendar reset in UTC. }
         team_id:       { type: string }
         spend_usd:     { type: number, minimum: 0 }
         reserved_usd:  { type: number, minimum: 0 }
@@ -14078,7 +14235,8 @@ components:
           description: |
             Creates an ephemeral group expiring `ttl_seconds` from now,
             in `[60, 86400]`; `0` means perpetual. The reaper deletes
-            the group shortly after expiry, at one-minute granularity.
+            the group shortly after expiry, at one-minute granularity. Inference
+            rejects expired routes immediately, before the reaper removes them.
             Read the resulting instant from `expires_at`.
         expires_at:
           type: string
@@ -14287,6 +14445,7 @@ components:
         empty body sweeps the route table. Input is body-only by
         design: `X-Route-*` steering headers belong to live dispatch.
       properties:
+        team_id: { type: string, description: Existing team whose policy and reservation budget should be previewed. }
         route:
           type: string
           description: |
@@ -14318,8 +14477,13 @@ components:
       type: object
       description: |
         One assignment per previewed route, in route order.
-      required: [assignments]
+      required: [assignments, unchecked]
       properties:
+        team_id: { type: string }
+        unchecked:
+          type: array
+          description: Conditions not simulated. Each route is an independent hypothetical request; no quota is consumed.
+          items: { type: string, enum: [key_limits, rate_limits, concurrency, endpoint_and_input, model_readiness, memory_capacity] }
         assignments:
           type: array
           items: { $ref: '#/components/schemas/RoutePreviewAssignment' }
@@ -14339,10 +14503,20 @@ components:
 
     RoutePreviewAssignment:
       type: object
-      description: One route and the replica that would serve it.
-      required: [route, projected_cost_micro, projected_cost_source, strategy]
+      description: Current selection before endpoint, input, readiness and capacity admission; not a guarantee of dispatch.
+      required: [route, route_version, projected_cost_micro, projected_cost_source, strategy]
       properties:
+        eligible:
+          type: array
+          description: Eligible destination names ordered by the live routing strategy.
+          items: { type: string }
+        denied_reason:
+          type: string
+          description: Request-level refusal, including route access, team suspension, pricing or budget.
         route: { type: string }
+        route_version:
+          type: string
+          description: ETag of the exact route configuration evaluated, including refused assignments.
         replica:
           type: string
           description: Chosen replica. Absent when every candidate was filtered out.
@@ -14373,7 +14547,7 @@ components:
               replica: { type: string }
               reason:
                 type: string
-                description: Closed enum; see `attempt_skip_reason` in the schema endpoint.
+                description: Closed enum; see `preview_skip_reason` in the schema endpoint.
         no_survivors:
           type: boolean
           description: |

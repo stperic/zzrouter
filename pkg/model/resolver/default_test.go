@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -155,5 +156,70 @@ func TestInferenceBindingContractCatalogAuthority(t *testing.T) {
 				require.Equal(t, want, got.Provider)
 			})
 		}
+	}
+}
+
+func TestDefaultProviderSelectionBeforePreference(t *testing.T) {
+	replicas := []*cache.CachedModel{{Name: "m", Provider: "llamacpp", Node: "coord"}, {Name: "m", Provider: "vllm", Node: "worker"}}
+	lookups := 0
+	cfg := DefaultConfig{Parse: func(s string) (string, string, string) { return s, "", "" }, Nodename: func() string { return "coord" }, IsLocalNode: func(s string) bool { return s == "coord" }, CanRoute: func() bool { return true },
+		Replicas: func(context.Context, string, string, string, string, ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
+			lookups++
+			return replicas, nil
+		}}
+	result, err := NewDefault(cfg).Resolve(t.Context(), Reference{Model: "m", AllowProvider: func(provider string) bool { return provider == "vllm" }})
+	require.NoError(t, err)
+	require.Equal(t, "vllm", result.Provider)
+	require.Equal(t, "worker", result.Node)
+	require.Equal(t, 1, lookups)
+	require.Equal(t, "llamacpp", replicas[0].Provider, "filtering must not mutate the shared catalog")
+	_, err = NewDefault(cfg).Resolve(t.Context(), Reference{Model: "m", AllowProvider: func(string) bool { return false }})
+	var refusal httperr.Error
+	require.ErrorAs(t, err, &refusal)
+	require.Equal(t, 403, refusal.Status)
+}
+
+func TestDefaultTrustedProviderBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name, model, parsed, bound, registry string
+		conflict                             bool
+	}{
+		{name: "bare", model: "qwen", bound: "vllm"},
+		{name: "matching", model: "vllm/qwen", parsed: "vllm", bound: "vllm"},
+		{name: "case insensitive", model: "vllm/qwen", parsed: "vllm", bound: "VLLM"},
+		{name: "conflicting", model: "llamacpp/qwen", parsed: "llamacpp", bound: "vllm", conflict: true},
+		{name: "unbound qualification", model: "llamacpp/qwen", parsed: "llamacpp"},
+		{name: "registry is literal", model: "llamacpp/qwen", parsed: "llamacpp", bound: "vllm", registry: "huggingface"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookups := 0
+			r := NewDefault(DefaultConfig{
+				Parse:    func(string) (string, string, string) { return "qwen", tc.parsed, "" },
+				Nodename: func() string { return "worker" }, CanRoute: func() bool { return false },
+				IsLocalNode: func(string) bool { return true },
+				Replicas: func(_ context.Context, model, provider, _, registry string, _ ...cache.ReplicaSelection) ([]*cache.CachedModel, error) {
+					lookups++
+					if tc.registry != "" {
+						require.Equal(t, tc.model, model)
+						require.Equal(t, tc.registry, registry)
+					}
+					if tc.bound != "" {
+						require.True(t, strings.EqualFold(tc.bound, provider))
+					}
+					return nil, nil
+				},
+			})
+			got, err := r.Resolve(t.Context(), Reference{Model: tc.model, Provider: tc.bound, Registry: tc.registry})
+			if tc.conflict {
+				var wire httperr.Error
+				require.ErrorAs(t, err, &wire)
+				require.Equal(t, "model_provider_conflict", wire.Code)
+				require.Zero(t, lookups, "reject before catalog lookup or dispatch")
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.Equal(t, 1, lookups)
+			}
+		})
 	}
 }

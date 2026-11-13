@@ -84,6 +84,8 @@ type TagsResponse struct {
 
 // PsEntry is one running model in the /api/ps response.
 type PsEntry struct {
+	// Provider is internal admission metadata, stripped before compatibility responses.
+	Provider      string       `json:"provider,omitempty"`
 	Name          string       `json:"name"`
 	Model         string       `json:"model"`
 	Size          int64        `json:"size"`

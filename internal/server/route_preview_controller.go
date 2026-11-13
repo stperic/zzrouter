@@ -4,10 +4,12 @@ import (
 	"sort"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
+	"github.com/stperic/zzrouter/pkg/model/resolver"
 )
 
 // previewAssignmentsCap bounds the response size of the top-level
@@ -26,6 +28,7 @@ const previewAssignmentsCap = 25
 // live dispatch. Mixing the two input channels in a dry-run primitive
 // muddies the contract.
 type previewRequest struct {
+	TeamID string `json:"team_id,omitempty"`
 	// Route narrows the sweep to a single named route. The URL :name
 	// override fills this for the per-route handler; the top-level
 	// handler treats it as a body-supplied filter.
@@ -63,7 +66,10 @@ type previewSkip struct {
 // they lost and why; the chosen replica is at the top of the list
 // per group strategy.
 type previewAssignment struct {
+	Eligible            []string      `json:"eligible,omitempty"`
+	DeniedReason        string        `json:"denied_reason,omitempty"`
 	Route               string        `json:"route"`
+	RouteVersion        string        `json:"route_version"`
 	Replica             string        `json:"replica,omitempty"`
 	ProjectedCostMicro  int64         `json:"projected_cost_micro"`
 	ProjectedCostSource string        `json:"projected_cost_source"`
@@ -78,6 +84,8 @@ type previewAssignment struct {
 // omitted when any assignment has an empty source (pricing data
 // missing); summing partial-priced assignments would mislead.
 type previewResponse struct {
+	TeamID                  string              `json:"team_id,omitempty"`
+	Unchecked               []string            `json:"unchecked"`
 	Assignments             []previewAssignment `json:"assignments"`
 	TotalProjectedCostMicro *int64              `json:"total_projected_cost_micro,omitempty"`
 	Capped                  bool                `json:"capped,omitempty"`
@@ -119,19 +127,35 @@ func readPreviewBody(c *gin.Context, req *previewRequest) bool {
 	if c.Request.ContentLength == 0 {
 		return true
 	}
-	return BindJSONStrict(c, req)
+	if !BindJSONStrict(c, req) {
+		return false
+	}
+	if req.InputTokens < 0 || req.OutputTokens < 0 || req.LatencyBudgetMs < 0 {
+		BadRequest(c, "Token counts and latency budget must be nonnegative")
+		return false
+	}
+	return true
 }
 
 // runPreview is the shared dispatch — emits the assignment slice and
 // totals. Holds no locks beyond a single GroupStore.List() snapshot,
 // so concurrent mutators don't block on preview reads.
 func (ctrl *ModelGroupsController) runPreview(c *gin.Context, req previewRequest) {
-	if ctrl.groupStore == nil {
-		respondSuccess(c, "no model groups configured", previewResponse{Assignments: []previewAssignment{}})
-		return
+	var ac *AccessContext
+	if req.TeamID != "" {
+		if ctrl.access != nil {
+			ac = ctrl.access.core.TeamContext(req.TeamID)
+		}
+		if ac == nil || ac.Team == nil {
+			NotFound(c, "team not found")
+			return
+		}
 	}
 
-	all := ctrl.groupStore.List()
+	all := map[string]modelgroup.ModelGroup{}
+	if ctrl.groupStore != nil {
+		all = ctrl.groupStore.List()
+	}
 	names := previewRouteNames(all, req.Route)
 	sort.Strings(names)
 
@@ -144,10 +168,10 @@ func (ctrl *ModelGroupsController) runPreview(c *gin.Context, req previewRequest
 	assignments := make([]previewAssignment, 0, len(names))
 	for _, n := range names {
 		g := all[n]
-		assignments = append(assignments, ctrl.previewOne(n, g, req))
+		assignments = append(assignments, ctrl.previewOne(n, g, req, ac))
 	}
 
-	resp := previewResponse{Assignments: assignments, Capped: capped}
+	resp := previewResponse{Assignments: assignments, Capped: capped, TeamID: req.TeamID, Unchecked: []string{"key_limits", "rate_limits", "concurrency", "endpoint_and_input", "model_readiness", "memory_capacity"}}
 	if total, ok := previewTotal(assignments); ok {
 		resp.TotalProjectedCostMicro = &total
 	}
@@ -175,64 +199,70 @@ func previewRouteNames(all map[string]modelgroup.ModelGroup, only string) []stri
 // single route. The cooldown/health/latency dependencies are read-
 // only — the same snapshot live dispatch would see, but the preview
 // path never writes back.
-func (ctrl *ModelGroupsController) previewOne(name string, g modelgroup.ModelGroup, req previewRequest) previewAssignment {
-	cands := previewCandidatesFromReplicas(g.Replicas)
-	hints := fallback.SteeringHints{
-		ExcludeReplicas: req.ExcludeReplicas,
-		LatencyBudgetMs: req.LatencyBudgetMs,
+func (ctrl *ModelGroupsController) previewOne(name string, g modelgroup.ModelGroup, req previewRequest, ac *AccessContext) previewAssignment {
+	a := previewAssignment{Route: name, RouteVersion: modelGroupETag(name, g), Strategy: strategyName(g.Strategy)}
+	if !g.Available() {
+		a.NoSurvivors = true
+		a.DeniedReason = "route_unavailable"
+		return a
 	}
-	survivors, skipped := fallback.FilterDeployments(
-		cands,
-		ctrl.cooldowns,
-		nil, // providerCooldowns — Phase 6 preview omits the provider dimension
-		ctrl.healthChecker,
-		req.RequireTags,
-		ctrl.latencyTracker,
-		hints,
-	)
-
-	strategy := strategyName(g.Strategy)
-	a := previewAssignment{
-		Route:    name,
-		Strategy: strategy,
-		Skipped:  previewSkipsFromFallback(skipped),
+	if ac != nil {
+		if decision := ctrl.access.core.Authorize(ac, name); !decision.Allowed {
+			a.NoSurvivors = true
+			a.DeniedReason = decision.Reason.String()
+			return a
+		}
 	}
+	cands := resolver.GroupCandidates(g.Replicas)
+	allowed := cands[:0:0]
+	for _, cand := range cands {
+		reason := ""
+		if !control.ProviderAllowed(ac, cand.App) {
+			reason = "provider_access_denied"
+		} else if ac != nil && !ctrl.access.core.DestinationAllowed(ac, cand.Model, cand.App) {
+			reason = "model_access_denied"
+		}
+		if reason != "" {
+			a.Skipped = append(a.Skipped, previewSkip{Replica: cand.Name, Reason: reason})
+		} else {
+			allowed = append(allowed, cand)
+		}
+	}
+	quote := ctrl.quote
+	if quote == nil {
+		quote = func(provider, model string) pricing.Quote {
+			return pricing.Resolve(ctrl.pricing, provider, []string{model}, false)
+		}
+	}
+	allowed, quotes, unpriced := pricedCandidates(allowed, control.HasSpendLimit(ac), quote)
+	for _, cand := range unpriced {
+		a.Skipped = append(a.Skipped, previewSkip{Replica: cand.Name, Reason: "model_unpriced"})
+	}
+	if len(allowed) == 0 {
+		a.NoSurvivors = true
+		return a
+	}
+	if ac != nil {
+		if decision := ctrl.access.core.PreviewTeamBudget(ac, quotes); !decision.Allowed {
+			a.DeniedReason = decision.Reason
+			return a
+		}
+	}
+	survivors, skipped := fallback.FilterDeployments(allowed, ctrl.cooldowns, ctrl.providerCooldowns, ctrl.healthChecker,
+		req.RequireTags, ctrl.latencyTracker, fallback.SteeringHints{ExcludeReplicas: req.ExcludeReplicas, LatencyBudgetMs: req.LatencyBudgetMs})
+	a.Skipped = append(a.Skipped, previewSkipsFromFallback(skipped)...)
 	if len(survivors) == 0 {
 		a.NoSurvivors = true
 		return a
 	}
-
-	chosen := pickPreviewWinner(survivors, strategy, ctrl.latencyTracker, ctrl.loadTracker)
-	a.Replica = chosen.Name
-	cost, source := projectedCost(ctrl.pricingStore(), chosen, req.InputTokens, req.OutputTokens)
-	a.ProjectedCostMicro = cost
-	a.ProjectedCostSource = source
-	return a
-}
-
-// pricingStore returns the controller's pricing dependency. Indirected
-// so a nil controller field falls through to CalculateCostMicro's
-// "no source" path without panicking.
-func (ctrl *ModelGroupsController) pricingStore() *pricing.Store {
-	return ctrl.pricing
-}
-
-func previewCandidatesFromReplicas(reps []modelgroup.Replica) []fallback.Candidate {
-	out := make([]fallback.Candidate, len(reps))
-	for i, r := range reps {
-		out[i] = fallback.Candidate{
-			Name:       r.Name,
-			Model:      r.Model,
-			App:        r.App,
-			Node:       r.Node,
-			Priority:   r.Priority,
-			Timeout:    r.Timeout.Duration,
-			OnDemand:   r.OnDemand,
-			MaxRetries: r.MaxRetries,
-			Tags:       r.Tags,
-		}
+	ordered := previewStrategy(a.Strategy, ctrl.latencyTracker, ctrl.loadTracker).Select(survivors)
+	for _, candidate := range ordered {
+		a.Eligible = append(a.Eligible, candidate.Name)
 	}
-	return out
+	chosen := ordered[0]
+	a.Replica = chosen.Name
+	a.ProjectedCostMicro, a.ProjectedCostSource = projectedCost(ctrl.pricing, chosen, req.InputTokens, req.OutputTokens, quote(chosen.App, chosen.Model))
+	return a
 }
 
 func previewSkipsFromFallback(skipped []fallback.Skip) []previewSkip {
@@ -246,67 +276,16 @@ func previewSkipsFromFallback(skipped []fallback.Skip) []previewSkip {
 	return out
 }
 
-// pickPreviewWinner emulates the strategy for the preview without
-// touching tracker state. priority → lowest .Priority field; fastest
-// → lowest LatencyTracker snapshot avg; least-load → lowest in-flight
-// load; unknown → first survivor (deterministic via filter order).
-func pickPreviewWinner(
-	survivors []fallback.Candidate,
-	strategy string,
-	latency fallback.LatencySnapshotter,
-	loads loadSnapshotter,
-) fallback.Candidate {
+// previewStrategy uses the same read-only strategy implementations as dispatch.
+func previewStrategy(strategy string, latency fallback.LatencySnapshotter, loads fallback.LoadSnapshotter) fallback.DeploymentStrategy {
 	switch strategy {
-	case string(modelgroup.StrategyPriority):
-		best := survivors[0]
-		for _, c := range survivors[1:] {
-			if c.Priority < best.Priority {
-				best = c
-			}
-		}
-		return best
-	case string(modelgroup.StrategyFastest):
-		if latency == nil {
-			return survivors[0]
-		}
-		best := survivors[0]
-		bestAvg, bestSamples := latency.Snapshot(best.Name)
-		for _, c := range survivors[1:] {
-			avg, samples := latency.Snapshot(c.Name)
-			// Mirror strategy_fastest's sort exactly: replicas with
-			// samples sort ahead of untried ones ("Deployments with no
-			// data go to the end"), then by ascending average latency.
-			// Survivors already arrive in priority order, so keeping the
-			// incumbent on a tie reproduces the live priority tiebreak.
-			switch {
-			case bestSamples == 0 && samples > 0:
-				best, bestAvg, bestSamples = c, avg, samples
-			case bestSamples > 0 && samples > 0 && avg < bestAvg:
-				best, bestAvg, bestSamples = c, avg, samples
-			}
-		}
-		return best
-	case string(modelgroup.StrategyLeastLoad):
-		if loads == nil {
-			return survivors[0]
-		}
-		best := survivors[0]
-		bestLoad := loads.InFlight(best.Name)
-		for _, c := range survivors[1:] {
-			if l := loads.InFlight(c.Name); l < bestLoad {
-				best, bestLoad = c, l
-			}
-		}
-		return best
+	case "fastest":
+		return fallback.NewFastestStrategy(latency)
+	case "least-load":
+		return fallback.NewLeastLoadStrategy(loads)
 	default:
-		return survivors[0]
+		return &fallback.PriorityStrategy{}
 	}
-}
-
-// loadSnapshotter is the narrow read interface pickPreviewWinner
-// needs from *fallback.LoadTracker for the least-load strategy.
-type loadSnapshotter interface {
-	InFlight(name string) int64
 }
 
 // projectedCost computes a body-driven cost projection for a chosen
@@ -314,11 +293,11 @@ type loadSnapshotter interface {
 // store path; an empty source means the store has no entry for this
 // (provider, model) pair — agents see projected_cost_micro=0 +
 // projected_cost_source="" and treat it as "unknown".
-func projectedCost(store *pricing.Store, c fallback.Candidate, in, out int64) (int64, string) {
+func projectedCost(store *pricing.Store, c fallback.Candidate, in, out int64, admitted ...pricing.Quote) (int64, string) {
 	if in == 0 && out == 0 {
 		return 0, ""
 	}
-	return quota.CalculateCostMicro(nil, store, c.App, []string{c.Model}, in, out, 0, 0)
+	return quota.CalculateCostMicro(nil, store, c.App, []string{c.Model}, in, out, 0, 0, admitted...)
 }
 
 // strategyName mirrors live dispatch's fallback in
@@ -340,7 +319,7 @@ func strategyName(s modelgroup.StrategyType) string {
 func previewTotal(assignments []previewAssignment) (int64, bool) {
 	var total int64
 	for _, a := range assignments {
-		if a.NoSurvivors {
+		if a.NoSurvivors || a.DeniedReason != "" {
 			continue
 		}
 		if a.ProjectedCostSource == "" {

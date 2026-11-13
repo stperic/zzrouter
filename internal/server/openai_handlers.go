@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,7 @@ const handshakeModelID = "zzrouter"
 
 // OpenAIModelHandlers groups OpenAI model catalog handlers (/v1/models, /v1/model/info).
 type OpenAIModelHandlers struct {
+	access          catalogAccess
 	modelService    *ModelService
 	appsConfig      func() *pkgConfig.AppsConfig
 	groups          *modelgroup.GroupStore
@@ -417,23 +419,29 @@ func deriveServedBy(m *cache.CachedModel, endpoints []string) string {
 // group can be described from the entries its replicas already produce.
 // A lookup failure yields an empty index; describeGroup degrades to the
 // bare entry rather than failing the request.
-func (h *OpenAIModelHandlers) catalogByID(ctx context.Context) map[string]OpenAIModelObject {
-	models, err := h.modelService.ListModels(ctx, &ListModelsRequest{})
+func (h *OpenAIModelHandlers) catalogByID(c *gin.Context, route ...string) map[string]OpenAIModelObject {
+	models, err := h.modelService.ListModels(c.Request.Context(), &ListModelsRequest{})
 	if err != nil {
 		return nil
 	}
+	return h.catalogIndex(c, models, route...)
+}
+
+func (h *OpenAIModelHandlers) catalogIndex(c *gin.Context, models []*cache.CachedModel, route ...string) map[string]OpenAIModelObject {
 	byID := make(map[string]OpenAIModelObject, len(models))
 	for _, m := range models {
 		obj, ok := h.enrichRuntime(h.adapter.ListEntry(m), m).(OpenAIModelObject)
 		if !ok {
 			continue
 		}
-		byID[obj.ID] = obj
+		if h.access.permits(c, m.Name, m.Provider, route...) {
+			byID[obj.ID] = obj
+		}
 		// The list also publishes a SourceID alias entry (the HF repo path
 		// beside the file-stem name). A replica named by either form has to
 		// resolve, or the group loses capabilities depending on which of two
 		// equally-published ids its author happened to write down.
-		if alias := qualifyID(m.SourceID, m); m.SourceID != "" && m.SourceID != m.Name {
+		if alias := qualifyID(m.SourceID, m); m.SourceID != "" && m.SourceID != m.Name && h.access.permits(c, m.SourceID, m.Provider, route...) {
 			if _, taken := byID[alias]; !taken {
 				byID[alias] = obj
 			}
@@ -463,20 +471,24 @@ func (h *OpenAIModelHandlers) handleModels(c *gin.Context) {
 	seen := make(map[string]bool, len(modelsResp))
 	seenQualified := make(map[string]bool, len(modelsResp))
 	for _, m := range modelsResp {
-		entries = append(entries, h.enrichRuntime(h.adapter.ListEntry(m), m))
-		seen[m.Name] = true
-		seenQualified[qualifyID(m.Name, m)] = true
+		if h.access.permits(c, m.Name, m.Provider) {
+			entries = append(entries, h.enrichRuntime(h.adapter.ListEntry(m), m))
+			seen[m.Name] = true
+			seenQualified[qualifyID(m.Name, m)] = true
+		}
 
 		// SourceID alias entry (e.g. "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
 		// alongside the file-stem name). Lets agents listing models
 		// discover both forms; clients dedupe via alias_of.
-		if m.SourceID != "" && m.SourceID != m.Name {
+		if m.SourceID != "" && m.SourceID != m.Name && h.access.permits(c, m.SourceID, m.Provider) {
 			aliasID := qualifyID(m.SourceID, m)
 			if !seenQualified[aliasID] {
 				alias := h.enrichRuntime(h.adapter.ListEntry(m), m)
 				if obj, ok := alias.(OpenAIModelObject); ok {
 					obj.ID = aliasID
-					obj.AliasOf = qualifyID(m.Name, m)
+					if h.access.permits(c, m.Name, m.Provider) {
+						obj.AliasOf = qualifyID(m.Name, m)
+					}
 					alias = obj
 				}
 				entries = append(entries, alias)
@@ -491,23 +503,30 @@ func (h *OpenAIModelHandlers) handleModels(c *gin.Context) {
 	// reach a group by its alias, described the same way a plain model
 	// is: an agent that selects on capabilities.chat must not skip the
 	// entries the router most wants it to prefer.
-	if h.groups != nil {
-		now := utils.Now().Unix()
-		byID := make(map[string]OpenAIModelObject, len(entries))
-		for _, e := range entries {
-			if obj, ok := e.(OpenAIModelObject); ok {
-				byID[obj.ID] = obj
-			}
-		}
-		for name, group := range h.groups.List() {
-			if seen[name] {
-				continue
-			}
-			entries = append(entries, describeGroup(name, now, group.Replicas, byID, h.localNode()))
+	for _, entry := range h.routeCatalog(c, modelsResp) {
+		if !seen[entry.ID] {
+			entries = append(entries, entry)
 		}
 	}
 
 	c.JSON(http.StatusOK, h.adapter.ListEnvelope(entries))
+}
+
+// routeCatalog is the authorized route overlay shared by model discovery surfaces.
+func (h *OpenAIModelHandlers) routeCatalog(c *gin.Context, models []*cache.CachedModel) []OpenAIModelObject {
+	var entries []OpenAIModelObject
+	if h.groups != nil {
+		for name, group := range h.groups.List() {
+			if !group.Available() {
+				continue
+			}
+			replicas := h.access.replicas(c, name, group.Replicas)
+			if len(replicas) > 0 {
+				entries = append(entries, describeGroup(name, utils.Now().Unix(), replicas, h.catalogIndex(c, models, name), h.localNode()))
+			}
+		}
+	}
+	return entries
 }
 
 // handleModelByID handles GET /v1/models/*model. A wildcard route is used so
@@ -525,16 +544,17 @@ func (h *OpenAIModelHandlers) handleModelByID(c *gin.Context) {
 	}
 
 	if h.groups != nil {
-		if group := h.groups.Get(modelID); group != nil {
+		if group := h.groups.Get(rawID); group != nil && group.Available() && nodeHint == "" && c.GetHeader("X-Node") == "" && len(h.access.replicas(c, rawID, group.Replicas)) > 0 {
 			// Same description the list emits — a list→get round-trip
 			// that dropped capabilities would be its own trap.
 			c.JSON(http.StatusOK, describeGroup(modelID, utils.Now().Unix(),
-				group.Replicas, h.catalogByID(c.Request.Context()), h.localNode()))
+				h.access.replicas(c, modelID, group.Replicas), h.catalogByID(c, modelID), h.localNode()))
 			return
 		}
 	}
 
 	matches, err := h.modelService.ListModels(c.Request.Context(), &ListModelsRequest{Model: modelID, Node: nodeHint})
+	matches = slices.DeleteFunc(slices.Clone(matches), func(m *cache.CachedModel) bool { return !h.access.permits(c, modelID, m.Provider) })
 	if err != nil || len(matches) == 0 {
 		param := "model"
 		code := "model_not_found"
@@ -551,7 +571,15 @@ func (h *OpenAIModelHandlers) handleModelByID(c *gin.Context) {
 	// handleModels so the single-model and list responses can never
 	// drift on capabilities, endpoints, or runtime fields.
 	m := matches[0]
-	c.JSON(http.StatusOK, h.enrichRuntime(h.adapter.ListEntry(m), m))
+	entry := h.enrichRuntime(h.adapter.ListEntry(m), m)
+	if obj, ok := entry.(OpenAIModelObject); ok && modelID == m.SourceID && modelID != m.Name {
+		obj.ID = qualifyID(m.SourceID, m)
+		if h.access.permits(c, m.Name, m.Provider) {
+			obj.AliasOf = qualifyID(m.Name, m)
+		}
+		entry = obj
+	}
+	c.JSON(http.StatusOK, entry)
 }
 
 // handleDeleteModelByID handles DELETE /v1/models/*model. Mirrors the OpenAI
@@ -579,7 +607,7 @@ func (h *OpenAIModelHandlers) handleDeleteModelByID(c *gin.Context) {
 		return
 	}
 
-	response, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: modelID, Node: c.GetHeader("X-Node")})
+	response, err := h.modelService.DeleteModels(c.Request.Context(), &DeleteModelsRequest{Model: modelID, Node: c.GetHeader("X-Node"), Admit: func(model, provider string) bool { return h.access.permits(c, model, provider) }})
 	if err != nil {
 		RespondToError(c, err)
 		return

@@ -11,9 +11,11 @@ export class Element extends EventTarget {
     this.attributes = new Map();
     this.dataset = {};
     this.listeners = new Map();
-    this.classList = { add() {} };
+    this.classList = { add() {}, remove() {} };
     this.disabled = false;
+    this.checked = false;
   }
+  get isConnected() { return this === document.querySelector('#app') || !!this.parent?.isConnected; }
   get children() { return this.childNodes.filter(child => child.tag !== '#text'); }
   get firstChild() { return this.childNodes[0]; }
   get textContent() { return (this._text || '') + this.childNodes.map(child => child.textContent).join(''); }
@@ -44,13 +46,18 @@ export class Element extends EventTarget {
   querySelectorAll(selector) {
     return walk(this).slice(1).filter(node => {
       if (selector.startsWith('input[')) return node.type === 'password' || node.attributes.has('data-sensitive');
+      if (selector === 'input, select, textarea') return ['input', 'select', 'textarea'].includes(node.tag);
       const attribute = selector.match(/^\[([^\]]+)\]$/)?.[1];
       return attribute ? node.attributes.has(attribute) : false;
     });
   }
+  contains(node) { return walk(this).includes(node); }
+  showModal() { this.setAttribute('open', ''); }
+  show() { this.setAttribute('open', ''); }
+  close() { this.removeAttribute('open'); }
   scrollIntoView() {}
   reportValidity() { return true; }
-  focus() {}
+  focus() { document.activeElement = this; }
   select() {}
 }
 export function walk(root) { return [root, ...root.childNodes.flatMap(walk)]; }

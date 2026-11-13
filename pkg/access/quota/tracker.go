@@ -137,7 +137,7 @@ func (t *SpendTracker) ReserveBudget(scope SpendScope, limitMicro int64, period 
 		state.Period = period
 	}
 
-	if estimatedCostMicro > 0 && state.SpendMicro+state.ReservedMicro+estimatedCostMicro > limitMicro {
+	if !budgetAvailable(state, limitMicro, estimatedCostMicro) {
 		return false
 	}
 

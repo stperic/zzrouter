@@ -20,6 +20,7 @@ import (
 // by pointer, so fields are resolved at request time, not registration time.
 func (s *Server) registerOllamaRoutes() {
 	h := &OllamaHandlers{
+		access:                s.catalogAllowed,
 		ollamaDaemon:          s.ollamaDaemon,
 		proxyToOllamaProvider: s.proxyToOllamaProvider,
 		handleRoute:           s.HandleRoute,

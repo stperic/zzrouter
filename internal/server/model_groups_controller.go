@@ -27,6 +27,10 @@ import (
 // passed to GroupStore.ApplyPatch.
 type paramErrorCarrier struct{ inner utils.ParamError }
 
+var errRoutePrecondition = errors.New("route changed; reload before saving")
+var errRouteInUse = errors.New("route is assigned to teams; remove its assignments before deleting")
+var errRouteAutomatic = errors.New("automatic routes must be claimed before deletion")
+
 func (e *paramErrorCarrier) Error() string { return e.inner.Message }
 
 // respondMutatorError maps store-level errors from ApplyPatch /
@@ -38,6 +42,10 @@ func respondMutatorError(c *gin.Context, name, replica string, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, errRoutePrecondition):
+		RespondWithProblem(c, http.StatusPreconditionFailed, "Precondition Failed", err.Error())
+	case errors.Is(err, errRouteInUse), errors.Is(err, errRouteAutomatic):
+		Conflict(c, err.Error())
 	case errors.Is(err, modelgroup.ErrGroupNotFound):
 		RespondWithParamErrors(c, http.StatusNotFound, "Not Found", []utils.ParamError{{
 			Code:    string(httperr.CodeRouteUnknown),
@@ -179,43 +187,40 @@ func readMergePatchBody(c *gin.Context) json.RawMessage {
 // minimal-router setups pass nil; the /state handler omits the
 // corresponding fields when the source is absent.
 type ModelGroupsController struct {
-	groupStore     *modelgroup.GroupStore
-	cooldowns      *fallback.CooldownManager
-	loadTracker    *fallback.LoadTracker
-	latencyTracker *fallback.LatencyTracker
-	healthChecker  *fallback.HealthChecker
-	logStore       *inferencelog.Store
-	routeEvents    *route_events.Bus
-	pricing        *pricing.Store
-	routePrefix    string
+	access            *AccessControl
+	providerCooldowns *fallback.CooldownManager
+	quote             func(string, string) pricing.Quote
+	groupStore        *modelgroup.GroupStore
+	cooldowns         *fallback.CooldownManager
+	loadTracker       *fallback.LoadTracker
+	latencyTracker    *fallback.LatencyTracker
+	healthChecker     *fallback.HealthChecker
+	logStore          *inferencelog.Store
+	routeEvents       *route_events.Bus
+	pricing           *pricing.Store
+	routePrefix       string
 }
 
-// NewModelGroupsController creates a new model groups controller. The
-// tracker pointers feed the read-side /state endpoint; the log store
-// backs /history. Passing nil for any of them is supported — the
-// corresponding endpoints degrade (state omits fields, history 503).
-func NewModelGroupsController(
-	groupStore *modelgroup.GroupStore,
-	cooldowns *fallback.CooldownManager,
-	loadTracker *fallback.LoadTracker,
-	latencyTracker *fallback.LatencyTracker,
-	healthChecker *fallback.HealthChecker,
-	logStore *inferencelog.Store,
-	routeEvents *route_events.Bus,
-	pricingStore *pricing.Store,
-	routePrefix string,
-) *ModelGroupsController {
-	return &ModelGroupsController{
-		groupStore:     groupStore,
-		cooldowns:      cooldowns,
-		loadTracker:    loadTracker,
-		latencyTracker: latencyTracker,
-		healthChecker:  healthChecker,
-		logStore:       logStore,
-		routeEvents:    routeEvents,
-		pricing:        pricingStore,
-		routePrefix:    routePrefix,
-	}
+// ModelGroupsDependencies supplies existing route, access and runtime owners.
+type ModelGroupsDependencies struct {
+	Groups                       *modelgroup.GroupStore
+	Cooldowns, ProviderCooldowns *fallback.CooldownManager
+	LoadTracker                  *fallback.LoadTracker
+	LatencyTracker               *fallback.LatencyTracker
+	HealthChecker                *fallback.HealthChecker
+	LogStore                     *inferencelog.Store
+	RouteEvents                  *route_events.Bus
+	Pricing                      *pricing.Store
+	RoutePrefix                  string
+	Access                       *AccessControl
+	Quote                        func(string, string) pricing.Quote
+}
+
+// NewModelGroupsController constructs the route API; absent runtime sources stay unknown.
+func NewModelGroupsController(d ModelGroupsDependencies) *ModelGroupsController {
+	return &ModelGroupsController{groupStore: d.Groups, cooldowns: d.Cooldowns, providerCooldowns: d.ProviderCooldowns,
+		loadTracker: d.LoadTracker, latencyTracker: d.LatencyTracker, healthChecker: d.HealthChecker,
+		logStore: d.LogStore, routeEvents: d.RouteEvents, pricing: d.Pricing, routePrefix: d.RoutePrefix, access: d.Access, quote: d.Quote}
 }
 
 // RegisterPublicRoutes registers model group reads and idempotent mutations.
@@ -311,21 +316,36 @@ func (ctrl *ModelGroupsController) GetModelGroup(c *gin.Context) {
 		return
 	}
 
-	cfgProj := toModelGroupConfigProjection(name, *group)
-	cfgBytes, err := json.Marshal(cfgProj)
-	if err == nil {
-		sum := sha256.Sum256(cfgBytes)
-		etag := `"sha256:` + hex.EncodeToString(sum[:]) + `"`
-		if c.GetHeader("If-None-Match") == etag {
-			c.Header("ETag", etag)
-			c.Status(304)
-			return
-		}
-		c.Header("ETag", etag)
+	etag := modelGroupETag(name, *group)
+	c.Header("ETag", etag)
+	if etag != "" && c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
 	}
 
 	setExpiresAtHeader(c, *group)
 	respondSuccess(c, "Model group retrieved successfully", toModelGroupResponse(name, *group, ctrl.cooldowns))
+}
+
+func modelGroupETag(name string, group modelgroup.ModelGroup) string {
+	data, err := json.Marshal(toModelGroupConfigProjection(name, group))
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return `"sha256:` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func checkRouteVersion(c *gin.Context, name string, current *modelgroup.ModelGroup) error {
+	if c.GetHeader("If-None-Match") == "*" && current != nil {
+		return errRoutePrecondition
+	}
+	if match := c.GetHeader("If-Match"); match != "" {
+		if current == nil || (match != "*" && match != modelGroupETag(name, *current)) {
+			return errRoutePrecondition
+		}
+	}
+	return nil
 }
 
 // toModelGroupConfigProjection returns the *static* shape of a model
@@ -512,8 +532,8 @@ func (ctrl *ModelGroupsController) CreateOrUpdateModelGroup(c *gin.Context) {
 		group.AutoOwner = principal
 	}
 
-	if err := ctrl.groupStore.Set(name, group); err != nil {
-		BadRequest(c, err.Error())
+	if err := ctrl.groupStore.SetChecked(name, group, func(current *modelgroup.ModelGroup) error { return checkRouteVersion(c, name, current) }); err != nil {
+		respondMutatorError(c, name, "", err)
 		return
 	}
 
@@ -544,6 +564,9 @@ func (ctrl *ModelGroupsController) PatchModelGroup(c *gin.Context) {
 
 	var patched modelgroup.ModelGroup
 	err := ctrl.groupStore.ApplyPatch(name, func(current modelgroup.ModelGroup) (modelgroup.ModelGroup, error) {
+		if err := checkRouteVersion(c, name, &current); err != nil {
+			return modelgroup.ModelGroup{}, err
+		}
 		next, perr := applyModelGroupPatch(current, raw)
 		if perr != nil {
 			return modelgroup.ModelGroup{}, &paramErrorCarrier{inner: *perr}
@@ -552,6 +575,9 @@ func (ctrl *ModelGroupsController) PatchModelGroup(c *gin.Context) {
 		patched = next
 		return next, nil
 	})
+	if errors.Is(err, modelgroup.ErrGroupNotFound) && c.GetHeader("If-Match") != "" {
+		err = errRoutePrecondition
+	}
 	if respondMutatorError(c, name, "", err) {
 		return
 	}
@@ -772,14 +798,22 @@ func (ctrl *ModelGroupsController) ReleaseModelGroupOwner(c *gin.Context) {
 func (ctrl *ModelGroupsController) DeleteModelGroup(c *gin.Context) {
 	name := c.Param("name")
 
-	// Check if this is an auto-managed route
-	if group := ctrl.groupStore.Get(name); group != nil && autoroute.IsAutoGroup(group) {
-		Conflict(c, "cannot delete auto-route: this route is auto-managed because the model exists on multiple nodes")
-		return
+	err := ctrl.groupStore.DeleteChecked(name, func(current *modelgroup.ModelGroup) error {
+		if err := checkRouteVersion(c, name, current); err != nil {
+			return err
+		}
+		if autoroute.IsAutoGroup(current) {
+			return errRouteAutomatic
+		}
+		if ctrl.access != nil && len(ctrl.access.core.RouteTeams(name)) > 0 {
+			return errRouteInUse
+		}
+		return nil
+	})
+	if errors.Is(err, modelgroup.ErrGroupNotFound) && c.GetHeader("If-Match") != "" {
+		err = errRoutePrecondition
 	}
-
-	if !ctrl.groupStore.Delete(name) {
-		NotFound(c, "model group not found")
+	if respondMutatorError(c, name, "", err) {
 		return
 	}
 

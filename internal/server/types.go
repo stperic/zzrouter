@@ -92,6 +92,8 @@ func (r *ListModelsRequest) Validate() error {
 
 // ShowModelRequest represents a request to show model details
 type ShowModelRequest struct {
+	// Admit checks the resolved destination before any provider request.
+	Admit            func(model, provider string) bool
 	ModelName        string // Required: model name to show
 	Node             string // Optional: target specific host
 	App              string // Optional: filter by assigned_app

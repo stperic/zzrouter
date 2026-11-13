@@ -26,7 +26,7 @@ func mountPreviewRouter(t *testing.T, yamlBody string) *gin.Engine {
 	require.NoError(t, store.LoadFromBytes([]byte(yamlBody)))
 	store.SetPath(filepath.Join(t.TempDir(), "model_groups.yaml"))
 
-	ctrl := NewModelGroupsController(store, nil, nil, nil, nil, nil, nil, nil, "/model-groups/")
+	ctrl := NewModelGroupsController(ModelGroupsDependencies{Groups: store, RoutePrefix: "/model-groups/"})
 
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
@@ -192,7 +192,7 @@ func TestStrategyName_NormalizesUnknown(t *testing.T) {
 	assert.Equal(t, "fastest", strategyName(modelgroup.StrategyFastest))
 }
 
-func TestPickPreviewWinner_FastestPrefersLowerLatency(t *testing.T) {
+func TestPreviewStrategy_FastestPrefersLowerLatency(t *testing.T) {
 	lat := &stubLatency{m: map[string]struct {
 		dur     time.Duration
 		samples int
@@ -201,11 +201,11 @@ func TestPickPreviewWinner_FastestPrefersLowerLatency(t *testing.T) {
 		"r-slow": {500 * time.Millisecond, 3},
 	}}
 	survivors := []fallback.Candidate{{Name: "r-slow"}, {Name: "r-fast"}}
-	got := pickPreviewWinner(survivors, "fastest", lat, nil)
+	got := previewStrategy("fastest", lat, nil).Select(survivors)[0]
 	assert.Equal(t, "r-fast", got.Name)
 }
 
-func TestPickPreviewWinner_FastestSendsUntriedToTheEnd(t *testing.T) {
+func TestPreviewStrategy_FastestSendsUntriedToTheEnd(t *testing.T) {
 	// An observed replica beats an untried one: strategy_fastest sorts
 	// "Deployments with no data go to the end". The preview must agree,
 	// or a dry-run recommends a replica live dispatch would not pick.
@@ -222,12 +222,12 @@ func TestPickPreviewWinner_FastestSendsUntriedToTheEnd(t *testing.T) {
 		{{Name: "r-slow"}, {Name: "r-new"}},
 		{{Name: "r-new"}, {Name: "r-slow"}},
 	} {
-		got := pickPreviewWinner(survivors, "fastest", lat, nil)
+		got := previewStrategy("fastest", lat, nil).Select(survivors)[0]
 		assert.Equal(t, "r-slow", got.Name)
 	}
 }
 
-func TestPickPreviewWinner_FastestAllUntriedKeepsPriorityOrder(t *testing.T) {
+func TestPreviewStrategy_FastestAllUntriedKeepsPriorityOrder(t *testing.T) {
 	// With no data anywhere the live sort falls through to its priority
 	// tiebreak; survivors arrive priority-sorted, so the first wins.
 	lat := &stubLatency{m: map[string]struct {
@@ -235,14 +235,14 @@ func TestPickPreviewWinner_FastestAllUntriedKeepsPriorityOrder(t *testing.T) {
 		samples int
 	}{}}
 	survivors := []fallback.Candidate{{Name: "r-primary"}, {Name: "r-backup"}}
-	got := pickPreviewWinner(survivors, "fastest", lat, nil)
+	got := previewStrategy("fastest", lat, nil).Select(survivors)[0]
 	assert.Equal(t, "r-primary", got.Name)
 }
 
-func TestPickPreviewWinner_LeastLoadPrefersLowerInFlight(t *testing.T) {
+func TestPreviewStrategy_LeastLoadPrefersLowerInFlight(t *testing.T) {
 	loads := stubLoad{"r-busy": 7, "r-idle": 1}
 	survivors := []fallback.Candidate{{Name: "r-busy"}, {Name: "r-idle"}}
-	got := pickPreviewWinner(survivors, "least-load", nil, loads)
+	got := previewStrategy("least-load", nil, loads).Select(survivors)[0]
 	assert.Equal(t, "r-idle", got.Name)
 }
 

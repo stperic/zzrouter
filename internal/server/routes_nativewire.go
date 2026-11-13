@@ -59,7 +59,7 @@ func (s *Server) handleNativeWirePassthrough(c *gin.Context, mount, providerKey 
 		return
 	}
 
-	if !s.admitOpaqueForward(c, "/"+mount, resolved.Cloud) {
+	if !s.admitOpaqueForward(c, "/"+mount, providerKey, resolved.Cloud) {
 		return
 	}
 	_, release, ok := s.enforceAndAttribute(c, nativeWireLabel(mount), nil, nil)
@@ -100,7 +100,10 @@ func nativeWireLabel(mount string) string {
 // unenforced. Request-rate and concurrency limits need neither, and
 // Enforce applies them. billed marks a surface that forwards with this
 // node's own upstream credential, which a keyless caller would spend.
-func (s *Server) admitOpaqueForward(c *gin.Context, surface string, billed bool) bool {
+func (s *Server) admitOpaqueForward(c *gin.Context, surface, provider string, billed bool) bool {
+	if !s.access.AuthorizeProvider(c, provider) {
+		return false
+	}
 	ac := GetAccessContext(c)
 	if ac == nil {
 		if billed && !s.access.AnonymousCloudAllowed() {
@@ -123,6 +126,8 @@ func opaqueForwardLimit(ac *AccessContext) string {
 		return ""
 	}
 	switch {
+	case control.RoutesRestricted(ac):
+		return "its team allows only assigned routes"
 	case ac.Team != nil && len(ac.Team.AllowedModels) > 0:
 		return "its team limits which models it may use"
 	case control.HasSpendLimit(ac):

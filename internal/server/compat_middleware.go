@@ -73,7 +73,7 @@ func (a *AuthHandlers) OptionalAuthMiddleware() gin.HandlerFunc {
 		}
 
 		setAccessContext(c, ac)
-		c.Next()
+		a.observeClient(c)
 	}
 }
 

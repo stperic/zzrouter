@@ -465,7 +465,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		s.teamStore = teams.NewFileTeamStore(teamsPath)
 		if err := s.teamStore.Load(); err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				logger.Warn("Failed to load teams.yaml", "error", err)
+				return nil, fmt.Errorf("load teams.yaml: %w", err)
 			}
 		} else if teamCount := len(s.teamStore.List()); teamCount > 0 {
 			slog.Info("Teams loaded", "count", teamCount)
@@ -521,6 +521,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 
 	// Auth handlers (used by route registration)
 	s.auth = &AuthHandlers{
+		clients:         observability.NewClientActivity(utils.NowUTC()),
 		access:          s.access,
 		config:          s.config,
 		nodeConfigStore: s.nodeConfigStore,

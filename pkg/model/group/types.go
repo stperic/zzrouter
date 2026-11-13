@@ -5,6 +5,8 @@ package group
 
 import (
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 // StrategyType defines the replica selection strategy for a model group.
@@ -143,4 +145,9 @@ func (d Duration) MarshalYAML() (any, error) {
 		return "", nil
 	}
 	return d.Duration.String(), nil
+}
+
+// Available reports whether a route can resolve without a reaper tick.
+func (g ModelGroup) Available() bool {
+	return len(g.Replicas) > 0 && (g.ExpiresAt.IsZero() || utils.NowUTC().Before(g.ExpiresAt))
 }

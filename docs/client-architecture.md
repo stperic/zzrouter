@@ -21,6 +21,25 @@ flowchart TB
   OAuth --> Disk
 ```
 
+## Project terminology
+
+Use these terms consistently in the web console, terminal client and documentation.
+
+| Term | Meaning |
+| --- | --- |
+| Node | A machine running zzRouter. |
+| Coordinator | The role that manages the cluster and routes requests. |
+| Worker | A node's role when executing assigned work. A coordinator can also be a worker. |
+| Compute nodes | Overview inventory of machines providing compute, including the coordinator. Use Nodes in navigation. |
+| Local provider | A runtime operated on your own nodes, such as Ollama, vLLM, llama.cpp or ComfyUI. Local includes your remote servers and cloud VMs. |
+| Cloud provider | An external AI service, such as Groq, OpenRouter or OpenAI. |
+| Client | An application using the router through MCP or an API. Activity identities can group multiple apps sharing a key. |
+| Model registry | A model source such as Hugging Face. |
+
+A provider is a service/runtime, a node is a machine, and coordinator/worker are
+roles. UI role representations may repeat a machine; inventory/capacity totals
+must count its identity once. These presentation terms do not rename wire fields.
+
 ## Reusable Go code
 
 Both zzRouter and zztrace already use `github.com/stperic/common/mcp`. New shared
@@ -110,8 +129,11 @@ Its HTTP adapter owns the session proof and request lifetimes. Provider forms
 consume declared fields; access forms call KeysService/TeamsService routes.
 The browser contains no provider implementation, secret store or permission
 engine. `/me` explicitly projects existing key/team limits and allowed models;
-own usage is obtained through KeysService. Full principals and node configuration
-are never serialized to the browser.
+own usage is obtained through KeysService. Full principals and raw node
+configuration are not part of that response. Administrator inventory reads use
+the existing node and provider management projections. These include operational
+details such as addresses, hardware identifiers and declared provider endpoints;
+the console displays a smaller selection of those fields.
 
 Protected content is cleared before any session refresh. The adapter reads
 bootstrap and `/me`, then confirms the proof stayed unchanged before installing

@@ -24,15 +24,17 @@ type ModelToDelete struct {
 
 // DeleteModelsRequest represents the request body for model deletion
 type DeleteModelsRequest struct {
-	DefaultProvider string          `json:"-"`
-	Model           string          `json:"model,omitempty"`
-	Provider        string          `json:"provider,omitempty"`
-	Registry        string          `json:"registry,omitempty"`
-	SourceID        string          `json:"source_id,omitempty"`
-	Node            string          `json:"node,omitempty"`    // Target cluster node (for routing)
-	Pattern         string          `json:"pattern,omitempty"` // Pattern matching (e.g., "llama*")
-	Paths           []string        `json:"paths,omitempty"`   // Specific file paths
-	Models          []ModelToDelete `json:"models,omitempty"`  // Specific models with node/repo
+	// Admit checks the resolved destination for compatibility callers.
+	Admit           func(model, provider string) bool `json:"-"`
+	DefaultProvider string                            `json:"-"`
+	Model           string                            `json:"model,omitempty"`
+	Provider        string                            `json:"provider,omitempty"`
+	Registry        string                            `json:"registry,omitempty"`
+	SourceID        string                            `json:"source_id,omitempty"`
+	Node            string                            `json:"node,omitempty"`    // Target cluster node (for routing)
+	Pattern         string                            `json:"pattern,omitempty"` // Pattern matching (e.g., "llama*")
+	Paths           []string                          `json:"paths,omitempty"`   // Specific file paths
+	Models          []ModelToDelete                   `json:"models,omitempty"`  // Specific models with node/repo
 }
 
 // Validate validates the delete request

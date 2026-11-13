@@ -2,7 +2,6 @@ package quota
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/model/pricing"
@@ -156,53 +155,18 @@ func (e *Enforcer) Check(chain []QuotaScope, quotes []pricing.Quote) (Decision, 
 
 		// Budget reservation
 		if qs.Quotas.SpendLimit > 0 {
-			free := len(quotes) > 0
-			for _, quote := range quotes {
-				if quote.Rates == nil {
-					e.cancelReservations(reservations)
-					e.metrics.ObserveDecision(qs.Scope, "denied", "model_unpriced")
-					return Decision{Reason: "model_unpriced", Detail: fmt.Sprintf("model %q on provider %q has no usable pricing; ask an administrator to enable pricing and POST rates to /zzrouter/v1/pricing/overrides", quote.Model, quote.Provider), Scope: qs.Scope, EntityID: qs.EntityID}, nil
-				}
-				free = free && !quote.Rates.HasPricing() && quote.Rates.CacheReadCostPerToken == 0 && quote.Rates.OutputCostPerReasoningToken == 0
+			estimatedCostMicro, decision := budgetEstimate(qs, quotes)
+			if !decision.Allowed {
+				e.cancelReservations(reservations)
+				e.metrics.ObserveDecision(qs.Scope, "denied", decision.Reason)
+				return decision, nil
 			}
 			if e.tracker == nil {
 				continue
 			}
-
 			scope := SpendScope{Kind: qs.Scope, EntityID: qs.EntityID}
 			limitMicro := qs.Quotas.SpendLimitMicro()
 			period := ParsePeriod(qs.Quotas.ResetPeriod)
-			// Per-request budget reservation estimate.
-			//
-			// When DefaultMaxTokens is set explicitly, use it × 10µUSD
-			// (the calibration constant: ~$0.00001/token across most
-			// frontier models). When it's unset, derive a sane
-			// reservation from the spend limit itself instead of a
-			// flat 1024-token fallback.
-			//
-			// Why: a flat fallback ($0.01024 per reservation) silently
-			// breaks any key with a spend limit below ~$0.01 — first
-			// reservation trips even though actual cost is sub-cent.
-			// The cap (≤ DefaultMaxTokensFallback × 10µ) preserves
-			// existing behavior for high-budget keys; large limits
-			// keep the historic estimate, which still gives 5+
-			// concurrent reservations before tripping.
-			var estimatedCostMicro int64
-			if qs.Quotas.DefaultMaxTokens > 0 {
-				estimatedCostMicro = int64(qs.Quotas.DefaultMaxTokens) * 10
-			} else {
-				estimatedCostMicro = limitMicro / 2
-				if estimatedCostMicro < MinReservationMicro {
-					estimatedCostMicro = MinReservationMicro
-				}
-				if max := int64(DefaultMaxTokensFallback) * 10; estimatedCostMicro > max {
-					estimatedCostMicro = max
-				}
-			}
-
-			if free {
-				estimatedCostMicro = 0
-			}
 
 			if !e.tracker.ReserveBudget(scope, limitMicro, period, estimatedCostMicro) {
 				e.cancelReservations(reservations)

@@ -102,7 +102,7 @@ func (s *Server) admitImages(c *gin.Context, model string, body []byte, resolved
 // Provider-only affinity cannot identify a model among multiple matching replicas;
 // that evidence remains unknown, without redirecting a stateful continuation.
 func (s *Server) responseAffinityTarget(model, provider string) *resolver.Resolved {
-	target := &resolver.Resolved{ModelName: s.modelIdentity(model), Provider: provider}
+	target := &resolver.Resolved{OriginalName: model, ModelName: s.modelIdentity(model), Provider: provider}
 	if s.model == nil || s.model.Groups == nil {
 		return target
 	}
@@ -120,6 +120,9 @@ func (s *Server) responseAffinityTarget(model, provider string) *resolver.Resolv
 		}
 		target.ModelName, target.Node = rep.Model, rep.Node
 		matched = true
+	}
+	if matched {
+		target.GroupName = model
 	}
 	return target
 }

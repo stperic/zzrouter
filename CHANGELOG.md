@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- Align all console views around selection, read-only details and explicit editing
+  in one nonmodal side panel. Share creation and Save/Cancel controls, preserve
+  drafts and list/map context, and read current state after saving. Add consistent
+  mobile panels, keyboard selection and an integrated client connection guide.
+- Bind forwarded model requests to their trusted provider identity, rejecting
+  contradictory model qualifiers before worker dispatch. Require cluster protocol
+  23 on every node so older workers cannot bypass team provider restrictions.
+
+- Add a console Routes workspace with destination editing, team assignments,
+  shared-policy previews and conditional saves. Teams can permit direct models,
+  assigned routes only, or no inference; keys inherit the policy. Enforce exact
+  route identity, destination permissions, expiry and opaque-operation refusals
+  in Go. Publish permitted route aliases consistently across OpenAI and Ollama
+  discovery. Reuse live routing strategies and quota checks for read-only previews.
+
+- Redesign console Keys & teams with searchable lists, right-side editors,
+  explicit team selection, inline team creation and visible inherited access.
+  Add enforced All/Selected/None provider policies with Local and Cloud provider
+  pickers and optional model narrowing. Teams own provider permissions and usage
+  limits; keys select a team and preview inherited rules. Show shared USD budgets
+  with recorded usage, reservations, remaining allowance and UTC reset, retaining
+  existing individual key limits read-only. Align form controls and action rows.
+  Reject invalid persisted team policies at startup and retire active provider
+  browser sessions when their team provider policy changes.
+
+- Add a clickable console topology for clients, coordinator, compute nodes and
+  cloud providers. Show the coordinator's compute role without double-counting
+  machines, prioritize local providers, edit per-node provider enablement and
+  guide node pairing. Show bounded authenticated client activity separately
+  from owned MCP authorizations, with explicit observation timestamps. Use
+  bundled Cytoscape.js and ELK for a zoomable topology, larger status dots,
+  provider identity marks and a right-hand details panel that keeps the map
+  interactive. Show each node's local-provider branches by default, with details
+  scoped to the selected provider and machine. Preserve zoom during refresh,
+  keep selected icons visible beside details and offer an accessible list view.
+  Improve fitted text with larger clickable labels and layout space measured
+  from wrapped names. Label clients explicitly with their observed key names.
+
 - Open the zzRouter console when browsing the server root. Preserve Ollama
   client handshakes and JSON discovery without showing compatibility text to browsers.
 

@@ -1,0 +1,16 @@
+{
+  "name": "zzrouter-console-vendor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "cytoscape": "3.35.0",
+    "elkjs": "0.12.1"
+  },
+  "devDependencies": {
+    "@lobehub/icons-static-svg": "1.102.0",
+    "esbuild": "0.28.2"
+  }
+}

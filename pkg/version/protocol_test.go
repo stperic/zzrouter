@@ -357,3 +357,12 @@ func TestPlatformRecipesRequireProtocol21(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProviderBindingRequiresUpgradedWorkers(t *testing.T) {
+	if ClusterProtocolVersion < 23 || MinClusterProtocolVersion < 23 {
+		t.Fatalf("trusted provider binding requires protocol 23/23, got %d/%d", ClusterProtocolVersion, MinClusterProtocolVersion)
+	}
+	if err := LocalProtocolWindow().Check(22); err == nil {
+		t.Fatal("protocol-22 workers can reinterpret a trusted provider binding")
+	}
+}

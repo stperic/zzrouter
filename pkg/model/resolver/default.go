@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -36,6 +37,10 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 	if ref.Registry != "" {
 		name, provider, embedded = modelName, ref.Provider, ""
 	}
+	// A trusted worker-hop binding must not be reinterpreted by model grammar.
+	if provider != "" && ref.Provider != "" && !strings.EqualFold(provider, ref.Provider) {
+		return nil, httperr.Error{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "model_provider_conflict", Message: "The model provider qualifier conflicts with the selected provider"}
+	}
 	if provider == "" {
 		provider = ref.Provider
 	}
@@ -63,6 +68,10 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 	if err != nil {
 		return nil, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Code: string(httperr.CodeClusterUnavailable), Message: "model inventory is unavailable; retry when the cluster is reachable"}
 	}
+	replicas, err = permittedReplicas(replicas, ref.AllowProvider)
+	if err != nil {
+		return nil, err
+	}
 	if len(replicas) == 0 && warm {
 		resolved.ModelName, resolved.Provider = warmModel, warmProvider
 	}
@@ -80,6 +89,11 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 			return r.selectReplica(resolved, replicas, replica, localInference)
 		}
 	}
+	return r.selectRemoteReplica(resolved, replicas, localInference)
+}
+
+// selectRemoteReplica requires a unique remote node after local preference.
+func (r *Default) selectRemoteReplica(resolved *Resolved, replicas []*cache.CachedModel, localInference bool) (*Resolved, error) {
 	nodes := map[string]*cache.CachedModel{}
 	for _, replica := range replicas {
 		nodes[strings.ToLower(replica.Node)] = replica
@@ -87,15 +101,27 @@ func (r *Default) Resolve(ctx context.Context, ref Reference) (*Resolved, error)
 	if len(nodes) > 1 {
 		choices := make([]string, 0, len(nodes))
 		for _, replica := range nodes {
-			choices = append(choices, modelName+"@"+replica.Node)
+			choices = append(choices, resolved.OriginalName+"@"+replica.Node)
 		}
 		sort.Strings(choices)
-		return nil, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: string(httperr.CodeModelNodeAmbiguous), Message: fmt.Sprintf("model %q is available on several nodes; choose %s", modelName, strings.Join(choices, ", "))}
+		return nil, httperr.Error{Status: http.StatusConflict, Type: "invalid_request_error", Code: string(httperr.CodeModelNodeAmbiguous), Message: fmt.Sprintf("model %q is available on several nodes; choose %s", resolved.OriginalName, strings.Join(choices, ", "))}
 	}
 	if len(replicas) > 0 {
 		return r.selectReplica(resolved, replicas, replicas[0], localInference)
 	}
 	return resolved, nil
+}
+
+// permittedReplicas narrows a catalog snapshot without changing its shared slice.
+func permittedReplicas(replicas []*cache.CachedModel, allow func(string) bool) ([]*cache.CachedModel, error) {
+	if len(replicas) == 0 || allow == nil {
+		return replicas, nil
+	}
+	kept := slices.DeleteFunc(slices.Clone(replicas), func(replica *cache.CachedModel) bool { return !allow(replica.Provider) })
+	if len(kept) == 0 {
+		return nil, httperr.Error{Status: http.StatusForbidden, Type: "permission_error", Code: "provider_access_denied", Message: "No permitted provider serves this model"}
+	}
+	return kept, nil
 }
 
 // selectReplica commits the catalog identity before completing its provider binding.

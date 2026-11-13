@@ -128,17 +128,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 
 	// Model Groups: List and get model groups (with cooldown status)
 	if s.model.Groups != nil {
-		s.controllers.ModelGroups = NewModelGroupsController(
-			s.model.Groups,
-			s.providers.cooldowns.Deployments(),
-			s.providers.loadTracker,
-			s.providers.latencyTracker,
-			s.providers.healthChecker,
-			s.inference.logStore,
-			s.providers.routeEvents,
-			s.model.Pricing,
-			s.config.Coordinator.Routing.GetRoutePrefix(),
-		)
+		s.controllers.ModelGroups = NewModelGroupsController(ModelGroupsDependencies{Groups: s.model.Groups, Cooldowns: s.providers.cooldowns.Deployments(), LoadTracker: s.providers.loadTracker, LatencyTracker: s.providers.latencyTracker, HealthChecker: s.providers.healthChecker, LogStore: s.inference.logStore, RouteEvents: s.providers.routeEvents, Pricing: s.model.Pricing, RoutePrefix: s.config.Coordinator.Routing.GetRoutePrefix(), Access: s.access, ProviderCooldowns: s.providers.cooldowns.Providers(), Quote: s.targetQuote})
 		s.controllers.ModelGroups.RegisterPublicRoutes(router, s.idempotent)
 	}
 

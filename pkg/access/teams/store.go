@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -34,14 +35,14 @@ type FileTeamStore struct {
 	teams map[string]*Team
 	path  string
 
-	// hasGatedTeam is a lock-free snapshot of "any stored team has AllowedModels
-	// set". Read on the anonymous compat hot path without touching the store
+	// hasGatedTeam is a lock-free snapshot of any model or provider restriction.
+	// Read on the anonymous compat hot path without touching the store
 	// mutex — this is the gate that stops unauthenticated /v1/* and /api/*
-	// traffic on a node where any team restricts models.
+	// traffic on a node where any team restricts models or providers.
 	hasGatedTeam atomic.Bool
 }
 
-// HasGatedTeam reports whether any stored team has AllowedModels set.
+// HasGatedTeam reports whether any stored team restricts models or providers.
 // Lock-free; safe to call on the request hot path.
 func (s *FileTeamStore) HasGatedTeam() bool {
 	return s.hasGatedTeam.Load()
@@ -51,7 +52,7 @@ func (s *FileTeamStore) HasGatedTeam() bool {
 // Must be called with the write lock held.
 func (s *FileTeamStore) recomputeGated() {
 	for _, t := range s.teams {
-		if len(t.AllowedModels) > 0 {
+		if len(t.AllowedModels) > 0 || t.ProviderAccess.Restricted() || t.RouteAccess.Restricted() {
 			s.hasGatedTeam.Store(true)
 			return
 		}
@@ -75,12 +76,39 @@ func (s *FileTeamStore) Load() error {
 	}
 
 	var cfg teamsFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return fmt.Errorf("failed to parse teams config: %w", err)
+	}
+
+	// Decode effective mappings as well: YAML null (including aliases/merges)
+	// skips a value unmarshaller, but must not mean an omitted legacy policy.
+	var shape struct {
+		Teams map[string]map[string]any `yaml:"teams"`
+	}
+	if err := yaml.Unmarshal(data, &shape); err != nil {
+		return err
+	}
+	for id, fields := range shape.Teams {
+		for _, field := range []string{"provider_access", "route_access"} {
+			if value, present := fields[field]; present && value == nil {
+				return fmt.Errorf("team %q: %s must be a policy object", id, field)
+			}
+		}
 	}
 
 	loaded := make(map[string]*Team, len(cfg.Teams))
 	for id, team := range cfg.Teams {
+		if team == nil {
+			return fmt.Errorf("team %q must be an object", id)
+		}
+		if err := team.RouteAccess.Validate(); err != nil {
+			return err
+		}
+		if err := team.ProviderAccess.Validate(); err != nil {
+			return fmt.Errorf("team %q: %w", id, err)
+		}
 		team.ID = id
 		if team.Kind == "" {
 			return fmt.Errorf("team %q: missing kind (expected %q or %q)", id, KindPersonal, KindShared)
@@ -117,6 +145,12 @@ func (s *FileTeamStore) List() map[string]*Team {
 
 // Create adds a new team.
 func (s *FileTeamStore) Create(id string, team *Team) error {
+	if err := team.RouteAccess.Validate(); err != nil {
+		return err
+	}
+	if err := team.ProviderAccess.Validate(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -144,6 +178,12 @@ func (s *FileTeamStore) Create(id string, team *Team) error {
 // the existing record — callers cannot convert a personal team to shared or
 // vice versa.
 func (s *FileTeamStore) Update(id string, team *Team) error {
+	if err := team.RouteAccess.Validate(); err != nil {
+		return err
+	}
+	if err := team.ProviderAccess.Validate(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

@@ -6,7 +6,7 @@ const origin = 'https://router.example';
 const response = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
 const reply = data => response({ data });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-const click = async (root, label) => { button(root, label).dispatchEvent(new Event('click')); await drain(); };
+const click = async (root, label) => { const control = button(root, label); control.dispatchEvent(new Event('click')); if (control.type === 'submit') { let form = control.parent; while (form && form.tag !== 'form') form = form.parent; form?.dispatchEvent(new Event('submit', { cancelable: true })); } await drain(); };
 const submit = async root => { find(root, node => node.tag === 'form').dispatchEvent(new Event('submit', { cancelable: true })); await drain(); };
 const focus = async () => { window.dispatchEvent(new Event('focus')); await drain(); };
 let imports = 0;
@@ -18,12 +18,25 @@ async function consoleFixture(t, { own = false, managed = false, expiresAt, iden
     BroadcastChannel: class extends EventTarget { constructor() { super(); channel = this; } postMessage() {} },
     navigator: { clipboard: { writeText: async value => { clipboard.push(value); } } },
   });
+  const entries = [{ hash: '#overview', state: { zzrouterConsoleIndex: 0 } }];
+  let position = 0;
+  location.hash = '#overview';
+  window.history = {
+    state: entries[0].state,
+    replaceState(state, _, hash) { entries[position] = { state, hash }; this.state = state; location.hash = hash; },
+    pushState(state, _, hash) { entries.splice(++position); entries.push({ state, hash }); this.state = state; location.hash = hash; },
+    go(delta) { position += delta; this.state = entries[position].state; location.hash = entries[position].hash; queueMicrotask(() => window.dispatchEvent(new Event('popstate'))); },
+  };
   const state = { authenticated: true, csrf: 'proof-A', issuer: origin, node_name: 'Fixture', expires_at: expiresAt };
   let identity = { id: own ? 'mine' : 'admin', name: 'Operator', role: 'admin', is_virtual: own, expires_at: identityExpiry, limits: {}, team: null, usage: null };
   const record = { id: 'mine', name: 'My administrator', role: 'admin' };
-  const catalog = ['openai', 'groq'].map(key => ({ key, name: key, is_cloud: true, connection_supported: true }));
+  const catalog = [
+    ...['openai', 'groq'].map(key => ({ key, name: key, kind: 'cloud', is_cloud: true, available: key === 'openai', connection_supported: true })),
+    { key: 'huggingface', name: 'huggingface', kind: 'registry', is_cloud: false, connection_supported: true },
+  ];
   const calls = [];
   const held = new Map();
+  const failedReads = new Set();
   let failProbe = false;
   t.mock.method(globalThis, 'fetch', async (path, options) => {
     calls.push({ path, options });
@@ -33,9 +46,10 @@ async function consoleFixture(t, { own = false, managed = false, expiresAt, iden
       pending.sent = true;
       pending.signal = options.signal;
       pending.commit?.();
-      options.signal.addEventListener('abort', () => pending.reject(new Error('request canceled')), { once: true });
+      if (!pending.ignoreAbort) options.signal.addEventListener('abort', () => pending.reject(new Error('request canceled')), { once: true });
       return pending.promise;
     }
+    if (failedReads.has(path) && method === 'GET') return response({ detail: 'Synthetic read unavailable' }, 503);
     if (path.endsWith('/session')) {
       if (method === 'GET' && failProbe) throw new Error('probe offline');
       if (method === 'POST') { state.authenticated = true; state.csrf = 'proof-new-login'; }
@@ -43,9 +57,12 @@ async function consoleFixture(t, { own = false, managed = false, expiresAt, iden
       return reply({ ...state });
     }
     if (path.endsWith('/me')) return state.authenticated ? reply(identity) : response({ detail: 'No browser identity' }, 401);
-    if (path === '/health') return response({ version: 'fixture' });
+    if (path.endsWith('/nodes')) return response({ data: [{ name: 'Fixture', cluster_role: 'coordinator', health_status: 'healthy', os: 'synthetic', version: 'fixture', providers: [] }], total: 1, has_more: false });
+    if (path.endsWith('/providers')) return response({ data: catalog.map(entry => ({ name: entry.key, node: 'Fixture', kind: entry.kind, mode: entry.kind, enabled: false, installed: false, managed: false, version: '' })), total: catalog.length, has_more: false });
     if (path.includes('/providers/catalog')) return reply(catalog);
-    if (path.endsWith('/me/connections') || path.endsWith('/teams')) return reply([]);
+    if (path.endsWith('/clients')) return response({ data: [], metadata: { observed_since: '2026-01-01T00:00:00Z' } });
+    if (path.endsWith('/me/connections')) return reply([]);
+    if (path.endsWith('/teams')) return reply([{ id: 'fixture-team', name: 'Fixture team', kind: 'shared' }]);
     if (path.endsWith('/keys') && method === 'GET') return reply(own || managed ? [record] : []);
     if (path.endsWith('/keys/mine') && method === 'GET') return reply(record);
     if (path.endsWith('/keys') && method === 'POST') return reply({ id: 'created', key: 'synthetic-created-key', role: 'user' });
@@ -61,27 +78,89 @@ async function consoleFixture(t, { own = false, managed = false, expiresAt, iden
     app, state, clipboard, calls,
     hold(method, path, commit) { const operation = { ...deferred(), commit }; held.set(`${method} /zzrouter/v1${path}`, operation); return operation; },
     unhold(method, path) { held.delete(`${method} /zzrouter/v1${path}`); },
+    failRead(path) { failedReads.add('/zzrouter/v1' + path); },
     failProbe(value) { failProbe = value; },
     identity(value) { identity = value; },
     authChanged() { const event = new Event('message'); event.data = 'auth-state-changed'; channel.dispatchEvent(event); },
   };
 }
 
+test('actual console routes registry categories and Refresh without resetting the signed-in session', async t => {
+  const f = await consoleFixture(t);
+  await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await provider(f, 'openai');
+  assert.equal(find(f.app, node => node.dataset.provider === 'openai').getAttribute('aria-current'), 'true');
+  await click(f.app, 'Model registries');
+  await provider(f, 'huggingface');
+  assert.ok(find(f.app, node => node.dataset.provider === 'huggingface'));
+  assert.match(f.app.textContent, /huggingface/);
+  assert.equal(button(f.app, 'Model registries').getAttribute('aria-current'), 'true');
+  const candidate = named(f.app, 'token');
+  candidate.value = 'synthetic-registry-candidate';
+  const before = f.calls.length;
+  await click(f.app, 'Refresh');
+  assert.equal(candidate.value, '', 'Refresh leaves and scrubs the previous form');
+  assert.equal(button(f.app, 'Model registries').getAttribute('aria-current'), 'true');
+  assert.equal(walk(f.app).some(node => node.getAttribute('name') === 'token'), false, 'refresh returns to details');
+  assert.ok(f.calls.slice(before).every(call => !call.path.endsWith('/session')), 'Refresh uses the page lifetime without replacing authority');
+});
+
+for (const failed of ['/nodes', '/providers/catalog?kind=all']) {
+  test(`actual Overview preserves independent inventory when ${failed} fails`, async t => {
+    const f = await consoleFixture(t);
+    f.failRead(failed);
+    await click(f.app, 'Refresh');
+    assert.match(f.app.textContent, /Synthetic read unavailable/);
+    if (failed === '/nodes') {
+      assert.match(f.app.textContent, /Cloud providers.*openaiConfigured/s);
+      assert.match(f.app.textContent, /Node counts unavailable/);
+    } else {
+      assert.match(f.app.textContent, /CoordinatorFixtureCoordinator · Healthy/);
+    }
+    assert.ok(button(f.app, '+ Connect client'));
+    assert.ok(button(f.app, 'Keys & teams'));
+  });
+}
+
+test('late Overview inventory cannot replace a newly selected category', async t => {
+  const f = await consoleFixture(t);
+  const read = f.hold('GET', '/nodes');
+  read.ignoreAbort = true;
+  await click(f.app, 'Refresh');
+  assert.equal(read.sent, true);
+  await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await click(f.app, 'Model registries');
+  await provider(f, 'huggingface');
+  assert.equal(read.signal.aborted, true);
+  read.resolve(response({ data: [{ name: 'late-node', cluster_role: 'worker', health_status: 'healthy', providers: [] }], total: 1, has_more: false }));
+  await drain();
+  assert.equal(button(f.app, 'Model registries').getAttribute('aria-current'), 'true');
+  assert.ok(find(f.app, node => node.dataset.provider === 'huggingface'));
+  assert.doesNotMatch(f.app.textContent, /late-node|NODES & LOCAL PROVIDERS/);
+});
+
 async function createForm(fixture) {
   await click(fixture.app, 'Keys & teams');
-  await click(fixture.app, 'Create key');
+  await click(fixture.app, '+ Create key');
   named(fixture.app, 'id').value = 'created';
   named(fixture.app, 'name').value = 'Created key';
+  named(fixture.app, 'team_id').value = 'fixture-team';
 }
-async function ownForm(fixture) { await click(fixture.app, 'Keys & teams'); await click(fixture.app, 'Manage'); }
-async function provider(fixture, key) {
+async function ownForm(fixture) { await click(fixture.app, 'Keys & teams'); await click(fixture.app, 'My administrator'); await click(fixture.app, 'Edit'); }
+async function provider(fixture, key, edit = true) {
   find(fixture.app, node => node.dataset.provider === key).dispatchEvent(new Event('click'));
   await drain();
+  const action = walk(fixture.app).find(node => node.tag === 'button' && ['Connect', 'Edit'].includes(node.textContent));
+  if (edit && action) { action.dispatchEvent(new Event('click')); await drain(); }
 }
 
 test('focus preserves the selected provider and exact masked candidate without installing another identity', async t => {
   const f = await consoleFixture(t);
   await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await provider(f, 'openai');
   await provider(f, 'groq');
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-groq-candidate';
@@ -170,6 +249,8 @@ test('lost own-rotation response ends the exception, clears admin content and ex
 test('a failed probe preserves a provider form but blocks changes until a successful probe', async t => {
   const f = await consoleFixture(t);
   await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await provider(f, 'openai');
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-candidate';
   f.failProbe(true);
@@ -177,12 +258,12 @@ test('a failed probe preserves a provider form but blocks changes until a succes
   assert.equal(candidate.value, 'synthetic-candidate');
   assert.match(f.app.textContent, /New changes are paused/);
   assert.equal(find(f.app, node => node.tag === 'fieldset').inert, true);
-  await click(f.app, 'Save credentials');
+  await click(f.app, 'Save changes');
   assert.equal(f.calls.some(call => call.options.method === 'PUT'), false);
   f.failProbe(false);
   await click(f.app, 'Verify session');
   assert.equal(find(f.app, node => node.tag === 'fieldset').inert, false);
-  await click(f.app, 'Save credentials');
+  await click(f.app, 'Save changes');
   assert.equal(f.calls.filter(call => call.options.method === 'PUT').length, 1);
 });
 
@@ -234,7 +315,7 @@ test('pending create disables and guards Close, editor replacement, tabs, sideba
   await createForm(f);
   const id = named(f.app, 'id');
   await submit(f.app);
-  for (const label of ['Close', 'Create key', 'Teams', 'Providers', 'Sign out']) {
+  for (const label of ['Cancel', '+ Create key', 'Teams', 'Providers', 'Sign out']) {
     const control = button(f.app, label);
     assert.equal(control.disabled, true, label);
     // Calling the listener bypasses disabled, proving the handler guard too.
@@ -257,27 +338,40 @@ test('pending create disables and guards Close, editor replacement, tabs, sideba
 test('pending provider save blocks provider replacement and reload; diagnostic Test remains cancelable', async t => {
   const f = await consoleFixture(t);
   await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await provider(f, 'openai');
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-candidate';
   const save = f.hold('PUT', '/providers/openai/connection');
-  await click(f.app, 'Save credentials');
+  await click(f.app, 'Save changes');
   assert.equal(find(f.app, node => node.dataset.provider === 'groq').disabled, true);
-  assert.equal(button(f.app, 'Reload connection').disabled, true);
+  assert.equal(button(f.app, 'Refresh').disabled, true);
+  for (const label of ['Cloud providers', 'Local providers', 'Model registries', 'Refresh']) {
+    const control = button(f.app, label);
+    assert.equal(control.disabled, true, label);
+    control.listeners.get('click')({ currentTarget: control });
+    await drain();
+    assert.equal(named(f.app, 'token'), candidate, `${label} must keep the save owner`);
+  }
   await provider(f, 'groq');
-  await click(f.app, 'Reload connection');
+  await click(f.app, 'Refresh');
   assert.equal(named(f.app, 'token'), candidate);
   assert.equal(save.signal.aborted, false);
   save.resolve(reply({ saved: true, durable: true, active: true, published: true }));
   await drain();
-  await click(f.app, 'Reload connection');
-  named(f.app, 'token').value = 'synthetic-test-candidate';
+  await click(f.app, 'Refresh');
+  await provider(f, 'openai');
+  const testedCandidate = named(f.app, 'token');
+  testedCandidate.value = 'synthetic-test-candidate';
   const diagnostic = f.hold('POST', '/providers/openai/connection/test');
   await click(f.app, 'Test candidate');
   const unload = new Event('beforeunload', { cancelable: true });
   window.dispatchEvent(unload);
   assert.equal(unload.defaultPrevented, false);
-  await provider(f, 'groq');
+  await click(f.app, 'Local providers');
   assert.equal(diagnostic.signal.aborted, true);
+  assert.equal(testedCandidate.value, '', 'category navigation scrubs the diagnostic candidate');
+  assert.equal(button(f.app, 'Local providers').getAttribute('aria-current'), 'true');
   assert.doesNotMatch(f.app.textContent, /outcome may be unknown/);
 });
 
@@ -318,7 +412,7 @@ for (const kind of ['create', 'rotate', 'own rotation']) {
     operation.resolve(reply({ key: 'synthetic-awaiting-verification' }));
     await drain();
     assert.equal(walk(f.app).some(node => node.value === 'synthetic-awaiting-verification'), false, 'do not reveal while authority is being observed');
-    assert.equal(button(f.app, 'Close').disabled, true, 'keep owner/navigation guarded after response but before verification');
+    assert.equal(button(f.app, 'Cancel').disabled, true, 'keep owner/navigation guarded after response but before verification');
     f.unhold('GET', '/session');
     probe.resolve(reply({ ...f.state }));
     await drain();
@@ -363,7 +457,7 @@ for (const retry of ['same anchor', 'changed anchor', 'auth reset']) {
     probe.reject(new Error('read interrupted'));
     await drain();
     assert.equal(walk(f.app).some(node => node.value === 'synthetic-held-replacement'), false);
-    assert.equal(button(f.app, 'Close').disabled, true);
+    assert.equal(button(f.app, 'Cancel').disabled, true);
     assert.match(f.app.textContent, /New changes are paused/);
     const sentWrites = f.calls.filter(call => call.options.method === 'POST').length;
     f.unhold('GET', '/session');
@@ -396,7 +490,7 @@ test('an older matching probe cannot release a key while newer authority is pend
   older.resolve(reply({ ...f.state }));
   await drain();
   assert.equal(walk(f.app).some(node => node.value === 'synthetic-pending-latest-probe'), false);
-  assert.equal(button(f.app, 'Close').disabled, true, 'the newer authority check still owns verification');
+  assert.equal(button(f.app, 'Cancel').disabled, true, 'the newer authority check still owns verification');
   f.state.csrf = 'proof-B';
   f.unhold('GET', '/session');
   newer.resolve(reply({ ...f.state }));
@@ -412,7 +506,7 @@ test('expiry aborts a received key waiting after probe failure', async t => {
   t.mock.method(globalThis, 'setTimeout', (fn, delay) => { timers.push({ fn, delay }); return timers.length; });
   t.mock.method(globalThis, 'clearTimeout', () => {});
   const f = await consoleFixture(t, { own: true, expiresAt: new Date(now + 120000).toISOString(), identityExpiry: new Date(now + 60000).toISOString() });
-  const expiry = timers.at(-1);
+  const expiry = timers.find(timer => timer.delay === 60000);
   const operation = f.hold('POST', '/keys/mine/rotate', () => { f.state.authenticated = false; });
   await ownForm(f);
   await click(f.app, 'Rotate key');
@@ -423,7 +517,7 @@ test('expiry aborts a received key waiting after probe failure', async t => {
   probe.reject(new Error('probe failed'));
   await drain();
   assert.equal(walk(f.app).some(node => node.value === 'synthetic-expiring-hidden-key'), false);
-  assert.equal(button(f.app, 'Close').disabled, true);
+  assert.equal(button(f.app, 'Cancel').disabled, true);
   assert.equal(expiry.delay, 60000, 'original earliest expiry remains scheduled during verification');
   f.unhold('GET', '/session');
   const reads = f.calls.filter(call => call.path.endsWith('/session')).length;
@@ -468,6 +562,8 @@ test('lost own-rotation guidance survives failed recovery and retries until succ
 test('explicit sign-out works after a failed focus probe and clears protected values before sending', async t => {
   const f = await consoleFixture(t);
   await click(f.app, 'Providers');
+  await click(f.app, 'Cloud providers');
+  await provider(f, 'openai');
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-signout-candidate';
   f.failProbe(true);
@@ -534,3 +630,101 @@ for (const kind of ['create', 'rotate another key']) {
     assert.equal(walk(f.app).some(node => node.value === 'synthetic-unrelated-key'), false);
   });
 }
+
+test('node links open details and browser Back keeps pending pairing history intact', async t => {
+ const f = await consoleFixture(t);
+ await click(f.app, 'Nodes');
+ find(f.app, node => node.dataset.node === 'Fixture').dispatchEvent(new Event('click'));
+ await drain();
+ assert.match(f.app.textContent, /Node details/);
+ assert.match(location.hash, /item=node%2FFixture/);
+ find(f.app, element => element.getAttribute('aria-label') === 'Close node details').dispatchEvent(new Event('click'));
+ await drain();
+ await click(f.app, '+ Add node');
+ const before = location.hash;
+ named(f.app, 'worker_url').value = 'https://new-node.example:9091';
+ named(f.app, 'worker_fingerprint').value = 'synthetic-fingerprint';
+ named(f.app, 'pairing_code').value = 'synthetic-code';
+ const held = f.hold('POST', '/cluster/pairing/accept');
+ await submit(f.app);
+ assert.equal(held.sent, true);
+ assert.equal(find(f.app, element => element.getAttribute('aria-label') === 'Close add node').disabled, true);
+ window.history.go(-1);
+ await drain();
+ await drain();
+ assert.equal(location.hash, before);
+ assert.match(f.app.textContent, /Add a compute node/);
+ held.resolve(response({ node_name: 'Fixture' }));
+ await drain();
+ assert.match(f.app.textContent, /Fixture is paired and healthy/);
+ window.history.go(-1);
+ await drain();
+ assert.equal(location.hash, '#nodes', 'the previous history entry was preserved');
+ assert.doesNotMatch(f.app.textContent, /Add a compute node/);
+});
+
+test('overview selection and Back keep the map alive and guard in-flight pairing', async t => {
+ const f = await consoleFixture(t);
+ const map = find(f.app, element => element.getAttribute('aria-label') === 'Network map');
+ const reads = f.calls.filter(call => call.path === '/nodes').length;
+ find(f.app, element => element.dataset.node === 'Fixture').dispatchEvent(new Event('click'));
+ await drain();
+ assert.match(location.hash, /item=node%2FFixture/);
+ assert.ok(f.app.contains(map), 'selecting a node preserves the map instance');
+ assert.equal(f.calls.filter(call => call.path === '/nodes').length, reads);
+ await click(f.app, '+ Add node');
+ const before = location.hash;
+ named(f.app, 'worker_url').value = 'https://new-node.example:9091';
+ named(f.app, 'worker_fingerprint').value = 'synthetic-fingerprint';
+ named(f.app, 'pairing_code').value = 'synthetic-code';
+ const held = f.hold('POST', '/cluster/pairing/accept');
+ await submit(f.app);
+ window.history.go(-1);
+ await drain(); await drain();
+ assert.equal(location.hash, before);
+ assert.match(f.app.textContent, /Add a compute node/);
+ held.resolve(response({ node_name: 'Fixture' }));
+ await drain();
+ window.history.go(-1);
+ await drain();
+ assert.match(location.hash, /item=node%2FFixture/);
+ assert.match(f.app.textContent, /Node details/);
+ assert.ok(f.app.contains(map), 'Back changes only the side panel');
+ window.history.go(-1);
+ await drain();
+ assert.equal(location.hash, '#overview');
+ assert.ok(!walk(f.app).some(element => element.tag === 'dialog'));
+ assert.ok(f.app.contains(map));
+});
+
+test('declined navigation and Back retain the dirty draft and its route, without duplicate prompts', async t => {
+  const f = await consoleFixture(t);
+  await createForm(f);
+  const form = find(f.app, node => node.tag === 'form');
+  form.dispatchEvent(new Event('input'));
+  const hash = location.hash;
+  let prompts = 0;
+  globalThis.confirm = () => { prompts++; return false; };
+  await click(f.app, 'Nodes');
+  assert.equal(location.hash, hash); assert.ok(f.app.contains(form));
+  window.history.go(-1); await drain(); await drain();
+  assert.equal(location.hash, hash); assert.ok(f.app.contains(form));
+  assert.equal(prompts, 2);
+  const unload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(unload); assert.equal(unload.defaultPrevented, true);
+  globalThis.confirm = () => true;
+  await click(f.app, 'Cancel');
+  assert.equal(walk(f.app).some(node => node.tag === 'dialog'), false);
+});
+
+test('a slow access Refresh cannot replace a newly opened dirty editor', async t => {
+  const f = await consoleFixture(t);
+  await click(f.app, 'Keys & teams');
+  const read = f.hold('GET', '/keys');
+  await click(f.app, 'Refresh');
+  await click(f.app, '+ Create key');
+  const form = find(f.app, node => node.tag === 'form');
+  named(f.app, 'name').value = 'Keep this draft'; form.dispatchEvent(new Event('input'));
+  read.resolve(reply([])); await drain();
+  assert.ok(f.app.contains(form)); assert.equal(named(f.app, 'name').value, 'Keep this draft');
+});

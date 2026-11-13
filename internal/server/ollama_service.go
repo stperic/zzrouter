@@ -133,6 +133,9 @@ func (s *OllamaServiceImpl) RouteInference(c *gin.Context, endpointType string) 
 // (HuggingFace, etc.) return 400 pointing at /zzrouter/v1/deployments —
 // /api/* is scoped to Ollama-managed downloads.
 func (s *OllamaServiceImpl) Deploy(c *gin.Context, name string, insecure bool, stream *bool) error {
+	if err := ollamaAccessError(c); err != nil {
+		return err
+	}
 	id, err := parseModelIdentifier(name)
 	if err != nil {
 		return newProblemError(http.StatusBadRequest, "Bad Request", "invalid model identifier: "+err.Error())
@@ -268,6 +271,9 @@ func (s *OllamaServiceImpl) pullClusterRoute(c *gin.Context, targetNode, modelNa
 
 // ManagementCommand handles Ollama management commands (create, delete, copy, show, push)
 func (s *OllamaServiceImpl) ManagementCommand(c *gin.Context, endpoint string, modelLookup bool) error {
+	if err := ollamaAccessError(c); err != nil {
+		return err
+	}
 	if endpoint == "/api/delete" {
 		return newProblemError(400, "Bad Request", "model deletion uses the guarded model service")
 	}
@@ -409,6 +415,9 @@ func (s *OllamaServiceImpl) CheckBlob(ctx context.Context, digest string) (int, 
 
 // CreateBlob creates a blob
 func (s *OllamaServiceImpl) CreateBlob(c *gin.Context, digest string) error {
+	if err := ollamaAccessError(c); err != nil {
+		return err
+	}
 	daemon, err := s.Daemon()
 	if err != nil {
 		return newProblemError(http.StatusServiceUnavailable, "Service Unavailable", err.Error())

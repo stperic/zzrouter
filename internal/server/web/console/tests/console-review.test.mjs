@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { access } from '../access.mjs';
 
-import { Element, find, named, button, drain, installDOM } from './dom-fixture.mjs';
+import { Element, find, named, button, walk, drain, installDOM } from './dom-fixture.mjs';
 
 const now = Date.parse('2030-01-01T00:00:00Z');
 const iso = milliseconds => new Date(now + milliseconds).toISOString();
@@ -48,8 +48,9 @@ async function editor(t, { identity, record, uncertain = false }) {
   const calls = [];
   let refreshes = 0;
   let ended = 0;
+  let select;
   const p = {
-    root, identity, current: () => true, scope: { signal: new AbortController().signal }, go() {},
+    root, identity, current: () => true, scope: { signal: new AbortController().signal }, go: async(page,item,mode) => select(item,mode), handleSelection: handler => { select = handler; },
     refresh: async () => { refreshes++; }, showKeyAfterSession: () => { ended++; },
     beginOwnRotation: () => ({}), endOwnRotation() {}, syncActivity() {},
     api: {
@@ -64,7 +65,9 @@ async function editor(t, { identity, record, uncertain = false }) {
     },
   };
   await access(p);
-  button(root, 'Manage').listeners.get('click')();
+  await button(root, record.name).listeners.get('click')();
+  await drain();
+  button(root, 'Edit').listeners.get('click')();
   return { root, calls, refreshes: () => refreshes, ended: () => ended };
 }
 
@@ -95,9 +98,8 @@ for (const uncertain of [false, true]) {
 
 test('a fine-grained spend limit remains valid and untouched during a rename', async t => {
   const form = await editor(t, { identity: { id: 'startup-admin', is_virtual: false }, record: { id: 'other', name: 'Before', role: 'user', spend_limit: 0.00005 } });
-  const spend = named(form.root, 'spend_limit');
-  assert.equal(spend.getAttribute('step'), 'any', 'the input must accept the API numeric precision');
-  assert.equal(Number(spend.value), 0.00005);
+  assert.equal(walk(form.root).some(node => node.getAttribute('name') === 'spend_limit'), false);
+  assert.match(form.root.textContent, /Additional key limits.*0\.00005/s);
   named(form.root, 'name').value = 'After';
   find(form.root, node => node.tag === 'form').listeners.get('submit')({ preventDefault() {} });
   await drain();

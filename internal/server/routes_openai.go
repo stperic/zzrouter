@@ -49,6 +49,7 @@ func (s *Server) registerOpenAIRoutes() int {
 	// after RegisterPublicAPIRoutes populates s.services.Model.
 	appsConfigFn := s.appsConfig
 	mh := &OpenAIModelHandlers{
+		access:          s.catalogAllowed,
 		appsConfig:      appsConfigFn,
 		groups:          s.model.Groups,
 		adapter:         NewOpenAIAdapter(appsConfigFn),

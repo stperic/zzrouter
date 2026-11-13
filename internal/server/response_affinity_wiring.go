@@ -197,6 +197,9 @@ func (s *Server) handleResponses(c *gin.Context) {
 						return nil, false
 					}
 				}
+				if !s.admitAccessTargets(c, targetModel) {
+					return nil, false
+				}
 				mode := s.targetWireMode(c.Request.Context(), targetModel, "responses", "responses_compat")
 				if resolved, ok := s.backend.Resolve(providerKey); ok && (mode == wireModeNative || mode == wireModeUnknown) {
 					if !s.admitImages(c, req.Model, body, targetModel) {
@@ -346,6 +349,9 @@ func (s *Server) routeToResponsesBackend(c *gin.Context) {
 		return
 	}
 
+	if !s.admitOpaqueForward(c, "provider passthrough", providerKey, resolved.Cloud) {
+		return
+	}
 	body, bodyOK := s.readPassthroughBody(c)
 	if !bodyOK {
 		return

@@ -13,6 +13,7 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
 const browserBindingContext = "browser-credential-binding"
@@ -40,10 +41,12 @@ func browserQuota(q quota.QuotaConfig) browserLimits {
 }
 
 type browserTeam struct {
-	ID            string        `json:"id"`
-	Name          string        `json:"name"`
-	AllowedModels []string      `json:"allowed_models"`
-	Limits        browserLimits `json:"limits"`
+	ID             string               `json:"id"`
+	Name           string               `json:"name"`
+	AllowedModels  []string             `json:"allowed_models"`
+	RouteAccess    teams.RouteAccess    `json:"route_access"`
+	ProviderAccess teams.ProviderAccess `json:"provider_access"`
+	Limits         browserLimits        `json:"limits"`
 }
 
 type browserIdentity struct {
@@ -142,7 +145,7 @@ func (s *Server) browserOriginOnly(c *gin.Context) {
 func (a *AuthHandlers) browserAuthMiddleware(role UserRole) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if a.access.authenticate(c, role, true) {
-			c.Next()
+			a.observeClient(c)
 		}
 	}
 }
@@ -235,7 +238,7 @@ func (s *Server) handleBrowserMe(c *gin.Context) {
 	if ac.Team != nil {
 		info.TeamID = ac.Team.ID
 		info.Team = &browserTeam{ID: ac.Team.ID, Name: ac.Team.Name,
-			AllowedModels: append([]string{}, ac.Team.AllowedModels...), Limits: browserQuota(ac.Team.Quotas)}
+			AllowedModels: append([]string{}, ac.Team.AllowedModels...), ProviderAccess: ac.Team.ProviderAccess.Clone(), RouteAccess: ac.Team.RouteAccess.Clone(), Limits: browserQuota(ac.Team.Quotas)}
 	}
 	if ac.Key.IsVirtual && s.services.Keys != nil {
 		info.Usage, _ = s.services.Keys.GetKeyUsage(ac.Key.ID)

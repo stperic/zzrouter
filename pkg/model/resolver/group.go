@@ -2,8 +2,10 @@ package resolver
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/stperic/zzrouter/pkg/fallback"
+	"github.com/stperic/zzrouter/pkg/httperr"
 	"github.com/stperic/zzrouter/pkg/model/group"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -41,6 +43,9 @@ func (r *Group) Resolve(ctx context.Context, ref Reference) (*Resolved, error) {
 		return r.fallback.Resolve(ctx, ref)
 	}
 
+	if !group.Available() {
+		return nil, httperr.Error{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "route_unavailable", Message: "The requested route is expired or has no destinations"}
+	}
 	rep := group.Replicas[0]
 	utils.LogDebugf("[GroupResolver] %q resolved via group → replica %q (app=%s, model=%s, priority=%d)",
 		modelName, rep.Name, rep.App, rep.Model, rep.Priority)
@@ -52,14 +57,14 @@ func (r *Group) Resolve(ctx context.Context, ref Reference) (*Resolved, error) {
 		Provider:     rep.App,
 		GroupName:    modelName,
 		Strategy:     string(group.Strategy),
-		Candidates:   replicasToCandidates(group.Replicas),
+		Candidates:   GroupCandidates(group.Replicas),
 	}, nil
 }
 
-// replicasToCandidates converts YAML-configured replicas into the
+// GroupCandidates converts YAML-configured replicas into the
 // fallback-layer candidate representation used by routing strategies
 // and the proxy.
-func replicasToCandidates(reps []group.Replica) []fallback.Candidate {
+func GroupCandidates(reps []group.Replica) []fallback.Candidate {
 	result := make([]fallback.Candidate, len(reps))
 	for i, r := range reps {
 		result[i] = fallback.Candidate{

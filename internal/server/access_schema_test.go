@@ -184,6 +184,8 @@ func goKindToSchemaType(t reflect.Type) string {
 		return "float"
 	case reflect.Slice, reflect.Array:
 		return "array<" + goKindToSchemaType(t.Elem()) + ">"
+	case reflect.Struct:
+		return "object"
 	case reflect.Map:
 		return "object<" + goKindToSchemaType(t.Key()) + "," + goKindToSchemaType(t.Elem()) + ">"
 	}

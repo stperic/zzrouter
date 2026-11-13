@@ -1,6 +1,9 @@
 package client
 
-import "github.com/stperic/zzrouter/pkg/apipath"
+import (
+	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/apipath"
+)
 
 // TeamResponse is the client-side safe representation of a team.
 // Mirrors the server's zzrouter/v1/teams response shape.
@@ -12,7 +15,9 @@ type TeamResponse struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"` // "personal" | "shared"
 
-	AllowedModels []string `json:"allowed_models,omitempty"`
+	AllowedModels  []string             `json:"allowed_models,omitempty"`
+	RouteAccess    teams.RouteAccess    `json:"route_access"`
+	ProviderAccess teams.ProviderAccess `json:"provider_access"`
 
 	// Suspension state
 	Suspended   bool    `json:"suspended"`
@@ -54,32 +59,36 @@ type TeamDetailResponse struct {
 // teams can be created this way — personal teams are auto-created alongside
 // a key when CreateKey omits team_id.
 type CreateTeamRequest struct {
-	ID                  string            `json:"id"`
-	Name                string            `json:"name"`
-	AllowedModels       []string          `json:"allowed_models,omitempty"`
-	MaxParallelRequests int               `json:"max_parallel_requests,omitempty"`
-	RPMLimit            int               `json:"rpm_limit,omitempty"`
-	TPMLimit            int               `json:"tpm_limit,omitempty"`
-	SpendLimit          float64           `json:"spend_limit,omitempty"`
-	ResetPeriod         string            `json:"reset_period,omitempty"`
-	DefaultMaxTokens    int               `json:"default_max_tokens,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
+	ID                  string               `json:"id"`
+	Name                string               `json:"name"`
+	AllowedModels       []string             `json:"allowed_models,omitempty"`
+	RouteAccess         teams.RouteAccess    `json:"route_access,omitzero"`
+	ProviderAccess      teams.ProviderAccess `json:"provider_access,omitzero"`
+	MaxParallelRequests int                  `json:"max_parallel_requests,omitempty"`
+	RPMLimit            int                  `json:"rpm_limit,omitempty"`
+	TPMLimit            int                  `json:"tpm_limit,omitempty"`
+	SpendLimit          float64              `json:"spend_limit,omitempty"`
+	ResetPeriod         string               `json:"reset_period,omitempty"`
+	DefaultMaxTokens    int                  `json:"default_max_tokens,omitempty"`
+	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
 // UpdateTeamRequest is the payload for PATCH /zzrouter/v1/teams/:id.
 // Nil fields are omitted and leave stored values untouched. Personal teams
 // reject updates outright (409).
 type UpdateTeamRequest struct {
-	Name                *string           `json:"name,omitempty"`
-	AllowedModels       *[]string         `json:"allowed_models,omitempty"`
-	Suspended           *bool             `json:"suspended,omitempty"`
-	MaxParallelRequests *int              `json:"max_parallel_requests,omitempty"`
-	RPMLimit            *int              `json:"rpm_limit,omitempty"`
-	TPMLimit            *int              `json:"tpm_limit,omitempty"`
-	SpendLimit          *float64          `json:"spend_limit,omitempty"`
-	ResetPeriod         *string           `json:"reset_period,omitempty"`
-	DefaultMaxTokens    *int              `json:"default_max_tokens,omitempty"`
-	Metadata            map[string]string `json:"metadata,omitempty"`
+	Name                *string              `json:"name,omitempty"`
+	AllowedModels       *[]string            `json:"allowed_models,omitempty"`
+	RouteAccess         teams.RouteAccess    `json:"route_access,omitzero"`
+	ProviderAccess      teams.ProviderAccess `json:"provider_access,omitzero"`
+	Suspended           *bool                `json:"suspended,omitempty"`
+	MaxParallelRequests *int                 `json:"max_parallel_requests,omitempty"`
+	RPMLimit            *int                 `json:"rpm_limit,omitempty"`
+	TPMLimit            *int                 `json:"tpm_limit,omitempty"`
+	SpendLimit          *float64             `json:"spend_limit,omitempty"`
+	ResetPeriod         *string              `json:"reset_period,omitempty"`
+	DefaultMaxTokens    *int                 `json:"default_max_tokens,omitempty"`
+	Metadata            map[string]string    `json:"metadata,omitempty"`
 }
 
 // TeamKeyItem is a single row in a TeamKeysResponse.
@@ -104,17 +113,20 @@ type TeamKeysDetailResponse struct {
 
 // TeamUsageResponse is the client-side usage/spend data for a team.
 type TeamUsageResponse struct {
-	TeamID       string  `json:"team_id"`
-	SpendUSD     float64 `json:"spend_usd"`
-	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
-	TokensIn     int64   `json:"tokens_in"`
-	TokensOut    int64   `json:"tokens_out"`
-	RequestCount int64   `json:"request_count"`
-	PeriodStart  string  `json:"period_start,omitempty"`
-	Period       string  `json:"period,omitempty"`
-	SpendLimit   float64 `json:"spend_limit,omitempty"`
-	RPMLimit     int     `json:"rpm_limit,omitempty"`
-	TPMLimit     int     `json:"tpm_limit,omitempty"`
+	TeamID       string   `json:"team_id"`
+	SpendUSD     float64  `json:"spend_usd"`
+	ReservedUSD  float64  `json:"reserved_usd,omitempty"`
+	RemainingUSD *float64 `json:"remaining_usd,omitempty"`
+	Tracked      bool     `json:"tracked"`
+	ResetAt      string   `json:"reset_at,omitempty"`
+	TokensIn     int64    `json:"tokens_in"`
+	TokensOut    int64    `json:"tokens_out"`
+	RequestCount int64    `json:"request_count"`
+	PeriodStart  string   `json:"period_start,omitempty"`
+	Period       string   `json:"period,omitempty"`
+	SpendLimit   float64  `json:"spend_limit,omitempty"`
+	RPMLimit     int      `json:"rpm_limit,omitempty"`
+	TPMLimit     int      `json:"tpm_limit,omitempty"`
 }
 
 // TeamUsageDetailResponse is the envelope for GET /zzrouter/v1/teams/:id/usage.

@@ -25,7 +25,7 @@ import (
 
 func TestIntegrationBrowserConsoleFixedAssetsAndRoleGate(t *testing.T) {
 	s, _ := oauthTestNode(t, config.ClusterModeDisabled)
-	for _, path := range []string{"/console/", "/console/console.css", "/console/console.mjs", "/console/api.mjs", "/console/dom.mjs", "/console/providers.mjs", "/console/access.mjs"} {
+	for _, path := range []string{"/console/", "/console/console.css", "/console/console.mjs", "/console/api.mjs", "/console/dom.mjs", "/console/providers.mjs", "/console/inventory.mjs", "/console/access.mjs", "/console/access-form.mjs", "/console/access-policy.mjs", "/console/access-budget.mjs", "/console/network-data.mjs", "/console/details.mjs", "/console/nodes.mjs", "/console/clients.mjs", "/console/overview.mjs"} {
 		rec := httptest.NewRecorder()
 		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusOK, rec.Code, path)
@@ -56,6 +56,65 @@ func TestIntegrationBrowserConsoleFixedAssetsAndRoleGate(t *testing.T) {
 	rec = httptest.NewRecorder()
 	s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/console/", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestIntegrationBrowserConsoleTopologyAssets(t *testing.T) {
+	s, _ := oauthTestNode(t, config.ClusterModeDisabled)
+	assets := map[string]string{
+		"/console/topology.mjs":                   "text/javascript; charset=utf-8",
+		"/console/topology-data.mjs":              "text/javascript; charset=utf-8",
+		"/console/vendor/graph.mjs":               "text/javascript; charset=utf-8",
+		"/console/vendor/elk-worker.min.js":       "text/javascript; charset=utf-8",
+		"/console/vendor/THIRD_PARTY_NOTICES.txt": "text/plain; charset=utf-8",
+		"/console/icons/client.svg":               "image/svg+xml",
+		"/console/icons/coordinator.svg":          "image/svg+xml",
+		"/console/icons/node.svg":                 "image/svg+xml",
+		"/console/icons/cloud.svg":                "image/svg+xml",
+		"/console/icons/provider.svg":             "image/svg+xml",
+		"/console/provider-icons.mjs":             "text/javascript; charset=utf-8",
+		"/console/icons/provider-openai.svg":      "image/svg+xml",
+		"/console/icons/provider-anthropic.svg":   "image/svg+xml",
+		"/console/icons/provider-azure.svg":       "image/svg+xml",
+		"/console/icons/provider-bedrock.svg":     "image/svg+xml",
+		"/console/icons/provider-cloudflare.svg":  "image/svg+xml",
+		"/console/icons/provider-gemini.svg":      "image/svg+xml",
+		"/console/icons/provider-groq.svg":        "image/svg+xml",
+		"/console/icons/provider-openrouter.svg":  "image/svg+xml",
+		"/console/icons/provider-ollama.svg":      "image/svg+xml",
+		"/console/icons/provider-comfyui.svg":     "image/svg+xml",
+		"/console/icons/provider-vllm.svg":        "image/svg+xml",
+		"/console/icons/provider-huggingface.svg": "image/svg+xml",
+		"/console/icons/provider-mlx.svg":         "image/svg+xml",
+		"/console/icons/provider-llamacpp.svg":    "image/svg+xml",
+		"/console/icons/provider-strata.svg":      "image/svg+xml",
+		"/console/icons/status-healthy.svg":       "image/svg+xml",
+		"/console/icons/status-down.svg":          "image/svg+xml",
+		"/console/icons/status-degraded.svg":      "image/svg+xml",
+		"/console/icons/status-unknown.svg":       "image/svg+xml",
+	}
+	for path, contentType := range assets {
+		rec := httptest.NewRecorder()
+		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusOK, rec.Code, path)
+		assert.Equal(t, contentType, rec.Header().Get("Content-Type"))
+		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+		assert.Contains(t, rec.Header().Get("Content-Security-Policy"), "worker-src 'self'")
+		assert.NotContains(t, rec.Header().Get("Content-Security-Policy"), "unsafe-eval")
+		assert.NotContains(t, rec.Header().Get("Content-Security-Policy"), "unsafe-inline")
+		assert.NotEmpty(t, rec.Body.Bytes())
+	}
+	for _, path := range []string{"/console/vendor/package.json", "/console/vendor/unknown.js", "/console/icons/unknown.svg"} {
+		rec := httptest.NewRecorder()
+		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+	}
+	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "topology asset gate fixture"))
+	for path := range assets {
+		rec := httptest.NewRecorder()
+		s.engine.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code, path)
+	}
 }
 
 func TestIntegrationBrowserRootOpensConsole(t *testing.T) {

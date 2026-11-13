@@ -320,6 +320,15 @@ func (a *AccessControl) Authorize(c *gin.Context, modelName string) bool {
 	return true
 }
 
+// AuthorizeProvider checks a known destination, or refuses an unbound restricted request.
+func (a *AccessControl) AuthorizeProvider(c *gin.Context, provider string) bool {
+	if control.ProviderAllowed(GetAccessContext(c), provider) {
+		return true
+	}
+	a.rejectAuth(c, http.StatusForbidden, "The team's provider policy does not allow this destination")
+	return false
+}
+
 // resolveVirtualOrRespond settles the callers Core never sees. A nil
 // context with admitted=true is static or anonymous traffic let through;
 // on admitted=false the response is already written. A non-nil context
@@ -610,7 +619,7 @@ func (a *AccessControl) FlushSpend() {
 	a.core.FlushSpend()
 }
 
-// HasGatedTeam reports whether any team restricts its keys' models.
+// HasGatedTeam reports whether any team restricts its keys' models or providers.
 func (a *AccessControl) HasGatedTeam() bool {
 	if a == nil || a.core == nil {
 		return false

@@ -1,16 +1,29 @@
+import { policySummary } from './access-policy.mjs';
+import { usageDetails } from './access-budget.mjs';
 import { API, Lifetime, Obsolete } from './api.mjs';
 import { el, text, button, leaveButton, badge, actions, message, card, heading, field, input, facts, copyField, clearSecrets, problem, date, money } from './dom.mjs';
 import { providers } from './providers.mjs';
+import { overview } from './overview.mjs';
+import { nodes } from './nodes.mjs';
+import { clients, connectionGuide } from './clients.mjs';
 import { access } from './access.mjs';
+import { routes } from './routes.mjs';
 
 const app = document.querySelector('#app');
 const pages = new Lifetime();
 let expiryTimer;
 let refreshVersion = 0;
-let route = 'overview';
-let section;
+const initialRoute = readRoute();
+let route = initialRoute.name;
+let section = initialRoute.item;
+let mode = initialRoute.mode;
+let leaveGuard;
+let historyIndex = window.history?.state?.zzrouterConsoleIndex || 0;
+let historyReady = false;
+let restoringHistory = false;
 let publicState;
 let content;
+let pageSelection;
 let navigation;
 let notices;
 let rotation;
@@ -185,20 +198,22 @@ function renderShell(state, notice) {
   const identity = state.identity;
   const admin = identity.role === 'admin';
   navigation = el('nav', { class: 'nav', 'aria-label': 'Main navigation' });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['providers', 'Providers'], ['access', 'Keys & teams'], ['connections', 'MCP connections'], ['settings', 'Settings']] : [['connections', 'My Access']]) {
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['nodes', 'Nodes'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
   }
   content = el('main', { id: 'content' });
-  const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, el('span', { class: 'connection-dot' }), state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
-  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Cloud credentials and access, managed in one place.'))), workspace));
+  const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, 'Coordinator: ' + state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
+  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));
   scheduleExpiry(expiryDeadline(state));
-  void go(admin ? route : 'connections', section);
+  void go(admin ? route : 'connections', section, mode);
 }
 
+function canLeave() { return api.canLeave() && (!leaveGuard || leaveGuard.confirm()); }
+
 async function signOut() {
-  if (!api.canLeave()) return;
+  if (!canLeave()) return;
   try {
     await api.logout();
     announce();
@@ -239,50 +254,54 @@ function showKeyAfterSession(result, anchor) {
   scheduleExpiry(anchor.deadline);
 }
 
-async function go(name, sub) {
-  if (!api.state?.identity || !api.canLeave()) return;
-  const allowed = api.state.identity.role === 'admin' ? ['overview', 'providers', 'access', 'connections', 'settings'] : ['connections'];
-  route = allowed.includes(name) ? name : allowed[0];
-  section = sub;
+async function go(name, sub, nextMode, force = false, checked = false) {
+  if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
+  const allowed = api.state.identity.role === 'admin' ? ['overview', 'nodes', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['connections'];
+  const destination = allowed.includes(name) ? name : allowed[0];
+  if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
+    section = sub; mode = nextMode;
+    writeRoute();
+    await pageSelection.select(sub, nextMode);
+    syncActivity();
+    return;
+  }
+  pageSelection = undefined;
+  leaveGuard = undefined;
+  route = destination;
+  section = sub; mode = nextMode;
+  writeRoute();
   clearSecrets(content);
+  content.classList.remove('has-details');
   const scope = pages.next();
   content.replaceChildren();
   for (const item of navigation.children) {
-    if (item.dataset.page === route) item.setAttribute('aria-current', 'page');
+    if (item.dataset.page === (route === 'connections' && api.state.identity.role === 'admin' ? 'clients' : route)) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
   }
   const generation = api.generation;
+  const focusBefore = document.activeElement;
   const p = { api, root: content, scope, identity: api.state.identity, state: api.state, current: () => scope.current() && generation === api.generation, go,
+    handleSelection: (select, accepts = () => true) => { if (scope.current()) pageSelection = { current: () => scope.current() && generation === api.generation, select, accepts }; },
+    reload: () => go(route, section, mode, true), canLeave,
+    guardLeave: (confirm, dirty) => { const guard = { confirm, dirty }; leaveGuard = guard; return () => { if (leaveGuard === guard) leaveGuard = undefined; }; },
     refresh: notice => { announce(); return refreshSession(notice); }, showKeyAfterSession, beginOwnRotation, endOwnRotation, recoverOwnRotation, noteOwnRotationRecovery, syncActivity,
+    selectSection: (item, nextMode) => { if (scope.current()) { section = item; mode = nextMode; writeRoute(true); } },
     beforeKeyDisclosure: signal => beforeKeyDisclosure(signal, generation) };
   try {
-    if (route === 'providers') await providers(p);
-    else if (route === 'access') await access(p, sub === 'teams' ? 'teams' : 'keys');
+    if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
+    else if (route === 'nodes') await nodes(p, sub);
+    else if (route === 'clients') await clients(p, sub);
+    else if (route === 'routes') await routes(p, sub, nextMode);
+    else if (route === 'access') await access(p, sub || 'keys', nextMode);
     else if (route === 'connections') await connections(p);
     else if (route === 'settings') settings(p);
-    else await overview(p);
+    else await overview(p, sub);
   } catch (error) {
-    if (p.current()) content.append(problem(error), leaveButton('Reload page', () => go(route, section), api));
-  } finally { syncActivity(); }
-}
-
-async function overview(p) {
-  p.root.append(heading('Overview', 'Your coordinator, connections and access at a glance.'), message('Reading router status…'));
-  const results = await Promise.allSettled([
-    api.request('/health', { signal: p.scope.signal }), api.list('/providers/catalog?kind=all', { signal: p.scope.signal }), api.list('/keys', { signal: p.scope.signal }),
-  ]);
-  if (!p.current()) return;
-  const [health, catalog, keys] = results;
-  const tiles = el('div', { class: 'cards' });
-  tiles.append(health.status === 'fulfilled' ? card('Coordinator', el('div', { class: 'stat' }, 'Online'), text(`Version ${health.value.version}`, 'stat-label'), text('The process is responding. This is not an upstream-provider health check.', 'muted')) : card('Coordinator', problem(health.reason)));
-  if (catalog.status === 'fulfilled') {
-    const cloud = catalog.value.filter(entry => entry.is_cloud);
-    tiles.append(card('Cloud credentials', el('div', { class: 'stat' }, `${cloud.filter(entry => entry.available).length} / ${cloud.length}`), text('Providers with credential configuration', 'stat-label'), leaveButton('Manage providers', () => go('providers'), api, 'link')));
-  } else tiles.append(card('Cloud credentials', problem(catalog.reason)));
-  tiles.append(keys.status === 'fulfilled' ? card('Managed keys', el('div', { class: 'stat' }, keys.value.length), text('Named keys issued by this router', 'stat-label'), leaveButton('Manage access', () => go('access'), api, 'link')) : card('Managed keys', problem(keys.reason)));
-  p.root.replaceChildren(heading('Overview', 'Your coordinator, connections and access at a glance.'), tiles,
-    el('h2', { class: 'section-label' }, 'NEXT STEPS'), card('Connect a tool from anywhere', text('Use your configured public URL to connect an MCP client. Give each person or client a named user key and, when needed, a shared team with model limits.'), actions(leaveButton('MCP connection details', () => go('connections'), api, 'primary'), leaveButton('Create access', () => go('access'), api))),
-    card('Your installation', facts([['Coordinator', p.state.node_name], ['Public URL', p.state.issuer], ['Signed in as', p.identity.name || p.identity.id]]), leaveButton('Review settings', () => go('settings'), api, 'link')));
+    if (p.current()) content.append(problem(error), leaveButton('Reload page', () => p.reload(), api));
+  } finally {
+    syncActivity();
+    if (p.current() && document.activeElement === focusBefore && !content.querySelector?.('.detail-panel')) content.querySelector?.('h1')?.focus({ preventScroll: true });
+  }
 }
 
 function limitFacts(limits) {
@@ -291,20 +310,20 @@ function limitFacts(limits) {
 
 async function connections(p) {
   const admin = p.identity.role === 'admin';
-  p.root.append(heading(admin ? 'MCP connections' : 'My Access', 'Connect your tools and review the access granted to this key.'));
-  const endpoints = card('Connect an MCP client', copyField('Inference MCP endpoint', p.state.issuer + '/inference/mcp'),
-    text('Add this as a remote HTTP MCP server in your client. Choose browser sign-in, use a zzRouter user key, and approve the named client’s request.', 'muted'));
-  if (admin) endpoints.append(message('Administrator keys manage the router. Create a separate user key for inference MCP and model requests.'), copyField('Administrator MCP endpoint', p.state.issuer + '/zzrouter/v1/mcp'), text('Use an administrator key only for tools that should manage the router.', 'muted'));
-  const identity = card('Your key', facts([['Name', p.identity.name], ['ID', p.identity.id], ['Role', p.identity.role], ['Source', p.identity.is_virtual ? 'Managed key' : 'Startup key'], ['Expires', date(p.identity.expires_at)]]), limitFacts(p.identity.limits));
-  const team = p.identity.team ? card('Your team', facts([['Name', p.identity.team.name], ['Allowed models / groups', p.identity.team.allowed_models.join(', ') || 'All models']]), limitFacts(p.identity.team.limits)) : card('Model access', text('This startup key has no team-specific model restrictions. Its role still determines which APIs it can use.'));
+  p.root.append(heading(admin ? 'Connect a client' : 'My Access', 'Connect your tools and review the access granted to this key.'));
+  const endpoints = connectionGuide(p);
+  const identity = card('Your key', facts([['Name', p.identity.name], ['ID', p.identity.id], ['Role', p.identity.role], ['Source', p.identity.is_virtual ? 'Managed key' : 'Startup key'], ['Expires', date(p.identity.expires_at)]]));
+  if (['rpm_limit', 'tpm_limit', 'max_parallel_requests', 'spend_limit', 'default_max_tokens'].some(key => p.identity.limits[key] > 0)) identity.append(el('h3', {}, 'Additional key limits'), limitFacts(p.identity.limits));
+  const team = p.identity.team ? card('Your team policy', el('h3', {}, p.identity.team.name), policySummary(p.identity.team), limitFacts(p.identity.team.limits), text('Provider access and usage rules are managed by your team.', 'muted')) : card('Model access', text('This startup key has no team-specific model restrictions. Its role still determines which APIs it can use.'));
   const usage = p.identity.usage;
-  const activity = card('Your recorded usage', usage ? facts([['Spend', money(usage.spend_usd)], ['Reserved', money(usage.reserved_usd)], ['Requests', usage.request_count], ['Tokens in / out', `${usage.tokens_in} / ${usage.tokens_out}`], ['Period start', usage.period_start ? date(usage.period_start) : 'No recorded period']]) : text('Usage is unavailable for this identity. Startup keys do not have a managed-key usage record.', 'muted'));
-  const grants = card('Authorized clients', message('Loading your MCP grants…'));
+  const activity = card('Your recorded usage', usage ? usageDetails(usage) : text('Usage is unavailable for this identity. Startup keys do not have a managed-key usage record.', 'muted'));
+  const grants = card('Your authorizations', message('Loading your MCP grants…'));
   p.root.append(endpoints, el('div', { class: 'cards' }, identity, team, activity), el('p'), grants, text('Signing out ends browser access. Revoking a client ends that MCP grant and does not sign you out of this console.', 'footer-note'));
   try {
     const entries = await api.list('/me/connections', { signal: p.scope.signal });
     if (!p.current()) return;
-    grants.replaceChildren(el('h2', {}, 'Authorized clients'));
+    grants.replaceChildren(el('h2', {}, 'Your authorizations'));
+    grants.append(text('These grants allow clients to use your key. They are not a count of connected applications.', 'muted'));
     if (!entries.length) grants.append(text('No active MCP grants for this key.', 'empty'));
     for (const grant of entries) {
       const feedback = el('div');
@@ -321,10 +340,10 @@ async function connections(p) {
         }
       }, 'danger');
       revoke.setAttribute('data-protected-actions', '');
-      const row = el('div', { class: 'row' }, el('div', {}, el('h3', {}, grant.client), text(grant.resource), text(`Expires ${date(grant.expires_at)}`)), revoke);
+      const row = el('div', { class: 'row' }, el('div', {}, el('h3', {}, grant.client), text(grant.resource), text(`Authorized ${date(grant.created_at)} · Expires ${date(grant.expires_at)}`), text(`Grant ${grant.id}`, 'muted')), revoke);
       grants.append(row, feedback);
     }
-  } catch (error) { if (p.current()) grants.replaceChildren(el('h2', {}, 'Authorized clients'), problem(error), leaveButton('Reload grants', () => go('connections'), api)); }
+  } catch (error) { if (p.current()) grants.replaceChildren(el('h2', {}, 'Your authorizations'), problem(error), leaveButton('Reload grants', () => go('connections'), api)); }
 }
 
 function settings(p) {
@@ -335,9 +354,56 @@ function settings(p) {
     card('Local recovery', text('Use the terminal client for provider installation, local runtimes, models, jobs and installation recovery. The web and terminal clients share the coordinator APIs.'), el('a', { href: '/openapi.yaml' }, 'View the API contract')));
 }
 
+function readRoute() {
+  const [name, query] = (location.hash || '#overview').slice(1).split('?');
+  return { name: name || 'overview', item: new URLSearchParams(query).get('item') || undefined, mode: new URLSearchParams(query).get('mode') || undefined };
+}
+
+function writeRoute(replace = false) {
+  const query = new URLSearchParams({ ...(section ? { item: section } : {}), ...(mode ? { mode } : {}) });
+  const hash = '#' + route + (query.size ? '?' + query : '');
+  if (!window.history) return;
+  if (!historyReady) {
+    window.history.replaceState({ zzrouterConsoleIndex: historyIndex }, '', hash);
+    historyReady = true;
+  } else if (location.hash !== hash) {
+    if (!replace) historyIndex++;
+    window.history[replace ? 'replaceState' : 'pushState']({ zzrouterConsoleIndex: historyIndex }, '', hash);
+  }
+}
+
+function followHistory() {
+  if (!api.state?.identity) return;
+  const destination = window.history?.state?.zzrouterConsoleIndex;
+  if (restoringHistory) {
+    if (destination === historyIndex) restoringHistory = false;
+    return;
+  }
+  const next = readRoute();
+  if (next.name === route && next.item === section && next.mode === mode && destination === historyIndex) return;
+  if (!canLeave()) {
+    if (Number.isInteger(destination) && destination !== historyIndex) {
+      restoringHistory = true;
+      window.history.go(historyIndex - destination);
+    } else writeRoute(true);
+    return;
+  }
+  historyIndex = Number.isInteger(destination) ? destination : historyIndex + 1;
+  window.history?.replaceState({ zzrouterConsoleIndex: historyIndex }, '', location.hash);
+  if (next.name !== route || next.item !== section || next.mode !== mode) void go(next.name, next.item, next.mode, false, true);
+}
+document.querySelector('a.skip')?.addEventListener('click', event => {
+  event.preventDefault();
+  const target = document.querySelector('#content');
+  target?.setAttribute('tabindex', '-1');
+  target?.focus();
+});
+window.addEventListener('popstate', followHistory);
+window.addEventListener('hashchange', followHistory);
+
 channel?.addEventListener('message', event => { if (event.data === 'auth-state-changed') void refreshSession('Browser access changed in another tab.'); });
 window.addEventListener('focus', event => { if (event.target === window) void probeSession(); });
 window.addEventListener('pageshow', event => { if (event.persisted) void (api.state || disclosure ? probeSession() : refreshSession()); });
-window.addEventListener('beforeunload', event => { if (!api.canLeave()) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (!api.canLeave() || leaveGuard?.dirty()) { event.preventDefault(); event.returnValue = ''; } });
 window.addEventListener('pagehide', () => { api.clear('Session paused.'); });
 void refreshSession();

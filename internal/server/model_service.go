@@ -86,12 +86,18 @@ func (s *ModelService) ShowModel(ctx context.Context, req *ShowModelRequest) (*S
 		return nil, err
 	}
 	ref := resolver.Reference{Model: req.ModelName, Provider: req.App, Node: req.Node, Registry: req.Registry}
+	if req.Admit != nil {
+		ref.AllowProvider = func(provider string) bool { return req.Admit(req.ModelName, provider) }
+	}
 	if req.AllowUncataloged {
 		ref.DefaultProvider = constants.AppOllama
 	}
 	resolved, err := s.cache.ResolveModel(ctx, ref)
 	if err != nil {
 		return nil, err
+	}
+	if req.Admit != nil && !req.Admit(req.ModelName, resolved.Provider) {
+		return nil, newProblemError(http.StatusForbidden, "Forbidden", "Team policy does not allow this model and provider")
 	}
 	if resolved.Node == "*" {
 		return nil, newProblemError(http.StatusBadRequest, "Bad Request", "model show requires one node, never a broadcast")
@@ -149,9 +155,16 @@ func (s *ModelService) DeleteModels(ctx context.Context, req *DeleteModelsReques
 		if _, err := s.cache.ListModels(ctx, req.Node, req.Registry, req.Provider, req.Model); err != nil {
 			return nil, err
 		}
-		resolved, err := s.cache.ResolveModel(ctx, resolver.Reference{Model: req.Model, Node: req.Node, Provider: req.Provider, Registry: req.Registry, Exact: true, SourceID: req.SourceID, DefaultProvider: req.DefaultProvider})
+		ref := resolver.Reference{Model: req.Model, Node: req.Node, Provider: req.Provider, Registry: req.Registry, Exact: true, SourceID: req.SourceID, DefaultProvider: req.DefaultProvider}
+		if req.Admit != nil {
+			ref.AllowProvider = func(provider string) bool { return req.Admit(req.Model, provider) }
+		}
+		resolved, err := s.cache.ResolveModel(ctx, ref)
 		if err != nil {
 			return nil, err
+		}
+		if req.Admit != nil && !req.Admit(req.Model, resolved.Provider) {
+			return nil, newProblemError(http.StatusForbidden, "Forbidden", "Team policy does not allow this model and provider")
 		}
 		if resolved.GroupName != "" || (resolved.Replica != nil && (resolved.Replica.VariantOf != "" || resolved.Replica.IsCloud)) {
 			return nil, httperr.Error{Status: 409, Code: string(httperr.CodeModelNotDeletable), Message: "logical variants, groups and cloud models are configuration; use their supported management API instead of physical deletion"}

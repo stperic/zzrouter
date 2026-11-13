@@ -57,7 +57,7 @@ export class API {
     return this.generation;
   }
 
-  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn } = {}) {
+  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, timeoutMs = 15000 } = {}) {
     const generation = this.generation;
     if (!(path.startsWith(BASE + '/') || path === '/health')) throw new APIError('Unsupported console request.');
     const mutation = method !== 'GET';
@@ -66,8 +66,10 @@ export class API {
     if (signal?.aborted) throw new Obsolete();
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (ifMatch) headers['If-Match'] = ifMatch;
+    if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     if (mutation) headers['X-CSRF-Token'] = proof;
-    const timeout = AbortSignal.timeout(15000);
+    const timeout = AbortSignal.timeout(timeoutMs);
     // The tracker never retains request bodies, resource names or credentials.
     const operation = effectful ? {} : null;
     if (operation) { this.pending.add(operation); this.activity(); }
@@ -105,6 +107,7 @@ export class API {
       }
       // One-time results may need to await an overlapping identity check. Keep
       // the write/navigation owner until that transient result can be shown.
+      onVersion?.(response.headers?.get('ETag') || '');
       await beforeReturn?.(result);
       finish();
       return result;

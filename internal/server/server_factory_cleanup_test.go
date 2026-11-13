@@ -8,11 +8,30 @@ import (
 
 	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
+
+func TestProviderAccessInvalidPersistedPolicyPreventsStartup(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	t.Setenv("ZZROUTER_TEST_HOME", t.TempDir())
+	modelregistry.SetModelsRootDirOverride(t.TempDir())
+	defer modelregistry.ClearModelsRootDirOverride()
+	dir := config.NewConfigManager("zzrouter").GetNodeConfigDir()
+	require.NoError(t, os.MkdirAll(dir, 0700))
+	keyPath := filepath.Join(dir, "keys.yaml")
+	seedFileTestKey(t, keys.NewFileKeyStore(keyPath), keyPath, "client", keys.VirtualKey{Name: "Client", TeamID: "restricted", TeamRole: "member", Role: "user"})
+	for _, policy := range []string{"null", "{mode: select, providers: [ollama]}"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "teams.yaml"), []byte("teams:\n  restricted: {kind: shared, provider_access: "+policy+"}\n"), 0600))
+		cfg := &config.NodeConfig{Node: config.ServeConfig{Bind: "localhost", Port: 19191, Name: "fixture"}, Auth: config.AuthConfig{AdminKey: TestAdminKey, UserKey: TestUserKey, ClusterNetworkKey: TestClusterKey}}
+		server, err := NewServerWithOptions(cfg)
+		require.Nil(t, server, "a valid member key must not run without its team policy")
+		require.ErrorContains(t, err, "load teams.yaml")
+	}
+}
 
 func TestConstructorFailureReleasesCredentialOwnersAndGoroutines(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())

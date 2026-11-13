@@ -494,7 +494,7 @@ func TestServedSurfaces(t *testing.T) {
 		var ps OllamaPsResponse
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ps))
 		require.Len(t, ps.Models, 1)
-		assert.Equal(t, OllamaPsEntry{Name: servedDaemonModel + "@node-a", Model: servedDaemonModel, Size: 2, SizeVRAM: 1, ContextLength: 4096, ExpiresAt: expires, Digest: "sha-m",
+		assert.Equal(t, OllamaPsEntry{Provider: "ollama", Name: servedDaemonModel + "@node-a", Model: servedDaemonModel, Size: 2, SizeVRAM: 1, ContextLength: 4096, ExpiresAt: expires, Digest: "sha-m",
 			Details: OllamaModelDetails{Format: "gguf", Family: "llama", ParameterSize: "8B", QuantLevel: "Q4_K_M"}}, ps.Models[0])
 	})
 	t.Run("a served run's log is its lifecycle, readable where the 404 points once the daemon drops it", func(t *testing.T) {

@@ -18,14 +18,13 @@ type ShowModelResponse struct {
 	Details map[string]any `json:"details,omitempty"`
 
 	// Route is populated by handlers when the requested model resolves
-	// through an auto-route group (≥2 replicas). Protocol adapters may
+	// through an authorized model group. Protocol adapters may
 	// surface it as an extension field in their wire format (e.g.,
 	// Ollama's `zzrouter_route`). Left nil for single-deployment models.
 	Route *ModelRouteInfo `json:"-"`
 }
 
-// ModelRouteInfo describes the auto-route group a model belongs to when it
-// has multiple replicas across the cluster. Surfaced by protocol adapters
+// ModelRouteInfo describes the authorized route destinations for a model alias. Surfaced by protocol adapters
 // as an extension field.
 type ModelRouteInfo struct {
 	Strategy string   `json:"strategy"`        // e.g., "least-load", "priority"

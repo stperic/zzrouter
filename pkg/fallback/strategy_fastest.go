@@ -10,11 +10,11 @@ import (
 // of new deployments without starving them entirely).
 // Tiebreaker: higher priority wins.
 type FastestStrategy struct {
-	tracker *LatencyTracker
+	tracker LatencySnapshotter
 }
 
 // NewFastestStrategy creates a strategy backed by the given latency tracker.
-func NewFastestStrategy(tracker *LatencyTracker) *FastestStrategy {
+func NewFastestStrategy(tracker LatencySnapshotter) *FastestStrategy {
 	return &FastestStrategy{tracker: tracker}
 }
 
@@ -29,9 +29,9 @@ func (s *FastestStrategy) Select(candidates []Candidate) []Candidate {
 	}
 	latencies := make(map[string]latencyInfo, len(result))
 	for _, c := range result {
-		latencies[c.Name] = latencyInfo{
-			hasData: s.tracker.HasData(c.Name),
-			avg:     s.tracker.AverageLatency(c.Name),
+		if s.tracker != nil {
+			avg, samples := s.tracker.Snapshot(c.Name)
+			latencies[c.Name] = latencyInfo{hasData: samples > 0, avg: avg}
 		}
 	}
 

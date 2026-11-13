@@ -25,7 +25,10 @@ export const actions = (...children) => el('div', { class: 'actions' }, children
 export const message = (value, tone = '') => el('div', { class: `notice ${tone}`, role: tone === 'error' ? 'alert' : 'status' }, value);
 export const card = (title, ...children) => el('section', { class: 'card' }, el('h2', {}, title), children);
 export const heading = (title, description, ...controls) => el('header', { class: 'page-heading' }, el('div', {}, el('p', { class: 'eyebrow' }, 'ZZROUTER CONSOLE'), el('h1', { tabindex: '-1' }, title), text(description, 'muted')), actions(controls));
-export const field = (label, input, hint = '') => el('label', { class: 'field' }, el('span', {}, label), input, hint ? el('small', {}, hint) : null);
+export function field(label, control, hint = '') {
+  if (!control.getAttribute('aria-label')) control.setAttribute('aria-label', label);
+  return el('label', { class: 'field' }, el('span', {}, label), control, hint ? el('small', {}, hint) : null);
+}
 export const input = (name, value = '', attrs = {}) => el('input', { name, value, autocomplete: 'off', ...attrs });
 export function select(name, choices, value) {
   return el('select', { name }, choices.map(([key, label]) => el('option', { value: key, selected: String(value ?? '') === key }, label)));
@@ -57,3 +60,17 @@ export function problem(error) {
 }
 export const date = value => value ? new Date(value).toLocaleString() : 'No expiry';
 export const money = value => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });
+
+// Rows keep native table semantics; the name button provides keyboard activation.
+export function selectableRow(key, selected, open, ...cells) {
+  return el('tr', { class: 'selectable-row', 'data-selection': key, 'aria-current': String(key === selected), onclick: event => {
+    if (!event.target.closest?.('button, a, input, select, textarea')) open();
+  } }, cells);
+}
+export function markSelection(root, selected) {
+  for (const item of root.querySelectorAll('[data-selection]')) item.setAttribute('aria-current', String(item.getAttribute('data-selection') === selected));
+}
+export function editorActions(save, cancel, api) {
+  save.setAttribute('data-protected-actions', '');
+  return el('div', { class: 'editor-actions' }, save, leaveButton('Cancel', cancel, api));
+}

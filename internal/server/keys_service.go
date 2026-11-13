@@ -520,17 +520,8 @@ func (s *KeysService) ReloadKeys() error {
 
 // KeyUsageResponse is the response for GET /keys/:id/usage.
 type KeyUsageResponse struct {
-	KeyID        string  `json:"key_id"`
-	SpendUSD     float64 `json:"spend_usd"`
-	ReservedUSD  float64 `json:"reserved_usd,omitempty"`
-	TokensIn     int64   `json:"tokens_in"`
-	TokensOut    int64   `json:"tokens_out"`
-	RequestCount int64   `json:"request_count"`
-	PeriodStart  string  `json:"period_start,omitempty"`
-	Period       string  `json:"period,omitempty"`
-	SpendLimit   float64 `json:"spend_limit,omitempty"`
-	RPMLimit     int     `json:"rpm_limit,omitempty"`
-	TPMLimit     int     `json:"tpm_limit,omitempty"`
+	KeyID string `json:"key_id"`
+	quota.Usage
 }
 
 // SpendReportResponse is the response for GET /spend/report.
@@ -546,29 +537,11 @@ func (s *KeysService) GetKeyUsage(id string) (*KeyUsageResponse, error) {
 		return nil, fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
 	}
 
-	resp := &KeyUsageResponse{
-		KeyID:      id,
-		RPMLimit:   vk.RPMLimit,
-		TPMLimit:   vk.TPMLimit,
-		SpendLimit: vk.SpendLimit,
-		Period:     vk.ResetPeriod,
-	}
-
+	var state *quota.SpendState
 	if s.access != nil {
-		if state := s.access.GetKeySpend(id); state != nil {
-			resp.SpendUSD = state.SpendUSD()
-			resp.ReservedUSD = quota.MicroToUSD(state.ReservedMicro)
-			resp.TokensIn = state.TokensIn
-			resp.TokensOut = state.TokensOut
-			resp.RequestCount = state.RequestCount
-			if !state.PeriodStart.IsZero() {
-				resp.PeriodStart = state.PeriodStart.Format(time.RFC3339)
-			}
-			if state.Period != "" {
-				resp.Period = string(state.Period)
-			}
-		}
+		state = s.access.GetKeySpend(id)
 	}
+	resp := &KeyUsageResponse{KeyID: id, Usage: quota.CurrentUsage(vk.QuotaConfig, state)}
 	return resp, nil
 }
 
@@ -601,25 +574,11 @@ func (s *KeysService) GetSpendReport() *SpendReportResponse {
 			continue
 		}
 
-		item := KeyUsageResponse{
-			KeyID:        state.EntityID,
-			SpendUSD:     state.SpendUSD(),
-			ReservedUSD:  quota.MicroToUSD(state.ReservedMicro),
-			TokensIn:     state.TokensIn,
-			TokensOut:    state.TokensOut,
-			RequestCount: state.RequestCount,
-		}
-		if !state.PeriodStart.IsZero() {
-			item.PeriodStart = state.PeriodStart.Format(time.RFC3339)
-		}
-		if state.Period != "" {
-			item.Period = string(state.Period)
-		}
+		var config quota.QuotaConfig
 		if vk := s.store.Get(state.EntityID); vk != nil {
-			item.SpendLimit = vk.SpendLimit
-			item.RPMLimit = vk.RPMLimit
-			item.TPMLimit = vk.TPMLimit
+			config = vk.QuotaConfig
 		}
+		item := KeyUsageResponse{KeyID: state.EntityID, Usage: quota.CurrentUsage(config, state)}
 		resp.Keys = append(resp.Keys, item)
 		resp.TotalSpend += item.SpendUSD
 	}

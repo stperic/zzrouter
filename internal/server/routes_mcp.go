@@ -78,7 +78,7 @@ func (s *Server) registerMCPRoutes() int {
 		)
 		surface := "/mcp/" + name
 		group.Any("/*path", func(c *gin.Context) {
-			if !s.admitOpaqueForward(c, surface, mount.srv.Upstream.API() != nil) {
+			if !s.admitOpaqueForward(c, surface, "", mount.srv.Upstream.API() != nil) {
 				return
 			}
 			_, release, ok := s.enforceAndAttribute(c, "mcp "+surface, nil, nil)

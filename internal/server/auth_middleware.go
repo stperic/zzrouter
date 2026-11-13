@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/observability"
 	obsproxy "github.com/stperic/zzrouter/pkg/observability/proxy"
 )
 
@@ -72,6 +73,7 @@ func logAuthAttempt(c *gin.Context, cfg *pkgConfig.NodeConfig, status int, detai
 // AuthHandlers groups authentication middleware creation.
 type AuthHandlers struct {
 	access          *AccessControl
+	clients         *observability.ClientActivity
 	config          *pkgConfig.NodeConfig
 	nodeConfigStore *pkgConfig.NodeConfigStore
 	responders      *responderSet
@@ -83,7 +85,7 @@ func (a *AuthHandlers) AuthMiddleware(requiredRole UserRole) gin.HandlerFunc {
 		if !a.access.Authenticate(c, requiredRole) {
 			return
 		}
-		c.Next()
+		a.observeClient(c)
 	}
 }
 
@@ -93,7 +95,7 @@ func (a *AuthHandlers) AuthMiddlewareMultiRole(acceptedRoles []UserRole) gin.Han
 		if !a.access.AuthenticateMultiRole(c, acceptedRoles) {
 			return
 		}
-		c.Next()
+		a.observeClient(c)
 	}
 }
 

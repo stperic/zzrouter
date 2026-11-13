@@ -197,14 +197,16 @@ func (c *Core) buildAccessContext(p *KeyPrincipal) *AccessContext {
 	}
 
 	ac.Team = &TeamPrincipal{
-		ID:            team.ID,
-		Name:          team.Name,
-		MemberRole:    teams.MemberRole(p.TeamRole),
-		AllowedModels: team.AllowedModels,
-		Quotas:        team.QuotaConfig,
-		Suspended:     team.Suspended,
-		SuspendedAt:   team.SuspendedAt,
-		SuspendedBy:   team.SuspendedBy,
+		ID:             team.ID,
+		Name:           team.Name,
+		MemberRole:     teams.MemberRole(p.TeamRole),
+		AllowedModels:  team.AllowedModels,
+		ProviderAccess: team.ProviderAccess.Clone(),
+		RouteAccess:    team.RouteAccess.Clone(),
+		Quotas:         team.QuotaConfig,
+		Suspended:      team.Suspended,
+		SuspendedAt:    team.SuspendedAt,
+		SuspendedBy:    team.SuspendedBy,
 	}
 	return ac
 }
@@ -291,7 +293,11 @@ func (c *Core) Authorize(ac *AccessContext, modelName string) Decision {
 	// 3. Model access — team is the sole source of allowed models. A
 	// virtual key with no team is not model-gated. Static keys never
 	// reach Core; the adapter admits them first.
-	if ac.Team != nil && !c.authorizer.Allowed(modelName, ac.Team.AllowedModels) {
+	if ac.Team != nil && ac.Team.RouteAccess.Restricted() {
+		if !c.authorizer.RouteAllowed(modelName, ac.Team.RouteAccess) {
+			return Decision{Reason: DenyModelAccess, Message: "The team allows only its assigned routes"}
+		}
+	} else if ac.Team != nil && !c.authorizer.Allowed(modelName, ac.Team.AllowedModels) {
 		return Decision{
 			Reason: DenyModelAccess,
 			Message: fmt.Sprintf("Model access denied for key %q: model %q not in team %q allowed_models",
@@ -408,4 +414,12 @@ func HasSpendLimit(ac *AccessContext) bool {
 		}
 	}
 	return false
+}
+
+// PreviewTeamBudget reads the same team reservation policy without changing usage.
+func (c *Core) PreviewTeamBudget(ac *AccessContext, quotes []pricing.Quote) quota.Decision {
+	if ac == nil || ac.Team == nil {
+		return quota.Decision{Allowed: true}
+	}
+	return c.enforcer.PreviewBudget(quota.QuotaScope{Scope: quota.ScopeTeam, EntityID: ac.Team.ID, Quotas: ac.Team.Quotas}, quotes)
 }

@@ -96,11 +96,13 @@ func (k *KeyPrincipal) IsExpired() bool {
 
 // TeamPrincipal is the team-level identity when the key belongs to a team.
 type TeamPrincipal struct {
-	ID            string
-	Name          string
-	MemberRole    teams.MemberRole
-	AllowedModels []string
-	Quotas        quota.QuotaConfig
+	ID             string
+	Name           string
+	MemberRole     teams.MemberRole
+	AllowedModels  []string
+	RouteAccess    teams.RouteAccess
+	ProviderAccess teams.ProviderAccess
+	Quotas         quota.QuotaConfig
 
 	Suspended   bool
 	SuspendedAt *time.Time

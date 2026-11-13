@@ -132,6 +132,7 @@ func (s *Server) setupRoutes() {
 		// Security: live admin identity via an API key or protected browser session.
 		publicAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.browserAuthMiddleware(RoleAdmin))
 		s.registerPublicRoutes(publicAPI)
+		s.registerClientActivity(publicAPI)
 		mcpAPI := s.engine.Group("/zzrouter/v1", RequestIDMiddleware(), APIVersionMiddleware(), s.auth.adminAuthMiddleware())
 		s.registerMCPServer(mcpAPI)
 		s.registerInferenceMCPServer()
@@ -152,7 +153,7 @@ func (s *Server) setupRoutes() {
 		clusterOps := s.engine.Group("/zzrouter/v1/cluster",
 			RequestIDMiddleware(), APIVersionMiddleware(),
 			s.auth.adminAuthMiddleware())
-		clusterOps.POST("/pairing/accept", s.clusterHandlers.handleClusterPairingAccept)
+		s.registerBrowserPairing()
 		clusterOps.POST("/decommission-worker", s.clusterHandlers.handleClusterDecommissionWorker)
 		clusterOps.POST("/revoke-worker", s.clusterHandlers.handleClusterRevokeWorker)
 	}

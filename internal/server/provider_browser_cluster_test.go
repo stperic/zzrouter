@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
@@ -61,7 +62,7 @@ func seedBrowserTransportRun(t *testing.T, worker *Server, port int) *instance.I
 }
 
 func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
-	for _, reason := range []string{"revocation", "demotion"} {
+	for _, reason := range []string{"revocation", "demotion", "provider policy", "route policy"} {
 		t.Run(reason, func(t *testing.T) {
 			var calls atomic.Int32
 			backendClosed := make(chan struct{})
@@ -100,7 +101,13 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			require.NoError(t, err)
 			worker := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "worker", ClusterMode: config.ClusterModeWorker}, providers: []string{"comfyui"}, enabled: []string{"comfyui"}})
 			coordinator, g, _, issuer, _ := sharedBrowserAuthorityFixture(t, "", TestNodeConfig{NodeName: "coordinator", ClusterMode: config.ClusterModeCoordinator})
-			key := loadTestKey(t, coordinator, "provider-browser-cluster-reader", keys.VirtualKey{Name: "Cluster browser reader"})
+			reader := keys.VirtualKey{Name: "Cluster browser reader"}
+			if reason == "provider policy" || reason == "route policy" {
+				team, err := coordinator.services.Teams.CreateTeam(&CreateTeamRequest{ID: "browser-team", Name: "Browser team"}, "admin")
+				require.NoError(t, err)
+				reader.TeamID = team.ID
+			}
+			key := loadTestKey(t, coordinator, "provider-browser-cluster-reader", reader)
 			run := seedBrowserTransportRun(t, worker, port)
 			owner := transportNode(t, clusternode.Coordinator, "coordinator", nil)
 			workerFinished := make(chan struct{})
@@ -173,11 +180,18 @@ func TestProviderBrowserRealMTLSHTTPAndWebSocketLifecycle(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, websocket.BinaryMessage, kind)
 			require.Equal(t, payload, echo)
-			if reason == "revocation" {
+			switch reason {
+			case "revocation":
 				_, err := coordinator.keyStore.RotateKey("provider-browser-cluster-reader")
 				require.NoError(t, err)
-			} else {
+			case "demotion":
 				require.NoError(t, coordinator.role.Set(t.Context(), role.RoleWorker, "demote with active browser socket"))
+			case "route policy":
+				_, err := coordinator.services.Teams.UpdateTeam(reader.TeamID, &UpdateTeamRequest{RouteAccess: teams.RouteAccess{Mode: "none"}}, "admin")
+				require.NoError(t, err)
+			case "provider policy":
+				_, err := coordinator.services.Teams.UpdateTeam(reader.TeamID, &UpdateTeamRequest{ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}}}, "admin")
+				require.NoError(t, err)
 			}
 			_, _, err = conn.ReadMessage()
 			require.Error(t, err)

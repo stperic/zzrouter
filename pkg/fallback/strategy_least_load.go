@@ -5,11 +5,11 @@ import "sort"
 // LeastLoadStrategy selects the deployment with the fewest in-flight requests.
 // Tiebreaker: higher priority wins.
 type LeastLoadStrategy struct {
-	tracker *LoadTracker
+	tracker LoadSnapshotter
 }
 
 // NewLeastLoadStrategy creates a strategy backed by the given load tracker.
-func NewLeastLoadStrategy(tracker *LoadTracker) *LeastLoadStrategy {
+func NewLeastLoadStrategy(tracker LoadSnapshotter) *LeastLoadStrategy {
 	return &LeastLoadStrategy{tracker: tracker}
 }
 
@@ -20,7 +20,9 @@ func (s *LeastLoadStrategy) Select(candidates []Candidate) []Candidate {
 	// Snapshot in-flight counts for consistent sort ordering
 	loads := make(map[string]int64, len(result))
 	for _, c := range result {
-		loads[c.Name] = s.tracker.InFlight(c.Name)
+		if s.tracker != nil {
+			loads[c.Name] = s.tracker.InFlight(c.Name)
+		}
 	}
 
 	sort.SliceStable(result, func(i, j int) bool {
@@ -36,3 +38,6 @@ func (s *LeastLoadStrategy) Select(candidates []Candidate) []Candidate {
 }
 
 func (s *LeastLoadStrategy) Name() string { return "least-load" }
+
+// LoadSnapshotter supplies current load without acquiring a request slot.
+type LoadSnapshotter interface{ InFlight(string) int64 }
