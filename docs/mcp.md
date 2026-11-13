@@ -68,22 +68,9 @@ claude mcp add --transport http zzrouter http://localhost:9090/zzrouter/v1/mcp
 claude mcp login zzrouter
 ```
 
-For remote clients, configure a fixed HTTPS issuer and restart the coordinator:
-
-```yaml
-auth:
-  oauth:
-    issuer_url: https://router.example.com
-```
-
-The issuer must be a stable canonical HTTPS origin without a trailing slash.
-Keep the node's plaintext listener restricted behind a TLS reverse proxy.
-The issuer must be reachable from the MCP client, including hosted clients.
-No external identity service is required. The issuer never comes from request
-Host or forwarding headers, even when the node binds every network interface.
-
 For user inference, use `/inference/mcp` and a distinct client entry name.
-Other OAuth-capable Streamable HTTP clients need only the endpoint URL.
+For other OAuth-capable Streamable HTTP clients, use the endpoint URL and that
+client's login flow.
 The browser asks for the corresponding existing zzRouter key and explicit
 client consent. It remembers the browser identity for up to 12 hours. Each
 MCP client stores and refreshes its own tokens; the key never enters its config.
@@ -105,6 +92,108 @@ The existing management header precedence is preserved, so a stale explicit
 To disable browser OAuth, set `auth.oauth.enabled: false` and restart. Native
 MCP endpoints remain available with API-key authentication. Workers expose
 neither the native MCP endpoints nor browser login.
+
+### Remote HTTPS checklist
+
+Use this checklist for a TLS reverse proxy, including Cloudflare Tunnel. Replace
+the reserved example `https://router.example.com` with your public origin.
+
+1. **Fix the public origin.** Set `auth.oauth.issuer_url` to that stable HTTPS
+   origin in `node.yaml`, restrict the node's plaintext listener behind the proxy,
+   and restart the coordinator. Follow the [canonical origin rules](configuration.md#mcp-browser-login).
+   Open the exact hostname, scheme and port in the browser and client. A hosted
+   MCP client's `localhost` refers to its own host, so it cannot reach your local
+   coordinator that way. The issuer is fixed at startup; Host and forwarding
+   headers never select it. No external identity service is required.
+
+2. **Route every required family.** Forward discovery, OAuth and both MCP
+   resources, plus the console routes if used, according to the
+   [ingress contract](configuration.md#mcp-browser-login). Publish only those
+   necessary routes and follow its compatibility-authentication requirement before
+   adding `/v1/*` or `/api/*`. Preserve public paths, Host, request headers and
+   response cookies. Publish the routes at the origin
+   root; the issuer cannot include a `/router` prefix. For Tunnel,
+   [path matching forwards the full path](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/configuration-file/).
+   Its [HTTP Host Header setting](https://developers.cloudflare.com/tunnel/reference/origin-parameters/#httphostheader)
+   controls the origin Host; Origin Server Name controls origin TLS certificate
+   matching. Verify the chosen Host behavior separately from certificate trust.
+
+3. **Check discovery before login.** Run these requests from a host that should
+   reach the public service. They send no credentials and do not follow redirects:
+
+   ```sh
+   curl --include --max-time 15 \
+     https://router.example.com/.well-known/oauth-authorization-server
+   curl --include --max-time 15 \
+     https://router.example.com/.well-known/oauth-protected-resource/zzrouter/v1/mcp
+   curl --include --max-time 15 \
+     https://router.example.com/.well-known/oauth-protected-resource/inference/mcp
+   curl --include --max-time 15 --request POST \
+     https://router.example.com/zzrouter/v1/mcp
+   curl --include --max-time 15 --request POST \
+     https://router.example.com/inference/mcp
+   ```
+
+   The first three should return 200 and JSON. Authorization-server `issuer` and
+   endpoint URLs must use the public origin. Each resource document must name its
+   exact public MCP URL in `resource` and the public issuer in
+   `authorization_servers`. Each anonymous MCP POST should return Router's 401
+   with `WWW-Authenticate: Bearer` pointing `resource_metadata` at the matching
+   resource document. Private origin addresses must not appear in those URLs.
+   This follows [MCP authorization discovery](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
+
+   Inspect headers and body as well as status. A proxy/Access redirect or HTML
+   sign-in page is not Router metadata; check ingress policy and client access.
+   A 404 suggests a missing or rewritten route. A proxy 502 calls for checking
+   origin reachability and TLS. A wrong issuer calls for checking startup
+   configuration and restart. The anonymous Router 401 challenge is expected.
+   For authenticated Router 401/403 responses, check the selected resource,
+   current key or grant, and Origin. Access can also return 401/403, so status
+   alone does not identify which service refused the request.
+
+4. **Check any additional Access policy.** Cloudflare Tunnel routing and optional
+   [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/)
+   are separate controls from Router's OAuth authority. Confirm that the actual
+   client can traverse the chosen policy for discovery, registration, token,
+   revocation and MCP requests, and that the browser can reach consent and console
+   routes. An Access cookie in your browser does not automatically authenticate
+   an MCP process. Service-token headers require support in the chosen client;
+   preserve `Authorization` for Router OAuth. Check the client's current
+   documentation, including [Claude Code's proxy OAuth requirements](https://code.claude.com/docs/en/mcp#use-oauth-with-a-server-behind-an-authenticating-proxy)
+   and [Codex HTTP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli).
+   Qualify the chosen client and policy together.
+
+5. **Connect each audience separately.** Use the add/login commands above with
+   `https://router.example.com/zzrouter/v1/mcp` for management. Add a distinct
+   client entry for `https://router.example.com/inference/mcp` and sign in with a
+   user key. The command forms are documented by
+   [Codex](https://learn.chatgpt.com/docs/developer-commands?surface=cli) and
+   [Claude Code](https://code.claude.com/docs/en/mcp#authenticate-from-the-command-line).
+   Remove old explicit Router key headers before OAuth login. Check the consent
+   callback address against the client you intended to connect; its display name
+   is unverified. Use a harmless inventory or model-list tool to check access.
+
+6. **Verify continued access and disconnection.** Check that the client refreshes
+   its token and can still call that resource. Open `/console/` at the public
+   origin. Administrators use **MCP connections**; user keys use **My Access**.
+   Revoke the connection owned by the signed-in key and verify that access and
+   refresh fail. Signing out only ends the browser session.
+   Sign out before switching between management and inference identities. See
+   [console access and recovery](web-console.md#manage-access) and the
+   [security contract](security.md#mcp-browser-authorization).
+
+7. **Record what passed.** Keep a small acceptance record for each client:
+
+   - Date, Router/common versions, public origin and ingress/Access policy.
+   - Client name/version, transport and management or inference resource.
+   - Discovery, browser login/callback, harmless tool call, refresh and revocation.
+   - Untested clients, policies or behavior.
+
+   The local `TestIntegrationRemoteProxy` tests exercise Router through a
+   disposable HTTPS proxy with the official Go SDK. They do not qualify an actual
+   Tunnel/Access policy, Codex, Claude Code, hosted clients or native browser cookie
+   enforcement. The [API-key smoke and conformance commands](#conformance) have
+   their own scope and do not establish browser OAuth interoperability.
 
 ## Connect with API keys
 

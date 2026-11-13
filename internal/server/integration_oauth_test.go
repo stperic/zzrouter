@@ -41,6 +41,11 @@ func browserToken(t *testing.T, endpoint *httptest.Server, key, path string) str
 
 func browserOAuthTokens(t *testing.T, endpoint *httptest.Server, key, path string) (string, string, string) {
 	t.Helper()
+	return browserOAuthTokensWithConsent(t, endpoint, key, path, nil)
+}
+
+func browserOAuthTokensWithConsent(t *testing.T, endpoint *httptest.Server, key, path string, inspect func([]byte)) (string, string, string) {
+	t.Helper()
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	browser := *endpoint.Client()
@@ -63,6 +68,9 @@ func browserOAuthTokens(t *testing.T, endpoint *httptest.Server, key, path strin
 	require.NoError(t, err)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, 200, resp.StatusCode, string(data))
+	if inspect != nil {
+		inspect(data)
+	}
 	field := func(name string) string {
 		match := regexp.MustCompile(`name="` + name + `" value="([^"]+)"`).FindSubmatch(data)
 		require.Len(t, match, 2)
