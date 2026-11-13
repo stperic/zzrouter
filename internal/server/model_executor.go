@@ -31,6 +31,7 @@ type InternalExecutor struct {
 	modelCache         *cache.Cache
 	registry           *modelregistry.Registry
 	getNodename        func() string
+	connections        *backend.Resolver
 	appsConfig         func() *pkgConfig.AppsConfig
 	httpClient         *http.Client
 	getHFConnector     func() *huggingface.Connector
@@ -50,8 +51,13 @@ func NewInternalExecutor(
 	configStore *pkgConfig.AppsConfigStore,
 	publishCatalog func(context.Context) error,
 	getResourceMetrics func() any,
+	resolvers ...*backend.Resolver,
 ) *InternalExecutor {
-	return &InternalExecutor{
+	connections := backend.NewResolver(appsConfig)
+	if len(resolvers) > 0 {
+		connections = resolvers[0]
+	}
+	return &InternalExecutor{connections: connections,
 		registry:           registry,
 		getNodename:        getNodename,
 		appsConfig:         appsConfig,
@@ -95,7 +101,11 @@ func (e *InternalExecutor) ShowLocalModel(ctx context.Context, req *ShowModelReq
 	var details map[string]any
 	switch source {
 	case constants.RepoOllama:
-		backend, ok := backend.NewResolver(e.appsConfig).Resolve(app)
+		connections := e.connections
+		if connections == nil {
+			connections = backend.NewResolver(e.appsConfig)
+		}
+		backend, ok := connections.Resolve(app)
 		if !ok {
 			return nil, newRouteProblemError(http.StatusServiceUnavailable, "Service Unavailable", "selected provider backend is unavailable", httperr.CodeClusterUnavailable, e.getNodename())
 		}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -196,4 +197,23 @@ func TestPublicEntryDropsCoordinatorProviderHint(t *testing.T) {
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, req)
 	require.Equal(t, http.StatusNoContent, response.Code)
+}
+
+func TestUpstreamHeadersNeverForwardOAuth(t *testing.T) {
+	for _, up := range []backend.Upstream{backend.Engine(), backend.CallerKey(), backend.Cluster()} {
+		src := http.Header{"Authorization": []string{"Bearer zzoa_test-delegated-credential"}, "X-Api-Key": []string{"zzoa_test-delegated-credential"}}
+		got := upstreamHeaders(context.WithValue(t.Context(), oauthCredentialKey{}, true), src, up)
+		require.Empty(t, got.Get("Authorization"))
+		require.Empty(t, got.Get("X-API-Key"))
+		require.Equal(t, "Bearer zzoa_test-delegated-credential", src.Get("Authorization"))
+	}
+}
+
+func TestUpstreamHeadersPreserveNativeOAuthLikeKey(t *testing.T) {
+	key := "zzoa_native-api-key-has-the-same-prefix-but-is-not-an-oauth-token"
+	for _, up := range []backend.Upstream{backend.CallerKey(), backend.Cluster()} {
+		src := http.Header{"Authorization": []string{"Bearer " + key}}
+		got := upstreamHeaders(t.Context(), src, up)
+		require.Equal(t, "Bearer "+key, got.Get("Authorization"))
+	}
 }

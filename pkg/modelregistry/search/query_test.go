@@ -66,7 +66,7 @@ func TestSearchQueryHuggingFacePopularAlias(t *testing.T) {
 
 func TestSearchQueryCacheIsolation(t *testing.T) {
 	base := SearchParams{Provider: ProviderHuggingFace, Search: "a&author=b", Sort: "date", Direction: -1, Pagination: PaginationParams{Limit: 10}}
-	key := SearchCacheKey(base, "AND", false)
+	key := SearchCacheKey(base, "AND", false, "revision-1")
 	for _, mutate := range []func(*SearchParams){
 		func(p *SearchParams) { p.Author = "org" }, func(p *SearchParams) { p.Full = true },
 		func(p *SearchParams) { p.Pagination.Cursor = "next" }, func(p *SearchParams) { p.Pagination.Offset = 10 },
@@ -75,14 +75,15 @@ func TestSearchQueryCacheIsolation(t *testing.T) {
 	} {
 		changed := base
 		mutate(&changed)
-		require.NotEqual(t, key, SearchCacheKey(changed, "AND", false))
+		require.NotEqual(t, key, SearchCacheKey(changed, "AND", false, "revision-1"))
 	}
-	require.NotEqual(t, key, SearchCacheKey(base, "OR", false))
-	require.NotEqual(t, key, SearchCacheKey(base, "AND", true))
+	require.NotEqual(t, key, SearchCacheKey(base, "OR", false, "revision-1"))
+	require.NotEqual(t, key, SearchCacheKey(base, "AND", true, "revision-1"))
+	require.NotEqual(t, key, SearchCacheKey(base, "AND", false, "revision-2"))
 	base.Filter = []string{"gguf", "mlx"}
 	other := base
 	other.Filter = []string{"mlx", "gguf"}
-	require.Equal(t, SearchCacheKey(base, "AND", false), SearchCacheKey(other, "AND", false))
+	require.Equal(t, SearchCacheKey(base, "AND", false, "revision-1"), SearchCacheKey(other, "AND", false, "revision-1"))
 }
 
 func TestSearchQueryCloudDates(t *testing.T) {
@@ -116,7 +117,7 @@ func TestSearchQueryOllamaSortBeforePage(t *testing.T) {
 		require.Equal(t, "https://ollama.com/library", r.URL.String())
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(fixture)), Header: http.Header{}}, nil
 	})
-	page, err := SearchOllamaModelsPaginated(SearchParams{Provider: ProviderOllama, Search: "nomic", Sort: "downloads", Direction: 1, Pagination: PaginationParams{Limit: 1, Offset: 1}})
+	page, err := SearchOllamaModelsPaginated(t.Context(), SearchParams{Provider: ProviderOllama, Search: "nomic", Sort: "downloads", Direction: 1, Pagination: PaginationParams{Limit: 1, Offset: 1}})
 	require.NoError(t, err)
 	require.Len(t, page.Results, 1)
 	require.Equal(t, "nomic-embed-text", page.Results[0].Name)

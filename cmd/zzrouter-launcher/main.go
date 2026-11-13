@@ -115,10 +115,11 @@ func run(startChild func(*exec.Cmd) error) int {
 		defer os.Remove(pidFile)
 	}
 
-	// Channel to receive child exit result.
-	waitCh := make(chan error, 1)
+	// Completion publishes the ProcessState consumed by exitCode.
+	waitCh := make(chan struct{})
 	go func() {
-		waitCh <- cmd.Wait()
+		_ = cmd.Wait()
+		close(waitCh)
 	}()
 
 	// Stdin EOF requests shutdown on Windows and means the node died on Unix.

@@ -28,7 +28,7 @@ type LogsHandlers struct {
 	httpClient          *http.Client
 	httpStreamingClient *http.Client
 	getClusterClient    func() mesh.ClusterClient
-	routeToClusterNode  func(ctx context.Context, node, path, method string, body []byte, headers http.Header) (*mesh.Response, error)
+	routeToClusterNode  func(ctx context.Context, node, path, method string, body []byte) (*mesh.Response, error)
 	getClusterNodeURL   func(string) (string, error)
 	isLocalNode         func(string) bool
 	handleClusterAction func(*gin.Context, string, string, string, []byte) bool
@@ -489,7 +489,7 @@ func (l *LogsHandlers) routeInstanceLogsToCluster(c *gin.Context, targetNode, in
 	query := mergeClusterLogQuery(c.Request.URL.Query(), lines, follow)
 	endpoint := fmt.Sprintf("/zzrouter/v1/internal/runs/%s/logs?%s", instanceID, query.Encode())
 
-	resp, err := l.routeToClusterNode(ctx, targetNode, endpoint, "GET", nil, c.Request.Header)
+	resp, err := l.routeToClusterNode(ctx, targetNode, endpoint, "GET", nil)
 	if err != nil {
 		BadGateway(c, fmt.Sprintf("Failed to get logs from host '%s': %s", targetNode, err.Error()))
 		return

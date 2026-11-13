@@ -3,10 +3,12 @@ package detect
 import (
 	"context"
 	"encoding/json"
-	"maps"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/stperic/common/httpclient"
 
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -28,7 +30,7 @@ const ollamaProbeTimeout = 2 * time.Second
 // detection rules engine for this one provider.
 //
 // It GETs OllamaVersionEndpoint(svc) carrying svc's declared credential.
-func ProbeOllama(ctx context.Context, svc *config.ServiceConfig) (string, bool) {
+func ProbeOllama(ctx context.Context, svc *config.ServiceConfig, resolvers ...*backend.Resolver) (string, bool) {
 	endpoint := OllamaVersionEndpoint(svc)
 	if endpoint == "" {
 		return "", false
@@ -36,12 +38,32 @@ func ProbeOllama(ctx context.Context, svc *config.ServiceConfig) (string, bool) 
 	probeCtx, cancel := context.WithTimeout(ctx, ollamaProbeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
+	target, ok := backend.Target(svc)
+	if len(resolvers) > 0 {
+		target, ok = resolvers[0].Target("ollama")
+	}
+	if !ok {
+		return "", false
+	}
+	// Only the declared path travels to the coherently resolved daemon.
+	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		return "", false
 	}
-	maps.Copy(req.Header, backend.ForProvider(svc.API()).Header())
-	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	base, err := url.Parse(target.Endpoint)
+	if err != nil {
+		return "", false
+	}
+	probePath := parsed.RequestURI()
+	prefix := strings.TrimRight(base.EscapedPath(), "/")
+	if prefix != "" && (parsed.EscapedPath() == prefix || strings.HasPrefix(parsed.EscapedPath(), prefix+"/")) {
+		probePath = strings.TrimPrefix(probePath, prefix)
+	}
+	req, err := target.NewRequest(probeCtx, http.MethodGet, probePath, nil)
+	if err != nil {
+		return "", false
+	}
+	client := httpclient.SameOrigin(&http.Client{Transport: &http.Transport{DisableKeepAlives: true}})
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", false

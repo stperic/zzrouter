@@ -2,11 +2,15 @@ package update
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/stperic/common/atomicfile"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -84,8 +88,11 @@ func (h *History) saveLocked(history *UpdateHistory) error {
 		return fmt.Errorf("failed to marshal history: %w", err)
 	}
 
-	if err := utils.AtomicWriteFile(h.filePath, data, h.mode); err != nil {
-		return fmt.Errorf("save update history: %w", err)
+	if err := atomicfile.WriteFile(h.filePath, data, h.mode); err != nil {
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			return fmt.Errorf("save update history: %w", err)
+		}
+		slog.Warn("Update history committed with uncertain durability", "error", err)
 	}
 	return nil
 }

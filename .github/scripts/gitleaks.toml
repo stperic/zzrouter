@@ -137,3 +137,11 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''(^|/)pkg/security/redaction_test\.go$''']
 regexes = ['''^\s*input:\ \ \ \ "ZZROUTER_ADMIN_API_KEY=mx\-verysecretkey1234567890abc",\s*$''']
+
+[[allowlists]]
+description = "Synthetic OAuth-shaped native key fixture: internal/server/integration_oauth_test.go:232"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''(^|/)internal/server/integration_oauth_test\.go$''']
+regexes = ['''^\s*const key = "zzoa_B9vQ4x7pD2mR8tK3nH6wS1cF5jL0zA9uE4yG7dN2"\s*$''']

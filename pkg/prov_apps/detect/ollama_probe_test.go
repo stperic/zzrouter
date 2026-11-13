@@ -25,7 +25,7 @@ func TestProbeOllama_SendsTheDeclaredCredential(t *testing.T) {
 
 	svc := &config.ServiceConfig{
 		Discovery: &config.AppDiscovery{Detection: []config.AppDetectionRule{{Method: "http", Target: daemon.URL + "/api/version"}}},
-		Runtime:   &config.AppRuntimeConfig{API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "t"}},
+		Runtime:   &config.AppRuntimeConfig{Endpoint: daemon.URL, API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "t"}},
 	}
 	v, ok := ProbeOllama(context.Background(), svc)
 	assert.True(t, ok)
@@ -34,4 +34,23 @@ func TestProbeOllama_SendsTheDeclaredCredential(t *testing.T) {
 	svc.Runtime.API = nil
 	_, ok = ProbeOllama(context.Background(), svc)
 	assert.False(t, ok)
+}
+
+func TestOllamaProbeKeepsEndpointPrefixExactlyOnce(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/ollama/api/version?format=json", r.URL.RequestURI())
+		assert.Equal(t, "Bearer fixture-credential", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"version":"0.12.0"}`))
+	}))
+	defer upstream.Close()
+	service := &config.ServiceConfig{
+		Runtime: &config.AppRuntimeConfig{
+			Endpoint: upstream.URL + "/ollama",
+			API:      &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "fixture-credential"}, //nolint:gosec // Synthetic credential used only by this test server.
+		},
+		Discovery: &config.AppDiscovery{Detection: []config.AppDetectionRule{{Method: "http", Target: upstream.URL + "/ollama/api/version?format=json"}}},
+	}
+	version, ok := ProbeOllama(t.Context(), service)
+	assert.True(t, ok)
+	assert.Equal(t, "0.12.0", version)
 }

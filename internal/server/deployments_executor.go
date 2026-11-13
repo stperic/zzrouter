@@ -83,6 +83,7 @@ type DeploymentsExecutor struct {
 	downloads              *modelregistry.DownloadTracker
 	registry               *modelregistry.Registry
 	ollamaDaemon           func() (*backend.Resolved, error)
+	connections            *backend.Resolver
 	appsConfig             func() *pkgConfig.AppsConfig
 	configStore            *pkgConfig.AppsConfigStore
 	publishCatalog         func() error
@@ -110,8 +111,13 @@ func NewDeploymentsExecutor(
 	configStore *pkgConfig.AppsConfigStore,
 	publishCatalog func() error,
 	jobsReg *jobs.Registry,
+	resolvers ...*backend.Resolver,
 ) *DeploymentsExecutor {
-	return &DeploymentsExecutor{
+	connections := backend.NewResolver(appsConfig)
+	if len(resolvers) > 0 {
+		connections = resolvers[0]
+	}
+	return &DeploymentsExecutor{connections: connections,
 		getNodename:            getNodename,
 		isCloudProviderFn:      isCloudProvider,
 		isLocalNodeCompatible:  isLocalNodeCompatible,
@@ -646,15 +652,12 @@ func (e *DeploymentsExecutor) isCloudProvider(repoName string) bool {
 
 // hasProviderCredentials reports whether the provider has API credentials configured.
 func (e *DeploymentsExecutor) hasProviderCredentials(repoName string) bool {
-	cfg := e.appsConfig()
-	if cfg == nil || repoName == "" {
-		return false
+	r := e.connections
+	if r == nil {
+		r = backend.NewResolver(e.appsConfig)
 	}
-	appCfg, exists := cfg.LookupApp(repoName)
-	if !exists {
-		return false
-	}
-	return appCfg.Runtime != nil && appCfg.Runtime.API != nil && appCfg.Runtime.API.HasCredentials()
+	target, ok := r.Target(repoName)
+	return ok && target.Configured
 }
 
 // isOllamaCloudVariant returns true if the Ollama model deploy targets a cloud

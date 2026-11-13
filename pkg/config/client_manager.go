@@ -6,44 +6,88 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
+	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"gopkg.in/yaml.v3"
 )
 
-// LoadClientConfig loads client configuration from file
-// Searches in priority order: current directory, then user config directory
+// LoadClientConfig loads the client file, creating its template on first use.
 func (cm *ConfigManager) LoadClientConfig() (*ClientConfig, error) {
+	cfg, err := cm.readClientConfig()
+	if !errors.Is(err, os.ErrNotExist) {
+		return cfg, err
+	}
+	owner, err := cm.lockClientConfig()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = owner.Close() }()
+	return cm.loadClientConfig()
+}
+
+// lockClientConfig serializes short file transactions across managers and processes.
+func (cm *ConfigManager) lockClientConfig() (*os.File, error) {
+	if err := cm.EnsureDir(cm.GetClientConfigDir()); err != nil {
+		return nil, fmt.Errorf("create client config directory: %w", err)
+	}
+	owner, err := atomicfile.LockWait(cm.GetClientConfigPath() + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("lock client config: %w", err)
+	}
+	return owner, nil
+}
+
+// loadClientConfig requires the client file lock and rechecks before first-run creation.
+func (cm *ConfigManager) loadClientConfig() (*ClientConfig, error) {
+	cfg, err := cm.readClientConfig()
+	if !errors.Is(err, os.ErrNotExist) {
+		return cfg, err
+	}
+	if err := cm.writeClientTemplate(); err != nil {
+		return nil, err
+	}
+	return cm.readClientConfig()
+}
+
+// ResetClientConfig atomically restores defaults under the client transaction lock.
+func (cm *ConfigManager) ResetClientConfig() error {
+	owner, err := cm.lockClientConfig()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = owner.Close() }()
+	return cm.writeClientTemplate()
+}
+
+// writeClientTemplate requires the client transaction lock.
+func (cm *ConfigManager) writeClientTemplate() error {
+	err := atomicfile.WriteFile(cm.GetClientConfigPath(), []byte(templates.GetClientTemplate()), 0o600)
+	if errors.Is(err, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Client config template committed with uncertain durability", "error", err)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("write client config template: %w", err)
+	}
+	return nil
+}
+
+// readClientConfig reads a complete atomic snapshot without requiring write access.
+func (cm *ConfigManager) readClientConfig() (*ClientConfig, error) {
 	// Load .env from config directory so env var references (e.g. ZZROUTER_ADMIN_API_KEY) resolve
 	cm.LoadConfigDirEnv()
 
-	// Try to find existing config file (current dir first, then user config)
-	configFile := cm.FindClientConfigFile()
-
-	// If no config found, create default in user config directory
-	if configFile == "" {
-		configDir := cm.GetClientConfigDir()
-		if err := cm.EnsureDir(configDir); err != nil {
-			return nil, fmt.Errorf("failed to create client config dir: %w", err)
-		}
-
-		configFile = filepath.Join(configDir, clientConfigFileName)
-
-		// Write template directly to file - this is the source of truth
-		templateContent := templates.GetClientTemplate()
-		if err := os.WriteFile(configFile, []byte(templateContent), 0600); err != nil {
-			return nil, fmt.Errorf("failed to write template to file: %w", err)
-		}
-	}
-
+	configFile := cm.GetClientConfigPath()
 	// Load config from file (either existing or newly created template)
 	v := viper.New()
 	v.SetConfigFile(configFile)
@@ -66,19 +110,31 @@ func (cm *ConfigManager) LoadClientConfig() (*ClientConfig, error) {
 // SaveClientConfig saves client configuration to file.
 // Uses proper YAML marshal instead of regex text replacement.
 func (cm *ConfigManager) SaveClientConfig(config *ClientConfig) error {
-	configDir := cm.GetClientConfigDir()
-	if err := cm.EnsureDir(configDir); err != nil {
-		return fmt.Errorf("failed to create client config dir: %w", err)
+	owner, err := cm.lockClientConfig()
+	if err != nil {
+		return err
 	}
+	defer func() { _ = owner.Close() }()
+	return cm.saveClientConfig(config)
+}
 
-	configFile := filepath.Join(configDir, clientConfigFileName)
-
+// saveClientConfig requires the client file lock held by the surrounding transaction.
+func (cm *ConfigManager) saveClientConfig(config *ClientConfig) error {
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal client config: %w", err)
 	}
 
-	return os.WriteFile(configFile, data, 0600)
+	write := cm.writeClientFile
+	if write == nil {
+		write = atomicfile.WriteFile
+	}
+	err = write(cm.GetClientConfigPath(), data, 0o600)
+	if errors.Is(err, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Client config committed with uncertain durability", "error", err)
+		return nil
+	}
+	return err
 }
 
 // mergeWithDefaults merges loaded config with defaults for any missing fields
@@ -328,13 +384,7 @@ func saveDetectedNode(address string, port int, secure bool) error {
 	cm := NewConfigManager("zzrouter")
 	store, err := NewClientConfigStore(cm)
 	if err != nil {
-		// If load fails, save a fresh config with just connection details.
-		// This handles first-run where cli.yaml doesn't exist yet.
-		config := &ClientConfig{}
-		config.Node.Address = address
-		config.Node.Port = port
-		config.Node.Secure = secure
-		return cm.SaveClientConfig(config)
+		return fmt.Errorf("load client config for detected node: %w", err)
 	}
 	return store.SetNodeConnection(address, port, secure)
 }

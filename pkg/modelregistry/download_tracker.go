@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -447,7 +449,7 @@ func atomicWriteState(path string, downloads map[string]*PersistedDownload) {
 		return
 	}
 
-	if err := utils.AtomicWriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
 		slog.Error("Failed to write download state", "error", err, "path", path)
 	}
 }

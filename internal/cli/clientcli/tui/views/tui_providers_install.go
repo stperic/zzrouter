@@ -11,12 +11,10 @@ import (
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/jobstream"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -39,25 +37,22 @@ const (
 
 // providersInstallPlanMsg carries the fetched install plan.
 type providersInstallPlanMsg struct {
+	ctx  context.Context
 	plan *pkgClient.InstallPlanResponse
 	err  error
 }
 
 // providersStepVerifyMsg carries the result of verifying a single step.
 type providersStepVerifyMsg struct {
+	ctx    context.Context
 	step   int
 	result *pkgClient.StepResultResponse
 	err    error
 }
 
-// providersVerifyMsg carries the result of a provider connectivity check.
-type providersVerifyMsg struct {
-	result *pkgClient.VerifyProviderResponse
-	err    error
-}
-
 // providersStepExecuteMsg carries the result of executing a single step.
 type providersStepExecuteMsg struct {
+	ctx    context.Context
 	step   int
 	result *pkgClient.StepResultResponse
 	err    error
@@ -66,6 +61,7 @@ type providersStepExecuteMsg struct {
 // providersAutoInstallDoneMsg signals automatic install completed.
 // Emitted when the jobstream subscription reaches a terminal FrameMsg.
 type providersAutoInstallDoneMsg struct {
+	ctx context.Context
 	err error
 }
 
@@ -75,6 +71,7 @@ type providersAutoInstallDoneMsg struct {
 // on view exit. stepIdx=-1 indicates a wizard-level Run All; >=0 is
 // the 0-based step index of a single-step Enter.
 type providersInstallJobSubscribedMsg struct {
+	ctx     context.Context
 	row     *jobstream.Row
 	err     error
 	next    tea.Cmd
@@ -83,6 +80,7 @@ type providersInstallJobSubscribedMsg struct {
 
 // providersPreflightMsg carries the result of preflight checks.
 type providersPreflightMsg struct {
+	ctx    context.Context
 	report *pkgClient.PreflightResponse
 	err    error
 }
@@ -129,17 +127,42 @@ func installWizardHints() string {
 // Fetch command
 // ============================================================================
 
-func fetchInstallPlan(client *pkgClient.Client, name, node string) tea.Cmd {
-	return func() tea.Msg {
-		plan, err := client.GetInstallPlan(name, node)
-		return providersInstallPlanMsg{plan: plan, err: err}
+func (m *ProvidersViewModel) retireInstallRequest() {
+	m.installLoading = false
+	if m.installCancel != nil {
+		m.installCancel()
+		m.installCancel = nil
+	}
+	m.installContext = nil
+	m.installInFlight = false
+	m.installProgress = nil
+	if m.installJobRow != nil {
+		m.installJobRow.Cancel()
+		m.installJobRow = nil
 	}
 }
 
-func fetchPreflight(client *pkgClient.Client, name, node string) tea.Cmd {
+func (m *ProvidersViewModel) beginInstallRequest() context.Context {
+	m.retireInstallRequest()
+	m.installContext, m.installCancel = context.WithCancel(m.Context())
+	return m.installContext
+}
+
+func (m *ProvidersViewModel) ownsInstallRequest(ctx context.Context) bool {
+	return ctx != nil && ctx == m.installContext && ctx.Err() == nil
+}
+
+func fetchInstallPlan(ctx context.Context, client *pkgClient.Client, name, node string) tea.Cmd {
+	return func() tea.Msg {
+		plan, err := client.GetInstallPlan(name, node)
+		return providersInstallPlanMsg{ctx: ctx, plan: plan, err: err}
+	}
+}
+
+func fetchPreflight(ctx context.Context, client *pkgClient.Client, name, node string) tea.Cmd {
 	return func() tea.Msg {
 		report, err := client.GetPreflight(name, node)
-		return providersPreflightMsg{report: report, err: err}
+		return providersPreflightMsg{ctx: ctx, report: report, err: err}
 	}
 }
 
@@ -160,13 +183,16 @@ var preflightKeys = preflightKeyMap{
 func (m *ProvidersViewModel) updatePreflightFail(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, preflightKeys.Retry):
-		m.loading = true
+		ctx := m.beginInstallRequest()
+		m.mode = providersViewPickNode
+		m.installLoading = true
 		m.actionStatus = ""
 		return tea.Batch(
-			fetchPreflight(m.client, m.installProvider, m.installNode),
+			fetchPreflight(ctx, m.client, m.installProvider, m.installNode),
 			shared.SpinnerTickCmd(),
 		)
 	case key.Matches(msg, preflightKeys.Back):
+		m.retireInstallRequest()
 		m.mode = providersViewList
 		m.preflightReport = nil
 		m.actionStatus = ""
@@ -264,6 +290,7 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 	if m.installPlan == nil {
 		// Still loading
 		if key.Matches(msg, installWizardKeys.Back) {
+			m.retireInstallRequest()
 			m.mode = providersViewList
 		}
 		return nil
@@ -273,6 +300,7 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 
 	switch {
 	case key.Matches(msg, installWizardKeys.Back):
+		m.retireInstallRequest()
 		// Check if any steps completed — if so, refresh the provider list
 		hadActivity := false
 		for _, s := range m.installStepStatus {
@@ -281,18 +309,7 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 				break
 			}
 		}
-		// Esc out of the wizard mid-install: cancel the active job
-		// subscription so the goroutine exits before we leave the view.
-		// Niling the row here means the synthetic FrameMsg{Done:true}
-		// that Next emits on channel-close lands after the guard in
-		// tui_providers.go §jobstream.FrameMsg clears it — dropped
-		// silently. That's intended.
-		if m.installJobRow != nil {
-			m.installJobRow.Cancel()
-			m.installJobRow = nil
-		}
-		m.installInFlight = false
-		m.installProgress = nil
+
 		m.mode = providersViewList
 		m.installPlan = nil
 		m.installStepStatus = nil
@@ -324,9 +341,10 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 			client := m.client
 			name, node := m.installPlan.Provider, m.installNode
 			plan := *m.installPlan
+			ctx := m.installContext
 			return func() tea.Msg {
 				result, err := client.VerifyInstallStep(name, node, stepNum, &plan)
-				return providersStepVerifyMsg{step: idx, result: result, err: err}
+				return providersStepVerifyMsg{ctx: ctx, step: idx, result: result, err: err}
 			}
 		}
 
@@ -341,15 +359,12 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 			stepNum := steps[idx].Number
 			client := m.client
 			name, node := m.installPlan.Provider, m.installNode
+			ctx := m.beginInstallRequest()
 			m.installInFlight = true
 			m.installProgress = nil
-			if m.installJobRow != nil {
-				m.installJobRow.Cancel()
-				m.installJobRow = nil
-			}
 			m.installJobStep = idx
 			return tea.Batch(
-				startExecuteStepJobCmd(m.Context(), client, name, node, stepNum, idx, *m.installPlan),
+				startExecuteStepJobCmd(ctx, client, name, node, stepNum, idx, *m.installPlan),
 				shared.SpinnerTickCmd(),
 			)
 		}
@@ -365,14 +380,11 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		client := m.client
 		name, node := m.installPlan.Provider, m.installNode
+		ctx := m.beginInstallRequest()
 		m.installInFlight = true
 		m.installProgress = nil
-		if m.installJobRow != nil {
-			m.installJobRow.Cancel()
-			m.installJobRow = nil
-		}
 		m.installJobStep = -1
-		return startInstallJobCmd(m.Context(), client, name, node, *m.installPlan)
+		return startInstallJobCmd(ctx, client, name, node, *m.installPlan)
 
 	case key.Matches(msg, installWizardKeys.CopyCmd):
 		idx := m.installStepCursor
@@ -414,13 +426,13 @@ func startInstallJobCmd(ctx context.Context, client *pkgClient.Client, name, nod
 		}
 		resp, err := client.InstallProvider(name, node, plan)
 		if err != nil {
-			return providersInstallJobSubscribedMsg{err: err, stepIdx: -1}
+			return providersInstallJobSubscribedMsg{ctx: ctx, err: err, stepIdx: -1}
 		}
 		if resp == nil || resp.JobID == "" {
-			return providersInstallJobSubscribedMsg{err: fmt.Errorf("server returned no job_id"), stepIdx: -1}
+			return providersInstallJobSubscribedMsg{ctx: ctx, err: fmt.Errorf("server returned no job_id"), stepIdx: -1}
 		}
 		row, next := jobstream.Subscribe(ctx, client, resp.JobID, resp.Node)
-		return providersInstallJobSubscribedMsg{row: row, next: next, stepIdx: -1}
+		return providersInstallJobSubscribedMsg{ctx: ctx, row: row, next: next, stepIdx: -1}
 	}
 }
 
@@ -436,13 +448,13 @@ func startExecuteStepJobCmd(ctx context.Context, client *pkgClient.Client, name,
 		}
 		resp, err := client.ExecuteInstallStep(name, node, stepNum, plan)
 		if err != nil {
-			return providersInstallJobSubscribedMsg{err: err, stepIdx: stepIdx}
+			return providersInstallJobSubscribedMsg{ctx: ctx, err: err, stepIdx: stepIdx}
 		}
 		if resp == nil || resp.JobID == "" {
-			return providersInstallJobSubscribedMsg{err: fmt.Errorf("server returned no job_id"), stepIdx: stepIdx}
+			return providersInstallJobSubscribedMsg{ctx: ctx, err: fmt.Errorf("server returned no job_id"), stepIdx: stepIdx}
 		}
 		row, next := jobstream.Subscribe(ctx, client, resp.JobID, resp.Node)
-		return providersInstallJobSubscribedMsg{row: row, next: next, stepIdx: stepIdx}
+		return providersInstallJobSubscribedMsg{ctx: ctx, row: row, next: next, stepIdx: stepIdx}
 	}
 }
 
@@ -641,160 +653,4 @@ func renderCommandBox(b *strings.Builder, styles ui.Styles, cmd string, width in
 	for line := range strings.SplitSeq(box, "\n") {
 		b.WriteString(margin + line + "\n")
 	}
-}
-
-// ============================================================================
-// API Key Input — enter API key for cloud providers
-// ============================================================================
-
-// currentEnvVar returns the env var name currently being prompted.
-func (m *ProvidersViewModel) currentEnvVar() string {
-	if m.keyEnvIndex < len(m.keyEnvVars) {
-		return m.keyEnvVars[m.keyEnvIndex]
-	}
-	return ""
-}
-
-// isSensitiveVar returns true if the env var contains a secret that should be masked.
-func isSensitiveVar(envVar string) bool {
-	upper := strings.ToUpper(envVar)
-	return strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN")
-}
-
-// newEnvVarInput creates a textinput configured for the given env var.
-// Sensitive vars (keys, secrets, tokens) are masked with EchoPassword.
-func newEnvVarInput(envVar string) textinput.Model {
-	ti := textinput.New()
-	ti.Prompt = ""
-	ti.CharLimit = 512
-	if isSensitiveVar(envVar) {
-		ti.EchoMode = textinput.EchoPassword
-		ti.EchoCharacter = '*'
-	}
-	// Use white text for both focused and blurred states
-	s := ti.Styles()
-	s.Focused.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	s.Blurred.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	ti.SetStyles(s)
-	return ti
-}
-
-func (m *ProvidersViewModel) updateEnterKey(msg tea.Msg) tea.Cmd {
-	// Forward all messages to textinput (for cursor blink, etc.)
-	var tiCmd tea.Cmd
-	m.keyInput, tiCmd = m.keyInput.Update(msg)
-
-	keyMsg, ok := msg.(tea.KeyPressMsg)
-	if !ok {
-		return tiCmd
-	}
-
-	switch {
-	case key.Matches(keyMsg, tui.ProvidersKeys.Back):
-		if m.keyEnvIndex > 0 {
-			m.keyEnvIndex--
-			m.keyInput = newEnvVarInput(m.currentEnvVar())
-			m.actionStatus = ""
-			return m.keyInput.Focus()
-		}
-		m.mode = providersViewPickProvider
-		m.actionStatus = ""
-		m.keyInput.Blur()
-		m.buildProviderPicker()
-		return nil
-
-	case key.Matches(keyMsg, tui.ProvidersKeys.Enter):
-		value := strings.TrimSpace(m.keyInput.Value())
-		if value == "" {
-			return tiCmd
-		}
-		envVar := m.currentEnvVar()
-		if err := pkgConfig.SetEnvVar(envVar, value); err != nil {
-			m.actionStatus = fmt.Sprintf("✗ Failed to save %s: %v", envVar, err)
-			m.mode = providersViewList
-			m.keyInput.Blur()
-			return nil
-		}
-
-		// More env vars to prompt?
-		if m.keyEnvIndex+1 < len(m.keyEnvVars) {
-			m.actionStatus = fmt.Sprintf("✓ %s saved", envVar)
-			m.keyEnvIndex++
-			m.keyInput = newEnvVarInput(m.currentEnvVar())
-			return m.keyInput.Focus()
-		}
-
-		// All env vars saved — verify
-		m.actionStatus = fmt.Sprintf("✓ Saved to %s: verifying...", pkgConfig.GetEnvFilePath())
-		m.mode = providersViewList
-		m.loading = true
-		m.keyInput.Blur()
-		client := m.client
-		provider := m.installProvider
-		return tea.Batch(func() tea.Msg {
-			result, err := client.VerifyProvider(provider)
-			return providersVerifyMsg{result: result, err: err}
-		}, shared.SpinnerTickCmd())
-	}
-
-	return tiCmd
-}
-
-func (m *ProvidersViewModel) viewEnterKey(width, height int) string { //nolint:unparam // Render helpers share width and height with the view dispatcher.
-	var b strings.Builder
-
-	envVar := m.currentEnvVar()
-
-	b.WriteString("\n")
-
-	// Progress indicator for multi-var flows
-	if len(m.keyEnvVars) > 1 {
-		b.WriteString(fmt.Sprintf(" %s\n",
-			m.styles.Normal.Render(fmt.Sprintf("Step %d of %d", m.keyEnvIndex+1, len(m.keyEnvVars)))))
-	}
-
-	b.WriteString(" " + m.styles.Normal.Render("This provider requires "+envVar+" to connect.") + "\n")
-	b.WriteString("\n")
-	d := shared.NewDetail(m.styles, width)
-	d.Field("Config file", pkgConfig.GetEnvFilePath())
-
-	// Show node info from client
-	if m.client != nil {
-		nodeDisplay := m.client.Name()
-		if nodeDisplay != "" {
-			nodeDisplay += " (" + m.client.BaseURL() + ")"
-		} else {
-			nodeDisplay = m.client.BaseURL()
-		}
-		d.Field("Node", nodeDisplay)
-	}
-	b.WriteString(d.String())
-
-	b.WriteString("\n")
-	b.WriteString(" " + m.styles.Help.Render("You can either:") + "\n")
-	b.WriteString(" " + m.styles.Help.Render("  • Set "+envVar+" manually and restart the server") + "\n")
-	b.WriteString(" " + m.styles.Help.Render("  • Paste the value below to save it now") + "\n")
-	b.WriteString("\n")
-
-	b.WriteString(fmt.Sprintf(" %s %s\n", m.styles.DetailKey.Render(envVar+":"), m.keyInput.View()))
-
-	// Show action status (verification result, errors)
-	if m.actionStatus != "" {
-		b.WriteString("\n")
-		maxWidth := max(width-4, 40)
-		if strings.HasPrefix(m.actionStatus, "✓") {
-			b.WriteString(" " + m.styles.Success.Width(maxWidth).Render(m.actionStatus) + "\n")
-		} else {
-			b.WriteString(" " + m.styles.Error.Width(maxWidth).Render(m.actionStatus) + "\n")
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(shared.RenderViewFooter(m.styles, width, tui.JoinHints(
-		"Ctrl+V paste",
-		tui.Hint(tui.ProvidersKeys.Enter, "save"),
-		tui.Hint(tui.ProvidersKeys.Back, "cancel"),
-	)))
-
-	return b.String()
 }

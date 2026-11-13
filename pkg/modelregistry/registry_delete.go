@@ -94,7 +94,7 @@ type DeletionTarget struct {
 func (r *Registry) SelectDeletion(model *metadata.ModelMetadata) (DeletionTarget, error) {
 	target := DeletionTarget{Model: model}
 	if model.SourceRepo == metadata.SourceOllama {
-		resolved, ok := backend.NewResolver(r.appsConfigFn).Resolve(model.AssignedApp)
+		resolved, ok := r.backendResolver().Resolve(model.AssignedApp)
 		if ok {
 			resolved.Endpoint = config.NormalizeEndpoint(resolved.Endpoint)
 		}

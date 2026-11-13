@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/common/atomicfile"
 )
 
 //go:embed files/node-default.yaml
@@ -77,7 +77,7 @@ func InstallDefaults(dstDir string) error {
 		if err != nil {
 			return fmt.Errorf("read embed %s: %w", p, err)
 		}
-		return utils.AtomicWriteFile(dst, data, providerFileMode)
+		return atomicfile.WriteFile(dst, data, providerFileMode)
 	})
 }
 

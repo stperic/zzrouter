@@ -36,6 +36,9 @@ type UserConfig struct {
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
+	// OAuth configures default-enabled browser authorization for MCP clients.
+	OAuth OAuthConfig `mapstructure:"oauth" yaml:"oauth,omitempty"`
+
 	// Admin API key (full access)
 	AdminKey string `mapstructure:"admin_key" yaml:"admin_key"`
 

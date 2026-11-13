@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -9,7 +11,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/search"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
@@ -26,6 +30,8 @@ import (
 // coordinator role; workers never run a ModelSearchService.
 type ModelSearchService struct {
 	searchCache  *search.SearchCache
+	backend      *backend.Resolver
+	cards        *search.CardCache
 	appsConfig   func() *pkgConfig.AppsConfig
 	pricingStore *pricing.Store // Token-cost pricing data (may be nil if disabled)
 }
@@ -33,9 +39,14 @@ type ModelSearchService struct {
 // NewModelSearchService constructs a search service with an empty cache
 // and a getter that follows ReloadConfig swaps so newly-enabled
 // providers and registries take effect without a restart.
-func NewModelSearchService(appsConfig func() *pkgConfig.AppsConfig, pricingStore *pricing.Store) *ModelSearchService {
+func NewModelSearchService(appsConfig func() *pkgConfig.AppsConfig, pricingStore *pricing.Store, resolvers ...*backend.Resolver) *ModelSearchService {
+	resolver := backend.NewResolver(appsConfig)
+	if len(resolvers) > 0 && resolvers[0] != nil {
+		resolver = resolvers[0]
+	}
 	return &ModelSearchService{
-		searchCache:  search.NewSearchCache(search.DefaultSearchCacheTTL),
+		searchCache: search.NewSearchCache(search.DefaultSearchCacheTTL),
+		backend:     resolver, cards: search.NewCardCache(),
 		appsConfig:   appsConfig,
 		pricingStore: pricingStore,
 	}
@@ -198,7 +209,20 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 		return
 	}
 
-	cacheKey := search.SearchCacheKey(params, tagLogic, enrich)
+	targetName := string(searchProvider)
+	if searchProvider == search.ProviderAll {
+		targetName = "huggingface"
+	}
+	target, ok := s.backend.Target(targetName)
+	if (!ok && searchProvider != search.ProviderOllama) || (target != nil && target.Cloud && !target.Configured) {
+		s.connectionUnavailable(c, targetName)
+		return
+	}
+	revision := ""
+	if target != nil {
+		revision = target.Revision
+	}
+	cacheKey := search.SearchCacheKey(params, tagLogic, enrich, revision)
 	if cached := s.searchCache.Get(cacheKey); cached != nil {
 		respondSuccess(c, "Search completed", cached)
 		return
@@ -206,7 +230,7 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 
 	// Execute search based on provider
 	if searchProvider == search.ProviderHuggingFace || searchProvider == search.ProviderAll {
-		client := search.NewDefaultClient()
+		client := search.NewClient(search.ClientOptions{Target: target})
 		results, err := client.SearchModels(ctx, params)
 		if err != nil {
 			InternalNodeError(c, "Search failed: "+err.Error())
@@ -234,14 +258,13 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 				"has_prev": offset > 0,
 			},
 		}
-		s.searchCache.Set(cacheKey, resp)
-		respondSuccess(c, "Search completed", resp)
+		s.completeSearch(c, "Search completed", resp, cacheKey)
 		return
 	}
 
 	// Cloud search providers (OpenRouter, Cloudflare, etc.) — registry-driven
 	if search.IsCloudSearchProvider(searchProvider) {
-		results, err := search.SearchCloudProvider(ctx, searchProvider, query, 0)
+		results, err := search.SearchCloudTarget(ctx, target, query, 0)
 		if err != nil {
 			InternalNodeError(c, fmt.Sprintf("%s search failed: %s", searchProvider, err.Error()))
 			return
@@ -270,24 +293,20 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 				"has_prev": offset > 0,
 			},
 		}
-		s.searchCache.Set(cacheKey, resp)
-		respondSuccess(c, "Search completed", resp)
+		s.completeSearch(c, "Search completed", resp, cacheKey)
 		return
 	}
 
 	if searchProvider == search.ProviderOllama {
-		results, err := search.SearchOllamaModelsPaginated(params)
+		results, err := search.SearchOllamaModelsPaginated(ctx, params)
 		if err != nil {
 			InternalNodeError(c, "Ollama search failed: "+err.Error())
 			return
 		}
-		resp := gin.H{
-			"type": "models", "query": query, "provider": "ollama",
-			"results": results.Results, "total": results.Total, "is_total_exact": results.IsTotalExact,
+		s.completeSearch(c, "Search completed", gin.H{
+			"type": "models", "query": query, "provider": "ollama", "results": results.Results, "total": results.Total, "is_total_exact": results.IsTotalExact,
 			"pagination": gin.H{"limit": limit, "offset": offset, "has_next": results.HasMore, "has_prev": offset > 0},
-		}
-		s.searchCache.Set(cacheKey, resp)
-		respondSuccess(c, "Search completed", resp)
+		}, cacheKey)
 		return
 	}
 
@@ -296,7 +315,7 @@ func (s *ModelSearchService) handleModelsSearch(c *gin.Context, ctx context.Cont
 
 func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context, query string, limit, offset int) {
 	// Re-register cloud search providers to pick up newly enabled providers since startup.
-	search.RegisterCloudProvidersFromConfig(s.appsConfig)
+	search.RegisterCloudProvidersFromConfig(s.appsConfig, s.backend)
 	cfg := s.appsConfig()
 
 	// Config-driven: collect active search registries from enabled providers
@@ -343,6 +362,7 @@ func (s *ModelSearchService) handleAppsSearch(c *gin.Context, _ context.Context,
 			"client_sorts":       clientSorts,
 			"client_filter":      svc.Search.ClientFilter,
 			"has_tags":           svc.Search.HasTags,
+			"configured":         true,
 			"enabled":            true,
 		})
 	}
@@ -415,7 +435,7 @@ func (s *ModelSearchService) cloudProviderStatus(name string) (bool, bool) {
 	if !exists {
 		return false, false
 	}
-	return true, appCfg.IsCloudAvailable()
+	return true, appCfg.IsEnabled() && s.backend.Available(name)
 }
 
 // collectActiveRegistries determines which search registries should be active
@@ -456,6 +476,16 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 		return
 	}
 
+	targetName := string(searchProvider)
+	if searchProvider == search.ProviderAll {
+		targetName = "huggingface"
+	}
+	target, ok := s.backend.Target(targetName)
+	if (!ok && searchProvider != search.ProviderOllama) || (target != nil && target.Cloud && !target.Configured) {
+		s.connectionUnavailable(c, targetName)
+		return
+	}
+
 	if searchProvider == search.ProviderHuggingFace || searchProvider == search.ProviderAll {
 		params := search.SearchParams{
 			Provider:  search.ProviderHuggingFace,
@@ -467,14 +497,14 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 			},
 		}
 
-		client := search.NewDefaultClient()
+		client := search.NewClient(search.ClientOptions{Target: target})
 		results, err := client.SearchModels(ctx, params)
 		if err != nil {
 			InternalNodeError(c, "Failed to get popular models: "+err.Error())
 			return
 		}
 
-		respondSuccess(c, "Popular models retrieved", gin.H{
+		s.completeSearch(c, "Popular models retrieved", gin.H{
 			"type":           "popular",
 			"provider":       "huggingface",
 			"results":        results.Results,
@@ -486,18 +516,18 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 				"has_next": offset+limit < results.Total,
 				"has_prev": offset > 0,
 			},
-		})
+		}, "")
 		return
 	}
 
 	if searchProvider == search.ProviderOllama {
-		results, err := search.GetOllamaPopularModels(limit)
+		results, err := search.GetOllamaPopularModels(ctx, limit)
 		if err != nil {
 			InternalNodeError(c, "Failed to get popular Ollama models: "+err.Error())
 			return
 		}
 
-		respondSuccess(c, "Popular models retrieved", gin.H{
+		s.completeSearch(c, "Popular models retrieved", gin.H{
 			"type":           "popular",
 			"provider":       "ollama",
 			"results":        results.Results,
@@ -509,13 +539,13 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 				"has_next": false,
 				"has_prev": false,
 			},
-		})
+		}, "")
 		return
 	}
 
 	// Cloud search providers — popular = search with empty query
 	if search.IsCloudSearchProvider(searchProvider) {
-		results, err := search.SearchCloudProvider(ctx, searchProvider, "", limit)
+		results, err := search.SearchCloudTarget(ctx, target, "", limit)
 		if err != nil {
 			InternalNodeError(c, fmt.Sprintf("Failed to get %s models: %s", searchProvider, err.Error()))
 			return
@@ -527,7 +557,7 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 		}
 		search.EnrichCloudResultsWithURL(results, searchProvider)
 
-		respondSuccess(c, "Popular models retrieved", gin.H{
+		s.completeSearch(c, "Popular models retrieved", gin.H{
 			"type":           "popular",
 			"provider":       string(searchProvider),
 			"results":        results,
@@ -539,7 +569,7 @@ func (s *ModelSearchService) handlePopularModelsSearch(c *gin.Context, ctx conte
 				"has_next": false,
 				"has_prev": false,
 			},
-		})
+		}, "")
 		return
 	}
 
@@ -567,10 +597,29 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 		BadRequest(c, "Invalid provider")
 		return
 	}
+	provider = string(searchProvider)
+
+	if searchProvider == search.ProviderHuggingFace && !metadata.ValidHuggingFaceID(decodedID) {
+		BadRequest(c, "Hugging Face model id must be in org/repo form")
+		return
+	}
+	if searchProvider == search.ProviderOllama {
+		base, _, _ := strings.Cut(decodedID, ":")
+		if !search.ValidOllamaModelName(base) {
+			BadRequest(c, "Invalid Ollama catalog identifier")
+			return
+		}
+	}
+	target, ok := s.backend.Target(provider)
+	if (!ok && searchProvider != search.ProviderOllama) || (target != nil && target.Cloud && !target.Configured) {
+		s.connectionUnavailable(c, provider)
+		return
+	}
+	ctx := c.Request.Context()
 
 	// Cloud providers: return raw map with all native fields + pricing-store enrichment
 	if search.IsCloudSearchProvider(searchProvider) {
-		raw, err := search.GetCloudModelRaw(searchProvider, decodedID)
+		raw, err := search.GetCloudModelRaw(ctx, searchProvider, decodedID, target)
 		if err != nil {
 			if isModelCardNotFound(err) {
 				NotFound(c, fmt.Sprintf("model %q not found in %s registry", decodedID, provider))
@@ -583,12 +632,12 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 		if meta := s.lookupModelMetadata(provider, decodedID); meta != nil {
 			search.MergeMetadataWithPriority(raw, meta)
 		}
-		respondSuccess(c, "Model card retrieved", raw)
+		respondSuccess(c, "Model card retrieved", s.discoveryResult(provider, raw))
 		return
 	}
 
 	// Local providers: use ModelCard struct
-	modelCard, err := search.GetModelCard(searchProvider, decodedID)
+	modelCard, err := s.cards.GetModelCard(ctx, searchProvider, decodedID, target)
 	if err != nil {
 		if isModelCardNotFound(err) {
 			NotFound(c, fmt.Sprintf("model %q not found in %s registry", decodedID, provider))
@@ -601,7 +650,7 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 	siblings := modelCard.Siblings
 	totalSize := modelCard.Size
 	if searchProvider == search.ProviderHuggingFace && len(siblings) > 0 {
-		enrichedSiblings, err := search.EnrichSiblingsWithSizes(c.Request.Context(), decodedID, siblings)
+		enrichedSiblings, err := search.NewClient(search.ClientOptions{Target: target}).EnrichSiblingsWithSizes(ctx, decodedID, siblings)
 		if err == nil {
 			siblings = enrichedSiblings
 			totalSize = 0
@@ -611,7 +660,7 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 		}
 	}
 
-	respondSuccess(c, "Model card retrieved", gin.H{
+	raw := gin.H{
 		"provider":     provider,
 		"model_id":     decodedID,
 		"name":         modelCard.Name,
@@ -627,7 +676,18 @@ func (s *ModelSearchService) handleGetModelCard(c *gin.Context) {
 		"url":          modelCard.URL,
 		"siblings":     siblings,
 		"readme":       modelCard.README,
-	})
+	}
+	encoded, encodeErr := json.Marshal(raw)
+	if encodeErr != nil {
+		InternalNodeError(c, "Unable to encode model card")
+		return
+	}
+	var native map[string]any
+	if err := json.Unmarshal(encoded, &native); err != nil {
+		InternalNodeError(c, "Unable to normalize model card")
+		return
+	}
+	respondSuccess(c, "Model card retrieved", s.discoveryResult(provider, native))
 }
 
 // lookupModelMetadata returns pricing-store metadata for a single model as a map.
@@ -722,16 +782,5 @@ func (s *ModelSearchService) enrichCloudResultsWithMetadata(results []any, provi
 	}
 }
 
-// isModelCardNotFound reports whether err from a search-provider card
-// fetch represents a missing model. Each provider phrases its 404
-// differently ("not found in Ollama registry", "404 Not Found",
-// HuggingFace "Repository not found", etc.) so we sniff via substring.
-// A typed error from search/* would be cleaner; until then this keeps
-// the gin handler from emitting 500 on agent-recoverable misses.
-func isModelCardNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not found") || strings.Contains(msg, "404")
-}
+// isModelCardNotFound preserves typed upstream absence without interpreting prose.
+func isModelCardNotFound(err error) bool { return errors.Is(err, search.ErrModelNotFound) }

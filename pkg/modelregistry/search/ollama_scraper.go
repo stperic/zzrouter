@@ -1,13 +1,19 @@
 package search
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/stperic/common/httpclient"
+
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 )
 
 const (
@@ -63,11 +69,15 @@ var (
 // ScrapeOllamaLibrary scrapes the Ollama library page to get all available models
 // This is a workaround since Ollama doesn't provide a public API for the full library
 // See: https://github.com/ollama/ollama/issues/7751
-func ScrapeOllamaLibrary() ([]OllamaModelInfo, error) {
-	url := "https://ollama.com/library"
-	client := &http.Client{Timeout: httpTimeout}
+func ScrapeOllamaLibrary(ctx context.Context) ([]OllamaModelInfo, error) {
+	address := "https://ollama.com/library"
+	client := httpclient.SameOrigin(&http.Client{Timeout: httpTimeout})
 
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch Ollama library: %w", err)
 	}
@@ -242,11 +252,21 @@ func isExcludedPath(path string) bool {
 
 // GetOllamaModelTags fetches the list of available tags/versions for a specific model
 // This is called lazily when a user selects a model
-func GetOllamaModelTags(modelName string) ([]OllamaTagInfo, error) {
-	url := fmt.Sprintf("https://ollama.com/library/%s/tags", modelName)
-	client := &http.Client{Timeout: httpTimeout}
+func GetOllamaModelTags(ctx context.Context, modelName string) ([]OllamaTagInfo, error) {
+	return getOllamaModelTags(ctx, httpclient.SameOrigin(&http.Client{Timeout: httpTimeout}), modelName)
+}
 
-	resp, err := client.Get(url)
+func getOllamaModelTags(ctx context.Context, client *http.Client, modelName string) ([]OllamaTagInfo, error) {
+	if !ValidOllamaModelName(modelName) {
+		return nil, fmt.Errorf("invalid Ollama catalog model name")
+	}
+	address := "https://ollama.com/library/" + url.PathEscape(modelName) + "/tags"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch tags for %s: %w", modelName, err)
 	}
@@ -263,6 +283,9 @@ func GetOllamaModelTags(modelName string) ([]OllamaTagInfo, error) {
 
 	// Extract tag details from the tags page
 	tags := extractTagDetailsFromHTML(string(body))
+	for i := range tags {
+		tags[i].IsCloud = tags[i].Name == "cloud" || strings.HasSuffix(tags[i].Name, "-cloud")
+	}
 	return tags, nil
 }
 
@@ -330,3 +353,19 @@ func extractTagDetailsFromHTML(html string) []OllamaTagInfo {
 
 	return tags
 }
+
+// ValidOllamaModelName restricts catalog lookups to a single library identifier.
+func ValidOllamaModelName(name string) bool {
+	if len(name) == 0 || len(name) > 200 || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// OllamaTagInfo is the catalog's typed public tag contract.
+type OllamaTagInfo = metadata.OllamaTag

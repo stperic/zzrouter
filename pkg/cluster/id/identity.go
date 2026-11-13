@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/stperic/common/atomicfile"
 )
 
 // Identity file names on disk. Directory is caller-provided.
@@ -81,7 +83,7 @@ func LoadOrCreateIdentity(dir string) (*Identity, error) {
 		if err != nil {
 			return nil, fmt.Errorf("identity self-sign: %w", err)
 		}
-		if err := writeAtomic(id.certPath, certPEM, 0o600); err != nil {
+		if err := writeIdentityFile(id.certPath, certPEM); err != nil {
 			return nil, fmt.Errorf("write cert: %w", err)
 		}
 	}
@@ -154,12 +156,17 @@ func (id *Identity) CSR(commonName string, dnsNames []string, ipAddresses []net.
 //     coordinator (or MITM) trying to hand us a cert for a different key.
 //
 // The file is replaced atomically; the next handshake picks it up via
-// GetCertificate without a listener rebind.
+// GetCertificate without a listener rebind. ErrPostRenameDurability is returned
+// after publishing the committed certificate; it does not roll back identity.
 //
 // SAN-subset, OU, and chain-to-CA checks are the caller's job — they
 // require context this package doesn't hold (the advertised SAN set, the
 // trusted CA pool).
 func (id *Identity) InstallSignedCert(certPEM []byte) error {
+	return id.installSignedCert(certPEM, writeIdentityFile)
+}
+
+func (id *Identity) installSignedCert(certPEM []byte, write func(string, []byte) error) error {
 	cert, err := parseSingleCert(certPEM)
 	if err != nil {
 		return err
@@ -169,11 +176,14 @@ func (id *Identity) InstallSignedCert(certPEM []byte) error {
 	if !samePublicKey(cert.PublicKey, id.key.Public()) {
 		return ErrKeyMismatch
 	}
-	if err := writeAtomic(id.certPath, certPEM, 0o600); err != nil {
+	err = write(id.certPath, certPEM)
+	if err == nil || errors.Is(err, atomicfile.ErrPostRenameDurability) {
+		id.cert = cert
+		id.certPEM = bytes.Clone(certPEM)
+	}
+	if err != nil {
 		return fmt.Errorf("write signed cert: %w", err)
 	}
-	id.cert = cert
-	id.certPEM = bytes.Clone(certPEM)
 	return nil
 }
 
@@ -242,7 +252,7 @@ func loadOrCreateKey(path string) (*ecdsa.PrivateKey, error) {
 			return nil, fmt.Errorf("marshal key: %w", err)
 		}
 		pemBytes := encodePEM("EC PRIVATE KEY", der)
-		if err := writeAtomic(path, pemBytes, 0o600); err != nil {
+		if err := writeIdentityFile(path, pemBytes); err != nil {
 			return nil, fmt.Errorf("write key: %w", err)
 		}
 		return key, nil

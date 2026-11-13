@@ -103,11 +103,11 @@ func (a *AuthHandlers) adminAuthMiddleware() gin.HandlerFunc {
 }
 
 // accessControlAuthMiddleware gates the access-control surface (teams, keys,
-// spend). Currently identical to adminAuthMiddleware — split so operators can
-// later swap in a dedicated ZZROUTER_ACCESS_CONTROL_API_KEY without touching
-// any handler, URL, or client. The split is a seam, not a feature yet.
+// spend), including the supported browser client. A separate middleware lets
+// operators later select a dedicated access-control key without changing
+// handlers, URLs or clients.
 func (a *AuthHandlers) accessControlAuthMiddleware() gin.HandlerFunc {
-	return a.AuthMiddleware(RoleAdmin)
+	return a.browserAuthMiddleware(RoleAdmin)
 }
 
 // internalRequestOnlyMiddleware gates the public-engine /internal/*

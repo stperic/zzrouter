@@ -6,6 +6,20 @@ search:
   sort_options: [popular, downloads, likes, newest, name]
   client_sorts: [name, newest]
   has_tags: true
+connection:
+  test_path: /api/whoami-v2
+  fields:
+    - id: token
+      label: Access token
+      type: text
+      env: HF_TOKEN
+      env_aliases: [HUGGING_FACE_TOKEN]
+      fallback_file: ~/.cache/huggingface/token
+      secret: true
+      required: false
 runtime:
+  api:
+    auth_type: bearer
+    token: "${HF_TOKEN}"
   endpoint: https://huggingface.co
   model_url: "https://huggingface.co/%s"

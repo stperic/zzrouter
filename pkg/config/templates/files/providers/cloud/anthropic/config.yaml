@@ -2,6 +2,14 @@
 # Edit on the coordinator, never here.
 description: "Claude frontier AI models"
 enabled: false
+connection:
+  fields:
+    - id: api_key
+      label: API key
+      type: text
+      env: ANTHROPIC_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://api.anthropic.com
   model_url: "https://docs.anthropic.com/en/docs/about-claude/models#%s"

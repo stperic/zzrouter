@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stretchr/testify/require"
 )
 
@@ -160,11 +161,7 @@ func TestSearchQueryClientProviderDefaults(t *testing.T) {
 			_, _ = io.WriteString(w, `{"data":{"results":[]}}`)
 			return w.Result(), nil
 		})}}
-		values := url.Values{"type": {"models"}, "q": {"image & edit"}, "provider": {"openai"}, "limit": {"10"}, "order": {"desc"}}
-		if sort != "" {
-			values.Set("sort", sort)
-		}
-		_, err := c.SearchModels(values)
+		_, err := c.SearchModels(t.Context(), metadata.SearchQuery{Query: "image & edit", Provider: "openai", Limit: 10, Order: "desc", Sort: sort})
 		require.NoError(t, err)
 	}
 }

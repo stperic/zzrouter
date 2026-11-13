@@ -27,6 +27,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stperic/common/httpclient"
+
 	"github.com/stperic/common/download"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/backend"
@@ -73,9 +75,10 @@ type state struct {
 // writes. A request that loaded the previous state runs to completion
 // against it even if ReloadConfig swaps the pointer mid-flight.
 type Connector struct {
-	client     *http.Client
-	pullClient *http.Client
-	state      atomic.Pointer[state] // nil = not configured
+	connections *backend.Resolver
+	client      *http.Client
+	pullClient  *http.Client
+	state       atomic.Pointer[state] // nil = not configured
 }
 
 // LayerProgress tracks progress for individual layers during a pull.
@@ -92,10 +95,14 @@ const APITimeout = 30 * time.Second
 
 // NewConnector creates a new Ollama connector in the "not configured"
 // state. Call ReloadConfig with the current AppsConfig to activate it.
-func NewConnector() *Connector {
-	return &Connector{
-		client:     &http.Client{Timeout: APITimeout},
-		pullClient: &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: APITimeout}},
+func NewConnector(resolvers ...*backend.Resolver) *Connector {
+	var connections *backend.Resolver
+	if len(resolvers) > 0 {
+		connections = resolvers[0]
+	}
+	return &Connector{connections: connections,
+		client:     httpclient.SameOrigin(&http.Client{Timeout: APITimeout}),
+		pullClient: httpclient.SameOrigin(&http.Client{Transport: &http.Transport{ResponseHeaderTimeout: APITimeout}}),
 	}
 }
 
@@ -123,7 +130,8 @@ func (oc *Connector) ReloadConfig(cfg *config.AppsConfig) {
 // for example, Registry.PullOllamaModel checks before starting a pull
 // to avoid starting work that is guaranteed to fail.
 func (oc *Connector) IsConfigured() bool {
-	return oc.state.Load() != nil
+	_, err := oc.Daemon()
+	return err == nil
 }
 
 // Daemon returns the configured Ollama: its endpoint and what it is
@@ -132,6 +140,13 @@ func (oc *Connector) IsConfigured() bool {
 // other subsystems (HTTP proxy, inference passthrough) must go through
 // here instead of re-reading provider config themselves.
 func (oc *Connector) Daemon() (*backend.Resolved, error) {
+	if oc.connections != nil {
+		daemon, ok := oc.connections.Resolve(constants.AppOllama)
+		if !ok {
+			return nil, ErrNotConfigured
+		}
+		return daemon, nil
+	}
 	st := oc.state.Load()
 	if st == nil {
 		return nil, ErrNotConfigured

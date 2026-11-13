@@ -13,9 +13,9 @@ import (
 	"slices"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/stperic/common/atomicfile"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"gopkg.in/yaml.v3"
 )
 
 // managedSpineKeys are the runtime sections zzRouter owns outright: how it
@@ -47,7 +47,7 @@ var managedSpineKeys = []string{"execution", "exclude_parameters", "failure_patt
 // model_defaults is a retired key: no release ships it, so listing it here
 // strips it from an older install before the strict load would refuse it.
 // Engine platforms and prerequisites must follow the shipped install recipe.
-var managedTopLevelKeys = []string{"version_source", "model_defaults", "install", "run_scope", "platforms", "requirements"}
+var managedTopLevelKeys = []string{"connection", "version_source", "model_defaults", "install", "run_scope", "platforms", "requirements"}
 
 // managedCapabilityKeys are the managed keys under capabilities.
 //
@@ -138,7 +138,7 @@ func reconcile(src fs.FS, dstDir string) ([]string, error) {
 		if !updated {
 			continue
 		}
-		if writeErr := utils.AtomicWriteFile(dst, next, providerFileMode); writeErr != nil {
+		if writeErr := atomicfile.WriteFile(dst, next, providerFileMode); writeErr != nil {
 			failures = append(failures, fmt.Errorf("write %s: %w", rel, writeErr))
 			continue
 		}
@@ -250,6 +250,18 @@ func mergeManagedSpine(live, tmpl []byte, history [][]string) (merged []byte, up
 			parent, _ = liveDoc[path[0]].(map[string]any)
 		}
 		updated = mergeKeys(parent, nil, path[len(path)-1:]) || updated
+	}
+	// Newly declared connection auth is seeded only when absent. Operator
+	// endpoint/auth overrides remain declarations; secret values never go here.
+	if _, declared := tmplDoc["connection"]; declared {
+		runtime, _ := liveDoc["runtime"].(map[string]any)
+		shipped, _ := tmplDoc["runtime"].(map[string]any)
+		if auth, ok := shipped["api"]; ok && runtime != nil {
+			if _, exists := runtime["api"]; !exists {
+				runtime["api"] = auth
+				updated = true
+			}
+		}
 	}
 	updated = reconcileFeatures(liveDoc, tmplDoc) || updated
 	for _, section := range managedKeySections(tmplDoc) {

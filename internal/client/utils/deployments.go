@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,12 +14,15 @@ import (
 
 // DeployRequest mirrors the server-side public deploy request shape.
 type DeployRequest struct {
-	Model    string   `json:"model"`
-	Nodes    []string `json:"nodes,omitempty"`
-	Registry string   `json:"registry,omitempty"`
-	File     string   `json:"file,omitempty"`
-	Format   string   `json:"format,omitempty"`
-	Force    bool     `json:"force,omitempty"`
+	Provider string    `json:"provider,omitempty"`
+	Features *[]string `json:"features,omitempty"`
+	Restart  string    `json:"restart,omitempty"`
+	Model    string    `json:"model"`
+	Nodes    []string  `json:"nodes,omitempty"`
+	Registry string    `json:"registry,omitempty"`
+	File     string    `json:"file,omitempty"`
+	Format   string    `json:"format,omitempty"`
+	Force    bool      `json:"force,omitempty"`
 }
 
 // DeploymentNode mirrors the server-side per-node progress entry inside a Deployment.
@@ -60,18 +64,11 @@ type Deployment struct {
 
 // Deploy starts a deployment against the server. Empty nodes defers target
 // selection to the server (valid for cloud/shared-storage; otherwise 400).
-func (c *Client) Deploy(model, registry, file string, nodes []string, force bool) (*Deployment, error) {
-	req := DeployRequest{
-		Model:    model,
-		Nodes:    nodes,
-		Registry: registry,
-		File:     file,
-		Force:    force,
-	}
+func (c *Client) Deploy(ctx context.Context, req DeployRequest) (*Deployment, error) {
 	var envelope struct {
 		Data Deployment `json:"data"`
 	}
-	if err := c.doJSON("POST", apipath.Deployments, req, &envelope, "deploy"); err != nil {
+	if err := c.doContextJSON(ctx, "POST", apipath.Deployments, req, &envelope, "deploy"); err != nil {
 		return nil, err
 	}
 	return &envelope.Data, nil

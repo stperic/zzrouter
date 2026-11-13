@@ -37,6 +37,9 @@ cluster:
 # =============================================================================
 # API keys for client access. Values are env var names resolved from .env file.
 auth:
+  oauth:
+    enabled: true                    # Browser login for MCP clients; defaults to localhost at node.port
+    # issuer_url: https://router.example.com  # Set a canonical HTTPS origin for remote clients
   admin_key: "ZZROUTER_ADMIN_API_KEY"     # Full access (config, models, cluster)
   user_key: "ZZROUTER_API_KEY"       # Read-only access (inference, status)
   require_compat_auth: true           # false: /v1/* and /api/* also answer requests without a key
@@ -57,6 +60,10 @@ auth:
 # SECURITY
 # =============================================================================
 security:
+  # Managed provider keys need an operator-provisioned 32-byte encryption key.
+  # Relative paths resolve from this node configuration directory.
+  credentials:
+    key_file: ""
   log_auth_attempts: true             # Log auth attempts for audit
 
 # =============================================================================

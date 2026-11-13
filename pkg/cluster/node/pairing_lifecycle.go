@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/version"
 
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -318,6 +319,7 @@ func (n *Node) completePairing(signedCertPEM, caCertPEM []byte, coordURL string)
 }
 
 // pairingMu precedes mu so cancellation cannot overlap the trust commit.
+// Post-rename warnings still activate committed trust so runtime matches disk.
 func (n *Node) installPairingLocked(signedCertPEM, caCertPEM []byte, coordURL string) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -346,13 +348,22 @@ func (n *Node) installPairingLocked(signedCertPEM, caCertPEM []byte, coordURL st
 		return err
 	}
 	if err := writeClusterFile(filepath.Join(n.cfg.ClusterDir, "ca.pem"), caCertPEM); err != nil {
-		return err
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing CA committed with uncertain durability: %v\n", err)
 	}
 	if err := writeClusterFile(filepath.Join(n.cfg.ClusterDir, "coordinator_url"), []byte(coordURL)); err != nil {
-		return err
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing coordinator URL committed with uncertain durability: %v\n", err)
 	}
 	if err := n.identity.InstallSignedCert(signedCertPEM); err != nil {
-		return err
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "clusternode: pairing certificate committed with uncertain durability: %v\n", err)
 	}
 	n.selfHealStarted = false
 	n.coordinatorURL = coordURL
@@ -384,5 +395,5 @@ func writePairingCodeFile(path, code string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("pairing mkdir: %w", err)
 	}
-	return utils.AtomicWriteFile(path, []byte(code+"\n"), pairingFilePerm)
+	return atomicfile.WriteFile(path, []byte(code+"\n"), pairingFilePerm)
 }

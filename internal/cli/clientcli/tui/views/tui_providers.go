@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -57,12 +58,13 @@ type providersStatusMsg struct {
 
 // providersCatalogMsg carries the provider catalog from provider config.
 type providersCatalogMsg struct {
+	ctx     context.Context
 	catalog []pkgClient.ProviderCatalogEntry
 	err     error
 }
 
 // providersVerifySuccessTimerMsg fires after showing verify success for 3 seconds.
-type providersVerifySuccessTimerMsg struct{}
+type providersVerifySuccessTimerMsg struct{ ctx context.Context }
 
 // providersActionMsg carries result of install/uninstall operations.
 type providersActionMsg struct {
@@ -127,10 +129,16 @@ type ProvidersViewModel struct {
 	// the contradiction unexplained.
 	actionUnconfirmed bool
 
-	// API key/env var input
-	keyEnvVars  []string        // env vars to prompt for (e.g., ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY"])
-	keyEnvIndex int             // current index into keyEnvVars
-	keyInput    textinput.Model // text input with cursor and masking
+	// Coordinator connection form. Candidate secrets live only until save/exit.
+	connection        *pkgClient.ProviderConnection
+	connectionValues  map[string]string
+	connectionField   int
+	connectionContext context.Context
+	connectionCancel  context.CancelFunc
+	connectionBusy    bool
+	connectionWriting bool
+	connectionConfirm string
+	keyInput          textinput.Model
 
 	// Upgrade prompt state
 	upgradeProvider string          // provider being upgraded
@@ -145,6 +153,9 @@ type ProvidersViewModel struct {
 	preflightReport *pkgClient.PreflightResponse
 
 	// Install wizard state
+	installLoading    bool
+	installContext    context.Context
+	installCancel     context.CancelFunc
 	installPlan       *pkgClient.InstallPlanResponse
 	installStepCursor int
 	installStepStatus []string // per-.Step: "pending", "running", "done", "failed", "verified"
@@ -200,7 +211,7 @@ func NewProvidersViewModel(client *pkgClient.Client, styles ui.Styles) *Provider
 // first tick and the status line froze on whatever step was last emitted —
 // which is how a step that ran for over two minutes read as hung.
 func (m *ProvidersViewModel) needsTick() bool {
-	return m.loading || m.hasRunningStep() || m.upgrade != nil
+	return m.loading || m.installLoading || m.hasRunningStep() || m.upgrade != nil
 }
 
 // hasRunningStep returns true if any install step is currently executing.
@@ -218,10 +229,8 @@ func (m *ProvidersViewModel) hasRunningStep() bool {
 // buffer is full at the moment ctx cancellation races with a pending
 // send. ViewContext.Cancel alone cancels the ctx but can't drain.
 func (m *ProvidersViewModel) Cancel() {
-	if m.installJobRow != nil {
-		m.installJobRow.Cancel()
-		m.installJobRow = nil
-	}
+	m.retireInstallRequest()
+	m.cancelConnection()
 	// An upgrade outlives the prompt that started it, so leaving the view
 	// mid-upgrade must tear the subscription down with it.
 	if m.upgrade != nil {
@@ -260,9 +269,16 @@ func (m *ProvidersViewModel) selectedProvider() *shared.ProviderInfo {
 
 // Update implements tea.Model.
 func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+	if m.NavigationBlocked() {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg, tea.MouseClickMsg, tea.MouseWheelMsg, tui.BreadcrumbClickMsg:
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
+		m.keyInput.SetWidth(max(msg.Width-4, 1))
 		m.termHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
 		vis := shared.VisibleRows(m.termHeight, shared.StdListFooter(m.styles))
 		m.list.SetVisible(vis)
@@ -278,7 +294,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 
 	case tea.PasteMsg:
 		// Handle paste in key input mode
-		if m.mode == providersViewEnterKey {
+		if m.mode == providersViewEnterKey && !m.connectionBusy && m.connectionConfirm == "" {
 			pasted := strings.TrimSpace(msg.Content)
 			m.keyInput.SetValue(m.keyInput.Value() + pasted)
 		}
@@ -339,7 +355,10 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersCatalogMsg:
-		m.loading = false
+		if m.mode != providersViewPickType || !m.installLoading || !m.ownsInstallRequest(msg.ctx) {
+			return m, nil
+		}
+		m.installLoading = false
 		if msg.err != nil {
 			m.actionStatus = "Server not reachable: start with: zzrouter-node start"
 			m.mode = providersViewList
@@ -379,7 +398,10 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		}, shared.SpinnerTickCmd())
 
 	case providersPreflightMsg:
-		m.loading = false
+		if m.mode != providersViewPickNode || !m.installLoading || !m.ownsInstallRequest(msg.ctx) {
+			return m, nil
+		}
+		m.installLoading = false
 		if msg.err != nil {
 			m.actionStatus = fmt.Sprintf("✗ Preflight failed: %v", msg.err)
 			m.mode = providersViewList
@@ -391,13 +413,16 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 			m.installPlan = nil
 			m.mode = providersViewInstallSteps
 			return m, tea.Batch(
-				fetchInstallPlan(m.client, m.installProvider, m.installNode),
+				fetchInstallPlan(m.beginInstallRequest(), m.client, m.installProvider, m.installNode),
 				shared.SpinnerTickCmd(),
 			)
 		}
 		return m, nil
 
 	case providersInstallPlanMsg:
+		if m.mode != providersViewInstallSteps || m.installPlan != nil || !m.ownsInstallRequest(msg.ctx) {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.actionStatus = fmt.Sprintf("✗ Failed to get install plan: %v", msg.err)
 			m.mode = providersViewList
@@ -426,6 +451,9 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersStepExecuteMsg:
+		if m.mode != providersViewInstallSteps || m.installPlan == nil || !m.installInFlight || !m.ownsInstallRequest(msg.ctx) || msg.step < 0 || msg.step >= len(m.installStepStatus) {
+			return m, nil
+		}
 		// Per-step terminal arrived (via jobstream FrameMsg.Done). Clear
 		// the live snapshot + the subscription so the next Enter starts
 		// from a clean slate.
@@ -457,7 +485,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 						m.actionStatus = fmt.Sprintf("✓ %s installed successfully", m.installProvider)
 						m.needsRefresh = true
 						return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-							return providersVerifySuccessTimerMsg{}
+							return providersVerifySuccessTimerMsg{ctx: msg.ctx}
 						})
 					}
 					m.actionStatus = fmt.Sprintf("✓ Step %d completed", msg.step+1)
@@ -477,6 +505,9 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersStepVerifyMsg:
+		if m.mode != providersViewInstallSteps || m.installPlan == nil || !m.ownsInstallRequest(msg.ctx) || msg.step < 0 || msg.step >= len(m.installStepStatus) {
+			return m, nil
+		}
 		if msg.err != nil {
 			if msg.step < len(m.installStepStatus) {
 				m.installStepStatus[msg.step] = stepFailed
@@ -495,10 +526,11 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersVerifySuccessTimerMsg:
-		// Already back on the list with fresh data (user pressed Esc before timer) — skip
-		if m.mode == providersViewList && !m.needsRefresh {
+		// A delayed install transition belongs only to the current wizard.
+		if m.mode != providersViewInstallSteps || !m.ownsInstallRequest(msg.ctx) {
 			return m, nil
 		}
+		m.retireInstallRequest()
 		// Timer expired after showing success — go back to list and refresh
 		m.mode = providersViewList
 		m.loading = true
@@ -508,41 +540,6 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 			apps, err := shared.FetchProviders(client, "", "", true)
 			return providersLoadedMsg{providers: apps, err: err}
 		}, shared.SpinnerTickCmd())
-
-	case providersVerifyMsg:
-		m.loading = false
-		if msg.err != nil {
-			m.actionStatus = fmt.Sprintf("✗ Verification failed: %v", msg.err)
-			m.mode = providersViewEnterKey
-			m.keyInput.SetValue("")
-		} else if msg.result != nil && msg.result.Status == "ok" {
-			if m.installType == constants.AppModeCloud {
-				// Cloud provider — show success on key screen, wait 3s, then go to list
-				m.actionStatus = fmt.Sprintf("✓ %s is verified and ready to use", m.installProvider)
-				m.mode = providersViewEnterKey
-				m.keyInput.SetValue("")
-				return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-					return providersVerifySuccessTimerMsg{}
-				})
-			}
-			// Local provider — run preflight checks first
-			m.actionStatus = ""
-			m.installPlan = nil
-			m.loading = true
-			return m, tea.Batch(
-				fetchPreflight(m.client, m.installProvider, m.installNode),
-				shared.SpinnerTickCmd(),
-			)
-		} else {
-			message := "unknown error"
-			if msg.result != nil {
-				message = msg.result.Message
-			}
-			m.actionStatus = fmt.Sprintf("✗ Verification failed: %s", message)
-			m.mode = providersViewEnterKey // Let user retry with a different key
-			m.keyInput.SetValue("")
-		}
-		return m, nil
 
 	case providersUpgradeJobSubscribedMsg:
 		if msg.err != nil {
@@ -566,16 +563,20 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, tea.Batch(msg.next, shared.SpinnerTickCmd())
 
 	case providersInstallJobSubscribedMsg:
+		if m.mode != providersViewInstallSteps || m.installPlan == nil || !m.installInFlight || !m.ownsInstallRequest(msg.ctx) {
+			msg.row.Cancel()
+			return m, nil
+		}
 		// Either Run All (stepIdx=-1) or per-step (stepIdx>=0) kicked
 		// off. POST error maps to the right terminal handler based on
 		// stepIdx; success parks the row + pumps the first frame.
 		if msg.err != nil {
 			if msg.stepIdx < 0 {
-				return m, func() tea.Msg { return providersAutoInstallDoneMsg{err: msg.err} }
+				return m, func() tea.Msg { return providersAutoInstallDoneMsg{ctx: msg.ctx, err: msg.err} }
 			}
 			idx := msg.stepIdx
 			return m, func() tea.Msg {
-				return providersStepExecuteMsg{step: idx, err: msg.err}
+				return providersStepExecuteMsg{ctx: msg.ctx, step: idx, err: msg.err}
 			}
 		}
 		m.installJobRow = msg.row
@@ -591,21 +592,22 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		}
 		// Route by JobID. Messages for rows we don't own (e.g. a late
 		// frame after a row was replaced) are dropped.
-		if m.installJobRow == nil || msg.JobID != m.installJobRow.JobID {
+		if m.mode != providersViewInstallSteps || m.installJobRow == nil || msg.JobID != m.installJobRow.JobID {
 			return m, nil
 		}
 		if msg.Done {
+			ctx := m.installContext
 			m.installJobRow.Done = true
 			// Branch: Run All (stepIdx=-1) fires the wizard-level
 			// terminal; per-step fires the single-step handler. Both
 			// handlers already exist and will Cancel the row on entry.
 			if m.installJobStep < 0 {
-				return m, func() tea.Msg { return providersAutoInstallDoneMsg{err: msg.Err} }
+				return m, func() tea.Msg { return providersAutoInstallDoneMsg{ctx: ctx, err: msg.Err} }
 			}
 			idx := m.installJobStep
 			result := stepResultFromFrame(msg)
 			return m, func() tea.Msg {
-				return providersStepExecuteMsg{step: idx, result: result, err: msg.Err}
+				return providersStepExecuteMsg{ctx: ctx, step: idx, result: result, err: msg.Err}
 			}
 		}
 		// Progress frame — mirror the legacy InstallProgress shape so
@@ -633,6 +635,9 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, jobstream.Next(m.installJobRow)
 
 	case providersAutoInstallDoneMsg:
+		if m.mode != providersViewInstallSteps || m.installPlan == nil || !m.installInFlight || !m.ownsInstallRequest(msg.ctx) {
+			return m, nil
+		}
 		m.installInFlight = false
 		if m.installJobRow != nil {
 			m.installJobRow.Cancel()
@@ -656,8 +661,11 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		}
 		m.installProgress = nil
 		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg {
-			return providersVerifySuccessTimerMsg{}
+			return providersVerifySuccessTimerMsg{ctx: msg.ctx}
 		})
+
+	case providerConnectionMsg:
+		return m, m.handleConnectionResult(msg)
 
 	case providersConnectResultMsg:
 		return m, m.handleConnectResult(msg)
@@ -902,6 +910,10 @@ func (m *ProvidersViewModel) Breadcrumb() []string {
 
 // navigateToBreadcrumb navigates to the state matching breadcrumb level.
 func (m *ProvidersViewModel) navigateToBreadcrumb(level int) {
+	m.retireInstallRequest()
+	if m.mode == providersViewEnterKey {
+		m.cancelConnection()
+	}
 	switch level {
 	case 1:
 		// Level 1 is detail or install — go back to list

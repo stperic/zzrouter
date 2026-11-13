@@ -21,6 +21,10 @@ const (
 	CodeTemplateSourceUnavailable RouteErrorCode = "template_source_unavailable"
 	// CodeWorkflowModelMetadataMissing means model provisioning cannot be assessed.
 	CodeWorkflowModelMetadataMissing RouteErrorCode = "workflow_model_metadata_missing"
+
+	// CodeProviderConnectionUnavailable requires repairing a discovery connection.
+	CodeProviderConnectionUnavailable RouteErrorCode = "provider_connection_unavailable"
+
 	// CodeModelUnpriced requires administrator-supplied pricing for budget enforcement.
 	CodeModelUnpriced RouteErrorCode = "model_unpriced"
 	// CodeModelInUse refuses physical deletion while a run holds the weights.

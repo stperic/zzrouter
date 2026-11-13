@@ -890,7 +890,12 @@ func (m *ProviderAppManager) Stop(ctx context.Context) error {
 		return nil
 	}
 	endBudget := context.AfterFunc(ctx, func() { close(m.runExpired) })
-	defer endBudget()
+	defer func() {
+		// Done may close before its callback starts; preserve that expired budget.
+		if endBudget() && ctx.Err() != nil {
+			close(m.runExpired)
+		}
+	}()
 
 	m.startsCancel()
 	deadline, bounded := ctx.Deadline()

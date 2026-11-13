@@ -91,6 +91,7 @@ func newProviderModelHarness(t *testing.T) *providerModelHarness {
 	t.Cleanup(modelregistry.ClearModelsRootDirOverride)
 	newNode := func(node string) (*DeploymentsExecutor, *gin.Engine) {
 		cfg := &config.AppsConfig{}
+		require.NoError(t, cfg.AddApp("huggingface", config.ServiceConfig{Mode: constants.AppModeRegistry, Enabled: new(true), Runtime: &config.AppRuntimeConfig{Endpoint: "https://huggingface.co"}}))
 		require.NoError(t, cfg.AddApp("studio", config.ServiceConfig{Name: "studio", Enabled: new(false), Mode: constants.AppModeOnDemand, RunScope: config.RunScopeNode,
 			Runtime: &config.AppRuntimeConfig{DataDir: node + "-data", ModelStore: &config.ModelStoreConfig{Directory: "models", Categories: []string{"vae", "loras"}},
 				BasePort: 8188, PortRange: []int{8188, 8188}, Execution: config.ExecutionConfig{Type: "python", Command: "python", WorkingDir: "source"}}}))

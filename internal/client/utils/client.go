@@ -17,7 +17,7 @@
 //	models, err := client.ListModels(client.ModelFilter{Model: "llama*"})
 //
 //	// Deploy a model
-//	_, err = client.Deploy("llama2", "ollama", "", []string{"gpu-1"}, false)
+//	_, err = client.Deploy(ctx, client.DeployRequest{Model:"llama2", Registry:"ollama", Nodes:[]string{"gpu-1"}})
 package client
 
 import (
@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/jclem/sseparser"
+	"github.com/stperic/common/httpclient"
 	"github.com/stperic/zzrouter/pkg/apipath"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
@@ -57,16 +58,16 @@ type Client struct {
 
 // NewClient creates a new API client for a zzrouter host
 func NewClient(hostConfig pkgConfig.ClientNodeConfig) *Client {
-	httpClient := &http.Client{
+	httpClient := httpclient.SameOrigin(&http.Client{
 		Timeout: constants.HTTPLongTimeout,
-	}
+	})
 	// Separate client for install/upgrade/uninstall — a ~1.5 GB Ollama
 	// download on the worker can take minutes, far longer than the 120s
 	// general-purpose HTTPLongTimeout. Provider lifecycle ops route through
 	// this client via makeLongRequest.
-	longHTTPClient := &http.Client{
+	longHTTPClient := httpclient.SameOrigin(&http.Client{
 		Timeout: constants.HTTPDownloadTimeout,
-	}
+	})
 
 	var tlsCfg *tls.Config
 	if hostConfig.TLSCACert != "" {
@@ -94,7 +95,7 @@ func (c *Client) newStreamingClient() *http.Client {
 		ResponseHeaderTimeout: 30 * time.Second,
 		TLSClientConfig:       c.tlsConfig,
 	}
-	return &http.Client{Transport: transport}
+	return httpclient.SameOrigin(&http.Client{Transport: transport})
 }
 
 // Name returns the node name of the connected server.
@@ -202,6 +203,13 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 // checks status, and decodes the JSON response into target (if non-nil).
 // Non-2xx bodies are parsed with parseErrorResponse to produce RFC 9457 /
 // OpenAI-aware error text.
+// doContextJSON binds the transport and body read to the caller's request lifetime.
+func (c *Client) doContextJSON(ctx context.Context, method, path string, body any, out any, op string) error {
+	return c.doWith(func(method, path string, body any) (*http.Response, error) {
+		return c.makeContextRequest(ctx, method, path, body, nil)
+	}, method, path, body, out, op)
+}
+
 func (c *Client) doJSON(method, path string, body, target any, operation string) error {
 	return c.doWith(c.makeRequest, method, path, body, target, operation)
 }
@@ -273,59 +281,6 @@ func parseErrorEnvelope(body []byte) (message, errType string) {
 	}
 	// If JSON parsing fails, return the raw body
 	return string(body), ""
-}
-
-// SearchModels forwards ordinary registry query parameters without overriding provider defaults.
-func (c *Client) SearchModels(query url.Values) (map[string]any, error) {
-	var envelope struct {
-		Data map[string]any `json:"data"`
-	}
-	if err := c.doJSON("GET", withQuery(apipath.Search, query), nil, &envelope, "search"); err != nil {
-		return nil, err
-	}
-	return envelope.Data, nil
-}
-
-// GetSearchProviders fetches the list of search providers and their metadata.
-// GET /zzrouter/v1/search?type=providers
-func (c *Client) GetSearchProviders() ([]map[string]any, error) {
-	var envelope struct {
-		Data map[string]any `json:"data"`
-	}
-	if err := c.doJSON("GET", apipath.Search+"?type=providers", nil, &envelope, "get search providers"); err != nil {
-		return nil, err
-	}
-
-	resultsRaw, ok := envelope.Data["results"]
-	if !ok {
-		return nil, fmt.Errorf("no results in response")
-	}
-	resultsSlice, ok := resultsRaw.([]any)
-	if !ok {
-		return nil, fmt.Errorf("invalid results format")
-	}
-
-	var providers []map[string]any
-	for _, item := range resultsSlice {
-		if m, ok := item.(map[string]any); ok {
-			providers = append(providers, m)
-		}
-	}
-	return providers, nil
-}
-
-// GetModelCard retrieves detailed model information including file variants
-// GET /zzrouter/models/card/:provider/*id (wildcard route handles slashes)
-func (c *Client) GetModelCard(provider, modelID string) (map[string]any, error) {
-	// Don't encode slashes - the wildcard route handles them
-	path := apipath.ModelCard(provider, modelID)
-	var envelope struct {
-		Data map[string]any `json:"data"`
-	}
-	if err := c.doJSON("GET", path, nil, &envelope, "get model card"); err != nil {
-		return nil, err
-	}
-	return envelope.Data, nil
 }
 
 // GetInstance retrieves detailed information for a specific instance

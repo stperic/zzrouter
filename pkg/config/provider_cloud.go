@@ -7,6 +7,7 @@ import "fmt"
 // providers never ship parameters or install variants — they're pure auth
 // + endpoint + occasional catalog-listing metadata.
 type CloudProvider struct {
+	Connection  *ConnectionConfig  `yaml:"connection,omitempty" json:"connection,omitempty"`
 	Features    map[string]Feature `yaml:"features,omitempty" json:"features,omitempty"`
 	Name        string             `yaml:"-" json:"name"`
 	Description string             `yaml:"description,omitempty" json:"description,omitempty"`
@@ -53,6 +54,9 @@ func (p *CloudProvider) IsAvailable() bool {
 // present (the API value is always present, but auth_type must be set to
 // one of the known values — empty is not allowed for cloud).
 func (p *CloudProvider) Validate() error {
+	if err := p.Connection.Validate(); err != nil {
+		return fmt.Errorf("provider %q: %w", p.Name, err)
+	}
 	if err := p.Capabilities.ValidateArchitectures(); err != nil {
 		return fmt.Errorf("provider %q: %w", p.Name, err)
 	}

@@ -9,7 +9,6 @@ import (
 	"github.com/stperic/zzrouter/pkg/model/gguf"
 
 	"github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/filesystem"
 	"github.com/stperic/zzrouter/pkg/modelregistry/source/ollama"
@@ -97,7 +96,7 @@ func (r *Registry) buildModelList(ctx context.Context) ([]*metadata.ModelMetadat
 	scanCtx, cancel := context.WithTimeout(ctx, ollama.APITimeout)
 	defer cancel()
 	if cfg := r.appsConfigFn(); cfg != nil {
-		resolver := backend.NewResolver(r.appsConfigFn)
+		resolver := r.backendResolver()
 		for name, p := range cfg.ExternalProviders() {
 			if p.Protocol != config.ProtocolOllama && p.Protocol != config.ProtocolOpenAI {
 				continue

@@ -32,6 +32,7 @@ var tagBySegment = map[string]string{
 	"inference-logs": "InferenceLogs",
 	"jobs":           "Jobs",
 	"mcp":            "MCP",
+	"me":             "Me",
 	"keys":           "Keys",
 	"model-groups":   "ModelGroups",
 	"models":         "Models",
@@ -42,6 +43,7 @@ var tagBySegment = map[string]string{
 	"runs":           "Runs",
 	"search":         "Search",
 	"server":         "Server",
+	"session":        "Session",
 	"spend":          "Spend",
 	"teams":          "Teams",
 	"update":         "Update",
@@ -71,6 +73,8 @@ func expectedTagForPath(path string) (string, bool) {
 		return tag, true
 	}
 	switch {
+	case strings.HasPrefix(path, "/oauth/") || strings.HasPrefix(path, "/.well-known/oauth-"):
+		return "OAuth", true
 	case strings.HasPrefix(path, apipath.Base+"/"):
 		seg := strings.SplitN(strings.TrimPrefix(path, apipath.Base+"/"), "/", 2)[0]
 		tag, ok := tagBySegment[seg]

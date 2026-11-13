@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+
+	"github.com/stperic/common/atomicfile"
 
 	"github.com/stperic/zzrouter/pkg/config/assets"
 )
@@ -26,20 +29,23 @@ func kindDirKeyFor(k Kind) string {
 
 // AppsConfigStore is the single owner of the providers/ directory I/O.
 // All reads go through Config(); all writes go through mutation methods
-// that atomically update the in-memory config and persist to disk.
+// that serialize disk changes and publish coherent in-memory snapshots.
 // This eliminates the stale-config race where independent load-modify-save
 // cycles could overwrite each other's changes.
 //
 // Subscribers register with OnChange to receive the updated config after
-// every successful mutation. This is the one-way contract: if you need to
+// every successful mutation and any committed part of a failed write.
+// This is the one-way contract: if you need to
 // react to config changes (e.g., reload a port pool, rebuild a cache), you
 // subscribe — you never poll Config() or call a manual sync method.
 type AppsConfigStore struct {
-	mu        sync.RWMutex
-	config    *AppsConfig
-	dirPath   string
-	node      string
-	listeners []appsListenerEntry
+	publicationMu sync.Mutex // A transaction includes its synchronous listener effects.
+	mu            sync.RWMutex
+	config        *AppsConfig
+	reloadErr     error // A failed post-write reload makes Config unavailable until repaired.
+	dirPath       string
+	node          string
+	listeners     []appsListenerEntry
 }
 
 // appsListenerEntry pairs the listener's name with its callback so the
@@ -100,6 +106,9 @@ func (s *AppsConfigStore) load() (*AppsConfig, error) {
 func (s *AppsConfigStore) Config() *AppsConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.reloadErr != nil {
+		return nil
+	}
 	return s.config
 }
 
@@ -198,14 +207,25 @@ func (e *AssetInUseError) Error() string {
 // mutation does: assets are part of the provider's definition, and the
 // peer-sync listener is what carries them to workers.
 func (s *AppsConfigStore) mutateAssets(provider string, fn func(assets.Dir) error) error {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
 	s.mu.Lock()
+	if s.reloadErr != nil {
+		err := s.reloadErr
+		s.mu.Unlock()
+		return fmt.Errorf("provider state requires a successful reload: %w", err)
+	}
 	dir, err := s.providerDirIn(s.config, provider)
 	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
 	if err := fn(assets.NewDir(dir)); err != nil {
-		s.mu.Unlock()
+		if errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			s.unlockAndNotify("asset-durability")
+		} else {
+			s.mu.Unlock()
+		}
 		return err
 	}
 	s.unlockAndNotify("asset")
@@ -262,7 +282,7 @@ type ProviderFiles struct {
 	Assets map[string][]byte
 }
 
-// WriteProviderFiles atomically replaces one provider's files and
+// WriteProviderFiles atomically replaces each of one provider's files and
 // triggers a full reload so in-memory state tracks the new bytes. Used
 // by worker-side peer-sync receivers; the coordinator never calls this
 // (it writes via SaveToDir and the asset methods).
@@ -288,15 +308,24 @@ func (s *AppsConfigStore) WriteProviderFiles(name string, kind Kind, files Provi
 	if err := assets.ValidateSet(files.Assets); err != nil {
 		return false, err
 	}
+	provider, validationErr := decodeProviderBody(kind, name, files.Config)
+	if validationErr != nil {
+		return false, validationErr
+	}
+	if validationErr = provider.Validate(); validationErr != nil {
+		return false, validationErr
+	}
 	kindKey := kindDirKeyFor(kind)
 	if kindKey == "" {
 		return false, fmt.Errorf("unknown kind %q", kind)
 	}
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
 	s.mu.Lock()
 	providerDir := filepath.Join(s.dirPath, kindKey, name)
 	// Compared under the same lock as the write, so a concurrent push
 	// cannot slip between "matches" and "skip".
-	if providerFilesMatch(providerDir, files) {
+	if providerFilesMatch(providerDir, files) && s.reloadErr == nil {
 		s.mu.Unlock()
 		return false, nil
 	}
@@ -309,35 +338,35 @@ func (s *AppsConfigStore) WriteProviderFiles(name string, kind Kind, files Provi
 	// would delete an asset renamed only in case on a macOS or Windows
 	// worker, where the old and new names are one file.
 	if err := assets.NewDir(providerDir).Replace(files.Assets); err != nil {
-		s.mu.Unlock()
-		return false, fmt.Errorf("write assets of %s: %w", name, err)
+		return true, s.reconcileWriteFailure("provider-sync", fmt.Errorf("write assets of %s: %w", name, err))
 	}
 	configPath := filepath.Join(providerDir, "config.yaml")
 	if err := atomicWriteYAML(configPath, files.Config); err != nil {
-		s.mu.Unlock()
-		return false, fmt.Errorf("write %s: %w", configPath, err)
+		return true, s.reconcileWriteFailure("provider-sync", fmt.Errorf("write %s: %w", configPath, err))
 	}
 	if files.Schema != nil {
 		schemaPath := filepath.Join(providerDir, "schema.yaml")
 		if len(files.Schema) == 0 {
-			_ = os.Remove(schemaPath)
+			if err := os.Remove(schemaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return true, s.reconcileWriteFailure("provider-sync", err)
+			}
 		} else if err := atomicWriteYAML(schemaPath, files.Schema); err != nil {
-			s.mu.Unlock()
-			return false, fmt.Errorf("write %s: %w", schemaPath, err)
+			return true, s.reconcileWriteFailure("provider-sync", fmt.Errorf("write %s: %w", schemaPath, err))
 		}
 	}
 
 	cfg, err := s.load()
 	if err != nil {
 		// Bytes landed on disk but the reload failed — in-memory config
-		// is now stale. Next push re-runs the reload; meanwhile the
-		// launcher will see old values. Ops must see this.
-		slog.Error("provider sync: bytes on-disk but in-memory stale",
+		// is unavailable until a repaired push or explicit reload succeeds.
+		slog.Error("provider sync: state unavailable after failed reload",
 			"provider", name, "error", err)
-		s.mu.Unlock()
+		s.reloadErr = err
+		s.unlockAndNotify("provider-sync-unavailable")
 		return true, fmt.Errorf("reload after sync: %w", err)
 	}
 	s.config = cfg
+	s.reloadErr = nil
 	s.unlockAndNotify("provider-sync")
 	return true, nil
 }
@@ -367,9 +396,14 @@ func providerFilesMatch(providerDir string, files ProviderFiles) bool {
 }
 
 // OnChange registers a listener that fires after every successful mutation.
-// Listeners run after the write lock is released, so they may safely call
-// back into the store. They are invoked in registration order and report
-// their result as a ReloadDisposition. See docs/plan_reload_semantics.md.
+// A nil snapshot means committed state could not be loaded: readers must
+// refuse new work, but must not interpret it as removing existing resources.
+// A valid empty snapshot, unlike nil, confirms that providers were removed.
+// Listeners run in registration order after the state lock is released,
+// but before the next transaction. They may read the store, but must not
+// synchronously mutate/reload it or wait for another mutation to finish.
+// Their synchronous effects finish in publication order. Each returns a
+// ReloadDisposition; see docs/plan_reload_semantics.md.
 func (s *AppsConfigStore) OnChange(name string, fn func(*AppsConfig) ReloadDisposition) {
 	s.mu.Lock()
 	s.listeners = append(s.listeners, appsListenerEntry{name: name, fn: fn})
@@ -380,6 +414,8 @@ func (s *AppsConfigStore) OnChange(name string, fn func(*AppsConfig) ReloadDispo
 // in-memory config, and notifies listeners. Returns the aggregated
 // ReloadReport so callers can surface per-listener dispositions.
 func (s *AppsConfigStore) Reload() (*ReloadReport, error) {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
 	s.mu.Lock()
 	cfg, err := s.load()
 	if err != nil {
@@ -387,18 +423,26 @@ func (s *AppsConfigStore) Reload() (*ReloadReport, error) {
 		return nil, fmt.Errorf("reload apps config: %w", err)
 	}
 	s.config = cfg
+	s.reloadErr = nil
 	return s.unlockAndNotify("disk-reload"), nil
 }
 
 // mutate runs the closure on a copy of the config under the write lock,
 // persists the copy, then publishes it and notifies listeners after the
-// lock is released. A config already handed out by Config() never changes,
-// and a write that fails or cannot be saved leaves memory as it was.
+// lock is released. A config already handed out by Config() never changes.
+// A failed multi-file write reloads only the state that actually reached disk.
 // Closures signal whether anything actually changed: changed=false skips
 // save and notification (idempotent no-op). This is the single entry point
 // for all mutation methods; callers must NOT hold the lock when calling this.
 func (s *AppsConfigStore) mutate(fn func(cfg *AppsConfig) (changed bool, err error)) error {
+	s.publicationMu.Lock()
+	defer s.publicationMu.Unlock()
 	s.mu.Lock()
+	if s.reloadErr != nil {
+		err := s.reloadErr
+		s.mu.Unlock()
+		return fmt.Errorf("provider state requires a successful reload: %w", err)
+	}
 	next := s.config.clone()
 	changed, err := fn(next)
 	if err != nil || !changed {
@@ -406,8 +450,7 @@ func (s *AppsConfigStore) mutate(fn func(cfg *AppsConfig) (changed bool, err err
 		return err
 	}
 	if err := next.SaveToDir(s.dirPath); err != nil {
-		s.mu.Unlock()
-		return err
+		return s.reconcileWriteFailure("mutation", err)
 	}
 	s.config = next
 	s.unlockAndNotify("mutation")
@@ -415,9 +458,12 @@ func (s *AppsConfigStore) mutate(fn func(cfg *AppsConfig) (changed bool, err err
 }
 
 // unlockAndNotify releases the write lock and tells listeners about the
-// config now held. They run outside the lock so they may call back in.
+// config now held. The publication lock stays held; readers may call back in.
 func (s *AppsConfigStore) unlockAndNotify(source string) *ReloadReport {
 	cfg := s.config
+	if s.reloadErr != nil {
+		cfg = nil
+	}
 	listeners := s.snapshotListenersLocked()
 	s.mu.Unlock()
 	return s.notify(cfg, listeners, source)
@@ -642,4 +688,29 @@ func (s *AppsConfigStore) ApplyParameterPatch(provider string, mutate func(*Serv
 		}
 		return true, nil
 	})
+}
+
+// reconcileWriteFailure publishes only the bytes actually readable after a
+// possibly partial multi-file write. It never swaps the entire proposed tree.
+// Caller holds mu; this function releases it, including on reload failure.
+func (s *AppsConfigStore) reconcileWriteFailure(source string, writeErr error) error {
+	if s.dirPath == "" {
+		s.mu.Unlock()
+		return writeErr
+	}
+	actual, loadErr := s.load()
+	if loadErr != nil {
+		s.reloadErr = loadErr
+		s.unlockAndNotify(source + "-unavailable")
+		return errors.Join(writeErr, fmt.Errorf("reload after provider write: %w", loadErr))
+	}
+	changed := s.config.Fingerprint() != actual.Fingerprint() || s.reloadErr != nil
+	s.config = actual
+	s.reloadErr = nil
+	if changed || errors.Is(writeErr, atomicfile.ErrPostRenameDurability) || source == "provider-sync" {
+		s.unlockAndNotify(source + "-partial")
+	} else {
+		s.mu.Unlock()
+	}
+	return writeErr
 }

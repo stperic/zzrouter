@@ -150,7 +150,7 @@ func TestModelsFailedRefreshKeepsContent(t *testing.T) {
 	m := &ModelsViewModel{rows: []modelRow{{Kind: rowKindModel, RawModel: "qwen3"}}}
 	m.syncListItems()
 
-	m.Update(modelsLoadedMsg{err: errRefreshFailed})
+	m.Update(modelsLoadedMsg{ctx: m.beginLoad(), err: errRefreshFailed})
 
 	if len(m.rows) != 1 {
 		t.Fatalf("rows wiped by a failed reload: got %d", len(m.rows))
@@ -168,7 +168,7 @@ func TestModelsFailedRefreshKeepsContent(t *testing.T) {
 func TestModelsFailedFirstLoadShowsError(t *testing.T) {
 	m := &ModelsViewModel{}
 
-	m.Update(modelsLoadedMsg{err: errRefreshFailed})
+	m.Update(modelsLoadedMsg{ctx: m.beginLoad(), err: errRefreshFailed})
 
 	if m.err == nil {
 		t.Error("first-load failure swallowed; the view would show an empty list")

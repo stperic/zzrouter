@@ -155,6 +155,7 @@ func (s *Server) newInternalExecutor() *InternalExecutor {
 		s.configStore,
 		func(ctx context.Context) error { _, err := s.RescanLocal(ctx); return err },
 		getResourceMetrics,
+		s.backend,
 	)
 	executor.modelCache = s.model.Cache
 	executor.deletionManager = s.providers.appMgr
@@ -214,6 +215,7 @@ func (s *Server) newDeploymentsExecutor() *DeploymentsExecutor {
 		s.configStore,
 		s.publishCatalog,
 		s.jobs,
+		s.backend,
 	)
 	e.ensureFeatures = s.providers.appMgr.EnsureModelFeatures
 	s.deploymentsExecutor = e

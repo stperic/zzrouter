@@ -112,10 +112,11 @@ func (m *ProviderAppManager) serviceState(name string) *managedService {
 
 func (m *ProviderAppManager) serviceConfig(name string) (config.ServiceConfig, error) {
 	cfg := m.AppsConfig()
-	if cfg != nil {
-		if svc, ok := cfg.LookupApp(name); ok {
-			return svc, nil
-		}
+	if cfg == nil {
+		return config.ServiceConfig{}, ErrConfigUnavailable
+	}
+	if svc, ok := cfg.LookupApp(name); ok {
+		return svc, nil
 	}
 	return config.ServiceConfig{}, fmt.Errorf("provider %q is not configured", name)
 }
@@ -347,12 +348,8 @@ func (m *ProviderAppManager) ApplyProviderService(ctx context.Context, name stri
 
 // ProviderEndpointHealthy reports whether name's own endpoint answers 200 to the credential it declares.
 func (m *ProviderAppManager) ProviderEndpointHealthy(ctx context.Context, name string) bool {
-	cfg, err := m.serviceConfig(name)
-	if err != nil {
-		return false
-	}
-	target, ok := backend.Target(&cfg)
-	if !ok {
+	target, ok := m.connections().Target(name)
+	if !ok || target.Cloud && !target.Configured {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, endpointProbeTimeout)
@@ -617,7 +614,7 @@ func (m *ProviderAppManager) controlDaemon(ctx context.Context, name, action str
 	if cfg.Runtime != nil && cfg.Runtime.Endpoint != "" {
 		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
-		target, ok := backend.Target(&cfg)
+		target, ok := m.connections().Target(name)
 		if !ok {
 			return ErrExternalService
 		}
@@ -786,7 +783,7 @@ func (m *ProviderAppManager) observeOSServices(ctx context.Context) {
 
 // reconcileServices reconciles every service, or with retry only those whose last reconcile failed.
 func (m *ProviderAppManager) reconcileServices(retry bool) {
-	if !m.servicesStarted.Load() || m.stopping.Load() {
+	if !m.servicesStarted.Load() || m.stopping.Load() || m.AppsConfig() == nil {
 		return
 	}
 	names := make(map[string]bool)
@@ -832,6 +829,9 @@ func (m *ProviderAppManager) reconcileService(ctx context.Context, name string) 
 	defer unlock()
 	state := m.serviceState(name)
 	cfg, cfgErr := m.serviceConfig(name)
+	if errors.Is(cfgErr, ErrConfigUnavailable) {
+		return cfgErr
+	}
 	inst, _ := m.installs.Dispatcher().Get(name)
 	if cfgErr != nil || !cfg.IsEnabled() || !cfg.HasEndpoint() || inst == nil || managedBinaryOf(inst) == "" {
 		defer state.endReady(errReadyStopped)

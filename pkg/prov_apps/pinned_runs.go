@@ -11,10 +11,11 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 type pinnedRuns struct {
@@ -136,7 +137,7 @@ func (s *pinnedRuns) update(req EnsureRequest, pinned bool, cfg *config.AppsConf
 
 func (s *pinnedRuns) persist() {
 	data, _ := json.Marshal(s)
-	if err := utils.AtomicWriteFile(s.path, data, 0o600); err != nil {
+	if err := atomicfile.WriteFile(s.path, data, 0o600); err != nil {
 		slog.Warn("Cannot persist pinned run", "path", s.path, "error", err)
 	}
 }

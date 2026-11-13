@@ -2,7 +2,6 @@ package search
 
 import (
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
@@ -22,48 +20,6 @@ var DateLayouts = []string{
 	"2006-01-02T15:04:05",
 	"2006-01-02 15:04:05", // Cloudflare uses space separator
 	"2006-01-02",
-}
-
-// saveSearchPrefs persists the last used registry, sort, and tags to client config.
-// Per-registry preferences (sort, tags) are stored under registry_prefs.
-func saveSearchPrefs(registry, sort string, tags []string) {
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	store, err := pkgConfig.NewClientConfigStore(cm)
-	if err != nil {
-		return
-	}
-	_ = store.SetSearchPrefs(registry, sort, tags)
-}
-
-// loadRegistryPrefs loads saved sort/tags for a registry from client config.
-func loadRegistryPrefs(registry string) *pkgConfig.SearchRegistryPrefs {
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	cfg, err := cm.LoadClientConfig()
-	if err != nil || cfg == nil {
-		return nil
-	}
-	if cfg.Preferences.Search.RegistryPrefs == nil {
-		return nil
-	}
-	prefs, ok := cfg.Preferences.Search.RegistryPrefs[registry]
-	if !ok {
-		return nil
-	}
-	return &prefs
-}
-
-// saveTagPresets persists the current tag presets to client config.
-func saveTagPresets(presets []TagPreset) {
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	store, err := pkgConfig.NewClientConfigStore(cm)
-	if err != nil {
-		return
-	}
-	var tags []pkgConfig.TagFilter
-	for _, p := range presets {
-		tags = append(tags, pkgConfig.TagFilter{Tags: p.Tags, Logic: p.Logic})
-	}
-	_ = store.SetModelTags(tags)
 }
 
 // htmlLinkRe matches <a href="URL" ...>TEXT</a> patterns.
@@ -270,208 +226,6 @@ func parseRelativeDateToTime(s string) time.Time {
 	return time.Time{}
 }
 
-// extractContextWindow extracts context window size from tags or name
-func extractContextWindow(tags []string, name string) string {
-	// Common patterns: "8k", "32k", "128k", "8192", etc.
-	patterns := []string{"128k", "32k", "16k", "8k", "4k", "2k", "1k"}
-
-	// Check tags first
-	for _, tag := range tags {
-		tagLower := strings.ToLower(tag)
-		for _, pattern := range patterns {
-			if strings.Contains(tagLower, pattern) {
-				return strings.ToUpper(pattern)
-			}
-		}
-	}
-
-	// Check name
-	nameLower := strings.ToLower(name)
-	for _, pattern := range patterns {
-		if strings.Contains(nameLower, pattern) {
-			return strings.ToUpper(pattern)
-		}
-	}
-
-	return ""
-}
-
-// extractInputTypes extracts input types from tags and pipeline
-func extractInputTypes(tags []string, pipelineTag string) []string {
-	var types []string
-	seen := make(map[string]bool)
-
-	// Check pipeline tag
-	switch pipelineTag {
-	case "text-generation", "text2text-generation":
-		types = append(types, "text")
-		seen["text"] = true
-	case "image-to-text", "visual-question-answering":
-		if !seen["image"] {
-			types = append(types, "image")
-			seen["image"] = true
-		}
-		if !seen["text"] {
-			types = append(types, "text")
-			seen["text"] = true
-		}
-	case "automatic-speech-recognition":
-		if !seen["audio"] {
-			types = append(types, "audio")
-			seen["audio"] = true
-		}
-	}
-
-	// Check tags for modalities
-	for _, tag := range tags {
-		tagLower := strings.ToLower(tag)
-		if (strings.Contains(tagLower, "vision") || strings.Contains(tagLower, "image")) && !seen["image"] {
-			types = append(types, "image")
-			seen["image"] = true
-		}
-		if (strings.Contains(tagLower, "audio") || strings.Contains(tagLower, "speech")) && !seen["audio"] {
-			types = append(types, "audio")
-			seen["audio"] = true
-		}
-		if strings.Contains(tagLower, "video") && !seen["video"] {
-			types = append(types, "video")
-			seen["video"] = true
-		}
-	}
-
-	// Default to text if nothing found
-	if len(types) == 0 {
-		types = append(types, "text")
-	}
-
-	return types
-}
-
-// extractCapabilities extracts model capabilities from tags
-func extractCapabilities(tags []string) []string {
-	var capabilities []string
-	seen := make(map[string]bool)
-
-	for _, tag := range tags {
-		tagLower := strings.ToLower(tag)
-
-		if (strings.Contains(tagLower, "tool") || strings.Contains(tagLower, "function")) && !seen["tools"] {
-			capabilities = append(capabilities, "tools")
-			seen["tools"] = true
-		}
-		if (strings.Contains(tagLower, "thinking") || strings.Contains(tagLower, "reasoning")) && !seen["thinking"] {
-			capabilities = append(capabilities, "thinking")
-			seen["thinking"] = true
-		}
-		if strings.Contains(tagLower, "vision") && !seen["vision"] {
-			capabilities = append(capabilities, "vision")
-			seen["vision"] = true
-		}
-		if strings.Contains(tagLower, "code") && !seen["code"] {
-			capabilities = append(capabilities, "code")
-			seen["code"] = true
-		}
-	}
-
-	return capabilities
-}
-
-// extractQuantMethod extracts quantization method from filename
-func extractQuantMethod(filename string) string {
-	upper := strings.ToUpper(filename)
-
-	// Full precision patterns
-	if strings.Contains(upper, "FP16") || strings.Contains(upper, ".F16.") {
-		return "FP16"
-	}
-
-	// GGUF patterns: Q4_K_M, Q5_K_S, Q8_0, etc.
-	ggufPatterns := []string{"Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "Q4_0", "Q4_K_S", "Q4_K_M", "Q5_0", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0"}
-	for _, pattern := range ggufPatterns {
-		if strings.Contains(upper, pattern) {
-			return pattern
-		}
-	}
-
-	// GPTQ patterns: 4bit-128g, 4bit-32g, gptq-4bit-128g, etc.
-	if strings.Contains(upper, "GPTQ") || strings.Contains(upper, "4BIT") || strings.Contains(upper, "8BIT") {
-		// Check for group size variants
-		if strings.Contains(upper, "128G") || strings.Contains(upper, "128-G") {
-			if strings.Contains(upper, "4BIT") || strings.Contains(upper, "4-BIT") {
-				return "GPTQ-4bit-128g"
-			} else if strings.Contains(upper, "8BIT") || strings.Contains(upper, "8-BIT") {
-				return "GPTQ-8bit-128g"
-			}
-		} else if strings.Contains(upper, "32G") || strings.Contains(upper, "32-G") {
-			return "GPTQ-4bit-32g"
-		} else if strings.Contains(upper, "4BIT") || strings.Contains(upper, "4-BIT") {
-			return "GPTQ-4bit"
-		} else if strings.Contains(upper, "8BIT") || strings.Contains(upper, "8-BIT") {
-			return "GPTQ-8bit"
-		}
-		// If filename just has "gptq" but no specific variant, use filename
-		if strings.Contains(filename, "/") {
-			parts := strings.Split(filename, "/")
-			return "GPTQ-" + parts[len(parts)-1]
-		}
-		return "GPTQ"
-	}
-
-	// AWQ patterns
-	if strings.Contains(upper, "AWQ") {
-		if strings.Contains(upper, "4BIT") {
-			return "AWQ-4bit"
-		}
-		return "AWQ"
-	}
-
-	// Extract from filename if it contains model file info
-	if strings.Contains(filename, "model") {
-		return filepath.Base(filename)
-	}
-
-	return "Unknown"
-}
-
-// getQuantDescription returns description for quantization method
-func getQuantDescription(quant string) string {
-	descriptions := map[string]string{
-		// Full precision
-		"FP16": "full precision, no quality loss (largest size)",
-
-		// GGUF quantizations
-		"Q2_K":   "smallest, significant quality loss",
-		"Q3_K_S": "very small, high quality loss",
-		"Q3_K_M": "very small, high quality loss",
-		"Q3_K_L": "small, substantial quality loss",
-		"Q4_0":   "legacy; small, very high quality loss",
-		"Q4_K_S": "small, greater quality loss",
-		"Q4_K_M": "medium, balanced quality - recommended ⭐",
-		"Q5_0":   "legacy; medium, balanced quality",
-		"Q5_K_S": "large, low quality loss - recommended",
-		"Q5_K_M": "large, very low quality loss - recommended ⭐",
-		"Q6_K":   "very large, extremely low quality loss",
-		"Q8_0":   "very large, extremely low quality loss",
-
-		// GPTQ quantizations
-		"GPTQ-4bit-128g": "4-bit, 128 group size - balanced",
-		"GPTQ-4bit-32g":  "4-bit, 32 group size - higher accuracy",
-		"GPTQ-8bit-128g": "8-bit, 128 group size - high quality",
-		"GPTQ-4bit":      "4-bit quantization",
-		"GPTQ-8bit":      "8-bit quantization",
-		"GPTQ":           "GPTQ quantized model",
-
-		// AWQ quantizations
-		"AWQ-4bit": "4-bit AWQ - efficient and accurate",
-		"AWQ":      "AWQ quantized model",
-	}
-
-	if desc, ok := descriptions[quant]; ok {
-		return desc
-	}
-	return ""
-}
-
 // FormatRelativeTimeFromISO formats an ISO timestamp as relative time (e.g., "11 months ago")
 func FormatRelativeTimeFromISO(isoTimeStr string) string {
 	if isoTimeStr == "" {
@@ -555,30 +309,18 @@ func FormatRelativeTimeFromISO(isoTimeStr string) string {
 	return fmt.Sprintf("%d years ago", years)
 }
 
-// variantRecommendedPriority is the sort order for HuggingFace GGUF quantizations.
-var variantRecommendedPriority = map[string]int{
-	"Q4_K_M": 1, "Q5_K_M": 2, "Q5_K_S": 3, "Q6_K": 4, "Q4_K_S": 5,
-	"Q8_0": 6, "Q3_K_M": 7, "Q3_K_L": 8, "Q3_K_S": 9, "Q5_0": 10,
-	"Q4_0": 11, "Q2_K": 12,
-}
-
-// sortVariants sorts variants by recommended quantization order (Q4_K_M first).
+// sortVariants follows the registry recommendation and stable catalog order.
 func sortVariants(variants []ModelVariant) {
-	sort.Slice(variants, func(i, j int) bool {
-		p1 := variantRecommendedPriority[variants[i].QuantMethod]
-		p2 := variantRecommendedPriority[variants[j].QuantMethod]
-		if p1 == 0 {
-			p1 = 100
+	sort.SliceStable(variants, func(i, j int) bool {
+		if variants[i].Recommended != variants[j].Recommended {
+			return variants[i].Recommended
 		}
-		if p2 == 0 {
-			p2 = 100
-		}
-		return p1 < p2
+		return variants[i].CatalogOrder < variants[j].CatalogOrder
 	})
 }
 
 // sortVariantsByField sorts variants by the given field.
-// "recommended" = HuggingFace quant priority or Ollama API order (default).
+// "recommended" follows the server recommendation and catalog order.
 // "name" = alphabetical. "size" = smallest first.
 func sortVariantsByField(variants []ModelVariant, field string) {
 	switch field {

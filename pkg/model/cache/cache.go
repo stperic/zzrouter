@@ -396,8 +396,8 @@ func (mc *Cache) Invalidate() {
 // ReloadConfig implements configReloader. Apps-config mutations can shift
 // auto-assignment outcomes, so we invalidate on any material change.
 // Fingerprint check avoids the full catalog rebuild when the on-disk YAML
-// churned without a semantic change. nil config is always treated as a
-// material reset (matches ProviderAppManager's nil-reset contract).
+// churned without a semantic change. Unavailable (nil) config invalidates
+// cached admission evidence without asserting that providers were removed.
 func (mc *Cache) ReloadConfig(fresh *pkgConfig.AppsConfig) pkgConfig.ReloadDisposition {
 	if fresh == nil {
 		mc.Invalidate()

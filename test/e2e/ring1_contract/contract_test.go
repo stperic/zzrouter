@@ -108,7 +108,7 @@ func suite(t *testing.T) (*harness.Cluster, []harness.RouteSpec) {
 		if err != nil {
 			t.Fatalf("harness.New: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) //nolint:gosec // TestMain cancels the suite provisioning context after all tests.
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) //nolint:gosec // G118: TestMain calls teardownSuite to cancel this shared lifetime.
 		suiteCancel = cancel
 		if err := cluster.Provision(ctx); err != nil {
 			t.Fatalf("Provision: %v", err)

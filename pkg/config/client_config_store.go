@@ -2,12 +2,12 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 )
 
-// ClientConfigStore is the single owner of cli.yaml I/O.
-// All reads go through Config(); all writes go through mutation methods
-// that atomically update in-memory config and persist to disk.
+// ClientConfigStore owns immutable client snapshots and field mutations.
+// Its ConfigManager serializes file access across stores and processes.
 //
 // Although CLI commands are typically sequential, this store prevents
 // the load-modify-save race when multiple commands run in quick succession
@@ -36,19 +36,26 @@ func (s *ClientConfigStore) Config() *ClientConfig {
 	return s.cfg
 }
 
-// save persists the current in-memory config to disk. Must be called with mu held.
-func (s *ClientConfigStore) save() error {
-	return s.cm.SaveClientConfig(s.cfg)
-}
-
-// mutate runs the closure under the write lock and persists on success.
-func (s *ClientConfigStore) mutate(fn func() error) error {
+// mutate applies one field change to the latest persisted config. Existing
+// snapshots returned by Config remain immutable, including on a failed save.
+func (s *ClientConfigStore) mutate(fn func(*ClientConfig)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := fn(); err != nil {
+	owner, err := s.cm.lockClientConfig()
+	if err != nil {
 		return err
 	}
-	return s.save()
+	defer func() { _ = owner.Close() }()
+	next, err := s.cm.loadClientConfig()
+	if err != nil {
+		return fmt.Errorf("reload client config: %w", err)
+	}
+	fn(next)
+	if err := s.cm.saveClientConfig(next); err != nil {
+		return err
+	}
+	s.cfg = next
+	return nil
 }
 
 // ============================================================================
@@ -57,29 +64,26 @@ func (s *ClientConfigStore) mutate(fn func() error) error {
 
 // SetNodeConnection updates the server connection details and persists.
 func (s *ClientConfigStore) SetNodeConnection(address string, port int, secure bool) error {
-	return s.mutate(func() error {
-		s.cfg.Node.Address = address
-		s.cfg.Node.Port = port
-		s.cfg.Node.Secure = secure
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Node.Address = address
+		cfg.Node.Port = port
+		cfg.Node.Secure = secure
 	})
 }
 
 // SetNodeKey updates the API key reference and persists.
 func (s *ClientConfigStore) SetNodeKey(key string) error {
-	return s.mutate(func() error {
-		s.cfg.Node.Key = key
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Node.Key = key
 	})
 }
 
 // Disconnect clears the node connection (keeps key) and persists.
 func (s *ClientConfigStore) Disconnect() error {
-	return s.mutate(func() error {
-		s.cfg.Node.Address = ""
-		s.cfg.Node.Port = 0
-		s.cfg.Node.Secure = false
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Node.Address = ""
+		cfg.Node.Port = 0
+		cfg.Node.Secure = false
 	})
 }
 
@@ -89,39 +93,38 @@ func (s *ClientConfigStore) Disconnect() error {
 
 // SetTheme sets the UI theme and persists.
 func (s *ClientConfigStore) SetTheme(theme string) error {
-	return s.mutate(func() error {
-		s.cfg.Preferences.Theme = theme
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Preferences.Theme = theme
 	})
 }
 
 // SetChatSettings updates chat session preferences and persists.
 func (s *ClientConfigStore) SetChatSettings(settings ChatSettings) error {
-	return s.mutate(func() error {
-		s.cfg.Preferences.Chat = settings
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Preferences.Chat = settings
 	})
 }
 
 // SetSearchPrefs updates search registry preferences and persists.
 func (s *ClientConfigStore) SetSearchPrefs(registry, sort string, tags []string) error {
-	return s.mutate(func() error {
-		s.cfg.Preferences.Search.DefaultRegistry = registry
-		if s.cfg.Preferences.Search.RegistryPrefs == nil {
-			s.cfg.Preferences.Search.RegistryPrefs = make(map[string]SearchRegistryPrefs)
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Preferences.Search.DefaultRegistry = registry
+		if cfg.Preferences.Search.RegistryPrefs == nil {
+			cfg.Preferences.Search.RegistryPrefs = make(map[string]SearchRegistryPrefs)
 		}
-		s.cfg.Preferences.Search.RegistryPrefs[registry] = SearchRegistryPrefs{
+		cfg.Preferences.Search.RegistryPrefs[registry] = SearchRegistryPrefs{
 			Sort: sort,
-			Tags: tags,
+			Tags: slices.Clone(tags),
 		}
-		return nil
 	})
 }
 
 // SetModelTags updates the model tag filters and persists.
 func (s *ClientConfigStore) SetModelTags(tags []TagFilter) error {
-	return s.mutate(func() error {
-		s.cfg.Preferences.Search.ModelTags = tags
-		return nil
+	return s.mutate(func(cfg *ClientConfig) {
+		cfg.Preferences.Search.ModelTags = slices.Clone(tags)
+		for i := range cfg.Preferences.Search.ModelTags {
+			cfg.Preferences.Search.ModelTags[i].Tags = slices.Clone(tags[i].Tags)
+		}
 	})
 }

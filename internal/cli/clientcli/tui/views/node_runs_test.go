@@ -27,7 +27,7 @@ func TestNodeRunRowsStayDistinctAndNamed(t *testing.T) {
 	}))
 	defer server.Close()
 	client := pkgClient.NewClient(config.ClientNodeConfig{Address: server.URL})
-	rows, _, _, _, err := fetchCombinedModels(client, false, false)
+	rows, _, _, _, _, err := fetchCombinedModels(t.Context(), client, false, false, false)
 	require.NoError(t, err)
 	require.Len(t, rows, 3)
 	require.Equal(t, "studio-a", rows[0].Model)

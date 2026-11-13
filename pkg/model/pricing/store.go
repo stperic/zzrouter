@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/utils"
+	"github.com/stperic/common/atomicfile"
 )
 
 // StoreConfig is the interface the store needs from its config.
@@ -376,8 +376,11 @@ func (s *Store) saveToDisk() error {
 	}
 
 	dest := s.cacheFilePath()
-	if err := utils.AtomicWriteFile(dest, data, 0o644); err != nil {
-		return fmt.Errorf("persist pricing cache: %w", err)
+	if err := atomicfile.WriteFile(dest, data, 0o644); err != nil {
+		if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+			return fmt.Errorf("persist pricing cache: %w", err)
+		}
+		slog.Warn("Pricing cache committed with uncertain durability", "error", err)
 	}
 
 	slog.Debug("Pricing data persisted to disk", "path", dest, "models", len(cache.Models))

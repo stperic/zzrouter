@@ -7,6 +7,7 @@ import "errors"
 // context (offending value, platform, etc.) for logs without changing
 // identity.
 var (
+	ErrModelNotFound   = errors.New("model not found")
 	ErrInvalidProvider = errors.New("invalid provider")
 	ErrLimitNegative   = errors.New("limit cannot be negative")
 	ErrLimitExceedsMax = errors.New("limit cannot exceed maximum")

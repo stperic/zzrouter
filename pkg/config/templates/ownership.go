@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
@@ -107,7 +109,7 @@ func managedHistory(files map[string][]byte, dstDir string) (map[string][][]stri
 		return nil, utils.ErrResponseTooLarge
 	}
 	if !bytes.Equal(previous, next) {
-		if err := utils.AtomicWriteFile(path, next, providerFileMode); err != nil {
+		if err := atomicfile.WriteFile(path, next, providerFileMode); err != nil {
 			return nil, err
 		}
 	}

@@ -52,24 +52,29 @@ func (c *Client) ListProviderStatus() ([]ProviderStatusResponse, error) {
 
 // ProviderCatalogEntry represents a provider definition from provider config.
 type ProviderCatalogEntry struct {
-	Key             string   `json:"key"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description,omitempty"`
-	Mode            string   `json:"mode"`
-	Protocol        string   `json:"protocol"`
-	IsCloud         bool     `json:"is_cloud"`
-	Installed       bool     `json:"installed"`
-	Available       bool     `json:"available"`
-	RequiredEnvVars []string `json:"required_env_vars,omitempty"`
+	Key                 string   `json:"key"`
+	Name                string   `json:"name"`
+	Description         string   `json:"description,omitempty"`
+	Mode                string   `json:"mode"`
+	Protocol            string   `json:"protocol"`
+	IsCloud             bool     `json:"is_cloud"`
+	Installed           bool     `json:"installed"`
+	Available           bool     `json:"available"`
+	ConnectionSupported bool     `json:"connection_supported"`
+	RequiredEnvVars     []string `json:"required_env_vars,omitempty"`
 }
 
 // GetProviderCatalog retrieves all defined providers from provider config.
 // GET /zzrouter/v1/providers/catalog
-func (c *Client) GetProviderCatalog() ([]ProviderCatalogEntry, error) {
+func (c *Client) GetProviderCatalog(modes ...string) ([]ProviderCatalogEntry, error) {
 	var result struct {
 		Data []ProviderCatalogEntry `json:"data"`
 	}
-	if err := c.doJSON("GET", apipath.ProvidersCatalog, nil, &result, "get provider catalog"); err != nil {
+	path := apipath.ProvidersCatalog
+	if len(modes) > 0 {
+		path += "?mode=" + url.QueryEscape(modes[0])
+	}
+	if err := c.doJSON("GET", path, nil, &result, "get provider catalog"); err != nil {
 		return nil, err
 	}
 	return result.Data, nil

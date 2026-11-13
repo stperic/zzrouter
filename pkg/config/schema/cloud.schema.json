@@ -53,6 +53,72 @@
         "has_tags": { "type": "boolean" }
       }
     },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fields"
+      ],
+      "properties": {
+        "test_path": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "type",
+              "env"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "enum": [
+                  "text",
+                  "endpoint",
+                  "identifier"
+                ]
+              },
+              "secret": {
+                "type": "boolean"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "env": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "env_aliases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "default": {
+                "type": "string"
+              },
+              "fallback_file": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
     "runtime": {
       "type": "object",
       "required": ["endpoint", "api"],

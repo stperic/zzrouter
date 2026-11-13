@@ -19,8 +19,9 @@ const (
 // ConfigManager handles OS-agnostic configuration file operations.
 // It delegates path resolution to PathResolver for consistency.
 type ConfigManager struct {
-	appName string
-	paths   *PathResolver
+	appName         string
+	paths           *PathResolver
+	writeClientFile func(string, []byte, os.FileMode) error
 }
 
 // NewConfigManager creates a new configuration manager.
@@ -35,6 +36,9 @@ func NewConfigManager(appName string) *ConfigManager {
 
 // GetClientConfigDir returns the client-specific config directory.
 func (cm *ConfigManager) GetClientConfigDir() string {
+	if root := os.Getenv(envTestHomeOverride); root != "" {
+		return root
+	}
 	return configdir.LocalConfig(cm.appName)
 }
 

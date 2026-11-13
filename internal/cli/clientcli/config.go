@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -75,15 +74,8 @@ func runConfigClientReset(yes bool) error {
 	}
 
 	cm := pkgConfig.NewConfigManager("zzrouter")
-	configDir := cm.GetClientConfigDir()
-	if err := cm.EnsureDir(configDir); err != nil {
-		return fmt.Errorf("failed to create client config dir: %w", err)
-	}
-
-	configFile := cm.GetClientConfigPath()
-	templateContent := templates.GetClientTemplate()
-	if err := os.WriteFile(configFile, []byte(templateContent), 0600); err != nil {
-		return fmt.Errorf("failed to write client config: %w", err)
+	if err := cm.ResetClientConfig(); err != nil {
+		return fmt.Errorf("reset client config: %w", err)
 	}
 
 	fmt.Println("Client configuration reset to defaults.")

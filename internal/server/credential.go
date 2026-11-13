@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/common/mcp/oauth"
 
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -59,7 +60,7 @@ var callerKeyHeaders = []string{"X-API-Key", authorizationHeader}
 func upstreamHeaders(ctx context.Context, src http.Header, up backend.Upstream) http.Header {
 	h := src.Clone()
 	wire.StripConnectionHeaders(h)
-	scrubForUpstream(h, up)
+	scrubForUpstream(ctx, h, up)
 	observability.InjectTraceContext(ctx, h)
 	return h
 }
@@ -67,7 +68,17 @@ func upstreamHeaders(ctx context.Context, src http.Header, up backend.Upstream) 
 // scrubForUpstream applies upstreamHeaders' rule to h in place. A reverse
 // proxy has already dropped the connection headers, so its Rewrite calls
 // this alone.
-func scrubForUpstream(h http.Header, up backend.Upstream) {
+func scrubForUpstream(ctx context.Context, h http.Header, up backend.Upstream) {
+	// Browser authority stays on this node even if a native key authenticated
+	// the request or the next hop is another cluster member.
+	oauth.StripCookies(h, browserSessionCookie, browserCSRFCookie, browserHostSessionCookie, browserHostCSRFCookie)
+	// Only credentials accepted as OAuth stop here; native caller keys retain
+	// their forwarding policy regardless of their spelling.
+	if isOAuthRequest(ctx) {
+		for _, name := range nodeAPIKeyHeaders {
+			h.Del(name)
+		}
+	}
 	// Responses are relayed as they arrive; a compressed stream cannot be
 	// flushed chunk by chunk.
 	h.Del("Accept-Encoding")
@@ -153,8 +164,8 @@ func readCredential(c *gin.Context, headers []string) credential {
 			continue
 		}
 		if name == authorizationHeader {
-			token, ok := parseBearer(raw)
-			if !ok {
+			token, _ := parseCredentialValue(name, raw)
+			if token == "" {
 				continue
 			}
 			return credential{key: token, scheme: authorizationHeader + ": " + bearerScheme}
@@ -162,6 +173,23 @@ func readCredential(c *gin.Context, headers []string) credential {
 		return credential{key: raw, scheme: name}
 	}
 	return credential{}
+}
+
+// parseCredentialValue distinguishes Router credentials from proxy schemes.
+// Empty credential headers and malformed Bearer values still deny cookie fallback.
+func parseCredentialValue(name, value string) (string, bool) {
+	if name != authorizationHeader {
+		return strings.TrimSpace(value), true
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return "", true
+	}
+	if !strings.EqualFold(fields[0], bearerScheme) {
+		return "", false
+	}
+	token, _ := parseBearer(strings.TrimSpace(value))
+	return token, true
 }
 
 // parseBearer pulls the token out of an RFC 6750 "Bearer <token>"

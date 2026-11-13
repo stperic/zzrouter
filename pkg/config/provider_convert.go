@@ -72,6 +72,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 
 	case constants.AppModeCloud:
 		return &CloudProvider{
+			Connection:   sc.Connection,
 			Features:     sc.Features,
 			Name:         name,
 			Description:  sc.Description,
@@ -83,6 +84,7 @@ func serviceConfigToProvider(name string, sc ServiceConfig) (Provider, error) {
 
 	case constants.AppModeRegistry:
 		return &SearchRegistry{
+			Connection:  sc.Connection,
 			Name:        name,
 			Description: sc.Description,
 			Enabled:     sc.Enabled,
@@ -154,6 +156,7 @@ func runtimeToRegistry(rt *AppRuntimeConfig) RegistryRuntime {
 		return RegistryRuntime{}
 	}
 	return RegistryRuntime{
+		API:      rt.API,
 		Endpoint: rt.Endpoint,
 		ModelURL: rt.ModelURLFmt,
 	}

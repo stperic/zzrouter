@@ -86,7 +86,7 @@ func LoadOrCreateCA(dir string) (*CA, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ca self-sign: %w", err)
 		}
-		if err := writeAtomic(ca.certPath, certPEM, 0o600); err != nil {
+		if err := writeIdentityFile(ca.certPath, certPEM); err != nil {
 			return nil, fmt.Errorf("write ca cert: %w", err)
 		}
 	}

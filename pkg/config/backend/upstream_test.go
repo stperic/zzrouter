@@ -26,6 +26,7 @@ func TestForProvider(t *testing.T) {
 // The shipped providers resolve to what they are owed: Ollama, a daemon
 // that takes no credential, gets no key; a cloud API its own credential.
 func TestResolve_ShippedProviders(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-openai-credential")
 	dir := t.TempDir()
 	require.NoError(t, templates.InstallDefaults(dir))
 	store, err := config.NewAppsConfigStore(dir)

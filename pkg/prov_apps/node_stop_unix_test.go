@@ -602,12 +602,21 @@ func TestNodeStopRunDeadlinePreservesDaemonGrace(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- r.m.Stop(ctx) }()
 	require.Eventually(t, func() bool { _, err := os.Stat(filepath.Join(runDir, "signals")); return err == nil }, contractWait, time.Millisecond)
+	<-ctx.Done()
+	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
 	require.NoError(t, r.m.daemonsCtx.Err(), "the daemon must keep serving while the run phase is open")
 	_, err = os.Stat(filepath.Join(dir, "signals"))
 	require.True(t, os.IsNotExist(err), "the daemon must receive no signal during the run phase")
 	run.GoroutineDone()
 	released = true
-	require.ErrorIs(t, <-stopped, context.DeadlineExceeded)
+	if err := <-stopped; err != nil {
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	}
+	select {
+	case <-r.m.runExpired:
+	default:
+		t.Fatal("Stop returned without publishing the expired run budget")
+	}
 	require.False(t, r.m.instances.Has(run.ID))
 	_, err = os.Stat(filepath.Join(dir, "exited"))
 	require.NoError(t, err, "the daemon must finish its own grace after the run budget expires")
@@ -616,6 +625,7 @@ func TestNodeStopRunDeadlinePreservesDaemonGrace(t *testing.T) {
 	default:
 		t.Fatal("manager returned before the daemon exited")
 	}
+	require.ErrorIs(t, syscall.Kill(-pid, 0), syscall.ESRCH)
 	count, err := os.ReadFile(filepath.Join(dir, "signals"))
 	require.NoError(t, err)
 	require.Equal(t, []byte{1}, count)
@@ -710,4 +720,61 @@ func TestCancelledStopLeavesRunServing(t *testing.T) {
 	require.NoError(t, syscall.Kill(-run.GetProcessGroupID(), 0))
 	_, err := os.Stat(filepath.Join(dir, "signals"))
 	require.True(t, os.IsNotExist(err), "cancelled stop must neither signal nor close launcher stdin")
+}
+
+// deferredBudgetContext holds the cancellation callback until Stop returns.
+// This models the allowed gap between Done closing and AfterFunc starting.
+type deferredBudgetContext struct {
+	context.Context
+	done       chan struct{}
+	registered chan struct{}
+	removed    chan struct{}
+}
+
+func (c *deferredBudgetContext) Done() <-chan struct{} { return c.done }
+func (c *deferredBudgetContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *deferredBudgetContext) AfterFunc(func()) func() bool {
+	close(c.registered)
+	return func() bool { close(c.removed); return true }
+}
+func TestNodeStopPublishesExpiredBudgetBeforeUnregistering(t *testing.T) {
+	r := newContractRig(t, false)
+	run := instance.NewInstance("owned-stop", "generic", "owned-stop", 0, 0, 8)
+	require.True(t, run.ClaimEnd())
+	require.NoError(t, r.m.instances.Register(run))
+	defer func() {
+		run.FinishEnd(nil)
+		require.NoError(t, r.m.instances.Remove(run.ID))
+	}()
+	ctx := &deferredBudgetContext{
+		Context: context.Background(), done: make(chan struct{}),
+		registered: make(chan struct{}), removed: make(chan struct{}),
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- r.m.Stop(ctx) }()
+	<-ctx.registered
+	close(ctx.done)
+	select {
+	case err := <-stopped:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(contractWait):
+		t.Fatal("Stop did not return after deadline")
+	}
+	select {
+	case <-ctx.removed:
+	default:
+		t.Fatal("probe expected Stop to unregister the delayed callback")
+	}
+	select {
+	case <-r.m.runExpired:
+	default:
+		t.Fatal("Stop unregistered the expired budget callback without publishing runExpired")
+	}
 }

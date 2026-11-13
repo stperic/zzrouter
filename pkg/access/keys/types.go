@@ -69,6 +69,8 @@ func (k *VirtualKey) IsExpired() bool {
 }
 
 // KeyStore provides CRUD operations for virtual keys.
+// Read methods return independent snapshots; changes require Update. Create and
+// Update may fill server-owned fields on their input but retain a separate copy.
 type KeyStore interface {
 	Get(id string) *VirtualKey
 	List() map[string]*VirtualKey

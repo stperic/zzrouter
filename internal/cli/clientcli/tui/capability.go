@@ -28,6 +28,12 @@ type HelpKeyer interface {
 	HelpKey() string
 }
 
+// NavigationGuard keeps a view present until its durable request has an outcome.
+// The request must have a deadline and release the guard on every reply.
+type NavigationGuard interface {
+	NavigationBlocked() bool
+}
+
 // Refresher reloads a view's data. Root calls it on the view that becomes
 // active again after a child pops, so state the child changed (a model
 // started from chat, a provider installed) shows immediately instead of

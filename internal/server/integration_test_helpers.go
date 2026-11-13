@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +45,14 @@ func getNextTestPort() int {
 
 // TestNodeConfig contains configuration options for creating test servers.
 type TestNodeConfig struct {
+	// OAuthIssuer overrides the local OAuth issuer in integration fixtures.
+	OAuthIssuer string
+	// OAuthEnabled overrides the default-on browser authority.
+	OAuthEnabled *bool
+	// CredentialsKeyFile selects a test-owned protected-store key for browser workflows.
+	CredentialsKeyFile string
+	// Port selects the fixture listener port when a real HTTP server needs it.
+	Port int
 	// AdminKey is the admin API key. Empty = no admin auth configured.
 	AdminKey string
 	// UserKey is the user API key. Empty = no user auth configured.
@@ -79,8 +89,8 @@ func DefaultTestNodeConfig() TestNodeConfig {
 // taking a transitive dep on testing.T.
 //
 // CONCURRENCY CONSTRAINT: BuildTestServer mutates the process-global
-// ZZROUTER_TEST_HOME env var (PathResolver reads it lazily for every
-// path lookup). Callers MUST serialize concurrent BuildTestServer
+// ZZROUTER_TEST_HOME env var and the provider install root (both are
+// resolved lazily for path lookups). Callers MUST serialize concurrent BuildTestServer
 // invocations within a single process — overlapping calls cross-poison
 // each other's path roots. The harness inproc backend serializes via a
 // per-Backend mutex; integration tests within this package serialize
@@ -92,6 +102,8 @@ func DefaultTestNodeConfig() TestNodeConfig {
 //   - BuildTestServer always allocates its own temp home and overwrites
 //     ZZROUTER_TEST_HOME for the server's lifetime; a pre-set value is
 //     saved and restored on cleanup, not honored.
+//   - Provider installs use a separate directory in that temp home. The
+//     previous install root is restored after the server has stopped.
 func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 	testHome, err := os.MkdirTemp("", "zzrouter-test-")
 	if err != nil {
@@ -102,16 +114,21 @@ func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 		_ = os.RemoveAll(testHome)
 		return nil, nil, fmt.Errorf("set ZZROUTER_TEST_HOME: %w", err)
 	}
+	previousInstallRoot := fsroot.ProviderRootDir()
+	restorePaths := func() {
+		fsroot.SetProviderRootOverride(previousInstallRoot)
+		if hadHome {
+			_ = os.Setenv("ZZROUTER_TEST_HOME", prevHome) // lint:allow os.Setenv
+		} else {
+			_ = os.Unsetenv("ZZROUTER_TEST_HOME")
+		}
+		_ = os.RemoveAll(testHome)
+	}
 
 	if cfg.SeedProvidersDir {
 		dir := pkgConfig.NewConfigManager("zzrouter").GetAppsConfigDir()
 		if err := templates.InstallDefaults(dir); err != nil {
-			_ = os.RemoveAll(testHome)
-			if hadHome {
-				_ = os.Setenv("ZZROUTER_TEST_HOME", prevHome) // lint:allow os.Setenv
-			} else {
-				_ = os.Unsetenv("ZZROUTER_TEST_HOME")
-			}
+			restorePaths()
 			return nil, nil, fmt.Errorf("seed providers dir: %w", err)
 		}
 	}
@@ -120,45 +137,44 @@ func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 	if name == "" {
 		name = "test-host"
 	}
+	port := cfg.Port
+	if port == 0 {
+		port = getNextTestPort()
+	}
 	hostCfg := &pkgConfig.NodeConfig{
 		Node: pkgConfig.ServeConfig{
 			Bind: "localhost",
-			Port: getNextTestPort(),
+			Port: port,
 			Name: name,
 		},
 		Cluster: pkgConfig.ClusterConfig{
 			Mode: cfg.ClusterMode,
 		},
 		Auth: pkgConfig.AuthConfig{
+			OAuth:             pkgConfig.OAuthConfig{IssuerURL: cfg.OAuthIssuer, Enabled: cfg.OAuthEnabled},
 			AdminKey:          cfg.AdminKey,
 			UserKey:           cfg.UserKey,
 			ClusterNetworkKey: cfg.ClusterKey,
 		},
+		Providers: pkgConfig.ProvidersConfig{InstallDir: filepath.Join(testHome, "installed-providers")},
+		Security: pkgConfig.SecurityConfig{Credentials: pkgConfig.CredentialsConfig{
+			KeyFile: cfg.CredentialsKeyFile,
+		}},
 	}
 	server, err := NewServerWithOptions(hostCfg)
 	if err != nil {
-		_ = os.RemoveAll(testHome)
-		if hadHome {
-			_ = os.Setenv("ZZROUTER_TEST_HOME", prevHome) // lint:allow os.Setenv
-		} else {
-			_ = os.Unsetenv("ZZROUTER_TEST_HOME")
-		}
+		restorePaths()
 		return nil, nil, fmt.Errorf("create server: %w", err)
 	}
 	if server.engine == nil {
 		cleanupTestNode(server)
-		_ = os.RemoveAll(testHome)
+		restorePaths()
 		return nil, nil, fmt.Errorf("test server engine is nil")
 	}
 
 	cleanup := func() {
 		cleanupTestNode(server)
-		_ = os.RemoveAll(testHome)
-		if hadHome {
-			_ = os.Setenv("ZZROUTER_TEST_HOME", prevHome) // lint:allow os.Setenv
-		} else {
-			_ = os.Unsetenv("ZZROUTER_TEST_HOME")
-		}
+		restorePaths()
 	}
 	return server, cleanup, nil
 }
@@ -194,6 +210,12 @@ func cleanupTestNode(server *Server) {
 	_ = server.providers.appMgr.Stop(context.Background())
 	server.providers.cooldowns.Stop()
 	server.access.Stop(context.Background())
+	if server.access != nil && server.access.oauth != nil {
+		_ = server.access.oauth.Close()
+	}
+	if server.providers.connectionStore != nil {
+		_ = server.providers.connectionStore.Close()
+	}
 
 	server.services.Deployments.Stop(context.Background())
 

@@ -2,11 +2,14 @@ package quota
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/stperic/common/atomicfile"
 
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -51,5 +54,10 @@ func SaveSpend(path string, file *SpendFile) error {
 		return fmt.Errorf("marshal spend state: %w", err)
 	}
 
-	return utils.AtomicWriteFile(path, data, 0o600)
+	writeErr := atomicfile.WriteFile(path, data, 0o600)
+	if errors.Is(writeErr, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Spend state committed with uncertain durability", "error", writeErr)
+		return nil
+	}
+	return writeErr
 }

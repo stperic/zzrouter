@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stperic/common/httpclient"
+
 	"golang.org/x/sync/semaphore"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -117,6 +119,8 @@ type ProviderAppManager struct {
 	// applied via ReloadConfig. Guarded by mu (same lock as appsConfig
 	// so reads always see a consistent (config, fingerprint) pair).
 	lastReloadFP [32]byte
+	// unavailablePrevious is only removal-comparison evidence, never active config.
+	unavailablePrevious *config.AppsConfig
 
 	// jobsRegistry, when non-nil, drives SSE progress streams for every
 	// install/upgrade/uninstall the coordinator runs. Set via
@@ -144,11 +148,12 @@ type ProviderAppManager struct {
 	modelSource func(ctx context.Context, model string) string
 
 	// flights holds the start in flight per run key; flightsMu guards only the map.
-	flightsMu      sync.Mutex
-	flights        map[instance.Key]*flight
-	localCatalog   func(context.Context, string) (bool, error)
-	observeStart   func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
-	resolveBackend func(string) (*backend.Resolved, bool)
+	flightsMu          sync.Mutex
+	flights            map[instance.Key]*flight
+	localCatalog       func(context.Context, string) (bool, error)
+	observeStart       func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))
+	resolveBackend     func(string) (*backend.Resolved, bool)
+	connectionResolver *backend.Resolver
 
 	// nodename is this node's cluster name, used to resolve the node
 	// tiers of the parameter tree. Optional; nil means Tier 0 only.
@@ -214,6 +219,18 @@ func WithLocalCatalog(fn func(context.Context, string) (bool, error)) Option {
 // WithStartObserver records only actual cold-start attempts.
 func WithStartObserver(fn func(context.Context, EnsureRequest) (context.Context, func(EnsureResult, error))) Option {
 	return func(m *ProviderAppManager) { m.observeStart = fn }
+}
+
+// WithConnectionResolver shares effective credentials with inference and discovery.
+func WithConnectionResolver(r *backend.Resolver) Option {
+	return func(m *ProviderAppManager) { m.connectionResolver = r; m.resolveBackend = r.Resolve }
+}
+
+func (m *ProviderAppManager) connections() *backend.Resolver {
+	if m.connectionResolver != nil {
+		return m.connectionResolver
+	}
+	return backend.NewResolver(m.AppsConfig)
 }
 
 // WithBackendResolver supplies the target for providers with their own endpoint.
@@ -395,6 +412,7 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 	if m.httpClient == nil {
 		m.httpClient = &http.Client{Timeout: constants.HTTPDefaultTimeout}
 	}
+	m.httpClient = httpclient.SameOrigin(m.httpClient)
 	if m.logMgr == nil {
 		m.logMgr = logging.NewManager(logging.DefaultManagerConfig(
 			config.Paths().GetLogsDir(),
@@ -498,9 +516,9 @@ func (m *ProviderAppManager) Start(ctx context.Context) {
 
 // setShutdownCtx keeps background work under the parent and daemon lifetime under Stop.
 func (m *ProviderAppManager) setShutdownCtx(parent context.Context) {
-	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)                      //nolint:gosec // G118: Stop calls the stored cancel
-	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx)                   //nolint:gosec // G118: Stop calls the stored cancel
-	m.daemonsCtx, m.daemonsCancel = context.WithCancel(context.WithoutCancel(parent)) //nolint:gosec // G118: Stop calls the stored cancel
+	m.shutdownCtx, m.shutdownCancel = context.WithCancel(parent)                      //nolint:gosec // G118: Stop owns the stored lifecycle cancellation.
+	m.startsCtx, m.startsCancel = context.WithCancel(m.shutdownCtx)                   //nolint:gosec // G118: Stop cancels starts before draining daemon lifetimes.
+	m.daemonsCtx, m.daemonsCancel = context.WithCancel(context.WithoutCancel(parent)) //nolint:gosec // G118: Stop cancels daemons after shutdown policy runs.
 }
 
 // eventLoop drains the audit channel and logs all provider events.
@@ -776,14 +794,27 @@ func (m *ProviderAppManager) localNodename() string {
 // This is the SINGLE method the server calls after any config mutation
 // (install, uninstall, enable, disable). The server should not iterate
 // providers or manage manager internals directly.
+// Nil makes new work unavailable without changing existing resource lifecycles;
+// a validated empty config confirms removal and performs normal reconciliation.
 func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.ReloadDisposition {
-	// nil is a documented reset: manager forgets its config (see
-	// TestProviderAppManager_ReloadConfig_NilSafe). Always material.
 	fp := fresh.Fingerprint()
 	m.mu.Lock()
-	unchanged := fresh != nil && m.lastReloadFP == fp
+	if fresh == nil {
+		if m.appsConfig != nil {
+			m.unavailablePrevious = m.appsConfig
+		}
+		m.appsConfig = nil
+		m.mu.Unlock()
+		m.instances.NotifyChanged()
+		return config.DispositionRejected
+	}
+	unchanged := m.lastReloadFP == fp
 	before := m.appsConfig
+	if before == nil {
+		before = m.unavailablePrevious
+	}
 	m.appsConfig = fresh
+	m.unavailablePrevious = nil
 	m.lastReloadFP = fp
 	m.mu.Unlock()
 	m.instances.NotifyChanged()
@@ -791,10 +822,6 @@ func (m *ProviderAppManager) ReloadConfig(fresh *config.AppsConfig) config.Reloa
 		m.retireUnserved(before)
 	}
 
-	if fresh == nil {
-		m.reconcileServices(false)
-		return config.DispositionApplied
-	}
 	if unchanged {
 		return config.DispositionIgnored
 	}
@@ -864,7 +891,7 @@ func (m *ProviderAppManager) syncVersions(cfg *config.AppsConfig) {
 // anything we didn't install is not ours to fingerprint.
 func (m *ProviderAppManager) detectProviderVersion(ctx context.Context, name string, svc *config.ServiceConfig) string {
 	if svc.IsCloudProvider() {
-		if svc.IsCloudAvailable() {
+		if m.connections().Available(name) {
 			return "cloud"
 		}
 		return "unknown"
@@ -873,7 +900,7 @@ func (m *ProviderAppManager) detectProviderVersion(ctx context.Context, name str
 		return v
 	}
 	if name == "ollama" {
-		if v, ok := detect.ProbeOllama(ctx, svc); ok {
+		if v, ok := detect.ProbeOllama(ctx, svc, m.connections()); ok {
 			return v
 		}
 	}
@@ -903,10 +930,13 @@ func (m *ProviderAppManager) servedTarget(name string) (protocol.ModelLoader, pr
 
 // daemonOf is how this node reaches a provider's daemon, from its config, enabled or not.
 func (m *ProviderAppManager) daemonOf(name string) (protocol.ModelLoader, *backend.Resolved, bool) {
-	key, cfg, found := m.resolveConfigKey(name)
+	key, _, found := m.resolveConfigKey(name)
 	p := m.protocols.Of(key, m.AppsConfig().Find(key))
 	loader, loads := p.(protocol.ModelLoader)
-	resolved, ok := backend.Target(&cfg)
+	resolved, ok := m.connections().Target(key)
+	if ok && resolved.Cloud && !resolved.Configured {
+		ok = false
+	}
 	if ok {
 		resolved.Endpoint = protocol.TargetOf(resolved).Endpoint()
 	}
@@ -942,6 +972,16 @@ func (m *ProviderAppManager) ProviderVersion(name string) string {
 // Used by server discovery to populate version info detected at startup.
 func (m *ProviderAppManager) SetProviderVersion(name, version string) {
 	m.versions.Set(name, version)
+}
+
+// RefreshProviderVersion updates the cached version through the canonical detector.
+func (m *ProviderAppManager) RefreshProviderVersion(ctx context.Context, name string) {
+	key, svc, ok := m.resolveConfigKey(name)
+	if !ok {
+		m.ClearProviderVersion(name)
+		return
+	}
+	m.SetProviderVersion(key, m.detectProviderVersion(ctx, key, &svc))
 }
 
 // ProviderRequirements returns the requirements from provider config for a provider.

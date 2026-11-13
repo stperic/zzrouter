@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -46,6 +47,7 @@ var internalRequestKey = internalRequestKeyType{}
 // inference_log_bridge.go use these methods directly; Core is not
 // exposed.
 type AccessControl struct {
+	oauth  *oauth.Server[control.CredentialReference]
 	core   *control.Core
 	config *pkgConfig.NodeConfig
 	hooks  ModelHooks
@@ -138,22 +140,17 @@ func (a *AccessControl) Stop(ctx context.Context) {
 //  4. Check role hierarchy.
 //  5. Store AccessContext on gin via setAccessContext.
 func (a *AccessControl) Authenticate(c *gin.Context, requiredRole UserRole) bool {
+	return a.authenticate(c, requiredRole, false)
+}
+
+func (a *AccessControl) authenticate(c *gin.Context, requiredRole UserRole, browser bool) bool {
 	if c.Request.Context().Value(internalRequestKey) == true {
 		a.setSyntheticContext(c, requiredRole, "internal-request")
 		return true
 	}
 
-	cred := extractCredential(c, a.config)
-	if !cred.found() {
-		a.rejectAuth(c, http.StatusUnauthorized, missingCredentialDetail(c))
-		return false
-	}
-
-	ac, err := a.core.Authenticate(cred.key)
-	if err != nil {
-		stashRejectedKeyFingerprint(c, cred.key)
-		a.rejectAuth(c, http.StatusUnauthorized,
-			fmt.Sprintf("Invalid %s API key (presented via %s)", requiredRole, cred.scheme))
+	ac, ok := a.requestAccess(c, browser, string(requiredRole))
+	if !ok {
 		return false
 	}
 
@@ -173,6 +170,10 @@ func (a *AccessControl) Authenticate(c *gin.Context, requiredRole UserRole) bool
 // accepted" as "no one gets in" is safer than panicking on the
 // bypass path or letting the membership check silently allow.
 func (a *AccessControl) AuthenticateMultiRole(c *gin.Context, acceptedRoles []UserRole) bool {
+	return a.authenticateMultiRole(c, acceptedRoles, false)
+}
+
+func (a *AccessControl) authenticateMultiRole(c *gin.Context, acceptedRoles []UserRole, browser bool) bool {
 	if len(acceptedRoles) == 0 {
 		a.rejectAuth(c, http.StatusForbidden,
 			"Insufficient permissions: no roles accepted for this endpoint")
@@ -183,17 +184,8 @@ func (a *AccessControl) AuthenticateMultiRole(c *gin.Context, acceptedRoles []Us
 		return true
 	}
 
-	cred := extractCredential(c, a.config)
-	if !cred.found() {
-		a.rejectAuth(c, http.StatusUnauthorized, missingCredentialDetail(c))
-		return false
-	}
-
-	ac, err := a.core.Authenticate(cred.key)
-	if err != nil {
-		stashRejectedKeyFingerprint(c, cred.key)
-		a.rejectAuth(c, http.StatusUnauthorized,
-			fmt.Sprintf("Invalid API key (presented via %s)", cred.scheme))
+	ac, ok := a.requestAccess(c, browser, "")
+	if !ok {
 		return false
 	}
 
@@ -259,6 +251,9 @@ var defaultAuthResponder = newProblemResponder()
 // Problem Details body: a client that only knows how to read one
 // envelope is exactly the client an auth failure needs to reach.
 func (a *AccessControl) rejectAuth(c *gin.Context, status int, detail string) {
+	if status == http.StatusUnauthorized {
+		a.oauthChallenge(c)
+	}
 	logAuthAttempt(c, a.config, status, detail)
 	r := httperr.FromContextOr(c, defaultAuthResponder)
 	switch status {

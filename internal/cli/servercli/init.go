@@ -4,17 +4,20 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 
+	"github.com/stperic/common/atomicfile"
+
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -403,7 +406,12 @@ func updateNodenameInConfig(configPath, hostname string) error {
 	// applies the mode on file creation — for the upgrade case where
 	// a previously-loose file is being overwritten, the helper's
 	// chmod-then-rename forces the new mode regardless of prior state.
-	return utils.AtomicWriteFile(configPath, output, 0o600)
+	writeErr := atomicfile.WriteFile(configPath, output, 0o600)
+	if errors.Is(writeErr, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Node name committed with uncertain durability", "error", writeErr)
+		return nil
+	}
+	return writeErr
 }
 
 // createConfigFileWithNodename creates the host config file with a custom hostname
@@ -425,7 +433,12 @@ func createConfigFileWithNodename(path string, hostname string) error {
 
 	// 0o600: same loader gate as updateNodenameInConfig above. The
 	// helper makes the perm idempotent across re-runs of init.
-	return utils.AtomicWriteFile(path, []byte(content), 0o600)
+	writeErr := atomicfile.WriteFile(path, []byte(content), 0o600)
+	if errors.Is(writeErr, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Node configuration committed with uncertain durability", "error", writeErr)
+		return nil
+	}
+	return writeErr
 }
 
 func createGitignore(path string) error {

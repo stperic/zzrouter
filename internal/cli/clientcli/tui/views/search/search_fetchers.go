@@ -1,784 +1,282 @@
 package search
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"net/url"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
-	"time"
-
-	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
-	"github.com/stperic/zzrouter/pkg/modelregistry"
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
-	"github.com/stperic/zzrouter/pkg/modelregistry/search"
 )
 
-// fetchProviderConfigs fetches provider metadata from the server's
-// GET /zzrouter/search?type=providers endpoint. The result populates providerKeys
-// and providerConfigs on the model, replacing the hardcoded defaults.
-func (m SearchTUIModel) fetchProviderConfigs() tea.Cmd {
+func (m *SearchTUIModel) fetchProviderConfigs() tea.Cmd {
+	if !m.active {
+		return nil
+	}
+	client, ctx := m.client, m.ctx
+	stamp := requestStamp{activation: m.activation}
 	return func() tea.Msg {
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
-		if err != nil {
-			return providerConfigsLoadedMsg{} // silent fallback to defaults
-		}
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return providerConfigsLoadedMsg{}
-		}
-		client := pkgClient.NewClient(*host)
-		data, err := client.GetSearchProviders()
-		if err != nil {
-			return providerConfigsLoadedMsg{}
-		}
-		keys, configs := parseSearchProviders(data)
-		return providerConfigsLoadedMsg{keys: keys, configs: configs}
+		providers, err := client.GetSearchProviders(ctx)
+		keys, configs := parseSearchProviders(providers)
+		return providerConfigsLoadedMsg{stamp: stamp, keys: keys, configs: configs, err: err}
 	}
 }
 
 // searchQuery keeps local view filters out of the upstream registry request.
-func (m SearchTUIModel) searchQuery() url.Values {
+func (m *SearchTUIModel) searchQuery() metadata.SearchQuery {
 	provider := m.Provider
 	if provider == "" {
 		provider = "all"
 	}
-	query := url.Values{"type": {"models"}, "q": {m.query}, "provider": {provider}, "limit": {"250"}, "order": {"desc"}, "full": {"true"}, "enrich": {"true"}}
-	if sort := mapSortToAPI(m.sortBy, m.getProviderConfig(m.Provider)); sort != "" {
-		query.Set("sort", sort)
-	}
+	cfg := m.getProviderConfig(m.Provider)
+	query := metadata.SearchQuery{Query: m.query, Provider: provider, Sort: mapSortToAPI(m.sortBy, cfg), Order: "desc", Limit: 250, Full: true, Enrich: true}
 	if len(m.tagFilter) > 0 && provider != constants.RepoOllama {
-		query.Set("tags", strings.Join(m.tagFilter, ","))
-		query.Set("logic", m.tagLogic)
+		query.Tags = strings.Join(m.tagFilter, ",")
+		query.Logic = m.tagLogic
+	}
+	if cfg.ClientFilter {
+		query.Query = ""
 	}
 	return query
 }
 
-// fetchResults performs the search using the unified server API
-func (m SearchTUIModel) fetchResults() tea.Cmd { //nolint:gocyclo,cyclop // Search response decoding handles optional fields from multiple registries together.
+func (m *SearchTUIModel) fetchResults() tea.Cmd {
+	if !m.active || m.NavigationBlocked() {
+		return nil
+	}
+	m.invalidateSearch()
+	m.invalidateSelection()
+	ctx, cancel := context.WithCancel(m.ctx)
+	m.searchCancel = cancel
+	stamp := requestStamp{activation: m.activation, generation: m.searchGeneration}
+	query := m.searchQuery()
+	client, filter := m.client, m.inlineFilter
+	if isBroadSearch(filter) {
+		filter = ""
+	}
+	tags, logic := slices.Clone(m.tagFilter), m.tagLogic
 	return func() tea.Msg {
-		// Get client config
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
+		page, err := client.SearchModels(ctx, query)
 		if err != nil {
-			return searchCompleteMsg{results: nil, err: fmt.Errorf("failed to load config: %w", err)}
+			return searchCompleteMsg{stamp: stamp, err: err}
 		}
-
-		// Ensure host is online
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return searchCompleteMsg{results: nil, err: fmt.Errorf("server not available: %w", err)}
-		}
-
-		// Create client
-		client := pkgClient.NewClient(*host)
-
-		searchResponse, err := client.SearchModels(m.searchQuery())
-		if err != nil {
-			return searchCompleteMsg{results: nil, err: fmt.Errorf("search failed: %w", err)}
-		}
-
-		// Parse provider from top-level response
-		responseProvider, _ := searchResponse["provider"].(string)
-		if responseProvider == "" {
-			responseProvider = constants.RepoHuggingFace // Default fallback
-		}
-
-		// Parse results from response
-		resultsInterface, ok := searchResponse["results"]
-		if !ok {
-			return searchCompleteMsg{results: nil, err: fmt.Errorf("no results in response")}
-		}
-
-		results, ok := resultsInterface.([]any)
-		if !ok {
-			return searchCompleteMsg{results: nil, err: fmt.Errorf("invalid results format")}
-		}
-
-		// Convert to searchResult format
-		var allResults []searchResult
-		for _, item := range results {
-			result, ok := item.(map[string]any)
-			if !ok {
+		rows := make([]searchResult, 0, len(page.Results))
+		for _, result := range page.Results {
+			row := presentationResult(result)
+			if row.Provider == constants.RepoOllama && !matchesOllamaViewTags(row.HasCloud, tags, logic) {
 				continue
 			}
-
-			// Extract fields with type assertions
-			id, _ := result["id"].(string)
-			name, _ := result["name"].(string)
-			displayName, _ := result["display_name"].(string)
-			apiID, _ := result["api_id"].(string)
-			downloads, _ := result["downloads"].(float64)
-			pulls, _ := result["pulls"].(float64)
-			likes, _ := result["likes"].(float64)
-			trendingScore, _ := result["trendingScore"].(float64)
-
-			// Try different date field names
-			createdAt, _ := result["created_at"].(string)
-			if createdAt == "" {
-				createdAt, _ = result["createdAt"].(string)
-			}
-			// OpenRouter uses "created" as a Unix timestamp
-			if createdAt == "" {
-				if createdUnix, ok := result["created"].(float64); ok && createdUnix > 0 {
-					createdAt = time.Unix(int64(createdUnix), 0).Format(time.RFC3339)
-				}
-			}
-
-			modifiedAt, _ := result["modified_at"].(string)
-			if modifiedAt == "" {
-				modifiedAt, _ = result["lastModified"].(string)
-			}
-			if modifiedAt == "" {
-				modifiedAt, _ = result["last_modified"].(string)
-			}
-
-			// Extract variant/sibling count
-			variantCount := 0
-
-			// For Ollama: use tags count (number of available versions)
-			if tagsCount, ok := result["tags"].(float64); ok && tagsCount > 0 {
-				variantCount = int(tagsCount)
-			} else if siblingsInterface, ok := result["siblings"].([]any); ok {
-				// For HuggingFace: count only displayable GGUF variants
-				for _, sib := range siblingsInterface {
-					if sibMap, ok := sib.(map[string]any); ok {
-						if rfilename, ok := sibMap["rfilename"].(string); ok {
-							filename := strings.ToLower(rfilename)
-
-							// Must be a .gguf file
-							if !strings.HasSuffix(filename, ".gguf") {
-								continue
-							}
-
-							// Skip non-model files
-							if strings.Contains(filename, "readme") ||
-								strings.Contains(filename, "license") ||
-								strings.Contains(filename, ".txt") ||
-								strings.Contains(filename, ".md") ||
-								strings.Contains(filename, "imatrix") ||
-								strings.Contains(filename, "config.json") ||
-								strings.Contains(filename, "tokenizer") {
-								continue
-							}
-
-							// Only count if we can identify the quant method
-							quant := extractQuantMethod(rfilename)
-							if quant != "Unknown" {
-								variantCount++
-							}
-						}
-					}
-				}
-			}
-
-			// Trust the server's response provider; fall back to heuristic for "all" queries
-			var resultProvider string
-			if responseProvider != "" && responseProvider != "all" {
-				resultProvider = responseProvider
-			} else if pulls > 0 {
-				resultProvider = constants.RepoOllama
-			} else if id != "" {
-				resultProvider = constants.RepoHuggingFace
-			} else {
-				resultProvider = constants.RepoHuggingFace
-			}
-
-			// api_id from server normalization — the canonical API identifier.
-			// Falls back to id/name for non-cloud providers.
-			rawID := apiID
-			if rawID == "" {
-				rawID = id
-				if rawID == "" {
-					rawID = name
-				}
-			}
-			// display_name from server normalization — clean for UI.
-			// Falls back to rawID for non-cloud providers.
-			modelName := displayName
-			if modelName == "" {
-				modelName = rawID
-			}
-
-			// Use downloads if available, otherwise pulls
-			downloadCount := int(downloads)
-			if downloadCount == 0 {
-				downloadCount = int(pulls)
-			}
-
-			// Extract tags
-			var tags []string
-			if tagsInterface, ok := result["tags"].([]any); ok {
-				for _, tag := range tagsInterface {
-					if tagStr, ok := tag.(string); ok {
-						tags = append(tags, tagStr)
-					}
-				}
-			}
-
-			// Extract size: top-level "size" (Ollama/cloud), safetensors.total, or gguf.total
-			sizeFloat, _ := result["size"].(float64)
-			sizeBytes := int64(sizeFloat)
-			if sizeBytes == 0 {
-				if st, ok := result["safetensors"].(map[string]any); ok {
-					if total, ok := st["total"].(float64); ok {
-						sizeBytes = int64(total)
-					}
-				}
-			}
-			if sizeBytes == 0 {
-				if gguf, ok := result["gguf"].(map[string]any); ok {
-					if total, ok := gguf["total"].(float64); ok {
-						sizeBytes = int64(total)
-					}
-				}
-			}
-			sizeDisplay := ""
-			if sizeBytes > 0 {
-				sizeDisplay = shared.FormatSize(sizeBytes)
-			}
-
-			// Extract description (OpenRouter provides this)
-			description, _ := result["description"].(string)
-
-			// Extract context window from provider-specific field names
-			contextWindow := ""
-			contextLength := 0
-			if ctxLen, ok := result["context_length"].(float64); ok && ctxLen > 0 {
-				contextLength = int(ctxLen)
-			} else if ctxWin, ok := result["context_window"].(float64); ok && ctxWin > 0 {
-				contextLength = int(ctxWin)
-			} else if maxIn, ok := result["max_input_tokens"].(float64); ok && maxIn > 0 {
-				contextLength = int(maxIn)
-			}
-			if contextLength > 0 {
-				contextWindow = shared.FormatContextWindow(contextLength)
-			}
-
-			// Extract pricing (OpenRouter provides pricing.prompt and pricing.completion)
-			var pricePrompt, priceComplete float64
-			priceDisplay := ""
-			if pricing, ok := result["pricing"].(map[string]any); ok {
-				if p, ok := pricing["prompt"].(string); ok {
-					_, _ = fmt.Sscanf(p, "%f", &pricePrompt)
-				}
-				if p, ok := pricing["completion"].(string); ok {
-					_, _ = fmt.Sscanf(p, "%f", &priceComplete)
-				}
-				if pricePrompt > 0 || priceComplete > 0 {
-					priceDisplay = shared.FormatCloudPrice(pricePrompt, priceComplete)
-				}
-			}
-
-			// URL comes from the server (enriched with provider's model_url)
-			url, _ := result["url"].(string)
-
-			// Ollama cloud badge
-			hasCloud, _ := result["has_cloud"].(bool)
-
-			allResults = append(allResults, searchResult{
-				Provider:      resultProvider,
-				Name:          modelName,
-				RawID:         rawID,
-				Description:   description,
-				Downloads:     downloadCount,
-				Likes:         int(likes),
-				CreatedAt:     createdAt,
-				ModifiedAt:    modifiedAt,
-				Tags:          tags,
-				SizeBytes:     sizeBytes,
-				SizeDisplay:   sizeDisplay,
-				URL:           url,
-				VariantCount:  variantCount,
-				ContextWindow: contextWindow,
-				ContextLength: contextLength,
-				TrendingScore: trendingScore,
-				PricePrompt:   pricePrompt,
-				PriceComplete: priceComplete,
-				PriceDisplay:  priceDisplay,
-				HasCloud:      hasCloud,
-				rawData:       result,
-			})
+			rows = append(rows, row)
 		}
-
-		// Filter out Ollama entries with zero downloads (non-model pages that slipped through scraping).
-		// Cloud providers (OpenRouter) and HuggingFace don't use this heuristic.
-		if responseProvider == constants.RepoOllama {
-			var cleaned []searchResult
-			for _, r := range allResults {
-				if r.Downloads > 0 {
-					cleaned = append(cleaned, r)
-				}
-			}
-			allResults = cleaned
-
-			// Ollama cloud/local tag filter
-			if len(m.tagFilter) > 0 {
-				var filtered []searchResult
-				for _, r := range allResults {
-					for _, tag := range m.tagFilter {
-						switch strings.ToLower(tag) {
-						case "cloud":
-							if r.HasCloud {
-								filtered = append(filtered, r)
-							}
-						case "local":
-							if !r.HasCloud {
-								filtered = append(filtered, r)
-							}
-						}
-					}
-				}
-				allResults = filtered
-			}
-		}
-
-		// Client-side name .Filter: when NOT broad search (~), filter results to only
-		// models whose name matches the filter pattern. Supports wildcards:
-		// "qwen3*mlx" matches names containing "qwen3" AND "mlx" in order.
-		if !m.broadSearch && m.inlineFilter != "" {
-			var filtered []searchResult
-			for _, r := range allResults {
-				if matchesWildcard(r.Name, m.inlineFilter) {
-					filtered = append(filtered, r)
-				}
-			}
-			allResults = filtered
-		}
-
-		// Empty results is not an error — keep TUI alive so user can refine
-		if len(allResults) == 0 {
-			return searchCompleteMsg{
-				results: nil,
-				err:     nil,
-			}
-		}
-
-		return searchCompleteMsg{
-			results: allResults,
-			err:     nil,
-		}
+		return searchCompleteMsg{stamp: stamp, results: rows, filter: filter}
 	}
 }
 
-// loadVariants loads available variants for the selected model
-func (m SearchTUIModel) loadVariants() tea.Cmd {
-	return func() tea.Msg {
-		if m.selectedItem == nil {
-			return variantsLoadedMsg{err: fmt.Errorf("no model selected")}
-		}
-
-		// Handle Ollama models - fetch tags from library page
-		if m.selectedItem.Provider == constants.RepoOllama {
-			return m.loadOllamaTags()
-		}
-
-		// Handle HuggingFace models - fetch GGUF variants
-		if m.selectedItem.Provider != constants.RepoHuggingFace {
-			return variantsLoadedMsg{variants: nil, err: nil}
-		}
-
-		// If we already know there are no variants from the search results, skip
-		if m.selectedItem.VariantCount == 0 {
-			return variantsLoadedMsg{variants: nil, err: nil}
-		}
-
-		// Get client config
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
-		if err != nil {
-			return variantsLoadedMsg{err: fmt.Errorf("failed to load config: %w", err)}
-		}
-
-		// Ensure host is online
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return variantsLoadedMsg{err: fmt.Errorf("server not available: %w", err)}
-		}
-
-		// Create client
-		client := pkgClient.NewClient(*host)
-
-		// Fetch model card from server
-		cardResponse, err := client.GetModelCard(m.selectedItem.Provider, m.selectedItem.APIName())
-		if err != nil {
-			return variantsLoadedMsg{err: fmt.Errorf("failed to fetch model card: %w", err)}
-		}
-
-		// Parse siblings from response
-		siblingsInterface, ok := cardResponse["siblings"]
-		if !ok {
-			return variantsLoadedMsg{variants: nil, err: nil}
-		}
-
-		siblings, ok := siblingsInterface.([]any)
-		if !ok {
-			return variantsLoadedMsg{variants: nil, err: nil}
-		}
-
-		// Extract quantized variants from siblings
-		var variants []ModelVariant
-		for _, siblingItem := range siblings {
-			sibling, ok := siblingItem.(map[string]any)
-			if !ok {
-				continue
-			}
-
-			rfilename, _ := sibling["rfilename"].(string)
-			if rfilename == "" {
-				continue
-			}
-
-			filename := strings.ToLower(rfilename)
-
-			// Skip non-model files
-			if strings.Contains(filename, "readme") ||
-				strings.Contains(filename, "license") ||
-				strings.Contains(filename, ".txt") ||
-				strings.Contains(filename, ".md") ||
-				strings.Contains(filename, "config.json") ||
-				strings.Contains(filename, "tokenizer") {
-				continue
-			}
-
-			// Check for GGUF, GPTQ (.safetensors), or AWQ files
-			// GPTQ models use .safetensors, AWQ can use .safetensors or .pt
-			if strings.HasSuffix(filename, ".gguf") ||
-				strings.HasSuffix(filename, ".safetensors") ||
-				strings.HasSuffix(filename, ".bin") ||
-				strings.HasSuffix(filename, ".pt") {
-
-				// Get size from sibling
-				sizeFloat, _ := sibling["size"].(float64)
-				size := int64(sizeFloat)
-
-				quant := extractQuantMethod(rfilename)
-				desc := getQuantDescription(quant)
-
-				// Only add if we could identify the quant method or it's a model file
-				if quant != "Unknown" || strings.Contains(filename, "model") {
-					variants = append(variants, ModelVariant{
-						Filename:    rfilename,
-						Size:        size,
-						SizeDisplay: shared.FormatSize(size),
-						QuantMethod: quant,
-						Description: desc,
-					})
-				}
-			}
-		}
-
-		// Sort variants by recommended order
-		sortVariants(variants)
-
-		return variantsLoadedMsg{variants: variants, err: nil}
+// matchesOllamaViewTags applies the cloud badge picker to the displayed catalog.
+func matchesOllamaViewTags(hasCloud bool, tags []string, logic string) bool {
+	if len(tags) == 0 {
+		return true
 	}
-}
-
-// loadOllamaTags loads available tags/versions for an Ollama model
-func (m SearchTUIModel) loadOllamaTags() tea.Msg {
-	if m.selectedItem == nil {
-		return variantsLoadedMsg{err: fmt.Errorf("no model selected")}
-	}
-
-	// Fetch tags from Ollama library using the scraper
-	tags, err := search.GetOllamaModelTags(m.selectedItem.Name)
-	if err != nil {
-		return variantsLoadedMsg{err: fmt.Errorf("failed to fetch Ollama tags: %w", err)}
-	}
-
-	// Convert tags to ModelVariant format for display
-	var variants []ModelVariant
+	matches := 0
 	for _, tag := range tags {
-		// Parse size string to bytes if possible (for sorting)
-		sizeBytes := int64(0)
-		// TODO: Parse size string like "5.2GB" to bytes
-
-		description := tag.Input
-		// Mark cloud tags so users know they require an API key
-		if strings.HasSuffix(tag.Name, "-cloud") || strings.Contains(tag.Name, "-cloud-") || strings.EqualFold(tag.Name, "cloud") {
-			description = "cloud (requires API key)"
+		if strings.EqualFold(tag, "cloud") && hasCloud || strings.EqualFold(tag, "local") && !hasCloud {
+			matches++
 		}
-
-		variants = append(variants, ModelVariant{
-			Filename:    tag.Name,
-			Size:        sizeBytes,
-			SizeDisplay: tag.Size,
-			QuantMethod: tag.Context, // Show context in quant column
-			Description: description,
-		})
 	}
-
-	return variantsLoadedMsg{variants: variants, err: nil}
+	if strings.EqualFold(logic, "OR") {
+		return matches > 0
+	}
+	return matches == len(tags)
 }
 
-// fetchModelDetails fetches additional model details like size
-func (m SearchTUIModel) fetchModelDetails() tea.Cmd {
+func presentationResult(result metadata.DiscoveryResult) searchResult {
+	d := result.Discovery
+	row := searchResult{Provider: d.Provider, Name: d.DisplayName, RawID: d.APIID, Description: d.Description, Downloads: d.Downloads, Likes: d.Likes, CreatedAt: d.CreatedAt, ModifiedAt: d.ModifiedAt, Tags: slices.Clone(d.Tags), SizeBytes: d.SizeBytes, URL: d.URL, VariantCount: d.VariantCount, ContextLength: d.ContextLength, TrendingScore: d.TrendingScore, HasCloud: d.HasCloud, rawData: result.Native}
+	row.Metadata = buildMetadata(result.Native)
+	if d.ParameterCount > 0 {
+		row.Metadata = mergeMetadata(row.Metadata, []KeyValue{{Key: "Parameters", Value: strconv.FormatInt(d.ParameterCount, 10)}})
+	}
+	if d.SizeBytes > 0 {
+		row.SizeDisplay = shared.FormatSize(d.SizeBytes)
+	}
+	if d.ContextLength > 0 {
+		row.ContextWindow = shared.FormatContextWindow(d.ContextLength)
+	}
+	row.PricePrompt, _ = strconv.ParseFloat(d.PricePrompt, 64)
+	row.PriceComplete, _ = strconv.ParseFloat(d.PriceComplete, 64)
+	if row.PricePrompt > 0 || row.PriceComplete > 0 {
+		row.PriceDisplay = shared.FormatCloudPrice(row.PricePrompt, row.PriceComplete)
+	}
+	return row
+}
+
+func (m *SearchTUIModel) loadVariants() tea.Cmd {
+	if !m.active || m.selectedItem == nil {
+		return nil
+	}
+	ctx, stamp := m.beginSelection(m.selectionIdentity())
+	client, model, registry, provider := m.client, m.selectedItem.APIName(), m.selectedItem.Provider, m.selectedProvider
 	return func() tea.Msg {
-		if m.selectedItem == nil {
-			return modelDetailsMsg{err: fmt.Errorf("no model selected")}
+		reply := variantsLoadedMsg{stamp: stamp}
+		switch registry {
+		case constants.RepoOllama:
+			tags, err := client.GetOllamaTags(ctx, model)
+			if err != nil {
+				reply.err = err
+				return reply
+			}
+			for i, tag := range tags.Tags {
+				reply.variants = append(reply.variants, ModelVariant{Filename: tag.Name, SizeDisplay: tag.Size, QuantMethod: tag.Context, Description: tag.Input, IsCloud: tag.IsCloud, CatalogOrder: i})
+			}
+		case constants.RepoHuggingFace:
+			variants, err := client.GetHuggingFaceVariants(ctx, model, provider)
+			if err != nil {
+				reply.err = err
+				return reply
+			}
+			reply.features = variants.Features
+			for i, variant := range variants.Variants {
+				description := variant.RecommendationReason
+				if variant.Shards > 1 {
+					description = fmt.Sprintf("%d shards. %s", variant.Shards, description)
+				}
+				reply.variants = append(reply.variants, ModelVariant{Filename: variant.File, Size: variant.SizeBytes, SizeDisplay: variant.SizeHuman, QuantMethod: variant.Quantization, Description: description, Recommended: variant.Recommended, Shards: variant.Shards, CatalogOrder: i})
+			}
+			sortVariants(reply.variants)
 		}
+		return reply
+	}
+}
 
-		// Get client config
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
+func (m *SearchTUIModel) fetchModelDetails() tea.Cmd {
+	if !m.active || m.selectedItem == nil {
+		return nil
+	}
+	ctx, stamp := m.beginSelection(m.selectionIdentity())
+	client, registry, model := m.client, m.selectedItem.Provider, m.selectedItem.APIName()
+	return func() tea.Msg {
+		card, err := client.GetModelCard(ctx, registry, model)
 		if err != nil {
-			return modelDetailsMsg{err: fmt.Errorf("failed to load config: %w", err)}
+			return modelDetailsMsg{stamp: stamp, err: err}
 		}
+		description := card.Discovery.README
+		if description == "" {
+			description = card.Discovery.Description
+		}
+		return modelDetailsMsg{stamp: stamp, description: description, metadata: presentationResult(*card).Metadata}
+	}
+}
 
-		// Ensure host is online
-		host, err := shared.EnsureNodeOnline(clientConfig)
+func (m *SearchTUIModel) loadAvailableNodes() tea.Cmd {
+	if !m.active || m.selectedItem == nil {
+		return nil
+	}
+	ctx, stamp := m.beginSelection(m.selectionIdentity())
+	client, model, registry, provider := m.client, m.selectedItem.APIName(), m.selectedItem.Provider, m.selectedProvider
+	return func() tea.Msg {
+		inventory, err := client.GetNodeInventory(ctx)
 		if err != nil {
-			return modelDetailsMsg{err: fmt.Errorf("server not available: %w", err)}
+			return hostsLoadedMsg{stamp: stamp, err: err}
 		}
-
-		// Create client
-		client := pkgClient.NewClient(*host)
-
-		// Fetch model card from server
-		cardResponse, err := client.GetModelCard(m.selectedItem.Provider, m.selectedItem.APIName())
-		if err != nil {
-			return modelDetailsMsg{err: fmt.Errorf("failed to fetch model card: %w", err)}
+		capacity, assessmentErr := client.GetCompatibleNodes(ctx, model, registry, provider)
+		if err := ctx.Err(); err != nil {
+			return hostsLoadedMsg{stamp: stamp, err: err}
 		}
-
-		// Extract fields from response
-		sizeFloat, _ := cardResponse["size"].(float64)
-		sizeBytes := int64(sizeFloat)
-
-		// If a variant is selected, use its size instead of total model size
-		if m.selectedVariant != nil && m.selectedVariant.Size > 0 {
-			sizeBytes = m.selectedVariant.Size
-		}
-
-		sizeDisplay := shared.FormatSize(sizeBytes)
-
-		description, _ := cardResponse["description"].(string)
-		readme, _ := cardResponse["readme"].(string)
-		pipelineTag, _ := cardResponse["pipeline_tag"].(string)
-
-		// Extract tags
-		var tags []string
-		if tagsInterface, ok := cardResponse["tags"].([]any); ok {
-			for _, tag := range tagsInterface {
-				if tagStr, ok := tag.(string); ok {
-					tags = append(tags, tagStr)
+		hosts := make([]hostWithProviders, 0, len(inventory))
+		for _, node := range inventory {
+			host := hostWithProviders{name: node.Name, role: node.ClusterRole, capacity: "unknown"}
+			for _, provider := range node.Providers {
+				host.providers = append(host.providers, provider.Name)
+			}
+			if node.DiskInfo != nil {
+				host.diskAvailableGB = node.DiskInfo.AvailableGB
+				host.diskTotalGB = node.DiskInfo.TotalGB
+			}
+			if node.MemoryInfo != nil {
+				host.ramAvailableGB = node.MemoryInfo.AvailableGB
+				host.ramTotalGB = node.MemoryInfo.TotalGB
+			}
+			if node.GPU != nil {
+				host.gpuCount = node.GPU.Count
+				host.vramAvailableKnown = len(node.GPU.GPUs) > 0
+				for _, gpu := range node.GPU.GPUs {
+					host.vramTotalGB += gpu.TotalGB
+					if gpu.AvailableGB != nil {
+						host.vramAvailableGB += *gpu.AvailableGB
+					} else {
+						host.vramAvailableKnown = false
+					}
 				}
 			}
-		}
-
-		// Use raw README markdown for detail view; fall back to extracted description
-		descForDetail := readme
-		if descForDetail == "" {
-			descForDetail = description
-		}
-
-		// Build metadata from the full card response
-		metadata := buildMetadata(cardResponse)
-
-		// For local providers, supplement with tag-based heuristics (single merge)
-		cfg := m.getProviderConfig(m.selectedItem.Provider)
-		if !cfg.IsCloud {
-			var extra []KeyValue
-			if cw := extractContextWindow(tags, m.selectedItem.Name); cw != "" {
-				extra = append(extra, KeyValue{Key: "Context", Value: cw})
-			}
-			if it := extractInputTypes(tags, pipelineTag); len(it) > 0 {
-				extra = append(extra, KeyValue{Key: "Input", Value: strings.Join(it, ", ")})
-			}
-			if caps := extractCapabilities(tags); len(caps) > 0 {
-				extra = append(extra, KeyValue{Key: "Capabilities", Value: strings.Join(caps, ", ")})
-			}
-			if sizeDisplay != "" && sizeDisplay != shared.EmptyValue {
-				extra = append(extra, KeyValue{Key: "Size", Value: sizeDisplay})
-			}
-			if len(extra) > 0 {
-				metadata = mergeMetadata(metadata, extra)
-			}
-		}
-
-		return modelDetailsMsg{
-			description: descForDetail,
-			metadata:    metadata,
-			err:         nil,
-		}
-	}
-}
-
-// loadAvailableNodes fetches the list of available nodes with compatible inference providers
-// parseResourceInfo extracts available/total GB from a string like "1519 / 1858 GB" or "70 / 128 GB".
-func parseResourceInfo(s string) (available, total float64) {
-	_, _ = fmt.Sscanf(strings.ReplaceAll(s, ",", ""), "%f / %f", &available, &total)
-	return
-}
-
-// loadAvailableNodes fetches nodes that have a compatible provider for the selected model.
-// Uses /zzrouter/providers + /zzrouter/nodes (two fast requests) instead of broadcasting to every node.
-func (m SearchTUIModel) loadAvailableNodes() tea.Cmd {
-	return func() tea.Msg {
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
-		if err != nil {
-			return hostsLoadedMsg{err: fmt.Errorf("failed to load config: %w", err)}
-		}
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return hostsLoadedMsg{err: fmt.Errorf("server not available: %w", err)}
-		}
-		client := pkgClient.NewClient(*host)
-
-		// 1. Fetch all providers across cluster
-		providers, err := shared.FetchProviders(client, "", "")
-		if err != nil {
-			return hostsLoadedMsg{err: fmt.Errorf("failed to fetch providers: %w", err)}
-		}
-
-		// 2. Determine which provider type and format the model needs
-		repo := m.selectedItem.Provider
-		if repo == "" {
-			repo = constants.RepoHuggingFace
-		}
-
-		modelName := m.selectedItem.Name
-
-		requiredFormat := modelregistry.DetectFormatFromName(modelName)
-		if requiredFormat == "" && m.selectedItem != nil {
-			requiredFormat = modelregistry.DetectFormatFromTags(m.selectedItem.Tags)
-		}
-
-		// 3. Filter providers to find nodes with compatible providers AND formats
-		nodeProviders := make(map[string][]string) // node → list of compatible provider names
-		for _, app := range providers {
-			// Repo/app compatibility lives in modelregistry so this loop
-			// doesn't have to know Ollama is a walled garden.
-			if !metadata.RepoAppCompatible(repo, app.Name) {
-				continue
-			}
-
-			// Format .Filter: app must support the required format
-			if !modelregistry.FormatSupported(app.Formats, requiredFormat) {
-				continue
-			}
-
-			nodeProviders[app.Node] = append(nodeProviders[app.Node], app.Name)
-		}
-
-		if len(nodeProviders) == 0 {
-			return hostsLoadedMsg{err: noCompatibleNodesError(repo, modelName, requiredFormat, providers)}
-		}
-
-		// 4. Fetch node details for disk/RAM info
-		nodeDetails, _ := shared.FetchNodes(client, "", false)
-		nodeInfoMap := make(map[string]shared.NodeInfo)
-		for _, n := range nodeDetails {
-			nodeInfoMap[n.Name] = n
-		}
-
-		// 5. Build host list
-		var hosts []hostWithProviders
-		for nodeName, appTypes := range nodeProviders {
-			h := hostWithProviders{
-				name:      nodeName,
-				providers: appTypes,
-			}
-			if info, ok := nodeInfoMap[nodeName]; ok {
-				h.role = info.ClusterRole
-				h.diskAvailableGB, h.diskTotalGB = parseResourceInfo(info.Disk)
-				h.ramAvailableGB, h.ramTotalGB = parseResourceInfo(info.Memory)
-				h.vramAvailableGB, h.vramTotalGB = parseResourceInfo(info.GPU) // "95 / 96 GB [1]" format
-				h.gpuCount = len(info.GPUs)
-				if h.gpuCount == 0 && info.GPU != "" && info.GPU != "-" {
-					h.gpuCount = 1
+			if capacity != nil {
+				for _, assessment := range capacity.Metadata.Assessments {
+					if assessment.Node == node.Name || assessment.Node == "" {
+						host.assessments = append(host.assessments, assessment)
+					}
 				}
 			}
-			hosts = append(hosts, h)
-		}
-
-		return hostsLoadedMsg{hosts: hosts}
-	}
-}
-
-// validateModelForDeploy checks if a model exists before pulling.
-// For Ollama cloud variants, checks API key availability via a deploy dry-run.
-// For others, uses GetModelCard as an existence check.
-func (m SearchTUIModel) validateModelForDeploy(provider, modelName string) tea.Cmd {
-	return func() tea.Msg {
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
-		if err != nil {
-			return deployValidateMsg{modelName: modelName, provider: provider, err: fmt.Errorf("config error: %w", err)}
-		}
-
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return deployValidateMsg{modelName: modelName, provider: provider, err: fmt.Errorf("server not available: %w", err)}
-		}
-
-		client := pkgClient.NewClient(*host)
-
-		// For Ollama: check model card from ollama.com library
-		// For HuggingFace: check model card from HF API
-		_, err = client.GetModelCard(provider, modelName)
-		if err != nil {
-			return deployValidateMsg{modelName: modelName, provider: provider, err: fmt.Errorf("model not found: %s", modelName)}
-		}
-
-		return deployValidateMsg{modelName: modelName, provider: provider, err: nil}
-	}
-}
-
-// deployModelToNodes initiates a model deploy to one or more nodes.
-func (m SearchTUIModel) deployModelToNodes(nodes []string) tea.Cmd {
-	return func() tea.Msg {
-		if m.selectedItem == nil {
-			return deployCompleteMsg{success: false, err: fmt.Errorf("no model selected")}
-		}
-
-		cm := pkgConfig.NewConfigManager("zzrouter")
-		clientConfig, err := cm.LoadClientConfig()
-		if err != nil {
-			return deployCompleteMsg{success: false, err: err}
-		}
-
-		host, err := shared.EnsureNodeOnline(clientConfig)
-		if err != nil {
-			return deployCompleteMsg{success: false, err: err}
-		}
-
-		client := pkgClient.NewClient(*host)
-
-		repository := m.selectedItem.Provider
-		if repository == "" {
-			repository = constants.RepoHuggingFace
-		}
-
-		var errors []string
-		file := ""
-		if m.selectedVariant != nil {
-			file = m.selectedVariant.Filename
-		}
-		for _, node := range nodes {
-			if _, err := client.Deploy(m.selectedItem.APIName(), repository, file, []string{node}, false); err != nil {
-				errors = append(errors, fmt.Sprintf("%s: %v", node, err))
+			if assessmentErr != nil {
+				host.assessments = append(host.assessments, pkgClient.NodeAssessment{Node: node.Name, Status: "unknown", UnknownCause: "assessment_failed", Reason: "Capacity assessment unavailable"})
 			}
+			for _, assessment := range host.assessments {
+				if assessment.Status == "fit" {
+					host.capacity = "fit"
+					break
+				}
+				if assessment.Status == "no_fit" {
+					host.capacity = "no fit"
+				}
+			}
+			hosts = append(hosts, host)
 		}
-
-		if len(errors) > 0 {
-			return deployCompleteMsg{success: false, err: fmt.Errorf("deploy failed on: %s", strings.Join(errors, "; "))}
-		}
-		return deployCompleteMsg{success: true, err: nil}
+		sort.SliceStable(hosts, func(i, j int) bool { return hosts[i].name < hosts[j].name })
+		return hostsLoadedMsg{stamp: stamp, hosts: hosts}
 	}
 }
 
-// noCompatibleNodesError builds a user-friendly error from provider config data.
-func noCompatibleNodesError(repo, modelName, requiredFormat string, allProviders []shared.ProviderInfo) error {
-	var providers []modelregistry.ProviderFormatEntry
-	for _, a := range allProviders {
-		providers = append(providers, modelregistry.ProviderFormatEntry{Name: a.Name, Formats: a.Formats})
+func (m *SearchTUIModel) validateModelForDeploy(provider, modelName string) tea.Cmd {
+	if !m.active {
+		return nil
 	}
-	return errors.New(modelregistry.FormatIncompatibleError(modelName, requiredFormat, repo, providers))
+	ctx, stamp := m.beginSelection(provider + "\x00" + modelName)
+	m.directPullLoading = m.State == stateDirectPull
+	client := m.client
+	return func() tea.Msg {
+		card, err := client.GetModelCard(ctx, provider, modelName)
+		reply := deployValidateMsg{stamp: stamp, modelName: modelName, provider: provider, err: err}
+		if card != nil {
+			reply.cloud = card.Discovery.IsCloud
+		}
+		return reply
+	}
+}
+
+func (m *SearchTUIModel) deployModelToNodes(nodes []string) tea.Cmd {
+	if !m.active || m.selectedItem == nil || m.deployPending {
+		return nil
+	}
+	ctx, stamp := m.beginSelection(m.selectionIdentity())
+	ctx, cancel := context.WithTimeout(ctx, constants.HTTPLongTimeout)
+	m.deployPending, m.deployStamp = true, stamp
+	m.State = statePulling
+	m.PullStatus = "Submitting deployment. Navigation waits for the response."
+	request := pkgClient.DeployRequest{Model: m.selectedItem.APIName(), Registry: m.selectedItem.Provider, Provider: m.selectedProvider, Nodes: slices.Clone(nodes)}
+	if m.selectedVariant != nil {
+		request.File = m.selectedVariant.Filename
+	}
+	if len(request.Nodes) == 1 && request.Nodes[0] == "" {
+		request.Nodes = nil
+	}
+	client := m.client
+	return func() tea.Msg {
+		defer cancel()
+		deployment, err := client.Deploy(ctx, request)
+		return deployCompleteMsg{stamp: stamp, deployment: deployment, err: err}
+	}
 }

@@ -15,6 +15,7 @@ import (
 func (m *ProvidersViewModel) updatePicker(msg tea.KeyPressMsg) tea.Cmd { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
 	switch {
 	case key.Matches(msg, tui.ProvidersKeys.Back):
+		m.retireInstallRequest()
 		switch m.mode {
 		case providersViewPickNode:
 			m.buildProviderPicker()
@@ -37,26 +38,29 @@ func (m *ProvidersViewModel) updatePicker(msg tea.KeyPressMsg) tea.Cmd { //nolin
 		}
 		switch m.mode {
 		case providersViewPickType:
+			ctx := m.beginInstallRequest()
 			// Type selected — fetch catalog filtered by type
 			m.installType = m.pickerKeys[m.pickerCursor]
-			m.loading = true
+			m.installLoading = true
 			client := m.client
 			typeFilter := m.installType
 			return tea.Batch(func() tea.Msg {
-				catalog, err := client.GetProviderCatalog()
+				catalog, err := client.GetProviderCatalog("all")
 				// Filter client-side based on type
 				if err == nil {
 					var filtered []pkgClient.ProviderCatalogEntry
 					for _, e := range catalog {
 						if typeFilter == constants.AppModeCloud && e.IsCloud {
 							filtered = append(filtered, e)
-						} else if typeFilter == "local" && !e.IsCloud {
+						} else if typeFilter == "local" && !e.IsCloud && e.Mode != constants.AppModeRegistry {
+							filtered = append(filtered, e)
+						} else if typeFilter == constants.AppModeRegistry && e.Mode == constants.AppModeRegistry {
 							filtered = append(filtered, e)
 						}
 					}
 					catalog = filtered
 				}
-				return providersCatalogMsg{catalog: catalog, err: err}
+				return providersCatalogMsg{ctx: ctx, catalog: catalog, err: err}
 			}, shared.SpinnerTickCmd())
 
 		case providersViewPickProvider:
@@ -72,41 +76,9 @@ func (m *ProvidersViewModel) updatePicker(msg tea.KeyPressMsg) tea.Cmd { //nolin
 				return m.focusConnectInput(connectFieldName)
 			}
 
-			// Find catalog entry for status checks
-			var entry *pkgClient.ProviderCatalogEntry
-			for i := range m.catalog {
-				if m.catalog[i].Key == name {
-					entry = &m.catalog[i]
-					break
-				}
-			}
-
-			if m.installType == constants.AppModeCloud {
-				// Cloud providers are cluster-wide — if already enabled, nothing to do.
-				if entry != nil && entry.Installed {
-					m.actionStatus = fmt.Sprintf("✓ %s is already installed and ready to go", name)
-					m.mode = providersViewList
-					return nil
-				}
-
-				// Cloud — check if env vars are available
-				if entry != nil && !entry.Available && len(entry.RequiredEnvVars) > 0 {
-					// Env vars missing — prompt user to enter them
-					m.keyEnvVars = entry.RequiredEnvVars
-					m.keyEnvIndex = 0
-					m.keyInput = newEnvVarInput(m.keyEnvVars[0])
-					m.mode = providersViewEnterKey
-					return m.keyInput.Focus()
-				}
-				// Cloud with key — verify connectivity and enable
-				m.actionStatus = fmt.Sprintf("Verifying %s...", name)
-				m.mode = providersViewList
-				client := m.client
-				provider := name
-				return func() tea.Msg {
-					result, err := client.VerifyProvider(provider)
-					return providersVerifyMsg{result: result, err: err}
-				}
+			if m.installType == constants.AppModeCloud || m.installType == constants.AppModeRegistry {
+				m.retireInstallRequest()
+				return m.beginConnection(name)
 			}
 
 			// Local — fetch cluster nodes, exclude nodes that already have this provider
@@ -141,13 +113,14 @@ func (m *ProvidersViewModel) updatePicker(msg tea.KeyPressMsg) tea.Cmd { //nolin
 			m.mode = providersViewPickNode
 
 		case providersViewPickNode:
+			ctx := m.beginInstallRequest()
 			// Node selected — run preflight checks first
 			m.installNode = m.pickerKeys[m.pickerCursor]
 			m.installPlan = nil
 			m.actionStatus = ""
-			m.loading = true
+			m.installLoading = true
 			return tea.Batch(
-				fetchPreflight(m.client, m.installProvider, m.installNode),
+				fetchPreflight(ctx, m.client, m.installProvider, m.installNode),
 				shared.SpinnerTickCmd(),
 			)
 		}
@@ -159,10 +132,11 @@ func (m *ProvidersViewModel) buildTypePicker() {
 	m.pickerItems = []string{
 		"Cloud Providers (gemini, openai, groq, ...)",
 		"Local Providers (ollama, vllm, llamacpp, mlx)",
+		"Registry Connections (Hugging Face)",
 	}
-	m.pickerKeys = []string{constants.AppModeCloud, "local"}
+	m.pickerKeys = []string{constants.AppModeCloud, "local", constants.AppModeRegistry}
 	m.pickerCursor = 0
-	m.pickerTitle = "Install Provider"
+	m.pickerTitle = "Providers and Connections"
 	m.mode = providersViewPickType
 }
 
@@ -184,6 +158,8 @@ func (m *ProvidersViewModel) buildProviderPicker() {
 	m.pickerCursor = 0
 	if m.installType == constants.AppModeCloud {
 		m.pickerTitle = "Cloud Providers"
+	} else if m.installType == constants.AppModeRegistry {
+		m.pickerTitle = "Registry Connections"
 	} else {
 		m.pickerTitle = "Local Providers"
 	}

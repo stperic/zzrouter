@@ -49,7 +49,7 @@ func (c *Coordinator) Start(ctx context.Context) {
 	if c.generation != nil {
 		return
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx) //nolint:gosec // G118: Stop owns the generation cancellation.
 	c.generation = &generation{ctx: ctx, cancel: cancel, peers: make(map[string]*peer)}
 }
 
@@ -92,6 +92,7 @@ func (c *Coordinator) Observe(url, node string) {
 	g.peers[url] = p
 	g.wg.Add(1)
 	go func() {
+		defer cancel()
 		defer g.wg.Done()
 		defer func() {
 			c.mu.Lock()

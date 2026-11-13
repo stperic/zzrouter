@@ -22,6 +22,8 @@ const instructions = "zzRouter manages cluster providers and models through its 
 
 // Config supplies the engine and its existing credential and route rules.
 type Config struct {
+	// ResourcePath binds inner REST calls to the ingress MCP audience.
+	ResourcePath     string
 	Engine           http.Handler
 	KeyHeaders       []string
 	Streaming        func(method, path string) string
@@ -35,6 +37,7 @@ type contextKey uint8
 const (
 	outerKey contextKey = iota
 	dispatchKey
+	resourceKey
 )
 
 type outerRequest struct {
@@ -45,6 +48,15 @@ type outerRequest struct {
 
 // IsDispatch identifies inner calls for HTTP accounting only, never auth.
 func IsDispatch(ctx context.Context) bool { return ctx.Value(dispatchKey) == true }
+
+// ResourcePath returns the audience of an in-process MCP dispatch only.
+func ResourcePath(ctx context.Context) string {
+	if !IsDispatch(ctx) {
+		return ""
+	}
+	path, _ := ctx.Value(resourceKey).(string)
+	return path
+}
 
 func newDispatcher(ctx context.Context, cfg Config, bindings map[string][]string) (dispatcher, error) {
 	outer, ok := ctx.Value(outerKey).(*outerRequest)

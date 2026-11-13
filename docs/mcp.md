@@ -5,6 +5,11 @@ error and HTTP conventions. Tool registration, REST dispatch and authorization
 stay in zzRouter. The [shared MCP plan](plan_shared-mcp.md) records the preserved
 contracts and local dependency setup.
 
+The reusable `common/mcp/oauth` authority now owns OAuth grants, session/CSRF
+mechanics and revocation. zzRouter supplies live identity and permission checks
+and its embedded browser pages. `common/secrets` and `common/atomicfile` provide
+the shared protected credential foundation; see [client architecture](client-architecture.md).
+
 zzRouter exposes two Streamable HTTP endpoints on the coordinator for Claude Code
 and Codex. Both use the shared MCP transport and call existing HTTP handlers.
 Workers expose neither endpoint. Both 2026-07-28 and legacy 2025-06-18 clients
@@ -35,7 +40,73 @@ Two missed probes or a graceful goodbye mark a node down. `last_seen_at` is the
 latest successful probe, and `last_error` carries sanitized probe/dispatch evidence.
 See [node routing errors](agent_error_codes.md#node-reachability).
 
-## Connect
+## Connect with browser login
+
+The coordinator also serves a [browser console](web-console.md) at
+`<issuer>/console/`. Administrators can issue named keys and configure provider
+credentials there; user keys see My Access. MCP connections displays the exact
+issuer-derived URLs and lets each identity revoke its own grants. An
+administrator key needs a separate user key for inference MCP. Signing out of
+the console does not revoke existing MCP grants.
+
+MCP and browser login are enabled by default on coordinators. For a local node
+using the standard port, open `http://localhost:9090/oauth/connections`. No OAuth
+configuration is required. The default issuer follows `node.port` and uses HTTPS
+when node TLS is configured. Always use the same hostname as the issuer.
+
+Codex:
+
+```sh
+codex mcp add zzrouter --url http://localhost:9090/zzrouter/v1/mcp
+codex mcp login zzrouter
+```
+
+Claude Code:
+
+```sh
+claude mcp add --transport http zzrouter http://localhost:9090/zzrouter/v1/mcp
+claude mcp login zzrouter
+```
+
+For remote clients, configure a fixed HTTPS issuer and restart the coordinator:
+
+```yaml
+auth:
+  oauth:
+    issuer_url: https://router.example.com
+```
+
+The issuer must be a stable canonical HTTPS origin without a trailing slash.
+Keep the node's plaintext listener restricted behind a TLS reverse proxy.
+The issuer must be reachable from the MCP client, including hosted clients.
+No external identity service is required. The issuer never comes from request
+Host or forwarding headers, even when the node binds every network interface.
+
+For user inference, use `/inference/mcp` and a distinct client entry name.
+Other OAuth-capable Streamable HTTP clients need only the endpoint URL.
+The browser asks for the corresponding existing zzRouter key and explicit
+client consent. It remembers the browser identity for up to 12 hours. Each
+MCP client stores and refreshes its own tokens; the key never enters its config.
+Check the callback address shown on consent; client names are supplied by the
+application and are not verified identities.
+Use `/oauth/connections` to review or revoke connections. Sign out there before
+switching between an admin identity and an inference identity.
+
+The authority supports S256 PKCE, path-specific protected resource discovery,
+issuer identification, Client ID Metadata Documents and public dynamic client
+registration. Access tokens last 15 minutes; connections last at most 30 days.
+Revoking or rotating the underlying key invalidates its connections. OAuth
+tokens are MCP-specific; use API keys for REST, CI and unattended automation.
+
+Remove previously configured key headers when switching a client to OAuth.
+The existing management header precedence is preserved, so a stale explicit
+`X-API-Key` can otherwise take precedence over an OAuth Bearer token.
+
+To disable browser OAuth, set `auth.oauth.enabled: false` and restart. Native
+MCP endpoints remain available with API-key authentication. Workers expose
+neither the native MCP endpoints nor browser login.
+
+## Connect with API keys
 
 Make `ZZROUTER_ADMIN_API_KEY` available to your management client through your
 normal credential channel, and replace `<coordinator>` with its hostname.

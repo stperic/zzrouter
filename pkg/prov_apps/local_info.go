@@ -222,12 +222,12 @@ func (m *ProviderAppManager) lifecycleFor(key string, p config.Provider) (Lifecy
 	if prog := m.installs.Progress(key); prog != nil && prog.Status == install.StatusRunning {
 		return StateInstalling, false
 	}
-	if cp, ok := p.(*config.CloudProvider); ok {
+	if _, ok := p.(*config.CloudProvider); ok {
 		// IsEnabled gate comes first: a disabled cloud provider is
 		// "not installed" from the UI's perspective even if credentials
 		// remain resolvable in-process (env vars survive .env rewrites
 		// until the next server restart).
-		if !cp.IsEnabled() || !cp.IsAvailable() {
+		if !m.connections().Available(key) {
 			return StateNotInstalled, false
 		}
 		// A cloud provider has no on-disk install to own.

@@ -1,13 +1,15 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/config/backend"
 	"github.com/stperic/zzrouter/pkg/modelregistry/search"
 	"github.com/stretchr/testify/require"
 )
@@ -15,18 +17,25 @@ import (
 func TestModelSearchQuery(t *testing.T) {
 	const provider search.Provider = "query-fixture"
 	var reads atomic.Int32
-	search.RegisterCloudProvider(provider, search.CloudProviderMeta{}, func(_ context.Context, query string, limit int) ([]any, error) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reads.Add(1)
-		require.Zero(t, limit, "retrieve the full catalog before sorting and pagination")
-		require.Equal(t, "image", query)
-		return []any{
-			map[string]any{"id": "unknown", "name": "No date"},
-			map[string]any{"id": "old", "name": "Alpha", "created_at": "2026-10-01"},
-			map[string]any{"id": "new", "name": "Zebra", "created_at": "2026-11-05T00:00:00Z"},
-			map[string]any{"id": "middle", "name": "Beta", "created": float64(1791072000)},
-		}, nil
-	})
-	s := NewModelSearchService(nil, nil)
+		require.Equal(t, "Bearer fixture", r.Header.Get("Authorization"))
+		require.Equal(t, "/v1/models", r.URL.Path)
+		require.Empty(t, r.URL.Query(), "retrieve the complete catalog before local filtering, sorting and pagination")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{
+			map[string]any{"id": "unknown", "name": "No date image"},
+			map[string]any{"id": "old", "name": "Alpha image", "created_at": "2026-10-01"},
+			map[string]any{"id": "new", "name": "Zebra image", "created_at": "2026-11-05T00:00:00Z"},
+			map[string]any{"id": "middle", "name": "Beta image", "created": float64(1791072000)},
+			map[string]any{"id": "excluded", "name": "Other modality", "created_at": "2026-11-06"},
+		}})
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := discoveryConfig(t, upstream.URL, "fixture")
+	require.NoError(t, cfg.AddApp(string(provider), config.ServiceConfig{Enabled: new(true), Mode: "cloud", Protocol: config.ProtocolOpenAI, Capabilities: &config.AppCapabilities{WireEndpoints: []string{"chat_completions"}}, Runtime: &config.AppRuntimeConfig{Endpoint: upstream.URL, API: &config.APIConfig{AuthType: config.AuthTypeBearer, Token: "fixture"}}}))
+	resolver := backend.NewResolver(func() *config.AppsConfig { return cfg })
+	search.RegisterCloudProvidersFromConfig(func() *config.AppsConfig { return cfg }, resolver)
+	s := NewModelSearchService(func() *config.AppsConfig { return cfg }, nil, resolver)
 	t.Cleanup(func() { s.Stop(t.Context()) })
 	engine := gin.New()
 	engine.GET("/search", s.HandleSearchPublic)
@@ -77,7 +86,9 @@ func TestModelSearchQuery(t *testing.T) {
 
 	// Cached HF result verifies aliases/defaults and pagination without consulting credentials or network.
 	params := search.SearchParams{Provider: search.ProviderHuggingFace, Search: "cached", Sort: "trendingScore", Direction: -1, Pagination: search.PaginationParams{Limit: 20}}
-	s.searchCache.Set(search.SearchCacheKey(params, "AND", false), gin.H{"results": []any{}, "sentinel": "default-query"})
+	target, ok := resolver.Target("huggingface")
+	require.True(t, ok)
+	s.searchCache.Set(search.SearchCacheKey(params, "AND", false, target.Revision), gin.H{"results": []any{}, "sentinel": "default-query"})
 	r := get("provider=huggingface&search=cached")
 	require.Equal(t, 200, r.Code, r.Body.String())
 	require.Contains(t, r.Body.String(), "default-query")

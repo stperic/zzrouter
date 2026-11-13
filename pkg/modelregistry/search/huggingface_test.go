@@ -56,6 +56,7 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestNewDefaultClient(t *testing.T) {
+	t.Setenv("HF_TOKEN", "fixture-token")
 	client := NewDefaultClient()
 
 	if client == nil {

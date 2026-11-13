@@ -53,7 +53,7 @@ func (a *AuthHandlers) OptionalAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		ac, err := a.access.AuthenticateRaw(apiKey)
+		ac, err := a.access.authenticateCredential(c, cred)
 		if err != nil {
 			// A client whose key field is cleared often still sends a
 			// header: the empty config serializes as "null" or

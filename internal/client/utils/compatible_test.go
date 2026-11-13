@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -19,8 +20,10 @@ func TestCompatibleNodesUsesCanonicalModelQuery(t *testing.T) {
 		_, err := w.Write([]byte(`{"data":[],"total":0,"metadata":{"assessments":[{"node":"worker","status":"unknown","reason":"missing size"}]}}`))
 		require.NoError(t, err)
 	}))
-	nodes, err := client.GetCompatibleNodes("m+variant", "huggingface", "vllm")
+	nodes, err := client.GetCompatibleNodes(context.Background(), "m+variant", "huggingface", "vllm")
 	require.NoError(t, err)
-	assert.Empty(t, nodes)
+	assert.Empty(t, nodes.Data)
+	require.Len(t, nodes.Metadata.Assessments, 1)
+	assert.Equal(t, "unknown", nodes.Metadata.Assessments[0].Status)
 	assert.Equal(t, 1, calls)
 }

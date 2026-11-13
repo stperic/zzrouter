@@ -2,6 +2,21 @@
 # Edit on the coordinator, never here.
 description: "Managed foundation models on AWS"
 enabled: false
+connection:
+  fields:
+    - id: endpoint
+      label: Endpoint
+      type: endpoint
+      env: AWS_BEDROCK_ENDPOINT
+      required: false
+      secret: false
+      default: https://bedrock-runtime.us-east-1.amazonaws.com
+    - id: api_key
+      label: API key
+      type: text
+      env: AWS_BEDROCK_TOKEN
+      required: true
+      secret: true
 runtime:
   endpoint: "${AWS_BEDROCK_ENDPOINT:-https://bedrock-runtime.us-east-1.amazonaws.com}"
   model_url: "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html#%s"

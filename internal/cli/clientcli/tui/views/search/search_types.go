@@ -1,7 +1,11 @@
 package search
 
 import (
-	"strings"
+	"context"
+
+	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
@@ -43,17 +47,10 @@ type searchProviderConfig struct {
 	Enabled      bool            // true = provider is configured AND enabled for inference
 }
 
-// DefaultSearchProviders is empty — all provider configs are server-driven
-// via parseSearchProviders. No hardcoded providers in the client.
-var DefaultSearchProviders = map[string]searchProviderConfig{}
-
-// defaultProviderKeys is empty — populated from server response.
-var defaultProviderKeys []string
-
 // getProviderConfig returns the config for the given provider key.
 // It checks the model's server-driven configs first, then the defaults.
 // Empty string defaults to the first available provider.
-func (m SearchTUIModel) getProviderConfig(provider string) searchProviderConfig {
+func (m *SearchTUIModel) getProviderConfig(provider string) searchProviderConfig {
 	if provider == "" {
 		if len(m.providerKeys) > 0 {
 			provider = m.providerKeys[0]
@@ -67,9 +64,6 @@ func (m SearchTUIModel) getProviderConfig(provider string) searchProviderConfig 
 		cfg, found = m.providerConfigs[provider]
 	}
 	if !found {
-		cfg, found = DefaultSearchProviders[provider]
-	}
-	if !found {
 		cfg = searchProviderConfig{DisplayName: provider, SortOptions: []string{"newest", "name"}, ClientSorts: map[string]bool{"name": true, "newest": true}}
 	}
 	// Always resolve icon from the single source of truth
@@ -79,79 +73,33 @@ func (m SearchTUIModel) getProviderConfig(provider string) searchProviderConfig 
 
 // isCloudVariantSelected returns true if the currently selected variant is a cloud tag.
 // Used to route cloud variants through the same registration path as cloud providers.
-func (m SearchTUIModel) isCloudVariantSelected() bool {
+func (m *SearchTUIModel) isCloudVariantSelected() bool {
 	if m.selectedVariant == nil {
 		return false
 	}
-	name := strings.ToLower(m.selectedVariant.Filename)
-	return name == "cloud" || strings.HasSuffix(name, "-cloud")
+	return m.selectedVariant.IsCloud
 }
 
 // parseSearchProviders converts the server's apps response into the client
 // types used by the TUI. Returns an ordered list of provider keys and a
 // config map.
-func parseSearchProviders(data []map[string]any) ([]string, map[string]searchProviderConfig) {
+func parseSearchProviders(data []metadata.SearchProvider) ([]string, map[string]searchProviderConfig) {
 	keys := make([]string, 0, len(data))
 	configs := make(map[string]searchProviderConfig, len(data))
-
 	for _, entry := range data {
-		name, _ := entry["name"].(string)
-		if name == "" {
+		if entry.Name == "" {
 			continue
 		}
-
-		cfg := searchProviderConfig{}
-
-		if v, ok := entry["display_name"].(string); ok && v != "" {
-			cfg.DisplayName = v
-		} else {
-			cfg.DisplayName = name
+		cfg := searchProviderConfig{DisplayName: entry.DisplayName, SortOptions: entry.SortOptions, ClientSorts: make(map[string]bool), ClientFilter: entry.ClientFilter, HasTags: entry.HasTags, IsCloud: entry.IsCloud, Configured: entry.Configured, Enabled: entry.Enabled}
+		if cfg.DisplayName == "" {
+			cfg.DisplayName = entry.Name
 		}
-
-		if arr, ok := entry["sort_options"].([]any); ok {
-			for _, item := range arr {
-				if s, ok := item.(string); ok {
-					cfg.SortOptions = append(cfg.SortOptions, s)
-				}
-			}
+		for _, key := range entry.ClientSorts {
+			cfg.ClientSorts[key] = true
 		}
-		if len(cfg.SortOptions) == 0 {
-			cfg.SortOptions = []string{"newest", "name"}
-		}
-
-		cfg.ClientSorts = make(map[string]bool)
-		if arr, ok := entry["client_sorts"].([]any); ok {
-			for _, item := range arr {
-				if s, ok := item.(string); ok {
-					cfg.ClientSorts[s] = true
-				}
-			}
-		}
-
-		if v, ok := entry["client_filter"].(bool); ok {
-			cfg.ClientFilter = v
-		}
-
-		if v, ok := entry["has_tags"].(bool); ok {
-			cfg.HasTags = v
-		}
-
-		if v, ok := entry["is_cloud"].(bool); ok {
-			cfg.IsCloud = v
-		}
-
-		if v, ok := entry["configured"].(bool); ok {
-			cfg.Configured = v
-		}
-
-		if v, ok := entry["enabled"].(bool); ok {
-			cfg.Enabled = v
-		}
-
-		keys = append(keys, name)
-		configs[name] = cfg
+		keys = append(keys, entry.Name)
+		configs[entry.Name] = cfg
 	}
-
 	return keys, configs
 }
 
@@ -215,15 +163,38 @@ type TagPreset struct {
 
 // ModelVariant represents a quantization variant
 type ModelVariant struct {
-	Filename    string
-	Size        int64
-	SizeDisplay string
-	QuantMethod string
-	Description string
+	Recommended  bool
+	Shards       int
+	IsCloud      bool
+	CatalogOrder int
+	Filename     string
+	Size         int64
+	SizeDisplay  string
+	QuantMethod  string
+	Description  string
 }
 
 // SearchTUIModel is the Bubble Tea model for interactive search
 type SearchTUIModel struct {
+	registryPrefs       map[string]pkgConfig.SearchRegistryPrefs
+	preferenceCommands  []tea.Cmd
+	preferenceWriter    searchPreferenceWriter
+	client              discoveryClient
+	active              bool
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	searchCancel        context.CancelFunc
+	selectionCancel     context.CancelFunc
+	activation          uint64
+	searchGeneration    uint64
+	selectionGeneration uint64
+	selectionID         string
+	availableFeatures   []metadata.FeatureFile
+	deployPending       bool
+	deployStamp         requestStamp
+	// LastDeployment retains server operation identity independently of view state.
+	LastDeployment *pkgClient.Deployment
+
 	// Theme styles (immutable after init)
 	styles ui.Styles
 
@@ -263,12 +234,12 @@ type SearchTUIModel struct {
 	// Filter edit state
 	filterInput   string
 	inlineFilter  string // Always-visible inline filter at bottom of list
-	broadSearch   bool   // true when ~ prefix used (search name + description + tags)
 	debounceSeqNo int    // Incremented on each keystroke, debounce only fires if current
 
 	// Node selection state
 	availableNodes []hostWithProviders
 	hostCursor     int
+	hostOffset     int
 	selectedNodes  map[string]bool // multi-select: toggled nodes for deploy
 
 	// Animation
@@ -310,75 +281,93 @@ type SearchTUIModel struct {
 
 // debounceSearchMsg is sent after the debounce delay to trigger a new search
 type debounceSearchMsg struct {
-	query string // The query at the time the debounce was scheduled
+	activation uint64
+	sequence   int
+	query      string // The query at the time the debounce was scheduled
 }
 
 // Messages
 type searchCompleteMsg struct {
+	filter  string
+	stamp   requestStamp
 	results []searchResult
 	err     error
 }
 
 type deployCompleteMsg struct {
-	success bool
-	err     error
+	stamp      requestStamp
+	deployment *pkgClient.Deployment
+	err        error
 }
 
 type modelDetailsMsg struct {
+	stamp       requestStamp
 	description string
 	metadata    []KeyValue
 	err         error
 }
 
 type variantsLoadedMsg struct {
+	stamp    requestStamp
+	features []metadata.FeatureFile
 	variants []ModelVariant
 	err      error
 }
 
 type providerLoadedMsg struct {
+	stamp   requestStamp
 	options []shared.DownloadOption
 	err     error
 }
 
 type hostWithProviders struct {
-	name            string
-	providers       []string // List of provider types available on this host
-	diskAvailableGB float64
-	diskTotalGB     float64
-	ramAvailableGB  float64
-	ramTotalGB      float64
-	vramAvailableGB float64
-	vramTotalGB     float64
-	gpuCount        int
-	role            string // coordinator/worker
+	assessments        []pkgClient.NodeAssessment
+	capacity           string
+	name               string
+	providers          []string // List of provider types available on this host
+	diskAvailableGB    float64
+	diskTotalGB        float64
+	ramAvailableGB     float64
+	ramTotalGB         float64
+	vramAvailableGB    float64
+	vramAvailableKnown bool
+	vramTotalGB        float64
+	gpuCount           int
+	role               string // coordinator/worker
 }
 
 type hostsLoadedMsg struct {
+	stamp requestStamp
 	hosts []hostWithProviders
 	err   error
 }
 
 // providerConfigsLoadedMsg carries provider metadata fetched from the server.
 type providerConfigsLoadedMsg struct {
+	stamp   requestStamp
 	keys    []string
 	configs map[string]searchProviderConfig
+	err     error
 }
 
 // cloudModelAddedMsg signals that a cloud model registration completed.
 type cloudModelAddedMsg struct {
+	stamp   requestStamp
 	modelID string
 	err     error
 }
 
 // deployValidateMsg carries the result of a pre-deploy model validation.
 type deployValidateMsg struct {
+	stamp     requestStamp
 	modelName string
+	cloud     bool
 	provider  string
 	err       error
 }
 
 // listPageSize returns how many data rows fit in the search list view.
-func (m SearchTUIModel) listPageSize() int {
+func (m *SearchTUIModel) listPageSize() int {
 	footer := m.renderFooter("")
 	vis := shared.VisibleRows(m.TermHeight, footer)
 	if vis > 50 {
@@ -388,19 +377,23 @@ func (m SearchTUIModel) listPageSize() int {
 }
 
 // variantPageSize returns how many variant rows fit in the variant select view.
-func (m SearchTUIModel) variantPageSize() int {
+func (m *SearchTUIModel) variantPageSize() int {
 	footer := shared.RenderViewFooterWithStatus(m.styles, m.TermWidth, " ", " ") + "\n"
 	return shared.VisibleRows(m.TermHeight, footer)
 }
 
 // Init initializes the model
-func (m SearchTUIModel) Init() tea.Cmd {
-	return tea.Batch(m.fetchResults(), m.filterCursor.Focus(), m.fetchProviderConfigs())
+func (m *SearchTUIModel) Init() tea.Cmd {
+	return m.Activate()
 }
 
 // quitOrBack returns a tea.Cmd that either quits (standalone) or goes back to the
 // parent menu (embedded mode).
-func (m SearchTUIModel) quitOrBack() tea.Cmd {
+func (m *SearchTUIModel) quitOrBack() tea.Cmd {
+	if m.NavigationBlocked() {
+		return nil
+	}
+	m.Deactivate()
 	if m.embedded {
 		return func() tea.Msg { return tui.TuiBackMsg{} }
 	}

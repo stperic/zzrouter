@@ -30,7 +30,7 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// a subset of these and are registered on their own engine on a worker,
 	// so that subset is built by a function both roles call.
 	s.bindCompatServices(routingRouter)
-	s.services.Search = NewModelSearchService(s.appsConfig, s.model.Pricing)
+	s.services.Search = NewModelSearchService(s.appsConfig, s.model.Pricing, s.backend)
 	s.services.Runs = NewRunsService(routingRouter).WithModelValidator(s.validateModel)
 	s.services.Load = NewLoadService(s, routingRouter).WithAppsConfig(s.appsConfig)
 	if s.jobsProxy == nil && s.cluster.listener != nil && s.cluster.coordinator != nil {
@@ -208,7 +208,9 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 
 		providersController := NewProvidersController(s.services.Apps, provSvc, appsConfigFn, s.configStore, s, s.providers.appMgr, versionsSvc, &http.Client{})
 		providersController.publishCatalog = s.publishCatalog
+		providersController.backend = s.backend
 		providersController.RegisterPublicRoutes(router, s.idempotent)
+		(&ProviderConnectionController{service: s.providers.connections}).RegisterPublicRoutes(router)
 		models := &ProviderModelsController{service: NewProvidersService(s.cluster.router), nodes: nodeValidator}
 		models.RegisterPublicRoutes(router, s.idempotent)
 	}

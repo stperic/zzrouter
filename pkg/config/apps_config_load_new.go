@@ -350,6 +350,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 		// downstream callers like deriveCapabilities can identify the
 		// protocol family without special-casing cloud.
 		return ServiceConfig{
+			Connection:   tp.Connection,
 			Features:     tp.Features,
 			Enabled:      tp.Enabled,
 			Name:         tp.Name,
@@ -362,6 +363,7 @@ func providerToServiceConfig(p Provider) ServiceConfig {
 		}
 	case *SearchRegistry:
 		return ServiceConfig{
+			Connection:  tp.Connection,
 			Enabled:     tp.Enabled,
 			Name:        tp.Name,
 			Description: tp.Description,
@@ -423,6 +425,7 @@ func cloudRuntimeToLegacy(rt CloudRuntime) *AppRuntimeConfig {
 
 func registryRuntimeToLegacy(rt RegistryRuntime) *AppRuntimeConfig {
 	return &AppRuntimeConfig{
+		API:         rt.API,
 		Endpoint:    rt.Endpoint,
 		ModelURLFmt: rt.ModelURL,
 		Execution:   ExecutionConfig{Type: "api"},

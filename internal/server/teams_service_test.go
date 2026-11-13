@@ -312,8 +312,10 @@ func TestUpdateTeam_MembersIsRefusedWithSomewhereToGo(t *testing.T) {
 	ctrl.UpdateTeam(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "membership is set on the key")
-	assert.Contains(t, w.Body.String(), "/zzrouter/v1/keys/", "the error must name where to go instead")
+	assert.Contains(t, w.Body.String(), "membership is immutable after key creation")
+	assert.Contains(t, w.Body.String(), "POST /zzrouter/v1/keys", "the error must name the supported replacement workflow")
+	assert.Contains(t, w.Body.String(), "then revoke the old key")
+	assert.NotContains(t, w.Body.String(), "PATCH /zzrouter/v1/keys")
 
 	// The rename is still not applied — that is the caller's to retry —
 	// but they now know exactly which field to drop.

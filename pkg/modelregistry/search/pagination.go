@@ -1,6 +1,10 @@
 package search
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
+)
 
 // MaxResultsLimit is the upper bound on page size for any search request.
 const MaxResultsLimit = 1000
@@ -27,12 +31,7 @@ func (p *PaginationParams) Validate() error {
 }
 
 // CursorInfo represents cursor information for pagination.
-type CursorInfo struct {
-	Next     string `json:"next,omitempty"`  // Cursor for next page
-	Previous string `json:"prev,omitempty"`  // Cursor for previous page
-	First    string `json:"first,omitempty"` // Cursor for first page
-	Last     string `json:"last,omitempty"`  // Cursor for last page
-}
+type CursorInfo = metadata.SearchCursor
 
 // SearchResponse represents a paginated search response.
 type SearchResponse[T any] struct {

@@ -37,15 +37,14 @@ func RoleAllowed(keyRole, requiredRole UserRole) bool {
 	return keyRole == requiredRole
 }
 
-// KeyFingerprint returns a safe (first4...last4) fingerprint of an API
-// key for audit logging without leaking the secret. Short keys (<=12
-// chars) are returned unchanged — those are test fixtures, not real keys.
+// KeyFingerprint returns a safe fingerprint for audit logging. Short keys are
+// fully redacted; longer keys expose only first4...last4.
 func KeyFingerprint(key string) string {
 	if key == "" {
 		return ""
 	}
 	if len(key) <= 12 {
-		return key
+		return "[redacted]"
 	}
 	return key[:4] + "..." + key[len(key)-4:]
 }
@@ -70,7 +69,7 @@ type AccessContext struct {
 type KeyPrincipal struct {
 	ID          string // "admin", "user", "cluster", or a virtual key ID.
 	Name        string
-	Fingerprint string // first4...last4 (safe to log).
+	Fingerprint string // Redacted or first4...last4 (safe to log).
 	Role        UserRole
 	IsVirtual   bool
 	TeamID      string // "" for static keys, set for virtual keys.

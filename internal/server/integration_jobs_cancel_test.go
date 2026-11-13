@@ -151,14 +151,13 @@ func TestJobsCancelInFlight_StopsDownload(t *testing.T) {
 							t.Cleanup(upstream.Close)
 							// A failing cancellation assertion must still release the fixture server.
 							t.Cleanup(func() { upstream.CloseClientConnections() })
-							cfg := &config.AppsConfig{}
+							cfg := e.appsConfig()
 							provider := config.NewOllamaConnectProvider(constants.AppOllama, upstream.URL, "")
 							require.NoError(t, cfg.AddApp(constants.AppOllama, config.ServiceConfig{
 								Name: constants.AppOllama, Mode: constants.AppModeExternal, Enabled: provider.Enabled,
 								Protocol: provider.Protocol, Runtime: &config.AppRuntimeConfig{Endpoint: upstream.URL}, Capabilities: provider.Capabilities,
 							}))
 							e.registry.ReloadConfig(cfg)
-							e.appsConfig = func() *config.AppsConfig { return cfg }
 							e.ollamaDaemon = func() (*backend.Resolved, error) { return e.registry.OllamaConnector().Daemon() }
 						}
 						api := downloadCancelAPI(t, e, remote)
@@ -248,7 +247,7 @@ func TestOllamaDownloadPanicPublishesFailure(t *testing.T) {
 		_, _ = io.WriteString(w, "{\"status\":\"pulling\",\"digest\":\"layer\",\"total\":8,\"completed\":8}\n{\"status\":\"success\"}\n")
 	}))
 	t.Cleanup(upstream.Close)
-	cfg := &config.AppsConfig{}
+	cfg := e.appsConfig()
 	provider := config.NewOllamaConnectProvider(constants.AppOllama, upstream.URL, "")
 	require.NoError(t, cfg.AddApp(constants.AppOllama, config.ServiceConfig{
 		Name: constants.AppOllama, Mode: constants.AppModeExternal, Enabled: new(true), Protocol: "ollama",

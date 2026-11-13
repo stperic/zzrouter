@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
-	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/views/search"
 
 	"charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
@@ -281,8 +280,7 @@ func (m *ChatModel) processStreamChunk(chunk pkgClient.StreamChunk) {
 	// Local:  "qwen3-coder:latest (ollama on macbook-pro)"
 	if chunk.Model != "" && chunk.Provider != "" {
 		suffix := chunk.Provider
-		isCloud := search.DefaultSearchProviders[chunk.Provider].IsCloud
-		if chunk.Node != "" && !isCloud {
+		if chunk.Node != "" {
 			suffix += " on " + chunk.Node
 		}
 		m.displayName = chunk.Model + " (" + suffix + ")"

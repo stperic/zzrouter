@@ -16,6 +16,7 @@ import (
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
 	"github.com/stperic/zzrouter/pkg/fallback"
 	"github.com/stperic/zzrouter/pkg/modelregistry"
+	"github.com/stperic/zzrouter/pkg/observability"
 	"github.com/stperic/zzrouter/pkg/routing"
 )
 
@@ -169,18 +170,14 @@ func (s *Server) resolveEndpointToNodename(endpoint string) string {
 
 // routeToClusterNode routes a request to a specific cluster host using unicast
 // This is a DRY helper used by all handlers that need to route to remote hosts
-func (s *Server) routeToClusterNode(ctx context.Context, targetNode, path, method string, body []byte, headers http.Header) (*mesh.Response, error) {
+func (s *Server) routeToClusterNode(ctx context.Context, targetNode, path, method string, body []byte) (*mesh.Response, error) {
 	if s.cluster.coordinator == nil {
 		return nil, fmt.Errorf("cluster  not configured")
 	}
 
-	// Clone headers to avoid modifying the original
-	if headers == nil {
-		headers = make(http.Header)
-	} else {
-		headers = headers.Clone()
-	}
-
+	// mTLS authenticates internal dispatch. Caller authority stays on the coordinator.
+	headers := make(http.Header)
+	observability.InjectTraceContext(ctx, headers)
 	headers.Set(clusternode.ClusterInternalHeader, "true")
 
 	clusterReq := &mesh.Request{

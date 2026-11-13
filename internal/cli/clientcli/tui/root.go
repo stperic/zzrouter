@@ -58,10 +58,22 @@ func (r *Root) Active() tea.Model {
 // Depth returns the current stack depth.
 func (r *Root) Depth() int { return len(r.stack) }
 
+// NavigationBlocked reports whether the active view owns a pending durable request.
+func (r *Root) NavigationBlocked() bool {
+	guard, ok := r.Active().(NavigationGuard)
+	return ok && guard.NavigationBlocked()
+}
+
 // Update handles nav messages at the root and forwards everything else to
 // the active view. WindowSizeMsg is stored and forwarded in parallel so
 // inactive views can be re-informed on activation.
 func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if r.NavigationBlocked() {
+		switch msg.(type) {
+		case NavToMsg, NavBackMsg, NavReplaceMsg, NavQuitMsg:
+			return r, nil
+		}
+	}
 	switch m := msg.(type) {
 	case tea.WindowSizeMsg:
 		r.lastSize = m

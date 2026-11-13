@@ -119,3 +119,34 @@ func TestParseVarWithDefault(t *testing.T) {
 	assert.Equal(t, "", def)
 	assert.True(t, has)
 }
+
+func TestExpandEnvWithPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, value, expanded, endpoint string
+		present                         bool
+	}{
+		{name: "absent", expanded: "fallback", endpoint: "https://fallback.example"},
+		{name: "explicit empty", present: true},
+		{name: "supplied", value: "https://supplied.example/v1/", present: true, expanded: "https://supplied.example/v1/", endpoint: "https://supplied.example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(string) (string, bool) { return tc.value, tc.present }
+			assert.Equal(t, tc.expanded, ExpandEnvWith("${SNAPSHOT:-fallback}", lookup))
+			assert.Equal(t, tc.endpoint, NormalizeEndpointWith("${SNAPSHOT:-https://fallback.example/v1/}", lookup))
+		})
+	}
+}
+
+func TestStandaloneExpansionKeepsEmptyEnvironmentDefaults(t *testing.T) {
+	t.Setenv("TEST_PRESENCE_EMPTY", "")
+	t.Setenv("TEST_PRESENCE_ABSENT", "")
+	assert.NoError(t, os.Unsetenv("TEST_PRESENCE_ABSENT"))
+	t.Setenv("TEST_PRESENCE_SET", "provided")
+	for _, input := range []string{"${TEST_PRESENCE_EMPTY:-fallback}", "${TEST_PRESENCE_ABSENT:-fallback}"} {
+		assert.Equal(t, "fallback", ExpandEnv(input))
+		assert.Equal(t, "fallback", ExpandEnvWith(input, nil))
+	}
+	assert.Equal(t, "provided", ExpandEnvWith("${TEST_PRESENCE_SET:-fallback}", nil))
+	assert.Equal(t, "https://fallback.example", NormalizeEndpointWith("${TEST_PRESENCE_EMPTY:-https://fallback.example/v1/}", nil))
+	assert.Equal(t, "https://fallback.example", NormalizeEndpoint("${TEST_PRESENCE_EMPTY:-https://fallback.example/v1/}"))
+}

@@ -56,6 +56,10 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/stperic/common/httpclient"
+
+	"github.com/stperic/zzrouter/pkg/config/backend"
 )
 
 // linkHeaderRegex is pre-compiled for parsing Link headers
@@ -68,10 +72,12 @@ type Client struct {
 	httpClient *http.Client
 	apiToken   string
 	baseURL    string
+	target     *backend.Resolved
 }
 
 // ClientOptions configures the Client
 type ClientOptions struct {
+	Target     *backend.Resolved
 	HTTPClient *http.Client
 	APIToken   string
 	BaseURL    string
@@ -95,9 +101,10 @@ func NewClient(options ClientOptions) *Client {
 	}
 
 	return &Client{
-		httpClient: httpClient,
+		httpClient: httpclient.SameOrigin(httpClient),
 		apiToken:   options.APIToken,
 		baseURL:    baseURL,
+		target:     options.Target,
 	}
 }
 
@@ -120,6 +127,7 @@ type ModelInfo struct {
 	LastModified  string         `json:"lastModified,omitempty"`
 	Private       bool           `json:"private"`
 	Safetensors   any            `json:"safetensors,omitempty"`
+	GGUF          any            `json:"gguf,omitempty"`
 	CardData      map[string]any `json:"cardData,omitempty"` // Parsed YAML metadata from model card
 	Siblings      []hfSibling    `json:"siblings,omitempty"` // Files in the repository
 }
@@ -204,7 +212,7 @@ func (c *Client) SearchModels(ctx context.Context, params SearchParams) (*Search
 
 func (c *Client) searchModelsPage(ctx context.Context, params SearchParams) (*SearchResponse[ModelInfo], error) {
 	// Create the request manually to add authentication headers
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL, nil)
+	req, err := c.newRequest(ctx, c.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -245,9 +253,6 @@ func (c *Client) searchModelsPage(ctx context.Context, params SearchParams) (*Se
 
 	// Set query parameters on the request
 	req.URL.RawQuery = values.Encode()
-
-	// Log the full URL for debugging
-	fmt.Printf("🔍 HuggingFace API Request: %s\n", req.URL.String())
 
 	// Add authentication header if token is provided
 	if c.apiToken != "" {
@@ -292,16 +297,15 @@ func (c *Client) searchModelsPage(ctx context.Context, params SearchParams) (*Se
 // EnrichSiblingsWithSizes fetches file sizes from HuggingFace tree API and adds them to siblings.
 // Callers must pass a cancellable context — the previous bare http.Get used the default client
 // with no timeout, so a slow HF response would stall the request handler indefinitely.
-func EnrichSiblingsWithSizes(ctx context.Context, modelID string, siblings []hfSibling) ([]hfSibling, error) {
+func (c *Client) EnrichSiblingsWithSizes(ctx context.Context, modelID string, siblings []hfSibling) ([]hfSibling, error) {
 	// Fetch file tree from HuggingFace
 	url := fmt.Sprintf("https://huggingface.co/api/models/%s/tree/main", modelID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := c.newRequest(ctx, url)
 	if err != nil {
 		return siblings, err
 	}
-	client := &http.Client{Timeout: httpTimeout}
-	resp, err := client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return siblings, err
 	}
@@ -340,4 +344,20 @@ func EnrichSiblingsWithSizes(ctx context.Context, modelID string, siblings []hfS
 	}
 
 	return enriched, nil
+}
+
+// newRequest applies only the immutable connection captured by this client.
+func (c *Client) newRequest(ctx context.Context, address string) (*http.Request, error) {
+	if c.target != nil {
+		u, err := url.Parse(address)
+		if err != nil {
+			return nil, err
+		}
+		return c.target.NewRequest(ctx, http.MethodGet, u.RequestURI(), nil)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err == nil && c.apiToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiToken)
+	}
+	return req, err
 }

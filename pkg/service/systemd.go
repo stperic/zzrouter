@@ -4,6 +4,7 @@ package service
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,11 +15,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/stperic/common/atomicfile"
+
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/host"
-	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 //go:embed templates/zzrouter-node.service
@@ -63,8 +65,11 @@ func (m *SystemdManager) EnsureStopSettings() error {
 		return err
 	}
 	if current, _ := os.ReadFile(path); string(current) != content {
-		if err := utils.AtomicWriteFile(path, []byte(content), 0644); err != nil {
-			return fmt.Errorf("write stop settings: %w", err)
+		if err := atomicfile.WriteFile(path, []byte(content), 0644); err != nil {
+			if !errors.Is(err, atomicfile.ErrPostRenameDurability) {
+				return fmt.Errorf("write stop settings: %w", err)
+			}
+			slog.Warn("Service stop settings committed with uncertain durability", "error", err)
 		}
 	}
 	if err := host.Command("systemctl", "daemon-reload").Run(); err != nil {

@@ -1,10 +1,9 @@
 package clientcli
 
 import (
+	"context"
 	"fmt"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stperic/zzrouter/pkg/constants"
+	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -87,9 +87,9 @@ EXAMPLES:
 				query = args[0]
 			}
 			if listMode {
-				return runSearch(query, provider, tags, tagLogic, limit, sortBy)
+				return runSearch(cmd.Context(), query, provider, tags, tagLogic, limit, sortBy)
 			}
-			return runInteractiveSearch(query, provider, tags, tagLogic, sortBy)
+			return runInteractiveSearch(cmd.Context(), query, provider, tags, tagLogic, sortBy)
 		},
 	}
 
@@ -103,9 +103,9 @@ EXAMPLES:
 }
 
 // runSearch executes the search and displays results in a table
-func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortBy string) error {
+func runSearch(ctx context.Context, query, providerFilter, tagsStr, tagLogic string, limit int, sortBy string) error {
 	// Use centralized sign-in logic
-	client, err := EnsureConnected()
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -130,22 +130,12 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 	}
 
 	// Call API endpoint with tags support
-	values := url.Values{"type": {"models"}, "q": {query}, "provider": {provider}, "limit": {strconv.Itoa(limit)}, "order": {"desc"}, "full": {"true"}, "enrich": {"true"}}
-	for key, value := range map[string]string{"sort": sortBy, "tags": tagsStr, "logic": tagLogic} {
-		if value != "" {
-			values.Set(key, value)
-		}
-	}
-	response, err := client.SearchModels(values)
+	response, err := client.SearchModels(ctx, metadata.SearchQuery{Query: query, Provider: provider, Limit: limit, Sort: sortBy, Order: "desc", Tags: tagsStr, Logic: tagLogic, Full: true, Enrich: true})
 	if err != nil {
 		return fmt.Errorf("search failed: %w", err)
 	}
 
-	// Parse response
-	results, ok := response["results"].([]any)
-	if !ok {
-		return fmt.Errorf("invalid response format")
-	}
+	results := response.Results
 
 	if len(results) == 0 {
 		fmt.Println("\nNo results found")
@@ -153,7 +143,7 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 	}
 
 	// Get provider from response
-	responseProvider, _ := response["provider"].(string)
+	responseProvider := response.Provider
 
 	// Display results
 	fmt.Println()
@@ -183,31 +173,17 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 	}
 
 	// Display results
-	for _, resultInterface := range results {
-		result, ok := resultInterface.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		modelID, _ := result["id"].(string)
+	for _, entry := range results {
+		result := entry.Discovery
+		modelID := result.APIID
 		if modelID == "" {
-			modelID, _ = result["name"].(string)
+			modelID = result.DisplayName
 		}
 		if len(modelID) > 50 {
 			modelID = modelID[:47] + "..."
 		}
-
-		downloads, _ := result["downloads"].(float64)
-		likes, _ := result["likes"].(float64)
-		trendingScore, _ := result["trendingScore"].(float64)
-
-		modifiedAt, _ := result["modified_at"].(string)
-		if modifiedAt == "" {
-			modifiedAt, _ = result["lastModified"].(string)
-		}
-		if modifiedAt == "" {
-			modifiedAt, _ = result["last_modified"].(string)
-		}
+		downloads, likes, trendingScore := result.Downloads, result.Likes, result.TrendingScore
+		modifiedAt := result.ModifiedAt
 
 		updatedDisplay := shared.EmptyValue
 		if modifiedAt != "" {
@@ -220,13 +196,13 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 				trendDisplay = fmt.Sprintf("%.0f", trendingScore)
 			}
 			fmt.Printf("%-50s  %-8s  %-10s  %-8s  %s\n",
-				modelID, trendDisplay, shared.FormatSearchDownloads(int(downloads)), shared.FormatSearchDownloads(int(likes)), updatedDisplay)
+				modelID, trendDisplay, shared.FormatSearchDownloads(downloads), shared.FormatSearchDownloads(likes), updatedDisplay)
 		} else if isOllama {
 			fmt.Printf("%-50s  %-10s  %s\n",
-				modelID, shared.FormatSearchDownloads(int(downloads)), updatedDisplay)
+				modelID, shared.FormatSearchDownloads(downloads), updatedDisplay)
 		} else {
 			fmt.Printf("%-50s  %s\n",
-				modelID, shared.FormatSearchDownloads(int(downloads)))
+				modelID, shared.FormatSearchDownloads(downloads))
 		}
 	}
 
@@ -236,8 +212,8 @@ func runSearch(query, providerFilter, tagsStr, tagLogic string, limit int, sortB
 }
 
 // runInteractiveSearch starts the interactive search TUI
-func runInteractiveSearch(query, provider, tagsStr, tagLogic, sortBy string) error {
-	_, err := EnsureConnected()
+func runInteractiveSearch(ctx context.Context, query, provider, tagsStr, tagLogic, sortBy string) error {
+	client, err := EnsureConnectedCtx(ctx)
 	if err != nil {
 		return err
 	}
@@ -245,9 +221,10 @@ func runInteractiveSearch(query, provider, tagsStr, tagLogic, sortBy string) err
 	theme := shared.ResolveUITheme()
 	styles := ui.NewStyles(theme)
 
-	m := search.NewSearchTUIModel(styles, query, provider, tagsStr, tagLogic, sortBy, false)
+	m := search.NewSearchTUIModel(client, styles, query, provider, tagsStr, tagLogic, sortBy, false)
 
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithContext(ctx))
+	defer m.Deactivate()
 
 	defer func() {
 		fmt.Print("\033[?25h")

@@ -10,6 +10,56 @@ before starting; the embedded node template binds all interfaces and requires
 inference authentication. Installers default to loopback. Keep credentials in
 protected environment configuration, rather than copied into examples.
 
+## Managed provider and Hugging Face credentials
+
+Administrators can add, test, replace and remove these credentials from
+**Providers** at the coordinator's `/console/` page as well as the terminal
+client. Fields come from the same declared schema. The browser displays startup
+protection requirements and separate save/activation/publication outcomes;
+it does not edit arbitrary environment files. See [console workflows](web-console.md).
+
+The web console and terminal connection form use the same coordinator API.
+OpenAI, Anthropic, Gemini, Groq, OpenRouter, Azure, Bedrock, Cloudflare and
+Ollama Cloud declare their required secret and nonsecret fields. Hugging Face
+declares an optional token used for gated/private metadata and downloads;
+access also requires the upstream account's model permission.
+The managed token serves coordinator requests and downloads. Worker downloads
+require their own externally provisioned Hugging Face token; the coordinator
+does not distribute managed credentials to workers.
+
+Provision a separate 32-byte random encryption key through the service's secret
+mechanism, then configure its path in `node.yaml` before starting:
+
+```yaml
+security:
+  credentials:
+    key_file: /run/secrets/zzrouter-credentials-key
+```
+
+The key file accepts 32 raw bytes or strict base64. Unix permissions must be
+owner-only; Windows checks the service identity, SYSTEM and Administrators ACL.
+Keep it outside normal configuration exports and backups of `credentials.enc`.
+The web/API cannot set this path or read the key. A configured invalid key fails
+startup. Without a key and without an existing encrypted store, external
+credentials still work and managed writes report unavailable. An existing
+encrypted store requires its key; removing that setting never silently restores
+old external credentials.
+
+Connection status reports `external`, `managed` or `disabled`, its revision and
+secret presence. Tests are temporary and do not enable the provider. Save supplies
+a complete connection and expected revision; optional activation uses normal
+provider onboarding. Remove suppresses external fallback until an administrator
+explicitly chooses external ownership. These are coordinator-local credentials,
+not worker settings. See the [connection API](api.md#browser-sessions-and-provider-connections)
+and [security requirements](security.md#managed-upstream-secrets).
+
+Back up the provider configuration before upgrading. The new `connection` fields
+and Hugging Face `api` configuration are not accepted by older builds' strict
+YAML readers. Rolling back the binary requires restoring its pre-upgrade provider
+configuration. Older builds cannot read the managed encrypted credential store;
+restore their original externally provisioned credentials rather than copying
+managed secrets into provider files.
+
 | File | Purpose |
 | --- | --- |
 | `node.yaml` | Bind, authentication, cluster, model storage and update settings |
@@ -386,3 +436,35 @@ curl -X POST http://localhost:9090/zzrouter/v1/pricing/overrides \
 ```
 
 Use a concrete model ID and real dollar rates per million tokens when billed.
+
+## MCP browser login
+
+MCP and browser login are enabled by default on coordinators. No OAuth config
+is needed for localhost: the issuer is `http://localhost:<node.port>`, using
+HTTPS when node TLS is configured. The standard port is 9090. The issuer is
+resolved at startup from configuration, never from request headers.
+
+The browser console is at `<issuer>/console/`. Open that exact origin, including
+hostname and port. Its Settings page shows effective configuration and restart
+guidance; issuer, listener, TLS and protection-key controls remain local startup
+configuration. Disabling OAuth also removes the console routes.
+
+For remote clients, set `auth.oauth.issuer_url` to a fixed HTTPS origin and
+restart the coordinator. Use a lowercase ASCII hostname or canonical IP address,
+omit default ports and trailing slashes, and include no query or fragment.
+Invalid origin spellings are rejected at startup.
+
+```yaml
+auth:
+  oauth:
+    issuer_url: https://router.example.com
+```
+
+The reverse proxy must preserve the MCP endpoint paths and route `/oauth/*` and
+`/.well-known/*` to the coordinator. Restrict a plaintext node listener behind
+the TLS proxy. Existing admin/user keys remain the browser login credentials.
+Set `auth.oauth.enabled: false` to disable browser OAuth; key-authenticated MCP
+remains available. Workers expose neither native MCP nor OAuth routes.
+See [client setup](mcp.md#connect-with-browser-login) and the
+[security model](security.md#mcp-browser-authorization) for persistence, expiry
+and revocation. These settings are read at startup.

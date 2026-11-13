@@ -1,9 +1,10 @@
 package search
 
 import (
-	"net/url"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	sortpkg "sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -95,15 +96,17 @@ func (c *SearchCache) Stop() {
 }
 
 // SearchCacheKey builds a deterministic cache key from search parameters.
-func SearchCacheKey(params SearchParams, tagLogic string, enrich bool) string {
-	sortedTags := append([]string(nil), params.Filter...)
-	sortpkg.Strings(sortedTags)
-	return url.Values{
-		"provider": {string(params.Provider)}, "q": {params.Search}, "author": {params.Author},
-		"sort": {params.Sort}, "direction": {strconv.Itoa(params.Direction)}, "tags": sortedTags,
-		"logic": {tagLogic}, "full": {strconv.FormatBool(params.Full)}, "enrich": {strconv.FormatBool(enrich)},
-		"limit": {strconv.Itoa(params.Pagination.Limit)}, "offset": {strconv.Itoa(params.Pagination.Offset)}, "cursor": {params.Pagination.Cursor},
-	}.Encode()
+func SearchCacheKey(params SearchParams, logic string, enrich bool, revision string) string {
+	params.Filter = append([]string(nil), params.Filter...)
+	sortpkg.Strings(params.Filter)
+	encoded, _ := json.Marshal(struct {
+		Params   SearchParams
+		Logic    string
+		Enrich   bool
+		Revision string
+	}{params, logic, enrich, revision})
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
 }
 
 func (c *SearchCache) cleanupLoop() {

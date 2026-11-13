@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stperic/zzrouter/pkg/apipath"
 )
 
 // RouteSpec describes mounted routes for discovery and MCP escape-hatch eligibility.
@@ -143,6 +144,11 @@ func surfaceForPath(p string) string {
 
 func authTierForPath(p string) string {
 	switch {
+	case p == apipath.Session:
+		// Bootstrap and login have no prior identity; mutations still require CSRF.
+		return "optional"
+	case p == apipath.Me || strings.HasPrefix(p, apipath.Me+"/"):
+		return "user"
 	case p == "/inference/mcp":
 		return "user"
 	case p == "/zzrouter/v1/internal" || strings.HasPrefix(p, "/zzrouter/v1/internal/"):

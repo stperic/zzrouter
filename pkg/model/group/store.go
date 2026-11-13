@@ -3,13 +3,15 @@ package group
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"sort"
 	"sync"
 
+	"github.com/stperic/common/atomicfile"
+
 	route_events "github.com/stperic/zzrouter/pkg/observability/route_events"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -325,7 +327,12 @@ func (s *GroupStore) SaveToFile(path string) error {
 		return fmt.Errorf("failed to marshal model groups: %w", err)
 	}
 
-	return utils.AtomicWriteFile(path, data, 0o644)
+	writeErr := atomicfile.WriteFile(path, data, 0o644)
+	if errors.Is(writeErr, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Model groups committed with uncertain durability", "error", writeErr)
+		return nil
+	}
+	return writeErr
 }
 
 // validateGroup checks that a model group definition is valid.

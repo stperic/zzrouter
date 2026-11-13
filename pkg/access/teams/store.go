@@ -3,10 +3,13 @@ package teams
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"sync"
 	"sync/atomic"
+
+	"github.com/stperic/common/atomicfile"
 
 	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/utils"
@@ -183,6 +186,10 @@ func (s *FileTeamStore) Reload() error {
 
 // Save persists the current state to disk.
 func (s *FileTeamStore) Save() error {
+	return s.save(atomicfile.WriteFile)
+}
+
+func (s *FileTeamStore) save(write func(string, []byte, os.FileMode) error) error {
 	s.mu.RLock()
 	cfg := teamsFile{
 		Version: "1",
@@ -196,5 +203,10 @@ func (s *FileTeamStore) Save() error {
 		return fmt.Errorf("failed to marshal teams: %w", err)
 	}
 
-	return utils.AtomicWriteFile(s.path, data, 0o600)
+	err = write(s.path, data, 0o600)
+	if errors.Is(err, atomicfile.ErrPostRenameDurability) {
+		slog.Warn("Team state committed with uncertain durability", "error", err)
+		return nil
+	}
+	return err
 }

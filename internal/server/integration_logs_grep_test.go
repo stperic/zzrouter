@@ -15,7 +15,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,7 +178,7 @@ func TestStoppedRunLogsRouteToNamedNode(t *testing.T) {
 	l := &LogsHandlers{
 		getClusterClient: func() mesh.ClusterClient { return nil },
 		isLocalNode:      func(n string) bool { return n == "coord" },
-		routeToClusterNode: func(_ context.Context, node, path, _ string, _ []byte, _ http.Header) (*mesh.Response, error) {
+		routeToClusterNode: func(_ context.Context, node, path, _ string, _ []byte) (*mesh.Response, error) {
 			routed = node + " " + path
 			return &mesh.Response{StatusCode: 200, Body: []byte(`{"success":true}`)}, nil
 		},

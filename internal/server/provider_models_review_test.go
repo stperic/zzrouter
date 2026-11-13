@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/httperr"
@@ -43,7 +44,7 @@ func TestProviderModelsCategoryEscapeAfterAdmission(t *testing.T) {
 		_, _ = io.WriteString(w, `{"siblings":[{"rfilename":"file","size":7}]}`)
 	}))
 	job := acceptedProviderModel(t, h.request("POST", "studio/models", `{"node":"worker","category":"vae","source":"org/repo#file","name":"nested/file"}`, ""))
-	<-entered // Admission has finished; metadata is still pending.
+	waitProviderFixture(t, entered) // Admission has finished; metadata is still pending.
 	root, outside := providerModelRoot(t, h.worker), t.TempDir()
 	require.NoError(t, os.MkdirAll(root, 0700))
 	require.NoError(t, os.Symlink(outside, filepath.Join(root, "vae")))
@@ -71,7 +72,7 @@ func TestProviderModelsNestedRedirectCannotChangeReservation(t *testing.T) {
 		_, _ = io.WriteString(w, `{"siblings":[{"rfilename":"file","size":7}]}`)
 	}))
 	job := acceptedProviderModel(t, h.request("POST", "studio/models", `{"node":"worker","category":"vae","source":"org/repo#file","name":"nested/file"}`, ""))
-	<-entered
+	waitProviderFixture(t, entered)
 	root := filepath.Join(providerModelRoot(t, h.worker), "vae")
 	other := filepath.Join(root, "other")
 	require.NoError(t, os.MkdirAll(other, 0700))
@@ -113,7 +114,7 @@ func TestProviderModelsCopiedFinalSurvivesTransfer(t *testing.T) {
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: body, ContentLength: -1, Request: r}, nil
 	}))
 	job := acceptedProviderModel(t, h.request("POST", "studio/models", `{"node":"worker","category":"vae","source":"org/repo#file.gguf"}`, ""))
-	<-entered
+	waitProviderFixture(t, entered)
 	root := filepath.Join(providerModelRoot(t, h.worker), "vae")
 	final := filepath.Join(root, "file.gguf")
 	require.NoError(t, os.WriteFile(final, []byte("operator-owned"), 0600))
@@ -226,5 +227,14 @@ func TestProviderModelsInterruptedPersistenceRetryDeleteAndCatalogIsolation(t *t
 			require.NoError(t, err)
 			require.Empty(t, models, "provider files remain outside scans after reloaded work is retried")
 		})
+	}
+}
+
+func waitProviderFixture(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider HTTP fixture was not reached")
 	}
 }

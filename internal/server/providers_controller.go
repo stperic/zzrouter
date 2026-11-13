@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
@@ -32,6 +30,7 @@ type ProviderRegistrar interface {
 }
 
 type ProvidersController struct {
+	backend          *backend.Resolver
 	httpClient       *http.Client
 	publishCatalog   func() error
 	appsService      *AppsService                  // runtime status: list, get, enable/disable (always available)
@@ -59,6 +58,7 @@ func NewProvidersController(appsSvc *AppsService, providersSvc *ProvidersService
 		panic("ProvidersController: HTTP client is required")
 	}
 	return &ProvidersController{
+		backend:          backend.NewResolver(appsConfig),
 		httpClient:       httpClient,
 		appsService:      appsSvc,
 		versionsService:  versionsSvc,
@@ -272,7 +272,7 @@ func (ctrl *ProvidersController) UpdateProvider(c *gin.Context) {
 func (ctrl *ProvidersController) ListProviderCatalog(c *gin.Context) {
 	cfg := ctrl.appsConfig()
 	if cfg == nil {
-		respondList(c, []any{}, 0, false)
+		RespondToError(c, prov_apps.ErrConfigUnavailable)
 		return
 	}
 
@@ -297,16 +297,17 @@ func (ctrl *ProvidersController) ListProviderCatalog(c *gin.Context) {
 	}
 
 	type catalogEntry struct {
-		Key             string   `json:"key"`
-		Name            string   `json:"name"`
-		Description     string   `json:"description,omitempty"`
-		Mode            string   `json:"mode"` // legacy; equal to Kind during arc
-		Kind            string   `json:"kind"` // canonical new discriminator
-		Protocol        string   `json:"protocol"`
-		IsCloud         bool     `json:"is_cloud"`
-		Installed       bool     `json:"installed"`
-		Available       bool     `json:"available"`                   // Cloud: has credentials; Local: is enabled
-		RequiredEnvVars []string `json:"required_env_vars,omitempty"` // Required env vars (endpoint + auth)
+		Key                 string   `json:"key"`
+		Name                string   `json:"name"`
+		Description         string   `json:"description,omitempty"`
+		Mode                string   `json:"mode"` // legacy; equal to Kind during arc
+		Kind                string   `json:"kind"` // canonical new discriminator
+		Protocol            string   `json:"protocol"`
+		IsCloud             bool     `json:"is_cloud"`
+		Installed           bool     `json:"installed"`
+		Available           bool     `json:"available"`                   // Cloud: has credentials; Local: is enabled
+		ConnectionSupported bool     `json:"connection_supported"`        // Declares an editable connection schema
+		RequiredEnvVars     []string `json:"required_env_vars,omitempty"` // Required env vars (endpoint + auth)
 	}
 
 	// Build set of installed provider names (from running apps)
@@ -320,7 +321,7 @@ func (ctrl *ProvidersController) ListProviderCatalog(c *gin.Context) {
 		}
 	}
 
-	var entries []catalogEntry
+	entries := make([]catalogEntry, 0)
 	cfg.RangeApps(func(key string, svc pkgConfig.ServiceConfig) bool {
 		// Mode filter: exclude registries by default
 		if modeFilter == constants.AppModeRegistry && svc.Mode != constants.AppModeRegistry {
@@ -346,7 +347,8 @@ func (ctrl *ProvidersController) ListProviderCatalog(c *gin.Context) {
 		available := svc.IsEnabled()
 		var requiredEnvVars []string
 		if isCloud && svc.Runtime != nil {
-			available = svc.IsCloudAvailable()
+			target, ok := ctrl.connectionResolver().Target(key)
+			available = ok && target.Configured
 			// Order matters: endpoint first, then auth key — TUI prompts in this order
 			if ev := extractEnvVar(svc.Runtime.Endpoint); ev != "" {
 				requiredEnvVars = append(requiredEnvVars, ev)
@@ -374,16 +376,17 @@ func (ctrl *ProvidersController) ListProviderCatalog(c *gin.Context) {
 			kind = string(p.Kind())
 		}
 		entries = append(entries, catalogEntry{
-			Key:             key,
-			Name:            name,
-			Description:     svc.Description,
-			Mode:            svc.Mode,
-			Kind:            kind,
-			Protocol:        string(svc.Protocol),
-			IsCloud:         isCloud,
-			Installed:       installedSet[key],
-			Available:       available,
-			RequiredEnvVars: requiredEnvVars,
+			Key:                 key,
+			Name:                name,
+			Description:         svc.Description,
+			Mode:                svc.Mode,
+			Kind:                kind,
+			Protocol:            string(svc.Protocol),
+			IsCloud:             isCloud,
+			Installed:           installedSet[key],
+			Available:           available,
+			ConnectionSupported: svc.Connection != nil,
+			RequiredEnvVars:     requiredEnvVars,
 		})
 		return true
 	})
@@ -415,47 +418,13 @@ func (ctrl *ProvidersController) VerifyProvider(c *gin.Context) {
 		return
 	}
 
-	// Force-reload .env so newly saved keys/endpoints are picked up (client may have just written them)
-	cm := pkgConfig.NewConfigManager("zzrouter")
-	cm.ReloadConfigDirEnv()
-
-	// Build the verify URL from endpoint + health check path
-	endpoint := pkgConfig.NormalizeEndpoint(svcConfig.Runtime.Endpoint)
-	if endpoint == "" {
-		BadRequest(c, fmt.Sprintf("provider %q has no endpoint configured", name))
+	target, ok := ctrl.connectionResolver().Target(name)
+	if !ok || target.Cloud && !target.Configured {
+		BadRequest(c, "provider connection is not configured")
 		return
 	}
-
-	checkPath := svcConfig.Runtime.HealthCheck.Path
-	if checkPath == "" {
-		checkPath = "/v1/models" // Default health check for OpenAI-compatible APIs
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
-	defer cancel()
-
-	// Built from config, not Resolve: verification precedes enabling.
-	target := &backend.Resolved{Endpoint: endpoint, Upstream: backend.ForProvider(svcConfig.API())}
-	req, err := target.NewRequest(ctx, http.MethodGet, checkPath, nil)
-	if err != nil {
-		InternalNodeError(c, fmt.Sprintf("failed to create request: %v", err))
-		return
-	}
-
-	// Execute request
-	resp, err := ctrl.httpClient.Do(req)
-	if err != nil {
-		respondSuccess(c, "Provider verification failed", gin.H{
-			"provider": name,
-			"status":   "failed",
-			"message":  fmt.Sprintf("connection failed: %v", err),
-		})
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Check response
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	result := probeConnection(c.Request.Context(), ctrl.httpClient, target)
+	if result.Status == "ok" {
 		// Terminal success of the cloud verify session — finalize the
 		// provider. If this fails the config flag did not flip, so we
 		// MUST report the drift rather than lying with a 200.
@@ -469,37 +438,17 @@ func (ctrl *ProvidersController) VerifyProvider(c *gin.Context) {
 		respondSuccess(c, "Provider verified", gin.H{
 			"provider": name,
 			"status":   "ok",
-			"message":  fmt.Sprintf("verified (HTTP %d)", resp.StatusCode),
+			"message":  fmt.Sprintf("verified (HTTP %d)", result.HTTPStatus),
 		})
 		return
 	}
 
-	// Read a small portion of the body for error hints
-	bodyBuf := make([]byte, 512)
-	n, _ := resp.Body.Read(bodyBuf)
-	bodyPreview := string(bodyBuf[:n])
+	respondSuccess(c, "Provider verification failed", gin.H{"provider": name, "status": result.Status, "message": result.Code})
+}
 
-	message := fmt.Sprintf("HTTP %d", resp.StatusCode)
-	switch {
-	case resp.StatusCode == 401 || resp.StatusCode == 403:
-		message = "authentication failed: check your API key"
-	case resp.StatusCode == 429:
-		message = "rate limited: try again later"
-	case resp.StatusCode >= 500:
-		message = fmt.Sprintf("server error (HTTP %d)", resp.StatusCode)
+func (ctrl *ProvidersController) connectionResolver() *backend.Resolver {
+	if ctrl.backend != nil {
+		return ctrl.backend
 	}
-
-	// Check body for additional hints
-	lower := strings.ToLower(bodyPreview)
-	if strings.Contains(lower, "invalid") && strings.Contains(lower, "key") {
-		message = "invalid API key"
-	} else if strings.Contains(lower, "quota") || strings.Contains(lower, "billing") {
-		message = "account quota or billing issue"
-	}
-
-	respondSuccess(c, "Provider verification failed", gin.H{
-		"provider": name,
-		"status":   "failed",
-		"message":  message,
-	})
+	return backend.NewResolver(ctrl.appsConfig)
 }

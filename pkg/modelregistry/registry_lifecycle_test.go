@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/modelregistry/metadata"
 
 	"github.com/stperic/zzrouter/pkg/config"
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 func newTestRegistry(t *testing.T) *Registry {
@@ -119,7 +120,13 @@ type lifecycleTransport func(*http.Request) (*http.Response, error)
 func (f lifecycleTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestRegistryStopWaitsForSynchronousHuggingFaceCleanup(t *testing.T) {
-	r := newTestRegistry(t)
+	cfg := &config.AppsConfig{}
+	require.NoError(t, cfg.AddApp("huggingface", config.ServiceConfig{
+		Mode: constants.AppModeRegistry, Enabled: new(true),
+		Runtime: &config.AppRuntimeConfig{Endpoint: "https://huggingface.co"},
+	}))
+	r, err := NewRegistry(func() *config.AppsConfig { return cfg })
+	require.NoError(t, err)
 	entered, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
@@ -140,7 +147,7 @@ func TestRegistryStopWaitsForSynchronousHuggingFaceCleanup(t *testing.T) {
 				t.Error("failed work must return its error")
 			}, r.CatalogDestination("org/repo"))
 	}()
-	<-entered
+	waitLifecycleSignal(t, entered)
 	stopped := make(chan struct{})
 	go func() { r.Stop(); close(stopped) }()
 	require.Eventually(t, func() bool {
@@ -149,7 +156,7 @@ func TestRegistryStopWaitsForSynchronousHuggingFaceCleanup(t *testing.T) {
 		return r.stopped
 	}, time.Second, time.Millisecond)
 	cancel()
-	<-cancelled
+	waitLifecycleSignal(t, cancelled)
 	select {
 	case <-result:
 		t.Fatal("synchronous call returned before cleanup")
@@ -158,8 +165,22 @@ func TestRegistryStopWaitsForSynchronousHuggingFaceCleanup(t *testing.T) {
 	default:
 	}
 	unblock()
-	require.ErrorIs(t, <-result, context.Canceled)
-	<-stopped
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("download did not finish after cleanup")
+	}
+	waitLifecycleSignal(t, stopped)
+}
+
+func waitLifecycleSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("registry lifecycle fixture did not reach the expected transition")
+	}
 }
 
 // Deleting a split GGUF removes every shard and nothing else.

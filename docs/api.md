@@ -12,6 +12,12 @@ at `GET /zzrouter/v1`; use discovery to inspect capabilities before an operation
 | `/api/*` | Ollama compatible APIs |
 | `/zzrouter/v1/internal/*` | Cluster transport, authenticated through mTLS |
 
+MCP supports default-enabled OAuth browser authorization on coordinators. See [MCP login](mcp.md#connect-with-browser-login).
+OAuth discovery and protocol endpoints live under `/.well-known/*` and `/oauth/*`
+unless `auth.oauth.enabled` is false. The default issuer uses localhost at the
+configured node port; use `auth.oauth.issuer_url` for a remote HTTPS origin. OAuth tokens are limited to their
+MCP resource and cannot authenticate direct REST calls.
+
 Client keys use `X-API-Key` or `Authorization: Bearer`. Management and inference
 permissions differ. A virtual key can be constrained by team, models, requests,
 tokens, concurrency and spend. Workers expose inference only on their cluster
@@ -19,6 +25,51 @@ listener. The coordinator applies client policy before dispatching to workers.
 
 Cluster connection direction, enrollment and replication are described in
 [cluster networking](cluster_networking.md). Only the coordinator initiates cluster connections.
+
+## Browser sessions and provider connections
+
+When coordinator OAuth is enabled, `GET /zzrouter/v1/session` bootstraps a CSRF
+proof and browser cookie. `POST` on that path accepts `{ "key": "..." }` with
+the exact issuer `Origin`, the cookie and `X-CSRF-Token`; `DELETE` logs out using
+the same origin/proof. The opaque session remains HttpOnly. `GET /me` returns the
+current identity, and `GET /me/connections` or `DELETE /me/connections/{id}`
+operates only on its MCP grants. These paths use the `/zzrouter/v1` prefix.
+Bootstrap/login also return the fixed `issuer` and coordinator `node_name`.
+`/me` explicitly projects key/team limits, team model allowances and own key
+usage; unavailable usage is null. It exposes no credential fingerprint or key
+metadata. The [console](web-console.md) is served at `/console/` when coordinator
+browser authentication is enabled.
+
+Protected admin browser sessions can call management and access-control APIs.
+Mutations require Origin/CSRF; API-key clients retain their existing contract.
+MCP tokens, browser cookies and general API keys remain distinct authorities.
+Cluster pairing and worker/internal paths do not accept browser authority.
+
+`GET /zzrouter/v1/providers/{name}/connection` returns the declared field schema,
+nonsecret values, secret presence, ownership mode and revision. `POST` to its
+`/test` subpath accepts candidate `values` without saving. `PUT` replaces the
+complete connection with `expected_revision`, `values` and optional `activate`.
+`DELETE` with `expected_revision` removes managed values and suppresses external
+fallback. `POST` to `/use-external` explicitly restores external resolution.
+All require a coordinator administrator, reject node selectors and use no-store
+responses. Inspect `saved`, `durable`, `active`, `published` and `outcome` after a
+mutation; saving and activation are separate effects. See OpenAPI for schemas.
+`saved` and `durable` describe the encrypted credential change. Provider setup
+can partially apply before reporting an error, so `saved_activation_failed` may
+coexist with `active: true`. Refresh current state before retrying; provider
+configuration spans multiple files and does not promise an atomic transaction.
+`GET /providers/catalog?kind=all` includes registries and disabled providers.
+Each row's `connection_supported` indicates a declared editable connection.
+Read list entries from `data`; list responses need not contain `success`.
+Unavailable configuration returns 503, while a validated empty catalog returns
+`data: []`. Connection refusals have distinct codes for unsupported connections,
+unavailable state, stale revisions, absent startup protection and failed writes.
+
+Model search and cards retain native provider fields and add typed `discovery`
+metadata. A missing storage size stays unknown, separate from parameter count.
+Hugging Face variants retain `shards` and `features` inside the `data` envelope.
+`GET /zzrouter/v1/registries/ollama/tags?id=llama3.2` supplies catalog tags through
+the authenticated coordinator, without client-side upstream scraping.
 
 ## Discover, execute, observe
 

@@ -4,6 +4,14 @@ description: "Hosted Ollama inference API"
 enabled: false
 search:
   registry: ollama
+connection:
+  fields:
+    - id: api_key
+      label: API key
+      type: text
+      env: OLLAMA_API_KEY
+      required: true
+      secret: true
 runtime:
   endpoint: https://ollama.com
   model_url: "https://ollama.com/library/%s"

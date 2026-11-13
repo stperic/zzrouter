@@ -7,6 +7,7 @@ package search
 // see the top of that package for the inverse pointer.
 
 import (
+	"context"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -37,15 +38,6 @@ type OllamaDetails struct {
 	Families          []string `json:"families"`
 	ParameterSize     string   `json:"parameter_size"`
 	QuantizationLevel string   `json:"quantization_level"`
-}
-
-// OllamaTagInfo represents a single tag/version of an Ollama model
-type OllamaTagInfo struct {
-	Name    string `json:"name"`    // Tag name (e.g., "latest", "7b", "8b-instruct-q5_K_S")
-	Size    string `json:"size"`    // Human-readable size (e.g., "5.2GB")
-	Context string `json:"context"` // Context window (e.g., "128K")
-	Input   string `json:"input"`   // Input type (e.g., "Text", "Image+Text")
-	Digest  string `json:"digest"`  // SHA256 digest
 }
 
 // OllamaTagsResponse represents the response from /api/tags
@@ -183,8 +175,8 @@ func paginateOllamaModels(models []OllamaModelInfo, pagination PaginationParams)
 // Cloud-only models are excluded (use Ollama Cloud search for those).
 // Uses web scraping since Ollama doesn't provide a public API for the full library.
 // See: https://github.com/ollama/ollama/issues/7751
-func GetOllamaModels() ([]OllamaModelInfo, error) {
-	all, err := ScrapeOllamaLibrary()
+func GetOllamaModels(ctx context.Context) ([]OllamaModelInfo, error) {
+	all, err := ScrapeOllamaLibrary(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -208,21 +200,21 @@ func locallyRunnable(all []OllamaModelInfo) []OllamaModelInfo {
 }
 
 // GetOllamaModelsWithSort returns Ollama models sorted by the specified criteria
-func GetOllamaModelsWithSort(sortBy string, limit int) (*SearchResponse[OllamaModelInfo], error) {
-	return SearchOllamaModelsPaginated(SearchParams{Provider: ProviderOllama, Sort: sortBy, Direction: -1, Pagination: PaginationParams{Limit: limit}})
+func GetOllamaModelsWithSort(ctx context.Context, sortBy string, limit int) (*SearchResponse[OllamaModelInfo], error) {
+	return SearchOllamaModelsPaginated(ctx, SearchParams{Provider: ProviderOllama, Sort: sortBy, Direction: -1, Pagination: PaginationParams{Limit: limit}})
 }
 
 // GetOllamaPopularModels returns the most popular Ollama models
-func GetOllamaPopularModels(limit int) (*SearchResponse[OllamaModelInfo], error) {
-	return GetOllamaModelsWithSort("downloads", limit)
+func GetOllamaPopularModels(ctx context.Context, limit int) (*SearchResponse[OllamaModelInfo], error) {
+	return GetOllamaModelsWithSort(ctx, "downloads", limit)
 }
 
 // SearchOllamaModelsPaginated searches Ollama models by name with pagination
-func SearchOllamaModelsPaginated(params SearchParams) (*SearchResponse[OllamaModelInfo], error) {
+func SearchOllamaModelsPaginated(ctx context.Context, params SearchParams) (*SearchResponse[OllamaModelInfo], error) {
 	if err := params.Validate(); err != nil {
 		return nil, err
 	}
-	models, err := GetOllamaModels()
+	models, err := GetOllamaModels(ctx)
 	if err != nil {
 		return nil, err
 	}
