@@ -4,6 +4,8 @@ Open `/console/` at the coordinator's configured OAuth issuer. The default is
 `http://localhost:9090/console/`. Use the exact configured hostname, scheme and
 port: `localhost` and `127.0.0.1` are different browser origins. The sign-in page
 links to the configured origin when the current address differs.
+For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)
+before signing in.
 
 Sign in with a zzRouter key. Administrator keys open Overview, Providers,
 Keys & teams, MCP connections and Settings. User keys open My Access, with their
