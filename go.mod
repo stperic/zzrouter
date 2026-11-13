@@ -34,7 +34,7 @@ require (
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
-	github.com/stperic/common v0.3.2-0.20261113055030-d0cad280ffa6
+	github.com/stperic/common v0.3.2-0.20261113061335-1b092ec74232
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.47.0

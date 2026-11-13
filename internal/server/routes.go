@@ -197,7 +197,7 @@ func (s *Server) registerHealthRoutes() {
 		// Pass draining check function so readiness probe can report "draining" during graceful shutdown
 		healthHandler := NewHealthHandler(
 			[]string{"cluster", "admin_api", "providers", "openai_api"},
-			func() bool { return s.draining.Load() },
+			s.readinessUnavailable,
 			s.nodeIdentityReport,
 		)
 		health.GET("", healthHandler.GetHealth)

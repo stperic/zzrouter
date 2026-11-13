@@ -116,11 +116,15 @@ func (e processEngine) prepare(ctx context.Context, svc config.ServiceConfig, co
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	return e.m.prepareLaunchFeatures(features, features.Params, configKey, endpoint, port)
+	return e.m.prepareLaunchFeatures(ctx, features, features.Params, configKey, endpoint, port)
 }
 
 func (processEngine) upstream(run *instance.Instance) (string, backend.Upstream, error) {
-	return fmt.Sprintf("http://%s:%d", constants.Localhost, run.Port), backend.Engine(), nil
+	return processRunEndpoint(run.Port), backend.Engine(), nil
+}
+
+func processRunEndpoint(port int) string {
+	return fmt.Sprintf("http://%s:%d", constants.Localhost, port)
 }
 
 func (processEngine) outlivesNode() bool { return false }

@@ -132,6 +132,7 @@ func (e *RunsExecutor) GetLocalRuns(ctx context.Context, withStatus bool) ([]ins
 			result[i] = e.appMgr.InstanceInfo(ctx, inst, hostname)
 		}
 		classifyRunInfo(&result[i])
+		e.annotateRunBrowser(ctx, &result[i])
 	}
 	return result, nil
 }
@@ -144,7 +145,15 @@ func (e *RunsExecutor) GetLocalRun(ctx context.Context, runID string) (*instance
 
 	info, err := e.appMgr.RunInfo(ctx, runID, e.getNodename())
 	classifyRunInfo(&info)
+	e.annotateRunBrowser(ctx, &info)
 	return &info, err
+}
+
+func (e *RunsExecutor) annotateRunBrowser(ctx context.Context, info *instance.InstanceInfo) {
+	info.Browser = nil
+	if run, _, err := e.appMgr.BrowserRun(ctx, info.ID); err == nil {
+		info.Browser = &instance.BrowserInfo{Name: run.Resolved().Browser.Name}
+	}
 }
 
 func classifyRunInfo(info *instance.InstanceInfo) {

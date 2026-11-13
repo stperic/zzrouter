@@ -84,6 +84,11 @@ func (t *nodeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		finish(err, false)
 		return resp, err
 	}
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		// The handshake completes this HTTP operation; keep the bidirectional body for the new protocol.
+		finish(nil, true)
+		return resp, nil
+	}
 	resp.Body = &nodeBody{ReadCloser: resp.Body, finish: finish, success: resp.StatusCode < 400}
 	return resp, nil
 }

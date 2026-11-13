@@ -155,6 +155,8 @@ func createSeededTestNode(t *testing.T, options ...seededTestNodeConfig) *Server
 		Auth:      pkgConfig.AuthConfig{AdminKey: cfg.AdminKey, UserKey: cfg.UserKey, ClusterNetworkKey: cfg.ClusterKey},
 		Providers: pkgConfig.ProvidersConfig{InstallDir: filepath.Join(home, "installed-providers")},
 	}
+	previousRoot := fsroot.ProviderRootDir()
+	t.Cleanup(func() { fsroot.SetProviderRootOverride(previousRoot) })
 	s, err := NewServerWithOptions(hostCfg)
 	require.NoError(t, err)
 	require.NotNil(t, s.engine, "test server engine must be constructed")

@@ -381,6 +381,7 @@ func onDemandRuntimeToLegacy(rt OnDemandRuntime) *AppRuntimeConfig {
 		DataSubdirs:           rt.DataSubdirs,
 		ModelStore:            rt.ModelStore,
 		ActivityProbe:         rt.ActivityProbe,
+		Browser:               rt.Browser,
 		PortRange:             rt.PortRange,
 		BasePort:              rt.BasePort,
 		KeepAlive:             rt.KeepAlive,

@@ -21,6 +21,7 @@ type InstallConfig struct {
 type InstallRecipe struct {
 	PinnedVersion     *string                          `yaml:"pinned_version,omitempty" json:"pinned_version,omitempty"`
 	Source            *InstallSource                   `yaml:"source,omitempty" json:"source,omitempty"`
+	Components        map[string]InstallComponent      `yaml:"components,omitempty" json:"components,omitempty"`
 	Package           *string                          `yaml:"package,omitempty" json:"package,omitempty"`
 	VersionConstraint *string                          `yaml:"version_constraint,omitempty" json:"version_constraint,omitempty"`
 	Indexes           *InstallIndexes                  `yaml:"indexes,omitempty" json:"indexes,omitempty"`
@@ -112,6 +113,12 @@ func (i InstallIndexes) ForOS(goos string) *InstallIndexes {
 type InstallCompanion struct {
 	Constraint *string `yaml:"constraint,omitempty" json:"constraint,omitempty"`
 	Build      *string `yaml:"build,omitempty" json:"build,omitempty"`
+}
+
+// InstallComponent declares optional requirements from the same verified source release.
+type InstallComponent struct {
+	Description  string `yaml:"description" json:"description"`
+	Requirements string `yaml:"requirements" json:"requirements"`
 }
 
 // InstallVerify adds fixed imports and predicates, never executable source.
@@ -245,7 +252,7 @@ func MergeInstallPatch(current *InstallConfig, raw []byte) (*InstallConfig, erro
 
 // Validate checks a complete resolved recipe without granting execution authority.
 func (r InstallRecipe) Validate() error {
-	for _, validate := range []func() error{r.validateRuntime, r.validateIndexes, r.validateCompanions, r.validateChecks, r.validatePlatformFields} {
+	for _, validate := range []func() error{r.validateRuntime, r.validateComponents, r.validateIndexes, r.validateCompanions, r.validateChecks, r.validatePlatformFields} {
 		if err := validate(); err != nil {
 			return err
 		}

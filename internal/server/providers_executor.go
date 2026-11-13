@@ -321,8 +321,8 @@ func (e *ProvidersExecutor) HandleInternalInstallProvider(c *gin.Context) {
 		c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, gin.H{"plan_id": plan.PlanID, "runtime": plan.Provider}))
 		return
 	}
-	if req.Smoke != nil {
-		BadRequest(c, "smoke requires a typed runtime recipe")
+	if req.PlanOptions.RequiresRecipe() {
+		BadRequest(c, "smoke and components require a typed runtime recipe")
 		return
 	}
 	slog.Info("[ProvidersExecutor] InstallProvider", "provider", name, "version", req.Version)
@@ -381,8 +381,8 @@ func (e *ProvidersExecutor) HandleInternalUpgradeProvider(c *gin.Context) {
 		c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, gin.H{"plan_id": plan.PlanID, "runtime": plan.Provider}))
 		return
 	}
-	if req.Smoke != nil {
-		BadRequest(c, "smoke requires a typed runtime recipe")
+	if req.PlanOptions.RequiresRecipe() {
+		BadRequest(c, "smoke and components require a typed runtime recipe")
 		return
 	}
 	slog.Info("[ProvidersExecutor] UpgradeProvider", "name", name, "version", req.Version)
@@ -534,6 +534,10 @@ func (e *ProvidersExecutor) HandleInternalExecuteStep(c *gin.Context) {
 		c.JSON(http.StatusAccepted, acceptedJob(jobID, name, e.nodeName, gin.H{"plan_id": plan.PlanID, "runtime": plan.Provider, "step": req.Step}))
 		return
 	}
+	if req.Components != nil {
+		BadRequest(c, "components require a typed runtime recipe")
+		return
+	}
 	slog.Info("[ProvidersExecutor] ExecuteStep", "provider", name, "step", req.Step)
 
 	// finalize mirrors the Run All contract: only flip onboarding config
@@ -585,6 +589,10 @@ func (e *ProvidersExecutor) HandleInternalVerifyInstallStep(c *gin.Context) {
 	if e.hasRecipe(name) {
 		plan, err = e.mgr.Install().PrepareInstallPlan(c.Request.Context(), name, req.Version, req.PlanOptions)
 	} else {
+		if req.Components != nil {
+			BadRequest(c, "components require a typed runtime recipe")
+			return
+		}
 		inst, lookupErr := e.mgr.Install().Installer(name)
 		if lookupErr != nil {
 			NotFound(c, lookupErr.Error())

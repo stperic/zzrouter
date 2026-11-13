@@ -41,10 +41,15 @@ func (s *Server) initOAuth() error {
 	if err != nil {
 		return fmt.Errorf("parse browser views: %w", err)
 	}
+	resources := []oauth.Resource{{Path: adminMCPPath, Scope: "zzrouter:manage"}, {Path: inferenceMCPPath, Scope: "zzrouter:inference"}}
+	var ownedClients map[string]oauth.OwnedClient
+	if origin := s.config.Coordinator.ProviderBrowser.Origin; origin != "" {
+		resources = append(resources, oauth.Resource{Path: providerBrowserResource, Scope: providerBrowserScope})
+		ownedClients = map[string]oauth.OwnedClient{providerBrowserOwner: {Name: "Provider browser", RedirectURI: origin + "/oauth/callback", ResourcePath: providerBrowserResource}}
+	}
 	authority, err := oauth.New(oauth.Options[control.CredentialReference]{
 		Issuer: issuer, StatePath: filepath.Join(s.auditConfigDir, "oauth.json"),
-		Resources: []oauth.Resource{{Path: adminMCPPath, Scope: "zzrouter:manage"}, {Path: inferenceMCPPath, Scope: "zzrouter:inference"}},
-		Browser:   browser,
+		Resources: resources, OwnedClients: ownedClients, Browser: browser,
 		Authenticate: func(_ context.Context, key string) (control.CredentialReference, error) {
 			return s.access.core.Reference(key)
 		},
@@ -59,6 +64,12 @@ func (s *Server) initOAuth() error {
 			return oauth.IdentityView{ID: ac.Key.ID, Name: ac.Key.Name}, nil
 		},
 		Authorize: func(_ context.Context, ref control.CredentialReference, resource oauth.Resource) error {
+			if resource.Path == providerBrowserResource {
+				if control.RoleAllowed(ref.Role, control.RoleAdmin) || control.RoleAllowed(ref.Role, control.RoleUser) {
+					return nil
+				}
+				return control.ErrInvalidKey
+			}
 			role := control.RoleUser
 			if resource.Path == adminMCPPath {
 				role = control.RoleAdmin
@@ -76,6 +87,9 @@ func (s *Server) initOAuth() error {
 		return fmt.Errorf("initialize MCP browser login: %w", err)
 	}
 	s.access.oauth = authority
+	if ownedClients != nil {
+		s.providerBrowser.authority = &providerBrowserOAuthAuthority{authority: authority, core: s.access.core}
+	}
 	return nil
 }
 func (s *Server) registerOAuthRoutes() {
@@ -84,7 +98,11 @@ func (s *Server) registerOAuthRoutes() {
 	}
 	s.registerBrowserSessionRoutes()
 	serve := gin.WrapH(s.access.oauth)
-	for _, path := range []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource" + adminMCPPath, "/.well-known/oauth-protected-resource" + inferenceMCPPath} {
+	discovery := []string{"/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource" + adminMCPPath, "/.well-known/oauth-protected-resource" + inferenceMCPPath}
+	if s.config.Coordinator.ProviderBrowser.Origin != "" {
+		discovery = append(discovery, "/.well-known/oauth-protected-resource"+providerBrowserResource)
+	}
+	for _, path := range discovery {
 		s.engine.GET(path, s.browserCoordinatorOnly, serve)
 	}
 	for _, path := range []string{"/oauth/authorize", "/oauth/connections"} {

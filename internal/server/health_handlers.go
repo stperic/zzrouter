@@ -13,18 +13,18 @@ import (
 type HealthHandler struct {
 	startTime    time.Time
 	capabilities []string
-	isDraining   func() bool // Returns true when server is draining (graceful shutdown in progress)
+	unavailable  func() string
 	identity     func() NodeIdentityReport
 }
 
 // NewHealthHandler creates a new health handler.
-// isDraining reports graceful shutdown; identity reports which config
+// unavailable reports why readiness is unavailable; identity reports which config
 // this process loaded, and may be nil.
-func NewHealthHandler(capabilities []string, isDraining func() bool, identity func() NodeIdentityReport) *HealthHandler {
+func NewHealthHandler(capabilities []string, unavailable func() string, identity func() NodeIdentityReport) *HealthHandler {
 	return &HealthHandler{
 		startTime:    utils.Now(),
 		capabilities: capabilities,
-		isDraining:   isDraining,
+		unavailable:  unavailable,
 		identity:     identity,
 	}
 }
@@ -97,14 +97,14 @@ func (hh *HealthHandler) GetHealthLive(c *gin.Context) {
 }
 
 // GetHealthReady handles GET /health/ready — same shape as /health, but
-// flips status to "draining" + returns 503 during graceful shutdown so
-// orchestrators stop routing traffic here.
+// returns 503 during shutdown or a role transition.
 func (hh *HealthHandler) GetHealthReady(c *gin.Context) {
 	status := "ready"
 	statusCode := http.StatusOK
-	if hh.isDraining != nil && hh.isDraining() {
-		status = "draining"
-		statusCode = http.StatusServiceUnavailable
+	if hh.unavailable != nil {
+		if reason := hh.unavailable(); reason != "" {
+			status, statusCode = reason, http.StatusServiceUnavailable
+		}
 	}
 	c.JSON(statusCode, hh.buildHealthResponse(status))
 }

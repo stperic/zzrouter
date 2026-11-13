@@ -92,6 +92,9 @@ type CoordinatorConfig struct {
 
 	// Chat configuration (slash commands in chat interfaces)
 	Chat ChatConfig `mapstructure:"chat" yaml:"chat,omitempty"`
+
+	// ProviderBrowser exposes eligible native provider interfaces on a separate origin.
+	ProviderBrowser ProviderBrowserConfig `mapstructure:"provider_browser" yaml:"provider_browser,omitempty"`
 }
 
 // OpenAICompatConfig holds settings for OpenAI-compatible API pass-through
@@ -349,6 +352,11 @@ func (c *NodeConfig) Validate() error {
 
 	if err := c.Auth.OAuth.Validate(); err != nil {
 		return err
+	}
+	if !c.Cluster.IsWorker() {
+		if err := c.Coordinator.ProviderBrowser.Validate(c.Auth.OAuth, c.Node); err != nil {
+			return err
+		}
 	}
 	if err := c.Security.CORS.Validate(); err != nil {
 		return err

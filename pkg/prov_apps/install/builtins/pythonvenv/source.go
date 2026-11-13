@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/config"
@@ -14,6 +15,22 @@ import (
 	"github.com/stperic/zzrouter/pkg/prov_apps/install/fsroot"
 	"github.com/stperic/zzrouter/pkg/security"
 )
+
+func (i *Installer) selectComponents(ctx context.Context, snapshot *install.RecipeSnapshot, requested *[]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if snapshot.Recipe.Source != nil && requested == nil {
+		manifest, err := fsroot.ReadInstallManifest(i.cfg.Name)
+		if err != nil {
+			return errors.Join(errSourceRecordIncomplete, err)
+		}
+		if manifest != nil {
+			snapshot.SelectedComponents = slices.Clone(manifest.SelectedComponents)
+		}
+	}
+	return snapshot.SelectComponents(requested)
+}
 
 func (i *Installer) sourceRoots(ctx context.Context, snapshot install.RecipeSnapshot, directory string) (map[string]string, error) {
 	source := *snapshot.Recipe.Source
@@ -24,7 +41,7 @@ func (i *Installer) sourceRoots(ctx context.Context, snapshot install.RecipeSnap
 		}
 	}
 	archive := filepath.Join(cache, filepath.Base(source.URL))
-	roots, err := install.ReadSource(ctx, archive, "", "", source)
+	roots, err := install.ReadSource(ctx, archive, "", "", source, snapshot.ComponentRequirements()...)
 	if !errors.Is(err, security.ErrChecksumMismatch) && !os.IsNotExist(err) {
 		return roots, err
 	}
@@ -36,7 +53,7 @@ func (i *Installer) sourceRoots(ctx context.Context, snapshot install.RecipeSnap
 	if _, err := download.FetchForProvider(ctx, snapshot.Provider, source.URL, cache, nil, download.Options{MaxSize: install.SourceArchiveLimit}); err != nil {
 		return nil, err
 	}
-	return install.ReadSource(ctx, archive, "", "", source)
+	return install.ReadSource(ctx, archive, "", "", source, snapshot.ComponentRequirements()...)
 }
 
 func sourceSmoke(ctx context.Context, python, directory, entrypoint string, environment []string) error {
@@ -64,10 +81,13 @@ func (i *Installer) sourceCompletion() (string, bool, error) {
 	if readErr != nil {
 		return "", true, fmt.Errorf("%w: %v", errSourceRecordIncomplete, readErr)
 	}
-	if manifest == nil || manifest.Recipe == nil || manifest.Recipe.Source == nil || manifest.WorkingDir != snapshot.WorkingDir || manifest.PlanID == "" || manifest.Interpreter == nil || manifest.Interpreter.Path == "" || manifest.Interpreter.Version == "" || len(manifest.Inventory) == 0 || manifest.Version != manifest.Recipe.Source.Version || manifest.RecipeFingerprint != install.Fingerprint(*manifest.Recipe) {
+	if manifest == nil || manifest.Recipe == nil || manifest.Recipe.Source == nil || manifest.WorkingDir != snapshot.WorkingDir || manifest.PlanID == "" || manifest.Interpreter == nil || manifest.Interpreter.Path == "" || manifest.Interpreter.Version == "" || len(manifest.Inventory) == 0 || manifest.Version != manifest.Recipe.Source.Version || manifest.RecipeFingerprint != install.RecipeFingerprint(*manifest.Recipe) {
 		return "", true, errSourceRecordIncomplete
 	}
 	if err := install.ValidatePackageConstraints(manifest.AdditionalPackages, install.AdditionalPackagesLimit); err != nil {
+		return "", true, errors.Join(errSourceRecordIncomplete, err)
+	}
+	if _, err := install.ValidateComponents(*manifest.Recipe, manifest.SelectedComponents); err != nil {
 		return "", true, errors.Join(errSourceRecordIncomplete, err)
 	}
 	return manifest.Version, true, nil

@@ -86,6 +86,10 @@ parameters:
   disable-mmap: {type: bool, description: "Do not mmap safetensors"}
   disable-metadata: {type: bool, description: "Do not save prompt metadata in files"}
   disable-all-custom-nodes: {type: bool, description: "Do not load custom nodes"}
+  whitelist-custom-nodes: {type: string, description: "Custom node allowed with disable-all-custom-nodes; false omits the flag and is required for shared access"}
+  enable-manager: {type: bool, description: "Enable native Manager; shared access requires false"}
+  enable-manager-legacy-ui: {type: bool, description: "Enable Manager with its legacy interface; shared access requires false"}
+  enable-agent: {type: bool, description: "Enable the agent service; shared access requires false"}
   disable-partner-nodes: {type: bool, description: "Do not load paid API partner nodes"}
   offline: {type: bool, description: "Block frontend internet access and partner nodes"}
   disable-api-nodes: {type: bool, description: "Deprecated alias of offline"}

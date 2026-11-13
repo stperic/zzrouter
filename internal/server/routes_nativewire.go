@@ -110,21 +110,26 @@ func (s *Server) admitOpaqueForward(c *gin.Context, surface string, billed bool)
 		}
 		return true
 	}
-	if ac.Key == nil || !ac.Key.IsVirtual {
-		return true
+	if unenforceable := opaqueForwardLimit(ac); unenforceable != "" {
+		s.responders.openai.Forbidden(c, fmt.Sprintf("key %q cannot use %s: %s, and %s forwards requests "+
+			"without reading them, so it cannot tell which model one uses or what it costs", ac.Key.ID, surface, unenforceable, surface))
+		return false
 	}
-	var unenforceable string
+	return true
+}
+
+func opaqueForwardLimit(ac *AccessContext) string {
+	if ac == nil || ac.Key == nil || !ac.Key.IsVirtual {
+		return ""
+	}
 	switch {
 	case ac.Team != nil && len(ac.Team.AllowedModels) > 0:
-		unenforceable = "its team limits which models it may use"
+		return "its team limits which models it may use"
 	case control.HasSpendLimit(ac):
-		unenforceable = "it has a spend limit"
+		return "it has a spend limit"
 	case ac.Key.Quotas.TPMLimit > 0 || (ac.Team != nil && ac.Team.Quotas.TPMLimit > 0):
-		unenforceable = "it has a tokens-per-minute limit"
+		return "it has a tokens-per-minute limit"
 	default:
-		return true
+		return ""
 	}
-	s.responders.openai.Forbidden(c, fmt.Sprintf("key %q cannot use %s: %s, and %s forwards requests "+
-		"without reading them, so it cannot tell which model one uses or what it costs", ac.Key.ID, surface, unenforceable, surface))
-	return false
 }

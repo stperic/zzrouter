@@ -46,9 +46,10 @@ package version
 // Protocol 19 requires coordinator-initiated communication, enrollment and transfer.
 // Protocol 20 adds platform-specific managed Python package indexes.
 // Protocol 21 adds platform-specific companion builds, GPU requirements and MPS verification.
+// Protocol 22 adds release-curated source components and shared provider browser declarations.
 const (
-	ClusterProtocolVersion    = 21
-	MinClusterProtocolVersion = 21
+	ClusterProtocolVersion    = 22
+	MinClusterProtocolVersion = 22
 )
 
 // ProtocolWindow describes a coordinator's accepted cluster protocol range.

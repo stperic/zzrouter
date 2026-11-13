@@ -38,7 +38,13 @@ import (
 // The coordinator-group mode check lives here (not inside the group
 // helper) so the role subscriber can call startCoordinatorSubsystems
 // directly without re-acquiring role.Manager's mutex and deadlocking.
-func (s *Server) Start(ctx context.Context) error {
+func (s *Server) Start(ctx context.Context) (startErr error) {
+	//nolint:contextcheck // Failed startup drains with stop's independent budget even when ctx was cancelled.
+	defer func() {
+		if startErr != nil {
+			startErr = errors.Join(startErr, s.stop(constants.ShutdownDrainTimeout))
+		}
+	}()
 	s.startTime = utils.Now()
 	// Replace the Background-rooted shutdownCtx set at construction
 	// with a child of the caller's ctx so cancellation flows in.
@@ -84,6 +90,25 @@ func (s *Server) Stop() error {
 	return s.stop(constants.ShutdownDrainTimeout)
 }
 
+func (s *Server) readinessUnavailable() string {
+	if s.draining.Load() {
+		return "draining"
+	}
+	if s.role.Transitioning() {
+		return "transitioning"
+	}
+	if s.config != nil && s.config.Coordinator.ProviderBrowser.Origin != "" && s.role.Current().IsCoordinator() {
+		s.providerBrowser.RLock()
+		gateway := s.providerBrowser.gateway
+		available := gateway != nil && gateway.ctx.Err() == nil
+		s.providerBrowser.RUnlock()
+		if !available {
+			return "provider_browser_unavailable"
+		}
+	}
+	return ""
+}
+
 func (s *Server) stop(drainTimeout time.Duration) error {
 	slog.Info("Stopping zzrouter server gracefully")
 
@@ -108,6 +133,8 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 
 	s.idempotency.Stop()
 
+	// Close native browser streams before dependencies or the administrative listener drain.
+	browserErr := s.stopProviderBrowser(ctx)
 	httpErr := s.stopServing(ctx)
 
 	// Workers send a synchronous goodbye to the coordinator so it
@@ -141,7 +168,7 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 		stopErr = errors.Join(stopErr, s.providers.connectionStore.Close())
 	}
 	slog.Info("Node stopped gracefully")
-	return errors.Join(httpErr, stopErr)
+	return errors.Join(browserErr, httpErr, stopErr)
 }
 
 // startServing binds the HTTP listener, signals listenerReady, and
@@ -153,13 +180,28 @@ func (s *Server) startServing() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
 	}
+	if s.role.Current().IsCoordinator() {
+		if err := s.startProviderBrowser(s.shutdownCtx); err != nil {
+			_ = ln.Close()
+			return err
+		}
+	}
 	close(s.listenerReady)
 	s.warnIfCompatOpenToNetwork(ln.Addr())
-	if s.config.Node.IsTLSEnabled() {
-		slog.Info("Starting HTTPS server", "addr", s.httpServer.Addr, "cert", s.config.Node.TLSCert)
-		err = s.httpServer.ServeTLS(ln, s.config.Node.TLSCert, s.config.Node.TLSKey)
-	} else {
-		err = s.httpServer.Serve(ln)
+	served := make(chan error, 1)
+	go func() {
+		if s.config.Node.IsTLSEnabled() {
+			slog.Info("Starting HTTPS server", "addr", s.httpServer.Addr, "cert", s.config.Node.TLSCert)
+			served <- s.httpServer.ServeTLS(ln, s.config.Node.TLSCert, s.config.Node.TLSKey)
+		} else {
+			served <- s.httpServer.Serve(ln)
+		}
+	}()
+	select {
+	case err = <-served:
+	case err = <-s.servingErrors:
+		_ = s.httpServer.Close()
+		<-served
 	}
 	if err != nil && err != http.ErrServerClosed {
 		return err
@@ -381,7 +423,7 @@ func (s *Server) handleRoleTransition(t role.Transition) {
 // Callers MUST check s.role.Current().IsCoordinator() before invoking.
 // The gate lives in Server.Start and handleRoleTransition, not here,
 // because the subscriber runs under role.Manager's mutex and cannot
-// safely call role.Current() again (deadlock).
+// infer completed subsystem readiness from the newly published role.
 func (s *Server) startCoordinatorSubsystems() error {
 	if s.cluster.poller != nil {
 		s.cluster.poller.Start(s.shutdownCtx)
@@ -431,6 +473,11 @@ func (s *Server) startCoordinatorSubsystems() error {
 	// with.
 	if s.cluster.coordinator != nil {
 		s.cluster.coordinator.ReplayStartupReconnects()
+	}
+	select {
+	case <-s.listenerReady:
+		return s.startProviderBrowser(s.shutdownCtx)
+	default:
 	}
 	return nil
 }
@@ -577,13 +624,8 @@ func (s *Server) startCommonSubsystems() error {
 // makes every Stop a safe no-op when the paired Start never ran,
 // and moving the gate to callers avoids the role.Manager mutex
 // deadlock the subscriber would otherwise hit.
-//
-// Returns error for signature symmetry with startCoordinatorSubsystems
-// and to keep the door open for stop-failure aggregation; today every
-// leaf Stop is best-effort.
-//
-//nolint:unparam // symmetric with startCoordinatorSubsystems; reserved for stop-failure aggregation
 func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
+	browserErr := s.stopProviderBrowser(ctx)
 	if s.cluster.poller != nil {
 		s.cluster.poller.Stop(ctx)
 	}
@@ -631,7 +673,7 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
 	}
 	s.closeAuditSink()
 	s.access.Stop(ctx)
-	return nil
+	return browserErr
 }
 
 // stopCommonSubsystems stops subsystems that run on every node.

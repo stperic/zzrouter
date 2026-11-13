@@ -7,6 +7,11 @@
   writes on directory durability warnings, and isolate OAuth admission budgets
   and retained state. Guard terminal navigation while durable writes are pending.
 
+- Select optional release-curated source dependencies through the existing
+  verified install plan, hash-pinned environment and activation rollback.
+  ComfyUI offers its release's Manager libraries; selection does not enable
+  Manager. REST, MCP and guided installation preserve the same selection.
+
 - Support managed ComfyUI on Apple Silicon through the existing install, upgrade and run APIs. Verify native PyTorch MPS execution, admit reservations against freshly available unified RAM and preserve shared-pool commitments without inventing GPU attribution or freed memory. Linux and Windows effective recipes remain unchanged.
 
 - Select OS-specific companion builds and fixed verification checks through managed Python recipes. Add PyTorch MPS verification and environment observations while retaining existing platform index settings. GPU prerequisites can select a vendor per OS. Raise cluster current/minimum from 20 to 21; upgrade coordinator and workers together.

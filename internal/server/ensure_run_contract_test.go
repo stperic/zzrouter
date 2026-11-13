@@ -505,7 +505,7 @@ func TestServedSurfaces(t *testing.T) {
 			internal := gin.New()
 			internal.GET("/zzrouter/v1/internal/runs", executor.HandleInternalListRuns)
 			internal.GET("/zzrouter/v1/internal/runs/:id", executor.HandleInternalGetRun)
-			ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+			ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
 			logs := &LogsHandlers{appMgr: r.mgr, getClusterClient: func() mesh.ClusterClient { return nil }, isLocalNode: func(n string) bool { return n == "node-a" }}
 			public := gin.New()
 			public.GET("/zzrouter/v1/runs/:id", ctrl.GetRun)

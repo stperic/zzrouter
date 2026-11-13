@@ -45,6 +45,8 @@ func getNextTestPort() int {
 
 // TestNodeConfig contains configuration options for creating test servers.
 type TestNodeConfig struct {
+	// ProviderBrowser supplies opt-in native browser settings for lifecycle fixtures.
+	ProviderBrowser pkgConfig.ProviderBrowserConfig
 	// OAuthIssuer overrides the local OAuth issuer in integration fixtures.
 	OAuthIssuer string
 	// OAuthEnabled overrides the default-on browser authority.
@@ -160,6 +162,7 @@ func BuildTestServer(cfg TestNodeConfig) (*Server, func(), error) {
 		Security: pkgConfig.SecurityConfig{Credentials: pkgConfig.CredentialsConfig{
 			KeyFile: cfg.CredentialsKeyFile,
 		}},
+		Coordinator: pkgConfig.CoordinatorConfig{ProviderBrowser: cfg.ProviderBrowser},
 	}
 	server, err := NewServerWithOptions(hostCfg)
 	if err != nil {

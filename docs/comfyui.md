@@ -1,6 +1,6 @@
 # ComfyUI GPU tenancy
 
-zzRouter launches ComfyUI as a node-scoped provider and manages its GPU reservation, idle lifetime and memory-pressure eviction. ComfyUI workflows and checkpoints stay outside the model catalog. Clients call ComfyUI directly using the run's `base_url`; zzRouter does not proxy its API.
+zzRouter launches ComfyUI as a node-scoped provider and manages its GPU reservation, idle lifetime and memory-pressure eviction. ComfyUI workflows and checkpoints stay outside the model catalog. Shared users open the run's authenticated `browser.url` when the coordinator's separate-origin gateway is configured. Private local clients can use the engine API directly.
 
 An isolated node-scoped launch job completes when the engine becomes healthy and its reservation is admitted. If admission changes a model run's serving state, the job also waits for that catalog change to reach the coordinator, including an eviction whose stop fails. Unconfirmed stops do not count as successful evictions or reclaimed memory. A failed acknowledgment keeps the job failed even when the engine is healthy: `code: catalog_publication_failed`, `catalog_publication: failed` and `run_status` distinguish the publication failure from an engine failure. Inspect the returned run and existing job before launching again. Later stops consider their own effects, rather than prior launch evictions.
 
@@ -66,6 +66,27 @@ mv "$provider_dir/venv" "$backup_dir/venv"
 ```
 
 If only one payload exists, move that directory. Retry the install request after moving the payloads aside; existing data stays in use. Configure node parameters through `PATCH /zzrouter/v1/providers/comfyui/parameters` using the existing `nodes.<node>.parameters` tree. Defaults and the selected node are the configuration tiers; model tiers and endpoint overlays are refused.
+
+## Release-managed optional dependencies
+
+The release declares the optional `manager` component from its pinned
+`manager_requirements.txt`. It installs the native Manager libraries through the
+existing verified install flow. Installing these libraries does not enable
+Manager; shared-user mode keeps Manager inactive.
+
+Use `zz_provider_install` with provider, node, `plan_only: true`,
+`components: ["manager"]` and `force: true` when replacing a managed copy. Inspect
+the returned recipe, `selected_components`, full dependency inventory and
+`plan_id`, then repeat the same options without `plan_only` and with
+`expected_plan_id` set to that ID. Follow its job with `zz_job`. Omitted components
+preserve the installed selection; `components: []` removes the optional libraries
+through a newly staged environment. This does not remove operator data.
+
+The TUI's provider list and detail views offer **O: dependencies** for an installed
+provider. The install wizard offers the same selection. It previews the changed
+plan before **Run All** or guided execution. Selection and replacement semantics
+are retained through every step. Arbitrary custom-node libraries remain protected
+operator grants, described below.
 
 ## Custom-node dependencies
 
@@ -199,7 +220,7 @@ Send `POST /zzrouter/v1/runs` with `{"provider":"comfyui","node":"localai"}`. Om
 
 The CLI equivalent is `zzrouter run --provider comfyui --node localai --watch`. MCP `zz_run_start` and `zz_run_preview` accept the same provider without a model, and run tools return `base_url`.
 
-Port 8188 is a firm singleton pool pin. An occupied port fails because the pool has no alternative port. Choose another singleton range in provider configuration when needed. URLs use the node address selected from bind and advertised IP settings, with IPv6 brackets when required. Keep the ComfyUI `listen` parameter consistent with the address family and reachability clients need.
+Port 8188 is a firm singleton pool pin. An occupied port fails because the pool has no alternative port. Choose another singleton range in provider configuration when needed. Direct engine URLs use the node's advertised address, with IPv6 brackets when required. The shared default binds the engine to IPv4 loopback, so remote users use `browser.url` rather than exposing that port.
 
 ## Memory and activity
 
@@ -226,7 +247,33 @@ Observed-busy runs are protected. A direct submission between an idle sample and
 
 ## Access
 
-ComfyUI has no authentication and custom nodes execute as the host account. Anyone who can reach its port can use the GPU and that account. Use `listen: "127.0.0.1"` for single-host access, or restrict network access at the host boundary. A zzRouter admin key controls the run lifecycle; it does not authenticate direct ComfyUI requests or meter them.
+The shipped shared launch uses `listen: "127.0.0.1"`, disables Manager, its legacy
+alias and agent startup, and disables all custom nodes with no whitelist. The
+whitelist parameter is `false`, which omits the upstream flag. Existing custom-node
+files and workflows remain on disk. Selecting the optional `manager` dependency
+component installs its libraries through the managed installer; it does not enable
+Manager or permit runtime installation.
+
+Configure the [separate provider origin](configuration.md#native-provider-browser-access)
+on the coordinator, start ComfyUI through the existing run flow, follow its job,
+and inspect `zz_runs.browser.url`. The TUI's run details show the same URL. The
+gateway passes native pages, assets, uploads, downloads and WebSockets through the
+existing coordinator-to-worker mTLS transport. Every tab's URL names its own run.
+The engine receives no zzRouter key or browser cookie.
+
+Only a ready run with evidence captured during its managed launch qualifies.
+Changing the installed runtime, stopping the run or using a private launch that
+enables Manager, custom nodes, agents or a network listener removes shared access.
+Old processes without a launch receipt do not become eligible after an update.
+Shared access uses the release's flag declarations. Active custom CLI flags added
+under `schema` and values that could become additional switches do not qualify.
+The native UI remains ComfyUI's UI, with core-node workflows and a shared workspace.
+Per-user file isolation and arbitrary custom-node installation are outside this mode.
+
+Direct ComfyUI requests have no zzRouter authentication or quota enforcement.
+An operator can choose private launch parameters, but must protect access to that
+engine port. Request and connection limits on the authenticated gateway do not
+measure or limit asynchronous workflow execution.
 
 ### Catalog queries
 

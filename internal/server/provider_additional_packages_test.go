@@ -49,7 +49,7 @@ func TestAdditionalPackagesEnvironmentReportsPolicyDrift(t *testing.T) {
 			require.NoError(t, yaml.Unmarshal(body, &observed))
 			grant := observed.Runtimes["engine/engine"]
 			result := providerEnvironment{Installed: true, DesiredInstall: &config.ResolvedInstall{Recipe: recipe}, InstallAuthority: &install.PolicyCapabilities{Grant: &grant}}
-			result.recordInstall(&fsroot.InstallManifest{Recipe: &recipe, RecipeFingerprint: install.Fingerprint(recipe), AdditionalPackages: actual})
+			result.recordInstall(&fsroot.InstallManifest{Recipe: &recipe, RecipeFingerprint: install.RecipeFingerprint(recipe), AdditionalPackages: actual})
 			want := change == "add" || change == "remove" || change == "constraint"
 			require.Equal(t, want, result.RecipeDrift)
 			wire, err := json.Marshal(result)
@@ -90,10 +90,31 @@ func TestInstalledSourcePolicyEvidenceNeverBecomesAnOverride(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mgr.Stop(t.Context()) })
 	e := &ProvidersExecutor{mgr: mgr, nodeName: "worker", configStore: store, appsConfig: func() *config.AppsConfig { return apps }}
-	manifest := &fsroot.InstallManifest{Version: recipe.Source.Version, Recipe: &recipe, RecipeFingerprint: install.Fingerprint(recipe), PolicyFingerprint: "historical-policy", WorkingDir: "source", PlanID: "completed", Interpreter: &fsroot.ManifestInterpreter{Path: "python", Version: "3.12.1"}, Inventory: []fsroot.ManifestPackage{{Name: "torch", Version: "2.5", Requested: true}}}
+	manifest := &fsroot.InstallManifest{Version: recipe.Source.Version, Recipe: &recipe, RecipeFingerprint: install.RecipeFingerprint(recipe), PolicyFingerprint: "historical-policy", WorkingDir: "source", PlanID: "completed", Interpreter: &fsroot.ManifestInterpreter{Path: "python", Version: "3.12.1"}, Inventory: []fsroot.ManifestPackage{{Name: "torch", Version: "2.5", Requested: true}}}
 	snapshot, err := e.installedRecipeAuthority("comfyui", "comfyui", manifest)
 	require.NoError(t, err, "source with no added roots retains release authority despite historical policy evidence")
 	require.Equal(t, "release", snapshot.Authority)
+	prior := recipe
+	prior.Components = nil
+	manifest.Recipe = &prior
+	_, err = e.installedRecipeAuthority("comfyui", "comfyui", manifest)
+	require.NoError(t, err, "new optional component choices do not revoke the unchanged installed source")
+	manifest.SelectedComponents = []string{"manager"}
+	_, err = e.installedRecipeAuthority("comfyui", "comfyui", manifest)
+	require.Error(t, err, "a selected component needs its installed release declaration")
+	manifest.Recipe = &recipe
+	manifest.SelectedComponents = []string{"manager"}
+	snapshot, err = e.installedRecipeAuthority("comfyui", "comfyui", manifest)
+	require.NoError(t, err)
+	require.Equal(t, []string{"manager"}, snapshot.SelectedComponents)
+	historical := recipe
+	historical.Components = map[string]config.InstallComponent{"retired": {Description: "Historical libraries", Requirements: "prior_requirements.txt"}}
+	manifest.Recipe, manifest.SelectedComponents = &historical, []string{"retired"}
+	snapshot, err = e.installedRecipeAuthority("comfyui", "comfyui", manifest)
+	require.NoError(t, err, "diagnostics validate selection against its installed recipe")
+	require.Equal(t, []string{"retired"}, snapshot.SelectedComponents)
+	manifest.Recipe = &recipe
+	manifest.SelectedComponents = nil
 	manifest.AdditionalPackages = map[string]string{"torchaudio": ">=2"}
 	manifest.Inventory = append(manifest.Inventory, fsroot.ManifestPackage{Name: "torchaudio", Version: "2.5", Requested: true})
 	_, err = e.installedRecipeAuthority("comfyui", "comfyui", manifest)

@@ -5839,6 +5839,10 @@ paths:
         in a temporary managed venv without installing the engine. No active runtime
         is replaced and no job is created. The response contains a plan_id, field
         provenance, authority fingerprints and a dependency inventory.
+        An explicit Idempotency-Key replays that reviewed plan; execution still
+        re-resolves and checks expected_plan_id before changing the runtime.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: false
         content:
@@ -5855,6 +5859,21 @@ paths:
                   - type: object
                     properties:
                       data: { $ref: '#/components/schemas/InstallPlan' }
+        '422':
+          description: The Idempotency-Key was recorded against a different body; code is idempotency_key_conflict.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: The idempotency store is full with requests still in flight; code is idempotency_store_full.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '504':
+          description: A duplicate exceeded its wait limit or replay window; code is idempotency_wait_timeout.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: No provider by that name, or the target node is unknown.
@@ -12105,6 +12124,12 @@ components:
       properties:
         version: { type: string }
         runtime: { type: string, description: Declared runtime ID; no recipe or command is accepted in this body. }
+        components:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items: { type: string, pattern: '^[a-z][a-z0-9-]{0,47}$' }
+          description: Release-declared optional source dependency components. Omit to preserve the installed selection; an explicit empty array removes all optional components. Installs libraries only and never enables Manager.
         action: { type: string, enum: [install, upgrade], description: Preview and guided action; install/upgrade routes select their own action. }
         force: { type: boolean }
         expected_plan_id: { type: string, pattern: '^[a-f0-9]{64}$', description: Required for guided Python execution; a mismatch returns 409. }
@@ -12121,6 +12146,18 @@ components:
       additionalProperties: false
       description: Typed merge-patch leaves; null deletes an override. Mandatory effective fields and serving checks cannot be removed.
       properties:
+        components:
+          type: object
+          readOnly: true
+          maxProperties: 16
+          description: Release-owned optional requirements from the same checksum-verified source archive. Cannot be overridden through configuration tiers.
+          additionalProperties:
+            type: object
+            required: [description, requirements]
+            additionalProperties: false
+            properties:
+              description: { type: string, maxLength: 256 }
+              requirements: { type: string, maxLength: 256 }
         package: { type: string, maxLength: 128 }
         pinned_version: { type: string, description: Fresh-install seed; upgrades resolve latest. }
         version_constraint: { type: string, maxLength: 256 }
@@ -12214,6 +12251,7 @@ components:
                 fingerprint: { type: string }
                 policy_fingerprint: { type: string }
                 additional_packages: { type: object, maxProperties: 128, additionalProperties: { type: string }, description: Human-selected additive roots from the protected node policy; source recipe authority remains release-owned. }
+                selected_components: { type: array, items: { type: string }, description: Effective sorted release-component selection captured by this plan and persisted on activation. }
                 authority: { type: string, enum: [release, operator] }
                 node: { type: string }
         dependency_inventory:
@@ -13150,6 +13188,14 @@ components:
               exclusiveMinimum: true
               description: Engine-reported cache concurrency multiplier at context_tokens, preserving fractions; scheduler limits apply separately.
         base_url: { type: string, format: uri, description: Direct engine URL using the node advertised address; no zzRouter authentication or proxy. }
+        browser:
+          type: object
+          description: Native UI eligibility checked by the running node against its managed installation and actual launch. Absent for an ineligible or stopped run. URL is supplied only while the coordinator's separately configured browser gateway is serving.
+          additionalProperties: false
+          required: [name]
+          properties:
+            name: { type: string }
+            url: { type: string, format: uri, description: Authenticated native browser URL. Open this URL instead of exposing the engine port. }
         pinned: { type: boolean, description: True when negative resolved launch keep-alive protects this run from router idle expiry and pressure reclaim. Inference hints never change this fact. Omitted when false. }
         engine_busy: { type: boolean, description: Last observed queue state; observed-busy runs are protected from idle stops. }
         memory_commitments_mib:

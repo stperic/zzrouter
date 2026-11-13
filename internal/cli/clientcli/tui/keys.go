@@ -80,39 +80,41 @@ var LogsKeys = LogsKeyMap{
 
 // ProvidersKeyMap defines key bindings for the apps view (list + detail).
 type ProvidersKeyMap struct {
-	Up        key.Binding
-	Down      key.Binding
-	PageUp    key.Binding
-	PageDown  key.Binding
-	Home      key.Binding
-	End       key.Binding
-	Enter     key.Binding
-	Edit      key.Binding
-	Install   key.Binding
-	Uninstall key.Binding
-	Upgrade   key.Binding
-	Logs      key.Binding
-	Refresh   key.Binding
-	Back      key.Binding
-	Quit      key.Binding
+	Up           key.Binding
+	Down         key.Binding
+	PageUp       key.Binding
+	PageDown     key.Binding
+	Home         key.Binding
+	End          key.Binding
+	Enter        key.Binding
+	Edit         key.Binding
+	Install      key.Binding
+	Uninstall    key.Binding
+	Upgrade      key.Binding
+	Dependencies key.Binding
+	Logs         key.Binding
+	Refresh      key.Binding
+	Back         key.Binding
+	Quit         key.Binding
 }
 
 var ProvidersKeys = ProvidersKeyMap{
-	Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/↓", "navigate")),
-	Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "navigate")),
-	PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("PgUp", "page up")),
-	PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("PgDn", "page down")),
-	Home:      key.NewBinding(key.WithKeys("home"), key.WithHelp("Home", "top")),
-	End:       key.NewBinding(key.WithKeys("end"), key.WithHelp("End", "bottom")),
-	Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", "details")),
-	Edit:      key.NewBinding(key.WithKeys("e", "E"), key.WithHelp("E", "parameters")),
-	Install:   key.NewBinding(key.WithKeys("a", "A"), key.WithHelp("A", "install")),
-	Uninstall: key.NewBinding(key.WithKeys("d", "D"), key.WithHelp("D", "uninstall")),
-	Upgrade:   key.NewBinding(key.WithKeys("u", "U"), key.WithHelp("U", "upgrade")),
-	Logs:      key.NewBinding(key.WithKeys("l", "L"), key.WithHelp("L", "logs")),
-	Refresh:   key.NewBinding(key.WithKeys("r", "R"), key.WithHelp("R", "refresh")),
-	Back:      key.NewBinding(key.WithKeys("esc", "q"), key.WithHelp("Esc", "back")),
-	Quit:      key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
+	Up:           key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/↓", "navigate")),
+	Down:         key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "navigate")),
+	PageUp:       key.NewBinding(key.WithKeys("pgup"), key.WithHelp("PgUp", "page up")),
+	PageDown:     key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("PgDn", "page down")),
+	Home:         key.NewBinding(key.WithKeys("home"), key.WithHelp("Home", "top")),
+	End:          key.NewBinding(key.WithKeys("end"), key.WithHelp("End", "bottom")),
+	Enter:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", "details")),
+	Edit:         key.NewBinding(key.WithKeys("e", "E"), key.WithHelp("E", "parameters")),
+	Install:      key.NewBinding(key.WithKeys("a", "A"), key.WithHelp("A", "install")),
+	Uninstall:    key.NewBinding(key.WithKeys("d", "D"), key.WithHelp("D", "uninstall")),
+	Upgrade:      key.NewBinding(key.WithKeys("u", "U"), key.WithHelp("U", "upgrade")),
+	Dependencies: key.NewBinding(key.WithKeys("o", "O"), key.WithHelp("O", "dependencies")),
+	Logs:         key.NewBinding(key.WithKeys("l", "L"), key.WithHelp("L", "logs")),
+	Refresh:      key.NewBinding(key.WithKeys("r", "R"), key.WithHelp("R", "refresh")),
+	Back:         key.NewBinding(key.WithKeys("esc", "q"), key.WithHelp("Esc", "back")),
+	Quit:         key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
 }
 
 func (k ProvidersKeyMap) ListHintsString() string {
@@ -122,6 +124,7 @@ func (k ProvidersKeyMap) ListHintsString() string {
 		Hint(k.Install, "install"),
 		Hint(k.Uninstall, "uninstall"),
 		Hint(k.Upgrade, "upgrade"),
+		Hint(k.Dependencies, "dependencies"),
 		Hint(k.Logs, "logs"),
 		Hint(k.Refresh, "refresh"),
 		Hint(k.Back, "back"),
@@ -132,6 +135,7 @@ func (k ProvidersKeyMap) DetailHintsString() string {
 	return JoinHints(
 		Hint(k.Up, "scroll"),
 		Hint(k.Edit, "parameters"),
+		Hint(k.Dependencies, "dependencies"),
 		Hint(k.Back, "back"),
 	)
 }

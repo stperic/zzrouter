@@ -262,7 +262,7 @@ func (m *ProviderAppManager) prepareRun(ctx context.Context, inst *instance.Inst
 	inst.SetAdmissionEffects(effects)
 	var prepared preparedLaunch
 	if err == nil {
-		prepared, err = m.prepareLaunchFeatures(features, argvFeatures.Params, selection.key, endpoint, inst.Port)
+		prepared, err = m.prepareLaunchFeatures(ctx, features, argvFeatures.Params, selection.key, endpoint, inst.Port)
 	}
 	if err != nil {
 		return admittedRun{}, err
@@ -1204,7 +1204,7 @@ func (m *ProviderAppManager) PreviewLaunch(ctx context.Context, req EnsureReques
 	return preview, err
 }
 
-func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, argvParams map[string]string, configKey, endpoint string, port int) (preparedLaunch, error) {
+func (m *ProviderAppManager) prepareLaunchFeatures(ctx context.Context, features LaunchParameters, argvParams map[string]string, configKey, endpoint string, port int) (preparedLaunch, error) {
 	params, env, svcCfg := features.Params, features.Environment, features.Config
 	budget := launchBudget(features.declared)
 	if budget != nil && budget.Kind == schema.MemoryReserveMiB {
@@ -1221,10 +1221,12 @@ func (m *ProviderAppManager) prepareLaunchFeatures(features LaunchParameters, ar
 		runtime = svcCfg.Name
 	}
 	states, probes := m.launchFeatureEvidence(configKey, svcCfg.Features, params, features.declared.ForEndpoint(endpoint))
-	return preparedLaunch{
+	prepared := preparedLaunch{
 		launch: launch, config: svcCfg, parameters: features, executionEnvironment: features.ExecutionEnvironment,
 		resolved: instance.Resolved{Features: states, FeatureHTTP: probes, WorkingDir: launch.WorkingDir, Commitments: features.Commitments, Runtime: runtime, Parameters: params, Environment: env, Files: mergeStringMaps(files, features.Files), Execution: executionDigest(svcCfg, features.RuntimeKey, launch.Command), WireEndpoints: wireEndpoints(svcCfg)},
-	}, nil
+	}
+	prepared.resolved.Browser = m.captureBrowserReceipt(ctx, prepared, port)
+	return prepared, nil
 }
 
 // mergeStringMaps merges two string maps, with overrides taking precedence.

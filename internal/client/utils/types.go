@@ -75,6 +75,7 @@ type RunPreview struct {
 
 // Instance represents a running app instance
 type Instance struct {
+	Browser         *RunBrowser      `json:"browser,omitempty"`
 	LastRefusal     *httperr.Refusal `json:"last_refusal,omitempty"`
 	RecordOnly      bool             `json:"record_only,omitempty"`
 	BaseURL         string           `json:"base_url,omitempty"`
@@ -98,6 +99,12 @@ type Instance struct {
 	KeepAlive       string           `json:"keep_alive,omitempty"`     // Keep-alive duration
 	LastActivity    string           `json:"last_activity,omitempty"`  // Last activity time
 	LaunchCommand   *LaunchCommand   `json:"launch_command,omitempty"` // Structured launch command
+}
+
+// RunBrowser carries native UI access returned by the coordinator.
+type RunBrowser struct {
+	Name string `json:"name"`
+	URL  string `json:"url,omitempty"`
 }
 
 // DisplayStatus distinguishes retained requests from runs.

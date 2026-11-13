@@ -59,12 +59,18 @@ func extensionWheel(t *testing.T, directory, name, dependency string) install.Re
 	return install.ResolvedPackage{Name: name, Version: "1.0", Requested: true, ArtifactURL: "https://files.pythonhosted.org/packages/" + filename, SHA256: fmt.Sprintf("%x", sha256.Sum256(archive.Bytes()))}
 }
 
-func extensionArchive(t *testing.T, snapshot *install.RecipeSnapshot, directory string) {
+func extensionArchive(t *testing.T, snapshot *install.RecipeSnapshot, directory string, members ...map[string]string) {
 	t.Helper()
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
 	w := tar.NewWriter(gz)
-	for path, body := range map[string]string{"release/requirements.txt": "zzrouter-test-base>=1,<2\n", "release/main.py": "import argparse\nargparse.ArgumentParser().parse_args()\n"} {
+	files := map[string]string{"release/requirements.txt": "zzrouter-test-base>=1,<2\n", "release/main.py": "import argparse\nargparse.ArgumentParser().parse_args()\n"}
+	for _, additions := range members {
+		for path, body := range additions {
+			files[path] = body
+		}
+	}
+	for path, body := range files {
 		require.NoError(t, w.WriteHeader(&tar.Header{Name: path, Typeflag: tar.TypeReg, Mode: 0644, Size: int64(len(body))}))
 		_, err := w.Write([]byte(body))
 		require.NoError(t, err)
@@ -72,7 +78,7 @@ func extensionArchive(t *testing.T, snapshot *install.RecipeSnapshot, directory 
 	require.NoError(t, w.Close())
 	require.NoError(t, gz.Close())
 	snapshot.Recipe.Source.SHA256 = fmt.Sprintf("%x", sha256.Sum256(archive.Bytes()))
-	snapshot.Fingerprint = install.Fingerprint(snapshot.Recipe)
+	snapshot.Fingerprint = install.RecipeFingerprint(snapshot.Recipe)
 	cache := filepath.Join(directory, config.SubdirCandidate, snapshot.Recipe.Source.SHA256)
 	require.NoError(t, os.MkdirAll(cache, 0700))
 	require.NoError(t, os.WriteFile(filepath.Join(cache, filepath.Base(snapshot.Recipe.Source.URL)), archive.Bytes(), 0600))

@@ -88,7 +88,16 @@ func (e *ProvidersExecutor) installedRecipeAuthority(provider, runtime string, m
 		actual.Nodes[node] = spec
 	}
 	if manifest != nil && manifest.Recipe != nil {
-		installed := &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{runtime: *manifest.Recipe}}
+		recipe := *manifest.Recipe
+		if _, err := install.ValidateComponents(recipe, manifest.SelectedComponents); err != nil {
+			return install.RecipeSnapshot{}, err
+		}
+		if recipe.Source != nil {
+			current := release.Install.Runtimes[runtime]
+			// Available choices do not change installed dependencies or authorize new imports.
+			recipe.Components = current.Components
+		}
+		installed := &config.InstallConfig{Runtimes: map[string]config.InstallRecipe{runtime: recipe}}
 		actual.Install = installed
 		// An operator-approved restatement still requires operator authority.
 		if manifest.PolicyFingerprint != "" && manifest.Recipe.Source == nil {

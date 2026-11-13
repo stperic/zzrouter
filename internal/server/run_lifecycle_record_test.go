@@ -112,7 +112,7 @@ func TestRunLifecycleRecordExecutor(t *testing.T) {
 			var refusal map[string]any
 			require.NoError(t, json.Unmarshal(actual, &refusal))
 			assert.Equal(t, string(httperr.CodeUnknownFlag), refusal["code"])
-			controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, nil, &NodeIdentity{name: "worker"}, nil)
+			controller := NewRunsController(NewRunsService(&lifecycleRouter{engine: engine}), nil, nil, &NodeIdentity{name: "worker"}, nil, nil)
 			public := gin.New()
 			public.GET("/runs", controller.ListRuns)
 			filtered := httptest.NewRecorder()

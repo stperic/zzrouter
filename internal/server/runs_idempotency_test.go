@@ -40,7 +40,7 @@ func TestRunRestartIdempotencyReplay(t *testing.T) {
 			JobID: h.ID(), Status: "starting",
 		})
 	})
-	ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil)
+	ctrl := NewRunsController(NewRunsService(&lifecycleRouter{engine: internal}), nil, nil, nil, nil, nil)
 	s := &Server{idempotency: newIdempotencyStore()}
 	s.idempotency.now = fc.Now
 	public := gin.New()

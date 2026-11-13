@@ -183,3 +183,72 @@ func TestManager_InjectedClock_UsedForTransitionTime(t *testing.T) {
 	require.NoError(t, m.Set(context.Background(), RoleCoordinator, ""))
 	assert.Equal(t, fixed, at)
 }
+
+func TestManager_CurrentAvailableWhileSubscriberDrains(t *testing.T) {
+	m, err := NewManager(RoleCoordinator)
+	require.NoError(t, err)
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	m.Subscribe(func(tr Transition) {
+		close(entered)
+		roleRead := make(chan Role, 1)
+		go func() { roleRead <- m.Current() }()
+		select {
+		case got := <-roleRead:
+			assert.Equal(t, tr.To, got)
+		case <-time.After(time.Second):
+			t.Error("authorization cannot read role while teardown waits for it")
+		}
+		<-release
+	})
+	go func() { defer close(done); _ = m.Set(t.Context(), RoleWorker, "demote") }()
+	<-entered
+	read := make(chan bool, 1)
+	go func() { read <- m.Transitioning() }()
+	select {
+	case active := <-read:
+		require.True(t, active)
+	case <-time.After(time.Second):
+		t.Fatal("readiness blocked behind subsystem teardown")
+	}
+	releaseOnce.Do(func() { close(release) })
+	<-done
+	require.False(t, m.Transitioning())
+	require.Equal(t, RoleWorker, m.Current())
+}
+
+func TestManager_TransitionWaitsForSubscribersAndRechecksCancellation(t *testing.T) {
+	m, err := NewManager(RoleWorker)
+	require.NoError(t, err)
+	entered, release, first := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	m.Subscribe(func(Transition) { close(entered); <-release })
+	go func() { defer close(first); _ = m.Set(t.Context(), RoleCoordinator, "promote") }()
+	<-entered
+	select {
+	case <-first:
+		t.Fatal("Set returned before subscribers finished")
+	default:
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	second := make(chan error, 1)
+	go func() { second <- m.Set(ctx, RoleDisabled, "cancelled transition") }()
+	require.ErrorIs(t, <-second, context.Canceled)
+	releaseOnce.Do(func() { close(release) })
+	<-first
+	require.Equal(t, RoleCoordinator, m.Current())
+}
+
+func TestManager_SubscriberCanUnsubscribeAndReadCurrent(t *testing.T) {
+	m, err := NewManager(RoleWorker)
+	require.NoError(t, err)
+	var unsubscribe func()
+	calls := 0
+	unsubscribe = m.Subscribe(func(tr Transition) { require.Equal(t, tr.To, m.Current()); calls++; unsubscribe() })
+	require.NoError(t, m.Set(t.Context(), RoleCoordinator, "promote"))
+	require.NoError(t, m.Set(t.Context(), RoleWorker, "demote"))
+	require.Equal(t, 1, calls)
+}
