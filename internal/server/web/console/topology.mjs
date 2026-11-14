@@ -1,4 +1,4 @@
-import { layoutInput, layoutPositions, topologySignature } from './topology-data.mjs';
+import { computeCard, layoutInput, layoutPositions, topologySignature } from './topology-data.mjs';
 import { providerIcon } from './provider-icons.mjs';
 
 const icons = { client: 'client', compute: 'node', coordinator: 'coordinator', cloud: 'cloud', provider: 'provider' };
@@ -15,16 +15,22 @@ const style = [
   { selector: 'node[kind="coordinator"]', style: { width: 60, height: 60, 'background-width': [44, 16], 'background-height': [44, 16] } },
   { selector: 'node[kind="provider"]', style: { width: 42, height: 42, 'background-width': [30, 14], 'background-height': [30, 14], 'text-max-width': 110 } },
   { selector: 'node[kind="client"], node[kind="cloud"]', style: { 'text-max-width': 180 } },
-  { selector: 'node[kind="compute"]', style: { 'text-max-width': 130 } },
-  { selector: 'node[kind="metrics"]', style: { width: 210, height: 120, 'background-image': 'none', 'font-size': 20, 'font-weight': 400,
-    'text-valign': 'center', 'text-halign': 'center', 'text-margin-y': 0, 'text-max-width': 210, 'text-wrap': 'wrap', 'text-background-opacity': 0 } },
+  { selector: 'node[kind="compute"]', style: { width: computeCard.width, height: computeCard.height,
+    'background-color': '#fff', 'background-opacity': 1, 'border-width': 1.5, 'border-color': '#cddbd3',
+    'background-position-x': [20, 46], 'background-position-y': [16, 8],
+    'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': -computeCard.width + 78, 'text-margin-y': -66,
+    'text-wrap': 'ellipsis', 'text-max-width': computeCard.width - 98, 'text-background-opacity': 0, 'font-weight': 600 } },
+  { selector: 'node[kind="metrics"]', style: { width: 1, height: 1, 'background-image': 'none', 'font-size': 20, 'line-height': 1.2, 'font-weight': 400,
+    'text-valign': 'bottom', 'text-halign': 'right', 'text-justification': 'left', 'text-margin-y': 0,
+    'text-max-width': computeCard.width - 40, 'text-wrap': 'wrap', 'text-background-opacity': 0 } },
   { selector: 'node[kind="activity"]', style: { width: 24, height: 24, shape: 'ellipse', label: '', 'background-image': 'none', 'background-color': '#279861', 'background-opacity': 1, opacity: 0 } },
   { selector: ':parent', style: { 'background-color': '#f4f7f5', 'background-opacity': 0.6, 'border-color': '#e0e7e3', 'border-width': 1, 'border-style': 'dashed',
     'background-image': 'none', 'text-valign': 'top', 'text-halign': 'center', 'text-margin-x': 0, 'text-margin-y': 22, 'font-size': 18, 'font-weight': 600,
     'text-wrap': 'none', 'text-background-opacity': 0, padding: 28, 'text-max-width': 260, 'compound-sizing-wrt-labels': 'include' } },
   { selector: 'edge', style: { width: 1.5, 'line-color': '#bdcbc4', 'curve-style': 'round-taxi', 'taxi-direction': 'downward', 'taxi-turn': '50%', 'taxi-radius': 8, 'target-arrow-shape': 'none' } },
   { selector: 'edge[tone="bad"]', style: { 'line-color': '#c68d87', 'line-style': 'dashed' } },
-  { selector: 'node.selected', style: { 'underlay-color': '#4487be', 'underlay-padding': 7, 'underlay-opacity': 0.14 } },
+  { selector: 'node.selected[!owner]', style: { 'underlay-color': '#4487be', 'underlay-padding': 7, 'underlay-opacity': 0.14 } },
+  { selector: 'node.selected[kind="compute"]', style: { 'border-color': '#67967b', 'background-color': '#f2f8f4' } },
 ];
 
 // Membership or label-size changes run ELK. Later layouts invalidate earlier ones.
@@ -37,7 +43,7 @@ export function graphLayout(cy, elk, signal, failed) {
     let own = revision;
     try {
       const attached = elements.filter(({ data }) => data.kind === 'compute').flatMap(({ data }) => [
-        { data: { id: `metrics:${data.id}`, owner: data.id, kind: 'metrics', selection: data.selection, parent: data.parent, label: `${data.metrics || ''}\n${data.activityLabel || 'Activity unavailable'}` } },
+        { data: { id: `metrics:${data.id}`, owner: data.id, kind: 'metrics', selection: data.selection, parent: data.parent, label: [data.caption, data.metrics].filter(Boolean).join('\n') } },
         { data: { id: `activity:${data.id}`, owner: data.id, kind: 'activity', selection: data.selection, parent: data.parent, until: data.activityUntil || 0, active: data.active === true } },
       ]);
       cy.batch(() => {
@@ -71,7 +77,8 @@ export function graphLayout(cy, elk, signal, failed) {
 function positionAttached(cy) {
   cy.nodes('[owner]').positions(node => {
     const point = cy.getElementById(node.data('owner')).position();
-    return node.data('kind') === 'metrics' ? { x: point.x + 155, y: point.y + 28 } : { x: point.x + 16, y: point.y - 16 };
+    return node.data('kind') === 'metrics' ? { x: point.x - computeCard.width / 2 + 20, y: point.y - 28 }
+      : { x: point.x - computeCard.width / 2 + 54, y: point.y - computeCard.height / 2 + 16 };
   });
 }
 
@@ -94,10 +101,6 @@ export function activityMotion(cy, signal, { now = () => performance.now(), hidd
         pulse();
       }
       if (fresh) deadline = Math.min(deadline, dot.data('until'));
-      else {
-        const owner = cy.getElementById(dot.data('owner'));
-        if (owner.data('activityLabel') !== 'Activity unavailable') cy.getElementById(`metrics:${owner.id()}`).data('label', `${owner.data('metrics')}\nActivity unavailable`);
-      }
     });
     if (Number.isFinite(deadline)) { timer = setTimeout(sync, Math.max(1, deadline - now() + 1)); timer.unref?.(); }
   }

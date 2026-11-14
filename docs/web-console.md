@@ -42,9 +42,10 @@ or map. Forms share readable control sizes and a consistent action footer.
 The Overview maps Clients to the Coordinator, then to Compute nodes and Cloud
 providers. Each node, client and provider is clickable. Local compute has
 priority: every known machine appears under Compute nodes with observed health.
-Every reported local provider appears beneath its owning compute node by default,
-including disabled providers. The tree does not infer installations from the
-provider catalog. Compact icons keep the map readable; hardware appears in details.
+Local providers appear beneath their owning compute node unless the API reports
+them disabled. Disabled providers remain available in node settings and through
+their details links. Unknown enablement remains visible if inventory is unavailable.
+The tree does not infer installations from the provider catalog.
 Down nodes remain visible. The header
 counts unique machine identities, including the coordinator once.
 
@@ -66,8 +67,10 @@ if the graph package or layout fails.
 
 The map uses larger, darker system-font labels and a taller canvas so Fit remains
 readable for a typical cluster. Labels are clickable and mask connectors behind
-the text. Names wrap at spaces and hyphens; their measured dimensions reserve
-layout space, including when a display name changes during refresh. Fit still
+the text. Compute cards contain the icon, status and memory readings in one
+clickable surface. Long card titles truncate; details and List view retain the
+full name. Other labels wrap at spaces and hyphens and reserve measured layout
+space, including when a display name changes during refresh. Fit still
 shows the entire network; larger inventories can use zoom or List view.
 
 Status dots sit at the top-right of each icon: green for observed healthy nodes
@@ -78,16 +81,18 @@ Provider marks identify every shipped local/cloud provider and Hugging Face;
 unknown custom providers use a generic mark. These marks appear consistently in
 the map, its list, provider lists and node details.
 
-Compute icons show measured used/total memory to their right. RAM and discrete
+Compute cards show measured used/total memory below their header. RAM and discrete
 GPU cards are separate; unified memory appears once. Details list every card.
 Unavailable readings remain explicit, including older peers and unsupported
-per-card probes. Measured zero remains zero. The console never derives used
+per-card probes. Compact summaries omit GPU devices with neither measured usage
+nor a reported capacity; details retain them. Measured zero remains zero. The console never derives used
 memory from available memory. An asterisk marks last reported readings; details
 show their observation time and age. Public-only health responses preserve the
 last authenticated inventory without renewing its timestamps.
 
 A gentle pulse indicates fresh admitted-request or engine-probe activity, with
-matching text in the map, list and details. A loaded service alone is not active
+matching text in the list and details. The map has no separate activity text.
+A loaded service alone is not active
 work. Pulses and activity labels expire independently of refresh. Pause updates,
 hidden pages and reduced-motion preferences stop animation. Metric updates keep
 the existing layout and viewport.
@@ -132,9 +137,10 @@ views use the same nonmodal panel.
 
 Workloads has Runs and Jobs views, a compute-node filter and search. Each row
 opens the same details panel. Node/provider details link to that node's workloads.
-Reads address each node explicitly with bounded concurrency; a failed worker
-remains named, and previously read rows are marked last reported. Refresh also
-updates the node choices without silently broadening a missing-node selection.
+Reads address each node explicitly with bounded concurrency. Nodes reported down
+are skipped with one quiet offline summary. Refresh updates node health and resumes
+reads when they return. Unexpected read failures remain named, and previously read
+rows are marked last reported. A missing-node selection never broadens silently.
 
 Runs show models and node services, their provider, node, status and observed
 activity. Retained pins are stopped records. Details include reported memory
@@ -162,20 +168,6 @@ evidence. Node details retain sanitized transport errors. Route previews explain
 the API's denied/skipped reasons while preserving the unchecked readiness,
 capacity and inference limits. Shared errors show safe codes, node/request IDs
 and bounded field evidence as text.
-
-### Planned activity and memory readouts
-
-Compute-node layout reserves a wider footprint for a compact metrics area to the
-right of the icon. The first readout should show reported used/total memory and
-units, with room for additional metrics below it. Keep RAM and discrete GPU
-memory separate, and show unified memory once. Missing or stale observations
-must be explicit; do not derive used memory by subtracting free from total.
-Metric updates should not relayout the graph.
-
-Dots are currently static. A future gentle pulse should mean observed active
-work, with a text label and reduced-motion support. A running provider service
-does not by itself prove active inference. Memory usage and activity pulses are
-planned, not implemented in this map.
 
 ## Observe clients
 

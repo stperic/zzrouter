@@ -85,7 +85,7 @@ export async function overview(p, selection) {
     else if (next === 'connect') owner.root.append(connectionGuide(owner));
     else if (next.startsWith('node/')) showNode(owner, next.slice(5), snapshot.inventory);
     else if (next.startsWith('local/')) {
-      const entry = model.elements.find(({ data }) => data.kind === 'provider' && data.selection === next)?.data;
+      const entry = model.providers.find(entry => entry.selection === next);
       if (entry) showLocalProvider(owner, entry.nodeName, entry.providerKey, snapshot.inventory);
       else owner.root.append(message('This provider is no longer in the current node inventory.', 'warning'));
     } else if (next.startsWith('client/')) showClient(owner, model.clients.find(row => clientKey(row) === next.slice(7)));

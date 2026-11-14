@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Integrate overview memory readings into clickable compute-node cards, hide
+  disabled provider branches and remove unavailable activity text from the map.
+  Workloads skips nodes reported offline with a compact summary, resumes reads
+  after recovery and keeps unexpected read failures visible.
+
 - Add measured node memory and expiring activity indicators to the console
   Overview, plus a Workloads view for runs and installation/download jobs.
   Use the shared side panel for exact-node start/stop, previews and read-only

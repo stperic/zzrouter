@@ -251,3 +251,38 @@ Go 1.26.11, reproduces the same 15 unchanged baseline findings. Deployment build
 come from a separate clean checkout; the shared checkout's unrelated staged and
 unstaged changes remain untouched. Each target retains its prior binary set and
 must report the deployed commit, protocol and measured observations after restart.
+
+## Overview card refinement, 2026-11-14
+
+The overview hides providers explicitly disabled by the API. Inventory and node
+settings retain every provider, including disabled entries and their deep links.
+Unknown enablement remains visible when provider inventory cannot be read.
+
+`topology-data.mjs` owns the display projection and card footprint. The existing
+Cytoscape renderer owns a single clickable compute-card surface with the icon,
+health label and measured memory inside it. Its attached metric text and activity
+dot share that card's selection; they have no separate selection backgrounds.
+ELK reserves the whole card, while metric refreshes preserve layout and viewport.
+Activity uses the existing expiring pulse, with explanatory text in details and
+the accessible list, rather than an unavailable label on every graph node.
+
+Reuse the current API observations and memory formatter. Compact memory summaries
+omit GPU devices with neither measured usage nor a reported capacity; full details
+retain unavailable measurements. No backend, inference or policy changes.
+
+Validate filtering, disabled-provider management/deep links, metric containment,
+selection, long names and refresh stability with the existing graph/DOM suite and
+rendered desktop/mobile browser checks before updating the deployed console.
+
+Workloads uses refreshed `/nodes` health to skip known-down nodes for Runs and
+Jobs, with one quiet offline summary. Unexpected read failures remain visible.
+When a node goes down, discard its previous list rows and pagination; when it
+returns, the normal refresh reads it again. No backend error-message matching.
+
+Validation: all 162 console tests pass, including offline/recovered Runs and Jobs,
+focused controls during a health refresh and disabled-provider deep links. The
+focused Go console asset/role integration tests pass with the race detector.
+Headless Chrome checks pass at 1440px and 390px: card and metric click targets,
+long-title and multiple-GPU containment, provider filtering, skipped offline
+requests, details panels and horizontal overflow. The production delta is +11
+lines, reusing the existing renderer, inventory and read owners.

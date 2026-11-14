@@ -56,22 +56,26 @@ export async function workloads(p, selection, mode = 'runs') {
     const own = scope;
     const reader = { ...p, scope: { signal: AbortSignal.any([p.scope.signal, own.signal]) }, current: () => p.current() && own.current() };
     try {
-      if (!nodes.length || !automatic && !older) {
-        nodes = await p.api.list('/nodes', { signal: reader.scope.signal });
+      if (!nodes.length || !older) {
+        const latest = await p.api.list('/nodes', { signal: reader.scope.signal });
         if (!reader.current()) return false;
-        node.replaceChildren(el('option', { value: '' }, 'All nodes'), ...nodes.map(value => el('option', { value: value.name }, value.name)));
+        if (automatic && !live.canUpdate()) return true;
+        nodes = latest;
+        node.replaceChildren(el('option', { value: '' }, 'All nodes'), ...nodes.map(value => el('option', { value: value.name }, `${value.name}${value.health_status === 'down' ? ' (offline)' : ''}`)));
         if (filterNode && !nodes.some(value => value.name === filterNode)) node.append(el('option', { value: filterNode }, `${filterNode} (not in current inventory)`));
         node.value = filterNode;
         node.disabled = false;
       }
       const names = node.value ? [node.value] : nodes.map(value => value.name);
-      const requested = older ? names.filter(name => more.get(name)) : names;
+      const offline = nodes.filter(value => value.health_status === 'down' && names.includes(value.name)).map(value => value.name);
+      const requested = names.filter(name => !offline.includes(name) && (!older || more.get(name)));
       const nextOffsets = new Map(requested.map(name => [name, older ? (offsets.get(name) || 0) + 25 : 0]));
       const pages = await readWorkloadPages(reader, requested, tab, nextOffsets);
       if (!reader.current()) return false;
       if (automatic && !live.canUpdate()) return true;
-      if (!older) for (const name of snapshots.keys()) if (!names.includes(name)) { snapshots.delete(name); more.delete(name); offsets.delete(name); }
+      if (!older) for (const name of snapshots.keys()) if (!names.includes(name) || offline.includes(name)) { snapshots.delete(name); more.delete(name); offsets.delete(name); }
       feedback.replaceChildren();
+      if (offline.length) feedback.append(text(node.value ? 'This node is offline. Workloads will appear when it reconnects.' : `${offline.length} offline ${offline.length === 1 ? 'node' : 'nodes'} skipped.`, 'muted'));
       for (const page of pages) {
         if (page.error) {
           feedback.append(message(`Could not read ${tab} on ${page.node}.`, 'warning'), problem(page.error));
