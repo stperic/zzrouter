@@ -134,11 +134,12 @@ type Instance struct {
 
 	// mu protects mutable state: Status, ErrorMessage, timestamps, keep-alive state.
 	// Use RLock for reads, Lock for writes.
-	mu           sync.RWMutex    `json:"-"`
-	idleChanged  chan<- struct{} `json:"-"`
-	activityHold bool            `json:"-"`
-	idleReleased bool            `json:"-"`
-	pinned       bool            // fixed by resolved launch settings before admission
+	mu            sync.RWMutex    `json:"-"`
+	idleChanged   chan<- struct{} `json:"-"`
+	activityHold  bool            `json:"-"`
+	activityProbe activityProbe
+	idleReleased  bool `json:"-"`
+	pinned        bool // fixed by resolved launch settings before admission
 
 	// Launcher wrapping flag (accessed atomically)
 	usingLauncher atomic.Bool `json:"-"`
@@ -313,6 +314,7 @@ func (i *Instance) setStatusLocked(status Status) {
 	i.Status = status
 	if status.IsTerminal() || status == StatusStopping {
 		i.activityHold = false
+		i.activityProbe.known = false
 	}
 	i.notifyIdleLocked()
 }
@@ -839,7 +841,9 @@ func (i *Instance) ToInfo(hostname string) InstanceInfo {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 
+	activity := i.activitySnapshotLocked(utils.Now())
 	info := InstanceInfo{
+		Activity:          &activity,
 		BaseURL:           i.BaseURL,
 		EngineBusy:        i.activityHold,
 		MemoryCommitments: maps.Clone(i.resolved.Commitments),
@@ -1000,6 +1004,14 @@ func (i *Instance) ReleaseMemory() {
 func (i *Instance) ObserveActivity(busy bool) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
+		return
+	}
+	i.observeActivityProbeLocked(busy)
+	i.observeActivityHoldLocked(busy)
+}
+
+func (i *Instance) observeActivityHoldLocked(busy bool) {
 	if i.idleStopClaimed || i.Status == StatusStopping || i.Status.IsTerminal() {
 		return
 	}

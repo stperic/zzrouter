@@ -135,7 +135,7 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 				registry := instance.NewRegistry()
 				require.NoError(t, registry.Register(run))
 				samples := make(chan bool)
-				observed := make(chan bool, 1)
+				observed := make(chan instance.InstanceInfo, 1)
 				monitor := NewMonitor(registry, MonitorConfig{Interval: time.Millisecond, Timeout: time.Second, MaxRetries: policy.retries, HTTPClient: &http.Client{Transport: queueTransport(func(req *http.Request) (*http.Response, error) {
 					body, status := `{"queue_running":[1],"queue_pending":[]}`, http.StatusOK
 					if req.URL.Path == "/queue" {
@@ -156,7 +156,7 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 						}
 					} else {
 						select {
-						case observed <- run.ToInfo("node").EngineBusy:
+						case observed <- run.ToInfo("node"):
 						case <-req.Context().Done():
 							return nil, req.Context().Err()
 						}
@@ -187,7 +187,12 @@ func TestActivityUsesHealthRetryThresholdAndResetsStreak(t *testing.T) {
 					}
 					select {
 					case held := <-observed:
-						require.Equal(t, busy, held)
+						require.Equal(t, busy, held.EngineBusy)
+						if failing {
+							require.Equal(t, "unknown", held.Activity.State)
+						} else {
+							require.Equal(t, "active", held.Activity.State)
+						}
 					case <-time.After(time.Second):
 						t.Fatal("sample was not observed")
 					}

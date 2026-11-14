@@ -190,7 +190,7 @@ small {
   padding:2.4rem clamp(1.2rem,3.5vw,4rem);
   max-width:1400px;
   width:100%;
-  margin:auto;
+  margin:0 auto;
   align-self:start
 }
 .topbar {
@@ -518,6 +518,8 @@ code {
   font-weight:650
 }
 .tabs {
+  display:flex;
+  gap:.5rem;
   margin-bottom:1.2rem
 }
 .tabs button[aria-current=true] {
@@ -1039,3 +1041,16 @@ h1 {
 .route-choice input { margin-top:.2rem; flex-shrink:0 }
 .route-choice strong,.route-choice small { display:block; overflow-wrap:anywhere }
 .route-choice small { color:var(--muted); line-height:1.5; margin-top:.25rem }
+
+.memory-summary { white-space:pre-line; font-size:.85rem; line-height:1.7; font-variant-numeric:tabular-nums; color:var(--muted) }
+.memory-details .facts { margin-bottom:.35rem }
+.memory-details p { font-size:.8rem; margin:.3rem 0 1rem; overflow-wrap:anywhere }
+.activity-label { font-size:.8rem; margin:.35rem 0 }
+.workload-filters { display:grid; grid-template-columns:minmax(130px,1fr) minmax(180px,2fr); gap:1rem }
+.workload-filters input,.workload-filters select { width:100%; min-height:44px; padding:.6rem .75rem; border:1px solid var(--line); border-radius:8px; font:inherit; color:inherit; background:#f9fbf9 }
+.job-progress { min-width:120px; max-width:240px }
+.job-progress progress { width:100%; height:7px; accent-color:var(--green) }
+.job-progress p { margin:.3rem 0; font-size:.8rem; overflow-wrap:anywhere }
+.diagnostic-evidence pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; font-size:.8rem }
+.diagnostic-evidence summary { cursor:pointer; padding:.7rem 0 }
+@media(max-width:600px) { .workload-filters { grid-template-columns:minmax(0,1fr) } }

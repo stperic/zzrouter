@@ -384,11 +384,17 @@ func NewProviderAppManager(appsConfig *config.AppsConfig, opts ...Option) (*Prov
 		memoryAdmission: make(chan struct{}, 1),
 		runExpired:      make(chan struct{}),
 		memorySnapshot:  gpu.MemorySnapshotContext,
-		memorySystem:    inventory.Default().GetMemoryInfo,
-		memoryInventory: inventory.Default().GetGPUCardMetrics,
-		services:        make(map[string]*managedService),
-		flights:         make(map[instance.Key]*flight),
-		sightings:       make(map[string]map[string]bool),
+		memorySystem: func(ctx context.Context) *hardware.HardwareInfo {
+			value, _ := inventory.Default().GetMemoryInfo(ctx)
+			return value
+		},
+		memoryInventory: func(ctx context.Context) []gpu.CardMetrics {
+			value, _ := inventory.Default().GetGPUCardMetrics(ctx)
+			return value
+		},
+		services:  make(map[string]*managedService),
+		flights:   make(map[instance.Key]*flight),
+		sightings: make(map[string]map[string]bool),
 	}
 	m.stopBudget = func(provider string) time.Duration {
 		if _, svc, _ := m.resolveConfigKey(provider); Lifecycle(svc) == LifecycleServed {

@@ -1,11 +1,12 @@
 const BASE = '/zzrouter/v1';
 
 export class APIError extends Error {
-  constructor(message, { status = 0, code = '', uncertain = false } = {}) {
+  constructor(message, { status = 0, code = '', uncertain = false, node, request_id, errors, mutation_applied, run_id, deleted } = {}) {
     super(message);
     this.status = status;
     this.code = code;
     this.uncertain = uncertain;
+    Object.assign(this, { node, request_id, errors, mutation_applied, run_id, deleted });
   }
 }
 
@@ -57,7 +58,7 @@ export class API {
     return this.generation;
   }
 
-  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, timeoutMs = 15000 } = {}) {
+  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000 } = {}) {
     const generation = this.generation;
     if (!(path.startsWith(BASE + '/') || path === '/health')) throw new APIError('Unsupported console request.');
     const mutation = method !== 'GET';
@@ -68,6 +69,7 @@ export class API {
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (ifMatch) headers['If-Match'] = ifMatch;
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
+    if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
     if (mutation) headers['X-CSRF-Token'] = proof;
     const timeout = AbortSignal.timeout(timeoutMs);
     // The tracker never retains request bodies, resource names or credentials.
@@ -98,7 +100,7 @@ export class API {
       if (!result || typeof result !== 'object') throw new APIError('The server returned an invalid response. Reload current state before another change.', { status: response.status, uncertain: effectful });
       if (!response.ok || result.success === false) {
         const knownRefusal = ['provider_connection_unavailable', 'provider_config_unavailable', 'managed_credentials_unavailable', 'provider_connection_persistence_failed'].includes(result.code);
-        const error = new APIError(result.detail || result.message || `Request failed (${response.status}).`, { status: response.status, code: result.code, uncertain: effectful && response.status >= 500 && !knownRefusal });
+        const error = new APIError(result.detail || result.message || `Request failed (${response.status}).`, { ...result, status: response.status, uncertain: effectful && (result.mutation_applied === true || response.status >= 500 && !knownRefusal) });
         // An explicit refusal is settled before an auth callback can reset the
         // owner; that reset must not turn this refusal into an unknown outcome.
         finish(error);

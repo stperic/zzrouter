@@ -21,12 +21,13 @@ import (
 // loop both read through this cache so each physical hardware query runs
 // at most once per TTL window regardless of handler concurrency.
 type Cache struct {
-	mu         sync.RWMutex
-	diskInfo   []hardware.DiskInfo
-	memInfo    *hardware.HardwareInfo
-	cpuInfo    *hardware.HardwareInfo // Cached once at first call.
-	lastUpdate time.Time
-	ttl        time.Duration
+	mu       sync.RWMutex
+	diskInfo []hardware.DiskInfo
+	memInfo  *hardware.HardwareInfo
+	cpuInfo  *hardware.HardwareInfo // Cached once at first call.
+	diskAt   time.Time
+	memoryAt time.Time
+	ttl      time.Duration
 
 	// gpuCards is live per-card VRAM. It carries its own stamp because it
 	// refreshes on a different trigger than disk and memory: every health
@@ -47,13 +48,13 @@ func NewCache(ttl time.Duration) *Cache {
 //
 // A nil result means no card was measured this window; callers must render
 // that as unknown, never as zero free.
-func (c *Cache) GetGPUCardMetrics(ctx context.Context) []gpu.CardMetrics {
+func (c *Cache) GetGPUCardMetrics(ctx context.Context) ([]gpu.CardMetrics, time.Time) {
 	c.mu.RLock()
 	if !c.gpuCardsAt.IsZero() && time.Since(c.gpuCardsAt) < c.ttl {
-		cards := make([]gpu.CardMetrics, len(c.gpuCards))
-		copy(cards, c.gpuCards)
+		cards := copyCardMetrics(c.gpuCards)
+		at := c.gpuCardsAt
 		c.mu.RUnlock()
-		return cards
+		return cards, at
 	}
 	c.mu.RUnlock()
 
@@ -62,23 +63,21 @@ func (c *Cache) GetGPUCardMetrics(ctx context.Context) []gpu.CardMetrics {
 
 	// Double-check in case another goroutine refreshed while we waited.
 	if !c.gpuCardsAt.IsZero() && time.Since(c.gpuCardsAt) < c.ttl {
-		cards := make([]gpu.CardMetrics, len(c.gpuCards))
-		copy(cards, c.gpuCards)
-		return cards
+		cards := copyCardMetrics(c.gpuCards)
+		return cards, c.gpuCardsAt
 	}
 
-	c.gpuCards = gpu.LiveCardMetricsContext(ctx)
 	c.gpuCardsAt = utils.Now()
+	c.gpuCards = gpu.LiveCardMetricsContext(ctx)
 
-	cards := make([]gpu.CardMetrics, len(c.gpuCards))
-	copy(cards, c.gpuCards)
-	return cards
+	cards := copyCardMetrics(c.gpuCards)
+	return cards, c.gpuCardsAt
 }
 
 // GetDiskInfo returns cached disk info or refreshes if expired.
 func (c *Cache) GetDiskInfo(ctx context.Context) []hardware.DiskInfo {
 	c.mu.RLock()
-	if time.Since(c.lastUpdate) < c.ttl && c.diskInfo != nil {
+	if time.Since(c.diskAt) < c.ttl && c.diskInfo != nil {
 		diskInfo := make([]hardware.DiskInfo, len(c.diskInfo))
 		copy(diskInfo, c.diskInfo)
 		c.mu.RUnlock()
@@ -90,15 +89,15 @@ func (c *Cache) GetDiskInfo(ctx context.Context) []hardware.DiskInfo {
 	defer c.mu.Unlock()
 
 	// Double-check in case another goroutine refreshed while we waited.
-	if time.Since(c.lastUpdate) < c.ttl && c.diskInfo != nil {
+	if time.Since(c.diskAt) < c.ttl && c.diskInfo != nil {
 		diskInfo := make([]hardware.DiskInfo, len(c.diskInfo))
 		copy(diskInfo, c.diskInfo)
 		return diskInfo
 	}
 
+	c.diskAt = utils.Now()
 	diskInfo, _ := hardware.DiscoverDisk(ctx)
 	c.diskInfo = diskInfo
-	c.lastUpdate = utils.Now()
 
 	utils.LogDebugf("Hardware cache refreshed: %d disks discovered", len(diskInfo))
 
@@ -108,32 +107,32 @@ func (c *Cache) GetDiskInfo(ctx context.Context) []hardware.DiskInfo {
 }
 
 // GetMemoryInfo returns cached memory info or refreshes if expired.
-func (c *Cache) GetMemoryInfo(ctx context.Context) *hardware.HardwareInfo {
+func (c *Cache) GetMemoryInfo(ctx context.Context) (*hardware.HardwareInfo, time.Time) {
 	c.mu.RLock()
-	if time.Since(c.lastUpdate) < c.ttl && c.memInfo != nil {
-		memInfo := *c.memInfo
+	if time.Since(c.memoryAt) < c.ttl && c.memInfo != nil {
+		memInfo := copyMemoryInfo(c.memInfo)
+		at := c.memoryAt
 		c.mu.RUnlock()
-		return &memInfo
+		return memInfo, at
 	}
 	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if time.Since(c.lastUpdate) < c.ttl && c.memInfo != nil {
-		memInfo := *c.memInfo
-		return &memInfo
+	if time.Since(c.memoryAt) < c.ttl && c.memInfo != nil {
+		memInfo := copyMemoryInfo(c.memInfo)
+		return memInfo, c.memoryAt
 	}
 
+	c.memoryAt = utils.Now()
 	memInfo, _ := hardware.DiscoverMemory(ctx)
 	c.memInfo = &memInfo
-	c.lastUpdate = utils.Now()
 
 	totalGB := float64(memInfo.TotalRAM) / constants.BytesPerGB
 	utils.LogDebugf("🔄 Memory cache refreshed: %.1f GB total", totalGB)
 
-	result := *c.memInfo
-	return &result
+	return copyMemoryInfo(c.memInfo), c.memoryAt
 }
 
 // GetCPUInfo returns cached CPU info, populating it on first call. Unlike
@@ -181,4 +180,30 @@ func Default() *Cache {
 		defaultCache = NewCache(constants.HealthCheckInterval)
 	})
 	return defaultCache
+}
+
+// Optional readings are copied too; callers cannot mutate the retained cache.
+func copyMemoryInfo(info *hardware.HardwareInfo) *hardware.HardwareInfo {
+	result := *info
+	if info.UsedRAM != nil {
+		value := *info.UsedRAM
+		result.UsedRAM = &value
+	}
+	return &result
+}
+
+func copyCardMetrics(values []gpu.CardMetrics) []gpu.CardMetrics {
+	result := make([]gpu.CardMetrics, len(values))
+	for index, value := range values {
+		result[index] = value
+		if value.UsedMemoryMiB != nil {
+			copy := *value.UsedMemoryMiB
+			result[index].UsedMemoryMiB = &copy
+		}
+		if value.FreeMemoryMiB != nil {
+			copy := *value.FreeMemoryMiB
+			result[index].FreeMemoryMiB = &copy
+		}
+	}
+	return result
 }

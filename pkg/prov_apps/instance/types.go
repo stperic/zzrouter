@@ -73,6 +73,7 @@ type Config struct {
 // InstanceInfo is a read-only snapshot of an instance for API responses.
 // Public APIs return this instead of a mutable *Instance pointer.
 type InstanceInfo struct {
+	Activity          *Activity        `json:"activity,omitempty"`
 	Browser           *BrowserInfo     `json:"browser,omitempty"`
 	RecordOnly        bool             `json:"record_only,omitempty"`
 	Refusal           error            `json:"-"`

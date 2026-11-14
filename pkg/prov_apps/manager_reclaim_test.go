@@ -511,7 +511,11 @@ func TestPinnedRunRefusesMemoryLaunch(t *testing.T) {
 			lease.Release()
 			before := f.older.ToInfo("")
 			f.assertNothingEvicted(t, map[string]string{f.older.ID: "pinned"})
-			assert.Equal(t, before, f.older.ToInfo(""))
+			after := f.older.ToInfo("")
+			// Reading admitted-request activity observes the current instant.
+			// The retained run state must still be identical after refusal.
+			before.Activity.ObservedAt = after.Activity.ObservedAt
+			assert.Equal(t, before, after)
 			assert.Equal(t, instance.StatusRunning, f.newer.GetStatus())
 			assert.Empty(t, f.mgr.auditEvents, "refusal must issue zero stops")
 			current, exists := f.mgr.instances.Get(f.older.ID)

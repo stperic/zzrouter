@@ -61,6 +61,14 @@ func TestIntegrationBrowserConsoleFixedAssetsAndRoleGate(t *testing.T) {
 func TestIntegrationBrowserConsoleTopologyAssets(t *testing.T) {
 	s, _ := oauthTestNode(t, config.ClusterModeDisabled)
 	assets := map[string]string{
+		"/console/observations.mjs":     "text/javascript; charset=utf-8",
+		"/console/live-reads.mjs":       "text/javascript; charset=utf-8",
+		"/console/diagnostics.mjs":      "text/javascript; charset=utf-8",
+		"/console/workloads.mjs":        "text/javascript; charset=utf-8",
+		"/console/workload-data.mjs":    "text/javascript; charset=utf-8",
+		"/console/workload-details.mjs": "text/javascript; charset=utf-8",
+		"/console/run-form.mjs":         "text/javascript; charset=utf-8",
+
 		"/console/topology.mjs":                   "text/javascript; charset=utf-8",
 		"/console/topology-data.mjs":              "text/javascript; charset=utf-8",
 		"/console/vendor/graph.mjs":               "text/javascript; charset=utf-8",

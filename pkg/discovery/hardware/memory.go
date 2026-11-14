@@ -12,7 +12,7 @@ func DiscoverMemory(ctx context.Context) (HardwareInfo, []error) {
 	var hardware HardwareInfo
 	var errors []error
 
-	memInfo, err := mem.VirtualMemory()
+	memInfo, err := mem.VirtualMemoryWithContext(ctx)
 	if err != nil {
 		errors = append(errors, fmt.Errorf("failed to get memory information: %w", err))
 		return hardware, errors
@@ -20,6 +20,8 @@ func DiscoverMemory(ctx context.Context) (HardwareInfo, []error) {
 
 	hardware.TotalRAM = int64(memInfo.Total)
 	hardware.AvailableRAM = int64(memInfo.Available)
+	used := int64(memInfo.Used)
+	hardware.UsedRAM = &used
 
 	return hardware, errors
 }

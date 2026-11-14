@@ -13,9 +13,10 @@ type NodeDisk struct {
 
 // NodeMemory reports aggregate RAM metrics for the node. Wire key: "memory".
 type NodeMemory struct {
-	TotalGB     float64 `json:"total_gb"`
-	AvailableGB float64 `json:"available_gb"`
-	UsedPercent float64 `json:"used_percent"`
+	Sample      *MemorySample `json:"sample,omitempty"`
+	TotalGB     float64       `json:"total_gb"`
+	AvailableGB float64       `json:"available_gb"`
+	UsedPercent float64       `json:"used_percent"`
 }
 
 // NodeGPU reports GPU information for a node.
@@ -47,11 +48,12 @@ type NodeGPU struct {
 // downstream as "no VRAM left", which is the opposite of what a missing
 // measurement means.
 type NodeGPUDetails struct {
-	Index             int      `json:"index"`
-	Name              string   `json:"name"`
-	MemoryTotalGB     float64  `json:"memory_total_gb"`
-	MemoryAvailableGB *float64 `json:"memory_available_gb,omitempty"`
-	ComputeCapability string   `json:"compute_capability,omitempty"`
+	Sample            *MemorySample `json:"sample,omitempty"`
+	Index             int           `json:"index"`
+	Name              string        `json:"name"`
+	MemoryTotalGB     float64       `json:"memory_total_gb"`
+	MemoryAvailableGB *float64      `json:"memory_available_gb,omitempty"`
+	ComputeCapability string        `json:"compute_capability,omitempty"`
 }
 
 // NodeGPUUsage is a stable JSON schema slot for future per-card live

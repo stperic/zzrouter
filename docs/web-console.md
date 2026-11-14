@@ -7,14 +7,14 @@ links to the configured origin when the current address differs.
 For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)
 before signing in.
 
-Sign in with a zzRouter key. Administrator keys open Overview, Nodes, Clients, Providers,
+Sign in with a zzRouter key. Administrator keys open Overview, Nodes, Workloads, Clients, Providers,
 Routes, Keys & teams and Settings. User keys open My Access, with their
 own model policy, limits, recorded usage and MCP grants. Keys remain the identity
 model; the console does not introduce a separate account or role database.
 
 ## Shared selection and editing
 
-Overview, Nodes, Clients, Providers, Routes and Keys & teams share one nonmodal
+Overview, Nodes, Workloads, Clients, Providers, Routes and Keys & teams share one nonmodal
 right-side panel. Select a graph icon, card or table row to inspect details. A
 native name button also supports keyboard selection. The selected item remains
 highlighted. Editable resources expose one Edit action inside the panel; Save
@@ -78,6 +78,20 @@ Provider marks identify every shipped local/cloud provider and Hugging Face;
 unknown custom providers use a generic mark. These marks appear consistently in
 the map, its list, provider lists and node details.
 
+Compute icons show measured used/total memory to their right. RAM and discrete
+GPU cards are separate; unified memory appears once. Details list every card.
+Unavailable readings remain explicit, including older peers and unsupported
+per-card probes. Measured zero remains zero. The console never derives used
+memory from available memory. An asterisk marks last reported readings; details
+show their observation time and age. Public-only health responses preserve the
+last authenticated inventory without renewing its timestamps.
+
+A gentle pulse indicates fresh admitted-request or engine-probe activity, with
+matching text in the map, list and details. A loaded service alone is not active
+work. Pulses and activity labels expire independently of refresh. Pause updates,
+hidden pages and reduced-motion preferences stop animation. Metric updates keep
+the existing layout and viewport.
+
 Node details show hardware, last successful observation, address, local provider
 installation/enablement and reported service state. Unavailable reads and unknown
 health remain explicit. Details for an unhealthy node are last reported data,
@@ -109,10 +123,45 @@ pending. Status updates keep positions, zoom and pan; membership or label-size
 changes rerun layout while retaining the viewport. Explicit Refresh updates details
 and asks before discarding a dirty editor. Node saves wait for current inventory
 and return to the same overview selection.
-Refresh remains explicit in other views. Status means the displayed observation,
+Refresh remains explicit outside Overview and Workloads. Status means the displayed observation,
 not an upstream inference test. Hash links preserve selected nodes/providers and
 browser Back/Forward; pending writes prevent leaving the editor. All entity
 views use the same nonmodal panel.
+
+## Workloads and diagnostics
+
+Workloads has Runs and Jobs views, a compute-node filter and search. Each row
+opens the same details panel. Node/provider details link to that node's workloads.
+Reads address each node explicitly with bounded concurrency; a failed worker
+remains named, and previously read rows are marked last reported. Refresh also
+updates the node choices without silently broadening a missing-node selection.
+
+Runs show models and node services, their provider, node, status and observed
+activity. Retained pins are stopped records. Details include reported memory
+commitments, failure/refusal evidence, evictions and any native browser link
+returned by the API. Environment values and launch commands are not displayed.
+Start run opens the shared form panel with complete local catalog models and
+providers that report a managed run lifecycle. Preview uses the existing run
+assessment; explicit Start uses an idempotency key and disables automatic
+deployment. Acceptance and job completion do not establish readiness: the panel
+reads the exact run on its owning node. Stop confirms the exact node/run identity,
+then reads it back. Interrupted writes retain a read-only inspection result and
+are never automatically replayed.
+
+Jobs show actual step counts, percentages, bytes and download speed when reported.
+Missing progress remains indeterminate. Older jobs load explicitly and deduplicate
+by node and job ID; the view discloses that changing event order can shift page
+boundaries. Details include errors, warnings and the retention deadline. A quiet
+job is not classified as failed, and a missing job does not imply success.
+
+Workload snapshots refresh every five seconds while visible and idle, with Pause
+updates and Refresh controls. Reads do not overlap, replace focused controls or
+overwrite a draft. Failures stop automatic polling until explicit Refresh.
+Provider details retain lifecycle state, backoff, readiness-job and last-exit
+evidence. Node details retain sanitized transport errors. Route previews explain
+the API's denied/skipped reasons while preserving the unchecked readiness,
+capacity and inference limits. Shared errors show safe codes, node/request IDs
+and bounded field evidence as text.
 
 ### Planned activity and memory readouts
 

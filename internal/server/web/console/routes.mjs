@@ -4,6 +4,7 @@ import { details } from './details.mjs';
 import { routeForm } from './route-form.mjs';
 import { providerCategory } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
+import { routeReason } from './diagnostics.mjs';
 
 const endpoint = name => `/model-groups/${encodeURIComponent(name)}`;
 const assignedTeams = (teams, name) => teams.filter(team => team.route_access?.mode === 'selected' && team.route_access.routes?.includes(name));
@@ -167,10 +168,10 @@ function routePreview(p, route, teams, assigned, etag) {
       if (!assignment) { result.replaceChildren(message('The route is no longer available.', 'warning')); return; }
       if (assignment.route_version !== etag) { invalidate(); return; }
       const label = name => { const target = route.replicas.find(replica => replica.name === name); return target ? `${target.provider} · ${target.model}${target.node ? ` on ${target.node}` : ''}` : name; };
-      result.replaceChildren(assignment.replica ? message(`Preferred destination: ${label(assignment.replica)}`) : message(assignment.denied_reason ? `Blocked: ${assignment.denied_reason.replaceAll('_', ' ')}` : 'No eligible destination.', 'warning'));
+      result.replaceChildren(text(`Preview for ${teams.find(value => value.id === team.value)?.name || team.value}`, 'muted'), assignment.replica ? message(`Preferred destination: ${label(assignment.replica)}`) : message(assignment.denied_reason ? `Blocked: ${routeReason(assignment.denied_reason)} (${assignment.denied_reason})` : 'No eligible destination.', 'warning'));
       if (assignment.eligible?.length > 1) result.append(text(`Next choices: ${assignment.eligible.slice(1).map(label).join('; ')}`, 'muted'));
       if (assignment.replica) result.append(text(assignment.projected_cost_source ? `Projected cost: $${(assignment.projected_cost_micro / 1e6).toFixed(6)}` : 'Projected cost unavailable.', 'muted'));
-      if (assignment.skipped?.length) result.append(el('ul', {}, assignment.skipped.map(skip => el('li', {}, `${label(skip.replica)}: ${skip.reason.replaceAll('_', ' ')}`))));
+      if (assignment.skipped?.length) result.append(el('ul', {}, assignment.skipped.map(skip => el('li', {}, `${label(skip.replica)}: ${routeReason(skip.reason)} (${skip.reason})`))));
       result.append(text(`Not checked: ${(preview.unchecked || []).map(value => value.replaceAll('_', ' ')).join(', ')}. Live requests recheck current conditions.`, 'muted'));
     } catch (error) { if (p.current() && !invalidated) result.replaceChildren(problem(error)); }
     finally { if (p.current()) controls.disabled = invalidated; }

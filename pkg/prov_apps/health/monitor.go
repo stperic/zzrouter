@@ -115,6 +115,9 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 	if hcConfig.Interval > 0 {
 		interval = hcConfig.Interval
 	}
+	if hcConfig.ActivityProbe != nil {
+		inst.ConfigureActivityProbe(2*interval + constants.HealthCheckTimeout)
+	}
 
 	maxFailures := m.config.MaxRetries
 	if hcConfig.MaxRetries > 0 {
@@ -161,9 +164,7 @@ func (m *Monitor) Run(ctx context.Context, inst *instance.Instance, hcConfig Che
 					current.ObserveActivity(busy)
 				} else {
 					activityFailures++
-					if activityFailures >= maxFailures {
-						current.ObserveActivity(false)
-					}
+					current.ActivityUnknown(activityFailures >= maxFailures)
 				}
 			}
 

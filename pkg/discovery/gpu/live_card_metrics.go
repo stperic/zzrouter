@@ -16,8 +16,8 @@ type CardMetrics struct {
 	UUID           string
 	PCIAddress     string
 	TotalMemoryMiB int64
-	UsedMemoryMiB  int64
-	FreeMemoryMiB  int64
+	UsedMemoryMiB  *int64
+	FreeMemoryMiB  *int64
 	UtilizationPct float64
 }
 
@@ -52,10 +52,12 @@ func liveCardMetricsContext(ctx context.Context, opts liveMetricsOptions) []Card
 	out := make([]CardMetrics, 0, len(rows))
 	for _, row := range rows {
 		m := CardMetrics{
-			PCIAddress:     normalizePCIAddress(row[nvidiaFieldPCIBusID]),
-			TotalMemoryMiB: rowMiB(row, nvidiaFieldMemoryTotalMiB),
-			UsedMemoryMiB:  rowMiB(row, nvidiaFieldMemoryUsedMiB),
-			FreeMemoryMiB:  rowMiB(row, nvidiaFieldMemoryFreeMiB),
+			PCIAddress:    normalizePCIAddress(row[nvidiaFieldPCIBusID]),
+			UsedMemoryMiB: rowMiB(row, nvidiaFieldMemoryUsedMiB),
+			FreeMemoryMiB: rowMiB(row, nvidiaFieldMemoryFreeMiB),
+		}
+		if total := rowMiB(row, nvidiaFieldMemoryTotalMiB); total != nil {
+			m.TotalMemoryMiB = *total
 		}
 		// isMeaningful keeps "[N/A]" from becoming a literal lookup key,
 		// matching how the inventory path guards the same field.
@@ -70,7 +72,7 @@ func liveCardMetricsContext(ctx context.Context, opts liveMetricsOptions) []Card
 		// A row with no memory figures at all carries nothing a caller
 		// can use; dropping it keeps "present in the slice" equivalent
 		// to "measured".
-		if m.TotalMemoryMiB == 0 && m.UsedMemoryMiB == 0 && m.FreeMemoryMiB == 0 {
+		if m.TotalMemoryMiB == 0 && m.UsedMemoryMiB == nil && m.FreeMemoryMiB == nil {
 			continue
 		}
 		out = append(out, m)
@@ -81,16 +83,16 @@ func liveCardMetricsContext(ctx context.Context, opts liveMetricsOptions) []Card
 	return out
 }
 
-func rowMiB(row nvidiaRow, field string) int64 {
+func rowMiB(row nvidiaRow, field string) *int64 {
 	v := row[field]
 	if !isMeaningful(v) {
-		return 0
+		return nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return 0
+	if err != nil || n < 0 {
+		return nil
 	}
-	return n
+	return &n
 }
 
 // CardMetricsIndex joins live per-card metrics back onto detected cards.

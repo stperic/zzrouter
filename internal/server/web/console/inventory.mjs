@@ -1,12 +1,20 @@
 import { el, text, leaveButton, badge, actions, message, card, facts, problem, date } from './dom.mjs';
+import { observeActivity } from './observations.mjs';
+import { providerDiagnostics } from './diagnostics.mjs';
 
 export function providerCategory(entry) {
   if (entry.kind === 'registry') return 'registries';
   return entry.is_cloud || entry.cloud || entry.kind === 'cloud' ? 'cloud' : 'local';
 }
 
-export function readInventory(p) {
-  return Promise.allSettled(['/nodes', '/providers'].map(path => p.api.list(path, { signal: p.scope.signal })));
+export async function readInventory(p) {
+  const startedAt = performance.now();
+  const results = await Promise.allSettled(['/nodes', '/providers'].map(path => p.api.list(path, { signal: p.scope.signal })));
+  for (const node of results[0].value || []) {
+    observeActivity(node.activity, startedAt);
+    for (const value of Object.values(node.provider_activity || {})) observeActivity(value, startedAt);
+  }
+  return results;
 }
 
 const rowsFrom = result => result.status === 'fulfilled' ? result.value : [];
@@ -54,6 +62,7 @@ export function nodeInventory(p, [nodes, providers], entry) {
         service ? badge(service, routed.running ? 'good' : 'warn') : null,
       ));
       body.append(row);
+      body.append(providerDiagnostics(p, record || routed, node.name));
     }
     if (!entry) {
       if (names.size) body.append(chips);

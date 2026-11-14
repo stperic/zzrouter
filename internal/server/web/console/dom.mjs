@@ -56,7 +56,22 @@ export function copyField(label, value, sensitive = false) {
   return el('div', { class: 'copy-field' }, field(label, copyInput), actions(buttons), feedback);
 }
 export function problem(error) {
-  return message(error.uncertain ? `${error.message} Do not resubmit automatically.` : error.message, 'error');
+  const root = message(error.uncertain ? `${error.message} Do not resubmit automatically.` : error.message, 'error');
+  const context = [['Code', error.code], ['Node', error.node], ['Request ID', error.request_id]].filter(([, value]) => value);
+  if (context.length) root.append(facts(context));
+  if (error.mutation_applied) root.append(text('The server reports that the change was applied. Inspect current state to verify the result.'));
+  for (const item of Array.isArray(error.errors) ? error.errors.slice(0, 12) : []) {
+    root.append(text([item.key, item.code, item.message, item.hint].filter(value => typeof value === 'string').map(value => value.slice(0, 2048)).join(' · ')));
+    const evidence = ['got', 'want', 'min', 'max'].filter(key => item[key] !== undefined).map(key => [key, safeEvidence(item[key])]);
+    if (evidence.length) root.append(el('details', {}, el('summary', {}, 'Reported evidence'), facts(evidence)));
+  }
+  return root;
+}
+function safeEvidence(value) {
+  if (value === null || typeof value !== 'object') return String(value).slice(0, 2048);
+  // Structured diagnostics may grow. Only numeric/boolean evidence is rendered
+  // from unknown objects, never environment maps, request bodies or credentials.
+  return JSON.stringify(Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item === 'number' || typeof item === 'boolean').slice(0, 20))).slice(0, 2048);
 }
 export const date = value => value ? new Date(value).toLocaleString() : 'No expiry';
 export const money = value => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });

@@ -25,7 +25,7 @@ func TestUnifiedMemoryLocalAndLegacySnapshotAgree(t *testing.T) {
 				if detailed {
 					snap.GPUs = []mesh.GPUDetail{{MemoryTotalGB: local.MemoryTotalGB}}
 				}
-				peer := snapshotGPUInfo(snap)
+				peer := snapshotGPUInfo(snap, false)
 				if typ == "none" {
 					assert.Nil(t, peer)
 					continue

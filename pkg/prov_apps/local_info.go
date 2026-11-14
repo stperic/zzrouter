@@ -85,6 +85,7 @@ type LocalProviderInfo struct {
 	// Architectures carries declared family compatibility with the inventory snapshot.
 	Architectures []string       `json:"architectures,omitempty"`
 	RunScope      string         `json:"run_scope,omitempty"`
+	RunLifecycle  string         `json:"run_lifecycle,omitempty"`
 	Key           string         `json:"key"`
 	Name          string         `json:"name"`
 	Type          string         `json:"type"`
@@ -170,7 +171,7 @@ func (m *ProviderAppManager) LocalInfo(nodeName string) []LocalProviderInfo {
 			endpoint = svc.Runtime.Endpoint
 		}
 		info := LocalProviderInfo{
-			Key: key, RunScope: svc.RunScope,
+			Key: key, RunScope: svc.RunScope, RunLifecycle: Lifecycle(svc).String(),
 			Name:             svc.Name,
 			Type:             svc.Name,
 			Kind:             string(p.Kind()),

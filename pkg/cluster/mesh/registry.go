@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -88,6 +89,7 @@ func (r *EndpointRegistry) ObserveLocal(snap EndpointSnapshot) {
 	if r.local == nil {
 		r.local = &Endpoint{IsLocal: true, Status: StatusUp}
 	}
+	snap.HealthReport = copyHealthReport(snap.HealthReport)
 	r.local.Snapshot = snap
 	r.local.Status = StatusUp
 }
@@ -189,12 +191,22 @@ func copyEndpoint(ep *Endpoint) *Endpoint {
 			cp.recovering = true
 		}
 	}
-	// Struct copy above duplicates scalar fields; Apps is a typed slice
-	// whose backing array aliases the registry's storage — clone it.
-	// Nested provider diagnostics must not alias another caller's snapshot.
-	if ep.Snapshot.Apps != nil {
-		cloned := make([]prov_apps.LocalProviderInfo, len(ep.Snapshot.Apps))
-		copy(cloned, ep.Snapshot.Apps)
+	cp.Snapshot.HealthReport = copyHealthReport(ep.Snapshot.HealthReport)
+	return &cp
+}
+
+// copyHealthReport isolates both incoming observations and outgoing snapshots.
+func copyHealthReport(report HealthReport) HealthReport {
+	cp := report
+	cp.MemorySample = report.MemorySample.Clone()
+	cp.Activity = copyPointer(report.Activity)
+	cp.ProviderActivity = maps.Clone(report.ProviderActivity)
+	for provider, activity := range cp.ProviderActivity {
+		cp.ProviderActivity[provider] = copyPointer(activity)
+	}
+	if report.Apps != nil {
+		cloned := make([]prov_apps.LocalProviderInfo, len(report.Apps))
+		copy(cloned, report.Apps)
 		for i := range cloned {
 			cloned[i].Formats = append([]string(nil), cloned[i].Formats...)
 			if cloned[i].Service != nil {
@@ -202,18 +214,27 @@ func copyEndpoint(ep *Endpoint) *Endpoint {
 				cloned[i].Service = &status
 			}
 		}
-		cp.Snapshot.Apps = cloned
+		cp.Apps = cloned
 	}
-	if ep.Snapshot.GPUs != nil {
-		// Same rationale as Apps: scalar-only entries (DriverIndex
-		// is a *int but the pointee is per-probe-fresh and never
-		// mutated post-Observe), so copy the slice handle and let
-		// individual GPUDetail values share their pointer aliases.
-		cloned := make([]GPUDetail, len(ep.Snapshot.GPUs))
-		copy(cloned, ep.Snapshot.GPUs)
-		cp.Snapshot.GPUs = cloned
+	if report.GPUs != nil {
+		cloned := make([]GPUDetail, len(report.GPUs))
+		copy(cloned, report.GPUs)
+		for i := range cloned {
+			cloned[i].Sample = cloned[i].Sample.Clone()
+			cloned[i].DriverIndex = copyPointer(cloned[i].DriverIndex)
+			cloned[i].MemoryAvailGB = copyPointer(cloned[i].MemoryAvailGB)
+		}
+		cp.GPUs = cloned
 	}
-	return &cp
+	return cp
+}
+
+func copyPointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 // GetEndpointsForRequest returns snapshot copies of endpoints matching request.
@@ -310,7 +331,7 @@ func (r *EndpointRegistry) Count() int {
 
 // Observe applies a probe result to the endpoint's liveness state machine.
 // Returns the resulting Transition (zero if state did not change). When
-// probe.OK, the Connection snapshot is propagated into Endpoint.Snapshot
+// probe.OK with full quality, the Connection snapshot is propagated into Endpoint.Snapshot
 // (version, OS, RAM, GPU, running models, apps). On failure, the error
 // is recorded in Snapshot.LastError.
 //
@@ -360,7 +381,8 @@ func (r *EndpointRegistry) Observe(url string, probe ProbeResult) Transition {
 		clearLastError(ep)
 	}
 
-	if probe.OK && probe.Snapshot != nil {
+	// Public liveness cannot renew or replace authenticated inventory.
+	if probe.OK && probe.Quality == QualityFull && probe.Snapshot != nil {
 		r.applyConnectionSnapshot(ep, probe.Snapshot)
 	}
 	after := copyEndpoint(ep).Status
@@ -424,7 +446,7 @@ func (r *EndpointRegistry) applyConnectionSnapshot(ep *Endpoint, conn *Connectio
 	// are stamped separately — Connection does not populate them.
 	// Version is stamped unconditionally to match pre-refactor
 	// semantics: a nil conn.Version clears ep.Snapshot.Version to "".
-	ep.Snapshot.HealthReport = conn.HealthReport
+	ep.Snapshot.HealthReport = copyHealthReport(conn.HealthReport)
 	ep.Snapshot.Version = ""
 	if conn.Version != nil {
 		ep.Snapshot.Version = conn.Version.String()
