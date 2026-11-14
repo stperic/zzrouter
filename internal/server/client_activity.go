@@ -13,7 +13,7 @@ import (
 // observeClient wraps only authenticated external traffic. Console polling and
 // nested MCP/cluster dispatch must not create clients or inflate request counts.
 func (a *AuthHandlers) observeClient(c *gin.Context) {
-	_, browser := c.Get(browserBindingContext)
+	_, browser := browserBinding(c.Request.Context())
 	trusted, _ := c.Get(string(CtxKeyClusterTrusted))
 	ac := GetAccessContext(c)
 	if a.clients == nil || browser || trusted == true || c.Request.Context().Value(internalRequestKey) != nil ||

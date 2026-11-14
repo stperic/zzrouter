@@ -19,7 +19,9 @@ func TestBrowserCookiesNeverForward(t *testing.T) {
 		ctx := context.WithValue(t.Context(), oauthCredentialKey{}, delegated)
 		for _, up := range []backend.Upstream{backend.Engine(), backend.CallerKey(), backend.Credential(&config.APIConfig{AuthType: config.AuthTypeAPIKey, AuthHeader: "X-API-Key", Token: "provider-key"}), backend.Cluster()} {
 			header := http.Header{"Cookie": {browserSessionCookie + "=session-secret; " + browserCSRFCookie + "=csrf-proof; __Host-" + browserSessionCookie + "=secure-session; __Host-" + browserCSRFCookie + "=secure-proof; preference=dark"}, "X-Api-Key": {"native-caller-key"}}
+			header.Set("X-CSRF-Token", "session-proof")
 			got := upstreamHeaders(ctx, header, up)
+			require.Empty(t, got.Get("X-CSRF-Token"))
 			require.Equal(t, "preference=dark", got.Get("Cookie"))
 			require.Contains(t, header.Get("Cookie"), "session-secret", "source request is not mutated")
 		}

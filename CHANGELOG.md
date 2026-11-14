@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add console Chat for user and administrator sessions: model/route selection,
+  system prompts, sampling/output limits, optional node selection, streamed
+  Markdown, reasoning, response statistics, regeneration and Stop. Reuse the
+  inference API and server access/quotas, with scoped browser authentication and
+  cancellable session-bound transport. Bundle AI SDK 7 and assistant-ui locally.
+
 - Integrate overview memory readings into clickable compute-node cards, hide
   disabled provider branches and remove unavailable activity text from the map.
   Workloads skips nodes reported offline with a compact summary, resumes reads

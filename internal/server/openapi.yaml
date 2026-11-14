@@ -8198,12 +8198,18 @@ paths:
     post:
       tags: [OpenAICompat]
       operationId: openaiCreateChatCompletion
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, { BrowserSession: [] }, {}]
       summary: OpenAI-compatible chat completion
       description: |
         Terminates at zzRouter's routing layer. Selects a backend
         (vLLM / llama.cpp / MLX / cloud) from the `model` field and
         forwards the request. Supports streaming via `stream: true`.
+
+        The coordinator also accepts its browser session, with exact Origin and
+        session-bound X-CSRF-Token. Browser callers use the same key/team access,
+        routing and quota enforcement. Explicit API credentials take precedence;
+        invalid browser credentials never fall back to anonymous access. Browser
+        cookies and CSRF proofs are not forwarded to providers or workers.
 
         Spend adds numeric `usage.cost` and
         `usage.cost_details.upstream_inference_cost` when present, including
@@ -8509,7 +8515,7 @@ paths:
     get:
       tags: [OpenAICompat]
       operationId: openaiListModels
-      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, {}]
+      security: [{ InferenceBearer: [] }, { InferenceKey: [] }, { BrowserSession: [] }, {}]
       summary: OpenAI-compatible list models
       description: |
         Returns every model currently routable through this coordinator,
@@ -8517,6 +8523,10 @@ paths:
         vision / stream / json_mode) derived from the provider
         registration. Agents can use `capabilities` to pick a model
         without hard-coding per-model flags.
+        The coordinator accepts browser sessions for this read, constrained to
+        the configured browser origin and the same key/team model visibility.
+        Cookie authentication is not enabled on other compatibility operations
+        except POST /v1/chat/completions.
       responses:
         '200':
           description: OK

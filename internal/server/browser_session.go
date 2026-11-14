@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,12 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
-const browserBindingContext = "browser-credential-binding"
+type browserBindingKey struct{}
+
+func browserBinding(ctx context.Context) (control.CredentialReference, bool) {
+	ref, ok := ctx.Value(browserBindingKey{}).(control.CredentialReference)
+	return ref, ok
+}
 
 // Browser projections deliberately omit credential fingerprints, key metadata
 // and installation configuration. They describe existing policy, never enforce it.
@@ -78,7 +84,16 @@ func (a *AccessControl) requestAccess(c *gin.Context, browser bool, role string)
 		a.rejectAuth(c, http.StatusUnauthorized, fmt.Sprintf("Invalid %sAPI key (presented via %s)", rolePrefix(role), cred.scheme))
 		return nil, false
 	}
-	if browser && a.oauth != nil && !explicitCredential(c.Request) {
+	if browser && !explicitCredential(c.Request) {
+		return a.browserRequestAccess(c)
+	}
+	a.rejectAuth(c, http.StatusUnauthorized, missingCredentialDetail(c))
+	return nil, false
+}
+
+// browserRequestAccess shares cookie authority without changing API-key precedence.
+func (a *AccessControl) browserRequestAccess(c *gin.Context) (*AccessContext, bool) {
+	if a.oauth != nil {
 		ref, _, err := a.oauth.BrowserSession(c.Request.Context(), c.Request)
 		if err == nil {
 			if !browserRequestOriginAllowed(c.Request, a.oauth.Issuer()) {
@@ -93,7 +108,7 @@ func (a *AccessControl) requestAccess(c *gin.Context, browser bool, role string)
 			}
 			ac, err := a.core.AuthenticateReference(ref)
 			if err == nil {
-				c.Set(browserBindingContext, ref)
+				c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), browserBindingKey{}, ref))
 				c.Header("Cache-Control", "no-store")
 				return ac, true
 			}
@@ -101,6 +116,19 @@ func (a *AccessControl) requestAccess(c *gin.Context, browser bool, role string)
 	}
 	a.rejectAuth(c, http.StatusUnauthorized, missingCredentialDetail(c))
 	return nil, false
+}
+
+func browserCredentialPresented(r *http.Request) bool {
+	if len(r.Header.Values("X-CSRF-Token")) != 0 {
+		return true
+	}
+	for _, cookie := range r.Cookies() {
+		switch cookie.Name {
+		case browserSessionCookie, browserCSRFCookie, browserHostSessionCookie, browserHostCSRFCookie:
+			return true
+		}
+	}
+	return false
 }
 
 func rolePrefix(role string) string {
@@ -247,10 +275,8 @@ func (s *Server) handleBrowserMe(c *gin.Context) {
 }
 
 func (s *Server) selfBinding(c *gin.Context) (control.CredentialReference, error) {
-	if value, ok := c.Get(browserBindingContext); ok {
-		if ref, ok := value.(control.CredentialReference); ok {
-			return ref, nil
-		}
+	if ref, ok := browserBinding(c.Request.Context()); ok {
+		return ref, nil
 	}
 	return s.access.core.Reference(extractCredential(c, s.config).key)
 }

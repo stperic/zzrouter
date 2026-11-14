@@ -133,6 +133,37 @@ not an upstream inference test. Hash links preserve selected nodes/providers and
 browser Back/Forward; pending writes prevent leaving the editor. All entity
 views use the same nonmodal panel.
 
+## Chat
+
+Chat is available to user and administrator keys. Search the model/route picker
+or enter an exact model name. The list comes from the same authorized
+`/v1/models` discovery used by API clients, including permitted route aliases.
+Only models explicitly reporting no chat capability are omitted. Node-qualified
+model IDs are sent unchanged; optional node names use the existing `X-Node`
+header. The API owns routing, provider/model permissions, budgets and usage
+limits. The browser does not implement a second policy engine.
+
+Settings opens the shared right-side panel. Apply a system prompt, temperature,
+top-p, output-token limit and optional node for the next request. Blank numeric
+values use model defaults. Display controls show returned reasoning and response
+statistics; only reported usage/cost is shown. Stop cancels the request; New chat
+clears the conversation after confirmation. Regenerate explicitly requests a new
+response. No inference request is automatically retried. Partial output remains
+visible on stream failure, with a distinct stopped/error outcome.
+
+Conversation and settings live only in the current page. Navigation, sign-out,
+pagehide and changed browser authority clear them and cancel active inference.
+Model replies render as Markdown without executable HTML or remote images.
+The SDK's schema validator runs without dynamic code generation, preserving the
+console's existing self-only script policy.
+
+Only GET `/v1/models` and POST `/v1/chat/completions` opt into browser sessions.
+The latter requires exact Origin and the session-bound CSRF proof. Explicit API
+credentials retain compatibility-surface precedence; expired or revoked browser
+attempts never become anonymous. Browser cookies and proofs stop at the
+coordinator. All existing inference authorization and quota enforcement remains
+in place. Browser chat is not counted as a separately connected external client.
+
 ## Workloads and diagnostics
 
 Workloads has Runs and Jobs views, a compute-node filter and search. Each row
@@ -360,7 +391,8 @@ out ends browser access; it does not revoke existing MCP grants.
 ## Architecture and boundaries
 
 The console is embedded HTML, CSS and native JavaScript modules on the existing
-coordinator listener. It has no frontend build dependency or additional server.
+coordinator listener. Chat is a lazy-loaded React module; normal Go builds use
+checked-in bundles and require no frontend tooling or additional server.
 `browser_console.go` serves a fixed asset allowlist with same-origin CSP and
 no-store headers. All data and changes use existing services through their HTTP
 APIs. The TUI remains the interface for local installation, model/runtime work,
@@ -382,6 +414,15 @@ mapping selects fixed embedded assets; labels cannot introduce remote URLs.
 Licenses and source notices ship in `/console/vendor/THIRD_PARTY_NOTICES.txt`.
 Maintainers regenerate assets with `npm ci --ignore-scripts` and `npm run build`
 in `scripts/console-vendor`. Normal Go builds embed the checked-in outputs.
+
+Reusable chat rendering and transport source lives in `internal/server/web/chat`.
+AI SDK 7's OpenAI-compatible provider handles the inference protocol;
+assistant-ui owns the thread/composer lifecycle. A small library-parser adapter
+preserves zzRouter's model-loading events and terminal framing. The console
+injects its authority-aware fetch, settings and cancellation lifetime. Chat
+transcript/state, routing and browser authentication are not duplicated in GW.
+`npm run check` in the vendor directory type-checks the chat source. Its build
+pins dependencies and gathers licenses for the complete bundled dependency set.
 
 `api.mjs` owns requests and session refresh; page and form lifetimes reject late
 responses. A refresh clears protected content before loading bootstrap and `/me`,

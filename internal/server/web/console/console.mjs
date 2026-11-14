@@ -199,7 +199,7 @@ function renderShell(state, notice) {
   const identity = state.identity;
   const admin = identity.role === 'admin';
   navigation = el('nav', { class: 'nav', 'aria-label': 'Main navigation' });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['connections', 'My Access']]) {
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
@@ -208,7 +208,7 @@ function renderShell(state, notice) {
   const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, 'Coordinator: ' + state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
   app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));
   scheduleExpiry(expiryDeadline(state));
-  void go(admin ? route : 'connections', section, mode);
+  void go(admin || ['chat', 'connections'].includes(route) ? route : 'chat', section, mode);
 }
 
 function canLeave() { return api.canLeave() && (!leaveGuard || leaveGuard.confirm()); }
@@ -257,7 +257,7 @@ function showKeyAfterSession(result, anchor) {
 
 async function go(name, sub, nextMode, force = false, checked = false) {
   if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
-  const allowed = api.state.identity.role === 'admin' ? ['overview', 'nodes', 'workloads', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['connections'];
+  const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'nodes', 'workloads', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['chat', 'connections'];
   const destination = allowed.includes(name) ? name : allowed[0];
   if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
     section = sub; mode = nextMode;
@@ -289,7 +289,8 @@ async function go(name, sub, nextMode, force = false, checked = false) {
     selectSection: (item, nextMode) => { if (scope.current()) { section = item; mode = nextMode; writeRoute(true); } },
     beforeKeyDisclosure: signal => beforeKeyDisclosure(signal, generation) };
   try {
-    if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
+    if (route === 'chat') { const { chat } = await import('./chat.mjs'); if (p.current()) await chat(p); }
+    else if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
     else if (route === 'nodes') await nodes(p, sub);
     else if (route === 'workloads') await workloads(p, sub, nextMode);
     else if (route === 'clients') await clients(p, sub);

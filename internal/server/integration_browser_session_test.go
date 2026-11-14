@@ -162,7 +162,9 @@ func TestIntegrationBrowserSessionRolesAndCredentialPrecedence(t *testing.T) {
 	}
 	s.config.Auth.RequireCompatAuth = true
 	status, _ = admin.call(t, "GET", "/v1/models", nil, nil)
-	require.Equal(t, 401, status, "cookie cannot satisfy compatibility authentication")
+	require.Equal(t, 200, status, "model discovery explicitly accepts browser authentication")
+	status, _ = admin.call(t, "POST", "/v1/completions", nil, nil)
+	require.Equal(t, 401, status, "other compatibility endpoints do not accept browser authentication")
 	s.config.Auth.RequireCompatAuth = false
 	// An explicitly anonymous compatibility route may ignore ambient cookies.
 	// Its existing policy remains authoritative and attaches no browser identity.

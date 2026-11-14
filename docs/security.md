@@ -122,8 +122,15 @@ Cookie-authenticated reads, session bootstrap and OAuth browser pages also rejec
 an explicit Origin other than the configured issuer. A credentialed CORS allowlist
 does not grant other sites access to browser sessions. Native API credentials and
 public OAuth protocol endpoints retain their configured cross-origin behavior.
-Browser cookies confer no authority on MCP, compatibility, pairing, internal or
-worker routes and are removed before all provider and cluster forwarding.
+Browser authority is opt-in on declared management/enrollment routes. Among
+compatibility operations, only GET `/v1/models` and POST `/v1/chat/completions`
+accept the coordinator's session; chat requires exact Origin and the session's
+CSRF proof and uses the existing key/team inference policy and quotas. Invalid
+browser attempts never become anonymous. Cookies confer no authority on MCP,
+internal or worker routes. Browser cookies and CSRF headers are removed before
+all provider and cluster forwarding. Once a browser session authenticates a
+request, unrelated proxy Authorization credentials are removed there too.
+Explicit native API keys keep their existing forwarding contract.
 
 HTTPS uses `__Host-zzrouter_oauth_session` and `__Host-zzrouter_oauth_browser`,
 always with Secure, HttpOnly, `Path=/` and no Domain, including deletion cookies.
