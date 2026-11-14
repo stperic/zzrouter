@@ -8,6 +8,7 @@ import { nodes } from './nodes.mjs';
 import { clients, connectionGuide } from './clients.mjs';
 import { access } from './access.mjs';
 import { routes } from './routes.mjs';
+import { workloads } from './workloads.mjs';
 
 const app = document.querySelector('#app');
 const pages = new Lifetime();
@@ -198,7 +199,7 @@ function renderShell(state, notice) {
   const identity = state.identity;
   const admin = identity.role === 'admin';
   navigation = el('nav', { class: 'nav', 'aria-label': 'Main navigation' });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['nodes', 'Nodes'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['connections', 'My Access']]) {
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
@@ -256,7 +257,7 @@ function showKeyAfterSession(result, anchor) {
 
 async function go(name, sub, nextMode, force = false, checked = false) {
   if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
-  const allowed = api.state.identity.role === 'admin' ? ['overview', 'nodes', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['connections'];
+  const allowed = api.state.identity.role === 'admin' ? ['overview', 'nodes', 'workloads', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['connections'];
   const destination = allowed.includes(name) ? name : allowed[0];
   if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
     section = sub; mode = nextMode;
@@ -290,6 +291,7 @@ async function go(name, sub, nextMode, force = false, checked = false) {
   try {
     if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
     else if (route === 'nodes') await nodes(p, sub);
+    else if (route === 'workloads') await workloads(p, sub, nextMode);
     else if (route === 'clients') await clients(p, sub);
     else if (route === 'routes') await routes(p, sub, nextMode);
     else if (route === 'access') await access(p, sub || 'keys', nextMode);

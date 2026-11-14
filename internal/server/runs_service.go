@@ -147,6 +147,7 @@ func (s *RunsService) ListRuns(ctx context.Context, req *ListRunsRequest) (*List
 	if req.WithParametersStatus {
 		path += "?include=" + includeParametersStatus
 	}
+	startedAt := utils.Now()
 	runsData, err := routeAndParse[runsResponse](ctx, s.router, "GET", path, targetNode, nil)
 	if err != nil {
 		return nil, err
@@ -154,6 +155,9 @@ func (s *RunsService) ListRuns(ctx context.Context, req *ListRunsRequest) (*List
 
 	// Apply filters if needed
 	filteredRuns := s.applyFilters(runsData.Instances, req)
+	for index := range filteredRuns {
+		filteredRuns[index].Activity = instance.ReceiveActivity(filteredRuns[index].Activity, startedAt).Current(utils.Now(), false)
+	}
 
 	slog.Info("[RunsService] Returning runs (filtered from )", "count", len(filteredRuns), "count_2", len(runsData.Instances))
 
@@ -185,6 +189,7 @@ func (s *RunsService) GetRun(ctx context.Context, req *GetRunRequest) (*instance
 	}
 
 	// Route the request
+	startedAt := utils.Now()
 	resp, err := s.router.Route(ctx, routingReq)
 	if err != nil {
 		return nil, newRoutedTransportError(err, req.Node)
@@ -213,6 +218,7 @@ func (s *RunsService) GetRun(ctx context.Context, req *GetRunRequest) (*instance
 	if run.ID == "" {
 		return nil, ErrRunNotFound
 	}
+	run.Activity = instance.ReceiveActivity(run.Activity, startedAt).Current(utils.Now(), false)
 
 	slog.Info("[RunsService] Found run on host", "run_id", req.RunID, "node", run.Node)
 	return &run, nil

@@ -1,4 +1,5 @@
 import { networkNodes, nodeHealth, nodeKey, localProviderKey, clientKey, clientLabel, clientState, cloudProviders, rowsFrom, localProviders } from './network-data.mjs';
+import { memorySummary, activityDeadline, activityLabel } from './observations.mjs';
 
 const label = (name, status) => `${String(name).replaceAll('-', '-\u200b')}\n${status}`;
 
@@ -25,6 +26,7 @@ export function topologyData({ inventory, catalog, clientResults }, coordinatorN
     const id = nodeKey(node.name);
     add(id, node.name, `${node.name === coordinatorName ? 'Coordinator + Worker · ' : ''}${nodeHealth(node)[0]}`, nodeHealth(node)[1], 'compute', id, 'compute');
     if (node.name === coordinatorName) elements.at(-1).data.label = label(node.name, `Worker · ${nodeHealth(node)[0]}`);
+    Object.assign(elements.at(-1).data, { metrics: memorySummary(node), activityLabel: activityLabel(node.activity), activityUntil: !node.activity?.stale ? activityDeadline(node.activity) : 0, active: node.activity?.state === 'active' });
     edge('coordinator', id, nodeHealth(node)[1]);
     for (const provider of localProviders(node, inventory)) {
       const providerID = localProviderKey(node.name, provider.key);
@@ -48,8 +50,8 @@ export function layoutInput(elements, bounds = new Map()) {
   const nodes = elements.filter(element => !element.data.source);
   const boxes = new Map(nodes.map(({ data }) => [data.id, data.kind === 'group'
     ? { id: data.id, children: [], layoutOptions: { 'elk.padding': '[top=30,left=24,bottom=16,right=24]' } }
-    : { id: data.id, width: Math.max(data.kind === 'compute' ? 190 : data.kind === 'provider' ? 110 : 180, Math.ceil(bounds.get(data.id)?.w || 0)),
-      height: Math.max(124, Math.ceil(bounds.get(data.id)?.h || 0) + 16) }]));
+    : { id: data.id, width: Math.max(data.kind === 'compute' ? 330 : data.kind === 'provider' ? 110 : 180, Math.ceil(bounds.get(data.id)?.w || 0)),
+      height: Math.max(data.kind === 'compute' ? 210 : 124, Math.ceil(bounds.get(data.id)?.h || 0) + 16), compute: data.kind === 'compute' }]));
   const children = [];
   for (const { data } of nodes) (data.parent ? boxes.get(data.parent).children : children).push(boxes.get(data.id));
   return { id: 'root', children, edges: elements.filter(element => element.data.source).map(({ data }) => ({ id: data.id, sources: [data.source], targets: [data.target] })),
@@ -61,7 +63,7 @@ export function layoutPositions(graph, origin = { x: 0, y: 0 }, positions = new 
   for (const node of graph.children || []) {
     const offset = { x: origin.x + node.x, y: origin.y + node.y };
     if (node.children) layoutPositions(node, offset, positions);
-    else positions.set(node.id, { x: offset.x + node.width / 2, y: offset.y + 32 });
+    else positions.set(node.id, { x: offset.x + (node.compute ? 70 : node.width / 2), y: offset.y + 32 });
   }
   return positions;
 }

@@ -8,12 +8,12 @@ import { topologyData } from './topology-data.mjs';
 import { topology } from './topology.mjs';
 import { providerName } from './provider-icons.mjs';
 import { showProvider } from './providers.mjs';
+import { activityText, memorySummary } from './observations.mjs';
+import { liveReads } from './live-reads.mjs';
 
 export async function overview(p, selection) {
-  let timer, snapshot, model, graph, drawer;
+  let snapshot, model, graph, drawer;
   let selected = selection;
-  let readPromise;
-  let automaticRead = false;
   let listMode = false;
   let graphFailed = false;
   const feedback = el('div', { 'aria-live': 'polite' });
@@ -40,11 +40,18 @@ export async function overview(p, selection) {
     const panel = drawer, revision = panel?.panel.revision;
     if (await read() && drawer === panel && drawer?.panel.revision === revision && drawer?.editing && p.api.canLeave()) select(selected, true);
   }, p.api);
+  const pause = button('Pause updates', () => live.toggle());
   p.root.append(heading('Overview', 'Your clients, coordinator and compute nodes.',
-    refreshButton, leaveButton('+ Add node', () => p.go('overview', 'add'), p.api, 'primary')), feedback, body,
+    refreshButton, pause, leaveButton('+ Add node', () => p.go('overview', 'add'), p.api, 'primary')), feedback, body,
     el('div', { class: 'network-footer' }, freshness, actions(leaveButton('+ Connect client', () => p.go('overview', 'connect'), p.api, 'link'), leaveButton('+ Cloud provider', () => p.go('providers', 'cloud'), p.api, 'link'))),
-    text('Node health is the coordinator’s latest observation. Configured providers and authorized clients do not establish a live connection.', 'network-caption'));
-  p.scope.signal.addEventListener('abort', () => clearTimeout(timer), { once: true });
+    text('Memory shows used / total GiB. * marks last reported readings. A pulse means observed work. Node health is the coordinator’s latest observation; configured providers and authorized clients do not establish a live connection.', 'network-caption'));
+  const live = liveReads(p, readSnapshot, { interval: 15000, eligible: () => idle(), changed: () => {
+    pause.textContent = live.paused ? 'Resume updates' : 'Pause updates';
+    pause.setAttribute('aria-pressed', String(live.paused));
+    graph?.pause(live.paused);
+    freshness.textContent = live.failed ? 'Automatic updates stopped. Refresh to retry.' : live.paused ? 'Updates and motion paused.' : 'Refreshes every 15 seconds while idle.';
+  } });
+  const read = () => live.refresh();
 
   function setListMode(value) {
     listMode = value;
@@ -108,6 +115,7 @@ export async function overview(p, selection) {
         item.setAttribute('aria-pressed', String(data.selection === selected));
         if (['coordinator', 'compute'].includes(kind)) item.dataset.node = data.name;
         item.append(data.providerKey ? providerName(data.providerKey, data.nodeName ? `${data.name} · ${data.nodeName}` : data.name) : el('span', {}, data.name), badge(data.status, data.tone));
+        if (kind === 'compute') { const node = model.nodes.find(node => node.name === data.name); item.append(el('span', { class: 'memory-summary' }, memorySummary(node)), activityText(p, node.activity)); }
         return item;
       }));
     }).filter(Boolean));
@@ -122,24 +130,20 @@ export async function overview(p, selection) {
   }
 
   const idle = () => !selected && !document.hidden && !list.contains(document.activeElement) && p.api.canChange();
-  function read(automatic = false) {
-    if (readPromise) { if (!automatic) automaticRead = false; return readPromise; }
-    if (!p.current()) return Promise.resolve(false);
-    automaticRead = automatic;
+  async function readSnapshot(automatic = false) {
+    if (!p.current()) return false;
     refreshButton.disabled = true;
-    readPromise = (async () => {
     try {
       const [inventory, catalog, clientResults] = await Promise.all([readInventory(p), Promise.allSettled([p.api.list('/providers/catalog?kind=all', { signal: p.scope.signal })]), readClients(p)]);
-      if (!p.current() || automaticRead && !idle()) return false;
+      if (!p.current()) return false;
+      if (automatic && !live.canUpdate()) return true;
       snapshot = { inventory, catalog: catalog[0], clientResults };
       updateModel();
       if (drawer && !drawer.editing) select(selected, true);
       freshness.textContent = `Updated ${date(new Date().toISOString())}. Refreshes every 15 seconds while idle.`;
-      return true;
+      return ![...inventory, catalog[0], ...clientResults].some(result => result.status === 'rejected');
     } catch (error) { if (p.current()) feedback.replaceChildren(problem(error)); return false; }
-    finally { readPromise = undefined; refreshButton.disabled = !p.api.canLeave(); }
-    })();
-    return readPromise;
+    finally { refreshButton.disabled = !p.api.canLeave(); }
   }
   await read();
   if (!p.current() || !snapshot) return;
@@ -156,14 +160,9 @@ export async function overview(p, selection) {
   void topology(canvas, p.scope.signal, value => p.go('overview', value), failed).then(value => {
     if (!p.current() || !value) return;
     graph = value;
+    graph.pause(live.paused);
     setListMode(listMode);
     updateModel();
   }).catch(failed);
-  const refresh = async () => {
-    if (!p.current()) return;
-    if (idle()) await read(true);
-    if (p.current()) { timer = setTimeout(refresh, 15000); timer.unref?.(); }
-  };
-  timer = setTimeout(refresh, 15000);
-  timer.unref?.();
+  live.start();
 }

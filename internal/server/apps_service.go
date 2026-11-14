@@ -38,10 +38,16 @@ import (
 // partial version-file leaves a dormant entry the user must be able to
 // see and uninstall, even though it isn't routable yet.
 type AppInfo struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Enabled   bool   `json:"enabled"`
-	Installed bool   `json:"installed"`
+	Key                string                           `json:"key,omitempty"`
+	State              prov_apps.LifecycleState         `json:"state,omitempty"`
+	RunScope           string                           `json:"run_scope,omitempty"`
+	RunLifecycle       string                           `json:"run_lifecycle,omitempty"`
+	SupportsLoadUnload bool                             `json:"supports_load_unload"`
+	Service            *prov_apps.ProviderServiceStatus `json:"service,omitempty"`
+	Name               string                           `json:"name"`
+	Type               string                           `json:"type"`
+	Enabled            bool                             `json:"enabled"`
+	Installed          bool                             `json:"installed"`
 	// Managed narrows Installed: zzRouter put this one here, so removing
 	// it is our business. An install we merely detected is Installed
 	// without being Managed, and uninstalling it would delete something
@@ -227,7 +233,13 @@ func sortApps(apps []AppInfo) {
 // DTO. node overrides the embedded Node (coord rewrites with endpoint
 // name); pass info.Node to keep it.
 func appInfoFromLocal(info prov_apps.LocalProviderInfo, node string) AppInfo {
+	var service *prov_apps.ProviderServiceStatus
+	if info.Service != nil {
+		copy := info.Service.Clone()
+		service = &copy
+	}
 	return AppInfo{
+		Key: info.Key, State: info.State, RunScope: info.RunScope, RunLifecycle: info.RunLifecycle, SupportsLoadUnload: info.SupportsLoadUnload, Service: service,
 		Name:        info.Name,
 		Type:        info.Type,
 		Node:        node,

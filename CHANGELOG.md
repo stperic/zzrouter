@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add measured node memory and expiring activity indicators to the console
+  Overview, plus a Workloads view for runs and installation/download jobs.
+  Use the shared side panel for exact-node start/stop, previews and read-only
+  recovery after uncertain writes. Preserve authenticated observation age and
+  unknown measurements across worker health reads; show provider lifecycle and
+  structured failure diagnostics without duplicating API policy in the browser.
+
 - Align all console views around selection, read-only details and explicit editing
   in one nonmodal side panel. Share creation and Save/Cancel controls, preserve
   drafts and list/map context, and read current state after saving. Add consistent

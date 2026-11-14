@@ -3,10 +3,30 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { cytoscape, ELK } from '../vendor/graph.mjs';
 import { topologyData, layoutInput, layoutPositions, topologySignature } from '../topology-data.mjs';
-import { graphLayout, revealNode } from '../topology.mjs';
+import { graphLayout, revealNode, activityMotion } from '../topology.mjs';
 import { overview } from '../overview.mjs';
 import { localProviderKey } from '../network-data.mjs';
 import { find, button, installDOM, walk, drain } from './dom-fixture.mjs';
+
+test('actual graph metrics preserve layout while idle and active evidence expire independently of polling', async t => {
+  installDOM(t);
+  const f = layoutFixture(t);
+  let now = 100;
+  const reduced = new EventTarget(); reduced.matches = true;
+  const motion = activityMotion(f.cy, f.controller.signal, { now: () => now, hidden: () => false, reduced });
+  const elements = [{ data: { id: 'worker', kind: 'compute', metrics: 'RAM 17 / 64 GiB', activityLabel: 'No observed work', activityUntil: 200, active: false } }];
+  const first = f.update(elements); f.pending[0].resolve(placed('worker', 20)); await first;
+  f.cy.viewport({ zoom: 1.3, pan: { x: 90, y: 70 } });
+  await f.update([{ data: { ...elements[0].data, metrics: 'RAM 23 / 64 GiB' } }]);
+  assert.equal(f.pending.length, 1); assert.equal(f.cy.zoom(), 1.3);
+  motion.pause(true); now = 201; motion.sync();
+  assert.match(f.cy.getElementById('metrics:worker').data('label'), /Activity unavailable/);
+  await f.update([{ data: { ...elements[0].data, activityLabel: 'Active at observation', activityUntil: 300, active: true } }]);
+  motion.pause(false); motion.sync();
+  assert.equal(f.cy.getElementById('activity:worker').animated(), false, 'reduced motion disables animation');
+  now = 301; motion.sync();
+  assert.match(f.cy.getElementById('metrics:worker').data('label'), /Activity unavailable/);
+});
 
 const ok = value => ({ status: 'fulfilled', value });
 const node = { name: 'atlas', health_status: 'healthy', providers: [{ key: 'ollama', kind: 'external' }] };
@@ -70,7 +90,7 @@ test('layout reserves measured wrapped labels without moving icons down inside t
   const input = layoutInput(projected(), new Map([['node/atlas', { w: 230, h: 210 }]]));
   const compute = input.children.find(node => node.id === 'compute');
   const parent = compute.children.find(node => node.id === 'node/atlas');
-  assert.equal(parent.width, 230);
+  assert.equal(parent.width, 330);
   assert.equal(parent.height, 226);
   const result = await elk.layout(input);
   const positions = layoutPositions(result);

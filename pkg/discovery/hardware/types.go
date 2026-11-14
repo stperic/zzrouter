@@ -15,6 +15,7 @@ type HardwareInfo struct {
 	CPUThreads   int        `json:"cpu_threads,omitempty"`   // Logical CPU threads
 	TotalRAM     int64      `json:"total_ram,omitempty"`     // in bytes
 	AvailableRAM int64      `json:"available_ram,omitempty"` // in bytes
+	UsedRAM      *int64     `json:"used_ram,omitempty"`      // OS-reported bytes; nil means unmeasured
 	DiskInfo     []DiskInfo `json:"disk_info,omitempty"`     // Disk space information
 }
 

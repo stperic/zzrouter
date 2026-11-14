@@ -177,7 +177,7 @@ func sortNodesByName(nodes []map[string]any) {
 // snapshotGPUInfo renders a peer's GPU block from its health snapshot,
 // or nil when the peer reported no GPU. Split out of endpointToNodeInfo
 // so the per-card shaping is readable on its own.
-func snapshotGPUInfo(snap mesh.EndpointSnapshot) map[string]any {
+func snapshotGPUInfo(snap mesh.EndpointSnapshot, unavailable bool) map[string]any {
 	if snap.GPUCount == 0 {
 		return nil
 	}
@@ -200,7 +200,7 @@ func snapshotGPUInfo(snap mesh.EndpointSnapshot) map[string]any {
 	if len(snap.GPUs) > 0 {
 		cards := make([]map[string]any, 0, len(snap.GPUs))
 		for _, g := range snap.GPUs {
-			cards = append(cards, gpuCardFields(g))
+			cards = append(cards, gpuCardFields(g, unavailable))
 		}
 		gpuInfo["gpus"] = cards
 		return gpuInfo
@@ -223,11 +223,14 @@ func snapshotGPUInfo(snap mesh.EndpointSnapshot) map[string]any {
 // gpuCardFields renders one card. Optional identifiers are omitted rather
 // than zeroed: absent means "not measured", which is not the same claim as
 // zero — a card reporting 0 GB free reads as full.
-func gpuCardFields(g mesh.GPUDetail) map[string]any {
+func gpuCardFields(g mesh.GPUDetail, unavailable bool) map[string]any {
 	card := map[string]any{
 		"index":           g.Index,
 		"name":            g.Name,
 		"memory_total_gb": math.Round(g.MemoryTotalGB*10) / 10,
+	}
+	if sample := g.Sample.Current(utils.Now(), unavailable); sample != nil {
+		card["sample"] = sample
 	}
 	if g.MemoryAvailGB != nil {
 		card["memory_available_gb"] = math.Round(*g.MemoryAvailGB*10) / 10
@@ -346,6 +349,22 @@ func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 		}
 	}
 
+	if sample := snap.MemorySample.Current(utils.Now(), healthStatus != "healthy"); sample != nil {
+		if memory, ok := nodeInfo["memory"].(map[string]any); ok {
+			memory["sample"] = sample
+		}
+	}
+	if activity := snap.Activity.Current(utils.Now(), healthStatus != "healthy"); activity != nil {
+		nodeInfo["activity"] = activity
+	}
+	if len(snap.ProviderActivity) > 0 {
+		activities := make(map[string]any, len(snap.ProviderActivity))
+		for key, value := range snap.ProviderActivity {
+			activities[key] = value.Current(utils.Now(), healthStatus != "healthy")
+		}
+		nodeInfo["provider_activity"] = activities
+	}
+
 	if snap.DiskTotalGB > 0 {
 		usedPercent := (snap.DiskTotalGB - snap.DiskAvailableGB) / snap.DiskTotalGB * 100
 		nodeInfo["disk"] = map[string]any{
@@ -355,7 +374,7 @@ func (s *NodesService) endpointToNodeInfo(ep *mesh.Endpoint) map[string]any {
 		}
 	}
 
-	if gpuInfo := snapshotGPUInfo(snap); gpuInfo != nil {
+	if gpuInfo := snapshotGPUInfo(snap, healthStatus != "healthy"); gpuInfo != nil {
 		nodeInfo["gpu"] = gpuInfo
 	}
 
@@ -571,7 +590,7 @@ func (s *Server) GetLocalNodeInfo() map[string]any {
 		"version":       versionStr,
 		// This node is answering the request, so it is being reached
 		// right now. Same meaning as the peer field: last successful
-		// observation.
+		// observation. Public liveness alone does not renew authenticated inventory.
 		"last_seen_at": utils.NowUTC().Format(time.RFC3339),
 	}
 
@@ -583,6 +602,9 @@ func (s *Server) GetLocalNodeInfo() map[string]any {
 		apps = append(apps, nodeProviderInfo(app))
 	}
 	hostInfo["providers"] = apps
+	if s.providers.appMgr != nil {
+		hostInfo["activity"], hostInfo["provider_activity"] = s.providers.appMgr.Activity(utils.Now())
+	}
 
 	ctx := context.Background()
 	cache := inventory.Default()
@@ -601,7 +623,8 @@ func (s *Server) GetLocalNodeInfo() map[string]any {
 
 func nodeProviderInfo(info prov_apps.LocalProviderInfo) map[string]any {
 	result := map[string]any{"key": info.Key, "type": info.Type, "name": info.Name,
-		"formats": info.Formats, "cloud": info.Kind == string(config.KindCloud), "kind": info.Kind}
+		"formats": info.Formats, "cloud": info.Kind == string(config.KindCloud), "kind": info.Kind,
+		"state": info.State, "run_scope": info.RunScope, "run_lifecycle": info.RunLifecycle, "supports_load_unload": info.SupportsLoadUnload}
 	if info.Service != nil {
 		result["running"] = info.Service.Running
 		result["service"] = info.Service.Clone()

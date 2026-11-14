@@ -13205,6 +13205,45 @@ components:
         json_mode:          { type: boolean }
         max_context_tokens: { type: integer, minimum: 1 }
 
+    MemorySample:
+      type: object
+      description: Measured memory usage. Absence or omitted used_bytes means unknown, never zero. Peer age is anchored to the coordinator probe start; reading inventory does not renew the sample. Stale or unavailable-node readings are last reported.
+      required: [total_bytes, age_seconds, observed_at, stale]
+      properties:
+        total_bytes: { type: integer, format: int64, minimum: 1 }
+        used_bytes: { type: integer, format: int64, minimum: 0 }
+        age_seconds: { type: number, minimum: 0 }
+        observed_at: { type: string, format: date-time }
+        stale: { type: boolean }
+
+    ActivityObservation:
+      type: object
+      description: Admitted requests or a fresh engine activity probe, independent of protective engine_busy holds. Absence means unknown. Consumers must expire validity from request start, even when polling pauses; running services alone do not establish activity.
+      required: [state, active_requests, busy_engines, observed_at, age_seconds, valid_for_seconds, stale]
+      properties:
+        state: { type: string, enum: [active, idle, unknown] }
+        active_requests: { type: integer, minimum: 0 }
+        busy_engines: { type: integer, minimum: 0 }
+        observed_at: { type: string, format: date-time }
+        age_seconds: { type: number, minimum: 0 }
+        valid_for_seconds: { type: number, minimum: 0 }
+        stale: { type: boolean }
+
+    ProviderServiceObservation:
+      type: object
+      description: Cached lifecycle-owner observation; absence is unknown, not stopped. This is not a fresh endpoint health test.
+      properties:
+        provider: { type: string }
+        supervisor: { type: string }
+        managed: { type: boolean }
+        enabled: { type: boolean }
+        desired_running: { type: boolean }
+        running: { type: boolean }
+        pid: { type: integer }
+        backoff: { type: string }
+        job_id: { type: string }
+        last_exit: { $ref: '#/components/schemas/ProviderServiceStatus/properties/last_exit' }
+
     RunRefusal:
       type: object
       description: Last refusal for this request, classified with the launch failure table; cleared by an accepted start.
@@ -13218,6 +13257,7 @@ components:
     Run:
       type: object
       properties:
+        activity: { $ref: '#/components/schemas/ActivityObservation' }
         id:       { type: string }
         node:     { type: string }
         provider: { type: string }
@@ -13377,6 +13417,11 @@ components:
     Provider:
       type: object
       properties:
+        state: { type: string, enum: [not-installed, installing, dormant, live, cloud-available] }
+        run_scope: { type: string, description: Node-scoped providers launch without a model. }
+        run_lifecycle: { type: string, enum: [process, served, none, unknown], description: API-owned lifecycle from provider configuration. Missing on older peers means unknown; supports_load_unload is a separate legacy capability. }
+        supports_load_unload: { type: boolean }
+        service: { $ref: '#/components/schemas/ProviderServiceObservation' }
         name:      { type: string }
         key:       { type: string }
         mode:      { type: string }
@@ -13479,6 +13524,32 @@ components:
         land in `metadata` (open map) before being promoted here.
       required: [name, cluster_role, health_status]
       properties:
+        activity: { $ref: '#/components/schemas/ActivityObservation' }
+        provider_activity:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/ActivityObservation' }
+        providers:
+          type: array
+          items: { $ref: '#/components/schemas/Provider' }
+        gpu:
+          type: object
+          properties:
+            count: { type: integer, minimum: 0 }
+            type: { type: string }
+            unified_memory: { type: boolean, description: GPU and RAM share one memory pool; do not sum them. }
+            gpus:
+              type: array
+              items:
+                type: object
+                properties:
+                  index: { type: integer }
+                  name: { type: string }
+                  uuid: { type: string }
+                  pci_address: { type: string }
+                  driver_index: { type: integer }
+                  memory_total_gb: { type: number }
+                  memory_available_gb: { type: number }
+                  sample: { $ref: '#/components/schemas/MemorySample' }
         name:          { type: string, description: Canonical node name. }
         ip_address:    { type: string, description: Resolved IP of the node's bind address. }
         port:          { type: integer, minimum: 0 }
@@ -13503,7 +13574,7 @@ components:
         last_seen_at:
           type: string
           format: date-time
-          description: Latest successful health probe, unchanged by ordinary requests or failed probes.
+          description: Latest successful authenticated health probe, unchanged by ordinary requests, failed probes or public-only health responses.
         last_error:
           type: string
           description: Sanitized probe or dispatch transport failure, omitted when absent.
@@ -13521,6 +13592,7 @@ components:
           type: object
           description: RAM summary populated when the worker reported resources on last probe. Every `*_gb` value on a node (memory, GPU, disk) is GiB, 1024^3 bytes.
           properties:
+            sample: { $ref: '#/components/schemas/MemorySample' }
             total_gb:     { type: number, description: GiB }
             available_gb: { type: number, description: GiB }
             used_percent: { type: number }

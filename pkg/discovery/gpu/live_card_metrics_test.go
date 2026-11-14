@@ -33,7 +33,7 @@ func TestLiveCardMetricsContext(t *testing.T) {
 		if len(cards) != 2 {
 			t.Fatalf("expected 2 cards, got %d", len(cards))
 		}
-		if cards[0].UUID != "GPU-aaa" || cards[0].FreeMemoryMiB != 67875 || cards[0].UsedMemoryMiB != 30012 {
+		if cards[0].UUID != "GPU-aaa" || *cards[0].FreeMemoryMiB != 67875 || *cards[0].UsedMemoryMiB != 30012 {
 			t.Errorf("first card mismatched: %+v", cards[0])
 		}
 		if cards[0].PCIAddress != "0000:41:00.0" {
@@ -42,7 +42,7 @@ func TestLiveCardMetricsContext(t *testing.T) {
 		if cards[0].UtilizationPct != 42 {
 			t.Errorf("utilization is per card, not averaged: %+v", cards[0])
 		}
-		if cards[1].FreeMemoryMiB != 97887 {
+		if *cards[1].FreeMemoryMiB != 97887 {
 			t.Errorf("second card mismatched: %+v", cards[1])
 		}
 	})
@@ -68,13 +68,13 @@ func TestCardMetricsIndex(t *testing.T) {
 	// nvidia-smi orders rows by NVML, so the second card's metrics arrive
 	// first here. A positional join would report card A's memory as B's.
 	idx := NewCardMetricsIndex([]CardMetrics{
-		{UUID: "GPU-bbb", PCIAddress: "0000:c1:00.0", FreeMemoryMiB: 97887},
-		{UUID: "GPU-aaa", PCIAddress: "0000:41:00.0", FreeMemoryMiB: 67875, UsedMemoryMiB: 30012},
+		{UUID: "GPU-bbb", PCIAddress: "0000:c1:00.0", FreeMemoryMiB: memoryValue(97887)},
+		{UUID: "GPU-aaa", PCIAddress: "0000:41:00.0", FreeMemoryMiB: memoryValue(67875), UsedMemoryMiB: memoryValue(30012)},
 	})
 
 	t.Run("joins on identity, not position", func(t *testing.T) {
 		got, ok := idx.ForCard(Card{UUID: "GPU-aaa", PCIAddress: "0000:41:00.0"})
-		if !ok || got.FreeMemoryMiB != 67875 || got.UsedMemoryMiB != 30012 {
+		if !ok || *got.FreeMemoryMiB != 67875 || *got.UsedMemoryMiB != 30012 {
 			t.Errorf("got %+v (ok=%v), want card aaa's figures", got, ok)
 		}
 	})
@@ -100,3 +100,20 @@ func TestCardMetricsIndex(t *testing.T) {
 		}
 	})
 }
+
+func TestLiveCardMemoryUnknownAndZeroAreIndependent(t *testing.T) {
+	for _, value := range []string{"[N/A]", "", "bad", "-1"} {
+		opts := liveMetricsOptions{queryNVIDIASMI: stubNVIDIASMI([]nvidiaRow{{
+			nvidiaFieldUUID: "A", nvidiaFieldMemoryTotalMiB: "100", nvidiaFieldMemoryFreeMiB: "40", nvidiaFieldMemoryUsedMiB: value,
+		}}, nil)}
+		cards := liveCardMetricsContext(t.Context(), opts.withDefaults())
+		if len(cards) != 1 || cards[0].UsedMemoryMiB != nil || cards[0].FreeMemoryMiB == nil || *cards[0].FreeMemoryMiB != 40 {
+			t.Fatalf("partial memory %q became fabricated usage: %+v", value, cards)
+		}
+	}
+	if zero := rowMiB(nvidiaRow{"x": "0"}, "x"); zero == nil || *zero != 0 {
+		t.Fatal("measured zero must stay present")
+	}
+}
+
+func memoryValue(value int64) *int64 { return &value }

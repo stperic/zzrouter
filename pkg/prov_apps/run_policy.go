@@ -22,6 +22,19 @@ const (
 	LifecycleNone                        // needs only catalog evidence
 )
 
+func (l RunLifecycle) String() string {
+	switch l {
+	case LifecycleProcess:
+		return "process"
+	case LifecycleServed:
+		return "served"
+	case LifecycleNone:
+		return "none"
+	default:
+		return "unknown"
+	}
+}
+
 // Lifecycle derives run ownership from config, with process ownership first.
 func Lifecycle(svc config.ServiceConfig) RunLifecycle {
 	if svc.LaunchesProcess() {

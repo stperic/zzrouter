@@ -12,7 +12,7 @@ import (
 )
 
 func TestUnifiedPoolIsCountedOnce(t *testing.T) {
-	cache := &Cache{ttl: time.Hour, lastUpdate: utils.Now(), gpuCardsAt: utils.Now(),
+	cache := &Cache{ttl: time.Hour, memoryAt: utils.Now(), gpuCardsAt: utils.Now(),
 		memInfo: &hardware.HardwareInfo{TotalRAM: 64 << 30, AvailableRAM: 32 << 30}}
 	inv := gpu.Inventory{Cards: []gpu.Card{{Vendor: gpu.VendorApple}, {Vendor: gpu.VendorApple}}}
 	local := GatherGPU(t.Context(), inv, cache)

@@ -278,7 +278,7 @@ func TestReservationPreparationUsesCachedTotals(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tools, "nvidia-smi"), []byte(script), 0700))
 	t.Setenv("PATH", tools)
 	cache := inventory.NewCache(time.Hour)
-	r.m.memoryInventory = cache.GetGPUCardMetrics
+	r.m.memoryInventory = func(ctx context.Context) []gpu.CardMetrics { value, _ := cache.GetGPUCardMetrics(ctx); return value }
 	r.m.memorySnapshot = func(context.Context) ([]gpu.MemoryDevice, error) {
 		t.Fatal("preparation queried live admission memory")
 		return nil, nil

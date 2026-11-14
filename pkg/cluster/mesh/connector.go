@@ -16,6 +16,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/discovery/gpu"
+	"github.com/stperic/zzrouter/pkg/host/inventory"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stperic/zzrouter/pkg/version"
 )
@@ -425,6 +427,16 @@ func (c *Connector) performHealthCheck(ctx context.Context, hostURL string) (*Co
 			// Parse memory (bytes → GB)
 			conn.RAMTotalGB = getNestedValueGB(data, "memory_total")
 			conn.RAMAvailableGB = getNestedValueGB(data, "memory_available")
+			if quality == QualityFull {
+				conn.MemorySample = memorySample(data["memory_sample"], observedAt)
+				conn.Activity = activitySample(data["activity"], observedAt)
+				if values, ok := data["provider_activity"].(map[string]any); ok {
+					conn.ProviderActivity = make(map[string]*instance.Activity, len(values))
+					for key, value := range values {
+						conn.ProviderActivity[key] = activitySample(value, observedAt)
+					}
+				}
+			}
 			// Parse disk (bytes → GB)
 			conn.DiskTotalGB = getNestedValueGB(data, "disk_total")
 			conn.DiskAvailableGB = getNestedValueGB(data, "disk_free")
@@ -452,6 +464,9 @@ func (c *Connector) performHealthCheck(ctx context.Context, hostURL string) (*Co
 						PCIAddress:    getStr(gpu, "pci_address"),
 						UUID:          getStr(gpu, "uuid"),
 						MemoryTotalGB: memTotal,
+					}
+					if quality == QualityFull {
+						detail.Sample = memorySample(gpu["memory_sample"], observedAt)
 					}
 					if measured {
 						avail := memAvail
@@ -673,4 +688,46 @@ func (c *Connector) BustVersionCache(urls ...string) {
 func IsVersionCompatibilityError(err error) bool {
 	var verr *version.VersionCompatibilityError
 	return errors.As(err, &verr)
+}
+
+// memorySample only accepts the explicit measured wire shape, never legacy usage.
+func memorySample(value any, startedAt time.Time) *inventory.MemorySample {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := raw["age_seconds"].(float64); !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var sample inventory.MemorySample
+	if json.Unmarshal(encoded, &sample) != nil {
+		return nil
+	}
+	return inventory.ReceiveMemorySample(&sample, startedAt)
+}
+
+func activitySample(value any, startedAt time.Time) *instance.Activity {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := raw["age_seconds"].(float64); !ok {
+		return nil
+	}
+	if _, ok := raw["valid_for_seconds"].(float64); !ok {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var sample instance.Activity
+	if json.Unmarshal(encoded, &sample) != nil {
+		return nil
+	}
+	return instance.ReceiveActivity(&sample, startedAt)
 }

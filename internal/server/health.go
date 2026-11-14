@@ -77,6 +77,9 @@ func (s *Server) handleHealth(c *gin.Context) {
 
 	// Add system information
 	maps.Copy(health, systemInfo)
+	if s.providers.appMgr != nil {
+		health["activity"], health["provider_activity"] = s.providers.appMgr.Activity(utils.Now())
+	}
 	if s.cluster.resources != nil {
 		health["resources"] = s.cluster.resources.GetMetrics()
 	}
@@ -100,40 +103,18 @@ func (s *Server) GetSystemInfo() map[string]any {
 	ctx := context.Background()
 	cache := inventory.Default()
 
-	// Memory information — computed from Total/Available. gopsutil
-	// also exposes Used and UsedPercent directly, but
-	// hardware.DiscoverMemory only carries Total + Available; the
-	// pair is sufficient because Used = Total - Available by
-	// definition on every platform gopsutil supports.
-	if memInfo := cache.GetMemoryInfo(ctx); memInfo != nil && memInfo.TotalRAM > 0 {
-		total := memInfo.TotalRAM
-		available := memInfo.AvailableRAM
-		used := total - available
-		var usedPercent float64
-		if total > 0 {
-			usedPercent = float64(used) / float64(total) * 100.0
+	// Usage is the OS observation, not total minus available memory.
+	if memInfo, sampledAt := cache.GetMemoryInfo(ctx); memInfo != nil && memInfo.TotalRAM > 0 {
+		total, available := memInfo.TotalRAM, memInfo.AvailableRAM
+		info["memory_total"] = map[string]any{"value": total, "display_value": utils.FormatSize(total)}
+		info["memory_available"] = map[string]any{"value": available, "display_value": utils.FormatSize(available)}
+		info["memory_sample"] = inventory.NewMemorySample(total, memInfo.UsedRAM, sampledAt)
+		if memInfo.UsedRAM != nil {
+			used := *memInfo.UsedRAM
+			percent := float64(used) / float64(total) * 100
+			info["memory_used"] = map[string]any{"value": used, "display_value": utils.FormatSize(used)}
+			info["memory_used_percent"] = map[string]any{"value": percent, "display_value": fmt.Sprintf("%.2f%%", percent)}
 		}
-		info["memory_total"] = map[string]any{
-			"value":         uint64(total),
-			"display_value": utils.FormatSize(total),
-		}
-		info["memory_available"] = map[string]any{
-			"value":         uint64(available),
-			"display_value": utils.FormatSize(available),
-		}
-		info["memory_used"] = map[string]any{
-			"value":         uint64(used),
-			"display_value": utils.FormatSize(used),
-		}
-		info["memory_used_percent"] = map[string]any{
-			"value":         usedPercent,
-			"display_value": fmt.Sprintf("%.2f%%", usedPercent),
-		}
-	} else {
-		info["memory_total"] = map[string]any{"value": 0, "display_value": "N/A"}
-		info["memory_available"] = map[string]any{"value": 0, "display_value": "N/A"}
-		info["memory_used"] = map[string]any{"value": 0, "display_value": "N/A"}
-		info["memory_used_percent"] = map[string]any{"value": 0.0, "display_value": "N/A"}
 	}
 
 	// Disk information — pick the primary mount from the disk
@@ -201,7 +182,8 @@ func (s *Server) GetSystemInfo() map[string]any {
 
 	// Read through the inventory cache so concurrent handlers share one
 	// nvidia-smi per TTL window instead of each spawning their own.
-	live := gpu.NewCardMetricsIndex(cache.GetGPUCardMetrics(ctx))
+	liveCards, sampledAt := cache.GetGPUCardMetrics(ctx)
+	live := gpu.NewCardMetricsIndex(liveCards)
 
 	gpuInfo := make([]map[string]any, 0, len(cards))
 	idx := 0
@@ -248,16 +230,21 @@ func (s *Server) GetSystemInfo() map[string]any {
 		// A reader that finds no key knows it wasn't measured; one that
 		// finds a zero has to guess, and "0 free" reads as a full card.
 		if m, ok := live.ForCard(card); ok {
-			freeBytes := m.FreeMemoryMiB * 1024 * 1024
-			usedBytes := m.UsedMemoryMiB * 1024 * 1024
-			gpuCard["vram_free"] = map[string]any{
-				"value":         freeBytes,
-				"display_value": utils.FormatSize(freeBytes),
+			var used *int64
+			if m.FreeMemoryMiB != nil {
+				free := *m.FreeMemoryMiB * 1024 * 1024
+				gpuCard["vram_free"] = map[string]any{"value": free, "display_value": utils.FormatSize(free)}
 			}
-			gpuCard["vram_used"] = map[string]any{
-				"value":         usedBytes,
-				"display_value": utils.FormatSize(usedBytes),
+			if m.UsedMemoryMiB != nil {
+				value := *m.UsedMemoryMiB * 1024 * 1024
+				used = &value
+				gpuCard["vram_used"] = map[string]any{"value": value, "display_value": utils.FormatSize(value)}
 			}
+			total := card.MemoryMiB
+			if m.TotalMemoryMiB > 0 {
+				total = m.TotalMemoryMiB
+			}
+			gpuCard["memory_sample"] = inventory.NewMemorySample(total*1024*1024, used, sampledAt)
 		}
 		gpuInfo = append(gpuInfo, gpuCard)
 	}

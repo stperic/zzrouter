@@ -19,7 +19,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/host/inventory"
 	"github.com/stperic/zzrouter/pkg/prov_apps"
+	"github.com/stperic/zzrouter/pkg/prov_apps/instance"
 )
 
 // Request represents a cluster request
@@ -85,6 +87,8 @@ func (e *Endpoint) Usable() bool {
 // consumer sites (conn.OS, snap.RAMTotalGB) while the type system
 // enforces the probe-produces vs registry-tracks boundary.
 type HealthReport struct {
+	Activity         *instance.Activity
+	ProviderActivity map[string]*instance.Activity
 	// Resources is an optional sample from the existing resource tracker.
 	Resources *ResourceMetrics
 	// ResourcesObservedAt is the local probe start, never a peer clock value.
@@ -97,6 +101,7 @@ type HealthReport struct {
 	RunningModels int
 	AppCount      int
 
+	MemorySample    *inventory.MemorySample
 	RAMTotalGB      float64
 	RAMAvailableGB  float64
 	DiskTotalGB     float64
@@ -135,13 +140,14 @@ type HealthReport struct {
 // can pick the right card without re-probing the worker. Field semantics
 // mirror pkg/discovery/gpu.Card — see those doc comments for full detail.
 type GPUDetail struct {
-	Index         int     `json:"index"`
-	Name          string  `json:"name,omitempty"`
-	Vendor        string  `json:"vendor,omitempty"`
-	PCIAddress    string  `json:"pci_address,omitempty"`
-	UUID          string  `json:"uuid,omitempty"`
-	DriverIndex   *int    `json:"driver_index,omitempty"`
-	MemoryTotalGB float64 `json:"memory_total_gb,omitempty"`
+	Sample        *inventory.MemorySample `json:"sample,omitempty"`
+	Index         int                     `json:"index"`
+	Name          string                  `json:"name,omitempty"`
+	Vendor        string                  `json:"vendor,omitempty"`
+	PCIAddress    string                  `json:"pci_address,omitempty"`
+	UUID          string                  `json:"uuid,omitempty"`
+	DriverIndex   *int                    `json:"driver_index,omitempty"`
+	MemoryTotalGB float64                 `json:"memory_total_gb,omitempty"`
 	// MemoryAvailGB is nil when the worker could not measure this card
 	// (no vendor SMI tool, Apple silicon, a failed probe). Nil and 0.0
 	// are opposite claims, so this stays a pointer all the way to the
@@ -150,7 +156,7 @@ type GPUDetail struct {
 }
 
 // EndpointSnapshot holds the registry's authoritative view of a worker.
-// Embeds HealthReport (populated on every successful probe) and adds
+// Embeds HealthReport (populated on successful authenticated probes) and adds
 // registry-owned state that the probe does NOT produce: the stringified
 // Version (for JSON serialization), the most recent probe error, and a
 // CollectedAt stamp. Written inside registry.Observe; read by consumers
@@ -167,8 +173,8 @@ type EndpointSnapshot struct {
 	// successful probe; populated on failure.
 	LastError string
 
-	// CollectedAt stamps when the snapshot was written (on a successful
-	// probe). Zero before the first success.
+	// CollectedAt stamps the latest successful authenticated inventory probe.
+	// Public-only probes retain the prior stamp. Zero before the first success.
 	CollectedAt time.Time
 }
 

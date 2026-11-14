@@ -76,7 +76,7 @@ func GatherDisk(ctx context.Context, modelsDir string, cache *Cache) *NodeDisk {
 // GatherMemory returns aggregate RAM metrics for the node. Returns nil if
 // the cache yields no data or reports TotalRAM == 0.
 func GatherMemory(ctx context.Context, cache *Cache) *NodeMemory {
-	memInfo := cache.GetMemoryInfo(ctx)
+	memInfo, sampledAt := cache.GetMemoryInfo(ctx)
 	if memInfo == nil || memInfo.TotalRAM == 0 {
 		return nil
 	}
@@ -90,6 +90,7 @@ func GatherMemory(ctx context.Context, cache *Cache) *NodeMemory {
 	}
 
 	return &NodeMemory{
+		Sample:      NewMemorySample(memInfo.TotalRAM, memInfo.UsedRAM, sampledAt),
 		TotalGB:     totalGB,
 		AvailableGB: availableGB,
 		UsedPercent: usedPercent,
@@ -131,7 +132,7 @@ func GatherGPU(ctx context.Context, inv gpu.Inventory, cache *Cache) *NodeGPU {
 			uuidByPCI[card.PCIAddress] = card.UUID
 		}
 	}
-	liveCards := cache.GetGPUCardMetrics(ctx)
+	liveCards, sampledAt := cache.GetGPUCardMetrics(ctx)
 	byIdentity := gpu.NewCardMetricsIndex(liveCards)
 
 	for i, g := range hwInfo.GPUs {
@@ -142,8 +143,20 @@ func GatherGPU(ctx context.Context, inv gpu.Inventory, cache *Cache) *NodeGPU {
 			ComputeCapability: g.ComputeCapability,
 		}
 		if m, ok := byIdentity.ForIdentity(uuidByPCI[g.PCIAddress], g.PCIAddress); ok {
-			availGB := float64(m.FreeMemoryMiB) / 1024.0
-			card.MemoryAvailableGB = &availGB
+			if m.FreeMemoryMiB != nil {
+				availGB := float64(*m.FreeMemoryMiB) / 1024.0
+				card.MemoryAvailableGB = &availGB
+			}
+			var used *int64
+			if m.UsedMemoryMiB != nil {
+				value := *m.UsedMemoryMiB * 1024 * 1024
+				used = &value
+			}
+			total := int64(g.MemoryGB * constants.BytesPerGB)
+			if m.TotalMemoryMiB > 0 {
+				total = m.TotalMemoryMiB * 1024 * 1024
+			}
+			card.Sample = NewMemorySample(total, used, sampledAt)
 		}
 		out.GPUs = append(out.GPUs, card)
 	}
@@ -154,14 +167,21 @@ func GatherGPU(ctx context.Context, inv gpu.Inventory, cache *Cache) *NodeGPU {
 	// vendor aggregate, which is why the fallback stays.
 	if out.Type == "nvidia" && len(liveCards) > 0 {
 		var totalMiB, freeMiB int64
+		complete := len(liveCards) == len(inv.Cards)
 		var utilSum float64
 		for _, m := range liveCards {
 			totalMiB += m.TotalMemoryMiB
-			freeMiB += m.FreeMemoryMiB
+			if m.FreeMemoryMiB != nil {
+				freeMiB += *m.FreeMemoryMiB
+			} else {
+				complete = false
+			}
 			utilSum += m.UtilizationPct
 		}
 		out.MemoryTotalGB = float64(totalMiB) / 1024.0
-		out.MemoryAvailableGB = float64(freeMiB) / 1024.0
+		if complete {
+			out.MemoryAvailableGB = float64(freeMiB) / 1024.0
+		}
 		out.UtilizationPercent = utilSum / float64(len(liveCards))
 		return out
 	}

@@ -3,6 +3,8 @@ import { readInventory, providerCategory } from './inventory.mjs';
 import { networkNodes, nodeHealth, localProviders, localProviderKey, hardwareLabel, memoryLabel, nodeKey } from './network-data.mjs';
 import { details, readAfterWrite } from './details.mjs';
 import { providerName } from './provider-icons.mjs';
+import { memorySummary, memoryDetails, activityText } from './observations.mjs';
+import { providerDiagnostics } from './diagnostics.mjs';
 
 export function nodeTile(p, node, destination = 'nodes', coordinator = false) {
   const item = leaveButton('', () => p.go(destination, nodeKey(node.name)), p.api, `network-item ${node.health_status === 'down' ? 'is-down' : ''}`);
@@ -12,7 +14,7 @@ export function nodeTile(p, node, destination = 'nodes', coordinator = false) {
   item.append(
     el('span', { class: 'network-item-title' }, el('strong', {}, node.name), badge(...nodeHealth(node))),
     el('span', { class: 'network-meta' }, [node.os || 'OS not reported', node.name === p.state.node_name && !coordinator ? 'Coordinator + Worker' : coordinator ? 'Coordination & routing' : 'Worker'].join(' · ')),
-    el('span', { class: 'network-hardware' }, hardwareLabel(node)));
+    el('span', { class: 'network-hardware' }, hardwareLabel(node)), el('span', { class: 'memory-summary' }, memorySummary(node)), activityText(p, node.activity));
   return item;
 }
 
@@ -65,6 +67,8 @@ export function showNode(p, name, inventory) {
     facts([['Last seen', node.last_seen_at ? date(node.last_seen_at) : 'Not reported'], ['Hardware', hardwareLabel(node)], ['Memory', memoryLabel(node)],
       ['Operating system', node.os], ['Router version', node.version], ['Node address', node.address || node.ip_address]]));
   if (node.last_error) p.root.append(message(node.last_error, 'warning'));
+  else if (node.health_status !== 'healthy') p.root.append(message('The cluster connection is not currently healthy and no failure cause was reported. Check that the node is running, paired and reachable.', 'warning'));
+  p.root.append(activityText(p, node.activity), memoryDetails(node), leaveButton('View workloads', () => p.go('workloads', `node/${encodeURIComponent(node.name)}`, 'runs'), p.api));
   if (node.health_status !== 'healthy') p.root.append(text('Provider and hardware details are the last reported observations.', 'muted'));
   p.root.append(el('h3', {}, 'Local providers'));
   if (inventory[1].status === 'rejected') p.root.append(problem(inventory[1].reason));
@@ -94,8 +98,9 @@ export function showLocalProvider(p, name, key, inventory) {
       ['Last seen', node.last_seen_at ? date(node.last_seen_at) : 'Not reported']]));
   if (node.health_status !== 'healthy') p.root.append(message('This node is not currently healthy. Provider details are last reported observations.', 'warning'));
   if (inventory[1].status === 'rejected') p.root.append(problem(inventory[1].reason));
+  p.root.append(providerDiagnostics(p, record || report, node.name), activityText(p, node.provider_activity?.[key]));
   p.root.append(actions(leaveButton('Edit node settings', () => editNode(p, node, inventory, owner => showLocalProvider(owner, name, key, inventory)), p.api, 'primary'),
-    leaveButton('View node', () => p.go('overview', nodeKey(node.name)), p.api)));
+    leaveButton('View node', () => p.go('overview', nodeKey(node.name)), p.api), leaveButton('View workloads', () => p.go('workloads', `node/${encodeURIComponent(node.name)}`, 'runs'), p.api)));
 }
 
 function editNode(p, node, inventory, renderDetails = owner => showNode(owner, node.name, inventory)) {
