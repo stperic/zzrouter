@@ -102,7 +102,8 @@ test('actual console routes registry categories and Refresh without resetting th
   await click(f.app, 'Refresh');
   assert.equal(candidate.value, '', 'Refresh leaves and scrubs the previous form');
   assert.equal(button(f.app, 'Model registries').getAttribute('aria-current'), 'true');
-  assert.equal(walk(f.app).some(node => node.getAttribute('name') === 'token'), false, 'refresh returns to details');
+  assert.notEqual(named(f.app, 'token'), candidate, 'refresh opens a fresh setup form');
+  assert.equal(named(f.app, 'token').value, '');
   assert.ok(f.calls.slice(before).every(call => !call.path.endsWith('/session')), 'Refresh uses the page lifetime without replacing authority');
 });
 
@@ -258,12 +259,12 @@ test('a failed probe preserves a provider form but blocks changes until a succes
   assert.equal(candidate.value, 'synthetic-candidate');
   assert.match(f.app.textContent, /New changes are paused/);
   assert.equal(find(f.app, node => node.tag === 'fieldset').inert, true);
-  await click(f.app, 'Save changes');
+  await click(f.app, 'Save and enable');
   assert.equal(f.calls.some(call => call.options.method === 'PUT'), false);
   f.failProbe(false);
   await click(f.app, 'Verify session');
   assert.equal(find(f.app, node => node.tag === 'fieldset').inert, false);
-  await click(f.app, 'Save changes');
+  await click(f.app, 'Save and enable');
   assert.equal(f.calls.filter(call => call.options.method === 'PUT').length, 1);
 });
 
@@ -343,7 +344,7 @@ test('pending provider save blocks provider replacement and reload; diagnostic T
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-candidate';
   const save = f.hold('PUT', '/providers/openai/connection');
-  await click(f.app, 'Save changes');
+  await click(f.app, 'Save and enable');
   assert.equal(find(f.app, node => node.dataset.provider === 'groq').disabled, true);
   assert.equal(button(f.app, 'Refresh').disabled, true);
   for (const label of ['Cloud providers', 'Local providers', 'Model registries', 'Refresh']) {
@@ -364,7 +365,7 @@ test('pending provider save blocks provider replacement and reload; diagnostic T
   const testedCandidate = named(f.app, 'token');
   testedCandidate.value = 'synthetic-test-candidate';
   const diagnostic = f.hold('POST', '/providers/openai/connection/test');
-  await click(f.app, 'Test candidate');
+  await click(f.app, 'Test connection');
   const unload = new Event('beforeunload', { cancelable: true });
   window.dispatchEvent(unload);
   assert.equal(unload.defaultPrevented, false);
@@ -566,6 +567,8 @@ test('explicit sign-out works after a failed focus probe and clears protected va
   await provider(f, 'openai');
   const candidate = named(f.app, 'token');
   candidate.value = 'synthetic-signout-candidate';
+  await click(f.app, 'Show');
+  assert.equal(candidate.type, 'text');
   f.failProbe(true);
   await focus();
   assert.match(f.app.textContent, /New changes are paused/);

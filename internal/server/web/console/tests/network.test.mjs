@@ -202,7 +202,7 @@ test('unavailable node reads never claim a configured cloud provider has no enab
  const original = f.p.api.list;
  f.p.api.list = path => ['/nodes', '/providers'].includes(path) ? Promise.reject(new Error('unavailable')) : original(path);
  await overview(f.p, 'cloud/groq');
- assert.match(f.root.textContent, /Groq.*ConfigurationConfiguredReported onNode enablement unavailable/s);
+ assert.match(f.root.textContent, /Groq.*Configured.*Enabled onNode enablement unavailable/s);
  assert.doesNotMatch(f.root.textContent, /No node reports this provider enabled/);
 });
 

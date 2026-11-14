@@ -205,19 +205,29 @@ running. Use the terminal job view for installation progress.
 Cloud and registry forms come from the provider's declared connection schema,
 including endpoint, region and account fields where applicable.
 
-Enter a complete replacement, including each required secret. Saved secrets
-cannot be read back or borrowed when changing a destination. Test is a diagnostic
-for the current form content. It keeps masked inputs for an explicit Save;
-editing any field invalidates the displayed test result. Saving does not test
-the upstream. The Connect after saving option additionally requests existing
-provider onboarding.
+Selecting an unconfigured cloud provider or registry opens its setup form
+directly. Enter a complete replacement, including each required secret. Saved
+secrets cannot be read back or borrowed when changing a destination. Show/Hide
+reveals only the value currently being entered; it is still cleared on saving,
+navigation and session invalidation.
+
+Test connection checks the current form without saving or enabling anything.
+Editing any field invalidates its result. Save and enable stores credentials and
+requests normal onboarding for a disabled cloud provider. Save changes updates
+an enabled provider without enabling it again. Advanced settings includes Save
+without enabling, credential removal and explicit installation-credential
+restoration. A configured but disabled provider can be enabled from its details
+without entering its credentials again. Saving is independent of testing.
 The terminal connection form's Save and connect action also requests provider
 onboarding.
 
-Results report saving, durability, activation and publication separately.
+Results show a short outcome and retain the separate saving, durability,
+activation and publication facts under Save details. Connection details keeps
+credential source and node scope out of the main setup flow.
 Successful writes automatically read current details. A stale revision or uncertain
-response requires an explicit read before making another change. Remove connection
-suppresses external fallback. Use installation values explicitly resumes the coordinator's declared environment or credential cache.
+response requires an explicit read before making another change. Remove credentials
+suppresses external fallback. Use installation credentials explicitly resumes the
+coordinator's declared environment or credential cache.
 
 A Hugging Face token is optional for public models. Its diagnostic may reject an
 empty token even though anonymous public browsing works. A successful token

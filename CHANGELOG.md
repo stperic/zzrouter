@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Simplify provider setup with direct credential entry, separate Test connection
+  and Save and enable actions, and Show/Hide for newly entered keys. Keep save-only
+  and credential removal under Advanced settings, provide actionable test errors,
+  and allow saved credentials to be enabled without re-entering them.
+
 - Integrate overview memory readings into clickable compute-node cards, hide
   disabled provider branches and remove unavailable activity text from the map.
   Workloads skips nodes reported offline with a compact summary, resumes reads
