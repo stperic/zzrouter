@@ -117,6 +117,9 @@ Validation completed on 2026-11-14:
 - The final fresh review of the complete staged change found no remaining
   should-fix items and independently passed the focused Go race, eight Chat
   tests, TypeScript and whitespace checks.
+- Integration with provider connection improvements passes all 183 console
+  tests and both Chat and provider-setup Chrome acceptance flows at desktop and
+  mobile sizes. The integration conflict was limited to additive release notes.
 
 Chat history and its system prompt are intentionally page-local. Leaving Chat
 or losing the session clears them. Tools, attachments and saved conversations
