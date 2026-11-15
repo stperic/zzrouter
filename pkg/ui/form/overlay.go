@@ -55,12 +55,3 @@ func RenderOverlay(content, bg string, width, height int, styles ui.Styles) stri
 	canvas := lipgloss.NewCanvas(w, h)
 	return canvas.Compose(comp).Render()
 }
-
-// Section renders a one-line section header with a leading blank line
-// spacer so groups visually separate without costing three rows each.
-// The spacer is suppressed for the first line of the form by trimming
-// at render time if needed; callers typically place the first section
-// immediately after the form title so the extra newline is absorbed.
-func Section(label string, styles ui.Styles) string {
-	return "\n" + styles.Accent.Render(label)
-}

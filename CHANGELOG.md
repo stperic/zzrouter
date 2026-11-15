@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Simplify console editors and provider job tracking through their shared
+  lifecycle owners. Restore editing after definite request refusals, protect
+  Cancel with draft confirmation, remove unused TUI form widgets and eliminate
+  circular view imports. The install API now supplies script exports or refusal
+  reasons to both interfaces, preserving hidden execution requirements.
 - Complete console management with model discovery, exact-node testing and
   downloads, provider install plans and service controls, scoped runtime
   parameters, logs, pricing overrides, software updates and guided setup. Reuse

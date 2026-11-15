@@ -59,6 +59,16 @@ func TestCloudRunEndpointNames(t *testing.T) {
 	require.EqualError(t, svc.ValidateRunTarget("model", "typo"), `unknown run endpoint "typo"`)
 }
 
+func TestRunEndpointsFollowProviderAdmission(t *testing.T) {
+	svc := ServiceConfig{Name: "ranker", Capabilities: &AppCapabilities{WireEndpoints: []string{"rerank"}},
+		Features: map[string]Feature{"embeddings": {WireEndpoints: []string{"embeddings"}}}}
+	require.Equal(t, []string{"embeddings", "reranking"}, svc.RunEndpoints())
+	svc.Mode = "cloud"
+	require.Equal(t, []string{"chat", "embeddings", "reranking"}, svc.RunEndpoints())
+	svc.RunScope = RunScopeNode
+	require.Empty(t, svc.RunEndpoints())
+}
+
 func TestNodeRunRefusalNamesSuppliedField(t *testing.T) {
 	svc := ServiceConfig{Name: "node", RunScope: RunScopeNode}
 	for _, tc := range []struct{ model, endpoint, field string }{

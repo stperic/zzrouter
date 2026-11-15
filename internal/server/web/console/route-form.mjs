@@ -1,4 +1,4 @@
-import { readAfterWrite } from './details.mjs';
+import { formSubmission, readAfterWrite } from './details.mjs';
 import { changedFields } from './api.mjs';
 import { el, text, field, input, select, button, leaveButton, actions, message, editorActions, formFeedback } from './dom.mjs';
 import { providerCategory } from './inventory.mjs';
@@ -109,25 +109,18 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
   render();
   if (teams.length) controls.append(message(`Changes affect ${teams.length} assigned ${teams.length === 1 ? 'team' : 'teams'}: ${teams.map(team => team.name).join(', ')}.`));
   const save = el('button', { type: 'submit', class: 'primary' }, record ? 'Save changes' : 'Create route');
-  let blocked = false;
+  const submission = formSubmission(p, controls, save, draft);
   const write = async (method, body) => {
-    if (!p.current() || controls.disabled || blocked || !p.api.canChange()) return;
-    invalidatePreview?.();
-    controls.disabled = true;
-    feedback.replaceChildren(message('Saving route…'));
     const path = `/model-groups/${encodeURIComponent(record?.name || name.value.trim())}`;
-    try {
-      await p.api.data(path, { method, body, signal: p.scope.signal, ifMatch: record ? etag : undefined, ifNoneMatch: record ? undefined : '*' });
-      if (!p.current()) return;
-      blocked = true;
-      draft?.clean();
-      await readAfterWrite(p, () => saved ? saved(record?.name || name.value.trim(), method === 'DELETE') : reload(), method === 'DELETE' ? 'Route deleted.' : 'Route saved.');
-    } catch (error) {
-      if (!p.current()) return;
-      blocked = !!error.uncertain || error.status === 412;
+    await submission.run(() => {
+      invalidatePreview?.();
+      feedback.replaceChildren(message('Saving route…'));
+      return p.api.data(path, { method, body, signal: p.scope.signal, ifMatch: record ? etag : undefined, ifNoneMatch: record ? undefined : '*' });
+    }, () => readAfterWrite(p, () => saved ? saved(record?.name || name.value.trim(), method === 'DELETE') : reload(), method === 'DELETE' ? 'Route deleted.' : 'Route saved.'), (error, blocked) => {
+      if (error.status === 412) submission.block();
       validation.error(error);
-      if (blocked) feedback.append(leaveButton('Reload routes', reload, p.api));
-    } finally { if (p.current()) { controls.disabled = blocked; save.disabled = blocked; p.syncActivity(); } }
+      if (blocked || submission.blocked) feedback.append(leaveButton('Reload routes', reload, p.api));
+    });
   };
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -144,8 +137,8 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
     controls.append(el('section', { class: 'access-section' }, el('h3', {}, 'Lifecycle'), remove,
       text(teams.length ? 'Remove team assignments before deleting this route.' : record.auto_managed ? 'Save to take ownership before deleting an automatic route.' : 'Deletion cannot be undone.', 'muted')));
   }
-  if (record && !etag) { blocked = true; controls.disabled = true; save.disabled = true; feedback.append(message('The route version could not be read. Reload before editing.', 'warning')); }
-  const footer = editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api);
+  if (record && !etag) { submission.block(); feedback.append(message('The route version could not be read. Reload before editing.', 'warning')); }
+  const footer = editorActions(save, cancel, p.api, draft);
   form.append(feedback, controls, footer);
   return form;
 }

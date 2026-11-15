@@ -14,7 +14,10 @@ export function modelTabs(p, mode) {
 }
 
 export async function models(p, selected, mode = 'available') {
-  if (mode === 'discover') return discoverModels(p, selected);
+  if (mode === 'discover') {
+    p.root.append(heading('Models', 'Find models and choose exactly where to deploy them.'), modelTabs(p, mode));
+    return discoverModels(p, selected);
+  }
   const search = input('model_search', '', { type: 'search', placeholder: 'Search available models' });
   const node = select('model_node', [['', 'All nodes']], '');
   const provider = select('model_provider', [['', 'All providers']], '');

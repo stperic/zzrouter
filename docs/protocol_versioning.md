@@ -31,6 +31,15 @@ config, schema or asset writes. This gate does not project newer configurations
 into an older schema, and an older coordinator without it can still attempt a
 push that the worker refuses.
 
+Protocol 24 keeps minimum 23 for rolling upgrades. Install-plan replies add
+`script_export`, containing a planner-approved POSIX command script or a refusal
+reason. The executing node evaluates hidden hooks, managed environments and
+other execution context before JSON serialization. Coordinators forward that
+decision unchanged. On protocol-23 workers the field is absent, so updated
+clients offer managed execution without constructing a script from preview
+commands. Upgrade the coordinator first, then workers. Install execution and
+plan identity are unchanged; this does not change provider configuration.
+
 Protocol 23 raises the minimum from 22 to 23. A worker rejects a model's
 provider qualifier when it conflicts with the coordinator's trusted provider
 binding. Older workers can reinterpret that model as a different provider,

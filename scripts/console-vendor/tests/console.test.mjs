@@ -141,6 +141,10 @@ test('model discovery reviews exact targets, downloads, test and Chat handoff', 
 
 test('provider plans, parameter scopes and services use the shared side panel', { timeout: 60000 }, async t => {
   const f = await consolePage(t); const { page } = f;
+  let jobDone = false;
+  await page.route(/\/zzrouter\/v1\/jobs\/install-job\?/, route => route.fulfill({ json: { data: {
+    job_id: 'install-job', node: 'studio-gpu', kind: 'install', epoch: 'fixture', seq: jobDone ? 2 : 1, phase: jobDone ? 'done' : 'running',
+  } } }));
   const manage = async () => {
     await f.open('#providers?item=local%2Fvllm', 390, 844);
     await page.getByRole('dialog').getByLabel('Compute node', { exact: true }).selectOption('studio-gpu');
@@ -163,6 +167,13 @@ test('provider plans, parameter scopes and services use the shared side panel', 
   await page.getByText('Synthetic verification passed', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Run all steps', exact: true }).click();
   await page.getByRole('heading', { name: 'install-job', exact: true }).waitFor();
+  const resume = page.getByRole('button', { name: 'Return to reviewed plan', exact: true });
+  assert.equal(await resume.isEnabled(), false);
+  jobDone = true;
+  await page.getByRole('dialog').getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent === 'Return to reviewed plan' && !button.disabled));
+  await resume.click();
+  await page.getByRole('button', { name: 'Run all steps', exact: true }).waitFor();
   const install = (await f.requests()).filter(row => row.path === '/providers/vllm/install' && row.method === 'POST');
   assert.equal(install.length, 1);
   assert.deepEqual(install[0].payload, { expected_plan_id: 'plan-1', version: '1.0.0', runtime: 'python', action: 'install', components: [] });

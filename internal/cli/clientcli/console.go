@@ -2,7 +2,6 @@ package clientcli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -34,16 +33,8 @@ func newConsoleCmd(discover func(context.Context) (string, error), open func(str
 			result := struct {
 				URL string `json:"url"`
 			}{URL: consoleURL}
-			switch GetOutputFormat(cmd) {
-			case OutputJSON:
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
-			case OutputYAML:
-				data, err := yamlLikeJSON(result)
-				if err != nil {
-					return err
-				}
-				_, err = cmd.OutOrStdout().Write(data)
-				return err
+			if GetOutputFormat(cmd) != OutputTable {
+				return OutputData(cmd, result, nil)
 			}
 			if _, err := fmt.Fprintln(cmd.OutOrStdout(), consoleURL); err != nil {
 				return err

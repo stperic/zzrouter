@@ -124,9 +124,8 @@ function editNode(p, node, inventory, renderDetails = owner => showNode(owner, n
   }
   const save = el('button', { type: 'submit', class: 'primary', disabled: true }, 'Save changes');
   const footer = editorActions(save, () => {
-    if (draft && !draft.discard()) return;
     p.root.replaceChildren(); renderDetails(p.panel ? { ...p, ...p.panel.view('Node details') } : p);
-  }, p.api);
+  }, p.api, draft);
   if (!entries.length) controls.append(message('Provider settings are unavailable until this node reports its providers.'));
   form.append(feedback, controls, footer);
   form.addEventListener('submit', async event => {
@@ -177,7 +176,7 @@ export function addNode(p) {
   controls.append(el('h2', {}, 'Add a compute node'), text('Start pairing on the new machine using the terminal client. Copy the HTTPS cluster address, public-key fingerprint and pairing code it prints.', 'muted'),
     field('Node address', url), field('Node fingerprint', fingerprint, 'Compare this with the fingerprint shown on the new machine.'), field('Pairing code', code));
   const save = el('button', { type: 'submit', class: 'primary' }, 'Pair node');
-  form.append(feedback, controls, editorActions(save, p.close, p.api));
+  form.append(feedback, controls, editorActions(save, p.close, p.api, draft));
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (blocked || controls.disabled || !p.current() || !p.api.canChange() || !form.reportValidity()) return;

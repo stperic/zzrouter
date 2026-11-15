@@ -24,7 +24,7 @@ export async function startRun(p, nodes, initialNode, initialTarget) {
   const invalidate = () => { reviewed = undefined; save.disabled = true; feedback.replaceChildren(); endpoint.disabled = !body()?.model; };
   controls.append(el('h2', {}, 'Start a model or service'), text('Choose a local model or service, then review its capacity and start settings.', 'muted'),
     field('Compute node', node), field('Model or service', target), field('Endpoint', endpoint), preview);
-  form.append(feedback, controls, editorActions(save, p.close, p.api));
+  form.append(feedback, controls, editorActions(save, p.close, p.api, draft));
   p.root.append(form);
   p.scope.signal.addEventListener('abort', () => choices.end(), { once: true });
   node.addEventListener('change', () => { if (!busy && !blocked) void loadTargets(); });

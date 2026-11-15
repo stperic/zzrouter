@@ -1,17 +1,13 @@
 import { Lifetime } from './api.mjs';
 import { el, text, button, leaveButton, actions, field, input, select, facts, message, problem, editorActions, formFeedback, copyField } from './dom.mjs';
 import { providerName } from './provider-icons.mjs';
-import { providerPath, providerOperation } from './provider-lifecycle.mjs';
+import { providerPath, providerOperation } from './provider-actions.mjs';
 
 export function acceptedInstallOptions(plan, options = {}) {
   const body = { expected_plan_id: plan.plan_id, version: plan.version, runtime: plan.provider, action: plan.action };
   for (const key of ['force', 'disposable', 'smoke']) if (options[key]) body[key] = options[key];
   if (Array.isArray(plan.resolved_install?.selected_components)) body.components = [...plan.resolved_install.selected_components];
   return body;
-}
-export function installScript(plan) {
-  if (!['linux', 'darwin'].includes(plan.platform?.os) || plan.resolved_install || plan.disposable || !plan.steps?.length || plan.steps.some(step => !step.command?.trim() || installContext(step).length)) return null;
-  return '#!/bin/sh\nset -e\n\n' + plan.steps.map(step => `sh -c '${step.command.replaceAll("'", "'\\''")}'`).join('\n\n') + '\n';
 }
 function installContext(step) {
   return [['Working directory', step.working_dir], ['Run as', step.run_as], ['Environment', Object.keys(step.env || {}).length ? 'Supplied by the managed installer' : ''],
@@ -38,7 +34,7 @@ export async function installProvider(p, entry, node, back, initial = {}) {
   controls.append(providerName(entry.key, entry.name, 'h2'), text(`Compute node: ${node}`, 'muted'), field('Runtime', runtime), field('Version (optional)', version, 'Leave blank to let the coordinator resolve the configured release.'), components,
     el('details', {}, el('summary', {}, 'Replacement options'), field('Force replacement of the managed installation', force, 'Review the resulting plan before execution.')),
     check, preflight);
-  form.append(feedback, controls, editorActions(preview, () => { if (draft?.discard() !== false) back(); }, p.api)); p.root.append(form);
+  form.append(feedback, controls, editorActions(preview, back, p.api, draft)); p.root.append(form);
   async function readComponents() {
     const scope = environmentReads.next(), signal = AbortSignal.any([p.scope.signal, scope.signal]);
     componentReady = false; preview.disabled = true; components.replaceChildren(message('Reading runtime components…')); componentInputs = new Map();
@@ -109,13 +105,13 @@ export async function installReview(p, entry, node, plan, options, back) {
   const run = button('Run all steps', () => execute(), 'primary'); run.disabled = !plan.plan_id; run.setAttribute('data-protected-actions', '');
   const verifyAll = button('Verify installation', () => verify());
   const executionButtons = [run], verificationButtons = [verifyAll];
-  const script = installScript(plan);
+  const script = plan.script_export?.script;
   p.root.append(providerName(entry.key, entry.name, 'h2'), facts([['Node', node], ['Runtime', plan.provider], ['Version', plan.version || 'Resolved by provider'], ['Action', plan.action], ['Install directory', plan.install_dir], ['Components', plan.resolved_install?.selected_components?.join(', ') || 'None reported']]),
     text('Execution is bound to this plan ID, version, runtime and component selection. A changed server plan requires a fresh preview.', 'muted'),
     plan.plan_id ? copyField('Plan ID', plan.plan_id) : message('This response has no plan ID. Execution is unavailable; request a fresh plan.', 'warning'),
     actions(run, verifyAll, leaveButton('Edit options', () => installProvider(p.panel.view('Install provider'), entry, node, back, { ...options, runtime: plan.provider, version: plan.version, ...(plan.resolved_install?.selected_components ? { components: plan.resolved_install.selected_components } : {}) }), p.api), leaveButton('Back', back, p.api)), feedback);
   if (script) p.root.append(el('details', {}, el('summary', {}, 'Reported command script'), text('POSIX shell commands stop on the first failed step. Installation verification and activation remain owned by the managed installer.', 'muted'), commandCopy(script)));
-  else p.root.append(text('Managed execution is required for this plan’s platform or execution context. Reported commands can be copied individually, with their required context shown below.', 'muted'));
+  else p.root.append(text(plan.script_export?.reason || 'This node did not provide a command script. Use managed execution.', 'muted'));
   for (const step of plan.steps || []) {
     const state = plan.current_state?.find(value => value.step === step.step), result = el('div', { 'aria-live': 'polite' });
     const control = button('Run this step', () => execute(step.step)); control.disabled = !plan.plan_id; control.setAttribute('data-protected-actions', ''); executionButtons.push(control);

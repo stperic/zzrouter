@@ -137,7 +137,11 @@ export function selectableRow(key, selected, open, ...cells) {
 export function markSelection(root, selected) {
   for (const item of root.querySelectorAll('[data-selection]')) item.setAttribute('aria-current', String(item.getAttribute('data-selection') === selected));
 }
-export function editorActions(save, cancel, api) {
+export function editorActions(save, cancel, api, draft) {
   save.setAttribute('data-protected-actions', '');
-  return el('div', { class: 'editor-actions' }, save, leaveButton('Cancel', cancel, api));
+  return el('div', { class: 'editor-actions' }, save, leaveButton('Cancel', () => {
+    if (draft && !draft.discard()) return;
+    draft?.clean();
+    return cancel();
+  }, api));
 }

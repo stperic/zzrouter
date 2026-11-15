@@ -1,5 +1,5 @@
 import { el, text, button, leaveButton, actions, field, input, facts, message, problem, date, editorActions, formFeedback, selectableRow, markSelection } from './dom.mjs';
-import { details, readAfterWrite } from './details.mjs';
+import { details, formSubmission, readAfterWrite } from './details.mjs';
 import { liveReads } from './live-reads.mjs';
 import { workloadKey } from './workload-data.mjs';
 
@@ -66,13 +66,13 @@ export async function updates(p, selected, mode) {
     if (!name && nextMode !== 'create') return;
     const owner = details({ ...p, root: workspace }, nextMode === 'create' ? 'Install software version' : 'Node software', listURL);
     drawer = owner;
-    if (nextMode === 'create') { updateForm(owner); return; }
+    if (nextMode === 'create') { updateForm(owner, rows); return; }
     await nodeDetails(owner, name, version);
   }
   async function nodeDetails(owner, name, version, notice) {
     const reader = owner.panel.view('Node software');
     const body = el('div'), note = el('div');
-    const schedule = leaveButton('Edit update schedule', () => scheduleForm(owner, name), p.api);
+    const schedule = leaveButton('Edit update schedule', () => scheduleForm(owner, name, notice => nodeDetails(owner, name, selectionVersion, notice)), p.api);
     const rollback = button('Roll back coordinator', async () => {
       if (!p.api.canChange() || !confirm(`Restore the previous coordinator version on ${name}? A restart may interrupt the console.`)) return;
       rollback.disabled = true;
@@ -102,61 +102,66 @@ export async function updates(p, selected, mode) {
     }, { eligible: () => !reader.editing && !body.contains(document.activeElement), failed: error => note.replaceChildren(problem(error)) });
     await watch.refresh();
   }
-  async function resultView(owner, result, notice, error) {
-    const reader = owner.panel.view('Update result');
-    reader.root.append(el('h2', {}, 'Update request'), error ? problem(error) : message(notice),
-      result ? facts([['Target version', result.version], ['State', result.state], ['Job ID', result.job_id], ['Delegated to', result.delegated_to]]) : '',
-      text('The coordinator may restart or delegate the work. An interrupted response does not prove failure. This request will not be repeated automatically.', 'muted'),
-      actions(leaveButton('Inspect update state', listURL, p.api), result?.job_id ? leaveButton('View update job', () => p.go('workloads', workloadKey('job', p.state.node_name, result.job_id), 'jobs'), p.api) : null));
-  }
-  function updateForm(owner) {
-    const editor = owner.panel.view('Install software version'), form = el('form', { class: 'entity-editor' });
-    const controls = el('fieldset', { 'data-protected-actions': true });
-    const target = input('version', '', { required: true, placeholder: 'For example, 0.2.3' });
-    const choices = rows.map(row => ({ name: row.node, control: input('target_' + row.node, '', { type: 'checkbox' }) }));
-    const feedback = el('div', { 'aria-live': 'polite' }), validation = formFeedback(form, feedback, key => key === 'version' ? target : key === 'nodes' ? choices[0]?.control : undefined);
-    const draft = editor.trackDraft(form); let busy = false;
-    controls.append(el('h2', {}, 'Choose release and targets'), field('Release version', target), el('h3', {}, 'Compute nodes'),
-      ...choices.map(item => field(item.name, item.control)), message('Selected nodes are updated serially. Running workloads may be interrupted. The API checks release compatibility before accepting the rollout.', 'warning'));
-    form.append(feedback, controls, editorActions(el('button', { type: 'submit', class: 'primary' }, 'Install selected version'), listURL, p.api)); editor.root.append(form);
-    form.addEventListener('submit', async event => {
-      event.preventDefault(); if (busy || !form.reportValidity() || !p.api.canChange()) return;
-      const nodes = choices.filter(item => item.control.checked).map(item => item.name);
-      if (!nodes.length) { validation.error(new Error('Select at least one compute node.')); return; }
-      busy = true; controls.disabled = true;
-      try {
-        const result = await p.api.data('/update/apply', { method: 'POST', body: { version: target.value.trim(), nodes }, idempotencyKey: crypto.randomUUID(), signal: editor.scope.signal, timeoutMs: 120000 });
-        if (editor.current()) { draft.clean(); await resultView(owner, result, 'Update request accepted. Inspect the rollout and node versions to confirm the result.'); }
-      } catch (error) {
-        if (!editor.current()) return;
-        if (error.uncertain || error.mutation_applied) { draft.clean(); await resultView(owner, null, '', error); }
-        else { validation.error(error); controls.disabled = false; busy = false; }
-      }
-    });
-  }
-  async function scheduleForm(owner, name) {
-    const editor = owner.panel.view('Update schedule'), path = '/update/settings?node=' + encodeURIComponent(name);
-    editor.root.append(message('Reading schedule…'));
-    try {
-      const initial = await p.api.data(path, { signal: editor.scope.signal }); if (!editor.current()) return;
-      const control = input('enabled', '', { type: 'checkbox', checked: initial.enabled });
-      const form = el('form', { class: 'entity-editor' }), feedback = el('div'), validation = formFeedback(form, feedback);
-      const controls = el('fieldset', { 'data-protected-actions': true }, el('h2', {}, name), field('Enable scheduled software updates', control));
-      const draft = editor.trackDraft(form); let busy = false;
-      form.append(feedback, controls, editorActions(el('button', { type: 'submit', class: 'primary' }, 'Save changes'), () => nodeDetails(owner, name, selectionVersion), p.api)); editor.root.replaceChildren(form);
-      form.addEventListener('submit', async event => {
-        event.preventDefault(); if (busy || !p.api.canChange()) return; busy = true; controls.disabled = true;
-        try {
-          const current = await p.api.data(path, { signal: editor.scope.signal });
-          if (!editor.current()) return;
-          if (current.enabled !== initial.enabled) throw new Error('The schedule changed elsewhere. Close this editor and read the current settings before saving.');
-          await p.api.data(path, { method: 'PATCH', body: { enabled: control.checked }, signal: editor.scope.signal });
-          if (!editor.current()) return; draft.clean();
-          await readAfterWrite(owner.panel.view('Node software'), () => nodeDetails(owner, name, selectionVersion, 'Update schedule saved.'));
-        } catch (error) { if (editor.current()) { validation.error(error); controls.disabled = !!error.uncertain; busy = !!error.uncertain; } }
-      });
-    } catch (error) { if (editor.current()) editor.root.replaceChildren(problem(error)); }
-  }
   p.handleSelection?.((value, mode) => choose(value?.startsWith('updates/') ? decodeURIComponent(value.slice(8)) : undefined, mode), value => value === 'updates' || value?.startsWith('updates/'));
   await live.refresh(); if (p.current()) await choose(selected, mode);
+}
+
+async function resultView(owner, result, notice, error) {
+  const reader = owner.panel.view('Update result');
+  reader.root.append(el('h2', {}, 'Update request'), error ? problem(error) : message(notice),
+    result ? facts([['Target version', result.version], ['State', result.state], ['Job ID', result.job_id], ['Delegated to', result.delegated_to]]) : '',
+    text('The coordinator may restart or delegate the work. An interrupted response does not prove failure. This request will not be repeated automatically.', 'muted'),
+    actions(leaveButton('Inspect update state', () => owner.go('settings', 'updates'), owner.api), result?.job_id ? leaveButton('View update job', () => owner.go('workloads', workloadKey('job', owner.state.node_name, result.job_id), 'jobs'), owner.api) : null));
+}
+function updateForm(owner, rows) {
+  const editor = owner.panel.view('Install software version'), form = el('form', { class: 'entity-editor' });
+  const controls = el('fieldset', { 'data-protected-actions': true });
+  const target = input('version', '', { required: true, placeholder: 'For example, 0.2.3' });
+  const choices = rows.map(row => ({ name: row.node, control: input('target_' + row.node, '', { type: 'checkbox' }) }));
+  const feedback = el('div', { 'aria-live': 'polite' }), validation = formFeedback(form, feedback, key => key === 'version' ? target : key === 'nodes' ? choices[0]?.control : undefined);
+  const draft = editor.trackDraft(form);
+  const save = el('button', { type: 'submit', class: 'primary' }, 'Install selected version');
+  const submission = formSubmission(editor, controls, save, draft);
+  controls.append(el('h2', {}, 'Choose release and targets'), field('Release version', target), el('h3', {}, 'Compute nodes'),
+    ...choices.map(item => field(item.name, item.control)), message('Selected nodes are updated serially. Running workloads may be interrupted. The API checks release compatibility before accepting the rollout.', 'warning'));
+  form.append(feedback, controls, editorActions(save, () => owner.go('settings', 'updates'), owner.api, draft)); editor.root.append(form);
+  form.addEventListener('submit', async event => {
+    event.preventDefault(); if (!form.reportValidity()) return;
+    const nodes = choices.filter(item => item.control.checked).map(item => item.name);
+    if (!nodes.length) { validation.error(new Error('Select at least one compute node.')); return; }
+    await submission.run(
+      () => owner.api.data('/update/apply', { method: 'POST', body: { version: target.value.trim(), nodes }, idempotencyKey: crypto.randomUUID(), signal: editor.scope.signal, timeoutMs: 120000 }),
+      result => resultView(owner, result, 'Update request accepted. Inspect the rollout and node versions to confirm the result.'),
+      (error, blocked) => {
+        if (blocked) { draft.clean(); return resultView(owner, null, '', error); }
+        validation.error(error);
+      });
+  });
+}
+async function scheduleForm(owner, name, back) {
+  const editor = owner.panel.view('Update schedule'), path = '/update/settings?node=' + encodeURIComponent(name);
+  editor.root.append(message('Reading schedule…'));
+  try {
+    const initial = await owner.api.data(path, { signal: editor.scope.signal }); if (!editor.current()) return;
+    const control = input('enabled', '', { type: 'checkbox', checked: initial.enabled });
+    const form = el('form', { class: 'entity-editor' }), feedback = el('div'), validation = formFeedback(form, feedback);
+    const controls = el('fieldset', { 'data-protected-actions': true }, el('h2', {}, name), field('Enable scheduled software updates', control));
+    const draft = editor.trackDraft(form);
+    const save = el('button', { type: 'submit', class: 'primary' }, 'Save changes');
+    const submission = formSubmission(editor, controls, save, draft);
+    form.append(feedback, controls, editorActions(save, back, owner.api, draft)); editor.root.replaceChildren(form);
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      await submission.run(async () => {
+        const current = await owner.api.data(path, { signal: editor.scope.signal });
+        if (!editor.current()) return;
+        if (current.enabled !== initial.enabled) {
+          submission.block();
+          throw new Error('The schedule changed elsewhere. Close this editor and read the current settings before saving.');
+        }
+        return owner.api.data(path, { method: 'PATCH', body: { enabled: control.checked }, signal: editor.scope.signal });
+      }, () => readAfterWrite(editor, () => back('Update schedule saved.')),
+      error => validation.error(error));
+    });
+  } catch (error) { if (editor.current()) editor.root.replaceChildren(problem(error)); }
 }

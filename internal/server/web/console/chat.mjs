@@ -133,10 +133,10 @@ export async function chat(p, session, initialModel, initialNode) {
       el('h3', {}, 'Generation'), text('Leave values blank to use the model’s defaults. Changes apply to your next request.', 'muted'),
       el('div', { class: 'form-grid' }, numbers.map(item => field(item.label, item.control))),
       field('Compute node', node, 'Optional node name. Model IDs may already select a node. Routes remain subject to your team’s access rules.'),
-      el('h3', {}, 'Display'), field('Show returned reasoning', reasoning), field('Show response statistics', stats),
-      editorActions(apply, closePanel, p.api));
+      el('h3', {}, 'Display'), field('Show returned reasoning', reasoning), field('Show response statistics', stats));
     formFeedback(form, formStatus);
     const draft = owner.trackDraft(form);
+    form.append(editorActions(apply, closePanel, p.api, draft));
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity() || !owner.current()) return;

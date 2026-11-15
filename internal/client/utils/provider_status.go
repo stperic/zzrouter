@@ -147,6 +147,7 @@ func (c *Client) GetPreflight(name, node string) (*PreflightResponse, error) {
 
 // InstallPlanResponse is the client representation of an install plan.
 type InstallPlanResponse struct {
+	ScriptExport    *InstallScriptExport   `json:"script_export,omitempty"`
 	ResolvedInstall *InstallRecipeResponse `json:"resolved_install,omitempty"`
 	Force           bool                   `json:"-"`
 	PlanID          string                 `json:"plan_id,omitempty"`
@@ -156,6 +157,26 @@ type InstallPlanResponse struct {
 	InstallDir      string                 `json:"install_dir"`
 	Steps           []InstallStepInfo      `json:"steps"`
 	CurrentState    []StepStateResponse    `json:"current_state,omitempty"`
+}
+
+// InstallScriptExport preserves the executing node's export decision verbatim.
+type InstallScriptExport struct {
+	Script string `json:"script,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// CommandScript returns only an artifact supplied by the planner. Commands in a
+// preview cannot establish the hidden execution context of an older worker.
+func (p *InstallPlanResponse) CommandScript() (string, error) {
+	if p.ScriptExport != nil {
+		if p.ScriptExport.Script != "" {
+			return p.ScriptExport.Script, nil
+		}
+		if p.ScriptExport.Reason != "" {
+			return "", errors.New(p.ScriptExport.Reason)
+		}
+	}
+	return "", errors.New("this node did not provide a command script; use managed execution")
 }
 
 // InstallRecipeResponse carries component discovery and the effective accepted selection.

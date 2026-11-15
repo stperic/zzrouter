@@ -5,8 +5,9 @@ import { models, deleteModel } from '../models.mjs';
 import { deploymentForm, discoverModels } from '../model-discovery.mjs';
 import { modelKey, modelIdentity, modelQuery, modelInferenceTarget, discoveryKey, discoveryIdentity, nextSearchPage, searchPath, searchSelection, discoveryRows } from '../model-data.mjs';
 import { inspectDeployment } from '../deployments.mjs';
-import { acceptedInstallOptions, installScript, installReview, installProvider } from '../provider-install.mjs';
-import { providerOperation, providerService, remoteOllama, providerVersions } from '../provider-lifecycle.mjs';
+import { acceptedInstallOptions, installReview, installProvider } from '../provider-install.mjs';
+import { providerService, remoteOllama, providerVersions } from '../provider-lifecycle.mjs';
+import { providerOperation } from '../provider-actions.mjs';
 import { installDOM, find, named, button, walk, drain } from './dom-fixture.mjs';
 
 const model = { name: 'org/model:Q4', node: 'worker one', assigned_app: 'engine', source_repo: 'huggingface', source_id: 'org/model', size: 123 };
@@ -234,22 +235,24 @@ test('node cancellation uses exact deployment/node and only refreshes after an u
 
 test('accepted install options retain plan binding and explicit empty component selection', () => {
   assert.deepEqual(acceptedInstallOptions(plan, { force: true }), { expected_plan_id: 'reviewed-1', version: 'v2', runtime: 'engine-runtime', action: 'install', force: true, components: [] });
-  assert.equal(installScript(plan), null);
-  assert.equal(installScript({ platform: { os: 'linux' }, steps: [{ command: 'first' }, { command: "second 'quoted'" }] }), "#!/bin/sh\nset -e\n\nsh -c 'first'\n\nsh -c 'second '\\''quoted'\\'''\n");
 });
 
-test('command scripts refuse missing platform and managed execution context without disclosing private inputs', async t => {
-  const command = { command: 'install component' };
-  for (const context of [{ working_dir: '/managed/strata' }, { env: { TOKEN: 'private-value' } }, { stdin: 'private-stdin' }, { run_as: 'service-user' }, { service_action: 'restart' }, { timeout: '5m' }, { optional: true }, { verify: { type: 'runtime_checks' } }]) {
-    assert.equal(installScript({ platform: { os: 'linux' }, steps: [{ ...command, ...context }] }), null);
-  }
-  assert.equal(installScript({ steps: [command] }), null);
-  assert.equal(installScript({ platform: { os: 'windows' }, steps: [command] }), null);
+test('install review displays the planner script verbatim without inferring export rules', async t => {
+  const script = "#!/bin/sh\nset -e\n\nsh -c 'server-owned command'\n";
   const f = fixture(t);
-  await installReview(f.owner(), entry, model.node, { ...plan, platform: { os: 'linux' }, steps: [{ step: 0, ...command, working_dir: '/managed/strata', env: { TOKEN: 'private-value' }, stdin: 'private-stdin' }] }, {}, () => {});
-  assert.match(f.root.textContent, /Managed execution is required/);
-  assert.match(f.root.textContent, /Working directory\/managed\/strata/);
-  assert.doesNotMatch(f.root.textContent, /Reported command script|Complete command script|private-value|private-stdin/);
+  await installReview(f.owner(), entry, model.node, { ...plan, script_export: { script } }, {}, () => {});
+  assert.equal(find(f.root, item => item.tag === 'pre' && item.textContent === script).textContent, script);
+});
+
+test('install review preserves export refusals, treats older nodes as unavailable and hides private context', async t => {
+  const f = fixture(t);
+  for (const script_export of [undefined, { reason: 'Step 0 requires managed execution.' }]) {
+    await installReview(f.owner(), entry, model.node, { ...plan, script_export, platform: { os: 'linux' },
+      steps: [{ step: 0, command: 'install component', working_dir: '/managed/strata', env: { TOKEN: 'private-value' }, stdin: 'private-stdin' }] }, {}, () => {});
+    assert.match(f.root.textContent, script_export ? /Step 0 requires managed execution/ : /This node did not provide a command script/);
+    assert.match(f.root.textContent, /Working directory\/managed\/strata/);
+    assert.doesNotMatch(f.root.textContent, /Reported command script|Complete command script|private-value|private-stdin/);
+  }
 });
 
 test('install form uses server-declared runtimes and optional components, then reviews without installing', async t => {
@@ -293,10 +296,50 @@ test('step execution retains accepted node/job and cannot return to plan until a
   assert.deepEqual(f.calls[0].body, { ...acceptedInstallOptions(plan, { force: true }), step: 0 });
   assert.equal(f.calls[1].path, '/jobs/job%2Fa?node=accepted%20node');
   assert.equal(button(f.root, 'Return to reviewed plan').disabled, true);
-  terminal = true; await click(f.root, 'Refresh job');
-  assert.equal(button(f.root, 'Return to reviewed plan').disabled, false);
-  assert.match(f.root.textContent, /Inspect current provider state to confirm readiness/);
+  await click(f.root, 'Return to reviewed plan');
   assert.equal(f.calls.filter(call => call.method).length, 1);
+  terminal = true; await click(f.root, 'Refresh');
+  assert.equal(button(f.root, 'Return to reviewed plan').disabled, false);
+  assert.match(f.root.textContent, /Inspect the provider after completion to confirm readiness/);
+  assert.equal(f.calls.filter(call => call.method).length, 1);
+});
+
+test('provider jobs use workload cancellation and missing-job recovery on the accepted node', async t => {
+  let missing = false, cancelled = false, resumed = 0, canLeave = true;
+  const f = fixture(t, {
+    canLeave: () => canLeave,
+    data: async (path, options = {}) => {
+      f.calls.push({ path, ...options });
+      if (options.method) return { accepted: true, node: 'accepted node', job_id: 'job/a' };
+      if (missing) throw Object.assign(new Error('Not retained'), { status: 404 });
+      return { job_id: 'job/a', kind: 'install', phase: cancelled ? 'failed' : 'running', epoch: 'epoch', seq: cancelled ? 2 : 1 };
+    },
+    request: async (path, options) => { f.calls.push({ path, ...options }); cancelled = true; return { accepted: true }; },
+  });
+  await providerOperation(f.owner(), entry, model.node, { label: 'Install provider' }, () => {}, () => { resumed++; });
+  const syncActivity = () => {
+    for (const control of f.root.querySelectorAll('[data-leave-view]')) control.disabled = !f.p.api.canLeave();
+  };
+  syncActivity();
+  assert.equal(button(f.root, 'Return to reviewed plan').disabled, true);
+  await click(f.root, 'Return to reviewed plan'); assert.equal(resumed, 0);
+  await click(f.root, 'Pause updates');
+  assert.equal(button(f.root, 'Resume updates').getAttribute('aria-pressed'), 'true');
+  await click(f.root, 'Cancel job');
+  const cancellation = f.calls.find(call => call.method === 'DELETE');
+  assert.equal(cancellation.path, '/zzrouter/v1/jobs/job%2Fa?node=accepted%20node');
+  assert.equal(button(f.root, 'Return to reviewed plan').disabled, false);
+  canLeave = false; syncActivity();
+  await click(f.root, 'Return to reviewed plan'); assert.equal(resumed, 0);
+  canLeave = true; syncActivity();
+  await click(f.root, 'Return to reviewed plan'); assert.equal(resumed, 1);
+  missing = true; await click(f.root, 'Refresh');
+  syncActivity();
+  assert.equal(button(f.root, 'Return to reviewed plan').disabled, true);
+  await click(f.root, 'Return to reviewed plan'); assert.equal(resumed, 1);
+  assert.equal(button(f.root, 'Cancel job').disabled, true);
+  assert.match(f.root.textContent, /outcome is unavailable/);
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
 });
 
 test('failed provider operation retains its identity and exposes only read recovery', async t => {
@@ -337,3 +380,33 @@ test('version pin is coordinator-scoped while upgrade remains exact-node scoped'
   const upgrade = f.calls.find(call => call.method === 'POST');
   assert.equal(upgrade.path, '/providers/engine/upgrade?node=worker%20one'); assert.deepEqual(upgrade.body, { version: '' });
 });
+
+for (const kind of ['connection', 'version pin']) {
+  for (const uncertain of [false, true]) {
+    test(`${kind} ${uncertain ? 'blocks an uncertain write' : 'recovers from a definite refusal'}`, async t => {
+      let writes = 0;
+      const f = fixture(t, { data: async (_path, options = {}) => {
+        if (!options.method) return { pinned: 'v1', nodes: [] };
+        writes++;
+        throw Object.assign(new Error('Synthetic refusal'), { status: uncertain ? 503 : 400, uncertain });
+      } });
+      if (kind === 'connection') {
+        remoteOllama(f.owner(), () => {});
+        named(f.root, 'remote_name').value = 'my-provider';
+        named(f.root, 'remote_endpoint').value = 'http://example.test:11434';
+        named(f.root, 'remote_token').value = 'synthetic-token';
+      } else {
+        await providerVersions(f.owner(), entry, model.node, () => {});
+        named(f.root, 'provider_pin').value = 'v2';
+      }
+      await submit(f.root);
+      const form = find(f.root, node => node.tag === 'form');
+      assert.equal(find(form, node => node.tag === 'fieldset').disabled, uncertain);
+      assert.equal(button(form, kind === 'connection' ? 'Connect provider' : 'Save version pin').disabled, uncertain);
+      assert.equal(named(f.root, kind === 'connection' ? 'remote_name' : 'provider_pin').value, kind === 'connection' ? 'my-provider' : 'v2');
+      if (kind === 'connection') assert.equal(named(f.root, 'remote_token').value, '');
+      await submit(f.root);
+      assert.equal(writes, uncertain ? 1 : 2);
+    });
+  }
+}

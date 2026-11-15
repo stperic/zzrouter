@@ -36,6 +36,33 @@ func TestInstallClientCarriesAcceptedPlanIdentity(t *testing.T) {
 	}
 }
 
+func TestInstallClientUsesPlannerScriptExport(t *testing.T) {
+	for _, export := range []*InstallScriptExport{nil, {}, {Reason: "Hidden installer hooks require managed execution."}, {Script: "#!/bin/sh\nprintf 'server artifact'\n"}} {
+		t.Run(fmt.Sprint(export), func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, "/zzrouter/v1/providers/engine/install/plan", r.URL.Path)
+				require.Equal(t, "worker one", r.URL.Query().Get("node"))
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": InstallPlanResponse{
+					ScriptExport: export, Steps: []InstallStepInfo{{Command: "do not reconstruct from this"}},
+				}}))
+			}))
+			plan, err := c.GetInstallPlanContext(t.Context(), "engine", "worker one")
+			require.NoError(t, err)
+			script, err := plan.CommandScript()
+			if export != nil && export.Script != "" {
+				require.NoError(t, err)
+				require.Equal(t, export.Script, script)
+				return
+			}
+			require.Error(t, err)
+			require.Empty(t, script)
+			if export != nil && export.Reason != "" {
+				require.EqualError(t, err, export.Reason)
+			}
+		})
+	}
+}
+
 func TestInstallClientPreservesComponentSelectionIncludingExplicitEmpty(t *testing.T) {
 	for _, selected := range [][]string{{"manager"}, {}} {
 		t.Run(fmt.Sprint(selected), func(t *testing.T) {

@@ -48,8 +48,9 @@ package version
 // Protocol 21 adds platform-specific companion builds, GPU requirements and MPS verification.
 // Protocol 22 adds release-curated source components and shared provider browser declarations.
 // Protocol 23 binds forwarded models to the trusted provider hint, rejecting conflicting qualifiers.
+// Protocol 24 adds planner-owned command script exports; absence on older peers means unavailable.
 const (
-	ClusterProtocolVersion    = 23
+	ClusterProtocolVersion    = 24
 	MinClusterProtocolVersion = 23
 )
 

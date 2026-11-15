@@ -1,5 +1,5 @@
 import { el, text, input, select, field, button, leaveButton, actions, message, problem, formFeedback, editorActions, clearSecrets } from './dom.mjs';
-import { readAfterWrite } from './details.mjs';
+import { formSubmission, readAfterWrite } from './details.mjs';
 
 const base = provider => `/zzrouter/v1/providers/${encodeURIComponent(provider)}`;
 const scopes = [['defaults', 'Provider defaults'], ['model', 'Model defaults'], ['node', 'Compute node'], ['node-model', 'Model on a compute node']];
@@ -94,7 +94,6 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
     const changes = { parameters: Object.create(null), environment: Object.create(null) };
     const fields = new Map();
     const entries = [];
-    let blocked = false;
     const validation = formFeedback(form, feedback, path => [...fields].find(([key]) => path?.endsWith(`.${key}`))?.[1]);
     const count = el('span', { class: 'muted', role: 'status' });
     const changed = () => {
@@ -135,41 +134,11 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
     };
     search.addEventListener('input', filter);
     const addRow = (group, key) => {
-      const shape = shapes[group][key] || {};
-      const present = has(before[group], key);
-      const sensitive = group === 'environment';
-      let value = present ? before[group][key] : '';
-      let visible = false;
-      const override = input(`${group}_${key}_override`, '', { type: 'checkbox', checked: present, 'aria-label': `Override ${key} at this scope` });
-      const control = valueControl(`${group}_${key}`, present ? value : undefined, shape, sensitive);
-      control.disabled = !present;
-      fields.set(`${group}.${key}`, control);
-      const evidence = effective?.[group]?.[key];
-      const help = [shape.description, shape.pass ? `Asset ${shape.pass}` : '', shape.excluded_by?.length ? `Excluded by: ${shape.excluded_by.map(item => item.runtime).join(', ')}` : ''].filter(Boolean).join(' · ');
-      const provenance = evidence ? [evidence.tier, evidence.node, evidence.model, evidence.pattern, evidence.endpoint].filter(Boolean).join(' · ') : '';
-      const row = el('section', { class: 'parameter-setting' }, el('div', { class: 'detail-heading' }, el('h4', {}, key), text(shape.type || 'string', 'muted')),
-        help ? text(help, 'muted') : '', el('label', { class: 'model-choice' }, override, 'Override at this scope'), field('Value', control),
-        evidence ? text(sensitive ? `Effective value hidden · ${provenance}` : `Effective: ${String(evidence.value)} · ${provenance}`, 'muted') : text('No effective value reported.', 'muted'));
-      const updateValue = () => { if (override.checked) update(group, key, value); };
-      control.addEventListener('input', () => { value = control.value; updateValue(); });
-      control.addEventListener('change', () => { value = control.value; updateValue(); });
-      override.addEventListener('change', () => {
-        control.disabled = !override.checked;
-        if (override.checked) updateValue(); else update(group, key, null);
-      });
-      if (sensitive) {
-        const reveal = button('Reveal', () => {
-          if (controls.disabled) return;
-          visible = !visible;
-          control.type = visible ? 'text' : 'password';
-          control.value = visible ? value : '';
-          reveal.textContent = visible ? 'Hide' : 'Reveal';
-        });
-        row.append(actions(reveal), text('Values are hidden until revealed. Entering a value replaces this scope only.', 'muted'));
-        owner.scope.signal.addEventListener('abort', () => { value = ''; control.value = ''; }, { once: true });
-      }
-      entries.push({ root: row, search: `${key} ${help}`.toLowerCase() });
-      (sensitive ? environmentRows : parameterRows).append(row);
+      const entry = parameterRow(owner, { group, key, shape: shapes[group][key] || {}, present: has(before[group], key),
+        configured: before[group]?.[key], evidence: effective?.[group]?.[key], update, disabled: () => controls.disabled });
+      fields.set(`${group}.${key}`, entry.control);
+      entries.push(entry);
+      (group === 'environment' ? environmentRows : parameterRows).append(entry.root);
     };
     for (const group of ['parameters', 'environment']) {
       const keys = [...new Set([...Object.keys(shapes[group]), ...Object.keys(before[group] || {}), ...Object.keys(effective?.[group] || {})])].sort();
@@ -185,35 +154,28 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
     controls.append(parameterRows.childNodes.length ? parameterRows : message('No runtime parameters declared for this provider.'),
       el('details', { class: 'access-section' }, el('summary', {}, 'Environment variables'), environmentRows, actions(envName, addEnv)));
     const save = el('button', { type: 'submit', class: 'primary' }, 'Save settings');
+    const submission = formSubmission(owner, controls, save, draft);
     form.addEventListener('submit', async event => {
       event.preventDefault();
-      if (!form.reportValidity() || blocked || controls.disabled || !owner.api.canChange()) return;
+      if (!form.reportValidity()) return;
       if (!Object.keys(changes.parameters).length && !Object.keys(changes.environment).length) { feedback.replaceChildren(message('No settings changed.')); return; }
-      controls.disabled = true; save.disabled = true;
-      feedback.replaceChildren(message('Checking current settings…'));
-      try {
+      await submission.run(async () => {
+        feedback.replaceChildren(message('Checking current settings…'));
         const fresh = await owner.api.request(`${base(provider)}/parameters?${query}`, { signal: owner.scope.signal });
         if (!owner.current()) return;
         const conflicts = parameterConflicts(before, fresh, changes);
         if (conflicts.length) {
-          blocked = true;
+          submission.block();
           throw new Error(`These settings changed in another session: ${conflicts.join(', ')}. Reload before editing.`);
         }
-        const result = await owner.api.request(`${base(provider)}/parameters`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: parameterPatch(selection, changes, shapes), signal: owner.scope.signal });
-        if (!owner.current()) return;
-        blocked = true; draft.clean();
-        await readAfterWrite(owner, notice => load(selection, notice, result.runs), 'Settings saved. Changes take effect on the next start; per-run overrides can still take precedence.');
-      } catch (error) {
-        if (!owner.current()) return;
-        blocked ||= !!error.uncertain || !!error.mutation_applied;
+        return owner.api.request(`${base(provider)}/parameters`, { method: 'PATCH', contentType: 'application/merge-patch+json', body: parameterPatch(selection, changes, shapes), signal: owner.scope.signal });
+      }, result => readAfterWrite(owner, notice => load(selection, notice, result.runs), 'Settings saved. Changes take effect on the next start; per-run overrides can still take precedence.'), (error, blocked) => {
         validation.error(error);
         if (blocked) feedback.append(leaveButton('Inspect current settings', () => { draft.clean(); return load(selection); }, owner.api));
-      } finally {
-        if (owner.current()) { controls.disabled = blocked; save.disabled = blocked; owner.syncActivity?.(); }
-      }
+      });
     });
     form.append(feedback, controls, text('Only overrides changed here are saved. Clearing an override restores inheritance. Values are checked again before saving, but another session can still change them during the save.', 'muted'),
-      editorActions(save, () => { if (draft.discard()) { draft.clean(); back(); } }, owner.api), count);
+      editorActions(save, back, owner.api, draft), count);
     owner.root.replaceChildren(el('h2', {}, `${provider} settings`), notice ? message(notice) : '', runs ? runImpact(owner, runs) : '', scopeForm,
       text(`Effective values below describe ${selection.node || 'the coordinator'}${selection.model ? ` · ${selection.model}` : ''}. They can differ from this editing scope.`, 'muted'),
       !effective ? message('Effective values could not be read. Configured overrides remain available.', 'warning') : '', search, form);
@@ -224,6 +186,39 @@ export async function parameterSettings(p, { provider, node = '', model = '', ba
     changed(); owner.syncActivity?.();
   };
   await load();
+}
+
+function parameterRow(owner, { group, key, shape, present, configured, evidence, update, disabled }) {
+  const sensitive = group === 'environment';
+  let value = present ? configured : '';
+  let visible = false;
+  const override = input(`${group}_${key}_override`, '', { type: 'checkbox', checked: present, 'aria-label': `Override ${key} at this scope` });
+  const control = valueControl(`${group}_${key}`, present ? value : undefined, shape, sensitive);
+  control.disabled = !present;
+  const help = [shape.description, shape.pass ? `Asset ${shape.pass}` : '', shape.excluded_by?.length ? `Excluded by: ${shape.excluded_by.map(item => item.runtime).join(', ')}` : ''].filter(Boolean).join(' · ');
+  const provenance = evidence ? [evidence.tier, evidence.node, evidence.model, evidence.pattern, evidence.endpoint].filter(Boolean).join(' · ') : '';
+  const row = el('section', { class: 'parameter-setting' }, el('div', { class: 'detail-heading' }, el('h4', {}, key), text(shape.type || 'string', 'muted')),
+    help ? text(help, 'muted') : '', el('label', { class: 'model-choice' }, override, 'Override at this scope'), field('Value', control),
+    evidence ? text(sensitive ? `Effective value hidden · ${provenance}` : `Effective: ${String(evidence.value)} · ${provenance}`, 'muted') : text('No effective value reported.', 'muted'));
+  const updateValue = () => { if (override.checked) update(group, key, value); };
+  control.addEventListener('input', () => { value = control.value; updateValue(); });
+  control.addEventListener('change', () => { value = control.value; updateValue(); });
+  override.addEventListener('change', () => {
+    control.disabled = !override.checked;
+    if (override.checked) updateValue(); else update(group, key, null);
+  });
+  if (sensitive) {
+    const reveal = button('Reveal', () => {
+      if (disabled()) return;
+      visible = !visible;
+      control.type = visible ? 'text' : 'password';
+      control.value = visible ? value : '';
+      reveal.textContent = visible ? 'Hide' : 'Reveal';
+    });
+    row.append(actions(reveal), text('Values are hidden until revealed. Entering a value replaces this scope only.', 'muted'));
+    owner.scope.signal.addEventListener('abort', () => { value = ''; control.value = ''; }, { once: true });
+  }
+  return { root: row, control, search: `${key} ${help}`.toLowerCase() };
 }
 
 function runImpact(p, runs) {

@@ -97,16 +97,16 @@ func OutputData(cmd *cobra.Command, data any, tableRenderer func()) error {
 		if err != nil {
 			return fmt.Errorf("failed to format JSON: %w", err)
 		}
-		fmt.Println(string(jsonBytes))
-		return nil
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(jsonBytes))
+		return err
 
 	case OutputYAML:
 		yamlBytes, err := yamlLikeJSON(data)
 		if err != nil {
 			return fmt.Errorf("failed to format YAML: %w", err)
 		}
-		fmt.Print(string(yamlBytes))
-		return nil
+		_, err = cmd.OutOrStdout().Write(yamlBytes)
+		return err
 
 	default: // OutputTable
 		tableRenderer()

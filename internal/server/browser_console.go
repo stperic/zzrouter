@@ -30,6 +30,7 @@ func (s *Server) registerBrowserConsole() {
 		{"/model-discovery.mjs", "model-discovery.mjs", "text/javascript; charset=utf-8"},
 		{"/deployments.mjs", "deployments.mjs", "text/javascript; charset=utf-8"},
 		{"/provider-lifecycle.mjs", "provider-lifecycle.mjs", "text/javascript; charset=utf-8"},
+		{"/provider-actions.mjs", "provider-actions.mjs", "text/javascript; charset=utf-8"},
 		{"/provider-install.mjs", "provider-install.mjs", "text/javascript; charset=utf-8"},
 		{"/parameters.mjs", "parameters.mjs", "text/javascript; charset=utf-8"},
 		{"/pricing.mjs", "pricing.mjs", "text/javascript; charset=utf-8"},

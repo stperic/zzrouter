@@ -12393,6 +12393,16 @@ components:
       required: [provider, steps]
       properties:
         plan_id: { type: string }
+        script_export:
+          type: object
+          description: |
+            Prepared on the executing node before hidden install context is lost.
+            Contains either a complete POSIX command script or a refusal reason.
+            Absent on older nodes: clients must not reconstruct a script from steps.
+            Command scripts omit managed verification and activation.
+          properties:
+            script: { type: string }
+            reason: { type: string }
         disposable: { type: boolean }
         supply_chain_notice: { type: string }
         resolved_install:

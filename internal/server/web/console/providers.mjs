@@ -1,4 +1,4 @@
-import { details, readAfterWrite } from './details.mjs';
+import { details, formSubmission, readAfterWrite } from './details.mjs';
 import { applySummary } from './api.mjs';
 import { el, text, button, leaveButton, badge, actions, message, heading, field, input, facts, clearSecrets, problem, markSelection, editorActions, formFeedback } from './dom.mjs';
 import { providerCategory, readInventory, nodeInventory, providerObservationSummary } from './inventory.mjs';
@@ -134,7 +134,6 @@ function connectionForm(p, entry, status, reload, cancel) {
   const diagnostic = el('div', { 'aria-live': 'polite' });
   const values = new Map();
   const validation = formFeedback(form, feedback, key => values.get(key) || values.get(String(key).replace(/^values\./, '')));
-  let blocked = false;
   let tested = false;
   const writeButtons = [];
   const enable = entry.is_cloud && !status.enabled;
@@ -171,10 +170,10 @@ function connectionForm(p, entry, status, reload, cancel) {
   }
   const candidate = () => Object.fromEntries([...values].map(([key, element]) => [key, element.value]));
   const resetBusy = () => {
-    controls.disabled = false;
+    controls.disabled = submission.blocked;
     form.setAttribute('aria-busy', 'false');
     save.textContent = saveLabel;
-    for (const item of writeButtons) item.disabled = blocked || !status.managed_available;
+    for (const item of writeButtons) item.disabled = submission.blocked || !status.managed_available;
   };
   const test = async () => {
     if (!form.reportValidity() || controls.disabled || !p.current() || !p.api.canChange()) return;
@@ -202,40 +201,37 @@ function connectionForm(p, entry, status, reload, cancel) {
     } finally { if (p.current()) resetBusy(); }
   };
   const change = async (operation, activate = false) => {
-    if (blocked || !status.managed_available || controls.disabled || !p.current() || !p.api.canChange()) return;
+    if (submission.blocked || !status.managed_available || controls.disabled || !p.current() || !p.api.canChange()) return;
     if (operation === 'save' && !form.reportValidity()) return;
     if (operation === 'remove' && !confirm('Remove these credentials? Credentials from the coordinator installation will also be blocked until you choose Use installation credentials.')) return;
     if (operation === 'external' && !confirm('Replace saved credentials with credentials from the coordinator installation?')) return;
     if (!p.current()) return;
-    controls.disabled = true;
-    save.disabled = true;
     save.textContent = 'Saving…';
     form.setAttribute('aria-busy', 'true');
     feedback.replaceChildren(message(operation === 'save' ? 'Saving credentials…' : 'Updating connection…'));
-    try {
+    await submission.run(() => {
       const path = `/providers/${encodeURIComponent(entry.key)}/connection` + (operation === 'external' ? '/use-external' : '');
-      const result = await p.api.data(path, {
+      return p.api.data(path, {
         method: operation === 'save' ? 'PUT' : operation === 'remove' ? 'DELETE' : 'POST', signal: p.scope.signal,
         body: { expected_revision: status.revision, ...(operation === 'save' ? { values: candidate(), activate } : {}) },
       });
-      if (!p.current()) return;
+    }, async result => {
       clearSecrets(form);
-      blocked = true;
-      draft?.clean();
       const complete = result.outcome === 'saved' && result.durable && result.published && (!activate || result.active);
       const summary = operation === 'remove' ? 'Credentials removed.' : operation === 'external' ? 'Using credentials from the coordinator installation.' : activate && result.active ? 'Credentials saved. Provider enabled.' : 'Credentials saved.';
       const receipt = el('div', {}, text(complete ? summary : result.saved ? 'The change was saved, but needs attention. Review the save details before continuing.' : 'The change was not saved. Review the save details before continuing.'),
         el('details', { class: 'provider-advanced' }, el('summary', {}, 'Save details'), text(applySummary(result))));
       await readAfterWrite(p, reload, receipt, complete ? '' : 'warning');
-    } catch (error) {
-      if (!p.current()) return;
-      blocked = error.uncertain || error.status === 409;
-      if (error.uncertain) clearSecrets(form);
+    }, (error, blocked) => {
+      if (error.status === 409) submission.block();
+      if (error.uncertain || error.mutation_applied) clearSecrets(form);
       validation.error(error);
-      if (blocked) feedback.append(message('Reload this connection before another change. Your previous revision will not be retried.', 'warning'), leaveButton('Reload details', () => { draft?.clean(); void readAfterWrite(p, reload, 'Reloading connection state.'); }, p.api));
-    } finally { if (p.current()) resetBusy(); }
+      if (blocked || submission.blocked) feedback.append(message('Reload this connection before another change. Your previous revision will not be retried.', 'warning'), leaveButton('Reload details', () => { draft?.clean(); void readAfterWrite(p, reload, 'Reloading connection state.'); }, p.api));
+    });
+    if (p.current()) resetBusy();
   };
   const save = el('button', { type: 'submit', class: 'primary' }, saveLabel);
+  const submission = formSubmission(p, controls, save, draft);
   const remove = button('Remove credentials', () => change('remove'), 'danger');
   const external = button('Use installation credentials', () => change('external'));
   writeButtons.push(save, remove, external);
@@ -254,7 +250,7 @@ function connectionForm(p, entry, status, reload, cancel) {
   controls.append(actions(button('Test connection', test)), diagnostic,
     text(enable ? 'Testing does not save anything. Save and enable stores these credentials and enables the provider.' : 'Testing does not save anything. Saving applies these credentials without running a test.', 'muted'));
   if (advanced.children.length > 1) controls.append(advanced);
-  form.append(feedback, controls, editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api));
+  form.append(feedback, controls, editorActions(save, cancel, p.api, draft));
   form.addEventListener('submit', event => { event.preventDefault(); void change('save', enable); });
   resetBusy();
   return form;

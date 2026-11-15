@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
-	"github.com/stperic/zzrouter/pkg/prov_apps"
 	"github.com/stperic/zzrouter/pkg/prov_apps/schema"
 )
 
@@ -110,11 +109,6 @@ func configuredParameterScope(cfg *pkgConfig.ServiceConfig, scope, node, model, 
 	if out.Environment == nil {
 		out.Environment = map[string]string{}
 	}
-	out.AvailableEndpoints = []string{}
-	for _, candidate := range []prov_apps.Endpoint{prov_apps.EndpointChat, prov_apps.EndpointEmbeddings, prov_apps.EndpointReranking} {
-		if cfg.ValidateRunEndpoint(string(candidate)) == nil {
-			out.AvailableEndpoints = append(out.AvailableEndpoints, string(candidate))
-		}
-	}
+	out.AvailableEndpoints = cfg.RunEndpoints()
 	return out, nil
 }

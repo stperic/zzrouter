@@ -10,6 +10,15 @@ import (
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
+const labelWidth = 16
+
+func padLabel(s string, width int) string {
+	if len(s) >= width {
+		return s[:width-1] + "…"
+	}
+	return fmt.Sprintf("%-*s", width, s)
+}
+
 // ChecklistField is a filter-first multi-select.
 //
 // Blurred: renders a one-line summary. When focused, expands in place into
@@ -332,7 +341,7 @@ func (f *ChecklistField) summary(styles ui.Styles) string {
 // View renders the blurred summary, or (when focused) the summary plus a
 // bordered inner box with filter input, viewport, and hint line.
 func (f *ChecklistField) View(_ int, styles ui.Styles) string {
-	label := padLabel(f.label, LabelWidth)
+	label := padLabel(f.label, labelWidth)
 	if f.focused {
 		label = styles.Accent.Render(label)
 	} else {

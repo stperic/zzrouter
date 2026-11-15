@@ -1,7 +1,6 @@
 import { Lifetime } from './api.mjs';
-import { el, text, button, leaveButton, heading, actions, field, input, select, facts, message, problem, badge, markSelection, editorActions, formFeedback, invalidField } from './dom.mjs';
+import { el, text, button, leaveButton, actions, field, input, select, facts, message, problem, badge, markSelection, editorActions, formFeedback, invalidField } from './dom.mjs';
 import { details } from './details.mjs';
-import { modelTabs } from './models.mjs';
 import { bytes, discoveryKey, discoveryIdentity, searchPath, nextSearchPage, searchSelection, discoveryRows } from './model-data.mjs';
 import { inspectDeployment } from './deployments.mjs';
 import { providerCategory } from './inventory.mjs';
@@ -61,7 +60,7 @@ export async function discoverModels(p, selected) {
   }
   provider.addEventListener('change', () => { updateFilters(); void read({}, true); });
   form.addEventListener('submit', event => { event.preventDefault(); void read({}, true); });
-  p.root.append(heading('Models', 'Find models and choose exactly where to deploy them.'), modelTabs(p, 'discover'), workspace);
+  p.root.append(workspace);
   try {
     const catalog = await p.api.data('/search?type=providers', { signal: p.scope.signal });
     if (!p.current()) return;
@@ -114,7 +113,7 @@ export async function deploymentForm(p, model, back) {
     el('section', { class: 'access-section' }, el('h3', {}, 'Target nodes'), text('Select the nodes to receive this model. Capacity observations are advisory. The coordinator validates the final request.', 'muted'), nodeChoices, assessment),
     el('details', {}, el('summary', {}, 'Advanced options'), field('Replace existing files', force), field('Restart affected running models after download', restart)));
   else controls.append(text(`Register this model with ${model.provider}. No local download is required.`, 'muted'));
-  const footer = editorActions(check, () => { if (draft?.discard() !== false) back(); }, p.api);
+  const footer = editorActions(check, back, p.api, draft);
   footer.append(submit);
   form.append(feedback, controls, review, footer);
   p.root.append(form);

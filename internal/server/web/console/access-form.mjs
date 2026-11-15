@@ -199,7 +199,7 @@ export function accessForm(p, type, record, options, reload) {
       }, 'danger'),
     )));
   }
-  const footer = editorActions(submit, () => { if (!draft || draft.discard()) { draft?.clean(); p.closeEditor(); } }, p.api);
+  const footer = editorActions(submit, p.closeEditor, p.api, draft);
   form.append(feedback, group, footer);
   form.addEventListener('submit', event => { void save(event); });
   panel.append(form);

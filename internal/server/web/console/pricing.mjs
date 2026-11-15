@@ -1,5 +1,5 @@
 import { el, text, input, field, button, leaveButton, actions, message, card, facts, date, problem, selectableRow, markSelection, formFeedback, editorActions } from './dom.mjs';
-import { details, readAfterWrite } from './details.mjs';
+import { details, formSubmission, readAfterWrite } from './details.mjs';
 import { Lifetime } from './api.mjs';
 
 const rates = [['input_cost_per_1m', 'Input'], ['output_cost_per_1m', 'Output'], ['cache_read_cost_per_1m', 'Cached input']];
@@ -41,33 +41,26 @@ export function priceOverrideForm(p, record, { seed = {}, cancel = p.close, save
   controls.append(rateFields, field('Note', note), text('Zero is a deliberate rate, including for local hardware or subscription billing. Existing cached-input pricing is retained when you edit other fields.', 'muted'));
   const validation = formFeedback(form, feedback, path => fields[path]);
   const save = el('button', { type: 'submit', class: 'primary' }, record ? 'Save changes' : 'Create override');
-  let blocked = false;
+  const submission = formSubmission(p, controls, save, draft);
   const write = async method => {
-    if (!p.current() || controls.disabled || blocked || !p.api.canChange()) return;
     const body = { provider: provider.value.trim(), model: model.value.trim(), note: note.value,
       ...Object.fromEntries(rates.map(([key]) => [key, Number(fields[key].value)])) };
     if (method !== 'DELETE' && record && !priceOverrideChanged(record, body)) { feedback.replaceChildren(message('No fields changed.')); return; }
-    controls.disabled = true; save.disabled = true;
-    feedback.replaceChildren(message('Checking current pricing…'));
-    try {
+    await submission.run(async () => {
+      feedback.replaceChildren(message('Checking current pricing…'));
       const records = await readOverrides(p);
       if (!p.current()) return;
       const fresh = records.find(item => priceOverrideKey(item) === priceOverrideKey(body));
       if (record ? priceOverrideChanged(record, fresh) : !!fresh) {
-        blocked = true;
+        submission.block();
         throw new Error(record ? 'This override changed in another session. Inspect current pricing before editing.' : 'An override already exists for this provider and model. Inspect it before editing.');
       }
-      await p.api.data(`/pricing/overrides${method === 'DELETE' ? `?${new URLSearchParams({ provider: body.provider, model: body.model })}` : ''}`,
+      return p.api.data(`/pricing/overrides${method === 'DELETE' ? `?${new URLSearchParams({ provider: body.provider, model: body.model })}` : ''}`,
         { method, body: method === 'DELETE' ? undefined : body, signal: p.scope.signal });
-      if (!p.current()) return;
-      blocked = true; draft?.clean();
-      await readAfterWrite(p, () => saved(body, method === 'DELETE'), method === 'DELETE' ? 'Override deleted. The API will use the remaining price configuration.' : 'Price override saved.');
-    } catch (error) {
-      if (!p.current()) return;
-      blocked ||= !!error.uncertain || !!error.mutation_applied;
+    }, () => readAfterWrite(p, () => saved(body, method === 'DELETE'), method === 'DELETE' ? 'Override deleted. The API will use the remaining price configuration.' : 'Price override saved.'), (error, blocked) => {
       validation.error(error);
       if (blocked) feedback.append(leaveButton('Inspect current pricing', () => { draft?.clean(); return reload(body); }, p.api));
-    } finally { if (p.current()) { controls.disabled = blocked; save.disabled = blocked; p.syncActivity?.(); } }
+    });
   };
   form.addEventListener('submit', async event => {
     event.preventDefault();
@@ -77,7 +70,7 @@ export function priceOverrideForm(p, record, { seed = {}, cancel = p.close, save
     text('Deletion restores any remaining matching price. It does not remove the model.', 'muted'),
     button('Delete override', async () => { if (confirm(`Delete the price override for ${record.model}?`)) await write('DELETE'); }, 'danger')));
   form.append(feedback, controls, text('Current values are read again before saving. The API does not lock concurrent editors, so another session can still change this override during the save.', 'muted'),
-    editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api));
+    editorActions(save, cancel, p.api, draft));
   return form;
 }
 
@@ -128,19 +121,11 @@ export async function pricing(p, selected = '', mode = '') {
       };
       const show = () => {
         const reader = owner.panel.view(mode === 'catalog' ? 'Catalog price' : 'Price override');
-        reader.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, record.model),
-          mode === 'catalog' ? (() => {
-            const existing = records.find(item => priceOverrideKey(item) === priceOverrideKey(target));
-            return leaveButton(existing ? 'View override' : 'Create override', () => open(existing || target, existing ? undefined : 'create'), p.api, 'primary');
-          })() : leaveButton('Edit', edit, p.api, 'primary')),
-        text(record.provider || 'Any provider', 'muted'), text('USD per 1 million tokens', 'muted'),
-        facts(rates.map(([key, label]) => [label, price(record[key])])), record.note ? text(record.note) : '');
-        if (mode === 'catalog') reader.root.append(facts([
-          ['Cache write ($ / 1M)', price(record.cache_write_cost_per_1m)], ['Reasoning output ($ / 1M)', price(record.output_cost_per_reasoning_1m)],
-          ['Input token limit', record.max_input_tokens ?? 'Not reported'], ['Output token limit', record.max_output_tokens ?? 'Not reported'], ['Mode', record.mode || 'Not reported'],
-        ]), text('These are the effective rates returned by the pricing API, including matching overrides.', 'muted'));
-        else reader.root.append(facts([['Billing', record.billed_per_token ? 'Per token' : 'No per-token charge declared'], ['Coverage', record.applies_to_all_models ? 'All models for this provider' : 'This model'], ['Updated', record.updated_at ? date(record.updated_at) : 'Not reported'], ['Updated by', record.updated_by || 'Not reported']]),
-          leaveButton('View effective price', () => open(record, 'catalog'), p.api));
+        const existing = records.find(item => priceOverrideKey(item) === priceOverrideKey(target));
+        const action = mode === 'catalog'
+          ? leaveButton(existing ? 'View override' : 'Create override', () => open(existing || target, existing ? undefined : 'create'), p.api, 'primary')
+          : leaveButton('Edit', edit, p.api, 'primary');
+        priceDetails(reader, record, mode === 'catalog', action, () => open(record, 'catalog'));
         p.syncActivity?.();
       };
       if (mode === 'create') edit(); else show();
@@ -190,6 +175,18 @@ export async function pricing(p, selected = '', mode = '') {
   };
   p.handleSelection?.((next = 'pricing', nextMode) => selectPrice(next.slice('pricing'.length).replace(/^\//, ''), nextMode), next => next === 'pricing' || next?.startsWith('pricing/'));
   render(); await selectPrice(selected, mode);
+}
+
+function priceDetails(p, record, catalog, action, effective) {
+  p.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, record.model), action),
+    text(record.provider || 'Any provider', 'muted'), text('USD per 1 million tokens', 'muted'),
+    facts(rates.map(([key, label]) => [label, price(record[key])])), record.note ? text(record.note) : '');
+  if (catalog) p.root.append(facts([
+    ['Cache write ($ / 1M)', price(record.cache_write_cost_per_1m)], ['Reasoning output ($ / 1M)', price(record.output_cost_per_reasoning_1m)],
+    ['Input token limit', record.max_input_tokens ?? 'Not reported'], ['Output token limit', record.max_output_tokens ?? 'Not reported'], ['Mode', record.mode || 'Not reported'],
+  ]), text('These are the effective rates returned by the pricing API, including matching overrides.', 'muted'));
+  else p.root.append(facts([['Billing', record.billed_per_token ? 'Per token' : 'No per-token charge declared'], ['Coverage', record.applies_to_all_models ? 'All models for this provider' : 'This model'], ['Updated', record.updated_at ? date(record.updated_at) : 'Not reported'], ['Updated by', record.updated_by || 'Not reported']]),
+    leaveButton('View effective price', effective, p.api));
 }
 
 function catalogSearch(p, open) {

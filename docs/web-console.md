@@ -67,6 +67,12 @@ commands, service controls, versions, cluster version pins and upgrades. Executi
 is bound to the reviewed plan ID and resolved options. Remote Ollama connections
 use the existing provider-instance API.
 
+The executing node supplies a command-script export or a refusal reason through
+the install-plan API. The console and TUI use that result unchanged. Exported
+commands do not replace managed verification or activation. Older nodes that
+omit the export still support managed execution; clients do not reconstruct a
+script from preview commands that may depend on hidden installer context.
+
 Parameters show the exact configured scope separately from effective values and
 their provenance: provider defaults, model, node or node/model, optionally narrowed
 to a supported endpoint. The API supplies schema types and valid endpoints. A
