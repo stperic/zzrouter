@@ -13,7 +13,9 @@ import { models } from './models.mjs';
 import { deployments } from './deployments.mjs';
 import { logs } from './logs.mjs';
 import { system } from './system.mjs';
+import { initializeAppearance, themePicker } from './appearance.mjs';
 
+initializeAppearance();
 const app = document.querySelector('#app');
 const pages = new Lifetime();
 let expiryTimer;
@@ -201,6 +203,7 @@ function renderLogin(state, notice) {
     right.append(form);
   }
   right.append(text('Need access? Ask your router administrator for a named key. Installation recovery is available through the local terminal client.', 'footer-note'));
+  right.append(themePicker(scope.signal));
   app.replaceChildren(el('div', { class: 'login' }, el('aside', { class: 'login-story' }, brand(), el('div', {}, el('p', { class: 'eyebrow' }, 'ONE CONNECTION TO YOUR MODELS'), el('h1', {}, 'Manage your router'), text('Connect your providers, manage access, and bring your router to the tools you use.')), el('small', {}, 'Self-hosted. Connected on your terms.')), right));
 }
 
@@ -221,6 +224,7 @@ function renderShell(state, notice) {
     item.dataset.page = id;
     navigation.append(item);
   }
+  navigation.append(themePicker(api.authority.signal));
   content = el('main', { id: 'content', class: 'page-content' });
   const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, 'Coordinator: ' + state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
   app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', { class: 'sidebar-heading' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigationToggle), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));

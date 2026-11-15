@@ -38,7 +38,7 @@ for (const name of ['openai', 'anthropic', 'azure', 'bedrock', 'cloudflare', 'ge
   const svg = await readFile(path.join(source, `node_modules/@lobehub/icons-static-svg/icons/${name}.svg`), 'utf8');
   await writeFile(path.join(target, `../icons/provider-${name}.svg`), svg
     .replace('width="1em"', 'width="32"').replace('height="1em"', 'height="32"')
-    .replaceAll('currentColor', '#52635b').replace(/ style="[^"]*"/g, '') + '\n');
+    .replaceAll('currentColor', '#89847c').replace(/ style="[^"]*"/g, '') + '\n');
 }
 const notices = [
   'Cytoscape.js 3.35.0: MIT, https://github.com/cytoscape/cytoscape.js/tree/v3.35.0',

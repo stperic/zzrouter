@@ -3,35 +3,39 @@ import { providerIcon } from './provider-icons.mjs';
 
 const icons = { client: 'client', compute: 'node', coordinator: 'coordinator', cloud: 'cloud', provider: 'provider' };
 const dots = { good: 'healthy', bad: 'down', warn: 'degraded' };
-const style = [
-  { selector: 'node', style: { width: 48, height: 48, shape: 'round-rectangle', 'background-opacity': 0, 'border-width': 0,
-    label: 'data(label)', color: '#1d2829', 'font-size': 24, 'font-family': 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', 'font-weight': 500,
-    'text-valign': 'bottom', 'text-margin-y': 10, 'text-wrap': 'wrap', 'text-max-width': 220, 'text-overflow-wrap': 'whitespace', 'line-height': 1.35,
-    'text-events': 'yes', 'text-background-opacity': 1, 'text-background-padding': 3,
-    'text-background-color': node => node.data('kind') === 'coordinator' ? '#fff' : '#f8faf9',
-    'background-image': node => [node.data('providerKey') ? providerIcon(node.data('providerKey')) : `/console/icons/${icons[node.data('kind')] || 'provider'}.svg`, `/console/icons/status-${dots[node.data('tone')] || 'unknown'}.svg`],
-    'background-width': [36, 16], 'background-height': [36, 16], 'background-fit': ['none', 'none'],
-    'background-position-x': ['50%', '100%'], 'background-position-y': ['50%', '0%'] } },
-  { selector: 'node[kind="coordinator"]', style: { width: 60, height: 60, 'background-width': [44, 16], 'background-height': [44, 16] } },
-  { selector: 'node[kind="provider"]', style: { width: 42, height: 42, 'background-width': [30, 14], 'background-height': [30, 14], 'text-max-width': 110 } },
-  { selector: 'node[kind="client"], node[kind="cloud"]', style: { 'text-max-width': 180 } },
-  { selector: 'node[kind="compute"]', style: { width: computeCard.width, height: computeCard.height,
-    'background-color': '#fff', 'background-opacity': 1, 'border-width': 1.5, 'border-color': '#cddbd3',
-    'background-position-x': [20, 46], 'background-position-y': [16, 8],
-    'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': -computeCard.width + 78, 'text-margin-y': -computeCard.height / 2 + 34,
-    'text-wrap': 'ellipsis', 'text-max-width': computeCard.width - 98, 'text-background-opacity': 0, 'font-weight': 600 } },
-  { selector: 'node[kind="metrics"]', style: { width: 1, height: 1, 'background-image': 'none', 'font-size': 22, 'line-height': 1.2, 'font-weight': 400,
-    'text-valign': 'bottom', 'text-halign': 'right', 'text-justification': 'left', 'text-margin-y': 0,
-    'text-max-width': computeCard.width - 40, 'text-wrap': 'wrap', 'text-background-opacity': 0 } },
-  { selector: 'node[kind="activity"]', style: { width: 24, height: 24, shape: 'ellipse', label: '', 'background-image': 'none', 'background-color': '#279861', 'background-opacity': 1, opacity: 0 } },
-  { selector: ':parent', style: { 'background-color': '#f4f7f5', 'background-opacity': 0.6, 'border-color': '#e0e7e3', 'border-width': 1, 'border-style': 'dashed',
-    'background-image': 'none', 'text-valign': 'top', 'text-halign': 'center', 'text-margin-x': 0, 'text-margin-y': 22, 'font-size': 18, 'font-weight': 600,
-    'text-wrap': 'none', 'text-background-opacity': 0, padding: 28, 'text-max-width': 260, 'compound-sizing-wrt-labels': 'include' } },
-  { selector: 'edge', style: { width: 1.5, 'line-color': '#bdcbc4', 'curve-style': 'round-taxi', 'taxi-direction': 'downward', 'taxi-turn': '50%', 'taxi-radius': 8, 'target-arrow-shape': 'none' } },
-  { selector: 'edge[tone="bad"]', style: { 'line-color': '#c68d87', 'line-style': 'dashed' } },
-  { selector: 'node.selected[!owner]', style: { 'underlay-color': '#4487be', 'underlay-padding': 7, 'underlay-opacity': 0.14 } },
-  { selector: 'node.selected[kind="compute"]', style: { 'border-color': '#67967b', 'background-color': '#f2f8f4' } },
-];
+function graphStyle(container) {
+  const palette = getComputedStyle(container);
+  const color = name => palette.getPropertyValue('--' + name).trim();
+  return [
+    { selector: 'node', style: { width: 48, height: 48, shape: 'round-rectangle', 'background-opacity': 0, 'border-width': 0,
+      label: 'data(label)', color: color('text'), 'font-size': 24, 'font-family': 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', 'font-weight': 500,
+      'text-valign': 'bottom', 'text-margin-y': 10, 'text-wrap': 'wrap', 'text-max-width': 220, 'text-overflow-wrap': 'whitespace', 'line-height': 1.35,
+      'text-events': 'yes', 'text-background-opacity': 1, 'text-background-padding': 3,
+      'text-background-color': node => node.data('kind') === 'coordinator' ? color('surface') : color('surface-muted'),
+      'background-image': node => [node.data('providerKey') ? providerIcon(node.data('providerKey')) : `/console/icons/${icons[node.data('kind')] || 'provider'}.svg`, `/console/icons/status-${dots[node.data('tone')] || 'unknown'}.svg`],
+      'background-width': [36, 16], 'background-height': [36, 16], 'background-fit': ['none', 'none'],
+      'background-position-x': ['50%', '100%'], 'background-position-y': ['50%', '0%'] } },
+    { selector: 'node[kind="coordinator"]', style: { width: 60, height: 60, 'background-width': [44, 16], 'background-height': [44, 16] } },
+    { selector: 'node[kind="provider"]', style: { width: 42, height: 42, 'background-width': [30, 14], 'background-height': [30, 14], 'text-max-width': 110 } },
+    { selector: 'node[kind="client"], node[kind="cloud"]', style: { 'text-max-width': 180 } },
+    { selector: 'node[kind="compute"]', style: { width: computeCard.width, height: computeCard.height,
+      'background-color': color('surface'), 'background-opacity': 1, 'border-width': 1.5, 'border-color': color('line-strong'),
+      'background-position-x': [20, 46], 'background-position-y': [16, 8],
+      'text-valign': 'center', 'text-halign': 'right', 'text-margin-x': -computeCard.width + 78, 'text-margin-y': -computeCard.height / 2 + 34,
+      'text-wrap': 'ellipsis', 'text-max-width': computeCard.width - 98, 'text-background-opacity': 0, 'font-weight': 600 } },
+    { selector: 'node[kind="metrics"]', style: { width: 1, height: 1, 'background-image': 'none', 'font-size': 22, 'line-height': 1.2, 'font-weight': 400,
+      'text-valign': 'bottom', 'text-halign': 'right', 'text-justification': 'left', 'text-margin-y': 0,
+      'text-max-width': computeCard.width - 40, 'text-wrap': 'wrap', 'text-background-opacity': 0 } },
+    { selector: 'node[kind="activity"]', style: { width: 24, height: 24, shape: 'ellipse', label: '', 'background-image': 'none', 'background-color': color('dot-good'), 'background-opacity': 1, opacity: 0 } },
+    { selector: ':parent', style: { 'background-color': color('surface-muted'), 'background-opacity': 0.6, 'border-color': color('line'), 'border-width': 1, 'border-style': 'dashed',
+      'background-image': 'none', 'text-valign': 'top', 'text-halign': 'center', 'text-margin-x': 0, 'text-margin-y': 22, 'font-size': 18, 'font-weight': 600,
+      'text-wrap': 'none', 'text-background-opacity': 0, padding: 28, 'text-max-width': 260, 'compound-sizing-wrt-labels': 'include' } },
+    { selector: 'edge', style: { width: 1.5, 'line-color': color('line-strong'), 'curve-style': 'round-taxi', 'taxi-direction': 'downward', 'taxi-turn': '50%', 'taxi-radius': 8, 'target-arrow-shape': 'none' } },
+    { selector: 'edge[tone="bad"]', style: { 'line-color': color('dot-bad'), 'line-style': 'dashed' } },
+    { selector: 'node.selected[!owner]', style: { 'underlay-color': color('focus'), 'underlay-padding': 7, 'underlay-opacity': 0.14 } },
+    { selector: 'node.selected[kind="compute"]', style: { 'border-color': color('selected-line'), 'background-color': color('selected') } },
+  ];
+}
 
 // Membership or label-size changes run ELK. Later layouts invalidate earlier ones.
 export function graphLayout(cy, elk, signal, failed) {
@@ -141,8 +145,9 @@ export async function topology(container, signal, select, failed) {
   let cy;
   try {
     const elk = new ELK({ algorithms: ['layered'], workerFactory: () => worker });
-    cy = cytoscape({ container, elements: [], style, layout: { name: 'preset' }, maxZoom: 2.5,
+    cy = cytoscape({ container, elements: [], style: graphStyle(container), layout: { name: 'preset' }, maxZoom: 2.5,
       autoungrabify: true, autounselectify: true, boxSelectionEnabled: false });
+    window.addEventListener('console-theme-change', () => cy.style(graphStyle(container)).update(), { signal });
     const motion = activityMotion(cy, signal);
     const layout = graphLayout(cy, elk, signal, failed);
     let width = cy.width(), height = cy.height(), anchor, positioned = false, initialized = false;

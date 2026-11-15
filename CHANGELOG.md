@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add browser-local Claude Web and Claude Code light/dark console themes, with
+  Claude Web as the default. Apply shared semantic colors to every view and the
+  network graph while preserving drafts, map position and health status colors.
 - Simplify console editors and provider job tracking through their shared
   lifecycle owners. Restore editing after definite request refusals, protect
   Cancel with draft confirmation, remove unused TUI form widgets and eliminate

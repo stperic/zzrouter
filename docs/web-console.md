@@ -13,6 +13,20 @@ User keys open Chat and My Access, with their
 own model policy, limits, recorded usage and MCP grants. Keys remain the identity
 model; the console does not introduce a separate account or role database.
 
+## Appearance
+
+Choose **Color theme** in the navigation or on the sign-in screen. **Claude Web**
+is the default, with warm cream surfaces, charcoal text and terracotta accents.
+Claude Web dark and neutral Claude Code light/dark alternatives are also available.
+The palettes adapt [Anthropic's published colors](https://github.com/anthropics/skills/blob/main/skills/brand-guidelines/SKILL.md)
+for readable console controls; they are not exact copies of terminal themes.
+
+The preference stays in this browser and synchronizes across tabs on the same
+origin. It changes the whole console, including the network graph, without
+discarding drafts or resetting the map. Health indicators keep their semantic
+green, red, amber and gray colors. If browser storage is unavailable, the selected
+theme applies for the current tab and the picker reports that it was not saved.
+
 ## Shared selection and editing
 
 The console is the complete interactive management surface. In the terminal,

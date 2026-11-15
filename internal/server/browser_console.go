@@ -25,6 +25,7 @@ func (s *Server) registerBrowserConsole() {
 		{"/", "index.html", "text/html; charset=utf-8"},
 		{"/console.css", "console.css", "text/css; charset=utf-8"},
 		{"/console.mjs", "console.mjs", "text/javascript; charset=utf-8"},
+		{"/appearance.mjs", "appearance.mjs", "text/javascript; charset=utf-8"},
 		{"/models.mjs", "models.mjs", "text/javascript; charset=utf-8"},
 		{"/model-data.mjs", "model-data.mjs", "text/javascript; charset=utf-8"},
 		{"/model-discovery.mjs", "model-discovery.mjs", "text/javascript; charset=utf-8"},

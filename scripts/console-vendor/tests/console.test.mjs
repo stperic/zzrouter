@@ -71,6 +71,64 @@ async function audit(page, name) {
   assert.deepEqual(violations, [], name + ': accessibility violations');
 }
 
+test('color themes preserve work, persist across tabs and cover light and dark surfaces', { timeout: 180000 }, async t => {
+  const f = await consolePage(t), { page } = f;
+  await f.open('#overview');
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'claude-web');
+  const graph = () => page.evaluate(() => {
+    const cy = document.querySelector('.topology-canvas')._cyreg.cy;
+    return { pan: cy.pan(), zoom: cy.zoom(), positions: cy.nodes().map(node => node.position()), color: cy.nodes().first().style('color') };
+  });
+  const before = await graph();
+  await page.getByLabel('Color theme', { exact: true }).selectOption('claude-web-dark');
+  const after = await graph();
+  assert.deepEqual(after.pan, before.pan); assert.equal(after.zoom, before.zoom); assert.deepEqual(after.positions, before.positions);
+  assert.notEqual(after.color, before.color);
+  const other = await page.context().newPage();
+  await other.goto(f.base + '#chat');
+  await other.getByRole('textbox', { name: 'Message', exact: true }).waitFor();
+  assert.equal(await other.locator('html').getAttribute('data-theme'), 'claude-web-dark');
+  for (const theme of ['claude-web', 'claude-web-dark', 'claude-code-light', 'claude-code-dark']) {
+    await page.getByLabel('Color theme', { exact: true }).selectOption(theme);
+    await other.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
+    await audit(page, theme + '-overview');
+    await f.open('#routes?item=coding');
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await audit(page, theme + '-editor');
+    await f.open('#chat', 390, 844);
+    await f.model('coding');
+    const message = page.getByRole('textbox', { name: 'Message', exact: true });
+    await message.fill('Keep this draft through a theme change.');
+    await page.getByRole('button', { name: 'Navigation', exact: true }).click();
+    await page.getByLabel('Color theme', { exact: true }).selectOption(theme === 'claude-web' ? 'claude-code-dark' : 'claude-web');
+    await page.getByLabel('Color theme', { exact: true }).selectOption(theme);
+    await audit(page, theme + '-mobile-navigation');
+    await page.getByRole('button', { name: 'Navigation', exact: true }).click();
+    assert.equal(await message.inputValue(), 'Keep this draft through a theme change.');
+    await audit(page, theme + '-chat-phone');
+    await f.open('#overview');
+  }
+  await page.reload();
+  await page.locator('.topology-status:empty').waitFor({ state: 'attached' });
+  assert.equal(await page.getByLabel('Color theme', { exact: true }).inputValue(), 'claude-code-dark');
+  await page.evaluate(() => localStorage.setItem('zzrouter.console.theme', 'unknown-preset'));
+  await page.reload();
+  await page.locator('#content h1').waitFor();
+  assert.equal(await page.getByLabel('Color theme', { exact: true }).inputValue(), 'claude-web');
+  await page.addInitScript(() => Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Blocked', 'SecurityError'); } }));
+  await page.reload();
+  await page.locator('#content h1').waitFor();
+  await page.getByLabel('Color theme', { exact: true }).selectOption('claude-code-dark');
+  await page.getByText('Applied for this tab. Browser storage is unavailable.').waitFor();
+  assert.equal(await page.locator('html').getAttribute('data-theme'), 'claude-code-dark');
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Color theme', { exact: true }).inputValue(), 'claude-code-dark');
+  await page.getByText('Applied for this tab. Browser storage is unavailable.').waitFor();
+  await page.getByLabel('Color theme', { exact: true }).selectOption('claude-web-dark');
+  await audit(page, 'theme-sign-in-dark');
+});
+
 test('all console views and shared editors fit desktop and phone viewports', { timeout: 180000 }, async t => {
   const f = await consolePage(t);
   const scenes = [

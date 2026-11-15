@@ -60,7 +60,7 @@ func TestIntegrationBrowserManagementStreamsAndMergePatch(t *testing.T) {
 
 func TestIntegrationBrowserCompleteConsoleAssets(t *testing.T) {
 	s, _ := oauthTestNode(t, config.ClusterModeDisabled)
-	for _, asset := range []string{"models", "model-data", "model-discovery", "deployments", "provider-lifecycle", "provider-install", "parameters", "pricing", "event-stream", "run-logs", "logs", "system", "updates", "vendor/events"} {
+	for _, asset := range []string{"appearance", "models", "model-data", "model-discovery", "deployments", "provider-lifecycle", "provider-install", "parameters", "pricing", "event-stream", "run-logs", "logs", "system", "updates", "vendor/events"} {
 		recorder := httptest.NewRecorder()
 		s.engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/console/"+asset+".mjs", nil))
 		require.Equal(t, http.StatusOK, recorder.Code, asset)
