@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Carry the double-Z brand into CLI help, the TUI and the project README.
-  Show a compact block monogram on the first TUI menu, then a quiet single-line
-  wordmark during use. Keep portable ASCII artwork in CLI help.
+  Share the five-line ASCII logo between CLI help and the first TUI menu, then
+  use a quiet single-line wordmark during navigation and in small terminals.
 - Add the double-Z console logo, matching color and monochrome assets, and a
   browser icon. Pair the symbol with Router without repeating the ZZ lettering.
 - Add browser-local Claude Web and Claude Code light/dark console themes, with

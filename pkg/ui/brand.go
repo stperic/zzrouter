@@ -1,19 +1,13 @@
 package ui
 
-import (
-	"strings"
-
-	"charm.land/lipgloss/v2"
-)
+import "charm.land/lipgloss/v2"
 
 // BrandASCII is the double-Z mark and Router wordmark in portable ASCII.
-const BrandASCII = `     __________
- __________   /
-         /   /
-     /  /   /   Router
-    /  /   /
-   /  /________
-  /___________`
+const BrandASCII = `_________         ____             __
+________   /        / __ \____  __  __/ /____  _____
+   /   /  /        / /_/ / __ \/ / / / __/ _ \/ ___/
+  /   /______     / _, _/ /_/ / /_/ / /_/  __/ /
+ /__________     /_/ |_|\____/\__,_/\__/\___/_/`
 
 func brandAccent(styles Styles) lipgloss.Style {
 	accent := "#98472e"
@@ -23,18 +17,9 @@ func brandAccent(styles Styles) lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(accent))
 }
 
-// BrandMark renders the interlocking monogram using terminal block characters.
+// BrandMark renders the shared ASCII logo in the terminal theme.
 func BrandMark(styles Styles) string {
-	ink, accent := styles.Normal.Render, brandAccent(styles).Render
-	return strings.Join([]string{
-		ink("    ▄▄▄▄▄▄▄▄▄▄▄▄▄ "),
-		accent(" ▀▀▀▀▀▀▀▀▀██") + ink("   ▟█▀"),
-		accent("         ▟█▀") + ink(" ▟█▀  "),
-		ink("    ▟█▀") + accent("▟█▀") + ink(" ▟█▀    "),
-		ink("  ▟█▀") + accent("▟█▀") + ink(" ▟█▀      "),
-		ink("▟█▀ ") + accent("▙▄▄▄▄▄▄▄▄▄▄▄▄ "),
-		ink("▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   "),
-	}, "\n")
+	return styles.Normal.Render(BrandASCII)
 }
 
 // BrandWordmark keeps working views compact with the plain product name.

@@ -67,10 +67,9 @@ func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
 func (m *tuiModel) menuHeader() string {
 	// Keep all top-level items visible; short terminals start with compact chrome.
 	if m.menuWelcome && m.termHeight >= 30 {
-		label := m.styles.Normal.Bold(true).Render("Router") + "\n" +
-			m.styles.HintsBar.Render("Local + cloud AI") + "\n" +
+		label := m.styles.HintsBar.Render("Local + cloud AI") + "  " +
 			m.styles.ChatDim.Render("v"+version.Current.ShortString())
-		welcome := lipgloss.JoinHorizontal(lipgloss.Center, ui.BrandMark(m.styles), "  ", label)
+		welcome := ui.BrandMark(m.styles) + "\n" + label
 		if m.termWidth >= lipgloss.Width(welcome)+2 {
 			return "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(welcome) + "\n\n" +
 				shared.Hrule(m.styles, m.termWidth) + "\n\n"
