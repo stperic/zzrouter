@@ -8,6 +8,7 @@ export function workloadSelection(value = '') {
   catch { return {}; }
 }
 export const ownedPath = (kind, node, id) => `/${kind}${id ? '/' + encodeURIComponent(id) : ''}?node=${encodeURIComponent(node)}`;
+export const stoppedRun = row => row.record_only === true || row.status === 'stopped';
 
 // Explicit node requests disclose failures that broadcast aggregation can omit.
 export async function readWorkloadPages(p, nodes, kind, offsets = new Map()) {

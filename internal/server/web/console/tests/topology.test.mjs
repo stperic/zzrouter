@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { cytoscape, ELK } from '../vendor/graph.mjs';
-import { computeCard, topologyData, layoutInput, layoutPositions, topologySignature } from '../topology-data.mjs';
-import { graphLayout, revealNode, activityMotion } from '../topology.mjs';
+import { computeCard, topologyData, visibleTopology, layoutInput, layoutPositions, topologySignature } from '../topology-data.mjs';
+import { graphLayout, revealNode, initialCamera, activityMotion } from '../topology.mjs';
 import { overview } from '../overview.mjs';
 import { localProviderKey } from '../network-data.mjs';
 import { find, button, installDOM, walk, drain } from './dom-fixture.mjs';
@@ -35,6 +35,32 @@ const snapshot = { inventory: [ok([node, node, { name: 'spruce', health_status: 
   catalog: ok([{ key: 'groq', name: 'Groq', kind: 'cloud', available: true }]), clientResults: [ok({ data: [client] }), ok([])] };
 const projected = () => topologyData(snapshot, 'atlas').elements;
 
+test('collapsed provider branches preserve the complete model and stable selection identities', () => {
+  const elements = projected(), before = structuredClone(elements);
+  const collapsed = visibleTopology(elements, new Set());
+  assert.equal(collapsed.some(({ data }) => data.kind === 'provider'), false);
+  assert.equal(collapsed.some(({ data }) => data.target === localProviderKey('atlas', 'ollama')), false);
+  const expanded = visibleTopology(elements, new Set(['atlas']));
+  assert.ok(expanded.some(({ data }) => data.selection === localProviderKey('atlas', 'ollama')));
+  assert.deepEqual(elements, before, 'presentation must not mutate inventory or erase hidden providers');
+});
+
+test('initial camera waits for a visible map and preserves readable zoom for large networks', t => {
+  const cy = cytoscape({ headless: true, elements: [{ data: { id: 'coordinator' }, position: { x: 0, y: 0 } },
+    { data: { id: 'node/worker' }, position: { x: 10000, y: 1000 } }], layout: { name: 'preset' } });
+  t.after(() => cy.destroy());
+  let width = 0;
+  cy.width = () => width; cy.height = () => 600;
+  assert.equal(initialCamera(cy), false);
+  width = 1000;
+  assert.equal(initialCamera(cy), true);
+  assert.equal(cy.zoom(), 0.6);
+  initialCamera(cy, 'node/worker');
+  const point = cy.getElementById('node/worker').renderedPosition();
+  assert.equal(point.x, 500);
+  assert.equal(point.y, 300);
+});
+
 test('graph roles share physical selection and retain explicit health and client observations', () => {
   const { elements, nodes } = topologyData(snapshot, 'atlas');
   assert.equal(nodes.length, 2);
@@ -42,7 +68,7 @@ test('graph roles share physical selection and retain explicit health and client
   assert.equal(roles.length, 2);
   assert.notEqual(roles[0].data.id, roles[1].data.id);
   assert.match(roles[1].data.status, /Coordinator \+ Worker · Healthy/);
-  assert.equal(elements.find(({ data }) => data.kind === 'client').data.status, 'Last active');
+  assert.equal(elements.find(({ data }) => data.kind === 'client').data.status, 'No active requests');
   assert.equal(elements.find(({ data }) => data.kind === 'client').data.name, 'Key: <img src=x>');
   const local = elements.find(({ data }) => data.kind === 'provider');
   assert.equal(local.data.providerKey, 'ollama');
@@ -150,6 +176,19 @@ test('label growth reruns layout, while label changes within the reserved cell k
   await grown;
   assert.equal(f.cy.zoom(), 1.3);
   assert.deepEqual(f.cy.pan(), { x: 90, y: 70 });
+});
+
+test('identical updates wait for the committed layout instead of reporting premature readiness', async t => {
+  const f = layoutFixture(t);
+  const elements = [{ data: { id: 'atlas', kind: 'compute' } }];
+  const first = f.update(elements);
+  let finished = false;
+  const second = f.update(elements).then(value => { finished = true; return value; });
+  await drain();
+  assert.equal(finished, false);
+  assert.equal(f.pending.length, 1);
+  f.pending[0].resolve(placed('atlas', 60));
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
 });
 
 test('a narrowed viewport reveals the selected icon without changing zoom or moving visible items', t => {

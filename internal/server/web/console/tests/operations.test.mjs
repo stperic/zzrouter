@@ -170,7 +170,7 @@ test('Workloads keeps partial failures visible and opens matching side panels', 
   };
   f.p.api.data = async () => ({ id: 'run', provider: 'engine', model: 'local/model', status: 'running' });
   await workloads(f.p);
-  assert.match(f.root.textContent, /Could not read runs on down/);
+  assert.match(f.root.textContent, /Could not refresh runs on down/);
   await click(f.root, 'local/model');
   assert.equal(walk(f.root).filter(node => node.tag === 'dialog').length, 1);
   assert.match(f.root.textContent, /worker\/a/);

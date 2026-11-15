@@ -59,8 +59,12 @@ Stop. Show elapsed time and reported usage, never invented token totals.
 Returned reasoning is collapsible. Incomplete/error streams retain readable
 partial output and a visible outcome. Settings snapshot at send time; changing
 the draft cannot alter a running request. No tools, attachments or automatic
-model selection/fallback beyond the server's existing routing. Conversation
-and system prompt remain in page memory and are cleared on exit/session loss.
+model selection/fallback beyond the server's existing routing. The authenticated
+shell retains one mounted conversation runtime in memory across ordinary
+navigation. Leaving Chat cancels the current run while retaining its partial
+outcome, composer draft and settings. New chat clears the conversation, draft
+and settings; reload, pagehide, sign-out and authority invalidation destroy the
+runtime. No conversation data is written to browser storage.
 
 ## Validation
 
@@ -73,7 +77,7 @@ and system prompt remain in page memory and are cleared on exit/session loss.
 - Reproducible bundle, TypeScript check, existing console tests, Go race tests,
   build/vet and affected lint. Independent architecture and final diff review.
 - Browser acceptance at desktop and mobile sizes: discovery, settings, send,
-  streamed rendering, Stop, regenerate, new chat, navigation/session clearing,
+  streamed rendering, Stop, regenerate, New chat, navigation retention and authority clearing,
   keyboard controls, safe Markdown and overflow. Use disposable state first.
 
 No cluster protocol change is required. Document the additive browser contract
@@ -121,9 +125,11 @@ Validation completed on 2026-11-14:
   tests and both Chat and provider-setup Chrome acceptance flows at desktop and
   mobile sizes. The integration conflict was limited to additive release notes.
 
-Chat history and its system prompt are intentionally page-local. Leaving Chat
-or losing the session clears them. Tools, attachments and saved conversations
-are outside this change.
+Chat history, draft and system prompt remain local to the current tab's verified
+browser authority. Ordinary navigation retains them and cancels active inference.
+Reload, pagehide, sign-out or changed authority clears them. Tools, attachments
+and persistent conversations are outside this change. The later UX cleanup
+contract is described in `docs/console-ux-plan.md`.
 
 Runtime production code grows by 473 lines against the deployed base, excluding
 generated vendor assets, tests, documentation and build tooling. This adds the

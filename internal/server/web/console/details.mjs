@@ -30,7 +30,7 @@ export function details(p, title, close) {
     panel.close?.(); panel.remove();
     p.root.classList.remove('has-details');
     if (restoreFocus) {
-      const target = previousFocus?.isConnected ? previousFocus : p.root.querySelector?.('[aria-current="true"] button, button[aria-current="true"]') || document.querySelector?.('h1');
+      const target = previousFocus?.isConnected && previousFocus !== document.body && previousFocus !== document.documentElement ? previousFocus : p.root.querySelector?.('[aria-current="true"] button, button[aria-current="true"]') || document.querySelector?.('h1');
       target?.focus({ preventScroll: true });
     }
   };
@@ -47,10 +47,12 @@ export function details(p, title, close) {
   };
   const view = (nextTitle = title) => {
     const content = contents.next(); revision++;
+    const restoreHeader = body.contains(document.activeElement);
     clearSecrets(body); body.replaceChildren(); drafts.clear(); editing = false;
     label.textContent = nextTitle;
     panel.setAttribute('aria-label', nextTitle);
     dismiss.setAttribute('aria-label', `Close ${nextTitle.toLowerCase()}`);
+    if (restoreHeader) dismiss.focus({ preventScroll: true });
     const owner = { ...p, root: body, panel: controller, close, dispose, trackDraft,
       scope: { signal: AbortSignal.any([signal, content.signal]) }, current: () => current() && content.current(),
       get editing() { return editing; }, set editing(value) { editing = value; } };

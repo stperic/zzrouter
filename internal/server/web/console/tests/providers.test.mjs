@@ -41,7 +41,7 @@ test('provider lists do not automatically select or expose credentials; categori
 
 test('selection opens node and connection details; editing is explicit and Cancel restores details', async t => {
   const f = fixture(t); await providers(f.p, 'local'); await choose(f, 'engine-a');
-  assert.match(f.root.textContent, /atlas.*Healthy.*Engine ADisabledInstalled.*spruce.*Down/s);
+  assert.match(f.root.textContent, /atlas.*Healthy.*DisabledInstalled.*spruce.*Down/s);
   assert.equal(walk(f.root).some(node => node.tag === 'form'), false);
   button(f.root, 'Connect').dispatchEvent(new Event('click'));
   const token = named(f.root, 'token'); token.value = 'synthetic-candidate';

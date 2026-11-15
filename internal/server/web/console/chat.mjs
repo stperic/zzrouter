@@ -1,4 +1,4 @@
-import { el, text, button, heading, field, input, select, message, problem, editorActions } from './dom.mjs';
+import { el, text, button, leaveButton, heading, field, input, select, message, problem, editorActions, formFeedback } from './dom.mjs';
 import { details } from './details.mjs';
 
 export const defaultSettings = () => ({ model: '', system: '', node: '', showReasoning: true, showStats: true });
@@ -9,58 +9,112 @@ export function chatModels(result) {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-export async function chat(p) {
-  let settings = defaultSettings();
+// One mounted runtime belongs to one browser authority, never a page or key ID.
+// Detaching its canvas preserves the SDK's message, composer and cancellation state.
+export function createChatSession(api, mount = () => import('./vendor/chat.mjs')) {
+  const signal = api.authority.signal;
+  const session = { settings: defaultSettings(), canvas: el('div', { class: 'chat-canvas' }), view: undefined };
+  session.ready = mount().then(({ mountChat }) => {
+    if (signal.aborted) return;
+    session.view = mountChat(session.canvas, { baseURL: new URL('/v1', api.origin).href,
+      fetcher: api.inferenceFetch.bind(api), settings: session.settings, signal, enabled: api.canChange() });
+    return session.view;
+  });
+  signal.addEventListener('abort', () => { session.settings = defaultSettings(); session.view = undefined; }, { once: true });
+  return session;
+}
+
+export async function chat(p, session, initialModel) {
   let models = [];
   let drawer;
-  let view;
   let readVersion = 0;
-  const model = input('model', '', { list: 'chat-models', placeholder: 'Search models and routes…', spellcheck: 'false' });
-  const choices = el('datalist', { id: 'chat-models' });
+  let discovery = 'loading';
+  let updatePicker;
+  const selection = el('strong', { class: 'chat-model-name' });
+  const context = el('small', { class: 'muted' });
+  const change = button('Choose model', () => openPicker());
+  const settingsButton = button('Settings', () => openSettings());
   const feedback = el('div', { 'aria-live': 'polite' });
   const summary = el('span', { class: 'chat-settings-summary muted' });
-  const canvas = el('div', { class: 'chat-canvas' });
   const listing = el('section', { class: 'entity-list chat-card' },
-    el('div', { class: 'chat-toolbar' }, field('Model or route', model), choices,
-      button('Settings', () => openSettings())), summary, feedback, canvas);
+    el('div', { class: 'chat-toolbar' }, el('div', { class: 'chat-selection' }, selection, context),
+      change, settingsButton), summary, feedback, session.canvas);
   const workspace = el('div', { class: 'entity-workspace chat-workspace' }, listing);
   const refresh = button('Refresh models', () => loadModels());
   const newChat = button('New chat', () => {
-    if (!p.current() || !view || view.hasMessages && !confirm('Clear this conversation and start a new chat?')) return;
-    view.reset();
+    if (!p.current() || !session.view || (session.view.hasMessages || session.view.hasDraft) && !confirm('Clear this conversation, draft and settings?') || !closePanel()) return;
+    session.view.reset(); session.settings = defaultSettings(); p.selectSection?.(); sync();
   });
   p.root.append(heading('Chat', 'Your models. Your prompts. One place to try them.', refresh, newChat), workspace);
-  model.addEventListener('change', () => { settings = { ...settings, model: model.value.trim(), node: '' }; sync(); });
+  const modelContext = model => model?.owned_by === 'zzrouter-route' ? 'Route' : [model?.zzrouter?.provider, model?.zzrouter?.node].filter(Boolean).join(' · ');
   const sync = () => {
+    const settings = session.settings;
+    selection.textContent = settings.model || 'Select a model or route';
+    context.textContent = modelContext(models.find(item => item.id === settings.model));
+    selection.setAttribute('title', selection.textContent); context.setAttribute('title', context.textContent);
+    change.textContent = settings.model ? 'Change' : 'Choose model';
     summary.textContent = [settings.system ? 'Custom system prompt' : 'No system prompt',
       settings.temperature === undefined ? '' : `Temperature ${settings.temperature}`,
       settings.topP === undefined ? '' : `Top-p ${settings.topP}`,
       settings.maxTokens ? `Up to ${settings.maxTokens.toLocaleString()} output tokens` : '',
       settings.temperature === undefined && settings.topP === undefined && settings.maxTokens === undefined ? 'Model defaults' : '',
       settings.node ? `Node: ${settings.node}` : ''].filter(Boolean).join(' · ');
-    view?.configure(settings);
+    session.view?.configure(settings);
+    p.syncActivity?.();
   };
+  function choose(value) {
+    if (!p.current() || !value || !closePanel()) return;
+    session.settings = { ...session.settings, model: value.trim(), node: '' };
+    p.selectSection?.(value.trim()); sync();
+  }
+  p.handleSelection?.(value => { if (value && value !== session.settings.model) choose(value); });
+  p.scope.signal.addEventListener('abort', () => { session.view?.cancel(); }, { once: true });
   async function loadModels() {
     const version = ++readVersion;
     refresh.disabled = true;
-    feedback.replaceChildren(message('Loading available models…'));
+    discovery = 'loading'; feedback.replaceChildren(message('Loading available models…')); updatePicker?.();
     try {
       const result = await p.api.request('/v1/models', { signal: p.scope.signal });
       if (!p.current() || version !== readVersion) return;
       models = chatModels(result);
-      choices.replaceChildren(...models.map(item => el('option', { value: item.id }, item.zzrouter?.provider || 'Route')));
-      feedback.replaceChildren(models.length ? text(`${models.length} available. Type to search or enter an exact model name.`, 'chat-model-help muted') : message('No chat models are listed for your key. Refresh after a model or route is made available.'));
-    } catch (error) { if (p.current() && version === readVersion) feedback.replaceChildren(problem(error)); }
+      discovery = 'ready';
+      feedback.replaceChildren(...(models.length ? [] : [message('No chat models are listed for your key.'),
+        leaveButton(p.identity.role === 'admin' ? 'Manage providers' : 'Review my access', () => p.go(p.identity.role === 'admin' ? 'providers' : 'connections'), p.api)]));
+      sync(); updatePicker?.();
+    } catch (error) { if (p.current() && version === readVersion) { discovery = 'failed'; feedback.replaceChildren(problem(error)); updatePicker?.(); } }
     finally { if (p.current() && version === readVersion) refresh.disabled = false; }
   }
-  function closeSettings() {
-    if (!drawer?.panel.confirmLeave()) return;
-    drawer.dispose(true); drawer = undefined;
+  function closePanel() {
+    if (drawer && !drawer.panel.confirmLeave()) return false;
+    drawer?.dispose(true); drawer = undefined; updatePicker = undefined;
+    return true;
+  }
+  function openPicker() {
+    if (!p.current() || !closePanel()) return;
+    change.focus({ preventScroll: true });
+    drawer = details({ ...p, root: workspace }, 'Choose model or route', closePanel);
+    const search = input('model-search', '', { type: 'search', placeholder: 'Search names, providers or nodes', spellcheck: 'false' });
+    const results = el('div', { class: 'model-results' });
+    const exact = button('', () => choose(search.value), 'secondary');
+    updatePicker = () => {
+      const query = search.value.trim();
+      const matches = models.filter(model => `${model.id} ${modelContext(model)}`.toLowerCase().includes(query.toLowerCase()));
+      results.replaceChildren(...matches.map(model => button(el('span', {}, el('strong', {}, model.id), el('small', {}, modelContext(model))), () => choose(model.id), 'model-result')));
+      if (!matches.length) results.append(text(discovery === 'loading' ? 'Loading models…' : discovery === 'failed' ? 'Model discovery failed. Refresh models or use an exact ID.' : 'No matching models or routes.', 'muted'));
+      exact.hidden = !query || models.some(model => model.id === query);
+      exact.textContent = `Use exact ID: ${query}`;
+    };
+    search.addEventListener('input', updatePicker);
+    search.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); results.querySelector?.('button')?.focus(); } });
+    drawer.root.append(field('Find a model or route', search), text('Choose a listed model, or enter an exact ID. Your access rules still apply.', 'muted'), results, exact);
+    updatePicker(); search.focus({ preventScroll: true });
   }
   function openSettings() {
-    if (!p.current() || drawer?.current()) return;
-    drawer = details({ ...p, root: workspace }, 'Chat settings', closeSettings);
+    if (!p.current() || !closePanel()) return;
+    settingsButton.focus({ preventScroll: true });
+    drawer = details({ ...p, root: workspace }, 'Chat settings', closePanel);
     const owner = drawer;
+    const settings = session.settings;
     const system = el('textarea', { name: 'system', rows: '7', value: settings.system, 'data-sensitive': true, placeholder: 'Give the model instructions for this conversation…' });
     const numbers = [
       ['temperature', 'Temperature', 0, 2, '0.1'],
@@ -73,28 +127,31 @@ export async function chat(p) {
     const reasoning = input('reasoning', '', { type: 'checkbox', checked: settings.showReasoning });
     const stats = input('stats', '', { type: 'checkbox', checked: settings.showStats });
     const apply = el('button', { type: 'submit', class: 'primary' }, 'Apply settings');
-    const form = el('form', { class: 'entity-editor chat-settings' },
+    const formStatus = el('div', { 'aria-live': 'polite' });
+    const form = el('form', { class: 'entity-editor chat-settings' }, formStatus,
       field('System prompt', system, 'Sent with each message in this conversation.'),
       el('h3', {}, 'Generation'), text('Leave values blank to use the model’s defaults. Changes apply to your next request.', 'muted'),
       el('div', { class: 'form-grid' }, numbers.map(item => field(item.label, item.control))),
       field('Compute node', node, 'Optional node name. Model IDs may already select a node. Routes remain subject to your team’s access rules.'),
       el('h3', {}, 'Display'), field('Show returned reasoning', reasoning), field('Show response statistics', stats),
-      editorActions(apply, closeSettings, p.api));
+      editorActions(apply, closePanel, p.api));
+    formFeedback(form, formStatus);
     const draft = owner.trackDraft(form);
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (!form.reportValidity() || !owner.current()) return;
-      settings = { ...settings, system: system.value, node: node.value, showReasoning: reasoning.checked, showStats: stats.checked,
+      session.settings = { ...settings, system: system.value, node: node.value, showReasoning: reasoning.checked, showStats: stats.checked,
         ...Object.fromEntries(numbers.map(({ key, control }) => [key, control.value === '' ? undefined : Number(control.value)])) };
-      draft.clean(); sync(); closeSettings();
+      draft.clean(); sync(); closePanel();
     });
     owner.root.append(form);
     system.focus({ preventScroll: true });
   }
+  if (initialModel && initialModel !== session.settings.model) session.settings = { ...session.settings, model: initialModel, node: '' };
   sync();
   const loading = loadModels();
-  const { mountChat } = await import('./vendor/chat.mjs');
+  await session.ready;
   if (!p.current()) return;
-  view = mountChat(canvas, { baseURL: new URL('/v1', p.api.origin).href, fetcher: p.api.inferenceFetch.bind(p.api), settings, signal: p.scope.signal });
+  sync();
   await loading;
 }

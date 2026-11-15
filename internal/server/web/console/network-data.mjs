@@ -7,7 +7,7 @@ export const localProviderKey = (node, provider) => `local/${encodeURIComponent(
 export const clientKey = row => [row.source, row.key_id, row.protocol, row.authentication].map(value => encodeURIComponent(value || '')).join(':');
 export const clientLabel = row => row.name ? `Key: ${row.name}` : `Key ID: ${row.key_id}`;
 export const protocolName = value => ({ 'management-mcp': 'Management MCP', 'inference-mcp': 'Inference MCP', 'management-api': 'Management API', 'inference-api': 'Inference API' })[value] || 'Protocol unknown';
-export const clientState = row => row.active_requests > 0 ? ['Active at refresh', 'good'] : ['Last active', ''];
+export const clientState = row => row.active_requests > 0 ? ['Request in progress', 'good'] : ['No active requests', ''];
 
 export function networkNodes(inventory) {
   const observed = inventory[0].status === 'fulfilled';

@@ -24,9 +24,9 @@ export const badge = (label, tone = '') => el('span', { class: `badge ${tone}` }
 export const actions = (...children) => el('div', { class: 'actions' }, children);
 export const message = (value, tone = '') => el('div', { class: `notice ${tone}`, role: tone === 'error' ? 'alert' : 'status' }, value);
 export const card = (title, ...children) => el('section', { class: 'card' }, el('h2', {}, title), children);
-export const heading = (title, description, ...controls) => el('header', { class: 'page-heading' }, el('div', {}, el('p', { class: 'eyebrow' }, 'ZZROUTER CONSOLE'), el('h1', { tabindex: '-1' }, title), text(description, 'muted')), actions(controls));
+export const heading = (title, description, ...controls) => el('header', { class: 'page-heading' }, el('div', {}, el('h1', { tabindex: '-1' }, title), text(description, 'muted')), actions(controls));
 export function field(label, control, hint = '') {
-  if (!control.getAttribute('aria-label')) control.setAttribute('aria-label', label);
+  if (!control.getAttribute('aria-label')) control.setAttribute('aria-label', label instanceof Node ? label.textContent : label);
   return el('label', { class: 'field' }, el('span', {}, label), control, hint ? el('small', {}, hint) : null);
 }
 export const input = (name, value = '', attrs = {}) => el('input', { name, value, autocomplete: 'off', ...attrs });
@@ -58,14 +58,66 @@ export function copyField(label, value, sensitive = false) {
 export function problem(error) {
   const root = message(error.uncertain ? `${error.message} Do not resubmit automatically.` : error.message, 'error');
   const context = [['Code', error.code], ['Node', error.node], ['Request ID', error.request_id]].filter(([, value]) => value);
-  if (context.length) root.append(facts(context));
   if (error.mutation_applied) root.append(text('The server reports that the change was applied. Inspect current state to verify the result.'));
+  const technical = el('details', { class: 'error-details' }, el('summary', {}, 'Technical details'));
+  if (context.length) technical.append(facts(context));
   for (const item of Array.isArray(error.errors) ? error.errors.slice(0, 12) : []) {
-    root.append(text([item.key, item.code, item.message, item.hint].filter(value => typeof value === 'string').map(value => value.slice(0, 2048)).join(' · ')));
+    technical.append(text([item.key, item.code, item.message, item.hint].filter(value => typeof value === 'string').map(value => value.slice(0, 2048)).join(' · ')));
     const evidence = ['got', 'want', 'min', 'max'].filter(key => item[key] !== undefined).map(key => [key, safeEvidence(item[key])]);
-    if (evidence.length) root.append(el('details', {}, el('summary', {}, 'Reported evidence'), facts(evidence)));
+    if (evidence.length) technical.append(facts(evidence));
   }
+  if (technical.children.length > 1) root.append(technical);
   return root;
+}
+
+export const invalidField = (message, field) => Object.assign(new Error(message), { field });
+let feedbackID = 0;
+function revealField(control) {
+  for (let parent = control.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS') parent.open = true;
+  }
+  control.focus({ preventScroll: true });
+  control.scrollIntoView?.({ block: 'nearest' });
+}
+
+// The form maps server paths to its controls. Never infer a target from prose.
+export function formFeedback(form, region, target = () => undefined) {
+  const marked = new Map();
+  const clear = () => {
+    for (const [control, previous] of marked) {
+      control.removeAttribute('aria-invalid');
+      if (previous) control.setAttribute('aria-describedby', previous);
+      else control.removeAttribute('aria-describedby');
+    }
+    marked.clear();
+  };
+  const show = (error, entries = []) => {
+    clear();
+    const root = problem(error);
+    const links = el('ul', { class: 'error-links' });
+    for (const { control, message } of entries) {
+      if (!control || marked.has(control)) continue;
+      const id = `form-error-${++feedbackID}`;
+      if (!control.id) control.id = `${id}-field`;
+      marked.set(control, control.getAttribute('aria-describedby'));
+      control.setAttribute('aria-invalid', 'true');
+      control.setAttribute('aria-describedby', [marked.get(control), id].filter(Boolean).join(' '));
+      links.append(el('li', {}, el('a', { id, href: `#${control.id}`, onclick: event => { event.preventDefault(); revealField(control); } }, message)));
+    }
+    if (links.children.length) root.append(links);
+    region.replaceChildren(root); region.setAttribute('tabindex', '-1');
+    region.focus({ preventScroll: true }); region.scrollIntoView?.({ block: 'nearest' });
+  };
+  let invalid = [];
+  form.addEventListener('invalid', event => {
+    event.preventDefault();
+    invalid.push({ control: event.target, message: `${event.target.getAttribute('aria-label') || 'Field'}: ${event.target.validationMessage}` });
+    if (invalid.length === 1) queueMicrotask(() => { show(new Error('Check the highlighted fields.'), invalid); invalid = []; });
+  }, true);
+  form.addEventListener('input', clear);
+  form.addEventListener('change', clear);
+  return { clear, error: error => show(error, error.field ? [{ control: error.field, message: error.message }] :
+    (Array.isArray(error.errors) ? error.errors : []).map(item => ({ control: target(item.key), message: item.message || item.hint || 'Check this value.' }))) };
 }
 function safeEvidence(value) {
   if (value === null || typeof value !== 'object') return String(value).slice(0, 2048);

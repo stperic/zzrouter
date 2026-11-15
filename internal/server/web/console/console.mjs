@@ -26,9 +26,11 @@ let publicState;
 let content;
 let pageSelection;
 let navigation;
+let navigationToggle;
 let notices;
 let rotation;
 let disclosure;
+let chatSession;
 let probeVersion = 0;
 let activeProbe;
 let recoveryNotice = '';
@@ -39,6 +41,7 @@ const brand = () => el('div', { class: 'brand' }, el('span', { class: 'brand-mar
 
 const api = new API({
   cleared(reason) {
+    chatSession = undefined;
     clearTimeout(expiryTimer);
     rotation = null;
     disclosure = null;
@@ -54,19 +57,21 @@ const api = new API({
 });
 
 function noticeArea() {
-  notices = el('div', { 'aria-live': 'polite' });
+  notices = el('div', { 'aria-live': 'polite', role: 'region', 'aria-label': 'Session status' });
   syncActivity();
   return notices;
 }
 
 function syncActivity() {
+  chatSession?.view?.enable(api.canChange());
   notices?.replaceChildren(...[
     recoveryNotice ? message(recoveryNotice, 'warning') : null,
     api.unknownChange ? message('A change was interrupted or its response was unreadable. Its outcome may be unknown. Inspect current state before another change. Nothing was retried automatically.', 'warning') : null,
-    api.unverified ? message('Browser access could not be verified. New changes are paused; your current form or one-time key is retained.', 'warning') : null,
-    api.unverified ? button('Verify session', () => probeSession()) : null,
+    api.unverified ? el('div', { class: 'notice warning session-verification', role: 'status' },
+      el('span', { title: 'Verify your browser access to resume. Your current work is retained.' }, 'New changes are paused'), button('Verify session', () => probeSession())) : null,
     api.pending.size ? message('A change is in progress. Wait before leaving this view.') : null,
   ].filter(Boolean));
+  notices?.setAttribute('tabindex', notices.children.length ? '0' : '-1');
   for (const control of app.querySelectorAll('[data-leave-view]')) control.disabled = !api.canLeave();
   for (const control of app.querySelectorAll('[data-protected-actions]')) control.inert = !api.canChange();
 }
@@ -198,17 +203,30 @@ function renderLogin(state, notice) {
 function renderShell(state, notice) {
   const identity = state.identity;
   const admin = identity.role === 'admin';
-  navigation = el('nav', { class: 'nav', 'aria-label': 'Main navigation' });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'Settings']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
+  navigation = el('nav', { id: 'main-navigation', class: 'nav', 'aria-label': 'Main navigation' });
+  navigationToggle = button('Navigation', () => setNavigation(navigationToggle.getAttribute('aria-expanded') !== 'true'), 'navigation-toggle');
+  navigationToggle.setAttribute('aria-controls', 'main-navigation');
+  navigationToggle.setAttribute('aria-expanded', 'false');
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && navigationToggle.getAttribute('aria-expanded') === 'true') {
+      event.preventDefault(); event.stopImmediatePropagation(); setNavigation(false); navigationToggle.focus();
+    }
+  }, { signal: api.authority.signal });
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'System']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
   }
-  content = el('main', { id: 'content' });
+  content = el('main', { id: 'content', class: 'page-content' });
   const workspace = el('div', { class: 'workspace' }, el('div', { class: 'topbar' }, el('span', {}, 'Coordinator: ' + state.node_name), actions(el('span', {}, identity.name || identity.id), badge(admin ? 'Administrator' : 'User'), leaveButton('Sign out', signOut, api))), noticeArea(), notice ? message(notice, 'warning') : null, content);
-  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));
+  app.replaceChildren(el('div', { class: 'layout' }, el('aside', { class: 'sidebar' }, el('div', { class: 'sidebar-heading' }, el('div', {}, brand(), text(state.node_name, 'node-label')), navigationToggle), navigation, el('div', { class: 'sidebar-footer' }, el('div', { class: 'identity-name' }, 'Your private AI gateway'), text('Your compute, providers and clients in one place.'))), workspace));
   scheduleExpiry(expiryDeadline(state));
   void go(admin || ['chat', 'connections'].includes(route) ? route : 'chat', section, mode);
+}
+
+function setNavigation(open) {
+  navigationToggle?.setAttribute('aria-expanded', String(open));
+  navigation?.setAttribute('data-open', String(open));
 }
 
 function canLeave() { return api.canLeave() && (!leaveGuard || leaveGuard.confirm()); }
@@ -257,6 +275,7 @@ function showKeyAfterSession(result, anchor) {
 
 async function go(name, sub, nextMode, force = false, checked = false) {
   if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
+  setNavigation(false);
   const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'nodes', 'workloads', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['chat', 'connections'];
   const destination = allowed.includes(name) ? name : allowed[0];
   if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
@@ -289,7 +308,10 @@ async function go(name, sub, nextMode, force = false, checked = false) {
     selectSection: (item, nextMode) => { if (scope.current()) { section = item; mode = nextMode; writeRoute(true); } },
     beforeKeyDisclosure: signal => beforeKeyDisclosure(signal, generation) };
   try {
-    if (route === 'chat') { const { chat } = await import('./chat.mjs'); if (p.current()) await chat(p); }
+    if (route === 'chat') {
+      const { chat, createChatSession } = await import('./chat.mjs');
+      if (p.current()) { chatSession ||= createChatSession(api); await chat(p, chatSession, sub); }
+    }
     else if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
     else if (route === 'nodes') await nodes(p, sub);
     else if (route === 'workloads') await workloads(p, sub, nextMode);
@@ -321,7 +343,8 @@ async function connections(p) {
   const usage = p.identity.usage;
   const activity = card('Your recorded usage', usage ? usageDetails(usage) : text('Usage is unavailable for this identity. Startup keys do not have a managed-key usage record.', 'muted'));
   const grants = card('Your authorizations', message('Loading your MCP grants…'));
-  p.root.append(endpoints, el('div', { class: 'cards' }, identity, team, activity), el('p'), grants, text('Signing out ends browser access. Revoking a client ends that MCP grant and does not sign you out of this console.', 'footer-note'));
+  const policies = el('div', { class: 'cards access-overview' }, identity, team, activity);
+  p.root.append(...(admin ? [endpoints, policies] : [policies, endpoints]), grants, text('Signing out ends browser access. Revoking a client ends that MCP grant and does not sign you out of this console.', 'footer-note'));
   try {
     const entries = await api.list('/me/connections', { signal: p.scope.signal });
     if (!p.current()) return;
@@ -350,11 +373,14 @@ async function connections(p) {
 }
 
 function settings(p) {
-  p.root.append(heading('Settings', 'Review effective browser configuration and installation controls.'),
-    card('Browser authentication', facts([['Public URL / OAuth issuer', p.state.issuer], ['Coordinator', p.state.node_name], ['Session expires', date(p.state.expires_at)], ['Authentication', 'Named zzRouter keys and HttpOnly browser sessions']]), text('This public URL is fixed at startup. It must exactly match the address opened in your browser, including scheme, hostname and port.'), message('To change it, update auth.oauth.issuer_url in the coordinator installation and restart. Update your MCP clients to the same URL.')),
-    card('Remote access', text('Use a stable HTTPS public URL for home or office access. A tunnel or Cloudflare Access can protect the outer connection; zzRouter still verifies the key, session and MCP authorization.'), text('Your proxy must allow the OAuth discovery and authorization flow required by your MCP clients. Never treat a forwarded header as a router identity.', 'muted')),
-    card('Protected provider credentials', text('Configure security.credentials.key_file locally before saving cloud or Hugging Face keys. The protected store is node-local; provider secrets are never copied to workers.'), text('Keep the protection key outside provider configuration and back it up securely with the encrypted state. Listener, issuer, TLS and protection-key changes require local installation access and a restart.', 'muted'), actions(leaveButton('Manage provider keys', () => go('providers'), api, 'primary'))),
-    card('Local recovery', text('Use the terminal client for provider installation, local runtimes, models, jobs and installation recovery. The web and terminal clients share the coordinator APIs.'), el('a', { href: '/openapi.yaml' }, 'View the API contract')));
+  p.root.append(heading('System', 'Read-only configuration and installation information.'),
+    card('Coordinator', facts([['Name', p.state.node_name], ['Session expires', date(p.state.expires_at)]]), copyField('Public console URL', p.state.issuer + '/console/'),
+      el('details', { class: 'access-section' }, el('summary', {}, 'Change the public address'), text('Update auth.oauth.issuer_url in the coordinator installation and restart. The scheme, hostname and port must match the browser address. Update your MCP clients to the same URL.'))),
+    card('Provider credentials', text('Manage provider connections and API keys in Providers.'), actions(leaveButton('Manage providers', () => go('providers'), api, 'primary')),
+      el('details', { class: 'access-section' }, el('summary', {}, 'Secure storage setup'), text('Configure security.credentials.key_file locally before saving cloud or Hugging Face keys. Keep the protection key outside provider configuration and back it up with the encrypted state. Provider secrets stay on the node where they are configured.'))),
+    card('Installation & recovery', text('Use the terminal client for installation, runtime setup and recovery. Changes to the listener, public URL, TLS or protection key require local access and a restart.'),
+      el('details', { class: 'access-section' }, el('summary', {}, 'Remote access'), text('Use a stable HTTPS public URL. A tunnel or access proxy can protect the outer connection; zzRouter still verifies each key and session. Your proxy must allow OAuth discovery and authorization for MCP clients.')),
+      el('a', { href: '/openapi.yaml' }, 'View the API contract')));
 }
 
 function readRoute() {

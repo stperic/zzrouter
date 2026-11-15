@@ -1,4 +1,4 @@
-import { el, text, field, input, select, facts } from './dom.mjs';
+import { el, text, field, input, select, facts, invalidField } from './dom.mjs';
 
 const dollars = value => Number(value || 0).toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 6 });
 
@@ -13,10 +13,11 @@ export function budgetFields(record) {
   mode.addEventListener('change', update);
   update();
   return {
+    fields: { spend_limit: amount, reset_period: period },
     root: el('section', { class: 'access-section' }, el('h3', {}, 'Budget'), field('Spending', mode), values,
       text('Shared by all keys in this team. Applies to priced requests across allowed providers. Free local requests can continue after a budget is used.', 'muted')),
     read: () => {
-      if (mode.value === 'limited' && !(Number(amount.value) > 0)) throw new Error('Enter a budget greater than $0, or choose No limit.');
+      if (mode.value === 'limited' && !(Number(amount.value) > 0)) throw invalidField('Enter a budget greater than $0, or choose No limit.', amount);
       return { spend_limit: mode.value === 'limited' ? Number(amount.value) : 0, reset_period: period.value };
     },
   };
@@ -26,7 +27,7 @@ export function budgetFields(record) {
 export function usageDetails(usage, compact = false) {
   if (usage?.tracked !== true) return text('Usage not yet tracked', 'muted');
   return el('div', {}, el('progress', { max: usage.spend_limit, value: Math.min(usage.spend_limit, usage.spend_usd + (usage.reserved_usd || 0)), 'aria-label': 'Spent and reserved budget' }),
-    compact ? text(`${dollars(usage.spend_usd)} spent · ${dollars(usage.reserved_usd)} reserved`, 'muted') : [
+    compact ? text(`${dollars(usage.spend_usd)} spent · ${dollars(usage.reserved_usd)} reserved · ${usage.remaining_usd == null ? 'Available amount unknown' : `${dollars(usage.remaining_usd)} available`}`, 'muted') : [
       facts([['Spent', dollars(usage.spend_usd)], ['Reserved for active requests', dollars(usage.reserved_usd)], ['Available', usage.remaining_usd == null ? 'Unavailable' : dollars(usage.remaining_usd)], ['Resets', usage.reset_at ? `${new Date(usage.reset_at).toLocaleString(undefined, { timeZone: 'UTC' })} UTC` : 'Unavailable']]),
       text('Usage is an estimate from recorded requests, not a provider invoice.', 'muted'),
     ]);

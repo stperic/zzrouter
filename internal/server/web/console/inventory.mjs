@@ -22,6 +22,18 @@ const stale = node => node.health_status !== 'healthy';
 const health = node => ({ healthy: ['Healthy', 'good'], down: ['Down', 'bad'], degraded: ['Degraded', 'warn'] })[node.health_status] || ['Unknown', ''];
 const serviceState = provider => provider?.running === false ? 'Service not running' : provider?.running === true ? 'Service running' : '';
 
+export function providerObservationSummary(entry, inventory) {
+  if (!inventory) return entry.description || 'Model registry connection';
+  const [nodes, providers] = inventory;
+  const records = rowsFrom(providers).filter(row => row.name === entry.key);
+  const names = new Set([...records.map(row => row.node), ...rowsFrom(nodes).filter(node => node.providers?.some(row => row.key === entry.key)).map(node => node.name)].filter(Boolean));
+  const enabled = new Set(records.filter(row => row.enabled).map(row => row.node)).size;
+  const down = rowsFrom(nodes).filter(node => names.has(node.name) && node.health_status === 'down').length;
+  return [names.size ? `${names.size} reported ${names.size === 1 ? 'node' : 'nodes'}` : 'No reported instances',
+    providers.status === 'fulfilled' ? `${enabled} enabled` : 'Enablement unavailable', down ? `${down} ${down === 1 ? 'node' : 'nodes'} down` : '',
+    nodes.status === 'rejected' ? 'Node inventory incomplete' : ''].filter(Boolean).join(' · ');
+}
+
 export function nodeInventory(p, [nodes, providers], entry) {
   const root = el('div', { class: 'inventory' });
   if (nodes.status === 'rejected') root.append(card('Node observations unavailable', problem(nodes.reason)));
@@ -29,15 +41,16 @@ export function nodeInventory(p, [nodes, providers], entry) {
   const observed = nodes.status === 'fulfilled';
   const records = rowsFrom(providers).filter(row => providerCategory(row) === 'local');
   const knownNodes = observed ? nodes.value : [...new Set(records.map(row => row.node).filter(Boolean))].map(name => ({ name }));
-  const cards = el('div', { class: 'cards' });
+  const cards = el('div', { class: entry ? 'provider-instances' : 'cards' });
   for (const node of knownNodes) {
     const reported = node.providers?.filter(row => providerCategory(row) === 'local' && (!entry || row.key === entry.key));
     const assigned = records.filter(row => row.node === node.name && (entry ? row.name === entry.key : row.enabled));
     const names = new Set([...assigned.map(row => row.name), ...(reported || []).map(row => row.key)]);
     const lastSeen = observed ? (node.last_seen_at ? date(node.last_seen_at) : 'Not reported') : 'Unavailable';
     const platform = observed ? [node.os, node.version].filter(Boolean).join(' · ') || 'Not reported' : 'Unavailable';
+    const observations = facts([['Last seen', lastSeen], ['OS / Router version', platform]]);
     const body = card(node.name, actions(badge(observed ? node.cluster_role || 'Role unknown' : 'Role unavailable'), badge(...(observed ? health(node) : ['Unavailable', '']))),
-      facts([['Last seen', lastSeen], ['OS / Router version', platform]]));
+      entry ? el('details', {}, el('summary', {}, 'Node observations'), observations) : observations);
     if (stale(node) && names.size) body.append(text('Last reported provider state.', 'muted'));
     if (!observed) body.append(message('Node observations unavailable.'));
     else if (providers.status === 'rejected' && !names.size) body.append(message('Provider status unavailable.'));
@@ -56,13 +69,13 @@ export function nodeInventory(p, [nodes, providers], entry) {
         chips.append(el('li', {}, badge(label, `provider-chip ${routed?.running === false ? 'warn' : ''}`)));
         continue;
       }
-      const row = el('div', { class: 'inventory-row' }, el('h3', {}, routed?.name || entry?.name || name), actions(
+      const row = el('div', { class: 'inventory-row' }, actions(
         record ? badge(record.enabled ? 'Enabled' : 'Disabled') : badge('Enablement unavailable'),
         record ? badge(record.installed ? 'Installed' : 'Not installed') : badge('Installation unavailable'),
         service ? badge(service, routed.running ? 'good' : 'warn') : null,
       ));
       body.append(row);
-      body.append(providerDiagnostics(p, record || routed, node.name));
+      body.append(el('details', {}, el('summary', {}, 'Lifecycle details'), providerDiagnostics(p, record || routed, node.name)));
     }
     if (!entry) {
       if (names.size) body.append(chips);

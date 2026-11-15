@@ -1,4 +1,4 @@
-import { el, text, leaveButton, actions, badge, heading, facts, field, input, message, problem, date, clearSecrets, markSelection, editorActions } from './dom.mjs';
+import { el, text, leaveButton, actions, badge, heading, facts, field, input, message, problem, date, clearSecrets, markSelection, editorActions, formFeedback, invalidField } from './dom.mjs';
 import { readInventory, providerCategory } from './inventory.mjs';
 import { networkNodes, nodeHealth, localProviders, localProviderKey, hardwareLabel, memoryLabel, nodeKey } from './network-data.mjs';
 import { details, readAfterWrite } from './details.mjs';
@@ -113,11 +113,14 @@ function editNode(p, node, inventory, renderDetails = owner => showNode(owner, n
   const entries = localProviders(node, inventory).filter(row => row.record);
   let blocked = false;
   const changes = new Map();
+  const fields = new Map();
+  const validation = formFeedback(form, feedback, key => fields.get(key));
   controls.append(el('h2', {}, `Settings for ${node.name}`), text('Choose which local providers this node can use. Node identity is established during pairing.', 'muted'));
   for (const { key, record, report } of entries) {
     const enabled = input(key, '', { type: 'checkbox', checked: record.enabled });
+    fields.set(key, enabled);
     enabled.addEventListener('change', () => { if (enabled.checked === record.enabled) changes.delete(key); else changes.set(key, enabled.checked); save.disabled = !changes.size; });
-    controls.append(field(report?.name || key, enabled, record.installed ? 'Installed on this node' : 'Provider is not installed on this node'));
+    controls.append(field(providerName(key, report?.name || key), enabled, record.installed ? 'Installed' : 'Not installed on this node'));
   }
   const save = el('button', { type: 'submit', class: 'primary', disabled: true }, 'Save changes');
   const footer = editorActions(save, () => {
@@ -125,7 +128,7 @@ function editNode(p, node, inventory, renderDetails = owner => showNode(owner, n
     p.root.replaceChildren(); renderDetails(p.panel ? { ...p, ...p.panel.view('Node details') } : p);
   }, p.api);
   if (!entries.length) controls.append(message('Provider settings are unavailable until this node reports its providers.'));
-  form.append(controls, feedback, footer);
+  form.append(feedback, controls, footer);
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (blocked || controls.disabled || !p.current() || !p.api.canChange() || !changes.size) return;
@@ -150,7 +153,8 @@ function editNode(p, node, inventory, renderDetails = owner => showNode(owner, n
     } catch (error) {
       if (!p.current()) return;
       blocked = true;
-      feedback.replaceChildren(problem(error), message('Some changes may have completed. Reload current settings before making another change.', 'warning'), leaveButton('Reload node', () => p.reloadNode ? p.reloadNode(node.name) : p.go('nodes', nodeKey(node.name)), p.api));
+      validation.error(error);
+      feedback.append(message('Some changes may have completed. Reload current settings before making another change.', 'warning'), leaveButton('Reload node', () => p.reloadNode ? p.reloadNode(node.name) : p.go('nodes', nodeKey(node.name)), p.api));
     } finally { if (p.current()) { controls.disabled = blocked; save.disabled = blocked || !changes.size; } }
   });
   p.root.replaceChildren(form);
@@ -167,18 +171,19 @@ export function addNode(p) {
   const fingerprint = input('worker_fingerprint', '', { required: true, spellcheck: 'false', maxlength: '128' });
   const code = input('pairing_code', '', { type: 'password', required: true, maxlength: '128', autocomplete: 'new-password', 'data-sensitive': true });
   const feedback = el('div', { 'aria-live': 'polite' });
+  const validation = formFeedback(form, feedback, key => ({ worker_url: url, worker_fingerprint: fingerprint, code })[key]);
   let blocked = false;
   let pairedName;
   controls.append(el('h2', {}, 'Add a compute node'), text('Start pairing on the new machine using the terminal client. Copy the HTTPS cluster address, public-key fingerprint and pairing code it prints.', 'muted'),
     field('Node address', url), field('Node fingerprint', fingerprint, 'Compare this with the fingerprint shown on the new machine.'), field('Pairing code', code));
   const save = el('button', { type: 'submit', class: 'primary' }, 'Pair node');
-  form.append(controls, feedback, editorActions(save, p.close, p.api));
+  form.append(feedback, controls, editorActions(save, p.close, p.api));
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (blocked || controls.disabled || !p.current() || !p.api.canChange() || !form.reportValidity()) return;
     let address;
-    try { address = new URL(url.value); } catch { feedback.replaceChildren(message('Enter the HTTPS cluster address printed by the node.', 'error')); return; }
-    if (address.protocol !== 'https:' || address.username || address.password || address.hash || address.search) { feedback.replaceChildren(message('Use an HTTPS cluster address without credentials, query parameters or a fragment.', 'error')); return; }
+    try { address = new URL(url.value); } catch { validation.error(invalidField('Enter the HTTPS cluster address printed by the node.', url)); return; }
+    if (address.protocol !== 'https:' || address.username || address.password || address.hash || address.search) { validation.error(invalidField('Use an HTTPS cluster address without credentials, query parameters or a fragment.', url)); return; }
     controls.disabled = true;
     const body = { worker_url: address.href, worker_fingerprint: fingerprint.value.trim(), code: code.value.trim() };
     code.value = '';
@@ -199,7 +204,8 @@ export function addNode(p) {
     } catch (error) {
       if (!p.current()) return;
       blocked = true;
-      feedback.replaceChildren(problem(error), message(pairedName ? `${pairedName} is paired. Current node observations are unavailable. Refresh Nodes to check health.` : 'Pairing was not confirmed. Enrollment may already have completed. Check the node inventory before trying again.', 'warning'), leaveButton('Inspect nodes', () => p.go('nodes'), p.api));
+      validation.error(error);
+      feedback.append(message(pairedName ? `${pairedName} is paired. Current node observations are unavailable. Refresh Nodes to check health.` : 'Pairing was not confirmed. Enrollment may already have completed. Check the node inventory before trying again.', 'warning'), leaveButton('Inspect nodes', () => p.go('nodes'), p.api));
     } finally { clearSecrets(form); if (p.current()) { controls.disabled = blocked; save.disabled = blocked; } }
   });
   p.root.append(form);

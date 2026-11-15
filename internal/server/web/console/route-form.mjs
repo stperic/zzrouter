@@ -1,6 +1,6 @@
 import { readAfterWrite } from './details.mjs';
 import { changedFields } from './api.mjs';
-import { el, text, field, input, select, button, leaveButton, actions, message, problem, editorActions } from './dom.mjs';
+import { el, text, field, input, select, button, leaveButton, actions, message, editorActions, formFeedback } from './dom.mjs';
 import { providerCategory } from './inventory.mjs';
 
 // Keep every editable replica field, excluding live observations from GET.
@@ -25,10 +25,16 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
   if (record?.auto_managed) controls.append(message('Saving takes ownership of this automatic route. Its destinations will then be managed here.', 'warning'));
   if (incomplete) controls.append(message('Some inventory choices could not be loaded. Saved destinations are retained. Reload for the complete inventory.', 'warning'));
   const destinations = el('div', { class: 'route-destinations' });
-  let rows = before.replicas.map(replica => ({ replica }));
-  if (!record) rows.push({ replica: { name: 'destination-1', provider: '', model: '', node: '', priority: 1 } });
-  const capture = () => { for (const row of rows) if (row.read) row.replica = row.read(); };
+  let rows = before.replicas.map((replica, index) => ({ replica, expanded: index === 0 }));
+  if (!record) rows.push({ replica: { name: 'destination-1', provider: '', model: '', node: '', priority: 1 }, expanded: true });
+  const validation = formFeedback(form, feedback, key => {
+    const field = { name, description, strategy }[key];
+    const replica = /^replicas\[(\d+)\]\.(node|provider|model|on_demand)$/.exec(key || '');
+    return field || (replica && rows[Number(replica[1])]?.fields[replica[2]]);
+  });
+  const capture = () => { for (const row of rows) if (row.read) { row.replica = row.read(); row.expanded = row.panel.open; } };
   const render = () => {
+    validation.clear(); feedback.replaceChildren();
     destinations.replaceChildren();
     rows.forEach((row, index) => {
       const rep = row.replica;
@@ -65,30 +71,39 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
       provider.addEventListener('change', populateModels);
       populateProviders(rep.provider);
       row.read = () => ({ ...rep, provider: provider.value, node: node.value, model: model.value.trim(), on_demand: demand.checked });
+      row.fields = { node, provider, model, on_demand: demand };
       const move = direction => {
         if (controls.disabled || !p.api.canLeave()) return;
         draft?.touch(); capture(); const target = index + direction;
         [rows[index], rows[target]] = [rows[target], rows[index]];
         rows.forEach((item, position) => { item.replica.priority = position + 1; });
+        rows[target].expanded = true;
         render(); destinations.children[target]?.querySelector?.('select')?.focus();
       };
       const up = button('↑', () => move(-1)); up.setAttribute('aria-label', `Move destination ${index + 1} up`); up.disabled = index === 0;
       const down = button('↓', () => move(1)); down.setAttribute('aria-label', `Move destination ${index + 1} down`); down.disabled = index === rows.length - 1;
       const remove = button('Remove', () => { if (!controls.disabled && p.api.canLeave()) { draft?.touch(); capture(); rows.splice(index, 1); render(); } }, 'link');
       remove.disabled = rows.length === 1;
-      destinations.append(el('section', { class: 'route-destination' },
-        el('div', { class: 'route-destination-heading' }, el('h3', {}, `Destination ${index + 1}`), actions(up, down, remove)),
+      const summary = el('summary', {});
+      const describe = () => summary.replaceChildren(el('strong', {}, `${index + 1}. ${provider.value || 'Choose a provider'}`),
+        el('small', {}, [model.value || 'Choose a model', node.value || p.state.node_name || 'Coordinator'].join(' · ')));
+      for (const control of [node, provider, model]) control.addEventListener('input', describe);
+      describe();
+      row.panel = el('details', { class: 'route-destination', open: row.expanded }, summary,
+        el('div', { class: 'route-destination-heading' }, text(`Destination ${index + 1}`, 'muted'), actions(up, down, remove)),
         field('Compute node', node, 'The node that connects to the local or cloud provider.'), field('Provider', provider), field('Model', model), choices,
         el('details', {}, el('summary', {}, 'Startup behavior'), el('label', { class: 'model-choice' }, demand, 'Start a local model on demand'),
-          text('Applies to providers that support on-demand starts. All existing advanced destination settings are retained.', 'muted'))));
+          text('Applies to providers that support on-demand starts. All existing advanced destination settings are retained.', 'muted')));
+      destinations.append(row.panel);
     });
   };
   const add = button('+ Add destination', () => {
     if (controls.disabled || !p.api.canLeave()) return;
     draft?.touch(); capture(); let next = rows.length + 1;
     while (rows.some(row => row.replica.name === `destination-${next}`)) next++;
-    rows.push({ replica: { name: `destination-${next}`, provider: '', model: '', node: '', priority: Math.max(0, ...rows.map(row => row.replica.priority || 0)) + 1 } });
+    rows.push({ replica: { name: `destination-${next}`, provider: '', model: '', node: '', priority: Math.max(0, ...rows.map(row => row.replica.priority || 0)) + 1 }, expanded: true });
     render();
+    rows.at(-1).fields.node.focus();
   });
   controls.append(el('section', { class: 'access-section' }, el('h3', {}, 'Destinations'), text('Cloud destinations can incur charges. Team permissions and spending limits always apply.', 'muted'), destinations, add));
   render();
@@ -110,7 +125,7 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
     } catch (error) {
       if (!p.current()) return;
       blocked = !!error.uncertain || error.status === 412;
-      feedback.replaceChildren(problem(error));
+      validation.error(error);
       if (blocked) feedback.append(leaveButton('Reload routes', reload, p.api));
     } finally { if (p.current()) { controls.disabled = blocked; save.disabled = blocked; p.syncActivity(); } }
   };
@@ -131,6 +146,6 @@ export function routeForm(p, record, { catalog, models, nodes, etag, teams, inco
   }
   if (record && !etag) { blocked = true; controls.disabled = true; save.disabled = true; feedback.append(message('The route version could not be read. Reload before editing.', 'warning')); }
   const footer = editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api);
-  form.append(controls, feedback, footer);
+  form.append(feedback, controls, footer);
   return form;
 }

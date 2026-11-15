@@ -2,7 +2,14 @@ import { networkNodes, nodeHealth, nodeKey, localProviderKey, clientKey, clientL
 import { memorySummary, activityDeadline } from './observations.mjs';
 
 const label = (name, status) => `${String(name).replaceAll('-', '-\u200b')}\n${status}`;
-export const computeCard = { width: 350, height: 200 };
+export const computeCard = { width: 280, height: 180 };
+
+// Branch visibility is a projection. The complete inventory and stable selection
+// identities remain available to the list, detail panel and deep links.
+export function visibleTopology(elements, expanded) {
+  const hidden = new Set(elements.filter(({ data }) => data.kind === 'provider' && !expanded.has(data.nodeName)).map(({ data }) => data.id));
+  return elements.filter(({ data }) => !hidden.has(data.id) && !hidden.has(data.source) && !hidden.has(data.target));
+}
 
 // Visual roles have distinct IDs; their selection always uses the domain identity.
 export function topologyData({ inventory, catalog, clientResults }, coordinatorName) {

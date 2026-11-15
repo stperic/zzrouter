@@ -9,7 +9,7 @@ import {
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
 import { createChatAdapter, type ChatHost, type ChatSettings } from './transport';
 
-const Settings = createContext<ChatSettings>({ model: '' });
+const Settings = createContext<ChatSettings & { enabled: boolean }>({ model: '', enabled: true });
 
 function Markdown() {
   return <MarkdownTextPrimitive className="chat-markdown" components={{
@@ -24,7 +24,7 @@ function Reasoning({ text }: ReasoningMessagePartProps) {
 }
 
 function MessageFooter() {
-  const { showStats } = useContext(Settings);
+  const { showStats, enabled } = useContext(Settings);
   const status = useAuiState(state => state.message.status);
   const stats = useAuiState(state => state.message.metadata.custom);
   const entries = showStats ? [
@@ -52,7 +52,7 @@ function MessageFooter() {
         <AuiIf condition={state => state.message.isCopied}>Copied</AuiIf>
         <AuiIf condition={state => !state.message.isCopied}>Copy</AuiIf>
       </ActionBarPrimitive.Copy>
-      <span data-protected-actions><ActionBarPrimitive.Reload>Regenerate</ActionBarPrimitive.Reload></span>
+      <span data-protected-actions><ActionBarPrimitive.Reload disabled={!enabled}>Regenerate</ActionBarPrimitive.Reload></span>
     </ActionBarPrimitive.Root>
   </>;
 }
@@ -71,7 +71,7 @@ function AssistantMessage() {
 function Conversation({ status }: { status: string }) {
   const settings = useContext(Settings);
   return <ThreadPrimitive.Root className="chat-thread">
-    <ThreadPrimitive.Viewport className="chat-viewport" autoScroll>
+    <ThreadPrimitive.Viewport className="chat-viewport" autoScroll tabIndex={0} role="region" aria-label="Conversation">
       <ThreadPrimitive.Empty><div className="chat-empty"><div className="chat-symbol" aria-hidden="true">✳</div>
         <h2>Talk to your models</h2><p>Choose a model or route, then start a conversation.</p>
         <p className="muted">Your key’s access rules and budgets apply.</p></div></ThreadPrimitive.Empty>
@@ -81,19 +81,19 @@ function Conversation({ status }: { status: string }) {
     <div className="chat-composer-area">
       <ThreadPrimitive.ScrollToBottom className="chat-scroll">Latest message ↓</ThreadPrimitive.ScrollToBottom>
       <ComposerPrimitive.Root className="chat-composer">
-        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={3} disabled={!settings.model} /></div>
+        <div data-protected-actions><ComposerPrimitive.Input aria-label="Message" placeholder={settings.model ? 'Message your model…' : 'Choose a model to start…'} rows={2} disabled={!settings.model || !settings.enabled} /></div>
         <div className="chat-composer-footer"><span>Enter to send · Shift+Enter for a new line</span>
-          <span data-protected-actions><AuiIf condition={state => !state.thread.isRunning}><ComposerPrimitive.Send className="primary" disabled={!settings.model}>Send ↑</ComposerPrimitive.Send></AuiIf></span>
+          <span data-protected-actions><AuiIf condition={state => !state.thread.isRunning}><ComposerPrimitive.Send className="primary" disabled={!settings.model || !settings.enabled}>Send ↑</ComposerPrimitive.Send></AuiIf></span>
           <AuiIf condition={state => state.thread.isRunning}><ComposerPrimitive.Cancel>Stop ■</ComposerPrimitive.Cancel></AuiIf>
         </div>
       </ComposerPrimitive.Root>
-      <p className="chat-privacy">Conversation stays in this view. Leaving or signing out clears it.</p>
+      <p className="chat-privacy">Kept in this tab until you start a new chat, reload or sign out.</p>
     </div>
   </ThreadPrimitive.Root>;
 }
 
-function Chat({ adapter, settings, subscribeStatus, ready }: {
-  adapter: ChatModelAdapter; settings: ChatSettings;
+function Chat({ adapter, settings, enabled, subscribeStatus, ready }: {
+  adapter: ChatModelAdapter; settings: ChatSettings; enabled: boolean;
   subscribeStatus: (listener: (status: string) => void) => () => void;
   ready: (runtime: AssistantRuntime) => void;
 }) {
@@ -101,24 +101,28 @@ function Chat({ adapter, settings, subscribeStatus, ready }: {
   const [status, setStatus] = useState('');
   useEffect(() => subscribeStatus(setStatus), [subscribeStatus]);
   useEffect(() => { ready(runtime); return () => runtime.thread.cancelRun(); }, [runtime, ready]);
-  return <Settings.Provider value={settings}><AssistantRuntimeProvider runtime={runtime}><Conversation status={status} /></AssistantRuntimeProvider></Settings.Provider>;
+  return <Settings.Provider value={{ ...settings, enabled }}><AssistantRuntimeProvider runtime={runtime}><Conversation status={status} /></AssistantRuntimeProvider></Settings.Provider>;
 }
 
-export function mountChat(element: HTMLElement, host: Omit<ChatHost, 'settings' | 'onStatus'> & { settings: ChatSettings }) {
+export function mountChat(element: HTMLElement, host: Omit<ChatHost, 'settings' | 'onStatus'> & { settings: ChatSettings; enabled?: boolean }) {
   let settings = host.settings;
+  let enabled = host.enabled ?? true;
   let runtime: AssistantRuntime | undefined;
   let statusListener: ((status: string) => void) | undefined;
   const subscribeStatus = (listener: (status: string) => void) => { statusListener = listener; return () => { statusListener = undefined; }; };
   const ready = (value: AssistantRuntime) => { runtime = value; };
   const adapter = createChatAdapter({ ...host, settings: () => settings, onStatus: value => statusListener?.(value) });
   const root = createRoot(element);
-  const render = () => root.render(<Chat adapter={adapter} settings={settings} subscribeStatus={subscribeStatus} ready={ready} />);
+  const render = () => root.render(<Chat adapter={adapter} settings={settings} enabled={enabled} subscribeStatus={subscribeStatus} ready={ready} />);
   render();
   host.signal.addEventListener('abort', () => { runtime?.thread.cancelRun(); root.unmount(); }, { once: true });
   return {
     configure(value: ChatSettings) { settings = value; render(); },
-    reset() { runtime?.thread.cancelRun(); runtime?.thread.reset(); },
+    enable(value: boolean) { if (enabled !== value) { enabled = value; render(); } },
+    cancel() { runtime?.thread.cancelRun(); },
+    reset() { runtime?.thread.cancelRun(); runtime?.thread.reset(); runtime?.thread.composer.reset(); },
     get running() { return runtime?.thread.getState().isRunning || false; },
     get hasMessages() { return Boolean(runtime?.thread.getState().messages.length); },
+    get hasDraft() { return Boolean(runtime?.thread.composer.getState().text); },
   };
 }

@@ -57,8 +57,8 @@ export async function clients(p, selection) {
     const result = activity.value; rows = result.data || [];
     listing.replaceChildren(text(`Updated ${date(new Date().toISOString())}.`, 'network-caption'),
       el('div', { class: 'node-grid' }, rows.map(row => clientTile(p, row))),
-      text('Active at refresh means a request was in progress. Between requests, clients show their last observed activity.', 'muted'));
-    if (!rows.length) listing.append(message('No authenticated client activity observed yet. Connect a client and send a request.'));
+      text('Activity is reported at refresh. A client can remain connected between requests.', 'muted'));
+    if (!rows.length) listing.append(message('No client activity yet.'), leaveButton('Connect a client', () => p.go('clients', 'connect'), p.api));
     if (result.metadata?.truncated) listing.append(message('The observation limit was reached. Some activity is omitted.', 'warning'));
     listing.append(text(`Observed since ${date(result.metadata?.observed_since)}. Inactive entries expire after 24 hours; observations reset when the coordinator restarts.`, 'footer-note'),
       actions(leaveButton('Manage keys & teams', () => p.go('access'), p.api), leaveButton(grants.status === 'fulfilled' ? `Your authorizations (${grants.value.length})` : 'Your authorizations', () => p.go('connections'), p.api)));

@@ -65,8 +65,12 @@ Zoom controls, drag to pan and Fit adjust the viewport. List view provides the
 same entities and actions for keyboard and screen-reader use, and remains usable
 if the graph package or layout fails.
 
-The map uses larger, darker system-font labels and a taller canvas so Fit remains
-readable for a typical cluster. Labels are clickable and mask connectors behind
+The map starts at a readable zoom rather than shrinking every label to fit a
+large cluster. Search focuses a compute node; its provider branch can be expanded
+or collapsed. Large clusters and shorter map viewports start with provider
+branches collapsed; selecting a node reveals its providers. List view always includes enabled providers beneath their nodes and
+is the default on phones. Explicit map/list choice survives refresh and selection.
+Labels are clickable and mask connectors behind
 the text. Compute cards contain the icon, status and memory readings in one
 clickable surface. Long card titles truncate; details and List view retain the
 full name. Other labels wrap at spaces and hyphens and reserve measured layout
@@ -147,12 +151,19 @@ Settings opens the shared right-side panel. Apply a system prompt, temperature,
 top-p, output-token limit and optional node for the next request. Blank numeric
 values use model defaults. Display controls show returned reasoning and response
 statistics; only reported usage/cost is shown. Stop cancels the request; New chat
-clears the conversation after confirmation. Regenerate explicitly requests a new
+clears the conversation, draft and settings after confirmation. Regenerate explicitly requests a new
 response. No inference request is automatically retried. Partial output remains
 visible on stream failure, with a distinct stopped/error outcome.
 
-Conversation and settings live only in the current page. Navigation, sign-out,
-pagehide and changed browser authority clear them and cancel active inference.
+Conversation, composer draft and settings live in memory within the current
+verified browser authority. Navigation cancels inference but retains its partial
+outcome and the mounted runtime. Returning to the same model preserves its node
+setting; choosing a different model or route clears that optional node pin.
+Reload, sign-out, pagehide and changed browser authority destroy the runtime and
+clear retained content. No prompt or transcript is written to browser storage.
+The model picker uses the shared panel with searchable native buttons and an
+explicit exact-ID action. Only a committed choice changes the next request.
+Route details provide Try in Chat without sending or discarding an existing draft.
 Model replies render as Markdown without executable HTML or remote images.
 The SDK's schema validator runs without dynamic code generation, preserving the
 console's existing self-only script policy.
@@ -433,6 +444,14 @@ injects its authority-aware fetch, settings and cancellation lifetime. Chat
 transcript/state, routing and browser authentication are not duplicated in GW.
 `npm run check` in the vendor directory type-checks the chat source. Its build
 pins dependencies and gathers licenses for the complete bundled dependency set.
+
+Browser UX regressions run with `npm run test:browser` in `scripts/console-vendor`.
+Install the pinned Playwright Chromium with `npx playwright install chromium`, or
+set `CONSOLE_CHROME` to an existing Chrome executable. The tests use an isolated,
+synthetic coordinator and the actual bundled console, including native form
+validation, focus, streaming cancellation, narrow layouts and axe accessibility
+checks. Screenshots and geometry/audit results are written to a temporary folder
+printed by the runner. No real keys or cluster writes are used.
 
 `api.mjs` owns requests and session refresh; page and form lifetimes reject late
 responses. A refresh clears protected content before loading bootstrap and `/me`,

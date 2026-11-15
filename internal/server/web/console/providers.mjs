@@ -1,7 +1,7 @@
 import { details, readAfterWrite } from './details.mjs';
 import { applySummary } from './api.mjs';
-import { el, text, button, leaveButton, badge, actions, message, heading, field, input, facts, clearSecrets, problem, markSelection, editorActions } from './dom.mjs';
-import { providerCategory, readInventory, nodeInventory } from './inventory.mjs';
+import { el, text, button, leaveButton, badge, actions, message, heading, field, input, facts, clearSecrets, problem, markSelection, editorActions, formFeedback } from './dom.mjs';
+import { providerCategory, readInventory, nodeInventory, providerObservationSummary } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
 
 export async function providers(p, category = 'local', selectedKey) {
@@ -32,7 +32,7 @@ export async function providers(p, category = 'local', selectedKey) {
       item.setAttribute('data-selection', entry.key);
       item.dataset.provider = entry.key;
       item.append(el('span', { class: 'network-item-title' }, providerName(entry.key, entry.name), badge(category === 'cloud' ? entry.available ? 'Configured' : 'Set up' : category === 'registries' ? 'Registry' : 'Local', category === 'cloud' && entry.available ? 'good' : '')),
-        text(entry.description || (category === 'local' ? 'Inspect provider instances on your nodes.' : 'Inspect connection settings.'), 'muted'));
+        text(providerObservationSummary(entry, inventory), 'muted'));
       return item;
     }));
     if (!entries.length) list.append(message('No provider definitions in this category. Add provider configuration on the coordinator, then refresh.'));
@@ -124,6 +124,7 @@ function connectionForm(p, entry, status, reload, cancel) {
   const feedback = el('div', { 'aria-live': 'polite' });
   const diagnostic = el('div', { 'aria-live': 'polite' });
   const values = new Map();
+  const validation = formFeedback(form, feedback, key => values.get(key) || values.get(String(key).replace(/^values\./, '')));
   let blocked = false;
   let tested = false;
   const writeButtons = [];
@@ -221,7 +222,7 @@ function connectionForm(p, entry, status, reload, cancel) {
       if (!p.current()) return;
       blocked = error.uncertain || error.status === 409;
       if (error.uncertain) clearSecrets(form);
-      feedback.replaceChildren(problem(error));
+      validation.error(error);
       if (blocked) feedback.append(message('Reload this connection before another change. Your previous revision will not be retried.', 'warning'), leaveButton('Reload details', () => { draft?.clean(); void readAfterWrite(p, reload, 'Reloading connection state.'); }, p.api));
     } finally { if (p.current()) resetBusy(); }
   };
@@ -244,7 +245,7 @@ function connectionForm(p, entry, status, reload, cancel) {
   controls.append(actions(button('Test connection', test)), diagnostic,
     text(enable ? 'Testing does not save anything. Save and enable stores these credentials and enables the provider.' : 'Testing does not save anything. Saving applies these credentials without running a test.', 'muted'));
   if (advanced.children.length > 1) controls.append(advanced);
-  form.append(controls, feedback, editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api));
+  form.append(feedback, controls, editorActions(save, () => { if (!draft || draft.discard()) { draft?.clean(); cancel(); } }, p.api));
   form.addEventListener('submit', event => { event.preventDefault(); void change('save', enable); });
   resetBusy();
   return form;

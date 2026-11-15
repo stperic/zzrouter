@@ -1,4 +1,4 @@
-import { el, text, field, input, select, button, actions, message } from './dom.mjs';
+import { el, text, field, input, select, button, actions, message, invalidField } from './dom.mjs';
 import { providerCategory } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
 
@@ -55,10 +55,11 @@ export function providerFields(record, catalog, unavailable = false) {
   mode.addEventListener('change', update);
   render(); update();
   return {
+    control: mode,
     root: el('section', { class: 'access-section' }, el('h3', {}, 'Provider access'), field('Allow requests to', mode),
       text('Applies across all compute nodes, including fallback routes. All providers includes providers added later.', 'muted'), unavailable ? message('Provider catalog unavailable. Saved selections are retained; reload to see other choices.', 'warning') : null, choices),
     read: () => {
-      if (mode.value === 'selected' && !chosen.size) throw new Error('Select at least one provider, or choose No providers.');
+      if (mode.value === 'selected' && !chosen.size) throw invalidField('Select at least one provider, or choose No providers.', mode);
       return mode.value === 'selected' ? { mode: 'selected', providers: [...chosen].sort() } : { mode: mode.value };
     },
   };
@@ -84,10 +85,11 @@ export function modelFields(record, models, groups, unavailable = false) {
   const update = () => { choices.hidden = mode.value !== 'selected'; };
   mode.addEventListener('change', update); query.addEventListener('input', render); render(); update();
   return {
+    control: mode,
     root: el('section', { class: 'access-section' }, el('h3', {}, 'Model access'), field('Within allowed providers', mode),
       text('Optional narrowing by exact model or group name. Group membership can change. This does not restrict which compute node serves a request.', 'muted'), unavailable ? message('Model choices are incomplete. Existing permissions remain selected; exact names can still be added.') : null, choices),
     read: () => {
-      if (mode.value === 'selected' && !chosen.size) throw new Error('Select at least one model, or choose All models. Use No providers to block all inference.');
+      if (mode.value === 'selected' && !chosen.size) throw invalidField('Select at least one model, or choose All models. Use No providers to block all inference.', mode);
       return mode.value === 'selected' ? [...chosen].sort() : [];
     },
   };
@@ -120,11 +122,12 @@ export function routeFields(record, groups, unavailable = false) {
   const update = () => { choices.hidden = mode.value !== 'selected'; };
   mode.addEventListener('change', update); search.addEventListener('input', render); render(); update();
   return {
+    control: mode,
     root: el('section', { class: 'access-section' }, el('h3', {}, 'Route access'), field('Clients may use', mode),
       text('Assigned routes only blocks direct model requests and node pins. Provider permissions, model limits and budgets below still apply to every destination.', 'muted'),
       unavailable ? message('Route catalog unavailable. Saved assignments are retained.', 'warning') : null, choices),
     read: () => {
-      if (mode.value === 'selected' && !chosen.size) throw new Error('Select at least one route, or choose No inference.');
+      if (mode.value === 'selected' && !chosen.size) throw invalidField('Select at least one route, or choose No inference.', mode);
       return mode.value === 'selected' ? { mode: 'selected', routes: [...chosen].sort() } : { mode: mode.value };
     },
   };
