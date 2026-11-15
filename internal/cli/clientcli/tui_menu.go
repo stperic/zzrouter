@@ -65,12 +65,16 @@ func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
 }
 
 func (m *tuiModel) menuHeader() string {
-	// Reserve room for every top-level menu item and the footer below the mark.
-	const bannerMinHeight = 30
-	if m.termHeight >= bannerMinHeight && m.termWidth >= lipgloss.Width(ui.BrandASCII) {
-		return m.styles.Normal.Render(ui.BrandASCII) + "\n" +
-			m.styles.ChatDim.Render(" v"+version.Current.ShortString()) + "\n" +
-			shared.Hrule(m.styles, m.termWidth) + "\n\n"
+	// Keep all top-level items visible; short terminals start with compact chrome.
+	if m.menuWelcome && m.termHeight >= 30 {
+		label := m.styles.Normal.Bold(true).Render("Router") + "\n" +
+			m.styles.HintsBar.Render("Local + cloud AI") + "\n" +
+			m.styles.ChatDim.Render("v"+version.Current.ShortString())
+		welcome := lipgloss.JoinHorizontal(lipgloss.Center, ui.BrandMark(m.styles), "  ", label)
+		if m.termWidth >= lipgloss.Width(welcome)+2 {
+			return "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(welcome) + "\n\n" +
+				shared.Hrule(m.styles, m.termWidth) + "\n\n"
+		}
 	}
 	return shared.RenderTitleBar(m.styles, m.termWidth) + "\n\n"
 }
@@ -119,6 +123,7 @@ func (m *tuiModel) menuActivate(visible []visibleMenuItem, idx int) tea.Cmd {
 	if idx < 0 || idx >= len(visible) {
 		return nil
 	}
+	m.menuWelcome = false
 	item := visible[idx]
 	if item.item.isGroup {
 		m.toggleMenuGroup(item.topIndex)

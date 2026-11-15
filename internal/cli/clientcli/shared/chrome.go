@@ -715,11 +715,10 @@ func RenderTitleBar(styles ui.Styles, width int) string {
 	if width <= 0 {
 		width = 80
 	}
-	info := " " + ui.BrandWordmark(styles) + styles.ChatDim.Render("  v"+version.Current.ShortString()+" ")
-	info = lipgloss.NewStyle().MaxWidth(width).Render(info)
-	infoW := lipgloss.Width(info)
-	gap := max(width-infoW, 0)
-	bar := info + strings.Repeat(" ", gap)
+	name := " " + ui.BrandWordmark(styles)
+	versionLabel := styles.ChatDim.Render("v" + version.Current.ShortString() + " ")
+	gap := max(width-lipgloss.Width(name)-lipgloss.Width(versionLabel), 1)
+	bar := lipgloss.NewStyle().MaxWidth(width).Render(name + strings.Repeat(" ", gap) + versionLabel)
 	return bar + "\n" + Hrule(styles, width)
 }
 

@@ -104,6 +104,7 @@ type tuiModel struct {
 	pane         tuiPane
 	menu         tui.List
 	menuExpanded map[int]bool // group indices that are expanded
+	menuWelcome  bool         // cleared after the first menu activation
 
 	root *tui.Root
 
@@ -135,6 +136,7 @@ type tuiOption func(*tuiModel)
 // withQuickstart starts the TUI in quickstart wizard mode.
 func withQuickstart() tuiOption {
 	return func(m *tuiModel) {
+		m.menuWelcome = false
 		m.search.Deactivate()
 		m.pane = paneRoot
 		updated, _ := m.root.Update(tui.NavToMsg{View: views.NewQuickstartViewModel(m.styles)})
@@ -164,6 +166,7 @@ func runTUI(opts ...tuiOption) error {
 		chatSettings: chatSettings,
 		pane:         paneMenu,
 		menuExpanded: make(map[int]bool),
+		menuWelcome:  true,
 		search:       search.NewSearchTUIModel(client, styles, "", "", "", "", "", true),
 		root:         tui.NewEmptyRoot(),
 	}
