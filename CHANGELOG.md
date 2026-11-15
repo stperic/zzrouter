@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Carry the double-Z brand into CLI help, the TUI and the project README.
+  Show ASCII artwork in taller terminal menus and a compact mark in headers.
 - Add the double-Z console logo, matching color and monochrome assets, and a
   browser icon. Pair the symbol with Router without repeating the ZZ lettering.
 - Add browser-local Claude Web and Claude Code light/dark console themes, with

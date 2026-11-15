@@ -710,12 +710,13 @@ type SpinnerTickMsg = ui.SpinnerTickMsg
 // compat with existing client call sites.
 func SpinnerTickCmd() tea.Cmd { return ui.SpinnerTickCmd() }
 
-// RenderTitleBar renders the top title bar with version and tagline.
+// RenderTitleBar renders the compact brand and version above the separator.
 func RenderTitleBar(styles ui.Styles, width int) string {
-	title := styles.Title.Render("zzRouter")
-	ver := styles.ChatDim.Render(" v" + version.Current.ShortString() + " ")
-
-	info := title + styles.ChatDim.Render(": ") + ver
+	if width <= 0 {
+		width = 80
+	}
+	info := " " + ui.BrandWordmark(styles) + styles.ChatDim.Render("  v"+version.Current.ShortString()+" ")
+	info = lipgloss.NewStyle().MaxWidth(width).Render(info)
 	infoW := lipgloss.Width(info)
 	gap := max(width-infoW, 0)
 	bar := info + strings.Repeat(" ", gap)

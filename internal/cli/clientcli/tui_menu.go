@@ -8,6 +8,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
+	"github.com/stperic/zzrouter/pkg/ui"
+	"github.com/stperic/zzrouter/pkg/version"
 )
 
 type menuItem struct {
@@ -63,6 +65,13 @@ func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
 }
 
 func (m *tuiModel) menuHeader() string {
+	// Reserve room for every top-level menu item and the footer below the mark.
+	const bannerMinHeight = 30
+	if m.termHeight >= bannerMinHeight && m.termWidth >= lipgloss.Width(ui.BrandASCII) {
+		return m.styles.Normal.Render(ui.BrandASCII) + "\n" +
+			m.styles.ChatDim.Render(" v"+version.Current.ShortString()) + "\n" +
+			shared.Hrule(m.styles, m.termWidth) + "\n\n"
+	}
 	return shared.RenderTitleBar(m.styles, m.termWidth) + "\n\n"
 }
 

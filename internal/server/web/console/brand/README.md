@@ -24,3 +24,7 @@ resizing. Use the app icon for browser tabs and the plain marks for page brandin
 The main palette is charcoal `#242420`, terracotta `#d97757`, and cream `#faf9f5`.
 The app tile uses deeper terracotta `#c96f4d` behind charcoal and cream strokes.
 The console selects the light or dark mark through the existing theme tokens.
+
+The terminal rendition lives in `pkg/ui/brand.go`. CLI help and taller TUI menus
+use its ASCII artwork; compact headers use a two-color `ZZ Router` wordmark.
+Command names and machine-readable output retain the `zzrouter` identity.

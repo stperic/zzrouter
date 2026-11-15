@@ -40,7 +40,9 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "zzrouter",
 		Short: "zzrouter - AI model router client (Ollama-compatible)",
-		Long: `zzrouter is a high-performance AI model router client written in Go.
+		Long: ui.BrandASCII + `
+
+zzrouter is a high-performance AI model router client written in Go.
 It provides Ollama-compatible commands for managing AI models across distributed clusters.
 
 Model commands work exactly like Ollama. Cluster commands provide multi-node management.
