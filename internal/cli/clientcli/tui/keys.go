@@ -557,7 +557,7 @@ func (k TeamsKeyMap) ListHintsString() string {
 	return JoinHints(
 		Hint(k.Up, "navigate"),
 		Hint(k.Enter, "details"),
-		Hint(k.New, "new"),
+		Hint(k.New, "create in console"),
 		Hint(k.Delete, "delete"),
 		Hint(k.Refresh, "refresh"),
 		Hint(k.Back, "back"),
@@ -567,7 +567,7 @@ func (k TeamsKeyMap) ListHintsString() string {
 func (k TeamsKeyMap) DetailHintsString() string {
 	return JoinHints(
 		Hint(k.Up, "scroll"),
-		Hint(k.Edit, "edit"),
+		Hint(k.Edit, "edit in console"),
 		Hint(k.Suspend, "suspend"),
 		Hint(k.JumpToKey, "view key"),
 		Hint(k.ResetUsage, "reset usage"),

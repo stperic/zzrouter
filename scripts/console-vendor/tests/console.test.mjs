@@ -63,6 +63,7 @@ async function audit(page, name) {
   await page.screenshot({ path: join(artifacts, name + '.png'), fullPage: true });
   await writeFile(join(artifacts, name + '.json'), JSON.stringify({ geometry, violations }, null, 2));
   assert.ok(geometry.documentWidth <= geometry.width + 1, name + ': page must not overflow horizontally');
+  assert.doesNotMatch(await page.locator('body').innerText(), /\[object (?:HTML|Object)/, name + ': DOM children must render as elements');
   for (const box of [...geometry.controls, ...geometry.panels]) {
     assert.ok(box.top >= -1 && box.bottom <= geometry.height + 1, name + ': visible controls within viewport: ' + JSON.stringify(box));
     assert.ok(box.left >= -1 && box.right <= geometry.width + 1, name + ': panel must fit width');
@@ -89,6 +90,149 @@ test('all console views and shared editors fit desktop and phone viewports', { t
   await f.state('login'); await f.page.goto(f.base + '#chat');
   await f.page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
   await audit(f.page, 'sign-in');
+});
+
+test('complete console workspaces and editors fit desktop and phone', { timeout: 180000 }, async t => {
+  const f = await consolePage(t);
+  const scenes = [
+    ['models', '#models'], ['model-details', '#models?item=studio-gpu%2Fvllm%2F%2Fqwen3-coder'],
+    ['discovery', '#models?mode=discover'], ['downloads', '#workloads?mode=downloads'],
+    ['download-details', '#workloads?mode=downloads&item=model-download'],
+    ['logs', '#logs'], ['request-details', '#logs?item=request-one'],
+    ['remote-provider', '#providers?item=local&mode=create'],
+    ['setup', '#settings?item=setup'], ['software', '#settings?item=updates'],
+    ['node-software', '#settings?item=updates%2Fstudio-gpu'], ['install-release', '#settings?item=updates&mode=create'],
+    ['pricing', '#settings?item=pricing'], ['create-price', '#settings?item=pricing&mode=create'],
+    ['edit-price', '#settings?item=pricing%2Fgroq%2Fllama-3.3-70b-versatile', 'Edit'],
+  ];
+  for (const width of [1280, 390]) for (const [name, hash, action] of scenes) {
+    await f.open(hash, width, width === 390 ? 844 : 800);
+    if (action) await f.page.getByRole('dialog').getByRole('button', { name: action, exact: true }).click();
+    await audit(f.page, name + '-' + width);
+  }
+});
+
+test('model discovery reviews exact targets, downloads, test and Chat handoff', { timeout: 60000 }, async t => {
+  const f = await consolePage(t); const { page } = f;
+  await f.open('#models');
+  await page.getByRole('button', { name: 'qwen3-coder', exact: true }).click();
+  await page.getByRole('button', { name: 'Test model', exact: true }).click();
+  await page.getByRole('button', { name: 'Send test', exact: true }).click();
+  await page.getByText('studio-gpu', { exact: true }).last().waitFor();
+  await f.open('#models?item=studio-gpu%2Fvllm%2F%2Fqwen3-coder');
+  await page.getByRole('dialog').getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Message', exact: true }).waitFor();
+  assert.match(await page.locator('.chat-settings-summary').innerText(), /Node: studio-gpu/);
+  await f.open('#models?mode=discover');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.getByRole('button', { name: /^Small model/ }).click();
+  await page.getByRole('button', { name: /Download|Add model/ }).click();
+  await page.getByLabel('Local provider', { exact: true }).selectOption('vllm');
+  await page.getByLabel('Weights variant', { exact: true }).selectOption('small-Q4.gguf');
+  await page.getByLabel('studio-gpu', { exact: true }).check();
+  await page.getByRole('button', { name: 'Review download', exact: true }).click();
+  await audit(page, 'download-review');
+  await page.getByRole('button', { name: 'Start download', exact: true }).click();
+  await page.getByText('model-download', { exact: true }).waitFor();
+  const writes = (await f.requests()).filter(row => row.path === '/deployments' && row.method === 'POST');
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].payload, { model: 'example/small-model', registry: 'huggingface', provider: 'vllm', nodes: ['studio-gpu'], file: 'small-Q4.gguf' });
+});
+
+test('provider plans, parameter scopes and services use the shared side panel', { timeout: 60000 }, async t => {
+  const f = await consolePage(t); const { page } = f;
+  const manage = async () => {
+    await f.open('#providers?item=local%2Fvllm', 390, 844);
+    await page.getByRole('dialog').getByLabel('Compute node', { exact: true }).selectOption('studio-gpu');
+    await page.getByRole('button', { name: 'Manage runtime', exact: true }).click();
+  };
+  await manage(); await page.getByRole('button', { name: 'Parameters', exact: true }).click();
+  await page.locator('.parameter-setting').first().waitFor();
+  await audit(page, 'parameter-editor-phone');
+  assert.equal(await page.getByText('synthetic-private-value', { exact: true }).count(), 0);
+  await page.locator('input[name="parameter_node"]').fill('office-pc');
+  await page.getByRole('button', { name: 'View scope', exact: true }).click();
+  await page.locator('.parameter-setting').first().waitFor();
+  assert.ok((await f.requests()).some(row => row.path.endsWith('/parameters') && row.query.scope === 'node' && row.query.node === 'office-pc'));
+  await manage(); await page.getByRole('button', { name: 'Install or repair', exact: true }).click();
+  await page.getByLabel('Runtime', { exact: true }).selectOption('python');
+  await page.getByRole('button', { name: 'Review install plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Run all steps', exact: true }).waitFor();
+  await audit(page, 'install-plan-phone');
+  await page.getByRole('button', { name: 'Verify step', exact: true }).click();
+  await page.getByText('Synthetic verification passed', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run all steps', exact: true }).click();
+  await page.getByRole('heading', { name: 'install-job', exact: true }).waitFor();
+  const install = (await f.requests()).filter(row => row.path === '/providers/vllm/install' && row.method === 'POST');
+  assert.equal(install.length, 1);
+  assert.deepEqual(install[0].payload, { expected_plan_id: 'plan-1', version: '1.0.0', runtime: 'python', action: 'install', components: [] });
+  assert.equal(install[0].query.node, 'studio-gpu');
+  await manage(); await page.getByRole('button', { name: 'Service', exact: true }).click();
+  await audit(page, 'provider-service-phone');
+  await manage(); await page.getByRole('button', { name: 'Versions', exact: true }).click();
+  await page.getByLabel('Cluster version pin').waitFor();
+  await audit(page, 'provider-versions-phone');
+});
+
+test('runtime replay, inference payload and management writes remain deliberate', { timeout: 60000 }, async t => {
+  const f = await consolePage(t); const { page } = f;
+  await f.open('#workloads');
+  await page.getByRole('button', { name: 'qwen3-coder', exact: true }).click();
+  await page.getByRole('button', { name: 'Runtime logs', exact: true }).click();
+  await page.getByText('old tail', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Follow live', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.log-output')?.textContent === 'repeated line\nrepeated line');
+  assert.equal(await page.locator('.log-output').innerText(), 'repeated line\nrepeated line');
+  await page.getByRole('button', { name: 'Follow live', exact: true }).click();
+  await page.getByText(/The log stream ended/).waitFor();
+  assert.equal(await page.locator('.log-output').innerText(), 'repeated line\nrepeated line');
+  await audit(page, 'runtime-logs');
+  await f.open('#logs?item=request-one');
+  await page.getByRole('button', { name: 'Show retained payload', exact: true }).click();
+  await page.getByText(/Private fixture prompt/).waitFor();
+  await page.getByRole('button', { name: 'Hide payload', exact: true }).click();
+  assert.equal(await page.getByText(/Private fixture prompt/).count(), 0);
+  await page.getByRole('button', { name: 'Close request details', exact: true }).click();
+  await page.getByRole('button', { name: 'Follow live', exact: true }).click();
+  await page.getByText(/Some live observations were dropped/).waitFor();
+  await f.open('#settings?item=updates%2Fstudio-gpu');
+  await page.getByRole('button', { name: 'Edit update schedule', exact: true }).click();
+  await page.getByLabel('Enable scheduled software updates').check();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByText('Update schedule saved.', { exact: true }).waitFor();
+  assert.ok((await f.requests()).some(row => row.path === '/update/settings' && row.method === 'PATCH' && row.query.node === 'studio-gpu' && row.payload.enabled));
+  await f.open('#settings?item=pricing%2Fgroq%2Fllama-3.3-70b-versatile');
+  await page.getByRole('dialog').getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Output ($ / 1M tokens)', { exact: true }).fill('1.2');
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Edit', exact: true }).waitFor();
+  const price = (await f.requests()).find(row => row.path === '/pricing/overrides' && row.method === 'POST');
+  assert.equal(price.payload.output_cost_per_1m, 1.2); assert.equal(price.payload.cache_read_cost_per_1m, 0.1);
+  await f.state('feature-errors'); await f.open('#logs');
+  await page.getByText(/Synthetic observation failure/).waitFor();
+  await audit(page, 'logs-error');
+});
+
+test('software rollout preserves refused drafts and never repeats an interrupted update', { timeout: 45000 }, async t => {
+  const f = await consolePage(t); const { page } = f;
+  await f.state('update-invalid'); await f.open('#settings?item=updates&mode=create', 390, 844);
+  await page.getByLabel('Release version').fill('invalid-release');
+  await page.getByLabel('studio-gpu', { exact: true }).check();
+  await page.getByRole('button', { name: 'Install selected version', exact: true }).click();
+  await page.getByText(/Unknown release version/).waitFor();
+  assert.equal(await page.getByLabel('Release version').inputValue(), 'invalid-release');
+  assert.equal(await page.getByLabel('studio-gpu', { exact: true }).isChecked(), true);
+  await f.state('update-interrupted');
+  await page.getByLabel('Release version').fill('0.2.4');
+  await page.getByRole('button', { name: 'Install selected version', exact: true }).click();
+  await page.getByRole('button', { name: 'Inspect update state', exact: true }).waitFor();
+  assert.match(await page.getByRole('dialog').innerText(), /check whether the change completed/);
+  assert.equal(await page.getByRole('button', { name: 'Install selected version', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Inspect update state', exact: true }).click();
+  const sent = (await f.requests()).filter(row => row.path === '/update/apply');
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].payload, { version: '0.2.4', nodes: ['studio-gpu'] });
+  await audit(page, 'update-interrupted-inspection');
 });
 
 test('Chat retains conversation, draft and settings through navigation and history', { timeout: 45000 }, async t => {

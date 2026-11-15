@@ -62,7 +62,7 @@ for (const category of ['local', 'cloud', 'registries']) {
     f.p.api.list = path => path.startsWith('/providers/catalog') ? catalog.map(item => ({ ...item, connection_supported: false })) : list(path);
     const key = { local: 'engine-a', cloud: 'cloud-a', registries: 'huggingface' }[category];
     await providers(f.p, category, key);
-    assert.match(f.root.textContent, category === 'local' ? /terminal client for installation/ : /Configure this connection on the coordinator/);
+    assert.match(f.root.textContent, category === 'local' ? /Runtime management.*Manage runtime/s : /Configure this connection on the coordinator/);
     assert.equal(f.calls.length, 0); assert.equal(walk(f.root).some(node => node.tag === 'form'), false);
   });
 }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Complete console management with model discovery, exact-node testing and
+  downloads, provider install plans and service controls, scoped runtime
+  parameters, logs, pricing overrides, software updates and guided setup. Reuse
+  coordinator APIs and shared side panels; preserve partial/uncertain outcomes,
+  sensitive data lifetimes and explicit operation identities. Add an exact-tier
+  parameter read alongside the compatible existing API.
+- Add `zzrouter console` and a top-level TUI console launcher with URL-only and
+  headless modes. Move interactive team policy editing to the console, retain
+  inherited policy summaries in the TUI, require explicit shared teams for new
+  keys and keep existing individual quotas read-only during ordinary edits.
+
 - Add console Chat for user and administrator sessions: model/route selection,
   system prompts, sampling/output limits, optional node selection, streamed
   Markdown, reasoning, response statistics, regeneration and Stop. Reuse the

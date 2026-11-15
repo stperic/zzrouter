@@ -1539,7 +1539,10 @@ paths:
         Selection follows inference: prefer local, otherwise one remote node;
         several remote holders answer 409 `model_node_ambiguous`. Same-name
         physical sources on the selected provider/node answer 409
-        `model_source_ambiguous`; select an exact catalog `source_id` as `model`.
+        `model_source_ambiguous`; pass `source_id` together with the exact
+        catalog name, provider, registry and node to select a physical copy.
+        A source alias used as `model` may identify several variants within one
+        repository; use the separate selector to preserve an exact variant.
         `registry` narrows the source and makes `model` a literal catalog name
         or source id; use separate provider/node selectors in that namespace.
         Logical variants read their base's
@@ -1555,6 +1558,10 @@ paths:
         - $ref: '#/components/parameters/NodeParam'
         - $ref: '#/components/parameters/ProviderParam'
         - $ref: '#/components/parameters/RegistryParam'
+        - in: query
+          name: source_id
+          description: Exact physical source identity paired with the catalog model name.
+          schema: { type: string }
         - in: query
           name: verbose
           schema: { type: boolean }
@@ -3315,27 +3322,67 @@ paths:
     get:
       tags: [Providers]
       operationId: listProviderParameters
-      summary: Get provider-level parameters (CLI flags + env)
+      summary: Read configured provider parameters at an explicit tier
       description: |
-        Parameters for this provider as resolved for this node, in the older
-        flat shape. `GET /zzrouter/v1/providers/{name}/resolved` is the
-        current read: it carries the same values plus the tier each came
-        from, and it takes `node` and `model` so you can ask for the cell a
-        launch would actually use.
+        With `scope`, returns only parameter and environment entries stored at
+        that exact tier in the coordinator configuration. No inheritance,
+        wildcard matching, coordinator-node substitution or worker proxying is
+        performed. An unset tier is represented by empty maps. Stored values
+        remain strings; use the provider schema to type values sent in PATCH.
+        Parameter keys use the same canonical flag identity as PATCH, so
+        underscore and hyphen spellings address one setting. Environment names
+        remain exact. Conflicting spellings within the selected map return
+        `409` with `duplicate_flag` diagnostics instead of hiding a value.
+        `endpoint` selects only that endpoint overlay, excluding the base tier.
+        This projection is editing evidence, not effective launch settings.
+
+        Without `scope`, preserves the older AppParameters response. For
+        effective values and provenance, use `/providers/{name}/resolved`.
+        Versions are advisory: this endpoint does not make PATCH conditional.
+      parameters:
+        - in: query
+          name: scope
+          schema: { type: string, enum: [defaults, model, node, node-model] }
+          description: Exact configuration tier. Scoped reads require the coordinator.
+        - in: query
+          name: node
+          schema: { type: string }
+          description: Required for node and node-model scopes; forbidden otherwise.
+        - in: query
+          name: model
+          schema: { type: string }
+          description: Required for model and node-model scopes; forbidden otherwise.
+        - in: query
+          name: endpoint
+          schema: { type: string, enum: [chat, embeddings, reranking] }
+          description: Optional declared endpoint overlay within the selected tier.
       responses:
         '200':
           description: OK
           content:
             application/json:
               schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessEnvelope'
-                  - type: object
-                    properties:
-                      data: { $ref: '#/components/schemas/AppParameters' }
+                oneOf:
+                  - $ref: '#/components/schemas/AppParameters'
+                  - $ref: '#/components/schemas/ConfiguredParameters'
+        '400':
+          description: Invalid scope, selectors or unsupported endpoint
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/MgmtUnauthorized' }
         '404':
           description: Provider not found
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: Conflicting values for spellings of the same parameter flag at this scope
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '421':
+          description: Scoped editing reads must target the coordinator
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -15237,6 +15284,27 @@ components:
           description: >
             What to do about it, when the failure has a known remedy.
             `message` says what is wrong; this says how to fix it.
+
+    ConfiguredParameters:
+      type: object
+      description: Exact-tier values with canonical parameter flag names, exact environment names, and no inheritance.
+      required: [provider, scope, parameters, environment, available_endpoints]
+      properties:
+        provider: { type: string }
+        scope: { type: string, enum: [defaults, model, node, node-model] }
+        node: { type: string }
+        model: { type: string }
+        endpoint: { type: string }
+        available_endpoints:
+          type: array
+          description: Endpoint scopes admitted by this provider, independent of schema overlays.
+          items: { type: string, enum: [chat, embeddings, reranking] }
+        parameters:
+          type: object
+          additionalProperties: { type: string }
+        environment:
+          type: object
+          additionalProperties: { type: string }
 
     AppParameters:
       type: object

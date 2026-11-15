@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { featureRequest } from './features-fixture.mjs';
 const assets = new URL('../../../internal/server/web/console/', import.meta.url);
 const now = () => new Date().toISOString();
 const node = (name, gpu, memory, health, os = 'Linux') => ({ name, health_status: health, os, version: 'UX preview', address: name + '.example:9091', last_seen_at: now(), memory: { total_gb: memory }, gpu: { gpus: [{ name: gpu }], unified_memory: os === 'macOS' }, providers: [{ key: 'ollama', name: 'Ollama', kind: 'external', running: health === 'healthy' }, { key: 'comfyui', name: 'ComfyUI', kind: 'python', running: false }] });
@@ -48,7 +49,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
   if (url.pathname.startsWith('/console/')) {
    const name = url.pathname.slice(9) || 'index.html';
-   if (!/^(?:[a-z-]+\.(?:html|css|mjs)|icons\/[a-z-]+\.svg|vendor\/(?:chat\.mjs|chat-transport\.mjs|graph\.mjs|elk-worker\.min\.js|THIRD_PARTY_NOTICES\.txt))$/.test(name)) { res.writeHead(404).end(); return; }
+   if (!/^(?:[a-z-]+\.(?:html|css|mjs)|icons\/[a-z-]+\.svg|vendor\/(?:events\.mjs|chat\.mjs|chat-transport\.mjs|graph\.mjs|elk-worker\.min\.js|THIRD_PARTY_NOTICES\.txt))$/.test(name)) { res.writeHead(404).end(); return; }
    res.setHeader('Content-Type', name.endsWith('.mjs') || name.endsWith('.js') ? 'text/javascript' : name.endsWith('.svg') ? 'image/svg+xml' : name.endsWith('.css') ? 'text/css' : 'text/html');
    res.end(await readFile(new URL(name, assets))); return;
   }
@@ -56,7 +57,8 @@ const server = http.createServer(async (req, res) => {
   for await (const chunk of req) body += chunk;
   const payload = body ? JSON.parse(body) : {};
   const path = url.pathname.replace('/zzrouter/v1','');
-  requests.push({path,method:req.method,payload});
+  requests.push({path,method:req.method,payload,query:Object.fromEntries(url.searchParams)});
+  if (featureRequest({ req, res, path, url, payload, scenario, nodes })) return;
   if(scenario==='field-errors' && path.startsWith('/model-groups/') && req.method==='PATCH'){
    res.writeHead(400,{'Content-Type':'application/json'}).end(JSON.stringify({detail:'Check the destination model.',errors:[{key:'replicas[1].model',message:'Choose an available model.'}]}));return;
   }

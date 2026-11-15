@@ -3,19 +3,26 @@ import { applySummary } from './api.mjs';
 import { el, text, button, leaveButton, badge, actions, message, heading, field, input, facts, clearSecrets, problem, markSelection, editorActions, formFeedback } from './dom.mjs';
 import { providerCategory, readInventory, nodeInventory, providerObservationSummary } from './inventory.mjs';
 import { providerName } from './provider-icons.mjs';
+import { providerControls, remoteOllama } from './provider-lifecycle.mjs';
+import { parameterSettings } from './parameters.mjs';
 
-export async function providers(p, category = 'local', selectedKey) {
+export async function providers(p, category = 'local', selectedKey, mode) {
   const categories = [['local', 'Local providers'], ['cloud', 'Cloud providers'], ['registries', 'Model registries']];
   if (!categories.some(([id]) => id === category)) category = 'local';
   let catalog, inventory, drawer;
   const list = el('div', { class: 'node-grid provider-grid', 'aria-label': 'Providers' });
   const listing = el('div', { class: 'entity-list' }, list);
   const workspace = el('div', { class: 'entity-workspace provider-workspace' }, listing);
-  const choose = async section => {
+  const choose = async (section, nextMode) => {
     const [, ...key] = (section || category).split('/');
     selectedKey = key.join('/');
     drawer?.dispose(!selectedKey); drawer = undefined;
     markSelection(list, selectedKey);
+    if (category === 'local' && nextMode === 'create') {
+      drawer = details({ ...p, root: workspace }, 'Connect remote Ollama', () => p.go('providers', category));
+      remoteOllama(drawer, async key => { await read(); if (p.current()) await p.go('providers', key ? `${category}/${key}` : category); });
+      return;
+    }
     if (!selectedKey) return;
     const entry = catalog.find(item => item.key === selectedKey && providerCategory(item) === category);
     drawer = details({ ...p, root: workspace }, 'Provider details', () => p.go('providers', category));
@@ -50,12 +57,12 @@ export async function providers(p, category = 'local', selectedKey) {
     item.setAttribute('aria-current', String(id === category)); return item;
   }));
   const description = { local: 'Manage the providers installed on your compute nodes.', cloud: 'Choose a provider to add an API key or update its connection.', registries: 'Add credentials for private or gated models. Public models can be browsed without a token.' };
-  p.root.append(heading('Providers', description[category], leaveButton('Refresh', refresh, p.api)), tabs, workspace);
+  p.root.append(heading('Providers', description[category], leaveButton('Refresh', refresh, p.api), category === 'local' ? leaveButton('+ Connect remote Ollama', () => p.go('providers', category, 'create'), p.api, 'primary') : null), tabs, workspace);
   list.append(message('Loading provider catalog…'));
   await read();
   if (!p.current()) return;
   p.handleSelection?.(choose, section => (section || 'local').split('/')[0] === category);
-  if (selectedKey) await choose(`${category}/${selectedKey}`);
+  if (selectedKey || mode === 'create') await choose(selectedKey ? `${category}/${selectedKey}` : category, mode);
 }
 
 // Used by both the map and provider list; credentials remain coordinator-scoped.
@@ -80,13 +87,14 @@ export async function showProvider(p, entry, inventory, onSaved) {
         text('Configuration status does not verify access to the provider.', 'muted')) : null;
       if (status) reader.root.append(actions(badge(status.configured ? 'Configured' : 'Not configured', status.configured ? 'good' : ''), entry.is_cloud && status.configured ? badge(status.enabled ? 'Enabled' : 'Disabled') : null),
         facts(status.fields.map(spec => [spec.label, spec.secret ? status.present?.includes(spec.id) ? status.mode === 'managed' ? 'Saved' : 'Provided by installation' : 'Not set' : status.values?.[spec.id] || spec.default || 'Not set'])));
-      if (entry.is_cloud && status?.configured && !status.enabled) {
-        const enable = button('Enable provider', async () => {
+      if (entry.is_cloud && status?.configured) {
+        const enabling = !status.enabled;
+        const enable = button(enabling ? 'Enable provider' : 'Disable provider', async () => {
           if (enable.disabled || !reader.current() || !p.api.canChange()) return;
           enable.disabled = true;
           try {
-            await p.api.data(`/providers/${encodeURIComponent(entry.key)}`, { method: 'PATCH', body: { enabled: true }, signal: reader.scope.signal });
-            if (reader.current()) await readAfterWrite(reader, reload(reader), 'Provider enabled.');
+            await p.api.data(`/providers/${encodeURIComponent(entry.key)}`, { method: 'PATCH', body: { enabled: enabling }, signal: reader.scope.signal });
+            if (reader.current()) await readAfterWrite(reader, reload(reader), enabling ? 'Provider enabled.' : 'Provider disabled.');
           } catch (error) {
             if (reader.current()) await readAfterWrite(reader, reload(reader), problem(error), 'warning');
           }
@@ -100,8 +108,9 @@ export async function showProvider(p, entry, inventory, onSaved) {
         (connectionDetails || reader.root).append(facts([['Enabled on', [...locations].join(', ') || (inventory.some(result => result.status === 'rejected') ? 'Node enablement unavailable' : 'No enabled nodes')]]));
       }
       if (connectionDetails) reader.root.append(connectionDetails);
-      if (inventory && providerCategory(entry) === 'local') reader.root.append(el('section', { class: 'access-section' }, el('h3', {}, 'Compute nodes'), nodeInventory(reader, inventory, entry)));
-      if (!status) reader.root.append(message(providerCategory(entry) === 'local' ? 'Use the terminal client for installation and runtime setup. Select a node to manage its enabled local providers.' : 'No editable connection fields are declared. Configure this connection on the coordinator.'));
+      if (inventory && providerCategory(entry) === 'local') reader.root.append(providerControls(reader, entry, inventory, show), el('section', { class: 'access-section' }, el('h3', {}, 'Compute nodes'), nodeInventory(reader, inventory, entry)));
+      if (providerCategory(entry) === 'cloud') reader.root.append(leaveButton('Provider defaults', () => parameterSettings(reader.panel.view('Provider parameters'), { provider: entry.key, back: show }), p.api));
+      if (!status && providerCategory(entry) !== 'local') reader.root.append(message('No editable connection fields are declared. Configure this connection on the coordinator.'));
     };
     const edit = () => {
       const editor = p.panel.view(status.configured ? 'Edit provider' : 'Connect provider');
@@ -114,7 +123,7 @@ export async function showProvider(p, entry, inventory, onSaved) {
   };
   p.root.append(message('Loading provider details…'));
   try { await load(); }
-  catch (error) { if (p.current()) p.root.replaceChildren(providerName(entry.key, entry.name, 'h2'), problem(error), leaveButton('Reload details', () => showProvider(p, entry, inventory, onSaved), p.api), inventory && providerCategory(entry) === 'local' ? nodeInventory(p, inventory, entry) : ''); }
+  catch (error) { if (p.current()) p.root.replaceChildren(providerName(entry.key, entry.name, 'h2'), problem(error), leaveButton('Reload details', () => showProvider(p, entry, inventory, onSaved), p.api), ...(inventory && providerCategory(entry) === 'local' ? [providerControls(p, entry, inventory, () => showProvider(p, entry, inventory, onSaved)), nodeInventory(p, inventory, entry)] : [])); }
 }
 
 function connectionForm(p, entry, status, reload, cancel) {

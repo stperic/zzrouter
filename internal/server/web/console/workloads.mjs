@@ -30,8 +30,8 @@ export async function workloads(p, selection, mode = 'runs') {
 
   function tabControls() {
     statusFilter.hidden = tab !== 'runs';
-    tabs.replaceChildren(...['runs', 'jobs'].map(value => {
-      const control = leaveButton(value === 'runs' ? 'Runs' : 'Jobs', () => p.go('workloads', node.value ? workloadKey('node', node.value, '') : undefined, value), p.api);
+    tabs.replaceChildren(...['runs', 'jobs', 'downloads'].map(value => {
+      const control = leaveButton(value === 'runs' ? 'Runs' : value === 'jobs' ? 'Jobs' : 'Downloads', () => p.go('workloads', value === 'downloads' ? undefined : node.value ? workloadKey('node', node.value, '') : undefined, value), p.api);
       control.setAttribute('aria-current', String(value === tab)); return control;
     }));
   }
@@ -133,5 +133,5 @@ export async function workloads(p, selection, mode = 'runs') {
   tabControls();
   feedback.append(message('Reading node workloads…'));
   await live.refresh();
-  if (p.current()) { p.handleSelection?.(choose); await choose(selected, mode); }
+  if (p.current()) { p.handleSelection?.(choose, (_, nextMode) => nextMode !== 'downloads'); await choose(selected, mode); }
 }

@@ -24,7 +24,7 @@ export function createChatSession(api, mount = () => import('./vendor/chat.mjs')
   return session;
 }
 
-export async function chat(p, session, initialModel) {
+export async function chat(p, session, initialModel, initialNode) {
   let models = [];
   let drawer;
   let readVersion = 0;
@@ -62,12 +62,12 @@ export async function chat(p, session, initialModel) {
     session.view?.configure(settings);
     p.syncActivity?.();
   };
-  function choose(value) {
+  function choose(value, node = '') {
     if (!p.current() || !value || !closePanel()) return;
-    session.settings = { ...session.settings, model: value.trim(), node: '' };
-    p.selectSection?.(value.trim()); sync();
+    session.settings = { ...session.settings, model: value.trim(), node };
+    p.selectSection?.(value.trim(), node || undefined); sync();
   }
-  p.handleSelection?.(value => { if (value && value !== session.settings.model) choose(value); });
+  p.handleSelection?.((value, node = '') => { if (value && (value !== session.settings.model || node !== session.settings.node)) choose(value, node); });
   p.scope.signal.addEventListener('abort', () => { session.view?.cancel(); }, { once: true });
   async function loadModels() {
     const version = ++readVersion;
@@ -147,7 +147,7 @@ export async function chat(p, session, initialModel) {
     owner.root.append(form);
     system.focus({ preventScroll: true });
   }
-  if (initialModel && initialModel !== session.settings.model) session.settings = { ...session.settings, model: initialModel, node: '' };
+  if (initialModel && (initialModel !== session.settings.model || initialNode !== undefined)) session.settings = { ...session.settings, model: initialModel, node: initialNode || '' };
   sync();
   const loading = loadModels();
   await session.ready;

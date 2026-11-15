@@ -3,7 +3,7 @@ import { el, text, button, field, select, message, editorActions, formFeedback }
 import { launchTargets, runAssessment } from './workload-data.mjs';
 import { followStart } from './workload-details.mjs';
 
-export async function startRun(p, nodes, initialNode) {
+export async function startRun(p, nodes, initialNode, initialTarget) {
   p.editing = true;
   const form = el('form', { class: 'entity-editor' });
   const draft = p.trackDraft?.(form), choices = new Lifetime();
@@ -44,7 +44,9 @@ export async function startRun(p, nodes, initialNode) {
       if (!p.current() || !scope.current()) return;
       targets = launchTargets(models, providers, selectedNode);
       target.replaceChildren(el('option', { value: '' }, 'Choose a model or service…'), ...targets.map((item, index) => el('option', { value: String(index) }, item.label)));
-      target.value = '';
+      const chosen = initialTarget && selectedNode === initialNode ? targets.findIndex(item => item.model === initialTarget.model && item.provider === initialTarget.provider) : -1;
+      target.value = chosen >= 0 ? String(chosen) : '';
+      endpoint.disabled = !body()?.model;
       target.disabled = !targets.length; preview.disabled = !targets.length;
       if (!targets.length) feedback.replaceChildren(message('No complete local model or node service with a reported run lifecycle is available here. Check the node’s provider setup and model inventory.', 'warning'));
     } catch (error) {

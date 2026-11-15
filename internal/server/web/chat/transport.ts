@@ -97,6 +97,7 @@ export function createChatAdapter(host: ChatHost): ChatModelAdapter {
           signal.throwIfAborted();
           if (part.type === 'error') throw part.error;
           if (part.type === 'text-delta' || part.type === 'reasoning-delta') {
+            if (part.text && stats.firstTokenMs === undefined) stats.firstTokenMs = performance.now() - started;
             host.onStatus?.('');
             const type = part.type === 'text-delta' ? 'text' : 'reasoning';
             const last = content.at(-1);

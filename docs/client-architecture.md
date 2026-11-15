@@ -5,6 +5,23 @@ They share operations and results, while retaining navigation and presentation
 suited to each interface. The [browser console](web-console.md) uses the existing
 coordinator APIs; this document records the shared boundaries.
 
+The browser console is the complete interactive management surface. The TUI is
+the terminal companion for common operations, with **Open web console** at its
+top level and `zzrouter console` in the CLI. It discovers the configured public
+issuer through the existing authenticated client transport, validates that origin
+and opens a credential-free URL. Remote/headless terminals print the URL.
+
+Team policy editing has one interactive owner in the console. The TUI shows the
+full inherited policy and opens contextual console creation/editing screens.
+Native key issuance requires an explicitly selected active shared team. Existing
+individual key quotas stay visible and read-only; ordinary key edits omit quota
+and membership fields. The CLI retains automation APIs and local recovery tools.
+
+Both interfaces remain clients: the coordinator owns validation, routing,
+provider admission, pricing and budget enforcement. Runtime parameter editing
+uses the existing scoped GET and merge-patch API; neither interface resolves
+effective parameters or implements a second policy engine.
+
 ```mermaid
 flowchart TB
   TUI[Terminal client] --> API[Coordinator HTTP API]

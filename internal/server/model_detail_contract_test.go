@@ -247,6 +247,7 @@ func detailWeights(t *testing.T, root, repo, file string, contextLength int) {
 func TestModelDetailSourceIdentityContract(t *testing.T) {
 	root := t.TempDir()
 	detailWeights(t, root, "org/a", "shared", 4096)
+	detailWeights(t, root, "org/a", "shared-Q8", 4096)
 	detailWeights(t, root, "org/b", "shared", 8192)
 	s := createSeededTestNode(t, seededTestNodeConfig{TestNodeConfig: TestNodeConfig{AdminKey: TestAdminKey, NodeName: "detail-node"}, modelsDir: root, providers: []string{"llamacpp", "vllm", "ollama", "huggingface"}, enabled: []string{"llamacpp"}})
 	for _, tc := range []struct {
@@ -263,6 +264,19 @@ func TestModelDetailSourceIdentityContract(t *testing.T) {
 	response := makeAuthRequest(t, s, "GET", "/zzrouter/v1/models/show?provider=llamacpp&model=shared", TestAdminKey, nil)
 	require.Equal(t, 409, response.Code, string(response.Body))
 	require.Contains(t, string(response.Body), `"code":"model_source_ambiguous"`)
+	for _, tc := range []struct {
+		name, source string
+		context      int
+	}{{"shared", "org/a", 4096}, {"shared", "org/b", 8192}, {"shared-Q8", "org/a", 4096}} {
+		query := url.Values{"model": {tc.name}, "source_id": {tc.source}, "registry": {"huggingface"}, "provider": {"llamacpp"}, "node": {"detail-node"}, "compact": {"true"}}
+		response := makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/models/show?"+query.Encode(), TestAdminKey, nil)
+		require.Equal(t, http.StatusOK, response.Code, string(response.Body))
+		show := detailData(t, response)
+		require.Equal(t, tc.name, show["name"], "source selector must not choose another variant in the same repository")
+		require.EqualValues(t, tc.context, show["model_info"].(map[string]any)["max_position_embeddings"])
+	}
+	response = makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/models/show?model=shared&provider=llamacpp&node=detail-node&source_id=missing", TestAdminKey, nil)
+	require.Equal(t, http.StatusNotFound, response.Code, "a stale source selector must not fall back to a different copy: %s", response.Body)
 }
 
 func TestModelDetailVariantAndGroupConstraintContract(t *testing.T) {

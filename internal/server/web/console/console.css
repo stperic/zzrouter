@@ -424,10 +424,10 @@ small {
 .field>span:first-child {
   font-weight:650
 }
-.field:has(input[type=checkbox]) { display:grid; grid-template-columns:20px minmax(0,1fr); align-items:center; gap:.25rem .75rem }
+.field:has(input[type=checkbox]) { display:grid; grid-template-columns:24px minmax(0,1fr); align-items:center; gap:.25rem .75rem; min-height:32px }
 .field:has(input[type=checkbox])>span { grid-column:2; grid-row:1 }
 .field:has(input[type=checkbox])>small { grid-column:2 }
-.field input[type=checkbox] { grid-column:1; grid-row:1; margin:0; padding:0; min-height:0; width:20px; height:20px; accent-color:var(--green) }
+.field input[type=checkbox] { grid-column:1; grid-row:1; margin:0; padding:0; min-height:0; width:24px; height:24px; accent-color:var(--green) }
 .field input,.field select,.field textarea {
   font:inherit;
   min-height:44px;
@@ -1103,9 +1103,20 @@ h1 {
 .access-section h3 { margin:0 0 .75rem; font-size:1rem }
 .access-section .muted,.inherited-policy .muted,.budget-summary .muted { font-size:.83rem; line-height:1.6 }
 .access-section summary { font-weight:600; cursor:pointer; padding-bottom:.7rem }
+.detail-body summary { min-height:28px; cursor:pointer }
 .entity-editor input,.entity-editor select { min-width:0; max-width:100%; font:inherit }
 .entity-editor .field>input:not([type=checkbox]),.entity-editor .field>select { min-height:44px; margin:0; box-sizing:border-box }
 .entity-editor .form-grid { grid-template-columns:repeat(2,minmax(0,1fr)) }
+.parameter-context { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.6rem 1rem; align-items:end; padding:1rem; border-radius:10px; background:#f4f7f3 }
+.parameter-context .field { margin:0 }
+.parameter-context button { grid-column:1/-1; justify-self:start }
+.parameter-setting { padding:1rem 0; border-bottom:1px solid var(--line); min-width:0 }
+.parameter-setting h3 { overflow-wrap:anywhere }
+.parameter-fields { min-width:0 }
+.log-output { max-width:100%; max-height:45vh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid var(--line); border-radius:10px; padding:1rem; background:#f6f8f5; color:#25352f; font: .82rem/1.65 ui-monospace,SFMono-Regular,Consolas,monospace }
+.setup-step { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:1.25rem 0; border-top:1px solid var(--line) }
+.setup-step h3,.setup-step p { margin:.35rem 0 }
+.setup-step button { flex-shrink:0 }
 .access-editor .access-limits { align-items:end; row-gap:1rem }
 .access-limits .field { margin-bottom:0 }
 .inherited-policy { margin-top:1rem; padding:1rem; background:#f4f7f3; border-radius:12px }
@@ -1134,6 +1145,7 @@ h1 {
 [hidden] { display:none!important }
 @media(max-width:480px) {
  .entity-editor .form-grid { grid-template-columns:minmax(0,1fr) }
+ .parameter-context { grid-template-columns:minmax(0,1fr) }
  .provider-choice { flex-wrap:wrap }
 }
 

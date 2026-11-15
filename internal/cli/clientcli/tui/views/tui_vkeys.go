@@ -44,8 +44,9 @@ type vkeysDeletedMsg struct {
 
 // vkeysCreatedMsg carries the result of creating a key.
 type vkeysCreatedMsg struct {
-	resp *pkgClient.CreateKeyResponse
-	err  error
+	owner *VkeysViewModel
+	resp  *pkgClient.CreateKeyResponse
+	err   error
 }
 
 // vkeysRotatedMsg carries the result of rotating a key.
@@ -79,9 +80,17 @@ type vkeysSavedKeyMsg struct {
 	err  error
 }
 
-// vkeysGroupsMsg carries available model group names for the allowed models picker.
-type vkeysGroupsMsg struct {
-	groups []string
+// vkeysTeamsMsg carries the server-owned policies for explicit team selection.
+type vkeysTeamsMsg struct {
+	owner *VkeysViewModel
+	teams []*pkgClient.TeamResponse
+	err   error
+}
+
+type vkeysUpdatedMsg struct {
+	owner *VkeysViewModel
+	key   *pkgClient.KeyResponse
+	err   error
 }
 
 // vkeysSpendMsg carries the total spend from the spend report.
@@ -96,15 +105,9 @@ const (
 	vkeysFieldID vkeysFormField = iota
 	vkeysFieldName
 	vkeysFieldRole
-	vkeysFieldRPM
-	vkeysFieldTPM
-	vkeysFieldMaxParallel
-	vkeysFieldBudgetMax
-	vkeysFieldBudgetPeriod
+	vkeysFieldTeam
 	vkeysFieldExpires
 )
-
-var vkeysBudgetPeriods = []string{"", "daily", "weekly", "monthly"}
 
 // vkeyItem wraps KeyResponse to satisfy tui.Item.
 type vkeyItem struct{ *pkgClient.KeyResponse }
@@ -143,27 +146,19 @@ type VkeysViewModel struct {
 	confirmAction  string // "delete", "rotate", "reset-usage", "suspend", "unsuspend"
 
 	// Overlay form: new/edit key
-	formID           textinput.Model
-	formName         textinput.Model
-	formRole         int // 0=user, 1=admin
-	formRPM          textinput.Model
-	formTPM          textinput.Model
-	formMaxParallel  textinput.Model
-	formBudgetMax    textinput.Model
-	formBudgetPeriod int // index into vkeysBudgetPeriods
-	formExpires      textinput.Model
-	formFocus        vkeysFormField
-
-	// Allowed models multi-select
-	availableGroups []string        // model group names from API
-	selectedGroups  map[string]bool // toggled model groups
-	groupsCursor    int             // cursor within the groups list
-	groupsLoaded    bool
-
-	// Metadata key-value pairs
-	formMetadata  map[string]string
-	formMetaKey   textinput.Model
-	formMetaValue textinput.Model
+	formID         textinput.Model
+	formName       textinput.Model
+	formRole       int // 0=user, 1=admin
+	formExpires    textinput.Model
+	formFocus      vkeysFormField
+	formDetail     tui.Detail
+	formTeamID     string
+	formHasExpiry  bool
+	teams          []*pkgClient.TeamResponse
+	teamsLoaded    bool
+	teamsErr       error
+	pending        bool
+	writeUncertain bool
 
 	// Raw key display
 	rawKeyValue string
@@ -193,23 +188,16 @@ func NewVkeysViewModel(client *pkgClient.Client, styles ui.Styles) *VkeysViewMod
 		Home: tui.VkeysKeys.Home, End: tui.VkeysKeys.End,
 	})
 	return &VkeysViewModel{
-		client:          client,
-		styles:          styles,
-		loading:         true,
-		list:            list,
-		detail:          detail,
-		confirm:         tui.NewConfirm(),
-		formID:          newFormInput("key-id", 64),
-		formName:        newFormInput("human-readable name", 128),
-		formRPM:         newFormInput("blank = unlimited", 16),
-		formTPM:         newFormInput("blank = unlimited", 16),
-		formMaxParallel: newFormInput("blank = unlimited", 8),
-		formBudgetMax:   newFormInput("blank = unlimited", 16),
-		formExpires:     newFormInput("YYYY-MM-DD, blank = never", 32),
-		selectedGroups:  make(map[string]bool),
-		formMetadata:    make(map[string]string),
-		formMetaKey:     newFormInput("key", 64),
-		formMetaValue:   newFormInput("value", 128),
+		client:      client,
+		styles:      styles,
+		loading:     true,
+		list:        list,
+		detail:      detail,
+		confirm:     tui.NewConfirm(),
+		formID:      newFormInput("key-id", 64),
+		formName:    newFormInput("human-readable name", 128),
+		formExpires: newFormInput("YYYY-MM-DD, blank = never", 64),
+		formDetail:  tui.NewDetail(),
 	}
 }
 
@@ -222,11 +210,8 @@ func NewVkeysViewModelFocused(client *pkgClient.Client, styles ui.Styles, focusI
 	return m
 }
 
-// Refresh implements tui.Refresher: reload keys when a child view (team
-// detail) pops, since membership changes there alter what keys report.
-// Groups and spend are left alone — they load once and the child can't
-// change them.
-func (m *VkeysViewModel) Refresh() tea.Cmd { return m.fetchKeysCmd() }
+// Refresh reloads keys and inherited policies after a console or team handoff.
+func (m *VkeysViewModel) Refresh() tea.Cmd { return tea.Batch(m.fetchKeysCmd(), m.fetchKeyTeamsCmd()) }
 
 func (m *VkeysViewModel) fetchKeysCmd() tea.Cmd {
 	client := m.client
@@ -243,19 +228,7 @@ func (m *VkeysViewModel) Init() tea.Cmd {
 		m.fetchKeysCmd(),
 		shared.SpinnerTickCmd(),
 	}
-	if !m.groupsLoaded {
-		cmds = append(cmds, func() tea.Msg {
-			groups, _, err := client.ListModelGroups()
-			if err != nil {
-				return vkeysGroupsMsg{groups: nil}
-			}
-			names := make([]string, len(groups))
-			for i, g := range groups {
-				names[i] = g.Name
-			}
-			return vkeysGroupsMsg{groups: names}
-		})
-	}
+	cmds = append(cmds, m.fetchKeyTeamsCmd())
 	if !m.spendLoaded {
 		cmds = append(cmds, func() tea.Msg {
 			report, err := client.GetSpendReport()
@@ -278,6 +251,15 @@ func (m *VkeysViewModel) selectedKey() *pkgClient.KeyResponse {
 
 // Update implements tea.Model.
 func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+	if m.Context().Err() != nil {
+		return m, nil
+	}
+	if m.pending {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseWheelMsg, tui.BreadcrumbClickMsg:
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
@@ -303,6 +285,8 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 	case tea.MouseWheelMsg:
 		if m.mode == vkeysViewList {
 			m.handleMouseWheel(msg)
+		} else if m.mode == vkeysViewDetail {
+			m.detail.UpdateWheel(msg)
 		}
 		return m, nil
 
@@ -313,9 +297,34 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		}
 		return m, nil
 
-	case vkeysGroupsMsg:
-		m.availableGroups = msg.groups
-		m.groupsLoaded = true
+	case vkeysTeamsMsg:
+		if msg.owner != m || m.Context().Err() != nil {
+			return m, nil
+		}
+		m.teams, m.teamsErr, m.teamsLoaded = msg.teams, msg.err, true
+		return m, nil
+
+	case vkeysUpdatedMsg:
+		if msg.owner != m || m.Context().Err() != nil {
+			return m, nil
+		}
+		m.pending = false
+		if msg.err != nil {
+			m.keyWriteFailed(msg.err)
+			return m, nil
+		}
+		if msg.key == nil || msg.key.ID != m.formID.Value() {
+			m.keyWriteFailed(fmt.Errorf("key response missing identity"))
+			return m, nil
+		}
+		m.mode = vkeysViewDetail
+		m.statusMsg = "Key updated. Team policy and additional key limits were preserved."
+		for i, k := range m.keys {
+			if k.ID == msg.key.ID {
+				m.keys[i] = msg.key
+				break
+			}
+		}
 		return m, nil
 
 	case vkeysSpendMsg:
@@ -338,9 +347,6 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 			items[i] = vkeyItem{k}
 		}
 		m.list.SetItems(items)
-		if m.mode == vkeysViewEditKey {
-			m.mode = vkeysViewDetail
-		}
 		if m.focusID != "" && msg.err == nil {
 			for i, k := range m.keys {
 				if k.ID == m.focusID {
@@ -372,8 +378,16 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, nil
 
 	case vkeysCreatedMsg:
+		if msg.owner != nil && msg.owner != m {
+			return m, nil
+		}
+		m.pending = false
 		if msg.err != nil {
-			m.statusMsg = msg.err.Error()
+			m.keyWriteFailed(msg.err)
+			return m, nil
+		}
+		if msg.resp == nil || msg.resp.Data.RawKey == "" {
+			m.keyWriteFailed(fmt.Errorf("key response missing secret"))
 			return m, nil
 		}
 		// Show the raw key
@@ -384,6 +398,7 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, nil
 
 	case vkeysRotatedMsg:
+		m.pending = false
 		m.confirmPending = false
 		if msg.err != nil {
 			m.statusMsg = msg.err.Error()
@@ -396,6 +411,7 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, nil
 
 	case vkeysDeletedMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -406,6 +422,7 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, m.Init()
 
 	case vkeysSuspendedMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -426,6 +443,7 @@ func (m *VkeysViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, nil
 
 	case vkeysUsageResetMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -505,7 +523,7 @@ func (m *VkeysViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case key.Matches(msg, tui.VkeysKeys.New):
 		m.openNewKeyForm()
-		return nil
+		return m.fetchKeyTeamsCmd()
 	case key.Matches(msg, tui.VkeysKeys.Delete):
 		if m.selectedKey() != nil {
 			m.confirmPending = true
@@ -587,6 +605,8 @@ func (m *VkeysViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				client := m.client
 				keyID := k.ID
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					err := client.DeleteKey(keyID)
 					return vkeysDeletedMsg{err: err}
@@ -597,6 +617,8 @@ func (m *VkeysViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				client := m.client
 				keyID := k.ID
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					resp, err := client.RotateKey(keyID)
 					return vkeysRotatedMsg{resp: resp, err: err}
@@ -607,6 +629,8 @@ func (m *VkeysViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				client := m.client
 				keyID := k.ID
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					err := client.ResetKeyUsage(keyID)
 					return vkeysUsageResetMsg{err: err}
@@ -618,6 +642,8 @@ func (m *VkeysViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				keyID := k.ID
 				suspend := m.confirmAction == "suspend"
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					req := &pkgClient.UpdateKeyRequest{Suspended: &suspend}
 					resp, err := client.UpdateKey(keyID, req)

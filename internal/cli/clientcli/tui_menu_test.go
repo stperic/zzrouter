@@ -93,7 +93,7 @@ func TestMenuEveryDestinationAndDefaultFocus(t *testing.T) {
 	for _, item := range visible {
 		top = append(top, item.item.name)
 	}
-	require.Equal(t, []string{"Models", "Providers", "Activity", "Manage"}, top)
+	require.Equal(t, []string{"Models", "Providers", "Activity", "Nodes", "Open web console", "Manage"}, top)
 	require.Equal(t, "Models", m.menu.Selected().Title())
 	_ = m.updateMenu(tea.KeyPressMsg{Code: tea.KeyEnter})
 	visible = m.syncMenu()
@@ -103,7 +103,8 @@ func TestMenuEveryDestinationAndDefaultFocus(t *testing.T) {
 	_ = m.updateMenu(tea.KeyPressMsg{Code: tea.KeyEnter})
 	visible = m.syncMenu()
 	want := map[tuiView]string{
-		tuiViewModels: "Available", tuiViewRunningModels: "Running", tuiViewSearch: "Discover",
+		tuiViewConsole: "Open web console",
+		tuiViewModels:  "Available", tuiViewRunningModels: "Running", tuiViewSearch: "Discover",
 		tuiViewProviders: "Providers", tuiViewDeploys: "Activity", tuiViewVkeys: "Keys", tuiViewTeams: "Teams",
 		tuiViewNodes: "Nodes", tuiViewLogs: "Logs", tuiViewPricing: "Pricing", tuiViewUpdate: "Software Update", tuiViewQuickstart: "Guided Setup",
 	}

@@ -82,6 +82,7 @@ Quick Start:
 		NewKeysCmd(),
 	)
 	addGroup(root, groupUtility,
+		NewConsoleCmd(),
 		NewQuickstartCmd(),
 		NewTUICmd(),
 		NewLogsCmd(),

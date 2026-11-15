@@ -11,17 +11,14 @@ import (
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/ui"
-	"github.com/stperic/zzrouter/pkg/ui/form"
 )
 
 // teamsViewMode tracks what the teams view is showing.
 type teamsViewMode int
 
 const (
-	teamsViewList     teamsViewMode = iota // Table list
-	teamsViewDetail                        // Detail panel for selected team
-	teamsViewNewTeam                       // Overlay: create new team
-	teamsViewEditTeam                      // Overlay: edit team settings
+	teamsViewList   teamsViewMode = iota // Table list
+	teamsViewDetail                      // Detail panel for selected team
 )
 
 // teamsLoadedMsg carries the result of fetching teams.
@@ -49,46 +46,14 @@ type teamsSuspendedMsg struct {
 	err  error
 }
 
-// teamsSavedMsg carries the result of create/update.
-type teamsSavedMsg struct {
-	team *pkgClient.TeamResponse
-	err  error
-}
-
 // teamsUsageResetMsg carries the result of resetting team usage.
 type teamsUsageResetMsg struct {
 	err error
 }
 
-// teamsGroupsMsg carries available model group names for the allowed models picker.
-type teamsGroupsMsg struct {
-	groups []string
-}
-
-// teamsKeysMsg carries the available virtual keys for the member picker.
+// teamsKeysMsg carries the available keys for the team roster.
 type teamsKeysMsg struct {
 	keys []*pkgClient.KeyResponse
-}
-
-// slugify converts a human name into a URL-safe team ID.
-// "My Team 01" → "my-team-01". Collapses runs of non-alphanumerics to
-// a single dash and trims leading/trailing dashes.
-func slugify(name string) string {
-	var b strings.Builder
-	prevDash := true
-	for _, r := range strings.ToLower(name) {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-			prevDash = false
-		default:
-			if !prevDash {
-				b.WriteByte('-')
-				prevDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
 
 // teamItem wraps TeamResponse to satisfy tui.Item.
@@ -123,20 +88,7 @@ type TeamsViewModel struct {
 	confirmPending bool
 	confirmAction  string // "delete", "reset-usage", "suspend", "unsuspend"
 
-	// Overlay form — built on pkg/ui/form. teamForm owns navigation; the
-	// named handles below give saveTeamForm direct access to field values.
-	// teamID holds the existing team id in edit mode (not user-editable).
-	teamForm      *form.Form
-	fName         *form.TextField
-	fRPM          *form.TextField
-	fTPM          *form.TextField
-	fMaxParallel  *form.TextField
-	fBudgetMax    *form.TextField
-	fBudgetPeriod *form.RadioField
-	fModels       *form.ChecklistField
-	teamID        string
-
-	groupsLoaded bool
+	pending bool
 
 	// Key roster — loaded once via ListKeys, used to render the "Keys in team"
 	// section of the detail view (filtered by TeamID client-side) and the
@@ -175,40 +127,14 @@ func NewTeamsViewModel(client *pkgClient.Client, styles ui.Styles) *TeamsViewMod
 		confirm: tui.NewConfirm(),
 	}
 
-	m.fName = form.NewText("Name", "human-readable name", 128)
-	m.fRPM = form.NewText("RPM Limit", "blank = unlimited", 16)
-	m.fTPM = form.NewText("TPM Limit", "blank = unlimited", 16)
-	m.fMaxParallel = form.NewText("Max Parallel", "blank = unlimited", 8)
-	m.fBudgetMax = form.NewText("Budget (USD)", "blank = unlimited", 16)
-	m.fBudgetPeriod = form.NewRadio(
-		"Budget Period",
-		[]string{"none", "daily", "weekly", "monthly"},
-		[]string{"", "daily", "weekly", "monthly"},
-	)
-	m.fModels = form.NewChecklist(
-		"Allowed Models",
-		nil,
-		"(no routes configured: all allowed)",
-		"all (use Space to restrict)",
-	)
-
-	m.teamForm = form.New(
-		m.fName,
-		m.fRPM,
-		m.fTPM,
-		m.fMaxParallel,
-		m.fBudgetMax,
-		m.fBudgetPeriod,
-		m.fModels,
-	)
-
 	return m
 }
 
-// Refresh implements tui.Refresher: reload teams when a child view (key
-// detail) pops, since a key's team assignment can change there. Groups and
-// keys are left alone — they load once and the child can't change them.
-func (m *TeamsViewModel) Refresh() tea.Cmd { return m.fetchTeamsCmd() }
+// Refresh reloads policy and membership after a console or key handoff.
+func (m *TeamsViewModel) Refresh() tea.Cmd {
+	m.keysLoaded = false
+	return m.Init()
+}
 
 func (m *TeamsViewModel) fetchTeamsCmd() tea.Cmd {
 	client := m.client
@@ -224,19 +150,6 @@ func (m *TeamsViewModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.fetchTeamsCmd(),
 		shared.SpinnerTickCmd(),
-	}
-	if !m.groupsLoaded {
-		cmds = append(cmds, func() tea.Msg {
-			groups, _, err := client.ListModelGroups()
-			if err != nil {
-				return teamsGroupsMsg{groups: nil}
-			}
-			names := make([]string, len(groups))
-			for i, g := range groups {
-				names[i] = g.Name
-			}
-			return teamsGroupsMsg{groups: names}
-		})
 	}
 	if !m.keysLoaded {
 		cmds = append(cmds, func() tea.Msg {
@@ -269,6 +182,15 @@ func (m *TeamsViewModel) selectedTeam() *pkgClient.TeamResponse {
 
 // Update implements tea.Model.
 func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+	if m.Context().Err() != nil {
+		return m, nil
+	}
+	if m.pending {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseWheelMsg, tui.BreadcrumbClickMsg:
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
@@ -294,6 +216,8 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 	case tea.MouseWheelMsg:
 		if m.mode == teamsViewList {
 			m.handleMouseWheel(msg)
+		} else if m.mode == teamsViewDetail {
+			m.detail.UpdateWheel(msg)
 		}
 		return m, nil
 
@@ -302,11 +226,6 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 			m.loadTick++
 			return m, shared.SpinnerTickCmd()
 		}
-		return m, nil
-
-	case teamsGroupsMsg:
-		m.fModels.SetOptions(msg.groups)
-		m.groupsLoaded = true
 		return m, nil
 
 	case teamsKeysMsg:
@@ -329,9 +248,6 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 			items[i] = teamItem{t}
 		}
 		m.list.SetItems(items)
-		if m.mode == teamsViewEditTeam {
-			m.mode = teamsViewDetail
-		}
 		if m.focusID != "" && msg.err == nil {
 			for i, t := range m.teams {
 				if t.ID == m.focusID {
@@ -361,17 +277,8 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		m.usageErr = msg.err
 		return m, nil
 
-	case teamsSavedMsg:
-		if msg.err != nil {
-			m.statusMsg = msg.err.Error()
-			return m, nil
-		}
-		m.statusMsg = ""
-		m.mode = teamsViewList
-		m.loading = true
-		return m, m.Init()
-
 	case teamsDeletedMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -382,6 +289,7 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, m.Init()
 
 	case teamsSuspendedMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -400,6 +308,7 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		return m, nil
 
 	case teamsUsageResetMsg:
+		m.pending = false
 		m.confirmPending = false
 		m.confirmAction = ""
 		if msg.err != nil {
@@ -424,8 +333,6 @@ func (m *TeamsViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:goc
 		switch m.mode {
 		case teamsViewDetail:
 			return m, m.updateDetail(msg)
-		case teamsViewNewTeam, teamsViewEditTeam:
-			return m, m.updateTeamForm(msg)
 		default:
 			return m, m.updateList(msg)
 		}
@@ -460,15 +367,14 @@ func (m *TeamsViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		return nil
 	case key.Matches(msg, tui.TeamsKeys.New):
-		m.openNewTeamForm()
-		return nil
+		return tui.NavTo(NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{Page: "access", Item: "teams", Mode: "create"}))
 	case key.Matches(msg, tui.TeamsKeys.Delete):
 		if t := m.selectedTeam(); t != nil {
 			if n := countTeamKeys(m.availableKeys, t.ID); n > 0 {
 				// Server rejects delete on non-empty teams with 409. Short-circuit
 				// here so the user sees an actionable message instead of a
 				// confirm prompt followed by a cryptic API error.
-				m.statusMsg = fmt.Sprintf("Team %q still has %d key(s). Delete or re-home them first.", t.ID, n)
+				m.statusMsg = fmt.Sprintf("Team %q still has %d key(s). Delete their keys first. Membership cannot be changed.", t.ID, n)
 				return nil
 			}
 			m.statusMsg = ""
@@ -495,7 +401,7 @@ func (m *TeamsViewModel) updateDetail(msg tea.KeyPressMsg) tea.Cmd {
 	switch {
 	case key.Matches(msg, tui.TeamsKeys.Edit):
 		if t := m.selectedTeam(); t != nil {
-			m.openEditTeamForm(t)
+			return tui.NavTo(NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{Page: "access", Item: "teams/" + t.ID}))
 		}
 		return nil
 	case key.Matches(msg, tui.TeamsKeys.Suspend):
@@ -533,7 +439,7 @@ func (m *TeamsViewModel) updateDetail(msg tea.KeyPressMsg) tea.Cmd {
 	case key.Matches(msg, tui.TeamsKeys.Delete):
 		if t := m.selectedTeam(); t != nil {
 			if n := countTeamKeys(m.availableKeys, t.ID); n > 0 {
-				m.statusMsg = fmt.Sprintf("Team %q still has %d key(s). Delete or re-home them first.", t.ID, n)
+				m.statusMsg = fmt.Sprintf("Team %q still has %d key(s). Delete their keys first. Membership cannot be changed.", t.ID, n)
 				return nil
 			}
 			m.statusMsg = ""
@@ -559,6 +465,8 @@ func (m *TeamsViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				client := m.client
 				teamID := t.ID
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					err := client.DeleteTeam(teamID)
 					return teamsDeletedMsg{err: err}
@@ -569,6 +477,8 @@ func (m *TeamsViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				client := m.client
 				teamID := t.ID
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					err := client.ResetTeamUsage(teamID)
 					return teamsUsageResetMsg{err: err}
@@ -580,6 +490,8 @@ func (m *TeamsViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 				teamID := t.ID
 				suspend := m.confirmAction == "suspend"
 				m.confirmPending = false
+				m.pending = true
+				m.statusMsg = "Saving..."
 				return func() tea.Msg {
 					req := &pkgClient.UpdateTeamRequest{Suspended: &suspend}
 					team, err := client.UpdateTeam(teamID, req)
@@ -645,13 +557,6 @@ func (m *TeamsViewModel) Breadcrumb() []string {
 			return []string{title, t.Name}
 		}
 		return []string{title, "Details"}
-	case teamsViewNewTeam:
-		return []string{title, "New Team"}
-	case teamsViewEditTeam:
-		if t := m.selectedTeam(); t != nil {
-			return []string{title, t.Name, "Edit"}
-		}
-		return []string{title, "Edit"}
 	default:
 		return []string{title}
 	}
@@ -673,10 +578,6 @@ func (m *TeamsViewModel) viewContent() string {
 	switch m.mode {
 	case teamsViewDetail:
 		return m.viewDetail(m.termWidth, m.termHeight)
-	case teamsViewNewTeam:
-		return m.viewTeamFormOverlay(m.termWidth, m.termHeight, "New Team")
-	case teamsViewEditTeam:
-		return m.viewTeamFormOverlay(m.termWidth, m.termHeight, "Edit Team")
 	default:
 		return m.viewList(m.termWidth, m.termHeight)
 	}
@@ -688,7 +589,7 @@ func (m *TeamsViewModel) viewList(width, height int) string { //nolint:unparam /
 		LoadTick:  m.loadTick,
 		Err:       m.err,
 		Empty:     len(m.teams) == 0,
-		EmptyText: "No teams configured. Press N to create one.",
+		EmptyText: "No teams configured. Press N to create one in the web console.",
 		BackHint:  tui.Hint(tui.ListKeys.Back, "back"),
 		EmptyHint: tui.JoinHints(tui.Hint(tui.TeamsKeys.New, "new team"), tui.Hint(tui.ListKeys.Back, "back")),
 	}); done {
@@ -744,3 +645,6 @@ func (m *TeamsViewModel) viewList(width, height int) string { //nolint:unparam /
 
 	return b.String()
 }
+
+// NavigationBlocked keeps the selected team stable until its write completes.
+func (m *TeamsViewModel) NavigationBlocked() bool { return m.pending }

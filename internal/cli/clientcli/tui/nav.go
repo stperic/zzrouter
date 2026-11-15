@@ -80,4 +80,5 @@ const (
 	ViewPricing
 	ViewUpdate
 	ViewRunningModels
+	ViewConsole
 )

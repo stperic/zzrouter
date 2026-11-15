@@ -7,14 +7,24 @@ links to the configured origin when the current address differs.
 For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)
 before signing in.
 
-Sign in with a zzRouter key. Administrator keys open Overview, Nodes, Workloads, Clients, Providers,
-Routes, Keys & teams and Settings. User keys open My Access, with their
+Sign in with a zzRouter key. Administrator keys open Overview, Chat, Models,
+Nodes, Workloads, Logs, Clients, Providers, Routes, Keys & teams and System.
+User keys open Chat and My Access, with their
 own model policy, limits, recorded usage and MCP grants. Keys remain the identity
 model; the console does not introduce a separate account or role database.
 
 ## Shared selection and editing
 
-Overview, Nodes, Workloads, Clients, Providers, Routes and Keys & teams share one nonmodal
+The console is the complete interactive management surface. In the terminal,
+choose **Open web console** or run `zzrouter console`. Use `zzrouter console
+--print` to print the configured URL without opening a browser. SSH/headless
+sessions and structured output also retain a URL instead of launching a browser.
+Discovery uses the coordinator's public OAuth issuer and never puts an API key
+or browser session in the URL. Initial node startup and local recovery remain
+terminal operations.
+
+Overview, Nodes, Models, Workloads, Logs, Clients, Providers, Routes, Keys & teams
+and System management share one nonmodal
 right-side panel. Select a graph icon, card or table row to inspect details. A
 native name button also supports keyboard selection. The selected item remains
 highlighted. Editable resources expose one Edit action inside the panel; Save
@@ -36,6 +46,53 @@ refresh/recovery responses cannot replace a newer selection or draft. Search,
 pagination and the map viewport remain intact while opening and closing panels.
 At narrow widths, the panel occupies the workspace and Close returns to its list
 or map. Forms share readable control sizes and a consistent action footer.
+
+## Models, runtime management and downloads
+
+Models separates available inventory from discovery. Available models have exact
+node/provider identities, details, an explicit inference test, Chat, run creation,
+parameters and deletion. Deletion reports partial errors; a successful HTTP
+response alone does not imply every requested copy was removed. Model-to-Chat
+handoff retains the selected compute node.
+
+Discover uses declared registry/provider search capabilities, cards, variant and
+feature choices. Download review shows the exact provider, file and target nodes.
+Capacity is advisory; unknown capacity does not silently remove a target. Accepted
+downloads remain inspectable under Workloads > Downloads, including per-node jobs
+and cancellation. Job acceptance or disappearance never establishes completion.
+
+Providers > Manage runtime offers prerequisites, optional runtime components,
+reviewed install plans, per-step or full execution, verification, copied reported
+commands, service controls, versions, cluster version pins and upgrades. Execution
+is bound to the reviewed plan ID and resolved options. Remote Ollama connections
+use the existing provider-instance API.
+
+Parameters show the exact configured scope separately from effective values and
+their provenance: provider defaults, model, node or node/model, optionally narrowed
+to a supported endpoint. The API supplies schema types and valid endpoints. A
+cleared override sends merge-patch null; unrelated values are omitted. Environment
+values require deliberate reveal and are cleared on exit. Editors reread changed
+fields before saving; the API does not atomically lock concurrent editors, so a
+second editor can still race during the save.
+
+## Logs and system management
+
+Run details open bounded runtime output with explicit Follow/Pause. Reconnecting
+replaces the buffer because the API replays from the beginning. Identical output
+lines remain distinct. Job cancellation preserves the exact node and job identity;
+an accepted cancellation is followed by observation rather than assumed success.
+
+Logs supports model, status, time, key and team filters, retained request details,
+an explicit live feed and deliberate payload reveal. Inline prompts are excluded
+from retained list buffers. Live reset/dropped-event evidence remains visible;
+disconnecting is not completion. Payloads stay only in the current panel.
+
+System groups observed setup guidance, software and pricing. Software shows each
+node's version and partial failures, history, explicit release/target rollouts,
+per-node scheduled-update settings and coordinator rollback. Interrupted updates
+are reconciled through status/history without replaying writes. Pricing separates
+catalog rates, overrides and unpriced observations. Override editors preserve
+cached-input rates and use USD per million tokens. Team budgets remain in teams.
 
 ## Overview and node details
 
@@ -117,7 +174,8 @@ Edit node settings changes provider enablement on the selected node through the
 existing node-addressed PATCH API. Edited fields are rechecked before writing;
 that API has no atomic revision guard, so concurrent editors still require
 coordination. Node names are certificate-bound identities, not editable labels.
-Provider installation remains in the terminal client.
+Provider installation is available under Providers: select a local provider,
+choose its compute node and open Manage runtime.
 
 + Add node accepts the HTTPS cluster address, fingerprint and pairing code printed
 by the new node's terminal pairing workflow. The browser authenticates enrollment
@@ -237,12 +295,13 @@ separate from observed activity and never presented as connected clients.
 
 Providers opens Local providers first, followed by Cloud providers and Model registries, including
 disabled services and Hugging Face. Select a local provider to see its reported
-installation and enablement on each node. Use the terminal client for installing
-providers and managing local runtimes. Any editable connection still belongs to
+installation and enablement on each node. Choose a compute node and open Manage
+runtime for installation, service controls, parameters and versions. An editable
+cloud or registry connection still belongs to
 the coordinator; it does not change a worker's credentials.
 Enablement and installation flags describe the node's effective provider state.
 They do not distinguish every installation phase or say whether a model is
-running. Use the terminal job view for installation progress.
+running. Inspect the returned job for installation progress.
 
 Cloud and registry forms come from the provider's declared connection schema,
 including endpoint, region and account fields where applicable.
@@ -475,7 +534,7 @@ Cross-tab messages carry only an authentication-state event.
 Pagehide scrubs transient secrets; a full reload does not preserve values or
 in-memory outcome notices.
 
-Settings shows effective public URL and authentication facts. Listener, issuer,
+System also shows the effective public URL and authentication facts. Listener, issuer,
 TLS and protection-key configuration remains a local installation concern and
 requires restart. See [configuration](configuration.md#mcp-browser-login),
 [security](security.md#mcp-browser-authorization), and

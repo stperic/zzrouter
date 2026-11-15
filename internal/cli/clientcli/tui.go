@@ -78,6 +78,7 @@ const (
 	tuiViewDeploys       tuiView = tui.ViewDeploys
 	tuiViewPricing       tuiView = tui.ViewPricing
 	tuiViewUpdate        tuiView = tui.ViewUpdate
+	tuiViewConsole       tuiView = tui.ViewConsole
 )
 
 // tuiPane identifies which UI rail is currently active. The host renders
@@ -485,6 +486,8 @@ func (m *tuiModel) viewForKind(view tuiView) tea.Model {
 		return views.NewPricingViewModel(m.client, m.styles)
 	case tuiViewUpdate:
 		return views.NewUpdateViewModel(m.client, m.styles)
+	case tuiViewConsole:
+		return views.NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{})
 	}
 	return nil
 }

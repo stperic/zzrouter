@@ -1,12 +1,12 @@
 package views
 
 import (
+	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -16,24 +16,18 @@ import (
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 )
 
-// --- Key form (new / edit) ---
-
 func (m *VkeysViewModel) openNewKeyForm() {
 	m.mode = vkeysViewNewKey
 	m.formID.SetValue("")
 	m.formName.SetValue("")
 	m.formRole = 0
-	m.formRPM.SetValue("")
-	m.formTPM.SetValue("")
-	m.formMaxParallel.SetValue("")
-	m.formBudgetMax.SetValue("")
-	m.formBudgetPeriod = 0
+	m.formTeamID = ""
+	m.formHasExpiry = false
 	m.formExpires.SetValue("")
 	m.formFocus = vkeysFieldID
 	m.statusMsg = ""
-	m.selectedGroups = make(map[string]bool)
-	m.groupsCursor = 0
-	m.formMetadata = make(map[string]string)
+	m.writeUncertain = false
+	m.formDetail.Reset()
 	m.setKeyFormFocus()
 }
 
@@ -45,124 +39,93 @@ func (m *VkeysViewModel) openEditKeyForm(k *pkgClient.KeyResponse) {
 	if k.Role == "admin" {
 		m.formRole = 1
 	}
-	if k.RPMLimit > 0 {
-		m.formRPM.SetValue(strconv.Itoa(k.RPMLimit))
-	} else {
-		m.formRPM.SetValue("")
-	}
-	if k.TPMLimit > 0 {
-		m.formTPM.SetValue(strconv.Itoa(k.TPMLimit))
-	} else {
-		m.formTPM.SetValue("")
-	}
-	if k.MaxParallelRequests > 0 {
-		m.formMaxParallel.SetValue(strconv.Itoa(k.MaxParallelRequests))
-	} else {
-		m.formMaxParallel.SetValue("")
-	}
-	if k.SpendLimit > 0 {
-		m.formBudgetMax.SetValue(fmt.Sprintf("%.2f", k.SpendLimit))
-	} else {
-		m.formBudgetMax.SetValue("")
-	}
-	m.formBudgetPeriod = 0
-	for i, p := range vkeysBudgetPeriods {
-		if p == k.ResetPeriod {
-			m.formBudgetPeriod = i
-			break
-		}
-	}
+	m.formTeamID = k.TeamID
+	m.formHasExpiry = k.ExpiresAt != nil
+	m.formExpires.SetValue("")
 	if k.ExpiresAt != nil {
-		exp := *k.ExpiresAt
-		if len(exp) >= 10 {
-			m.formExpires.SetValue(exp[:10])
-		} else {
-			m.formExpires.SetValue(exp)
-		}
-	} else {
-		m.formExpires.SetValue("")
+		m.formExpires.SetValue(*k.ExpiresAt)
 	}
-	m.formMetadata = make(map[string]string)
-	maps.Copy(m.formMetadata, k.Metadata)
 	m.formFocus = vkeysFieldName
 	m.statusMsg = ""
+	m.writeUncertain = false
+	m.formDetail.Reset()
 	m.setKeyFormFocus()
 }
 
 func (m *VkeysViewModel) setKeyFormFocus() {
 	m.formID.Blur()
 	m.formName.Blur()
-	m.formRPM.Blur()
-	m.formTPM.Blur()
-	m.formMaxParallel.Blur()
-	m.formBudgetMax.Blur()
 	m.formExpires.Blur()
-
 	switch m.formFocus {
 	case vkeysFieldID:
 		m.formID.Focus()
 	case vkeysFieldName:
 		m.formName.Focus()
-	case vkeysFieldRPM:
-		m.formRPM.Focus()
-	case vkeysFieldTPM:
-		m.formTPM.Focus()
-	case vkeysFieldMaxParallel:
-		m.formMaxParallel.Focus()
-	case vkeysFieldBudgetMax:
-		m.formBudgetMax.Focus()
 	case vkeysFieldExpires:
 		m.formExpires.Focus()
-		// AllowedModels is a toggle list — no text focus
 	}
 }
 
-func (m *VkeysViewModel) updateKeyForm(msg tea.KeyPressMsg) tea.Cmd { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
-	switch {
-	case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
-		switch m.formFocus {
-		case vkeysFieldID:
-			m.formFocus = vkeysFieldName
-		case vkeysFieldName:
-			m.formFocus = vkeysFieldRole
-		case vkeysFieldRole:
-			m.formFocus = vkeysFieldRPM
-		case vkeysFieldRPM:
-			m.formFocus = vkeysFieldTPM
-		case vkeysFieldTPM:
-			m.formFocus = vkeysFieldMaxParallel
-		case vkeysFieldMaxParallel:
-			m.formFocus = vkeysFieldBudgetMax
-		case vkeysFieldBudgetMax:
-			m.formFocus = vkeysFieldBudgetPeriod
-		case vkeysFieldBudgetPeriod:
-			m.formFocus = vkeysFieldExpires
-		case vkeysFieldExpires:
-			if m.mode == vkeysViewNewKey {
-				m.formFocus = vkeysFieldID
-			} else {
-				m.formFocus = vkeysFieldName
+func (m *VkeysViewModel) updateKeyForm(msg tea.KeyPressMsg) tea.Cmd {
+	if m.pending {
+		return nil
+	}
+	switch msg.String() {
+	case "pgup", "pgdown", "home", "end":
+		m.formDetail.UpdateKey(msg)
+		return nil
+	case "tab", "shift+tab":
+		m.formDetail.Reset()
+		fields := []vkeysFormField{vkeysFieldName, vkeysFieldRole, vkeysFieldExpires}
+		if m.mode == vkeysViewNewKey {
+			fields = []vkeysFormField{vkeysFieldID, vkeysFieldName, vkeysFieldTeam, vkeysFieldRole, vkeysFieldExpires}
+		}
+		for i, field := range fields {
+			if m.formFocus == field {
+				step := 1
+				if msg.String() == "shift+tab" {
+					step = -1
+				}
+				m.formFocus = fields[(i+step+len(fields))%len(fields)]
+				break
 			}
 		}
 		m.setKeyFormFocus()
 		return nil
-
-	case m.formFocus == vkeysFieldRole && (key.Matches(msg, key.NewBinding(key.WithKeys("left"))) || key.Matches(msg, key.NewBinding(key.WithKeys("right")))):
-		m.formRole = 1 - m.formRole
-		return nil
-
-	case m.formFocus == vkeysFieldBudgetPeriod && (key.Matches(msg, key.NewBinding(key.WithKeys("left"))) || key.Matches(msg, key.NewBinding(key.WithKeys("right")))):
-		if msg.String() == "left" && m.formBudgetPeriod > 0 {
-			m.formBudgetPeriod--
-		} else if msg.String() == "right" && m.formBudgetPeriod < len(vkeysBudgetPeriods)-1 {
-			m.formBudgetPeriod++
+	case "left", "right":
+		if m.formFocus == vkeysFieldRole {
+			m.formRole = 1 - m.formRole
+			return nil
 		}
-		return nil
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+s"))):
+		if m.formFocus == vkeysFieldTeam {
+			teams := m.sharedTeams()
+			if len(teams) == 0 {
+				return nil
+			}
+			index := -1
+			for i, team := range teams {
+				if team.ID == m.formTeamID {
+					index = i
+					break
+				}
+			}
+			step := 1
+			if msg.String() == "left" {
+				step = -1
+			}
+			if index < 0 {
+				index = 0
+			} else {
+				index = (index + step + len(teams)) % len(teams)
+			}
+			m.formTeamID = teams[index].ID
+			return nil
+		}
+	case "ctrl+s":
 		return m.saveKeyForm()
-
-	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
+	case "ctrl+o":
+		return tui.NavTo(NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{Page: "access", Item: "teams"}))
+	case "esc":
 		if m.mode == vkeysViewEditKey {
 			m.mode = vkeysViewDetail
 		} else {
@@ -170,207 +133,215 @@ func (m *VkeysViewModel) updateKeyForm(msg tea.KeyPressMsg) tea.Cmd { //nolint:g
 		}
 		m.statusMsg = ""
 		return nil
-
-	default:
-		var cmd tea.Cmd
-		switch m.formFocus {
-		case vkeysFieldID:
-			m.formID, cmd = m.formID.Update(msg)
-		case vkeysFieldName:
-			m.formName, cmd = m.formName.Update(msg)
-		case vkeysFieldRPM:
-			m.formRPM, cmd = m.formRPM.Update(msg)
-		case vkeysFieldTPM:
-			m.formTPM, cmd = m.formTPM.Update(msg)
-		case vkeysFieldMaxParallel:
-			m.formMaxParallel, cmd = m.formMaxParallel.Update(msg)
-		case vkeysFieldBudgetMax:
-			m.formBudgetMax, cmd = m.formBudgetMax.Update(msg)
-		case vkeysFieldExpires:
-			m.formExpires, cmd = m.formExpires.Update(msg)
-		}
-		return cmd
 	}
+	var cmd tea.Cmd
+	switch m.formFocus {
+	case vkeysFieldID:
+		m.formID, cmd = m.formID.Update(msg)
+	case vkeysFieldName:
+		m.formName, cmd = m.formName.Update(msg)
+	case vkeysFieldExpires:
+		m.formExpires, cmd = m.formExpires.Update(msg)
+	}
+	return cmd
+}
+
+func (m *VkeysViewModel) sharedTeams() []*pkgClient.TeamResponse {
+	var result []*pkgClient.TeamResponse
+	if m.teamsErr != nil || !m.teamsLoaded {
+		return result
+	}
+	for _, team := range m.teams {
+		if team.Kind == "shared" && !team.Suspended {
+			result = append(result, team)
+		}
+	}
+	return result
+}
+
+func (m *VkeysViewModel) keyTeam() *pkgClient.TeamResponse {
+	for _, team := range m.teams {
+		if team.ID == m.formTeamID {
+			return team
+		}
+	}
+	return nil
+}
+
+// keyExpiry accepts the displayed RFC3339 value unchanged, or a date ending at
+// 23:59:59 UTC. The API currently has no operation for clearing an expiry.
+func keyExpiry(value string) (*string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if len(value) == len("2006-01-02") {
+		value += "T23:59:59Z"
+	}
+	_, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("expiry must be YYYY-MM-DD or an RFC3339 timestamp")
+	}
+	return &value, nil
 }
 
 func (m *VkeysViewModel) saveKeyForm() tea.Cmd {
-	id := strings.TrimSpace(m.formID.Value())
-	name := strings.TrimSpace(m.formName.Value())
-
-	if m.mode == vkeysViewNewKey && id == "" {
-		m.statusMsg = "Key ID is required"
+	if m.pending || m.writeUncertain {
 		return nil
 	}
-	if name == "" {
-		m.statusMsg = "Name is required"
+	m.formDetail.Reset()
+	id, name := strings.TrimSpace(m.formID.Value()), strings.TrimSpace(m.formName.Value())
+	if id == "" || name == "" {
+		m.statusMsg = "Key ID and name are required"
 		return nil
 	}
-
 	role := "user"
 	if m.formRole == 1 {
 		role = "admin"
 	}
-
-	rpm, _ := strconv.Atoi(strings.TrimSpace(m.formRPM.Value()))
-	tpm, _ := strconv.Atoi(strings.TrimSpace(m.formTPM.Value()))
-	maxPar, _ := strconv.Atoi(strings.TrimSpace(m.formMaxParallel.Value()))
-
-	var spendLimit float64
-	var resetPeriod string
-	budgetMaxStr := strings.TrimSpace(m.formBudgetMax.Value())
-	if budgetMaxStr != "" {
-		parsed, err := strconv.ParseFloat(budgetMaxStr, 64)
-		if err != nil {
-			m.statusMsg = "Invalid budget amount"
+	expires, err := keyExpiry(m.formExpires.Value())
+	if err != nil {
+		m.statusMsg = err.Error()
+		return nil
+	}
+	client, ctx := m.client, m.Context()
+	if m.mode == vkeysViewNewKey {
+		var chosen *pkgClient.TeamResponse
+		for _, team := range m.sharedTeams() {
+			if team.ID == m.formTeamID {
+				chosen = team
+				break
+			}
+		}
+		if chosen == nil {
+			m.statusMsg = "Select an active shared team. Manage teams with Ctrl+O."
 			return nil
 		}
-		spendLimit = parsed
-		resetPeriod = vkeysBudgetPeriods[m.formBudgetPeriod]
-		if resetPeriod == "" {
-			resetPeriod = "monthly"
-		}
-	}
-
-	var expiresAt *string
-	expStr := strings.TrimSpace(m.formExpires.Value())
-	if expStr != "" {
-		// Convert YYYY-MM-DD to RFC3339
-		rfc := expStr + "T23:59:59Z"
-		expiresAt = &rfc
-	}
-
-	client := m.client
-
-	if m.mode == vkeysViewNewKey {
-		var metadata map[string]string
-		if len(m.formMetadata) > 0 {
-			metadata = m.formMetadata
-		}
-		req := &pkgClient.CreateKeyRequest{
-			ID:                  id,
-			Name:                name,
-			Role:                role,
-			RPMLimit:            rpm,
-			TPMLimit:            tpm,
-			MaxParallelRequests: maxPar,
-			SpendLimit:          spendLimit,
-			ResetPeriod:         resetPeriod,
-			ExpiresAt:           expiresAt,
-			Metadata:            metadata,
-		}
+		req := &pkgClient.CreateKeyRequest{ID: id, Name: name, Role: role, TeamID: chosen.ID, TeamRole: "member", ExpiresAt: expires}
+		m.pending, m.statusMsg = true, "Creating key..."
 		return func() tea.Msg {
-			resp, err := client.CreateKey(req)
-			return vkeysCreatedMsg{resp: resp, err: err}
+			resp, err := client.CreateKeyContext(ctx, req)
+			if ctx.Err() != nil {
+				return nil
+			}
+			return vkeysCreatedMsg{owner: m, resp: resp, err: err}
 		}
 	}
-
-	// Edit mode — PATCH with partial update
-	keyID := strings.TrimSpace(m.formID.Value())
-	req := &pkgClient.UpdateKeyRequest{
-		Name: &name,
-		Role: &role,
+	// Credentials and expiry only. Team membership is immutable; all quota and
+	// metadata fields are omitted so existing additional limits are preserved.
+	if m.formHasExpiry && expires == nil {
+		m.statusMsg = "The API cannot remove an expiry. Keep the existing timestamp or enter a new date."
+		return nil
 	}
-	if rpm > 0 {
-		req.RPMLimit = &rpm
-	}
-	if tpm > 0 {
-		req.TPMLimit = &tpm
-	}
-	if maxPar > 0 {
-		req.MaxParallelRequests = &maxPar
-	}
-	// Always send spend limit + reset period so clearing the field in the UI
-	// actually clears the server-side limit (rather than leaving the old value).
-	req.SpendLimit = &spendLimit
-	req.ResetPeriod = &resetPeriod
-	req.ExpiresAt = expiresAt
-	if len(m.formMetadata) > 0 {
-		req.Metadata = m.formMetadata
-	}
-
+	req := &pkgClient.UpdateKeyRequest{Name: &name, Role: &role, ExpiresAt: expires}
+	m.pending, m.statusMsg = true, "Saving key..."
 	return func() tea.Msg {
-		_, err := client.UpdateKey(keyID, req)
-		if err != nil {
-			return vkeysCreatedMsg{err: err} // reuse msg type for error display
+		updated, err := client.UpdateKeyContext(ctx, id, req)
+		if ctx.Err() != nil {
+			return nil
 		}
-		// Refresh the list
-		keys, err := client.ListKeys()
-		return vkeysLoadedMsg{keys: keys, err: err}
+		return vkeysUpdatedMsg{owner: m, key: updated, err: err}
 	}
 }
 
-// --- Overlay rendering ---
+func (m *VkeysViewModel) keyWriteFailed(err error) {
+	var apiErr *pkgClient.APIError
+	// Transport/server failures can arrive after commit. Do not offer a second
+	// submission of an unrecoverable key; inspect or rotate it first.
+	if !errors.As(err, &apiErr) || apiErr.StatusCode >= 500 {
+		m.writeUncertain = true
+		m.statusMsg = "The write outcome is unknown. Close this form and refresh keys before trying again."
+		return
+	}
+	m.statusMsg = err.Error()
+}
+
+func (m *VkeysViewModel) fetchKeyTeamsCmd() tea.Cmd {
+	ctx, client := m.Context(), m.client
+	m.teamsLoaded, m.teamsErr = false, nil
+	return func() tea.Msg {
+		teams, err := client.ListTeamsContext(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return vkeysTeamsMsg{owner: m, teams: teams, err: err}
+	}
+}
+
+// NavigationBlocked prevents losing a pending credential write.
+func (m *VkeysViewModel) NavigationBlocked() bool { return m.pending }
+
+// Cancel releases view work and clears any one-time secret from the model.
+func (m *VkeysViewModel) Cancel() {
+	m.rawKeyValue, m.rawKeyFlash = "", ""
+	m.ViewContext.Cancel()
+}
 
 func (m *VkeysViewModel) viewKeyFormOverlay(width, height int, title string) string {
 	var popup strings.Builder
-
 	popup.WriteString(m.styles.Title.Render(title) + "\n\n")
-
-	focusPrefix := func(f vkeysFormField) string {
-		if m.formFocus == f {
-			return "▸ "
-		}
-		return "  "
-	}
-
-	if m.mode == vkeysViewNewKey {
-		popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldID)+"ID:              ") + m.formID.View() + "\n")
-	} else {
-		popup.WriteString(m.styles.Help.Render("  ID:              "+m.formID.Value()) + "\n")
-	}
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldName)+"Name:            ") + m.formName.View() + "\n")
-
-	// Role radio
-	roleUser := "( ) user"
-	roleAdmin := "( ) admin"
-	if m.formRole == 0 {
-		roleUser = "(●) user"
-	} else {
-		roleAdmin = "(●) admin"
-	}
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldRole)+"Role:            ") + roleUser + "  " + roleAdmin + "\n")
-
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldRPM)+"RPM Limit:       ") + m.formRPM.View() + "\n")
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldTPM)+"TPM Limit:       ") + m.formTPM.View() + "\n")
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldMaxParallel)+"Max Parallel:    ") + m.formMaxParallel.View() + "\n")
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldBudgetMax)+"Budget (USD):    ") + m.formBudgetMax.View() + "\n")
-
-	// Budget period radio
-	var periodParts []string
-	for i, p := range vkeysBudgetPeriods {
-		label := p
-		if label == "" {
-			label = "none"
-		}
-		if i == m.formBudgetPeriod {
-			periodParts = append(periodParts, "(●) "+label)
-		} else {
-			periodParts = append(periodParts, "( ) "+label)
-		}
-	}
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldBudgetPeriod)+"Budget Period:   ") + strings.Join(periodParts, "  ") + "\n")
-
-	// Model access is controlled at the team level — no per-key picker.
-	popup.WriteString(m.styles.Help.Render("  Allowed Models:  (set on the team: use the Teams view)") + "\n")
-
-	popup.WriteString(m.styles.Normal.Render(focusPrefix(vkeysFieldExpires)+"Expires:         ") + m.formExpires.View() + "\n")
-
-	// Metadata display
-	if len(m.formMetadata) > 0 {
-		popup.WriteString("\n" + m.styles.Help.Render("  Metadata") + "\n")
-		for mk, mv := range m.formMetadata {
-			popup.WriteString(m.styles.Normal.Render(fmt.Sprintf("    %s: %s", mk, mv)) + "\n")
-		}
-	}
-
 	if m.statusMsg != "" {
-		popup.WriteString("\n" + m.styles.Error.Render(m.statusMsg) + "\n")
+		popup.WriteString(m.styles.Error.Render(m.statusMsg) + "\n\n")
 	}
-
-	popup.WriteString("\n" + m.styles.Help.Render("Tab next field  ←/→ toggle  Space select model  Ctrl+S save  Esc cancel"))
-
-	bg := m.viewList(width, height)
-	return renderFormOverlay(popup.String(), bg, width, height, m.styles)
+	field := func(f vkeysFormField, label, value string) {
+		prefix := "  "
+		if m.formFocus == f {
+			prefix = "▸ "
+		}
+		popup.WriteString(m.styles.Normal.Render(prefix+fmt.Sprintf("%-12s", label+":")) + value + "\n")
+	}
+	if m.mode == vkeysViewNewKey {
+		field(vkeysFieldID, "ID", m.formID.View())
+	} else {
+		field(-1, "ID", m.formID.Value())
+	}
+	field(vkeysFieldName, "Name", m.formName.View())
+	teamLabel := "Select a team with ←/→"
+	switch {
+	case !m.teamsLoaded:
+		teamLabel = "Loading teams..."
+	case m.teamsErr != nil:
+		teamLabel = "Could not load teams. Ctrl+O opens the console."
+	case m.keyTeam() != nil:
+		teamLabel = m.keyTeam().Name + " (" + m.keyTeam().ID + ")"
+	case len(m.sharedTeams()) == 0:
+		teamLabel = "No active shared teams. Create one with Ctrl+O."
+	}
+	if m.mode == vkeysViewNewKey {
+		field(vkeysFieldTeam, "Team", teamLabel)
+	} else {
+		field(-1, "Team", m.formTeamID+" (fixed)")
+	}
+	role := "[user]  admin"
+	if m.formRole == 1 {
+		role = "user  [admin]"
+	}
+	field(vkeysFieldRole, "Key role", role)
+	if m.formRole == 1 {
+		popup.WriteString(m.styles.Help.Render("  Administrators can change cluster policies. Use user for clients.") + "\n")
+	}
+	field(vkeysFieldExpires, "Expires", m.formExpires.View())
+	if team := m.keyTeam(); team != nil {
+		popup.WriteString("\n" + m.styles.Help.Render("Inherited team policy") + "\n")
+		for _, line := range teamPolicyLines(team) {
+			popup.WriteString("  " + line + "\n")
+		}
+	}
+	if m.mode == vkeysViewEditKey {
+		popup.WriteString("\n" + m.styles.Help.Render("Additional key limits are read-only and preserved. Issue a new key to change teams.") + "\n")
+	}
+	innerWidth := max(formOverlayWidth(width)-6, 1)
+	content := lipgloss.NewStyle().Width(innerWidth).Render(strings.TrimSuffix(popup.String(), "\n"))
+	hints := "Tab next  ←/→ choose  Ctrl+S save\nPgUp/PgDn scroll  Ctrl+O teams  Esc cancel"
+	if m.pending {
+		hints = "Saving. Please wait..."
+	}
+	if m.writeUncertain {
+		hints = "Esc close, then refresh keys to inspect the result."
+	}
+	footer := lipgloss.NewStyle().Width(innerWidth).Render(m.styles.Help.Render(hints))
+	content = m.formDetail.Render(content, max(height-5-lipgloss.Height(footer), 1)) + "\n" + footer
+	return renderFormOverlay(content, m.viewList(width, height), width, height, m.styles)
 }
 
 // updateRawKey drives the one-shot secret overlay. Only Copy, Save and an

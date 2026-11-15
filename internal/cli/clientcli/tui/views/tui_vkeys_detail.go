@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
@@ -43,9 +44,24 @@ func (m *VkeysViewModel) viewDetail(width, height int) string { //nolint:unparam
 	}
 
 	d.Field("Team", k.TeamID+" ("+k.TeamRole+")")
+	d.Section("Inherited team policy")
+	foundTeam := false
+	for _, team := range m.teams {
+		if team.ID == k.TeamID {
+			foundTeam = true
+			for _, line := range teamPolicyLines(team) {
+				d.Text("  ", line)
+			}
+			break
+		}
+	}
+	if !foundTeam {
+		d.Text("  ", "Team policy unavailable. Press T to inspect the team.")
+	}
+	d.Text("  ", "Team membership is fixed. Issue a replacement key to change teams.")
 
 	// --- Rate Limits ---
-	d.Section("Rate Limits")
+	d.Section("Additional key limits (read-only)")
 
 	rpm := "unlimited"
 	if k.RPMLimit > 0 {
@@ -64,6 +80,7 @@ func (m *VkeysViewModel) viewDetail(width, height int) string { //nolint:unparam
 		concurrency = fmt.Sprintf("%d parallel requests", k.MaxParallelRequests)
 	}
 	d.Field("Concurrency", concurrency)
+	d.Field("Output reservation", fmt.Sprint(k.DefaultMaxTokens))
 
 	// --- Budget ---
 	if k.SpendLimit > 0 {
@@ -109,6 +126,8 @@ func (m *VkeysViewModel) viewDetail(width, height int) string { //nolint:unparam
 	}
 
 	// Confirmation dialogs
+	body := d.String()
+	d = shared.NewDetail(m.styles, width)
 	if m.confirmPending {
 		switch m.confirmAction {
 		case "rotate":
@@ -134,7 +153,7 @@ func (m *VkeysViewModel) viewDetail(width, height int) string { //nolint:unparam
 		d.Text("  ", m.styles.Error.Render(m.statusMsg))
 	}
 
-	d.Write("\n" + shared.RenderViewFooter(m.styles, width, tui.VkeysKeys.DetailHintsString()))
-
-	return d.String()
+	footer := shared.RenderViewFooter(m.styles, width, shared.WrapIndent(tui.VkeysKeys.DetailHintsString(), "", max(width-2, 1)))
+	footer = d.String() + footer
+	return m.detail.Render(body, max(height-strings.Count(footer, "\n")-2, 1)) + "\n" + footer
 }

@@ -61,16 +61,18 @@ export class API {
     return this.generation;
   }
 
-  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000, raw = false, node } = {}) {
+  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000, raw = false, node, contentType = 'application/json' } = {}) {
     const generation = this.generation;
     const inference = method === 'GET' && path === '/v1/models' || method === 'POST' && path === '/v1/chat/completions';
-    if (!(path.startsWith(BASE + '/') || path === '/health' || inference) || raw && path !== '/v1/chat/completions') throw new APIError('Unsupported console request.');
+    const managementStream = method === 'GET' && /^\/zzrouter\/v1\/(?:jobs\/[^/?#]+\/stream|runs\/[^/?#]+\/logs)(?:\?[^#]*)?$/.test(path);
+    if (!(path.startsWith(BASE + '/') || path === '/health' || inference) || raw && path !== '/v1/chat/completions' && !managementStream) throw new APIError('Unsupported console request.');
+    if (!['application/json', 'application/merge-patch+json'].includes(contentType)) throw new APIError('Unsupported request content type.');
     const mutation = method !== 'GET';
     if ((mutation || inference) && !proof) throw new APIError('Refresh your session before making changes.', { code: 'session_refresh_required' });
     if (mutation && !this.canChange()) throw new APIError(this.unverified ? 'Verify your session before making another change.' : 'Wait for the current change to finish.');
     if (signal?.aborted) throw new Obsolete();
     const headers = { Accept: raw ? 'text/event-stream' : 'application/json' };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    if (body !== undefined) headers['Content-Type'] = contentType;
     if (ifMatch) headers['If-Match'] = ifMatch;
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
@@ -101,7 +103,7 @@ export class API {
       }
       if (raw && response.ok) {
         if (requestSignal.aborted || generation !== this.generation) throw new Obsolete();
-        if (!response.headers.get('Content-Type')?.includes('text/event-stream') || !response.body) throw new APIError('The coordinator did not return a chat stream.');
+        if (!response.headers.get('Content-Type')?.includes('text/event-stream') || !response.body) throw new APIError(`The coordinator did not return ${managementStream ? 'an event' : 'a chat'} stream.`);
         finish();
         return response;
       }
@@ -140,6 +142,10 @@ export class API {
   }
 
   async data(path, options) { return (await this.request(BASE + path, options)).data; }
+
+  stream(path, options = {}) {
+    return this.request(BASE + path, { ...options, method: 'GET', raw: true, effectful: false, timeoutMs: null });
+  }
 
   async list(path, options = {}) {
     const items = [];

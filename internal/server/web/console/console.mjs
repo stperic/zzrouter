@@ -9,6 +9,10 @@ import { clients, connectionGuide } from './clients.mjs';
 import { access } from './access.mjs';
 import { routes } from './routes.mjs';
 import { workloads } from './workloads.mjs';
+import { models } from './models.mjs';
+import { deployments } from './deployments.mjs';
+import { logs } from './logs.mjs';
+import { system } from './system.mjs';
 
 const app = document.querySelector('#app');
 const pages = new Lifetime();
@@ -212,7 +216,7 @@ function renderShell(state, notice) {
       event.preventDefault(); event.stopImmediatePropagation(); setNavigation(false); navigationToggle.focus();
     }
   }, { signal: api.authority.signal });
-  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'System']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
+  for (const [id, label] of admin ? [['overview', 'Overview'], ['chat', 'Chat'], ['models', 'Models'], ['nodes', 'Nodes'], ['workloads', 'Workloads'], ['logs', 'Logs'], ['clients', 'Clients'], ['providers', 'Providers'], ['routes', 'Routes'], ['access', 'Keys & teams'], ['settings', 'System']] : [['chat', 'Chat'], ['connections', 'My Access']]) {
     const item = leaveButton(label, () => go(id), api);
     item.dataset.page = id;
     navigation.append(item);
@@ -276,7 +280,7 @@ function showKeyAfterSession(result, anchor) {
 async function go(name, sub, nextMode, force = false, checked = false) {
   if (!api.state?.identity || !(checked ? api.canLeave() : canLeave())) return;
   setNavigation(false);
-  const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'nodes', 'workloads', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['chat', 'connections'];
+  const allowed = api.state.identity.role === 'admin' ? ['overview', 'chat', 'models', 'nodes', 'workloads', 'logs', 'clients', 'providers', 'routes', 'access', 'connections', 'settings'] : ['chat', 'connections'];
   const destination = allowed.includes(name) ? name : allowed[0];
   if (!force && destination === route && pageSelection?.current() && pageSelection.accepts(sub, nextMode)) {
     section = sub; mode = nextMode;
@@ -310,16 +314,18 @@ async function go(name, sub, nextMode, force = false, checked = false) {
   try {
     if (route === 'chat') {
       const { chat, createChatSession } = await import('./chat.mjs');
-      if (p.current()) { chatSession ||= createChatSession(api); await chat(p, chatSession, sub); }
+      if (p.current()) { chatSession ||= createChatSession(api); await chat(p, chatSession, sub, nextMode); }
     }
-    else if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/')); }
+    else if (route === 'providers') { const [category, ...key] = (sub || 'local').split('/'); await providers(p, category, key.join('/'), nextMode); }
+    else if (route === 'models') await models(p, sub, nextMode);
     else if (route === 'nodes') await nodes(p, sub);
-    else if (route === 'workloads') await workloads(p, sub, nextMode);
+    else if (route === 'workloads') { if (nextMode === 'downloads') await deployments(p, sub); else await workloads(p, sub, nextMode); }
+    else if (route === 'logs') await logs(p, sub);
     else if (route === 'clients') await clients(p, sub);
     else if (route === 'routes') await routes(p, sub, nextMode);
     else if (route === 'access') await access(p, sub || 'keys', nextMode);
     else if (route === 'connections') await connections(p);
-    else if (route === 'settings') settings(p);
+    else if (route === 'settings') await system(p, sub || 'general', nextMode);
     else await overview(p, sub);
   } catch (error) {
     if (p.current()) content.append(problem(error), leaveButton('Reload page', () => p.reload(), api));
@@ -370,17 +376,6 @@ async function connections(p) {
       grants.append(row, feedback);
     }
   } catch (error) { if (p.current()) grants.replaceChildren(el('h2', {}, 'Your authorizations'), problem(error), leaveButton('Reload grants', () => go('connections'), api)); }
-}
-
-function settings(p) {
-  p.root.append(heading('System', 'Read-only configuration and installation information.'),
-    card('Coordinator', facts([['Name', p.state.node_name], ['Session expires', date(p.state.expires_at)]]), copyField('Public console URL', p.state.issuer + '/console/'),
-      el('details', { class: 'access-section' }, el('summary', {}, 'Change the public address'), text('Update auth.oauth.issuer_url in the coordinator installation and restart. The scheme, hostname and port must match the browser address. Update your MCP clients to the same URL.'))),
-    card('Provider credentials', text('Manage provider connections and API keys in Providers.'), actions(leaveButton('Manage providers', () => go('providers'), api, 'primary')),
-      el('details', { class: 'access-section' }, el('summary', {}, 'Secure storage setup'), text('Configure security.credentials.key_file locally before saving cloud or Hugging Face keys. Keep the protection key outside provider configuration and back it up with the encrypted state. Provider secrets stay on the node where they are configured.'))),
-    card('Installation & recovery', text('Use the terminal client for installation, runtime setup and recovery. Changes to the listener, public URL, TLS or protection key require local access and a restart.'),
-      el('details', { class: 'access-section' }, el('summary', {}, 'Remote access'), text('Use a stable HTTPS public URL. A tunnel or access proxy can protect the outer connection; zzRouter still verifies each key and session. Your proxy must allow OAuth discovery and authorization for MCP clients.')),
-      el('a', { href: '/openapi.yaml' }, 'View the API contract')));
 }
 
 function readRoute() {

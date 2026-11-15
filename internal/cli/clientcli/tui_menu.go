@@ -26,10 +26,11 @@ var mainMenuItems = []menuItem{
 	}},
 	{name: "Providers", description: "Local engines, cloud connections, and registry credentials", view: tuiViewProviders},
 	{name: "Activity", description: "Installs, upgrades, downloads, and other jobs", view: tuiViewDeploys},
-	{name: "Manage", description: "Access, cluster settings, and diagnostics", isGroup: true, children: []menuItem{
-		{name: "Keys", description: "API keys, budgets, and rate limits", view: tuiViewVkeys},
-		{name: "Teams", description: "Membership, shared budgets, and rate limits", view: tuiViewTeams},
-		{name: "Nodes", description: "Cluster nodes and resources", view: tuiViewNodes},
+	{name: "Nodes", description: "Cluster health and resources", view: tuiViewNodes},
+	{name: "Open web console", description: "Full cluster management in your browser", view: tuiViewConsole},
+	{name: "Manage", description: "Advanced administration and diagnostics", isGroup: true, children: []menuItem{
+		{name: "Keys", description: "Issue team keys and manage credentials", view: tuiViewVkeys},
+		{name: "Teams", description: "Inspect policies, edit access and budgets in the console", view: tuiViewTeams},
 		{name: "Logs", description: "Inference logs", view: tuiViewLogs},
 		{name: "Pricing", description: "Token rates and unpriced models", view: tuiViewPricing},
 		{name: "Software Update", description: "This node's version, install, and rollback", view: tuiViewUpdate},
