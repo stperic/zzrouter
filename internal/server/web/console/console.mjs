@@ -43,7 +43,7 @@ let recoveryNotice = '';
 const verificationWaiters = new Set();
 const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('zzrouter-console-auth') : null;
 const announce = () => channel?.postMessage('auth-state-changed');
-const brand = () => el('div', { class: 'brand' }, el('span', { class: 'brand-mark', 'aria-hidden': 'true' }, 'zz'), el('span', {}, 'zzRouter'));
+const brand = () => el('div', { class: 'brand', role: 'img', 'aria-label': 'zzRouter' }, el('span', { class: 'brand-mark', 'aria-hidden': 'true' }), el('span', { 'aria-hidden': 'true' }, 'Router'));
 
 const api = new API({
   cleared(reason) {

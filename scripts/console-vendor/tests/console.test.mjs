@@ -24,6 +24,10 @@ async function consolePage(t, scenario = 'populated') {
   const page = await context.newPage();
   const errors = [], dialogs = [], answers = [];
   page.on('pageerror', error => errors.push(error.message));
+  page.on('response', response => {
+    const path = new URL(response.url()).pathname;
+    if (path.startsWith('/console/') && response.status() >= 400) errors.push('Console asset failed: ' + path + ' (' + response.status() + ')');
+  });
   page.on('dialog', dialog => { dialogs.push(dialog.message()); void (answers.shift() === 'dismiss' ? dialog.dismiss() : dialog.accept()); });
   t.after(async () => { await context.close(); fixture.kill(); assert.deepEqual(errors, [], 'No unhandled browser errors'); });
   const state = async value => { await fetch(origin + '/__scenario?state=' + value); };

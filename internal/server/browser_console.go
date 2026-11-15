@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed web/console/*.html web/console/*.css web/console/*.mjs web/console/icons/*.svg web/console/vendor/*.mjs web/console/vendor/*.js web/console/vendor/*.txt
+//go:embed web/console/*.html web/console/*.css web/console/*.mjs web/console/brand/*.svg web/console/icons/*.svg web/console/vendor/*.mjs web/console/vendor/*.js web/console/vendor/*.txt
 var consoleAssets embed.FS
 
 // registerBrowserConsole exposes a fixed public shell; the existing API owns
@@ -26,6 +26,15 @@ func (s *Server) registerBrowserConsole() {
 		{"/console.css", "console.css", "text/css; charset=utf-8"},
 		{"/console.mjs", "console.mjs", "text/javascript; charset=utf-8"},
 		{"/appearance.mjs", "appearance.mjs", "text/javascript; charset=utf-8"},
+		{"/brand/mark-color.svg", "brand/mark-color.svg", "image/svg+xml"},
+		{"/brand/mark-dark.svg", "brand/mark-dark.svg", "image/svg+xml"},
+		{"/brand/mark-black.svg", "brand/mark-black.svg", "image/svg+xml"},
+		{"/brand/mark-white.svg", "brand/mark-white.svg", "image/svg+xml"},
+		{"/brand/app-icon.svg", "brand/app-icon.svg", "image/svg+xml"},
+		{"/brand/wordmark-color.svg", "brand/wordmark-color.svg", "image/svg+xml"},
+		{"/brand/wordmark-dark.svg", "brand/wordmark-dark.svg", "image/svg+xml"},
+		{"/brand/wordmark-black.svg", "brand/wordmark-black.svg", "image/svg+xml"},
+		{"/brand/wordmark-white.svg", "brand/wordmark-white.svg", "image/svg+xml"},
 		{"/models.mjs", "models.mjs", "text/javascript; charset=utf-8"},
 		{"/model-data.mjs", "model-data.mjs", "text/javascript; charset=utf-8"},
 		{"/model-discovery.mjs", "model-discovery.mjs", "text/javascript; charset=utf-8"},

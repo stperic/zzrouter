@@ -17,8 +17,7 @@
   --muted:#66635c;
   --line:#dedbd2;
   --line-strong:#aaa69b;
-  --accent:#d97757;
-  --on-accent:#141413;
+  --brand-mark:url("/console/brand/mark-color.svg");
   --link:#98472e;
   --focus:#98472e;
   --primary:#292723;
@@ -46,6 +45,7 @@
 }
 :root[data-theme="claude-web-dark"],:root[data-theme="claude-code-dark"] {
   color-scheme:dark;
+  --brand-mark:url("/console/brand/mark-dark.svg");
   --canvas:#262624;
   --surface:#30302e;
   --surface-muted:#292927;
@@ -277,25 +277,18 @@ small {
   display:flex;
   align-items:center;
   gap:.8rem;
-  font-size:1.3rem;
-  font-weight:750;
+  font-size:1.4rem;
+  font-weight:700;
   letter-spacing:-.05em
 }
 .brand-mark {
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  width:38px;
-  height:38px;
-  border-radius:10px;
-  background:var(--accent);
-  color:var(--on-accent);
-  font-size:1.2rem;
-  font-weight:800;
-  letter-spacing:-.12em;
-  padding-right:.15em
+  display:block;
+  flex:none;
+  width:42px;
+  height:42px;
+  background:var(--brand-mark) center/contain no-repeat
 }
-.startup .brand-mark {
+.startup .brand {
   margin-bottom:1.4rem
 }
 .layout {

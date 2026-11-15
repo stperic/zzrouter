@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add the double-Z console logo, matching color and monochrome assets, and a
+  browser icon. Pair the symbol with Router without repeating the ZZ lettering.
 - Add browser-local Claude Web and Claude Code light/dark console themes, with
   Claude Web as the default. Apply shared semantic colors to every view and the
   network graph while preserving drafts, map position and health status colors.
