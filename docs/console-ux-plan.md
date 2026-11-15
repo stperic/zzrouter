@@ -180,7 +180,7 @@ the unrelated changes in the primary checkout.
   appropriate next actions; old view links remain valid.
 - [x] Keyboard focus returns after normal and deep-link panel closes; sign-in
   contrast passes; responsive layouts and reduced-motion behavior are checked.
-- [ ] Required tests, bundle/type checks, build/vet, fresh reviews and local
+- [x] Required tests, bundle/type checks, build/vet, fresh reviews and local
   deployment verification are complete, with net production-line change reported.
 
 ## Validation commands
@@ -260,4 +260,9 @@ checks. No numeric line budget: prefer removal/reuse and explain necessary growt
   documentation and build tooling. Growth implements authority-owned Chat
   retention, shared form feedback, graph visibility/camera behavior and responsive
   controls through existing feature owners. No backend policy path was added.
-- Local release and deployed-asset verification are pending.
+- Local release `0.2.3+11150155` is deployed from source `df7c9f6`.
+  Public health reports the expected source and healthy coordinator identity;
+  all 58 served console assets match the tested files byte for byte. The
+  installed launcher is unchanged and matches the server's embedded integrity
+  hash. The primary checkout's pre-existing Git status is unchanged. A rollback
+  copy of the prior server is retained outside the repository.
