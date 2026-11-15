@@ -62,7 +62,7 @@ preserve shared source/index state and installed launcher integrity.
 - [x] Planner-owned script export through API and both clients.
 - [x] CLI output, endpoint ownership, and controller cleanup.
 - [x] Validation, independent review and measured change.
-- [ ] Local commit, installation and verification.
+- [x] Local commit, installation and verification.
 
 ## Review and verification
 
@@ -96,5 +96,20 @@ rules previously split between clients; additional tests cover failure paths.
 
 The full `go test -race ./...` suite passed, including server, provider domain,
 client/TUI, protocol and in-process contract packages. Final client/TUI tests
-were rerun after the review wording correction. Release builds and installation
-verification follow the local commit.
+were rerun after the review wording correction.
+
+
+## Local release verification
+
+Code commit `aabd3f2` is installed locally as `0.2.3+11151629`. Client and release
+server builds passed; the server embeds the unchanged installed launcher digest.
+The coordinator restarted with its existing configuration and reports healthy,
+protocol 24 and minimum 23. All 73 served console assets match the committed
+source byte for byte, with expected content types and response protections.
+`zzrouter console --print` resolves `http://localhost:9090/console/#overview`.
+
+Installed binary hashes were verified, rollback copies retained, and the shared
+primary checkout's source/index state remained unchanged. No public push or
+remote deployment occurred. Browser interactions were verified in isolated
+Chrome fixtures; signed-in live installation, download and clipboard operations
+were not exercised on real providers merely for validation.
