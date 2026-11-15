@@ -165,7 +165,7 @@ for progressively exposed detail. Reuse pinned dependencies; no framework switch
 - [x] All matrix workflows implemented and checked against current TUI actions.
 - [x] Unit, browser, Go and vet validation complete; baseline lint compared.
 - [x] Independent whole-diff reviews and fixes complete.
-- [ ] Local commit/deployment/asset verification; net production-line change reported.
+- [x] Local commit/deployment/asset verification; net production-line change reported.
 
 Implementation notes and deviations are recorded here as evidence arrives.
 
@@ -188,3 +188,14 @@ provider mutations merely for verification.
 Net production change: +2,015 lines (2,811 added, 796 removed), excluding tests,
 docs, tooling and generated vendors. The increase adds the management workflows
 in the acceptance matrix while removing the duplicate TUI team-policy editor.
+
+Local release verification: client and integrity-verified server built as
+`0.2.3+11151328` from code commit `5f0e578`, using the unchanged installed
+launcher. The coordinator restarted with its existing configuration and reports
+healthy with the expected source identity. All 72 served console assets and
+their response headers match this source. `zzrouter console --print` resolves
+the live configured console URL. Installed hashes were verified, rollback copies
+retained, and the primary checkout's source/index state stayed unchanged.
+No public push or remote deployment was performed. Direct attachment to the
+user's Chrome was unavailable; the 12 isolated Chrome journeys provide the
+browser interaction evidence, not a claim of a signed-in live visual inspection.
