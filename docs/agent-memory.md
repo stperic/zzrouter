@@ -34,3 +34,4 @@
 
 - Project terminology and coordinator/compute presentation follow `docs/client-architecture.md#project-terminology`; console observation and pairing semantics are in `docs/web-console.md`.
 - Console provider permissions, model rules, budgets and rate limits belong in Teams. Key forms select a team and preview inherited rules without duplicating policy editors; use a dedicated team for a unique policy. Existing individual API quotas remain visible read-only. See `docs/web-console.md#manage-access`.
+- Branch references can themselves be symbolic aliases. Before advancing `main`, inspect `git for-each-ref --format='%(refname) %(symref)'` and each affected worktree's `git symbolic-ref --no-recurse HEAD`; the displayed branch name alone does not establish isolation. Preserve shared checkout bases and indexes when separating aliases, without resetting or checking out their files.

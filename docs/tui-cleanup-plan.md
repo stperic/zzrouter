@@ -54,3 +54,36 @@ an API revision precondition. The refactor review was completed before any
 merge, commit, deployment or restart. The subsequent delivery step integrates
 the reviewed branch, updates only the installed client and checks live workflows
 without restarting the coordinator.
+
+## Delivery: 2026-11-16
+
+- Committed the reviewed refactor as `7fd2e63` and integrated the reviewed
+  console history through `6f75483` on local `main`. No public push was made.
+- Installed client `0.2.3+11161312`, built from `6f75483`. Its SHA256 matches
+  the tested release candidate. Retained a verified copy of the previous
+  client in the integration worktree's `build/tui-ship/zzrouter-before`.
+- Updated only the client. The coordinator and launcher binaries, coordinator
+  PID and process start time are unchanged.
+- The integration passes `go mod verify`, `go build ./...`, `go vet ./...`,
+  `go test -race -timeout 15m ./...`, and CI-pinned golangci-lint 2.11.4.
+  Console validation passes all 258 unit tests and TypeScript checking, and
+  rebuilding its assets produces no changes. Twelve browser cases passed on
+  the initial run; the theme case failed a graph-pan equality assertion once
+  and passed its focused recheck without source changes.
+- Live release-candidate checks cover local/cloud provider filters and search,
+  worker-scoped parameter reads and edits, route details and edits, key policy
+  details and edits, and pricing entry. Changed drafts were discarded, and
+  reopening parameters confirmed the original inherited value. No live save,
+  provider mutation or key creation was performed; write paths are covered by
+  the automated HTTP fixtures. Key form and discard controls remained usable
+  at 40x10, although long field values are clipped at that width.
+- The installed client was launched again to confirm provider browsing and
+  the TUI's Open web console action. Browser launch returned successfully, the
+  discovered URL contained no credentials, and `/console/` returned HTTP 200.
+  The browser-control host was unavailable, so the resulting live browser page
+  was not visually inspected.
+- The final preservation check matches the shared checkout's original branch,
+  base commit, index checksum and all 710 status entries. Local `main` had been
+  a symbolic alias of the shared work branch. The references are now separate;
+  the existing shared checkouts retain their original work branch and base,
+  and their indexes were preserved. The clean main worktree holds the integration.
