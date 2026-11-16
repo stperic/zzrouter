@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { cytoscape, ELK } from '../vendor/graph.mjs';
-import { topologyData, layoutInput, layoutPositions, topologySignature } from '../topology-data.mjs';
-import { graphLayout, revealNode, activityMotion } from '../topology.mjs';
+import { computeCard, topologyData, visibleTopology, layoutInput, layoutPositions, topologySignature } from '../topology-data.mjs';
+import { graphLayout, revealNode, initialCamera, activityMotion } from '../topology.mjs';
 import { overview } from '../overview.mjs';
 import { localProviderKey } from '../network-data.mjs';
 import { find, button, installDOM, walk, drain } from './dom-fixture.mjs';
@@ -14,18 +14,18 @@ test('actual graph metrics preserve layout while idle and active evidence expire
   let now = 100;
   const reduced = new EventTarget(); reduced.matches = true;
   const motion = activityMotion(f.cy, f.controller.signal, { now: () => now, hidden: () => false, reduced });
-  const elements = [{ data: { id: 'worker', kind: 'compute', metrics: 'RAM 17 / 64 GiB', activityLabel: 'No observed work', activityUntil: 200, active: false } }];
+  const elements = [{ data: { id: 'worker', kind: 'compute', metrics: 'RAM 17 / 64 GiB', activityUntil: 200, active: false } }];
   const first = f.update(elements); f.pending[0].resolve(placed('worker', 20)); await first;
   f.cy.viewport({ zoom: 1.3, pan: { x: 90, y: 70 } });
   await f.update([{ data: { ...elements[0].data, metrics: 'RAM 23 / 64 GiB' } }]);
   assert.equal(f.pending.length, 1); assert.equal(f.cy.zoom(), 1.3);
   motion.pause(true); now = 201; motion.sync();
-  assert.match(f.cy.getElementById('metrics:worker').data('label'), /Activity unavailable/);
-  await f.update([{ data: { ...elements[0].data, activityLabel: 'Active at observation', activityUntil: 300, active: true } }]);
+  assert.equal(f.cy.getElementById('metrics:worker').data('label'), 'RAM 23 / 64 GiB');
+  await f.update([{ data: { ...elements[0].data, metrics: 'RAM 29 / 64 GiB', activityUntil: 300, active: true } }]);
   motion.pause(false); motion.sync();
   assert.equal(f.cy.getElementById('activity:worker').animated(), false, 'reduced motion disables animation');
   now = 301; motion.sync();
-  assert.match(f.cy.getElementById('metrics:worker').data('label'), /Activity unavailable/);
+  assert.equal(f.cy.getElementById('metrics:worker').data('label'), 'RAM 29 / 64 GiB');
 });
 
 const ok = value => ({ status: 'fulfilled', value });
@@ -35,6 +35,32 @@ const snapshot = { inventory: [ok([node, node, { name: 'spruce', health_status: 
   catalog: ok([{ key: 'groq', name: 'Groq', kind: 'cloud', available: true }]), clientResults: [ok({ data: [client] }), ok([])] };
 const projected = () => topologyData(snapshot, 'atlas').elements;
 
+test('collapsed provider branches preserve the complete model and stable selection identities', () => {
+  const elements = projected(), before = structuredClone(elements);
+  const collapsed = visibleTopology(elements, new Set());
+  assert.equal(collapsed.some(({ data }) => data.kind === 'provider'), false);
+  assert.equal(collapsed.some(({ data }) => data.target === localProviderKey('atlas', 'ollama')), false);
+  const expanded = visibleTopology(elements, new Set(['atlas']));
+  assert.ok(expanded.some(({ data }) => data.selection === localProviderKey('atlas', 'ollama')));
+  assert.deepEqual(elements, before, 'presentation must not mutate inventory or erase hidden providers');
+});
+
+test('initial camera waits for a visible map and preserves readable zoom for large networks', t => {
+  const cy = cytoscape({ headless: true, elements: [{ data: { id: 'coordinator' }, position: { x: 0, y: 0 } },
+    { data: { id: 'node/worker' }, position: { x: 10000, y: 1000 } }], layout: { name: 'preset' } });
+  t.after(() => cy.destroy());
+  let width = 0;
+  cy.width = () => width; cy.height = () => 600;
+  assert.equal(initialCamera(cy), false);
+  width = 1000;
+  assert.equal(initialCamera(cy), true);
+  assert.equal(cy.zoom(), 0.6);
+  initialCamera(cy, 'node/worker');
+  const point = cy.getElementById('node/worker').renderedPosition();
+  assert.equal(point.x, 500);
+  assert.equal(point.y, 300);
+});
+
 test('graph roles share physical selection and retain explicit health and client observations', () => {
   const { elements, nodes } = topologyData(snapshot, 'atlas');
   assert.equal(nodes.length, 2);
@@ -42,7 +68,7 @@ test('graph roles share physical selection and retain explicit health and client
   assert.equal(roles.length, 2);
   assert.notEqual(roles[0].data.id, roles[1].data.id);
   assert.match(roles[1].data.status, /Coordinator \+ Worker · Healthy/);
-  assert.equal(elements.find(({ data }) => data.kind === 'client').data.status, 'Last active');
+  assert.equal(elements.find(({ data }) => data.kind === 'client').data.status, 'No active requests');
   assert.equal(elements.find(({ data }) => data.kind === 'client').data.name, 'Key: <img src=x>');
   const local = elements.find(({ data }) => data.kind === 'provider');
   assert.equal(local.data.providerKey, 'ollama');
@@ -52,19 +78,21 @@ test('graph roles share physical selection and retain explicit health and client
   assert.equal(unknown.elements.find(({ data }) => data.id === 'coordinator').data.status, 'Coordinator · Unknown');
 });
 
-test('the complete tree includes each node’s providers by default, with distinct owning identities', () => {
+test('the tree hides disabled providers while preserving unknown enablement and full management identities', () => {
   const inventory = [ok([node, { name: 'studio/one %', health_status: 'down', providers: [
     { key: 'ollama', kind: 'external' }, { key: 'vllm/custom%', kind: 'python' }, { key: 'huggingface', kind: 'registry' },
   ] }]), ok([...snapshot.inventory[1].value, { node: 'studio/one %', name: 'vllm/custom%', kind: 'python', enabled: false }])];
-  const { elements } = topologyData({ ...snapshot, inventory }, 'atlas');
+  const { elements, providers: inventoryProviders } = topologyData({ ...snapshot, inventory }, 'atlas');
   const providers = elements.filter(({ data }) => data.kind === 'provider');
-  assert.equal(providers.length, 3);
-  assert.equal(new Set(providers.map(({ data }) => data.selection)).size, 3);
+  assert.equal(providers.length, 2);
+  assert.equal(new Set(providers.map(({ data }) => data.selection)).size, 2);
+  assert.equal(inventoryProviders.length, 3);
   for (const { data } of providers) {
     assert.equal(data.selection, localProviderKey(data.nodeName, data.providerKey));
     assert.ok(elements.some(({ data: edge }) => edge.source === `node/${data.nodeName}` && edge.target === data.id));
   }
-  assert.equal(providers.find(({ data }) => data.providerKey === 'vllm/custom%').data.status, 'Disabled');
+  assert.ok(!providers.some(({ data }) => data.providerKey === 'vllm/custom%'));
+  assert.ok(!elements.some(({ data }) => data.target === localProviderKey('studio/one %', 'vllm/custom%')));
   assert.equal(providers.find(({ data }) => data.nodeName === 'studio/one %' && data.providerKey === 'ollama').data.status, 'Unknown');
   assert.notEqual(localProviderKey('a/b', 'c'), localProviderKey('a', 'b/c'));
   assert.equal(topologyData({ ...snapshot, inventory: [inventory[0], { status: 'rejected' }] }, 'atlas').elements.filter(({ data }) => data.kind === 'provider').length, 3);
@@ -84,22 +112,22 @@ test('vendored ELK lays out the actual compound projection with finite distinct 
   assert.ok(positions.get(localProviderKey('atlas', 'ollama')).y > positions.get('node/atlas').y);
 });
 
-test('layout reserves measured wrapped labels without moving icons down inside taller cells', async () => {
+test('layout reserves the full compute card above its provider icons', async () => {
   const { Worker } = createRequire(import.meta.url)('../vendor/elk-worker.min.js');
   const elk = new ELK({ algorithms: ['layered'], workerFactory: () => new Worker() });
   const input = layoutInput(projected(), new Map([['node/atlas', { w: 230, h: 210 }]]));
   const compute = input.children.find(node => node.id === 'compute');
   const parent = compute.children.find(node => node.id === 'node/atlas');
-  assert.equal(parent.width, 330);
+  assert.equal(parent.width, computeCard.width);
   assert.equal(parent.height, 226);
   const result = await elk.layout(input);
   const positions = layoutPositions(result);
   const providerTop = positions.get(localProviderKey('atlas', 'ollama')).y - 21;
-  const labelBottom = positions.get('node/atlas').y - 24 + 210;
-  assert.ok(providerTop > labelBottom, 'a tall machine label must not cover its provider icon');
+  const cardBottom = positions.get('node/atlas').y + computeCard.height / 2;
+  assert.ok(providerTop > cardBottom, 'the full machine card must not cover its provider icon');
   const placed = result.children.find(node => node.id === 'compute');
   const cell = placed.children.find(node => node.id === 'node/atlas');
-  assert.equal(positions.get('node/atlas').y, placed.y + cell.y + 32);
+  assert.equal(positions.get('node/atlas').y, placed.y + cell.y + cell.height / 2);
 });
 
 function layoutFixture(t) {
@@ -148,6 +176,19 @@ test('label growth reruns layout, while label changes within the reserved cell k
   await grown;
   assert.equal(f.cy.zoom(), 1.3);
   assert.deepEqual(f.cy.pan(), { x: 90, y: 70 });
+});
+
+test('identical updates wait for the committed layout instead of reporting premature readiness', async t => {
+  const f = layoutFixture(t);
+  const elements = [{ data: { id: 'atlas', kind: 'compute' } }];
+  const first = f.update(elements);
+  let finished = false;
+  const second = f.update(elements).then(value => { finished = true; return value; });
+  await drain();
+  assert.equal(finished, false);
+  assert.equal(f.pending.length, 1);
+  f.pending[0].resolve(placed('atlas', 60));
+  assert.deepEqual(await Promise.all([first, second]), [true, true]);
 });
 
 test('a narrowed viewport reveals the selected icon without changing zoom or moving visible items', t => {
@@ -298,14 +339,13 @@ test('local provider deep links and list selection keep the machine context in o
   assert.match(panel.textContent, /Local provider on studio\/one %/);
   assert.match(panel.textContent, /EnablementDisabledInstallationInstalledServiceService running/);
   assert.match(panel.textContent, /last reported observations/);
-  const row = find(root, element => element.getAttribute('data-selection') === selection);
-  assert.match(row.textContent, /Ollama · studio\/one %/);
+  assert.ok(!walk(root).some(element => element.getAttribute('data-selection') === selection));
   select(localProviderKey('atlas', 'ollama'));
   panel = find(root, element => element.tag === 'dialog');
   assert.match(panel.textContent, /Local provider on atlas/);
   assert.doesNotMatch(panel.textContent, /studio|last reported observations/);
   assert.ok(root.contains(map));
-  row.dispatchEvent(new Event('click'));
+  select(selection);
   find(root, element => element.tag === 'button' && ['Edit', 'Edit node settings'].includes(element.textContent)).dispatchEvent(new Event('click'));
   assert.match(find(root, element => element.tag === 'form').textContent, /Settings for studio\/one %/);
   button(root, 'Cancel').dispatchEvent(new Event('click'));

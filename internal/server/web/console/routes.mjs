@@ -69,7 +69,7 @@ export async function routes(p, selected, mode) {
       };
       const show = () => {
         const reader = owner.panel.view('Route details');
-        reader.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, record.name), leaveButton('Edit', edit, p.api, 'primary')),
+        reader.root.append(el('div', { class: 'detail-heading' }, el('h2', {}, record.name), actions(leaveButton('Try in Chat', () => p.go('chat', record.name), p.api), leaveButton('Edit', edit, p.api, 'primary'))),
           notice ? message(notice) : '', text(record.description || 'No description', 'muted'),
           facts([['Selection', { priority: 'Priority order', 'least-load': 'Least loaded', fastest: 'Fastest observed' }[record.strategy] || record.strategy], ['Management', record.auto_managed ? 'Automatic' : record.auto_owner ? 'Claimed automatic route' : 'Manual'], ['Expires', date(record.expires_at)]]),
           el('section', { class: 'access-section' }, el('h3', {}, 'Destinations'), destinations(record)),

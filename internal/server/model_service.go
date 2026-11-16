@@ -85,7 +85,7 @@ func (s *ModelService) ShowModel(ctx context.Context, req *ShowModelRequest) (*S
 	if _, err := s.cache.ListModels(ctx, req.Node, req.Registry, req.App, req.ModelName); err != nil {
 		return nil, err
 	}
-	ref := resolver.Reference{Model: req.ModelName, Provider: req.App, Node: req.Node, Registry: req.Registry}
+	ref := resolver.Reference{Model: req.ModelName, Provider: req.App, Node: req.Node, Registry: req.Registry, SourceID: req.SourceID, Exact: req.SourceID != ""}
 	if req.Admit != nil {
 		ref.AllowProvider = func(provider string) bool { return req.Admit(req.ModelName, provider) }
 	}
@@ -95,6 +95,9 @@ func (s *ModelService) ShowModel(ctx context.Context, req *ShowModelRequest) (*S
 	resolved, err := s.cache.ResolveModel(ctx, ref)
 	if err != nil {
 		return nil, err
+	}
+	if req.SourceID != "" && resolved.Replica == nil {
+		return nil, newProblemError(http.StatusNotFound, "Not Found", "No model copy matches the selected name, provider, node and source")
 	}
 	if req.Admit != nil && !req.Admit(req.ModelName, resolved.Provider) {
 		return nil, newProblemError(http.StatusForbidden, "Forbidden", "Team policy does not allow this model and provider")

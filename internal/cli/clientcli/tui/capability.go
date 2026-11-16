@@ -34,6 +34,11 @@ type NavigationGuard interface {
 	NavigationBlocked() bool
 }
 
+// NavigationConfirmer lets an editor preserve and confirm a leave intention.
+type NavigationConfirmer interface {
+	ConfirmNavigation(tea.Msg) bool
+}
+
 // Refresher reloads a view's data. Root calls it on the view that becomes
 // active again after a child pops, so state the child changed (a model
 // started from chat, a provider installed) shows immediately instead of

@@ -26,6 +26,9 @@ type NavToMsg struct {
 // message is ignored (the root view is always present).
 type NavBackMsg struct{}
 
+// NavMenuMsg leaves the stack and returns to the host menu.
+type NavMenuMsg struct{}
+
 // NavReplaceMsg replaces the top view without pushing. Use this for
 // "open detail after create" flows where the form shouldn't sit in the
 // back-stack.
@@ -80,4 +83,5 @@ const (
 	ViewPricing
 	ViewUpdate
 	ViewRunningModels
+	ViewConsole
 )

@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- Simplify TUI parameter editing around scoped overrides and changed-leaf
+  patches. Protect drafts and pending writes, reject obsolete replies, and
+  require refresh after uncertain outcomes. Share responsive tables, forms,
+  popups and shortcut help; add provider search and local/cloud/node filters,
+  hide disabled providers by default, and confirm provider removal.
+
+- Carry the double-Z brand into CLI help, the TUI and the project README.
+  Share the five-line ASCII logo between CLI help and the first TUI menu, then
+  use a quiet single-line wordmark during navigation and in small terminals.
+- Add the double-Z console logo, matching color and monochrome assets, and a
+  browser icon. Pair the symbol with Router without repeating the ZZ lettering.
+- Add browser-local Claude Web and Claude Code light/dark console themes, with
+  Claude Web as the default. Apply shared semantic colors to every view and the
+  network graph while preserving drafts, map position and health status colors.
+- Simplify console editors and provider job tracking through their shared
+  lifecycle owners. Restore editing after definite request refusals, protect
+  Cancel with draft confirmation, remove unused TUI form widgets and eliminate
+  circular view imports. The install API now supplies script exports or refusal
+  reasons to both interfaces, preserving hidden execution requirements.
+- Complete console management with model discovery, exact-node testing and
+  downloads, provider install plans and service controls, scoped runtime
+  parameters, logs, pricing overrides, software updates and guided setup. Reuse
+  coordinator APIs and shared side panels; preserve partial/uncertain outcomes,
+  sensitive data lifetimes and explicit operation identities. Add an exact-tier
+  parameter read alongside the compatible existing API.
+- Add `zzrouter console` and a top-level TUI console launcher with URL-only and
+  headless modes. Move interactive team policy editing to the console, retain
+  inherited policy summaries in the TUI, require explicit shared teams for new
+  keys and keep existing individual quotas read-only during ordinary edits.
+
+- Add console Chat for user and administrator sessions: model/route selection,
+  system prompts, sampling/output limits, optional node selection, streamed
+  Markdown, reasoning, response statistics, regeneration and Stop. Reuse the
+  inference API and server access/quotas, with scoped browser authentication and
+  cancellable session-bound transport. Bundle AI SDK 7 and assistant-ui locally.
+
+- Simplify provider setup with direct credential entry, separate Test connection
+  and Save and enable actions, and Show/Hide for newly entered keys. Keep save-only
+  and credential removal under Advanced settings, provide actionable test errors,
+  and allow saved credentials to be enabled without re-entering them.
+
+- Integrate overview memory readings into clickable compute-node cards, hide
+  disabled provider branches and remove unavailable activity text from the map.
+  Workloads skips nodes reported offline with a compact summary, resumes reads
+  after recovery and keeps unexpected read failures visible.
+
 - Add measured node memory and expiring activity indicators to the console
   Overview, plus a Workloads view for runs and installation/download jobs.
   Use the shared side panel for exact-node start/stop, previews and read-only

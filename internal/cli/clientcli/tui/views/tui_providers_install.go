@@ -392,7 +392,7 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 		}
 
 	case key.Matches(msg, installWizardKeys.CopyScript):
-		script, err := buildInstallScript(m.installPlan)
+		script, err := m.installPlan.CommandScript()
 		if err != nil {
 			m.actionStatus = err.Error()
 			return nil
@@ -400,7 +400,7 @@ func (m *ProvidersViewModel) updateInstallWizard(msg tea.KeyPressMsg) tea.Cmd {
 		if err := clipboard.WriteAll(script); err != nil {
 			m.actionStatus = fmt.Sprintf("✗ Copy failed: %v", err)
 		} else {
-			m.actionStatus = fmt.Sprintf("✓ Full install script copied to clipboard (%d commands)", len(steps))
+			m.actionStatus = "✓ Command script copied. Use managed installation for verification and activation."
 		}
 	}
 
@@ -418,11 +418,7 @@ func (m *ProvidersViewModel) leaveInstallWizard() tea.Cmd {
 	}
 	m.loading = true
 	m.actionStatus = ""
-	client := m.client
-	return tea.Batch(func() tea.Msg {
-		apps, err := shared.FetchProviders(client, "", "", true)
-		return providersLoadedMsg{providers: apps, err: err}
-	}, shared.SpinnerTickCmd())
+	return tea.Batch(m.fetchProvidersCmd(true), shared.SpinnerTickCmd())
 }
 
 // startInstallJobCmd POSTs /install and subscribes to the returned
@@ -483,22 +479,6 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
-}
-
-// buildInstallScript exports only plans whose every step has a shell command.
-func buildInstallScript(plan *pkgClient.InstallPlanResponse) (string, error) {
-	var b strings.Builder
-	b.WriteString("#!/bin/bash\n")
-	b.WriteString("set -e\n")
-	b.WriteString(fmt.Sprintf("# zzRouter install script for %s\n\n", plan.Provider))
-	for _, step := range plan.Steps {
-		if step.Command == "" {
-			return "", fmt.Errorf("This plan requires server execution; use Run All or run each step.") //nolint:staticcheck // Preserve the agreed operator-facing message.
-		}
-		b.WriteString(fmt.Sprintf("# Step %d: %s\n", step.Number, step.Description))
-		b.WriteString(step.Command + "\n\n")
-	}
-	return b.String(), nil
 }
 
 // ============================================================================

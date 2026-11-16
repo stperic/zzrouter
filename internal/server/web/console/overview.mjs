@@ -1,21 +1,23 @@
-import { el, text, button, leaveButton, heading, badge, message, problem, date, facts, actions } from './dom.mjs';
+import { el, text, button, leaveButton, heading, badge, message, problem, date, actions, input } from './dom.mjs';
 import { readInventory } from './inventory.mjs';
 import { nodeSummary, clientKey, nodeKey } from './network-data.mjs';
 import { readClients, showClient, connectionGuide } from './clients.mjs';
 import { showNode, showLocalProvider, addNode } from './nodes.mjs';
 import { details } from './details.mjs';
-import { topologyData } from './topology-data.mjs';
+import { topologyData, visibleTopology } from './topology-data.mjs';
 import { topology } from './topology.mjs';
 import { providerName } from './provider-icons.mjs';
 import { showProvider } from './providers.mjs';
-import { activityText, memorySummary } from './observations.mjs';
+import { memorySummary } from './observations.mjs';
 import { liveReads } from './live-reads.mjs';
 
 export async function overview(p, selection) {
   let snapshot, model, graph, drawer;
   let selected = selection;
-  let listMode = false;
+  let listMode = globalThis.matchMedia?.('(max-width: 650px)').matches || false;
+  const branches = new Map();
   let graphFailed = false;
+  let graphVersion = 0;
   const feedback = el('div', { 'aria-live': 'polite' });
   const freshness = el('span', { class: 'network-caption', role: 'status' });
   const counts = el('div', { class: 'network-counts' });
@@ -29,22 +31,49 @@ export async function overview(p, selection) {
   const fit = button('Fit', () => graph?.fit());
   fit.setAttribute('aria-label', 'Fit network to view');
   const view = button('List view', () => setListMode(!listMode));
+  const branch = button('', () => {
+    const name = selected?.startsWith('node/') ? selected.slice(5) : undefined;
+    if (!name) return;
+    branches.set(name, !branches.get(name));
+    updateGraph(true);
+  });
+  branch.hidden = true;
+  const search = input('node_search', '', { type: 'search', placeholder: 'Find a compute node', 'aria-label': 'Find a compute node' });
+  const matches = el('div', { class: 'network-search-results' });
+  const findNode = async name => {
+    search.value = ''; matches.replaceChildren();
+    await p.go('overview', nodeKey(name));
+    if (selected === nodeKey(name)) graph?.focus(selected);
+  };
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    const found = query ? model?.nodes.filter(node => node.name.toLowerCase().includes(query)) || [] : [];
+    matches.replaceChildren(...found.map(node => leaveButton(node.name, () => findNode(node.name), p.api)));
+    if (query && !found.length) matches.append(text('No matching nodes.', 'muted'));
+  });
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); matches.querySelector?.('button')?.focus(); }
+  });
   const stage = el('section', { class: 'topology-stage entity-list', 'aria-label': 'Network map' },
-    el('div', { class: 'topology-toolbar' }, text('Network', 'topology-title'), actions(zoomOut, zoomIn, fit, view)),
+    el('div', { class: 'topology-toolbar' }, search, actions(
+      leaveButton('+ Connect client', () => p.go('overview', 'connect'), p.api, 'link'), leaveButton('+ Cloud provider', () => p.go('providers', 'cloud'), p.api, 'link'), zoomOut, zoomIn, fit, view)),
+    el('div', { class: 'network-branch' }, branch), matches,
     graphStatus, canvas, list,
-    el('div', { class: 'topology-legend' }, el('span', {}, '● Healthy / active'), el('span', { class: 'legend-down' }, '● Down'), el('span', { class: 'legend-degraded' }, '● Degraded'), el('span', {}, '● Unknown / last observed'), text('Click an item for details. Drag to pan.')));
+    el('div', { class: 'topology-legend' }, el('span', {}, '● Healthy / active'), el('span', { class: 'legend-down' }, '● Down'), el('span', { class: 'legend-degraded' }, '● Degraded'), el('span', {}, '● Unknown / last observed'), text('Select a node to see its providers. Drag to pan.')));
   const workspace = el('div', { class: 'network-workspace entity-workspace' }, stage);
   const body = el('div', { class: 'network-overview' }, counts, workspace);
   const refreshButton = leaveButton('Refresh', async () => {
     if (!(p.canLeave?.() ?? p.api.canLeave())) return;
+    if (graphFailed && graph) { graphFailed = false; view.disabled = false; }
     const panel = drawer, revision = panel?.panel.revision;
     if (await read() && drawer === panel && drawer?.panel.revision === revision && drawer?.editing && p.api.canLeave()) select(selected, true);
   }, p.api);
   const pause = button('Pause updates', () => live.toggle());
   p.root.append(heading('Overview', 'Your clients, coordinator and compute nodes.',
     refreshButton, pause, leaveButton('+ Add node', () => p.go('overview', 'add'), p.api, 'primary')), feedback, body,
-    el('div', { class: 'network-footer' }, freshness, actions(leaveButton('+ Connect client', () => p.go('overview', 'connect'), p.api, 'link'), leaveButton('+ Cloud provider', () => p.go('providers', 'cloud'), p.api, 'link'))),
-    text('Memory shows used / total GiB. * marks last reported readings. A pulse means observed work. Node health is the coordinator’s latest observation; configured providers and authorized clients do not establish a live connection.', 'network-caption'));
+    el('div', { class: 'network-footer' }, freshness,
+      el('details', { class: 'network-caption network-help' }, el('summary', {}, 'About this view'),
+        text('Memory shows used / total GiB. * marks last reported readings. A pulse means observed work. Health is the coordinator’s latest observation; configuration and authorization do not establish a live connection.'))));
   const live = liveReads(p, readSnapshot, { interval: 15000, eligible: () => idle(), changed: () => {
     pause.textContent = live.paused ? 'Resume updates' : 'Pause updates';
     pause.setAttribute('aria-pressed', String(live.paused));
@@ -59,7 +88,8 @@ export async function overview(p, selection) {
     canvas.hidden = value;
     view.textContent = value ? 'Map view' : 'List view';
     view.setAttribute('aria-pressed', String(value));
-    for (const control of [zoomOut, zoomIn, fit]) control.disabled = value || !graph;
+    for (const control of [zoomOut, zoomIn, fit]) { control.disabled = value || !graph; control.hidden = value; }
+    updateGraph();
   }
 
   function select(next, reload = false) {
@@ -69,6 +99,12 @@ export async function overview(p, selection) {
     drawer?.dispose();
     drawer = undefined;
     selected = next;
+    if (!reload && next?.startsWith('node/')) branches.set(next.slice(5), true);
+    if (next?.startsWith('local/')) {
+      const provider = model.providers.find(entry => entry.selection === next);
+      if (provider) branches.set(provider.nodeName, true);
+    }
+    updateGraph(!reload && (next?.startsWith('local/') || next?.startsWith('node/')));
     graph?.select(next);
     for (const item of list.querySelectorAll('[data-selection]')) item.setAttribute('aria-pressed', String(item.getAttribute('data-selection') === next));
     if (!next) {
@@ -85,7 +121,7 @@ export async function overview(p, selection) {
     else if (next === 'connect') owner.root.append(connectionGuide(owner));
     else if (next.startsWith('node/')) showNode(owner, next.slice(5), snapshot.inventory);
     else if (next.startsWith('local/')) {
-      const entry = model.elements.find(({ data }) => data.kind === 'provider' && data.selection === next)?.data;
+      const entry = model.providers.find(entry => entry.selection === next);
       if (entry) showLocalProvider(owner, entry.nodeName, entry.providerKey, snapshot.inventory);
       else owner.root.append(message('This provider is no longer in the current node inventory.', 'warning'));
     } else if (next.startsWith('client/')) showClient(owner, model.clients.find(row => clientKey(row) === next.slice(7)));
@@ -97,15 +133,33 @@ export async function overview(p, selection) {
     p.syncActivity();
   }
 
+  function updateGraph(focus = false) {
+    if (!model) return;
+    const name = selected?.startsWith('node/') ? selected.slice(5) : undefined;
+    branch.hidden = listMode || !name || !model.elements.some(({ data }) => data.kind === 'provider' && data.nodeName === name);
+    branch.textContent = branches.get(name) ? 'Hide providers' : 'Show providers';
+    branch.setAttribute('aria-expanded', String(!!branches.get(name)));
+    if (!graph || graphFailed) return;
+    const current = selected;
+    const version = ++graphVersion;
+    void graph.update(visibleTopology(model.elements, new Set([...branches].filter(([, open]) => open).map(([name]) => name)))).then(committed => {
+      if (!committed || !p.current() || version !== graphVersion || current !== selected) return;
+      if (!graphFailed) graphStatus.textContent = '';
+      graph.select(selected);
+      if (focus && selected) graph.focus(selected);
+    });
+  }
+
   function updateModel() {
     model = topologyData(snapshot, p.state.node_name);
+    for (const node of model.nodes) if (!branches.has(node.name)) branches.set(node.name, model.nodes.length <= 6 && canvas.clientHeight >= 560);
     const summary = nodeSummary(snapshot.inventory);
     counts.replaceChildren(...(summary ? [el('span', {}, el('strong', {}, `${summary.healthy} / ${summary.total}`), ' compute nodes healthy'),
       summary.down ? badge(`${summary.down} down`, 'bad') : null, summary.degraded ? badge(`${summary.degraded} degraded`, 'warn') : null,
       summary.unknown ? badge(`${summary.unknown} unknown`) : null] : [message('Node counts unavailable.', 'warning')]).filter(Boolean));
-    const active = model.clients.filter(row => row.active_requests > 0).length;
-    counts.append(text(snapshot.clientResults[0].status === 'rejected' ? 'Client activity unavailable' : `${active} active ${active === 1 ? 'identity' : 'identities'} at refresh · ${model.clients.length} observed`, 'network-caption'));
-    list.replaceChildren(...['client', 'coordinator', 'compute', 'cloud', 'provider'].map(kind => {
+    const active = new Set(model.clients.filter(row => row.active_requests > 0).map(row => JSON.stringify([row.source, row.key_id]))).size;
+    counts.append(text(snapshot.clientResults[0].status === 'rejected' ? 'Client activity unavailable' : `${active} ${active === 1 ? 'key' : 'keys'} with active requests · ${model.clients.length} observed clients`, 'network-caption'));
+    list.replaceChildren(...['client', 'coordinator', 'compute', 'cloud'].map(kind => {
       const entries = model.elements.filter(element => element.data.kind === kind);
       if (!entries.length) return null;
       const title = { client: 'Clients', coordinator: 'Coordinator', compute: 'Compute nodes', cloud: 'Cloud providers', provider: 'Local providers' }[kind];
@@ -115,7 +169,16 @@ export async function overview(p, selection) {
         item.setAttribute('aria-pressed', String(data.selection === selected));
         if (['coordinator', 'compute'].includes(kind)) item.dataset.node = data.name;
         item.append(data.providerKey ? providerName(data.providerKey, data.nodeName ? `${data.name} · ${data.nodeName}` : data.name) : el('span', {}, data.name), badge(data.status, data.tone));
-        if (kind === 'compute') { const node = model.nodes.find(node => node.name === data.name); item.append(el('span', { class: 'memory-summary' }, memorySummary(node)), activityText(p, node.activity)); }
+        if (kind === 'compute') {
+          const node = model.nodes.find(node => node.name === data.name);
+          item.append(el('span', { class: 'memory-summary' }, memorySummary(node)));
+          return el('div', { class: 'topology-list-node' }, item,
+            el('div', { class: 'topology-list-providers' }, model.elements.filter(({ data: provider }) => provider.kind === 'provider' && provider.nodeName === data.name).map(({ data: provider }) => {
+              const child = leaveButton(providerName(provider.providerKey, provider.name), () => p.go('overview', provider.selection), p.api, 'link');
+              child.setAttribute('data-selection', provider.selection); child.setAttribute('aria-pressed', String(provider.selection === selected));
+              return child;
+            })));
+        }
         return item;
       }));
     }).filter(Boolean));
@@ -123,10 +186,7 @@ export async function overview(p, selection) {
     if (!model.clients.length && snapshot.clientResults[0].status === 'fulfilled') notices.push(message('No authenticated client activity observed yet. Connect a client and send a request.'));
     if (snapshot.clientResults[0].value?.metadata?.truncated) notices.push(message('Some older client activity was omitted at the observation limit.', 'warning'));
     feedback.replaceChildren(...notices);
-    if (graph) {
-      void graph.update(model.elements).then(() => { if (p.current() && !graphFailed) graphStatus.textContent = ''; });
-      graph.select(selected);
-    }
+    updateGraph();
   }
 
   const idle = () => !selected && !document.hidden && !list.contains(document.activeElement) && p.api.canChange();
@@ -149,7 +209,7 @@ export async function overview(p, selection) {
   if (!p.current() || !snapshot) return;
   select(selected);
   p.handleSelection?.(select);
-  setListMode(false);
+  setListMode(listMode);
   const failed = () => {
     if (!p.current()) return;
     graphFailed = true;
@@ -162,7 +222,7 @@ export async function overview(p, selection) {
     graph = value;
     graph.pause(live.paused);
     setListMode(listMode);
-    updateModel();
+    graph.select(selected);
   }).catch(failed);
   live.start();
 }

@@ -98,6 +98,7 @@ func (ctrl *ModelsController) ShowModel(c *gin.Context) {
 		Node:      QueryNode(c),
 		App:       QueryProvider(c),
 		Registry:  QueryRegistry(c),
+		SourceID:  c.Query("source_id"),
 		Verbose:   c.Query("verbose") == "true",
 		Compact:   c.Query("compact") == "true",
 	}

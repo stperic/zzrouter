@@ -1,6 +1,10 @@
 package client
 
-import "github.com/stperic/zzrouter/pkg/apipath"
+import (
+	"context"
+
+	"github.com/stperic/zzrouter/pkg/apipath"
+)
 
 // KeyResponse is the client-side safe representation of a virtual key.
 // Mirrors the server's zzrouter/v1/keys response shape.
@@ -32,6 +36,7 @@ type KeyResponse struct {
 	TPMLimit            int     `json:"tpm_limit,omitempty"`
 	SpendLimit          float64 `json:"spend_limit,omitempty"`
 	ResetPeriod         string  `json:"reset_period,omitempty"`
+	DefaultMaxTokens    int     `json:"default_max_tokens,omitempty"`
 
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	IsExpired bool              `json:"is_expired"`
@@ -147,8 +152,13 @@ func (c *Client) GetKey(id string) (*KeyResponse, error) {
 // CreateKey creates a new virtual key.
 // POST /zzrouter/v1/keys
 func (c *Client) CreateKey(req *CreateKeyRequest) (*CreateKeyResponse, error) {
+	return c.CreateKeyContext(context.Background(), req)
+}
+
+// CreateKeyContext issues a credential with a caller-owned lifetime.
+func (c *Client) CreateKeyContext(ctx context.Context, req *CreateKeyRequest) (*CreateKeyResponse, error) {
 	var result CreateKeyResponse
-	if err := c.doJSON("POST", apipath.Keys, req, &result, "create key"); err != nil {
+	if err := c.doContextJSON(ctx, "POST", apipath.Keys, req, &result, "create key"); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -183,8 +193,13 @@ func (c *Client) GetKeyUsage(id string) (*KeyUsageResponse, error) {
 // UpdateKey partially updates a virtual key.
 // PATCH /zzrouter/v1/keys/:id
 func (c *Client) UpdateKey(id string, req *UpdateKeyRequest) (*KeyResponse, error) {
+	return c.UpdateKeyContext(context.Background(), id, req)
+}
+
+// UpdateKeyContext changes a credential with a caller-owned lifetime.
+func (c *Client) UpdateKeyContext(ctx context.Context, id string, req *UpdateKeyRequest) (*KeyResponse, error) {
 	var result KeyDetailResponse
-	if err := c.doJSON("PATCH", apipath.Key(id), req, &result, "update key"); err != nil {
+	if err := c.doContextJSON(ctx, "PATCH", apipath.Key(id), req, &result, "update key"); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil

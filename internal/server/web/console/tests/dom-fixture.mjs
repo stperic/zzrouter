@@ -70,7 +70,7 @@ export function installDOM(t, overrides = {}) {
   const values = {
     Node: Element, BroadcastChannel: undefined, confirm: () => true,
     window: new EventTarget(), location: { origin: 'https://router.example' },
-    document: { querySelector: () => app, createElement: tag => new Element(tag), createTextNode: value => { const node = new Element('#text'); node.textContent = value; return node; } },
+    document: { documentElement: new Element('html'), querySelector: () => app, createElement: tag => new Element(tag), createTextNode: value => { const node = new Element('#text'); node.textContent = value; return node; } },
     ...overrides,
   };
   for (const [key, value] of Object.entries(values)) {

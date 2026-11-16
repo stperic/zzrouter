@@ -682,6 +682,17 @@ func (s ServiceConfig) ValidateRunEndpoint(endpoint string) error {
 	return s.ServesEndpoint(endpoint)
 }
 
+// RunEndpoints lists the admitted named run endpoints in stable order.
+func (s ServiceConfig) RunEndpoints() []string {
+	endpoints := []string{}
+	for _, endpoint := range slices.Sorted(maps.Keys(runWireEndpoints)) {
+		if s.ValidateRunEndpoint(endpoint) == nil {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
+}
+
 // nodeRunFieldError names the supplied field a node-scoped run cannot accept.
 func (s ServiceConfig) nodeRunFieldError(field string) error {
 	return fmt.Errorf("node-scoped provider %q accepts no %s", s.Name, field)

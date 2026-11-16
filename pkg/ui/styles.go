@@ -11,7 +11,8 @@ type Styles struct {
 	Normal      lipgloss.Style
 	Error       lipgloss.Style
 	Success     lipgloss.Style
-	Help        lipgloss.Style // Dim gray for separators, faint UI
+	Help        lipgloss.Style // Readable secondary text
+	Separator   lipgloss.Style // Decorative rules
 	HintsBar    lipgloss.Style // Normal color for footer hints/info text
 	DetailKey   lipgloss.Style
 	DetailValue lipgloss.Style
@@ -43,14 +44,15 @@ func NewStyles(t Theme) Styles {
 		Normal:      lipgloss.NewStyle().Foreground(t.Text),
 		Error:       lipgloss.NewStyle().Foreground(t.Error).Bold(true),
 		Success:     lipgloss.NewStyle().Foreground(t.Success).Bold(true),
-		Help:        lipgloss.NewStyle().Foreground(t.Overlay),
+		Help:        lipgloss.NewStyle().Foreground(t.Subtext),
+		Separator:   lipgloss.NewStyle().Foreground(t.Overlay),
 		HintsBar:    lipgloss.NewStyle().Foreground(t.Subtext),
 		DetailKey:   lipgloss.NewStyle().Foreground(t.Subtext).Bold(true),
 		DetailValue: lipgloss.NewStyle().Foreground(t.DetailKey),
 		Accent:      lipgloss.NewStyle().Foreground(t.Accent).Bold(true),
 
 		StatusRunning:     lipgloss.NewStyle().Foreground(t.Success),
-		StatusIdle:        lipgloss.NewStyle().Foreground(t.Overlay),
+		StatusIdle:        lipgloss.NewStyle().Foreground(t.Subtext),
 		StatusDownloading: lipgloss.NewStyle().Foreground(t.Info),
 		StatusError:       lipgloss.NewStyle().Foreground(t.Error),
 

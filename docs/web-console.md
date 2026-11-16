@@ -7,14 +7,38 @@ links to the configured origin when the current address differs.
 For remote access, follow the [HTTPS ingress checklist](mcp.md#remote-https-checklist)
 before signing in.
 
-Sign in with a zzRouter key. Administrator keys open Overview, Nodes, Workloads, Clients, Providers,
-Routes, Keys & teams and Settings. User keys open My Access, with their
+Sign in with a zzRouter key. Administrator keys open Overview, Chat, Models,
+Nodes, Workloads, Logs, Clients, Providers, Routes, Keys & teams and System.
+User keys open Chat and My Access, with their
 own model policy, limits, recorded usage and MCP grants. Keys remain the identity
 model; the console does not introduce a separate account or role database.
 
+## Appearance
+
+Choose **Color theme** in the navigation or on the sign-in screen. **Claude Web**
+is the default, with warm cream surfaces, charcoal text and terracotta accents.
+Claude Web dark and neutral Claude Code light/dark alternatives are also available.
+The palettes adapt [Anthropic's published colors](https://github.com/anthropics/skills/blob/main/skills/brand-guidelines/SKILL.md)
+for readable console controls; they are not exact copies of terminal themes.
+
+The preference stays in this browser and synchronizes across tabs on the same
+origin. It changes the whole console, including the network graph, without
+discarding drafts or resetting the map. Health indicators keep their semantic
+green, red, amber and gray colors. If browser storage is unavailable, the selected
+theme applies for the current tab and the picker reports that it was not saved.
+
 ## Shared selection and editing
 
-Overview, Nodes, Workloads, Clients, Providers, Routes and Keys & teams share one nonmodal
+The console is the complete interactive management surface. In the terminal,
+choose **Open web console** or run `zzrouter console`. Use `zzrouter console
+--print` to print the configured URL without opening a browser. SSH/headless
+sessions and structured output also retain a URL instead of launching a browser.
+Discovery uses the coordinator's public OAuth issuer and never puts an API key
+or browser session in the URL. Initial node startup and local recovery remain
+terminal operations.
+
+Overview, Nodes, Models, Workloads, Logs, Clients, Providers, Routes, Keys & teams
+and System management share one nonmodal
 right-side panel. Select a graph icon, card or table row to inspect details. A
 native name button also supports keyboard selection. The selected item remains
 highlighted. Editable resources expose one Edit action inside the panel; Save
@@ -37,14 +61,68 @@ pagination and the map viewport remain intact while opening and closing panels.
 At narrow widths, the panel occupies the workspace and Close returns to its list
 or map. Forms share readable control sizes and a consistent action footer.
 
+## Models, runtime management and downloads
+
+Models separates available inventory from discovery. Available models have exact
+node/provider identities, details, an explicit inference test, Chat, run creation,
+parameters and deletion. Deletion reports partial errors; a successful HTTP
+response alone does not imply every requested copy was removed. Model-to-Chat
+handoff retains the selected compute node.
+
+Discover uses declared registry/provider search capabilities, cards, variant and
+feature choices. Download review shows the exact provider, file and target nodes.
+Capacity is advisory; unknown capacity does not silently remove a target. Accepted
+downloads remain inspectable under Workloads > Downloads, including per-node jobs
+and cancellation. Job acceptance or disappearance never establishes completion.
+
+Providers > Manage runtime offers prerequisites, optional runtime components,
+reviewed install plans, per-step or full execution, verification, copied reported
+commands, service controls, versions, cluster version pins and upgrades. Execution
+is bound to the reviewed plan ID and resolved options. Remote Ollama connections
+use the existing provider-instance API.
+
+The executing node supplies a command-script export or a refusal reason through
+the install-plan API. The console and TUI use that result unchanged. Exported
+commands do not replace managed verification or activation. Older nodes that
+omit the export still support managed execution; clients do not reconstruct a
+script from preview commands that may depend on hidden installer context.
+
+Parameters show the exact configured scope separately from effective values and
+their provenance: provider defaults, model, node or node/model, optionally narrowed
+to a supported endpoint. The API supplies schema types and valid endpoints. A
+cleared override sends merge-patch null; unrelated values are omitted. Environment
+values require deliberate reveal and are cleared on exit. Editors reread changed
+fields before saving; the API does not atomically lock concurrent editors, so a
+second editor can still race during the save.
+
+## Logs and system management
+
+Run details open bounded runtime output with explicit Follow/Pause. Reconnecting
+replaces the buffer because the API replays from the beginning. Identical output
+lines remain distinct. Job cancellation preserves the exact node and job identity;
+an accepted cancellation is followed by observation rather than assumed success.
+
+Logs supports model, status, time, key and team filters, retained request details,
+an explicit live feed and deliberate payload reveal. Inline prompts are excluded
+from retained list buffers. Live reset/dropped-event evidence remains visible;
+disconnecting is not completion. Payloads stay only in the current panel.
+
+System groups observed setup guidance, software and pricing. Software shows each
+node's version and partial failures, history, explicit release/target rollouts,
+per-node scheduled-update settings and coordinator rollback. Interrupted updates
+are reconciled through status/history without replaying writes. Pricing separates
+catalog rates, overrides and unpriced observations. Override editors preserve
+cached-input rates and use USD per million tokens. Team budgets remain in teams.
+
 ## Overview and node details
 
 The Overview maps Clients to the Coordinator, then to Compute nodes and Cloud
 providers. Each node, client and provider is clickable. Local compute has
 priority: every known machine appears under Compute nodes with observed health.
-Every reported local provider appears beneath its owning compute node by default,
-including disabled providers. The tree does not infer installations from the
-provider catalog. Compact icons keep the map readable; hardware appears in details.
+Local providers appear beneath their owning compute node unless the API reports
+them disabled. Disabled providers remain available in node settings and through
+their details links. Unknown enablement remains visible if inventory is unavailable.
+The tree does not infer installations from the provider catalog.
 Down nodes remain visible. The header
 counts unique machine identities, including the coordinator once.
 
@@ -64,10 +142,16 @@ Zoom controls, drag to pan and Fit adjust the viewport. List view provides the
 same entities and actions for keyboard and screen-reader use, and remains usable
 if the graph package or layout fails.
 
-The map uses larger, darker system-font labels and a taller canvas so Fit remains
-readable for a typical cluster. Labels are clickable and mask connectors behind
-the text. Names wrap at spaces and hyphens; their measured dimensions reserve
-layout space, including when a display name changes during refresh. Fit still
+The map starts at a readable zoom rather than shrinking every label to fit a
+large cluster. Search focuses a compute node; its provider branch can be expanded
+or collapsed. Large clusters and shorter map viewports start with provider
+branches collapsed; selecting a node reveals its providers. List view always includes enabled providers beneath their nodes and
+is the default on phones. Explicit map/list choice survives refresh and selection.
+Labels are clickable and mask connectors behind
+the text. Compute cards contain the icon, status and memory readings in one
+clickable surface. Long card titles truncate; details and List view retain the
+full name. Other labels wrap at spaces and hyphens and reserve measured layout
+space, including when a display name changes during refresh. Fit still
 shows the entire network; larger inventories can use zoom or List view.
 
 Status dots sit at the top-right of each icon: green for observed healthy nodes
@@ -78,16 +162,18 @@ Provider marks identify every shipped local/cloud provider and Hugging Face;
 unknown custom providers use a generic mark. These marks appear consistently in
 the map, its list, provider lists and node details.
 
-Compute icons show measured used/total memory to their right. RAM and discrete
+Compute cards show measured used/total memory below their header. RAM and discrete
 GPU cards are separate; unified memory appears once. Details list every card.
 Unavailable readings remain explicit, including older peers and unsupported
-per-card probes. Measured zero remains zero. The console never derives used
+per-card probes. Compact summaries omit GPU devices with neither measured usage
+nor a reported capacity; details retain them. Measured zero remains zero. The console never derives used
 memory from available memory. An asterisk marks last reported readings; details
 show their observation time and age. Public-only health responses preserve the
 last authenticated inventory without renewing its timestamps.
 
 A gentle pulse indicates fresh admitted-request or engine-probe activity, with
-matching text in the map, list and details. A loaded service alone is not active
+matching text in the list and details. The map has no separate activity text.
+A loaded service alone is not active
 work. Pulses and activity labels expire independently of refresh. Pause updates,
 hidden pages and reduced-motion preferences stop animation. Metric updates keep
 the existing layout and viewport.
@@ -108,7 +194,8 @@ Edit node settings changes provider enablement on the selected node through the
 existing node-addressed PATCH API. Edited fields are rechecked before writing;
 that API has no atomic revision guard, so concurrent editors still require
 coordination. Node names are certificate-bound identities, not editable labels.
-Provider installation remains in the terminal client.
+Provider installation is available under Providers: select a local provider,
+choose its compute node and open Manage runtime.
 
 + Add node accepts the HTTPS cluster address, fingerprint and pairing code printed
 by the new node's terminal pairing workflow. The browser authenticates enrollment
@@ -128,13 +215,52 @@ not an upstream inference test. Hash links preserve selected nodes/providers and
 browser Back/Forward; pending writes prevent leaving the editor. All entity
 views use the same nonmodal panel.
 
+## Chat
+
+Chat is available to user and administrator keys. Search the model/route picker
+or enter an exact model name. The list comes from the same authorized
+`/v1/models` discovery used by API clients, including permitted route aliases.
+Only models explicitly reporting no chat capability are omitted. Node-qualified
+model IDs are sent unchanged; optional node names use the existing `X-Node`
+header. The API owns routing, provider/model permissions, budgets and usage
+limits. The browser does not implement a second policy engine.
+
+Settings opens the shared right-side panel. Apply a system prompt, temperature,
+top-p, output-token limit and optional node for the next request. Blank numeric
+values use model defaults. Display controls show returned reasoning and response
+statistics; only reported usage/cost is shown. Stop cancels the request; New chat
+clears the conversation, draft and settings after confirmation. Regenerate explicitly requests a new
+response. No inference request is automatically retried. Partial output remains
+visible on stream failure, with a distinct stopped/error outcome.
+
+Conversation, composer draft and settings live in memory within the current
+verified browser authority. Navigation cancels inference but retains its partial
+outcome and the mounted runtime. Returning to the same model preserves its node
+setting; choosing a different model or route clears that optional node pin.
+Reload, sign-out, pagehide and changed browser authority destroy the runtime and
+clear retained content. No prompt or transcript is written to browser storage.
+The model picker uses the shared panel with searchable native buttons and an
+explicit exact-ID action. Only a committed choice changes the next request.
+Route details provide Try in Chat without sending or discarding an existing draft.
+Model replies render as Markdown without executable HTML or remote images.
+The SDK's schema validator runs without dynamic code generation, preserving the
+console's existing self-only script policy.
+
+Only GET `/v1/models` and POST `/v1/chat/completions` opt into browser sessions.
+The latter requires exact Origin and the session-bound CSRF proof. Explicit API
+credentials retain compatibility-surface precedence; expired or revoked browser
+attempts never become anonymous. Browser cookies and proofs stop at the
+coordinator. All existing inference authorization and quota enforcement remains
+in place. Browser chat is not counted as a separately connected external client.
+
 ## Workloads and diagnostics
 
 Workloads has Runs and Jobs views, a compute-node filter and search. Each row
 opens the same details panel. Node/provider details link to that node's workloads.
-Reads address each node explicitly with bounded concurrency; a failed worker
-remains named, and previously read rows are marked last reported. Refresh also
-updates the node choices without silently broadening a missing-node selection.
+Reads address each node explicitly with bounded concurrency. Nodes reported down
+are skipped with one quiet offline summary. Refresh updates node health and resumes
+reads when they return. Unexpected read failures remain named, and previously read
+rows are marked last reported. A missing-node selection never broadens silently.
 
 Runs show models and node services, their provider, node, status and observed
 activity. Retained pins are stopped records. Details include reported memory
@@ -163,20 +289,6 @@ the API's denied/skipped reasons while preserving the unchecked readiness,
 capacity and inference limits. Shared errors show safe codes, node/request IDs
 and bounded field evidence as text.
 
-### Planned activity and memory readouts
-
-Compute-node layout reserves a wider footprint for a compact metrics area to the
-right of the icon. The first readout should show reported used/total memory and
-units, with room for additional metrics below it. Keep RAM and discrete GPU
-memory separate, and show unified memory once. Missing or stale observations
-must be explicit; do not derive used memory by subtracting free from total.
-Metric updates should not relayout the graph.
-
-Dots are currently static. A future gentle pulse should mean observed active
-work, with a text label and reduced-motion support. A running provider service
-does not by itself prove active inference. Memory usage and activity pulses are
-planned, not implemented in this map.
-
 ## Observe clients
 
 Clients shows admitted authenticated API/MCP request activity grouped by key
@@ -203,29 +315,40 @@ separate from observed activity and never presented as connected clients.
 
 Providers opens Local providers first, followed by Cloud providers and Model registries, including
 disabled services and Hugging Face. Select a local provider to see its reported
-installation and enablement on each node. Use the terminal client for installing
-providers and managing local runtimes. Any editable connection still belongs to
+installation and enablement on each node. Choose a compute node and open Manage
+runtime for installation, service controls, parameters and versions. An editable
+cloud or registry connection still belongs to
 the coordinator; it does not change a worker's credentials.
 Enablement and installation flags describe the node's effective provider state.
 They do not distinguish every installation phase or say whether a model is
-running. Use the terminal job view for installation progress.
+running. Inspect the returned job for installation progress.
 
 Cloud and registry forms come from the provider's declared connection schema,
 including endpoint, region and account fields where applicable.
 
-Enter a complete replacement, including each required secret. Saved secrets
-cannot be read back or borrowed when changing a destination. Test is a diagnostic
-for the current form content. It keeps masked inputs for an explicit Save;
-editing any field invalidates the displayed test result. Saving does not test
-the upstream. The Connect after saving option additionally requests existing
-provider onboarding.
+Selecting an unconfigured cloud provider or registry opens its setup form
+directly. Enter a complete replacement, including each required secret. Saved
+secrets cannot be read back or borrowed when changing a destination. Show/Hide
+reveals only the value currently being entered; it is still cleared on saving,
+navigation and session invalidation.
+
+Test connection checks the current form without saving or enabling anything.
+Editing any field invalidates its result. Save and enable stores credentials and
+requests normal onboarding for a disabled cloud provider. Save changes updates
+an enabled provider without enabling it again. Advanced settings includes Save
+without enabling, credential removal and explicit installation-credential
+restoration. A configured but disabled provider can be enabled from its details
+without entering its credentials again. Saving is independent of testing.
 The terminal connection form's Save and connect action also requests provider
 onboarding.
 
-Results report saving, durability, activation and publication separately.
+Results show a short outcome and retain the separate saving, durability,
+activation and publication facts under Save details. Connection details keeps
+credential source and node scope out of the main setup flow.
 Successful writes automatically read current details. A stale revision or uncertain
-response requires an explicit read before making another change. Remove connection
-suppresses external fallback. Use installation values explicitly resumes the coordinator's declared environment or credential cache.
+response requires an explicit read before making another change. Remove credentials
+suppresses external fallback. Use installation credentials explicitly resumes the
+coordinator's declared environment or credential cache.
 
 A Hugging Face token is optional for public models. Its diagnostic may reject an
 empty token even though anonymous public browsing works. A successful token
@@ -368,7 +491,8 @@ out ends browser access; it does not revoke existing MCP grants.
 ## Architecture and boundaries
 
 The console is embedded HTML, CSS and native JavaScript modules on the existing
-coordinator listener. It has no frontend build dependency or additional server.
+coordinator listener. Chat is a lazy-loaded React module; normal Go builds use
+checked-in bundles and require no frontend tooling or additional server.
 `browser_console.go` serves a fixed asset allowlist with same-origin CSP and
 no-store headers. All data and changes use existing services through their HTTP
 APIs. The TUI remains the interface for local installation, model/runtime work,
@@ -390,6 +514,23 @@ mapping selects fixed embedded assets; labels cannot introduce remote URLs.
 Licenses and source notices ship in `/console/vendor/THIRD_PARTY_NOTICES.txt`.
 Maintainers regenerate assets with `npm ci --ignore-scripts` and `npm run build`
 in `scripts/console-vendor`. Normal Go builds embed the checked-in outputs.
+
+Reusable chat rendering and transport source lives in `internal/server/web/chat`.
+AI SDK 7's OpenAI-compatible provider handles the inference protocol;
+assistant-ui owns the thread/composer lifecycle. A small library-parser adapter
+preserves zzRouter's model-loading events and terminal framing. The console
+injects its authority-aware fetch, settings and cancellation lifetime. Chat
+transcript/state, routing and browser authentication are not duplicated in GW.
+`npm run check` in the vendor directory type-checks the chat source. Its build
+pins dependencies and gathers licenses for the complete bundled dependency set.
+
+Browser UX regressions run with `npm run test:browser` in `scripts/console-vendor`.
+Install the pinned Playwright Chromium with `npx playwright install chromium`, or
+set `CONSOLE_CHROME` to an existing Chrome executable. The tests use an isolated,
+synthetic coordinator and the actual bundled console, including native form
+validation, focus, streaming cancellation, narrow layouts and axe accessibility
+checks. Screenshots and geometry/audit results are written to a temporary folder
+printed by the runner. No real keys or cluster writes are used.
 
 `api.mjs` owns requests and session refresh; page and form lifetimes reject late
 responses. A refresh clears protected content before loading bootstrap and `/me`,
@@ -413,7 +554,7 @@ Cross-tab messages carry only an authentication-state event.
 Pagehide scrubs transient secrets; a full reload does not preserve values or
 in-memory outcome notices.
 
-Settings shows effective public URL and authentication facts. Listener, issuer,
+System also shows the effective public URL and authentication facts. Listener, issuer,
 TLS and protection-key configuration remains a local installation concern and
 requires restart. See [configuration](configuration.md#mcp-browser-login),
 [security](security.md#mcp-browser-authorization), and

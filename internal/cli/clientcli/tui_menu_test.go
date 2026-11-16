@@ -93,7 +93,7 @@ func TestMenuEveryDestinationAndDefaultFocus(t *testing.T) {
 	for _, item := range visible {
 		top = append(top, item.item.name)
 	}
-	require.Equal(t, []string{"Models", "Providers", "Activity", "Manage"}, top)
+	require.Equal(t, []string{"Models", "Providers", "Activity", "Nodes", "Open web console", "Manage"}, top)
 	require.Equal(t, "Models", m.menu.Selected().Title())
 	_ = m.updateMenu(tea.KeyPressMsg{Code: tea.KeyEnter})
 	visible = m.syncMenu()
@@ -103,7 +103,8 @@ func TestMenuEveryDestinationAndDefaultFocus(t *testing.T) {
 	_ = m.updateMenu(tea.KeyPressMsg{Code: tea.KeyEnter})
 	visible = m.syncMenu()
 	want := map[tuiView]string{
-		tuiViewModels: "Available", tuiViewRunningModels: "Running", tuiViewSearch: "Discover",
+		tuiViewConsole: "Open web console",
+		tuiViewModels:  "Available", tuiViewRunningModels: "Running", tuiViewSearch: "Discover",
 		tuiViewProviders: "Providers", tuiViewDeploys: "Activity", tuiViewVkeys: "Keys", tuiViewTeams: "Teams",
 		tuiViewNodes: "Nodes", tuiViewLogs: "Logs", tuiViewPricing: "Pricing", tuiViewUpdate: "Software Update", tuiViewQuickstart: "Guided Setup",
 	}
@@ -198,4 +199,60 @@ func TestMenuCollapseKeepsCorrectGroupAndNavigationCancelsViews(t *testing.T) {
 	require.Equal(t, "Discover", m.search.Breadcrumb()[0])
 	m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 2, Y: 2})
 	require.Equal(t, paneMenu, m.pane)
+}
+
+func TestMenuWelcomeCollapsesOnActivationAndStaysCompact(t *testing.T) {
+	for _, action := range []string{"group key", "group mouse", "view key", "view mouse"} {
+		t.Run(action, func(t *testing.T) {
+			m := menuFixture(t)
+			m.menuWelcome = true
+			m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+			frame := m.View().Content
+			require.Contains(t, frame, "Local + cloud AI")
+			require.Contains(t, frame, "Manage", "the welcome must leave all top-level items visible")
+			require.LessOrEqual(t, lipgloss.Height(frame), 30)
+			require.LessOrEqual(t, lipgloss.Width(frame), 80)
+
+			// Selecting a row keeps mouse targets still until activation.
+			m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			require.True(t, m.menuWelcome)
+			idx := 0 // Models group
+			if strings.HasPrefix(action, "view") {
+				idx = 3 // Nodes
+			}
+			row := strings.Count(m.menuHeader(), "\n") + 2*idx
+			m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, Y: row})
+			require.Equal(t, idx, m.menu.Cursor())
+			require.True(t, m.menuWelcome)
+			if strings.HasSuffix(action, "mouse") {
+				m.Update(tea.MouseClickMsg{Button: tea.MouseLeft, Y: row})
+			} else {
+				m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			}
+			require.False(t, m.menuWelcome)
+			if strings.HasPrefix(action, "view") {
+				require.Equal(t, paneRoot, m.pane)
+				m.Update(tui.NavBackMsg{})
+			} else {
+				require.True(t, m.menuExpanded[0])
+			}
+			for _, size := range []tea.WindowSizeMsg{{Width: 40, Height: 10}, {Width: 80, Height: 30}} {
+				m.Update(size)
+				require.NotContains(t, m.View().Content, "Local + cloud AI", "welcome must not return after use")
+			}
+		})
+	}
+}
+
+func TestShortMenuStartsCompactAndDoesNotShowWelcomeAfterUse(t *testing.T) {
+	m := menuFixture(t)
+	m.menuWelcome = true
+	m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
+	frame := m.View().Content
+	require.NotContains(t, frame, "Local + cloud AI")
+	require.LessOrEqual(t, lipgloss.Height(frame), 10)
+	require.LessOrEqual(t, lipgloss.Width(frame), 40)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 36})
+	require.NotContains(t, m.View().Content, "Local + cloud AI")
 }

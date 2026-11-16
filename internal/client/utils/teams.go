@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/apipath"
 )
@@ -139,8 +141,13 @@ type TeamUsageDetailResponse struct {
 // ListTeams retrieves all teams.
 // GET /zzrouter/v1/teams
 func (c *Client) ListTeams() ([]*TeamResponse, error) {
+	return c.ListTeamsContext(context.Background())
+}
+
+// ListTeamsContext loads the server-owned policies with a caller-owned lifetime.
+func (c *Client) ListTeamsContext(ctx context.Context) ([]*TeamResponse, error) {
 	var result TeamListResponse
-	if err := c.doJSON("GET", apipath.Teams, nil, &result, "list teams"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", apipath.Teams, nil, &result, "list teams"); err != nil {
 		return nil, err
 	}
 	return result.Data, nil

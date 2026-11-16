@@ -167,7 +167,7 @@ func (e *ParamsExecutor) WithCatalog(weights func(ctx context.Context, name stri
 	return e
 }
 
-// rejectOnWorker short-circuits write endpoints on workers with 421
+// rejectOnWorker short-circuits management endpoints on workers with 421
 // Misdirected Request + Location pointing to the coordinator (plan §5.1).
 // Returns true when the request was rejected.
 func (e *ParamsExecutor) rejectOnWorker(c *gin.Context) bool {
@@ -178,14 +178,14 @@ func (e *ParamsExecutor) rejectOnWorker(c *gin.Context) bool {
 	if e.coordURL != nil {
 		base := e.coordURL()
 		if base != "" {
-			loc = base + c.Request.URL.Path
+			loc = base + c.Request.URL.RequestURI()
 		}
 	}
 	if loc != "" {
 		c.Header("Location", loc)
 	}
 	RespondWithProblemOpts(c, http.StatusMisdirectedRequest, "Misdirected Request",
-		"provider parameter writes are coordinator-only",
+		"provider parameter management requires the coordinator",
 		ProblemOpts{Code: "coordinator_only"})
 	return true
 }
@@ -1013,6 +1013,10 @@ func eachLeaf(kv map[string]json.RawMessage, set func(k, v string), remove func(
 // Thin shim over Resolve for backward compatibility with callers that
 // predate /resolved; defaults-only view (no node/model).
 func (e *ParamsExecutor) HandleInternalGetAppParameters(c *gin.Context) {
+	if c.Request.URL.Query().Has("scope") {
+		e.handleConfiguredParameters(c)
+		return
+	}
 	provider := c.Param("name")
 	cfg, err := getAppConfig(e.appsConfig(), provider)
 	if err != nil {

@@ -72,9 +72,11 @@ func scrubForUpstream(ctx context.Context, h http.Header, up backend.Upstream) {
 	// Browser authority stays on this node even if a native key authenticated
 	// the request or the next hop is another cluster member.
 	oauth.StripCookies(h, browserSessionCookie, browserCSRFCookie, browserHostSessionCookie, browserHostCSRFCookie)
-	// Only credentials accepted as OAuth stop here; native caller keys retain
-	// their forwarding policy regardless of their spelling.
-	if isOAuthRequest(ctx) {
+	h.Del("X-CSRF-Token")
+	// Reference-authenticated requests cannot forward unrelated proxy credentials.
+	// Explicit native keys retain their forwarding policy even alongside cookies.
+	_, browser := browserBinding(ctx)
+	if browser || isOAuthRequest(ctx) {
 		for _, name := range nodeAPIKeyHeaders {
 			h.Del(name)
 		}

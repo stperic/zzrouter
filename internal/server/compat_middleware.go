@@ -32,6 +32,10 @@ import (
 // X-API-Key from the original coord-side caller doesn't fail validation
 // against the worker's own keys.
 func (a *AuthHandlers) OptionalAuthMiddleware() gin.HandlerFunc {
+	return a.optionalAuthMiddleware(false)
+}
+
+func (a *AuthHandlers) optionalAuthMiddleware(browser bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if trusted, _ := c.Get(string(CtxKeyClusterTrusted)); trusted == true {
 			if a.access != nil {
@@ -43,6 +47,13 @@ func (a *AuthHandlers) OptionalAuthMiddleware() gin.HandlerFunc {
 
 		cred := extractCompatCredential(c)
 		if !cred.found() {
+			if browser && a.access != nil && !explicitCredential(c.Request) && browserCredentialPresented(c.Request) {
+				if ac, ok := a.access.browserRequestAccess(c); ok {
+					setAccessContext(c, ac)
+					a.observeClient(c)
+				}
+				return
+			}
 			a.allowAnonymous(c)
 			return
 		}

@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed web/console/*.html web/console/*.css web/console/*.mjs web/console/icons/*.svg web/console/vendor/*.mjs web/console/vendor/*.js web/console/vendor/*.txt
+//go:embed web/console/*.html web/console/*.css web/console/*.mjs web/console/brand/*.svg web/console/icons/*.svg web/console/vendor/*.mjs web/console/vendor/*.js web/console/vendor/*.txt
 var consoleAssets embed.FS
 
 // registerBrowserConsole exposes a fixed public shell; the existing API owns
@@ -25,7 +25,35 @@ func (s *Server) registerBrowserConsole() {
 		{"/", "index.html", "text/html; charset=utf-8"},
 		{"/console.css", "console.css", "text/css; charset=utf-8"},
 		{"/console.mjs", "console.mjs", "text/javascript; charset=utf-8"},
+		{"/appearance.mjs", "appearance.mjs", "text/javascript; charset=utf-8"},
+		{"/brand/mark-color.svg", "brand/mark-color.svg", "image/svg+xml"},
+		{"/brand/mark-dark.svg", "brand/mark-dark.svg", "image/svg+xml"},
+		{"/brand/mark-black.svg", "brand/mark-black.svg", "image/svg+xml"},
+		{"/brand/mark-white.svg", "brand/mark-white.svg", "image/svg+xml"},
+		{"/brand/app-icon.svg", "brand/app-icon.svg", "image/svg+xml"},
+		{"/brand/wordmark-color.svg", "brand/wordmark-color.svg", "image/svg+xml"},
+		{"/brand/wordmark-dark.svg", "brand/wordmark-dark.svg", "image/svg+xml"},
+		{"/brand/wordmark-black.svg", "brand/wordmark-black.svg", "image/svg+xml"},
+		{"/brand/wordmark-white.svg", "brand/wordmark-white.svg", "image/svg+xml"},
+		{"/models.mjs", "models.mjs", "text/javascript; charset=utf-8"},
+		{"/model-data.mjs", "model-data.mjs", "text/javascript; charset=utf-8"},
+		{"/model-discovery.mjs", "model-discovery.mjs", "text/javascript; charset=utf-8"},
+		{"/deployments.mjs", "deployments.mjs", "text/javascript; charset=utf-8"},
+		{"/provider-lifecycle.mjs", "provider-lifecycle.mjs", "text/javascript; charset=utf-8"},
+		{"/provider-actions.mjs", "provider-actions.mjs", "text/javascript; charset=utf-8"},
+		{"/provider-install.mjs", "provider-install.mjs", "text/javascript; charset=utf-8"},
+		{"/parameters.mjs", "parameters.mjs", "text/javascript; charset=utf-8"},
+		{"/pricing.mjs", "pricing.mjs", "text/javascript; charset=utf-8"},
+		{"/event-stream.mjs", "event-stream.mjs", "text/javascript; charset=utf-8"},
+		{"/run-logs.mjs", "run-logs.mjs", "text/javascript; charset=utf-8"},
+		{"/logs.mjs", "logs.mjs", "text/javascript; charset=utf-8"},
+		{"/system.mjs", "system.mjs", "text/javascript; charset=utf-8"},
+		{"/updates.mjs", "updates.mjs", "text/javascript; charset=utf-8"},
+		{"/vendor/events.mjs", "vendor/events.mjs", "text/javascript; charset=utf-8"},
 		{"/api.mjs", "api.mjs", "text/javascript; charset=utf-8"},
+		{"/chat.mjs", "chat.mjs", "text/javascript; charset=utf-8"},
+		{"/vendor/chat.mjs", "vendor/chat.mjs", "text/javascript; charset=utf-8"},
+		{"/vendor/chat-transport.mjs", "vendor/chat-transport.mjs", "text/javascript; charset=utf-8"},
 		{"/observations.mjs", "observations.mjs", "text/javascript; charset=utf-8"},
 		{"/live-reads.mjs", "live-reads.mjs", "text/javascript; charset=utf-8"},
 		{"/diagnostics.mjs", "diagnostics.mjs", "text/javascript; charset=utf-8"},

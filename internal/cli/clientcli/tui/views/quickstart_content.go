@@ -39,12 +39,10 @@ func tutorialPageList() []tutorialPage {
 func pageWelcome() tutorialPage {
 	return tutorialPage{
 		centered: true,
-		renderBody: func(width, _ int, styles ui.Styles, shimmerFrame int) string {
+		renderBody: func(width, _ int, styles ui.Styles, _ int) string {
 			var b strings.Builder
 
-			title := ui.Shimmer("zzRouter", shimmerFrame, "#d4a574")
-			titleStyled := lipgloss.NewStyle().Bold(true).Render(title)
-			b.WriteString(titleStyled + "\n")
+			b.WriteString(ui.BrandWordmark(styles) + "\n")
 			b.WriteString(shared.Hrule(styles, 28) + "\n\n")
 
 			b.WriteString(styles.Normal.Render("Your AI model router.") + "\n")

@@ -67,8 +67,8 @@ test('overview duplicates the coordinator role visually, not in totals, and all 
   for (const card of coordinatorCards) card.dispatchEvent(new Event('click'));
   assert.deepEqual(f.routes, [['overview', 'node/atlas'], ['overview', 'node/atlas']]);
   assert.match(f.root.textContent, /Coordinator \+ Worker/);
-  assert.match(f.root.textContent, /Key: EditorLast active/);
-  assert.match(f.root.textContent, /0 active identities at refresh · 1 observed/);
+  assert.match(f.root.textContent, /Key: EditorNo active requests/);
+  assert.match(f.root.textContent, /0 keys with active requests · 1 observed clients/);
   assert.ok(button(f.root, '+ Connect client'));
   assert.doesNotMatch(f.root.textContent, /2 connected|Online|null/);
   const cloud = walk(f.root).find(element => element.tag === 'button' && element.textContent.startsWith('Groq'));
@@ -202,7 +202,7 @@ test('unavailable node reads never claim a configured cloud provider has no enab
  const original = f.p.api.list;
  f.p.api.list = path => ['/nodes', '/providers'].includes(path) ? Promise.reject(new Error('unavailable')) : original(path);
  await overview(f.p, 'cloud/groq');
- assert.match(f.root.textContent, /Groq.*ConfigurationConfiguredReported onNode enablement unavailable/s);
+ assert.match(f.root.textContent, /Groq.*Configured.*Enabled onNode enablement unavailable/s);
  assert.doesNotMatch(f.root.textContent, /No node reports this provider enabled/);
 });
 

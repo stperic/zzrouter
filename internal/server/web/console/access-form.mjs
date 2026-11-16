@@ -1,6 +1,6 @@
 import { readAfterWrite } from './details.mjs';
 import { changedFields, Obsolete } from './api.mjs';
-import { el, text, button, leaveButton, actions, message, field, input, select, facts, copyField, clearSecrets, problem, date, editorActions } from './dom.mjs';
+import { el, text, button, leaveButton, actions, message, field, input, select, facts, copyField, clearSecrets, date, editorActions, formFeedback, invalidField } from './dom.mjs';
 import { providerPolicy, routePolicy, routeFields, providerFields, modelFields, policySummary } from './access-policy.mjs';
 import { budgetFields, budgetUsage } from './access-budget.mjs';
 
@@ -29,7 +29,6 @@ export function accessForm(p, type, record, options, reload) {
   const own = record && p.identity.is_virtual && (isKey ? record.id === p.identity.id : record.id === p.identity.team_id);
   const panel = el('section', { class: 'access-editor' }, el('h2', {}, record ? record.name : isKey ? 'Create a named key' : 'Create a shared team'));
   const feedback = el('div', { 'aria-live': 'polite' });
-  if (record && !isKey) panel.append(budgetUsage(readOwner, type, record));
   if (personal) {
     panel.append(message('This personal team belongs to one existing key. To manage a provider policy and shared limits, create a replacement key assigned to a shared team.'), policySummary(record, catalog), facts([['ID', record.id]]));
     return { root: panel };
@@ -41,6 +40,7 @@ export function accessForm(p, type, record, options, reload) {
   const submit = el('button', { type: 'submit', class: 'primary', 'data-protected-actions': true }, record ? 'Save changes' : isKey ? 'Create key' : 'Create team');
   const setDisabled = disabled => { group.disabled = disabled; submit.disabled = disabled; };
   const fields = new Map();
+  const validation = formFeedback(form, feedback, key => fields.get(key) || fields.get(String(key).split(/[.[]/, 1)[0]));
   const add = (key, label, element, hint) => { fields.set(key, element); return field(label, element, hint); };
   const name = input('name', before.name, { required: true, placeholder: isKey ? 'e.g. Code editor' : 'e.g. Engineering' });
   const id = input('id', record?.id || '', { required: true, readOnly: !!record });
@@ -59,7 +59,7 @@ export function accessForm(p, type, record, options, reload) {
     teamRole.hidden = !value;
     inherited.replaceChildren();
     if (team) {
-      inherited.append(el('h3', {}, `${team.name} policy`), policySummary(team, catalog), budgetUsage(readOwner, 'teams', team), el('details', {}, el('summary', {}, 'Usage limits'), limitSummary(team)), text('Managed in Teams. Policy changes apply to every key in this team.', 'muted'));
+      inherited.append(el('h3', {}, `${team.name} policy`), policySummary(team, catalog), budgetUsage(readOwner, 'teams', team, { compact: true }), el('details', {}, el('summary', {}, 'Usage limits'), limitSummary(team)), text('Managed in Teams. Policy changes apply to every key in this team.', 'muted'));
       if (team.kind === 'personal') inherited.append(message('This key uses a personal team. Create a replacement key assigned to a shared team to configure provider access and limits.'));
     }
     else inherited.append(text(value ? 'Team policy unavailable. Reload before creating a key.' : 'Choose a team to preview its access and shared budget.', 'muted'));
@@ -77,7 +77,13 @@ export function accessForm(p, type, record, options, reload) {
   const routes = isKey ? null : routeFields(before, groups, options.modelsUnavailable);
   const modelAccess = isKey ? null : modelFields(before, models, groups, options.modelsUnavailable);
   const budget = isKey ? null : budgetFields(before);
-  if (!isKey) group.append(routes.root, providers.root, modelAccess.root, text(`This policy applies to ${options.memberCount || 0} existing member keys. Provider permissions and model permissions both apply.`, 'muted'), budget.root);
+  if (!isKey) {
+    fields.set('route_access', routes.control); fields.set('provider_access', providers.control); fields.set('allowed_models', modelAccess.control);
+    for (const [key, control] of Object.entries(budget.fields)) fields.set(key, control);
+    group.append(el('section', { class: 'access-group' }, el('h3', {}, 'Access'),
+      text(`Shared by ${options.memberCount || 0} existing member keys. Route, provider and model permissions all apply.`, 'muted'), routes.root, providers.root,
+      el('details', { class: 'access-section', open: before.allowed_models.length > 0 }, el('summary', {}, 'Restrict specific models'), modelAccess.root)), budget.root);
+  }
   if (isKey) group.append(el('section', { class: 'access-section' }, add('expires_at', 'Expiry (optional)', input('expires_at', '', { type: 'datetime-local' }), record?.expires_at ? `Current: ${date(record.expires_at)}. Leave blank to keep it. Existing expiry cannot be cleared.` : 'Leave blank for no expiry.')));
   const advanced = el('details', { class: 'access-section' }, el('summary', {}, isKey ? 'Advanced permissions' : 'Advanced usage limits'));
   if (isKey) {
@@ -102,7 +108,7 @@ export function accessForm(p, type, record, options, reload) {
       result.expires_at = expiry ? new Date(expiry).toISOString() : before.expires_at;
       if (!record) {
         const team = fields.get('team_id').value;
-        if (!teams.some(item => item.id === team && item.kind === 'shared' && !item.suspended)) throw new Error('Choose a shared team, or create one for this key.');
+        if (!teams.some(item => item.id === team && item.kind === 'shared' && !item.suspended)) throw invalidField('Choose a shared team, or create one for this key.', fields.get('team_id'));
         result.team_id = team; result.team_role = fields.get('team_role').value;
       }
     } else {
@@ -147,7 +153,7 @@ export function accessForm(p, type, record, options, reload) {
         else await p.refresh('The change outcome is unknown. Your access was rechecked; no write was retried.');
         return;
       }
-      feedback.replaceChildren(problem(error));
+      validation.error(error);
       if (blocked) feedback.append(message(isKey && !record ? 'Reload the keys list. If the key was created but its value was lost, rotate it to issue a new value.' : 'Reload current state before another change.', 'warning'), leaveButton('Reload access', reload, p.api));
     } finally { if (rotation) p.endOwnRotation(rotation); if (p.current()) setDisabled(blocked); }
   };
@@ -155,7 +161,8 @@ export function accessForm(p, type, record, options, reload) {
     event.preventDefault();
     if (!form.reportValidity() || !p.current() || group.disabled || !p.api.canChange()) return;
     let after;
-    try { after = read(); } catch (error) { feedback.replaceChildren(problem(error)); return; }
+    validation.clear();
+    try { after = read(); } catch (error) { validation.error(error); return; }
     const patch = record ? changedFields(before, after) : after;
     if (!Object.keys(patch).length) { feedback.replaceChildren(message('No fields changed.')); return; }
     const willEndSession = own && isKey && patch.role !== undefined;
@@ -170,7 +177,7 @@ export function accessForm(p, type, record, options, reload) {
           feedback.replaceChildren(message('An edited field changed on the server. Reload before applying your changes.', 'warning'), leaveButton('Reload access', reload, p.api));
           return;
         }
-      } catch (error) { if (p.current()) feedback.replaceChildren(problem(error)); return; }
+      } catch (error) { if (p.current()) validation.error(error); return; }
       finally { if (p.current()) setDisabled(blocked); }
     }
     const refreshIdentity = own && (isKey ? patch.role !== undefined || patch.expires_at !== undefined : patch.route_access !== undefined || patch.provider_access !== undefined || patch.allowed_models !== undefined);
@@ -192,8 +199,8 @@ export function accessForm(p, type, record, options, reload) {
       }, 'danger'),
     )));
   }
-  const footer = editorActions(submit, () => { if (!draft || draft.discard()) { draft?.clean(); p.closeEditor(); } }, p.api);
-  form.append(group, feedback, footer);
+  const footer = editorActions(submit, p.closeEditor, p.api, draft);
+  form.append(feedback, group, footer);
   form.addEventListener('submit', event => { void save(event); });
   panel.append(form);
   return {

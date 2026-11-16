@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+
 	"github.com/stperic/zzrouter/pkg/apipath"
 )
 
@@ -118,8 +120,13 @@ type ReplicaRequest struct {
 // CreateOrUpdateModelGroup creates or updates a model group.
 // PUT /zzrouter/v1/model-groups/:name
 func (c *Client) CreateOrUpdateModelGroup(name string, req *CreateOrUpdateModelGroupRequest) (*ModelGroupResponse, error) {
+	return c.CreateOrUpdateModelGroupContext(context.Background(), name, req)
+}
+
+// CreateOrUpdateModelGroupContext binds the request to the caller's lifetime.
+func (c *Client) CreateOrUpdateModelGroupContext(ctx context.Context, name string, req *CreateOrUpdateModelGroupRequest) (*ModelGroupResponse, error) {
 	var result ModelGroupDetailResponse
-	if err := c.doJSON("PUT", apipath.ModelGroup(name), req, &result, "save model group"); err != nil {
+	if err := c.doContextJSON(ctx, "PUT", apipath.ModelGroup(name), req, &result, "save model group"); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil
@@ -128,5 +135,10 @@ func (c *Client) CreateOrUpdateModelGroup(name string, req *CreateOrUpdateModelG
 // DeleteModelGroup deletes a model group by name.
 // DELETE /zzrouter/v1/model-groups/:name
 func (c *Client) DeleteModelGroup(name string) error {
-	return c.doJSON("DELETE", apipath.ModelGroup(name), nil, nil, "delete model group")
+	return c.DeleteModelGroupContext(context.Background(), name)
+}
+
+// DeleteModelGroupContext binds the request to the caller's lifetime.
+func (c *Client) DeleteModelGroupContext(ctx context.Context, name string) error {
+	return c.doContextJSON(ctx, "DELETE", apipath.ModelGroup(name), nil, nil, "delete model group")
 }

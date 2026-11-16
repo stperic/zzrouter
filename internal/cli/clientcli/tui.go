@@ -46,14 +46,7 @@ func (m *tuiModel) dispatchBreadcrumbClick(x int) tea.Cmd {
 			m.pane = paneMenu
 			return nil
 		}
-		// paneRoot: pop everything off the stack.
-		var cmds []tea.Cmd
-		for m.root.Depth() > 0 {
-			if cmd := m.popRoot(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-		return tea.Batch(cmds...)
+		return func() tea.Msg { return tui.NavMenuMsg{} }
 	}
 	// Middle segments: dispatch to the active view as a synthetic msg.
 	return func() tea.Msg { return tui.BreadcrumbClickMsg{Level: idx} }
@@ -78,6 +71,7 @@ const (
 	tuiViewDeploys       tuiView = tui.ViewDeploys
 	tuiViewPricing       tuiView = tui.ViewPricing
 	tuiViewUpdate        tuiView = tui.ViewUpdate
+	tuiViewConsole       tuiView = tui.ViewConsole
 )
 
 // tuiPane identifies which UI rail is currently active. The host renders
@@ -103,6 +97,7 @@ type tuiModel struct {
 	pane         tuiPane
 	menu         tui.List
 	menuExpanded map[int]bool // group indices that are expanded
+	menuWelcome  bool         // cleared after the first menu activation
 
 	root *tui.Root
 
@@ -134,6 +129,7 @@ type tuiOption func(*tuiModel)
 // withQuickstart starts the TUI in quickstart wizard mode.
 func withQuickstart() tuiOption {
 	return func(m *tuiModel) {
+		m.menuWelcome = false
 		m.search.Deactivate()
 		m.pane = paneRoot
 		updated, _ := m.root.Update(tui.NavToMsg{View: views.NewQuickstartViewModel(m.styles)})
@@ -163,6 +159,7 @@ func runTUI(opts ...tuiOption) error {
 		chatSettings: chatSettings,
 		pane:         paneMenu,
 		menuExpanded: make(map[int]bool),
+		menuWelcome:  true,
 		search:       search.NewSearchTUIModel(client, styles, "", "", "", "", "", true),
 		root:         tui.NewEmptyRoot(),
 	}
@@ -251,7 +248,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search.PullStatus = ""
 		return m, m.pushOnRoot(m.newModelsView())
 	case tui.OpenParamsEditorMsg:
-		return m, m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model))
+		return m, m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model, msg.Node))
 	case tui.LaunchRunLogsMsg:
 		return m, m.pushOnRoot(views.NewRunlogsViewModel(m.client, m.styles, msg.Filter))
 
@@ -267,16 +264,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return func() tea.Msg { return tui.QsStepDoneMsg{Step: step} }
 		})
 	case tui.QsEnterMenuMsg:
-		// Quickstart asked to exit to menu. Pop everything off root.
-		var cmds []tea.Cmd
-		for m.root.Depth() > 0 {
-			if cmd := m.popRoot(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		if m.pane == paneRoot {
+			return m, m.forwardToRoot(tui.NavMenuMsg{})
 		}
 		m.search.Deactivate()
 		m.pane = paneMenu
-		return m, tea.Batch(cmds...)
+		return m, nil
 
 	// --- Search-only signal. Search is off-stack, so it emits the
 	// classic tuiBackMsg; host catches it and switches pane. ---
@@ -431,7 +424,7 @@ func (m *tuiModel) blocksNavigationMessage(msg tea.Msg) bool {
 		return false
 	}
 	switch msg.(type) {
-	case tui.NavToMsg, tui.NavBackMsg, tui.NavReplaceMsg, tui.NavQuitMsg, tui.BreadcrumbClickMsg,
+	case tui.NavToMsg, tui.NavBackMsg, tui.NavReplaceMsg, tui.NavQuitMsg, tui.NavMenuMsg, tui.BreadcrumbClickMsg,
 		tui.LaunchChatMsg, tui.SwitchToModelsMsg, tui.OpenParamsEditorMsg, tui.LaunchRunLogsMsg,
 		tui.QsLaunchViewMsg, tui.QsEnterMenuMsg, tui.TuiBackMsg:
 		return true
@@ -485,6 +478,8 @@ func (m *tuiModel) viewForKind(view tuiView) tea.Model {
 		return views.NewPricingViewModel(m.client, m.styles)
 	case tuiViewUpdate:
 		return views.NewUpdateViewModel(m.client, m.styles)
+	case tuiViewConsole:
+		return views.NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{})
 	}
 	return nil
 }

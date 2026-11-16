@@ -1,9 +1,9 @@
 import { Lifetime } from './api.mjs';
-import { el, text, button, field, select, message, problem, editorActions } from './dom.mjs';
+import { el, text, button, field, select, message, editorActions, formFeedback } from './dom.mjs';
 import { launchTargets, runAssessment } from './workload-data.mjs';
 import { followStart } from './workload-details.mjs';
 
-export async function startRun(p, nodes, initialNode) {
+export async function startRun(p, nodes, initialNode, initialTarget) {
   p.editing = true;
   const form = el('form', { class: 'entity-editor' });
   const draft = p.trackDraft?.(form), choices = new Lifetime();
@@ -12,6 +12,7 @@ export async function startRun(p, nodes, initialNode) {
   const target = select('run_target', [['', 'Loading targets…']], ''); target.required = true;
   const endpoint = select('run_endpoint', [['chat', 'Chat'], ['embeddings', 'Embeddings'], ['reranking', 'Reranking']], 'chat');
   const feedback = el('div', { 'aria-live': 'polite' });
+  const validation = formFeedback(form, feedback, key => ({ node, provider: target, model: target, endpoint })[key]);
   const preview = button('Preview start', previewStart);
   const save = el('button', { type: 'submit', class: 'primary', disabled: true }, 'Start run');
   let targets = [], reviewed, blocked = false, busy = false;
@@ -23,7 +24,7 @@ export async function startRun(p, nodes, initialNode) {
   const invalidate = () => { reviewed = undefined; save.disabled = true; feedback.replaceChildren(); endpoint.disabled = !body()?.model; };
   controls.append(el('h2', {}, 'Start a model or service'), text('Choose a local model or service, then review its capacity and start settings.', 'muted'),
     field('Compute node', node), field('Model or service', target), field('Endpoint', endpoint), preview);
-  form.append(controls, feedback, editorActions(save, p.close, p.api));
+  form.append(feedback, controls, editorActions(save, p.close, p.api, draft));
   p.root.append(form);
   p.scope.signal.addEventListener('abort', () => choices.end(), { once: true });
   node.addEventListener('change', () => { if (!busy && !blocked) void loadTargets(); });
@@ -43,16 +44,18 @@ export async function startRun(p, nodes, initialNode) {
       if (!p.current() || !scope.current()) return;
       targets = launchTargets(models, providers, selectedNode);
       target.replaceChildren(el('option', { value: '' }, 'Choose a model or service…'), ...targets.map((item, index) => el('option', { value: String(index) }, item.label)));
-      target.value = '';
+      const chosen = initialTarget && selectedNode === initialNode ? targets.findIndex(item => item.model === initialTarget.model && item.provider === initialTarget.provider) : -1;
+      target.value = chosen >= 0 ? String(chosen) : '';
+      endpoint.disabled = !body()?.model;
       target.disabled = !targets.length; preview.disabled = !targets.length;
       if (!targets.length) feedback.replaceChildren(message('No complete local model or node service with a reported run lifecycle is available here. Check the node’s provider setup and model inventory.', 'warning'));
     } catch (error) {
-      if (p.current() && scope.current()) feedback.replaceChildren(problem(error), button('Reload targets', loadTargets));
+      if (p.current() && scope.current()) { validation.error(error); feedback.append(button('Reload targets', loadTargets)); }
     }
   }
   async function previewStart() {
     const selected = body();
-    if (!selected || busy || blocked || !p.current() || !p.api.canChange()) return;
+    if (!form.reportValidity() || !selected || busy || blocked || !p.current() || !p.api.canChange()) return;
     busy = true; controls.disabled = true; save.disabled = true;
     feedback.replaceChildren(message('Preparing the start preview. This may take up to two minutes…'));
     try {
@@ -60,7 +63,7 @@ export async function startRun(p, nodes, initialNode) {
       if (!p.current()) return;
       reviewed = JSON.stringify(selected);
       feedback.replaceChildren(runAssessment(result)); save.disabled = false;
-    } catch (error) { if (p.current()) { reviewed = undefined; feedback.replaceChildren(problem(error)); } }
+    } catch (error) { if (p.current()) { reviewed = undefined; validation.error(error); } }
     finally { busy = false; if (p.current()) controls.disabled = blocked; }
   }
   form.addEventListener('submit', async event => {

@@ -14,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/observability/logger"
 	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/service"
+	"github.com/stperic/zzrouter/pkg/ui"
 	"github.com/stperic/zzrouter/pkg/version"
 )
 
@@ -74,7 +75,9 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "zzrouter-node",
 		Short: "zzrouter-node - AI model router node",
-		Long: `zzrouter-node runs a zzRouter cluster node (coordinator or worker).
+		Long: ui.BrandASCII + `
+
+zzrouter-node runs a zzRouter cluster node (coordinator or worker).
 It is a unified aggregation layer for large language model (LLM) inference providers,
 routing OpenAI-compatible API requests to the appropriate provider by model name.`,
 		Version:      version.Current.String(),

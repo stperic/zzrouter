@@ -3,7 +3,7 @@ import { el, text, button, leaveButton, heading, card, actions, select, field, i
 import { details } from './details.mjs';
 import { liveReads } from './live-reads.mjs';
 import { activityText } from './observations.mjs';
-import { readWorkloadPages, workloadKey, workloadSelection, newerJob, jobSubject, jobProgress } from './workload-data.mjs';
+import { readWorkloadPages, workloadKey, workloadSelection, newerJob, jobSubject, jobProgress, stoppedRun } from './workload-data.mjs';
 import { inspectWorkload } from './workload-details.mjs';
 import { startRun } from './run-form.mjs';
 
@@ -15,8 +15,10 @@ export async function workloads(p, selection, mode = 'runs') {
   const node = select('workload_node', [['', 'All nodes']], initial.node || '');
   node.disabled = true;
   const search = input('workload_search', '', { type: 'search', placeholder: 'Search models, providers or jobs', 'aria-label': 'Search workloads' });
+  const visibility = select('workload_status', [['active', 'Active workloads'], ['stopped', 'Stopped records'], ['all', 'All workloads']], 'active');
+  const statusFilter = field('Show', visibility);
   const feedback = el('div', { 'aria-live': 'polite' }), results = el('div'), tabs = el('div', { class: 'tabs', 'aria-label': 'Workload type' });
-  const list = card('Current workloads', el('div', { class: 'workload-filters' }, field('Compute node', node), field('Search', search)), feedback, results);
+  const list = card('Current workloads', el('div', { class: 'workload-filters' }, field('Compute node', node), statusFilter, field('Search', search)), feedback, results);
   list.classList.add('entity-list');
   const workspace = el('div', { class: 'entity-workspace' }, list);
   const pause = button('Pause updates', () => live.toggle());
@@ -27,14 +29,16 @@ export async function workloads(p, selection, mode = 'runs') {
   p.scope.signal.addEventListener('abort', () => reads.end(), { once: true });
 
   function tabControls() {
-    tabs.replaceChildren(...['runs', 'jobs'].map(value => {
-      const control = leaveButton(value === 'runs' ? 'Runs' : 'Jobs', () => p.go('workloads', node.value ? workloadKey('node', node.value, '') : undefined, value), p.api);
+    statusFilter.hidden = tab !== 'runs';
+    tabs.replaceChildren(...['runs', 'jobs', 'downloads'].map(value => {
+      const control = leaveButton(value === 'runs' ? 'Runs' : value === 'jobs' ? 'Jobs' : 'Downloads', () => p.go('workloads', value === 'downloads' ? undefined : node.value ? workloadKey('node', node.value, '') : undefined, value), p.api);
       control.setAttribute('aria-current', String(value === tab)); return control;
     }));
   }
   function render() {
     const query = search.value.trim().toLowerCase();
-    const rows = [...snapshots.values()].flat().filter(row => [row.model, row.provider, row.id, row.job_id, row.kind, jobSubject(row)].some(value => String(value || '').toLowerCase().includes(query)));
+    const rows = [...snapshots.values()].flat().filter(row => [row.model, row.provider, row.id, row.job_id, row.kind, jobSubject(row)].some(value => String(value || '').toLowerCase().includes(query)))
+      .filter(row => tab !== 'runs' || visibility.value === 'all' || workloadKey('run', row.node, row.id) === selected || stoppedRun(row) === (visibility.value === 'stopped'));
     const body = el('tbody');
     for (const row of rows) {
       const id = tab === 'runs' ? row.id : row.job_id;
@@ -46,7 +50,8 @@ export async function workloads(p, selection, mode = 'runs') {
         el('td', {}, tab === 'runs' ? activityText(p, row.activity) : jobProgress(row))));
     }
     const older = button('Load older jobs', () => live.refresh(true, true)); older.disabled = loading;
-    results.replaceChildren(...[rows.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Workload', 'Node', 'Status', tab === 'runs' ? 'Activity' : 'Progress'].map(value => el('th', { scope: 'col' }, value)))), body)) : message(query ? 'No matching workloads.' : 'No workloads in the current successful observations.'),
+    results.replaceChildren(...[rows.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, ['Workload', 'Node', 'Status', tab === 'runs' ? 'Activity' : 'Progress'].map(value => el('th', { scope: 'col' }, value)))), body)) : el('div', {}, message(query ? 'No matching workloads.' : 'No workloads match this view in the successful observations.'),
+      tab === 'runs' && visibility.value === 'active' && !query ? leaveButton('Start a run', () => p.go('workloads', node.value ? workloadKey('node', node.value, '') : undefined, 'create'), p.api) : null),
       tab === 'jobs' ? text('Job order changes as events arrive. Older pages may overlap or omit jobs that moved between pages; Refresh reloads the latest page.', 'muted') : null,
       tab === 'jobs' && [...more.values()].some(Boolean) ? older : null].filter(Boolean));
   }
@@ -56,25 +61,30 @@ export async function workloads(p, selection, mode = 'runs') {
     const own = scope;
     const reader = { ...p, scope: { signal: AbortSignal.any([p.scope.signal, own.signal]) }, current: () => p.current() && own.current() };
     try {
-      if (!nodes.length || !automatic && !older) {
-        nodes = await p.api.list('/nodes', { signal: reader.scope.signal });
+      if (!nodes.length || !older) {
+        const latest = await p.api.list('/nodes', { signal: reader.scope.signal });
         if (!reader.current()) return false;
-        node.replaceChildren(el('option', { value: '' }, 'All nodes'), ...nodes.map(value => el('option', { value: value.name }, value.name)));
+        if (automatic && !live.canUpdate()) return true;
+        nodes = latest;
+        node.replaceChildren(el('option', { value: '' }, 'All nodes'), ...nodes.map(value => el('option', { value: value.name }, `${value.name}${value.health_status === 'down' ? ' (offline)' : ''}`)));
         if (filterNode && !nodes.some(value => value.name === filterNode)) node.append(el('option', { value: filterNode }, `${filterNode} (not in current inventory)`));
         node.value = filterNode;
         node.disabled = false;
       }
       const names = node.value ? [node.value] : nodes.map(value => value.name);
-      const requested = older ? names.filter(name => more.get(name)) : names;
+      const offline = nodes.filter(value => value.health_status === 'down' && names.includes(value.name)).map(value => value.name);
+      const requested = names.filter(name => !offline.includes(name) && (!older || more.get(name)));
       const nextOffsets = new Map(requested.map(name => [name, older ? (offsets.get(name) || 0) + 25 : 0]));
       const pages = await readWorkloadPages(reader, requested, tab, nextOffsets);
       if (!reader.current()) return false;
       if (automatic && !live.canUpdate()) return true;
-      if (!older) for (const name of snapshots.keys()) if (!names.includes(name)) { snapshots.delete(name); more.delete(name); offsets.delete(name); }
+      if (!older) for (const name of snapshots.keys()) if (!names.includes(name) || offline.includes(name)) { snapshots.delete(name); more.delete(name); offsets.delete(name); }
       feedback.replaceChildren();
+      if (offline.length) feedback.append(text(node.value ? 'This node is offline. Workloads will appear when it reconnects.' : `${offline.length} offline ${offline.length === 1 ? 'node' : 'nodes'} skipped.`, 'muted'));
       for (const page of pages) {
         if (page.error) {
-          feedback.append(message(`Could not read ${tab} on ${page.node}.`, 'warning'), problem(page.error));
+          feedback.append(el('div', { class: 'notice warning' }, text(`Could not refresh ${tab} on ${page.node}.`),
+            el('details', {}, el('summary', {}, 'Technical details'), problem(page.error))));
           if (snapshots.has(page.node)) snapshots.set(page.node, snapshots.get(page.node).map(row => ({ ...row, lastReported: true })));
           continue;
         }
@@ -83,6 +93,7 @@ export async function workloads(p, selection, mode = 'runs') {
         snapshots.set(page.node, tab === 'jobs' ? [...values.values()] : page.rows);
         more.set(page.node, page.more); offsets.set(page.node, page.offset);
       }
+      if (pages.some(page => page.error)) feedback.append(leaveButton('Retry reads', () => live.refresh(), p.api));
       loading = false;
       render(); return !pages.some(page => page.error);
     } finally { loading = false; }
@@ -91,6 +102,7 @@ export async function workloads(p, selection, mode = 'runs') {
     const version = ++selectionVersion;
     const current = () => p.current() && version === selectionVersion;
     const identity = workloadSelection(next);
+    const previous = selected, closing = !!drawer && nextMode !== 'create' && !['run', 'job'].includes(identity.kind);
     const desired = nextMode === 'jobs' || identity.kind === 'job' ? 'jobs' : 'runs';
     drawer?.dispose(!next); drawer = undefined; selected = next;
     const desiredNode = identity.kind === 'node' ? identity.node : !next ? '' : filterNode;
@@ -103,7 +115,8 @@ export async function workloads(p, selection, mode = 'runs') {
       tabControls(); await live.refresh();
       if (!current()) return;
     }
-    markSelection(list, next);
+    render(); markSelection(list, next);
+    if (closing) ([...list.querySelectorAll('[data-selection]')].find(row => row.getAttribute('data-selection') === previous)?.querySelector?.('button') || search).focus({ preventScroll: true });
     if (nextMode !== 'create' && !['run', 'job'].includes(identity.kind)) return;
     const owner = details({ ...p, root: workspace }, nextMode === 'create' ? 'Start run' : identity.kind === 'job' ? 'Job details' : 'Run details', () => p.go('workloads', node.value ? workloadKey('node', node.value, '') : undefined, tab));
     drawer = owner;
@@ -116,8 +129,9 @@ export async function workloads(p, selection, mode = 'runs') {
     if (p.canLeave?.() ?? p.api.canLeave()) void p.go('workloads', value ? workloadKey('node', value, '') : undefined, tab);
   });
   search.addEventListener('input', render);
+  visibility.addEventListener('change', render);
   tabControls();
   feedback.append(message('Reading node workloads…'));
   await live.refresh();
-  if (p.current()) { p.handleSelection?.(choose); await choose(selected, mode); }
+  if (p.current()) { p.handleSelection?.(choose, (_, nextMode) => nextMode !== 'downloads'); await choose(selected, mode); }
 }

@@ -39,6 +39,7 @@ export class API {
     this.pending = new Set();
     this.unknownChange = false;
     this.unverified = false;
+    this.authority = new AbortController();
   }
 
   canLeave() { return this.pending.size === 0; }
@@ -51,6 +52,8 @@ export class API {
     this.pending.clear();
     this.unverified = false;
     this.generation++;
+    this.authority.abort();
+    this.authority = new AbortController();
     this.refreshController?.abort();
     this.state = null;
     this.cleared(reason);
@@ -58,20 +61,24 @@ export class API {
     return this.generation;
   }
 
-  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000 } = {}) {
+  async request(path, { method = 'GET', body, signal, proof = this.state?.csrf, notifyAuth = true, effectful = method !== 'GET', beforeReturn, onVersion, ifMatch, ifNoneMatch, idempotencyKey, timeoutMs = 15000, raw = false, node, contentType = 'application/json' } = {}) {
     const generation = this.generation;
-    if (!(path.startsWith(BASE + '/') || path === '/health')) throw new APIError('Unsupported console request.');
+    const inference = method === 'GET' && path === '/v1/models' || method === 'POST' && path === '/v1/chat/completions';
+    const managementStream = method === 'GET' && /^\/zzrouter\/v1\/(?:jobs\/[^/?#]+\/stream|runs\/[^/?#]+\/logs)(?:\?[^#]*)?$/.test(path);
+    if (!(path.startsWith(BASE + '/') || path === '/health' || inference) || raw && path !== '/v1/chat/completions' && !managementStream) throw new APIError('Unsupported console request.');
+    if (!['application/json', 'application/merge-patch+json'].includes(contentType)) throw new APIError('Unsupported request content type.');
     const mutation = method !== 'GET';
-    if (mutation && !proof) throw new APIError('Refresh your session before making changes.', { code: 'session_refresh_required' });
+    if ((mutation || inference) && !proof) throw new APIError('Refresh your session before making changes.', { code: 'session_refresh_required' });
     if (mutation && !this.canChange()) throw new APIError(this.unverified ? 'Verify your session before making another change.' : 'Wait for the current change to finish.');
     if (signal?.aborted) throw new Obsolete();
-    const headers = { Accept: 'application/json' };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const headers = { Accept: raw ? 'text/event-stream' : 'application/json' };
+    if (body !== undefined) headers['Content-Type'] = contentType;
     if (ifMatch) headers['If-Match'] = ifMatch;
     if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
-    if (mutation) headers['X-CSRF-Token'] = proof;
-    const timeout = AbortSignal.timeout(timeoutMs);
+    if (mutation || inference) headers['X-CSRF-Token'] = proof;
+    if (inference && node) headers['X-Node'] = node;
+    const requestSignal = AbortSignal.any([this.authority.signal, signal, timeoutMs === null ? null : AbortSignal.timeout(timeoutMs)].filter(Boolean));
     // The tracker never retains request bodies, resource names or credentials.
     const operation = effectful ? {} : null;
     if (operation) { this.pending.add(operation); this.activity(); }
@@ -89,10 +96,16 @@ export class API {
         response = await this.fetcher(path, {
           method, headers, body: body === undefined ? undefined : JSON.stringify(body),
           credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-          signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          signal: requestSignal,
         });
       } catch {
         throw new APIError(effectful ? 'The response was interrupted. The change may have completed. Reload current state before doing anything else.' : 'Could not reach the coordinator. Check your connection and try again.', { uncertain: effectful });
+      }
+      if (raw && response.ok) {
+        if (requestSignal.aborted || generation !== this.generation) throw new Obsolete();
+        if (!response.headers.get('Content-Type')?.includes('text/event-stream') || !response.body) throw new APIError(`The coordinator did not return ${managementStream ? 'an event' : 'a chat'} stream.`);
+        finish();
+        return response;
       }
       let result;
       try { result = await response.json(); }
@@ -100,11 +113,12 @@ export class API {
       if (!result || typeof result !== 'object') throw new APIError('The server returned an invalid response. Reload current state before another change.', { status: response.status, uncertain: effectful });
       if (!response.ok || result.success === false) {
         const knownRefusal = ['provider_connection_unavailable', 'provider_config_unavailable', 'managed_credentials_unavailable', 'provider_connection_persistence_failed'].includes(result.code);
-        const error = new APIError(result.detail || result.message || `Request failed (${response.status}).`, { ...result, status: response.status, uncertain: effectful && (result.mutation_applied === true || response.status >= 500 && !knownRefusal) });
+        const detail = result.error || result;
+        const error = new APIError(detail.detail || detail.message || `Request failed (${response.status}).`, { ...detail, request_id: detail.request_id || response.headers?.get('X-Request-ID'), status: response.status, uncertain: effectful && (result.mutation_applied === true || response.status >= 500 && !knownRefusal) });
         // An explicit refusal is settled before an auth callback can reset the
         // owner; that reset must not turn this refusal into an unknown outcome.
         finish(error);
-        if (notifyAuth && (response.status === 401 || response.status === 403) && path !== BASE + '/session' && generation === this.generation && !signal?.aborted) this.rejected(error);
+        if (notifyAuth && (response.status === 401 || response.status === 403 && !inference) && path !== BASE + '/session' && generation === this.generation && !signal?.aborted) this.rejected(error);
         throw error;
       }
       // One-time results may need to await an overlapping identity check. Keep
@@ -119,7 +133,19 @@ export class API {
     }
   }
 
+  // SDK transport shares console authority, but streaming is cancelable work.
+  inferenceFetch(input, init = {}) {
+    const url = new URL(String(input), this.origin);
+    if (url.origin !== this.origin || url.pathname !== '/v1/chat/completions' || url.search || init.method !== 'POST') throw new APIError('Unsupported chat request.');
+    return this.request(url.pathname, { method: 'POST', body: JSON.parse(init.body), signal: init.signal,
+      node: new Headers(init.headers).get('X-Node'), raw: true, effectful: false, timeoutMs: null });
+  }
+
   async data(path, options) { return (await this.request(BASE + path, options)).data; }
+
+  stream(path, options = {}) {
+    return this.request(BASE + path, { ...options, method: 'GET', raw: true, effectful: false, timeoutMs: null });
+  }
 
   async list(path, options = {}) {
     const items = [];

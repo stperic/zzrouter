@@ -2,6 +2,7 @@ import { el, text, button, leaveButton, actions, badge, facts, message, problem,
 import { liveReads } from './live-reads.mjs';
 import { activityText, observeActivity } from './observations.mjs';
 import { failureDetails } from './diagnostics.mjs';
+import { runLogs } from './run-logs.mjs';
 import { ownedPath, jobProgress, jobSubject, newerJob, workloadKey } from './workload-data.mjs';
 
 export function runDetails(p, run) {
@@ -26,10 +27,10 @@ export function jobDetails(job) {
   return el('div', {}, el('h2', {}, jobSubject(job)), actions(badge(job.kind), badge(job.phase)),
     facts([['Node', job.node], ['Job ID', job.job_id], ['Latest event', date(job.at)], ['Retention deadline', job.expires_at ? date(job.expires_at) : 'Not reported']]),
     jobProgress(job), job.err ? message(job.err, 'error') : null, job.warning ? message(job.warning, 'warning') : null,
-    text('A quiet progress stream does not establish failure. A completed launch job still requires a run read to confirm readiness.', 'muted'));
+    text('A quiet progress stream does not establish failure. After a job completes, inspect its resource to confirm readiness.', 'muted'));
 }
 
-export async function inspectWorkload(p, kind, node, id) {
+export async function inspectWorkload(p, kind, node, id, { controls = [], observed = () => {} } = {}) {
   const content = el('div'), feedback = el('div', { 'aria-live': 'polite' }), confirmation = el('div');
   let row, stopping = false, terminal = false, blocked = false;
   const pause = button('Pause updates', () => live.toggle());
@@ -41,7 +42,21 @@ export async function inspectWorkload(p, kind, node, id) {
       actions(button('Confirm stop', performStop, 'danger'), button('Cancel', () => { p.editing = false; confirmation.replaceChildren(); })));
   }, 'danger');
   stop.setAttribute('data-protected-actions', '');
-  p.root.append(actions(refresh, pause), feedback, content, ...(kind === 'runs' ? [stop] : []), confirmation);
+  const cancel = button('Cancel job', async () => {
+    if (blocked || terminal || !row || !p.api.canChange() || !confirm(`Request cancellation of job ${id} on ${node}? Work already completed will remain.`)) return;
+    blocked = true; cancel.disabled = true;
+    try {
+      await live.settle();
+      if (!p.current()) return;
+      const result = await p.api.request('/zzrouter/v1' + ownedPath('jobs', node, id), { method: 'DELETE', signal: p.scope.signal, timeoutMs: 45000 });
+      if (!p.current()) return;
+      confirmation.replaceChildren(message(result.accepted ? 'Cancellation requested. The job state below is the current observation.' : 'The server returned a cancellation response. Inspect the current job state.'));
+      await live.refresh();
+    } catch (error) { if (p.current()) confirmation.replaceChildren(problem(error), leaveButton('Inspect current state', () => live.refresh(), p.api)); }
+  }, 'danger');
+  cancel.setAttribute('data-protected-actions', '');
+  const openLogs = () => runLogs(p.panel.view('Run logs'), { node, id, back: () => inspectWorkload(p.panel.view('Run details'), kind, node, id) });
+  p.root.append(actions(refresh, pause, controls), feedback, content, actions(...(kind === 'runs' ? [stop, leaveButton('Runtime logs', openLogs, p.api)] : [cancel])), confirmation);
   const idle = () => !terminal && !stopping && !p.editing && !content.contains(document.activeElement) && p.api.canChange();
   const live = liveReads(p, async automatic => {
     const startedAt = performance.now();
@@ -53,15 +68,18 @@ export async function inspectWorkload(p, kind, node, id) {
       observeActivity(row.activity, startedAt);
       content.replaceChildren(kind === 'jobs' ? jobDetails(row) : runDetails(p, row));
       terminal = kind === 'jobs' ? ['done', 'failed'].includes(row.phase) : row.record_only || ['stopped', 'failed', 'crashed'].includes(row.status);
+      observed(row, terminal);
       stop.textContent = row.record_only ? 'Remove retained pin' : 'Stop run';
       stop.disabled = blocked;
-      feedback.replaceChildren(blocked ? message('The stop request has finished or its outcome is uncertain. Current state is shown below. No stop was replayed.', 'warning') : text('Updates every 5 seconds while idle.', 'muted'));
+      cancel.disabled = blocked || terminal || row.kind === 'inference_log';
+      feedback.replaceChildren(blocked ? message('The action was submitted. Current observations are shown below; the request will not be repeated automatically.', 'warning') : text('Updates every 5 seconds while idle.', 'muted'));
       return true;
     } catch (error) {
       if (!p.current()) return false;
       if (automatic && !live.canUpdate()) return true;
       if (error.status === 404) {
-        terminal = true; stop.disabled = true;
+        terminal = true; stop.disabled = true; cancel.disabled = true;
+        observed(undefined, false);
         content.replaceChildren(message(kind === 'jobs' ? 'This job is missing or its retention period ended. Its outcome is unavailable.' : blocked ? 'This exact run is no longer listed on this node.' : 'This run is no longer listed. It may have stopped or been removed.', 'warning'));
       }
       feedback.replaceChildren(problem(error)); return false;

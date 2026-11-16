@@ -25,10 +25,12 @@ const click = async (root, name) => { button(root, name).dispatchEvent(new Event
 
 test('measured zero, missing usage, partial GPUs and unified memory stay distinct', () => {
   const node = { health_status: 'healthy', memory: { total_gb: 64, available_gb: 32, sample: { total_bytes: 64*GIB, used_bytes: 17*GIB } },
-    gpu: { gpus: [{ index: 0, sample: { total_bytes: 24*GIB, used_bytes: 0 } }, { index: 1, memory_total_gb: 24 }] } };
+    gpu: { gpus: [{ index: 0, sample: { total_bytes: 24*GIB, used_bytes: 0 } }, { index: 1, memory_total_gb: 24 }, { index: 2, name: 'Integrated graphics' }] } };
   assert.match(memorySummary(node), /RAM  17 \/ 64/);
   assert.match(memorySummary(node), /GPU 0  0 \/ 24/);
   assert.match(memorySummary(node), /GPU 1  Unavailable/);
+  assert.doesNotMatch(memorySummary(node), /GPU 2/);
+  assert.equal(memoryRows(node).length, 4, 'details still disclose the unmeasured GPU');
   node.gpu.unified_memory = true;
   assert.equal(memoryRows(node).length, 1);
   assert.equal(memoryRows(node)[0].label, 'Unified RAM');
@@ -168,10 +170,35 @@ test('Workloads keeps partial failures visible and opens matching side panels', 
   };
   f.p.api.data = async () => ({ id: 'run', provider: 'engine', model: 'local/model', status: 'running' });
   await workloads(f.p);
-  assert.match(f.root.textContent, /Could not read runs on down/);
+  assert.match(f.root.textContent, /Could not refresh runs on down/);
   await click(f.root, 'local/model');
   assert.equal(walk(f.root).filter(node => node.tag === 'dialog').length, 1);
   assert.match(f.root.textContent, /worker\/a/);
+});
+
+for (const tab of ['runs', 'jobs']) test(`${tab} skips known offline nodes and resumes reads after recovery`, async t => {
+  const f = fixture(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let health = 'down';
+  f.p.api.list = async () => [{ name: 'worker/a', health_status: 'healthy' }, { name: 'sleeping-pc', health_status: health }];
+  f.p.api.request = async path => {
+    f.calls.push({ path });
+    if (path.includes('sleeping-pc') && health === 'down') throw new Error('Offline nodes must not be queried');
+    return { data: [{ id: 'run', job_id: 'job', model: 'model', meta: { model: 'model' }, provider: 'engine', status: 'running', phase: 'running' }] };
+  };
+  await workloads(f.p, undefined, tab);
+  assert.ok(f.calls.every(call => !call.path.includes('sleeping-pc')));
+  assert.match(f.root.textContent, /1 offline node skipped/);
+  assert.doesNotMatch(f.root.textContent, /Could not read|Offline nodes must not/);
+  health = 'healthy';
+  t.mock.timers.tick(5000); await drain();
+  assert.ok(f.calls.some(call => call.path.includes('sleeping-pc')));
+  assert.doesNotMatch(f.root.textContent, /offline node skipped/);
+  assert.equal(walk(f.root).filter(node => node.tag === 'button' && node.textContent === 'model').length, 2);
+  health = 'down'; f.calls.length = 0;
+  await click(f.root, 'Refresh');
+  assert.ok(f.calls.every(call => !call.path.includes('sleeping-pc')));
+  assert.equal(walk(f.root).filter(node => node.tag === 'button' && node.textContent === 'model').length, 1, 'offline rows do not look current');
 });
 
 test('Jobs pagination is operable, deduplicates events and preserves actual zero speed', async t => {
@@ -201,6 +228,21 @@ test('automatic workload refresh preserves a row focused while the request is pe
   row.focus(); finish({ data: [{ id: 'run', model: 'new name', status: 'running' }] }); await drain();
   assert.ok(f.root.contains(row)); assert.equal(document.activeElement, row);
   assert.doesNotMatch(f.root.textContent, /new name/);
+});
+
+test('a pending node-health refresh preserves newly focused workload controls', async t => {
+  const f = fixture(t); t.mock.timers.enable({ apis: ['setTimeout'] });
+  let finish, count = 0;
+  f.p.api.list = async () => ++count === 1 ? [{ name: 'worker/a' }] : new Promise(resolve => { finish = resolve; });
+  f.p.api.request = async () => ({ data: [{ id: 'run', model: 'model', status: 'running' }] });
+  await workloads(f.p);
+  const selector = named(f.root, 'workload_node');
+  const options = [...selector.children];
+  t.mock.timers.tick(5000); await drain();
+  selector.focus(); finish([{ name: 'replacement' }]); await drain();
+  assert.deepEqual([...selector.children], options);
+  assert.equal(document.activeElement, selector);
+  assert.doesNotMatch(f.root.textContent, /replacement/);
 });
 
 test('automatic run detail refresh preserves a focused API gateway link', async t => {

@@ -205,11 +205,7 @@ func (m *ProvidersViewModel) handleConnectResult(msg providersConnectResultMsg) 
 	m.mode = providersViewList
 	m.loading = true
 	m.needsRefresh = false
-	client := m.client
-	return tea.Batch(func() tea.Msg {
-		apps, err := shared.FetchProviders(client, "", "", true)
-		return providersLoadedMsg{providers: apps, err: err}
-	}, shared.SpinnerTickCmd())
+	return tea.Batch(m.fetchProvidersCmd(true), shared.SpinnerTickCmd())
 }
 
 // viewConnectForm renders the three-field form. Layout mirrors the

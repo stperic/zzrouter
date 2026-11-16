@@ -19,7 +19,7 @@ mutation happens merely because an operator opens a screen or a preview.
 
 ## Overview and node details
 
-- Compute icons retain their top-right status dot. To their right, show measured
+- Compute cards contain the icon, its top-right status dot and measured
   used/total memory in GiB with tabular numerals: RAM and discrete GPU cards are
   separate; unified memory appears once. A compact map can show two GPU cards
   and a count linking to the remaining cards in details. The details panel lists
@@ -33,8 +33,9 @@ mutation happens merely because an operator opens a screen or a preview.
   per-card; they cannot imply a fully measured aggregate.
 - A gentle pulse means fresh, positive admitted-request or engine-probe evidence.
   Loaded models, running services, pending jobs and a failed activity probe do
-  not establish active work. Unknown and stale activity never pulses. Text says
-  `Active at observation`, `No observed work` or `Activity unavailable`.
+  not establish active work. Unknown and stale activity never pulses. The map
+  uses the dot only; list and details text says `Active at observation`,
+  `No observed work` or `Activity unavailable`.
 - The API supplies the remaining validity duration. A client deadline removes
   the pulse even if polling pauses or fails. Reduced-motion preferences, page
   visibility and Pause updates stop animation. Status and activity remain
@@ -51,8 +52,9 @@ mutation happens merely because an operator opens a screen or a preview.
 
 One workspace uses the existing list plus right-side panel. Runs and Jobs are
 tabs; a compute-node selector and search preserve context while selecting rows.
-All nodes reads use explicit node requests with bounded concurrency, so one
-unavailable worker is named instead of silently disappearing from an aggregate.
+All nodes reads use explicit node requests with bounded concurrency. Nodes
+reported down are skipped with a quiet offline count, and reads resume after
+health recovers. Unexpected read failures remain visible with the owning node.
 Keys for selection include both owning node and immutable run/job ID.
 
 ### Runs

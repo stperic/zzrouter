@@ -98,7 +98,7 @@ type ShowModelRequest struct {
 	Node             string // Optional: target specific host
 	App              string // Optional: filter by assigned_app
 	Registry         string // Optional: physical source registry
-	SourceID         string // Internal: selected source identity
+	SourceID         string // Optional: exact physical source identity, paired with ModelName
 	Verbose          bool   // Optional: verbose output
 	Compact          bool   // Optional: bounded model metadata
 	AllowUncataloged bool   // Internal: native Ollama show may read an unlisted model on its selected backend

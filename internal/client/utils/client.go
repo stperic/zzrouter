@@ -411,6 +411,11 @@ func (c *Client) StreamInstanceLogs(instanceID, host string) error {
 // GetProviders retrieves the list of enabled providers from the server.
 // host filters by host (optional). refresh forces the server to re-probe.
 func (c *Client) GetProviders(host string, refresh ...bool) (map[string]any, error) {
+	return c.GetProvidersContext(context.Background(), host, refresh...)
+}
+
+// GetProvidersContext reads provider inventory within the caller's lifetime.
+func (c *Client) GetProvidersContext(ctx context.Context, host string, refresh ...bool) (map[string]any, error) {
 	endpoint := apipath.Providers
 	sep := "?"
 	if host != "" {
@@ -421,7 +426,7 @@ func (c *Client) GetProviders(host string, refresh ...bool) (map[string]any, err
 		endpoint += sep + "refresh=true"
 	}
 	var response map[string]any
-	if err := c.doJSON("GET", endpoint, nil, &response, "get providers"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", endpoint, nil, &response, "get providers"); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -430,6 +435,11 @@ func (c *Client) GetProviders(host string, refresh ...bool) (map[string]any, err
 // GetNodesWithRefresh retrieves the list of nodes with optional refresh
 // If refresh is true, server will re-probe all cluster workers
 func (c *Client) GetNodesWithRefresh(fields string, refresh bool) (map[string]any, error) {
+	return c.GetNodesWithRefreshContext(context.Background(), fields, refresh)
+}
+
+// GetNodesWithRefreshContext reads node inventory within the caller's lifetime.
+func (c *Client) GetNodesWithRefreshContext(ctx context.Context, fields string, refresh bool) (map[string]any, error) {
 	q := url.Values{}
 	if fields != "" {
 		q.Set("fields", fields)
@@ -442,7 +452,7 @@ func (c *Client) GetNodesWithRefresh(fields string, refresh bool) (map[string]an
 		endpoint += "?" + q.Encode()
 	}
 	var response map[string]any
-	if err := c.doJSON("GET", endpoint, nil, &response, "get nodes"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", endpoint, nil, &response, "get nodes"); err != nil {
 		return nil, err
 	}
 	return response, nil
@@ -450,10 +460,15 @@ func (c *Client) GetNodesWithRefresh(fields string, refresh bool) (map[string]an
 
 // GetNode retrieves a single node with fresh data (re-probes the worker)
 func (c *Client) GetNode(name string) (map[string]any, error) {
+	return c.GetNodeContext(context.Background(), name)
+}
+
+// GetNodeContext binds the request to the caller's lifetime.
+func (c *Client) GetNodeContext(ctx context.Context, name string) (map[string]any, error) {
 	var envelope struct {
 		Data map[string]any `json:"data"`
 	}
-	if err := c.doJSON("GET", apipath.Node(name), nil, &envelope, "get node"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", apipath.Node(name), nil, &envelope, "get node"); err != nil {
 		return nil, err
 	}
 	return envelope.Data, nil

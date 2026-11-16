@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/ui"
 )
 
@@ -33,13 +35,19 @@ const wildcardModel = "*"
 // pricingLoadedMsg carries the override list and the un-priced tally,
 // fetched together so the header count is never stale against the table.
 type pricingLoadedMsg struct {
+	owner     *PricingViewModel
+	ctx       context.Context
 	overrides []pkgClient.PricingOverride
 	status    *pkgClient.PricingStatus
 	err       error
 }
 
 // pricingSavedMsg carries the result of an upsert or a delete.
-type pricingSavedMsg struct{ err error }
+type pricingSavedMsg struct {
+	ctx context.Context
+	err error
+}
+type pricingCloseMsg struct{ owner *PricingViewModel }
 
 // pricingFormField identifies which field is focused in the override form.
 type pricingFormField int
@@ -77,6 +85,14 @@ func (u unpricedItem) FilterValue() string { return u.provider + " " + u.model }
 
 type PricingViewModel struct {
 	tui.ViewContext
+	help tui.Help
+	tui.Draft
+	pending, writeUncertain bool
+	writeContext            context.Context
+	writeCancel             context.CancelFunc
+	loadContext             context.Context
+	loadCancel              context.CancelFunc
+	formDetail              tui.Detail
 
 	client     *pkgClient.Client
 	styles     ui.Styles
@@ -141,19 +157,38 @@ func (m *PricingViewModel) Init() tea.Cmd {
 
 func (m *PricingViewModel) fetchCmd() tea.Cmd {
 	client := m.client
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	ctx, cancel := context.WithCancel(m.Context())
+	m.loadContext, m.loadCancel = ctx, cancel
 	return func() tea.Msg {
-		overrides, err := client.ListPricingOverrides()
+		overrides, err := client.ListPricingOverridesContext(ctx)
 		if err != nil {
-			return pricingLoadedMsg{err: err}
+			return pricingLoadedMsg{owner: m, ctx: ctx, err: err}
 		}
 		// A status failure is not fatal: overrides are the primary
 		// content and must render even when the tally is unavailable.
-		status, _ := client.GetPricingStatus()
-		return pricingLoadedMsg{overrides: overrides, status: status}
+		status, _ := client.GetPricingStatusContext(ctx)
+		return pricingLoadedMsg{owner: m, ctx: ctx, overrides: overrides, status: status}
 	}
 }
 
 func (m *PricingViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.help.Update(msg, m.mode != pricingViewForm) {
+		return m, nil
+	}
+
+	if handled, cmd := m.Draft.Update(msg); handled {
+		return m, cmd
+	}
+	if m.pending {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseWheelMsg, tea.PasteMsg, tui.BreadcrumbClickMsg:
+			return m, nil
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
@@ -178,22 +213,36 @@ func (m *PricingViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pricingLoadedMsg:
-		m.loading = false
-		m.err = msg.err
-		m.overrides = msg.overrides
-		m.syncItems(msg.status)
+		m.loaded(msg)
 		return m, nil
 
 	case pricingSavedMsg:
-		if msg.err != nil {
-			m.statusMsg = msg.err.Error()
+		if msg.ctx == nil || msg.ctx != m.writeContext || m.Context().Err() != nil {
 			return m, nil
 		}
-		m.statusMsg = ""
+		m.pending = false
+		m.writeCancel()
+		m.writeContext = nil
+		if msg.err != nil {
+			m.statusMsg = msg.err.Error()
+			m.writeUncertain = writeOutcomeUnknown(msg.err)
+			if m.writeUncertain {
+				m.statusMsg = "Write outcome unknown. Close and refresh before saving again."
+			}
+			return m, nil
+		}
+		m.Dirty = false
+		m.statusMsg = "Saved"
 		m.mode = pricingViewList
 		m.loading = true
 		return m, m.fetchCmd()
 
+	case pricingCloseMsg:
+		if msg.owner != m || m.pending || m.ConfirmNavigation(msg) {
+			return m, nil
+		}
+		m.mode, m.statusMsg = pricingViewList, ""
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.confirmPending {
 			return m, m.updateConfirm(msg)
@@ -309,6 +358,11 @@ func (m *PricingViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 func (m *PricingViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
+	if m.pending || m.writeUncertain {
+		m.confirmPending = false
+		m.statusMsg = "Refresh pricing before another write."
+		return nil
+	}
 	switch m.confirm.UpdateKey(msg) {
 	case tui.ConfirmYes:
 		m.confirmPending = false
@@ -318,8 +372,9 @@ func (m *PricingViewModel) updateConfirm(msg tea.KeyPressMsg) tea.Cmd {
 		}
 		client := m.client
 		provider, model := o.Provider, o.Model
+		ctx := m.beginWrite()
 		return func() tea.Msg {
-			return pricingSavedMsg{err: client.DeletePricingOverride(provider, model)}
+			return pricingSavedMsg{ctx: ctx, err: client.DeletePricingOverrideContext(ctx, provider, model)}
 		}
 	case tui.ConfirmNo, tui.ConfirmCancelled:
 		m.confirmPending = false
@@ -359,7 +414,11 @@ func (m *PricingViewModel) Breadcrumb() []string {
 }
 
 func (m *PricingViewModel) View() tea.View {
-	return shared.RenderChildView(m.styles, m.termWidth, m.Breadcrumb(), m.viewContent())
+	hints := tui.PricingKeys.ListHintsString()
+	if m.mode == pricingViewUnpriced {
+		hints = tui.PricingKeys.UnpricedHintsString()
+	}
+	return shared.RenderChildView(m.styles, m.termWidth, m.Breadcrumb(), m.Draft.View(m.styles, m.help.View(m.styles, m.viewContent(), m.termWidth, m.termHeight, hints), m.termWidth, m.termHeight))
 }
 
 func (m *PricingViewModel) viewContent() string {
@@ -422,6 +481,7 @@ func (m *PricingViewModel) viewList(width, height int) string { //nolint:unparam
 		}
 	}
 
+	m.list.SetVisible(vis)
 	start, end := m.list.VisibleRange()
 	t := shared.NewScrollTable(shared.ScrollTableConfig{
 		Headers:   []string{"MODEL", "PROVIDER", "IN / 1M", "OUT / 1M", "NOTE"},
@@ -438,23 +498,22 @@ func (m *PricingViewModel) viewList(width, height int) string { //nolint:unparam
 	}
 	b.WriteString(t.Render() + "\n")
 
-	if n := len(m.unpriced); n > 0 {
-		b.WriteString(m.styles.Error.Render(
-			fmt.Sprintf("  %d model(s) served traffic with no price. They settled at $0 and drew down no budget. Press U.", n)) + "\n")
+	status := shared.TableStatus("Rates", len(m.overrides), m.list.Offset(), vis)
+	hints := tui.PricingKeys.ListHintsString() + "  ? help"
+	if len(m.unpriced) > 0 {
+		status = fmt.Sprintf("%d un-priced models. U reviews $0 traffic.", len(m.unpriced))
+	}
+	if m.statusMsg != "" {
+		status = m.statusMsg
 	}
 	if m.confirmPending {
 		if o := m.selectedOverride(); o != nil {
-			b.WriteString(m.styles.Error.Render(
-				fmt.Sprintf("  Delete the rate for %q? Upstream pricing takes over again. (y/n)", o.Model)) + "\n")
+			status = "Delete rate for " + o.Model + "? Upstream pricing takes over."
+			hints = "Y delete  Enter/Esc cancel"
 		}
 	}
-	if m.statusMsg != "" {
-		b.WriteString(m.styles.Error.Render("  "+m.statusMsg) + "\n")
-	}
+	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, status, hints))
 
-	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width,
-		shared.TableStatus("Rates", len(m.overrides), m.list.Offset(), vis),
-		tui.PricingKeys.ListHintsString()))
 	return b.String()
 }
 
@@ -492,6 +551,7 @@ func (m *PricingViewModel) viewUnpriced(width, height int) string { //nolint:unp
 		allRowStrs[i] = []string{u.model, provider, strconv.FormatInt(u.requests, 10)}
 	}
 
+	m.unpriceds.SetVisible(vis)
 	start, end := m.unpriceds.VisibleRange()
 	t := shared.NewScrollTable(shared.ScrollTableConfig{
 		Headers:   []string{"MODEL", "PROVIDER", "REQUESTS"},
@@ -507,10 +567,46 @@ func (m *PricingViewModel) viewUnpriced(width, height int) string { //nolint:unp
 		t.Row(row...)
 	}
 	b.WriteString(t.Render() + "\n")
-	b.WriteString(m.styles.Help.Render(
-		"  These settled at $0. A budget cannot stop traffic it prices at nothing.") + "\n")
-	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width,
-		shared.TableStatus("Un-priced", len(m.unpriced), m.unpriceds.Offset(), vis),
-		tui.PricingKeys.UnpricedHintsString()))
+	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, "Un-priced traffic settles at $0. Add a rate.", tui.PricingKeys.UnpricedHintsString()+"  ? help"))
 	return b.String()
+}
+
+// NavigationBlocked protects a durable pricing write until its outcome arrives.
+func (m *PricingViewModel) NavigationBlocked() bool { return m.pending }
+
+func (m *PricingViewModel) beginWrite() context.Context {
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	m.writeContext, m.writeCancel = context.WithTimeout(m.Context(), constants.HTTPLongTimeout)
+	m.pending = true
+	m.statusMsg = "Saving. Please wait..."
+	return m.writeContext
+}
+
+// Cancel releases all pricing requests on exit.
+func (m *PricingViewModel) Cancel() {
+	m.ViewContext.Cancel()
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	if m.writeCancel != nil {
+		m.writeCancel()
+	}
+}
+
+func (m *PricingViewModel) loaded(msg pricingLoadedMsg) {
+
+	if msg.owner != m || msg.ctx == nil || msg.ctx != m.loadContext || msg.ctx.Err() != nil || m.Context().Err() != nil {
+		return
+	}
+	if msg.err == nil {
+		m.writeUncertain = false
+	}
+	m.loading = false
+	m.err = msg.err
+	if msg.err == nil {
+		m.overrides = msg.overrides
+		m.syncItems(msg.status)
+	}
 }

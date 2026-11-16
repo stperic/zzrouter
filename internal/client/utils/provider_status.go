@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -147,6 +146,7 @@ func (c *Client) GetPreflight(name, node string) (*PreflightResponse, error) {
 
 // InstallPlanResponse is the client representation of an install plan.
 type InstallPlanResponse struct {
+	ScriptExport    *InstallScriptExport   `json:"script_export,omitempty"`
 	ResolvedInstall *InstallRecipeResponse `json:"resolved_install,omitempty"`
 	Force           bool                   `json:"-"`
 	PlanID          string                 `json:"plan_id,omitempty"`
@@ -156,6 +156,26 @@ type InstallPlanResponse struct {
 	InstallDir      string                 `json:"install_dir"`
 	Steps           []InstallStepInfo      `json:"steps"`
 	CurrentState    []StepStateResponse    `json:"current_state,omitempty"`
+}
+
+// InstallScriptExport preserves the executing node's export decision verbatim.
+type InstallScriptExport struct {
+	Script string `json:"script,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// CommandScript returns only an artifact supplied by the planner. Commands in a
+// preview cannot establish the hidden execution context of an older worker.
+func (p *InstallPlanResponse) CommandScript() (string, error) {
+	if p.ScriptExport != nil {
+		if p.ScriptExport.Script != "" {
+			return p.ScriptExport.Script, nil
+		}
+		if p.ScriptExport.Reason != "" {
+			return "", errors.New(p.ScriptExport.Reason)
+		}
+	}
+	return "", errors.New("this node did not provide a command script; use managed execution")
 }
 
 // InstallRecipeResponse carries component discovery and the effective accepted selection.
@@ -457,6 +477,15 @@ func (c *Client) UninstallProvider(name, node string) error {
 	return c.doLongJSON("DELETE", path, nil, nil, "uninstall provider")
 }
 
+// UninstallProviderContext removes a provider within a bounded caller lifetime.
+func (c *Client) UninstallProviderContext(ctx context.Context, name, node string) error {
+	path := apipath.Provider(name)
+	if node != "" {
+		path += "?node=" + url.QueryEscape(node)
+	}
+	return c.doContextJSON(ctx, http.MethodDelete, path, nil, nil, "uninstall provider")
+}
+
 // ============================================================================
 // Upstream Versions
 // ============================================================================
@@ -573,6 +602,11 @@ var ErrNoUsageRecorded = errors.New("no usage recorded since node start")
 // which is a reportable state rather than a failure.
 // GET /zzrouter/v1/usage/models/:model.
 func (c *Client) GetModelUsage(model, provider string) (*ModelUsageResponse, error) {
+	return c.GetModelUsageContext(context.Background(), model, provider)
+}
+
+// GetModelUsageContext binds the request to the caller's lifetime.
+func (c *Client) GetModelUsageContext(ctx context.Context, model, provider string) (*ModelUsageResponse, error) {
 	path := apipath.UsageModel(model)
 	if provider != "" {
 		path += "?provider=" + url.QueryEscape(provider)
@@ -580,10 +614,11 @@ func (c *Client) GetModelUsage(model, provider string) (*ModelUsageResponse, err
 	var envelope struct {
 		Data ModelUsageResponse `json:"data"`
 	}
-	if err := c.doJSON("GET", path, nil, &envelope, "model usage"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", path, nil, &envelope, "model usage"); err != nil {
 		// doJSON folds the status into the message, so match on it here
 		// rather than teaching every caller to parse the string.
-		if strings.Contains(err.Error(), "status 404") {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			return nil, ErrNoUsageRecorded
 		}
 		return nil, err

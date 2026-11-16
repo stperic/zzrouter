@@ -197,12 +197,12 @@ func TestTickAdvancesTheElapsedClockOnASilentStep(t *testing.T) {
 // "it said succeeded but showed the old version" happens. The line stays
 // provisional until the refetch that proves it lands.
 func TestSuccessStaysProvisionalUntilTheTableCatchesUp(t *testing.T) {
-	m := &ProvidersViewModel{providers: []shared.ProviderInfo{{Name: "vllm", Version: "0.19.0"}}}
+	m := &ProvidersViewModel{providers: []shared.ProviderInfo{{Enabled: true, Name: "vllm", Version: "0.19.0"}}}
 
 	m.Update(providersActionMsg{action: "upgrade", name: "vllm"})
 	assert.Equal(t, "✓ upgrade vllm succeeded, refreshing…", m.actionLine())
 
-	m.Update(providersLoadedMsg{providers: []shared.ProviderInfo{{Name: "vllm", Version: "0.27.1"}}})
+	m.Update(providersLoadedMsg{ctx: m.loadContext, providers: []shared.ProviderInfo{{Enabled: true, Name: "vllm", Version: "0.27.1"}}})
 	assert.Equal(t, "✓ upgrade vllm succeeded", m.actionLine())
 	assert.Equal(t, "0.27.1", m.providers[0].Version)
 }
@@ -210,12 +210,12 @@ func TestSuccessStaysProvisionalUntilTheTableCatchesUp(t *testing.T) {
 // A failure is already final — there is no later fetch that could turn it
 // into a success, so it must not be overwritten by one.
 func TestAFailedActionIsNotRewrittenByTheRefetch(t *testing.T) {
-	m := &ProvidersViewModel{providers: []shared.ProviderInfo{{Name: "vllm"}}}
+	m := &ProvidersViewModel{providers: []shared.ProviderInfo{{Enabled: true, Name: "vllm"}}}
 	m.Update(providersActionMsg{action: "upgrade", name: "vllm", err: assert.AnError})
 	failed := m.actionLine()
 	require.Contains(t, failed, "failed")
 	assert.NotContains(t, failed, "refreshing", "a failure is not waiting on the table")
 
-	m.Update(providersLoadedMsg{providers: []shared.ProviderInfo{{Name: "vllm"}}})
+	m.Update(providersLoadedMsg{ctx: m.loadContext, providers: []shared.ProviderInfo{{Enabled: true, Name: "vllm"}}})
 	assert.Equal(t, failed, m.actionLine())
 }

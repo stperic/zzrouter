@@ -82,6 +82,7 @@ func (c *InstallCoordinator) PrepareInstallPlan(ctx context.Context, provider, v
 	if options.ExpectedPlanID != "" && options.ExpectedPlanID != plan.PlanID {
 		return nil, install.ErrStalePlan
 	}
+	plan.PrepareScriptExport()
 	return plan, nil
 }
 

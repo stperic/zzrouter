@@ -1,7 +1,15 @@
 import { networkNodes, nodeHealth, nodeKey, localProviderKey, clientKey, clientLabel, clientState, cloudProviders, rowsFrom, localProviders } from './network-data.mjs';
-import { memorySummary, activityDeadline, activityLabel } from './observations.mjs';
+import { memorySummary, activityDeadline } from './observations.mjs';
 
 const label = (name, status) => `${String(name).replaceAll('-', '-\u200b')}\n${status}`;
+export const computeCard = { width: 280, height: 180 };
+
+// Branch visibility is a projection. The complete inventory and stable selection
+// identities remain available to the list, detail panel and deep links.
+export function visibleTopology(elements, expanded) {
+  const hidden = new Set(elements.filter(({ data }) => data.kind === 'provider' && !expanded.has(data.nodeName)).map(({ data }) => data.id));
+  return elements.filter(({ data }) => !hidden.has(data.id) && !hidden.has(data.source) && !hidden.has(data.target));
+}
 
 // Visual roles have distinct IDs; their selection always uses the domain identity.
 export function topologyData({ inventory, catalog, clientResults }, coordinatorName) {
@@ -10,6 +18,7 @@ export function topologyData({ inventory, catalog, clientResults }, coordinatorN
   const clouds = cloudProviders(catalog, inventory).sort((a, b) => a.key.localeCompare(b.key));
   const coordinator = nodes.find(node => node.name === coordinatorName) || { name: coordinatorName };
   const elements = [];
+  const providers = [];
   const add = (id, name, status, tone, kind, selection, parent) => elements.push({ data: { id, name, status, tone, kind, selection, parent, label: label(name, status) } });
   const edge = (source, target, tone = '') => elements.push({ data: { id: JSON.stringify([source, target]), source, target, tone } });
   const group = (id, name) => elements.push({ data: { id, name, label: name, kind: 'group' } });
@@ -25,12 +34,14 @@ export function topologyData({ inventory, catalog, clientResults }, coordinatorN
   for (const node of nodes) {
     const id = nodeKey(node.name);
     add(id, node.name, `${node.name === coordinatorName ? 'Coordinator + Worker · ' : ''}${nodeHealth(node)[0]}`, nodeHealth(node)[1], 'compute', id, 'compute');
-    if (node.name === coordinatorName) elements.at(-1).data.label = label(node.name, `Worker · ${nodeHealth(node)[0]}`);
-    Object.assign(elements.at(-1).data, { metrics: memorySummary(node), activityLabel: activityLabel(node.activity), activityUntil: !node.activity?.stale ? activityDeadline(node.activity) : 0, active: node.activity?.state === 'active' });
+    Object.assign(elements.at(-1).data, { label: node.name, caption: `${node.name === coordinatorName ? 'Worker · ' : ''}${nodeHealth(node)[0]}`,
+      metrics: memorySummary(node), activityUntil: !node.activity?.stale ? activityDeadline(node.activity) : 0, active: node.activity?.state === 'active' });
     edge('coordinator', id, nodeHealth(node)[1]);
     for (const provider of localProviders(node, inventory)) {
       const providerID = localProviderKey(node.name, provider.key);
-      const status = provider.record ? provider.record.enabled ? 'Enabled' : 'Disabled' : 'Unknown';
+      providers.push({ selection: providerID, nodeName: node.name, providerKey: provider.key });
+      if (provider.record?.enabled === false) continue;
+      const status = provider.record?.enabled === true ? 'Enabled' : 'Unknown';
       add(providerID, provider.report?.name || provider.key, status, '', 'provider', providerID, 'compute');
       elements.at(-1).data.providerKey = provider.key;
       elements.at(-1).data.nodeName = node.name;
@@ -43,15 +54,15 @@ export function topologyData({ inventory, catalog, clientResults }, coordinatorN
     elements.at(-1).data.providerKey = entry.key;
     edge('coordinator', id);
   }
-  return { elements, nodes, clients, clouds, grants: rowsFrom(clientResults[1]) };
+  return { elements, nodes, clients, clouds, providers, grants: rowsFrom(clientResults[1]) };
 }
 
 export function layoutInput(elements, bounds = new Map()) {
   const nodes = elements.filter(element => !element.data.source);
   const boxes = new Map(nodes.map(({ data }) => [data.id, data.kind === 'group'
     ? { id: data.id, children: [], layoutOptions: { 'elk.padding': '[top=30,left=24,bottom=16,right=24]' } }
-    : { id: data.id, width: Math.max(data.kind === 'compute' ? 330 : data.kind === 'provider' ? 110 : 180, Math.ceil(bounds.get(data.id)?.w || 0)),
-      height: Math.max(data.kind === 'compute' ? 210 : 124, Math.ceil(bounds.get(data.id)?.h || 0) + 16), compute: data.kind === 'compute' }]));
+    : { id: data.id, width: Math.max(data.kind === 'compute' ? computeCard.width : data.kind === 'provider' ? 110 : 180, Math.ceil(bounds.get(data.id)?.w || 0)),
+      height: Math.max(data.kind === 'compute' ? computeCard.height : 124, Math.ceil(bounds.get(data.id)?.h || 0) + 16), compute: data.kind === 'compute' }]));
   const children = [];
   for (const { data } of nodes) (data.parent ? boxes.get(data.parent).children : children).push(boxes.get(data.id));
   return { id: 'root', children, edges: elements.filter(element => element.data.source).map(({ data }) => ({ id: data.id, sources: [data.source], targets: [data.target] })),
@@ -63,7 +74,7 @@ export function layoutPositions(graph, origin = { x: 0, y: 0 }, positions = new 
   for (const node of graph.children || []) {
     const offset = { x: origin.x + node.x, y: origin.y + node.y };
     if (node.children) layoutPositions(node, offset, positions);
-    else positions.set(node.id, { x: offset.x + (node.compute ? 70 : node.width / 2), y: offset.y + 32 });
+    else positions.set(node.id, { x: offset.x + node.width / 2, y: offset.y + (node.compute ? node.height / 2 : 32) });
   }
   return positions;
 }

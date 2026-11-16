@@ -8,6 +8,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
+	"github.com/stperic/zzrouter/pkg/ui"
+	"github.com/stperic/zzrouter/pkg/version"
 )
 
 type menuItem struct {
@@ -26,10 +28,11 @@ var mainMenuItems = []menuItem{
 	}},
 	{name: "Providers", description: "Local engines, cloud connections, and registry credentials", view: tuiViewProviders},
 	{name: "Activity", description: "Installs, upgrades, downloads, and other jobs", view: tuiViewDeploys},
-	{name: "Manage", description: "Access, cluster settings, and diagnostics", isGroup: true, children: []menuItem{
-		{name: "Keys", description: "API keys, budgets, and rate limits", view: tuiViewVkeys},
-		{name: "Teams", description: "Membership, shared budgets, and rate limits", view: tuiViewTeams},
-		{name: "Nodes", description: "Cluster nodes and resources", view: tuiViewNodes},
+	{name: "Nodes", description: "Cluster health and resources", view: tuiViewNodes},
+	{name: "Open web console", description: "Full cluster management in your browser", view: tuiViewConsole},
+	{name: "Manage", description: "Advanced administration and diagnostics", isGroup: true, children: []menuItem{
+		{name: "Keys", description: "Issue team keys and manage credentials", view: tuiViewVkeys},
+		{name: "Teams", description: "Inspect policies, edit access and budgets in the console", view: tuiViewTeams},
 		{name: "Logs", description: "Inference logs", view: tuiViewLogs},
 		{name: "Pricing", description: "Token rates and unpriced models", view: tuiViewPricing},
 		{name: "Software Update", description: "This node's version, install, and rollback", view: tuiViewUpdate},
@@ -62,6 +65,16 @@ func visibleMenuItems(expanded map[int]bool) []visibleMenuItem {
 }
 
 func (m *tuiModel) menuHeader() string {
+	// Keep all top-level items visible; short terminals start with compact chrome.
+	if m.menuWelcome && m.termHeight >= 30 {
+		label := m.styles.HintsBar.Render("Local + cloud AI") + "  " +
+			m.styles.ChatDim.Render("v"+version.Current.ShortString())
+		welcome := ui.BrandMark(m.styles) + "\n" + label
+		if m.termWidth >= lipgloss.Width(welcome)+2 {
+			return "\n" + lipgloss.NewStyle().PaddingLeft(1).Render(welcome) + "\n\n" +
+				shared.Hrule(m.styles, m.termWidth) + "\n\n"
+		}
+	}
 	return shared.RenderTitleBar(m.styles, m.termWidth) + "\n\n"
 }
 
@@ -109,6 +122,7 @@ func (m *tuiModel) menuActivate(visible []visibleMenuItem, idx int) tea.Cmd {
 	if idx < 0 || idx >= len(visible) {
 		return nil
 	}
+	m.menuWelcome = false
 	item := visible[idx]
 	if item.item.isGroup {
 		m.toggleMenuGroup(item.topIndex)

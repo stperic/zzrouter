@@ -34,7 +34,7 @@ export function memoryRows(node) {
   return rows;
 }
 export function memorySummary(node) {
-  const rows = memoryRows(node);
+  const rows = memoryRows(node).filter((row, index) => index === 0 || Number.isFinite(row.sample?.used_bytes) || row.sample?.total_bytes > 0 || node.gpu?.gpus?.[index - 1]?.memory_total_gb > 0);
   return [...rows.slice(0, 3).map(row => `${row.label}  ${row.value}${row.stale ? ' *' : ''}`), rows.length > 3 ? `+ ${rows.length - 3} GPUs in details` : null].filter(Boolean).join('\n');
 }
 export function memoryDetails(node) {

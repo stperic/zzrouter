@@ -70,7 +70,13 @@ func (r *Root) NavigationBlocked() bool {
 func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if r.NavigationBlocked() {
 		switch msg.(type) {
-		case NavToMsg, NavBackMsg, NavReplaceMsg, NavQuitMsg:
+		case NavToMsg, NavBackMsg, NavReplaceMsg, NavQuitMsg, NavMenuMsg, BreadcrumbClickMsg:
+			return r, nil
+		}
+	}
+	switch msg.(type) {
+	case NavToMsg, NavBackMsg, NavReplaceMsg, NavQuitMsg, NavMenuMsg, BreadcrumbClickMsg:
+		if editor, ok := r.Active().(NavigationConfirmer); ok && editor.ConfirmNavigation(msg) {
 			return r, nil
 		}
 	}
@@ -85,6 +91,16 @@ func (r *Root) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case NavBackMsg:
 		return r, r.pop()
+	case NavMenuMsg:
+		r.TeardownAll()
+		var cmds []tea.Cmd
+		for i := len(r.onPop) - 1; i >= 0; i-- {
+			if r.onPop[i] != nil {
+				cmds = append(cmds, r.onPop[i]())
+			}
+		}
+		r.stack, r.onPop = nil, nil
+		return r, tea.Sequence(cmds...)
 
 	case NavReplaceMsg:
 		return r, r.replace(m.View)

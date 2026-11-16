@@ -110,6 +110,7 @@ type Plan struct {
 	SupplyChainNotice string                      `json:"supply_chain_notice,omitempty"`
 	Disposable        bool                        `json:"disposable,omitempty"`
 	PlanID            string                      `json:"plan_id,omitempty"`
+	ScriptExport      *ScriptExport               `json:"script_export,omitempty"`
 	Recipe            *RecipeSnapshot             `json:"resolved_install,omitempty"`
 	Environment       []string                    `json:"-"`
 	Rollback          func() error                `json:"-"`

@@ -41,68 +41,46 @@ type Popup struct {
 // and renders Details as a bullet list. Returns the raw box — use
 // OverlayPopup to place it on top of a background view.
 func RenderPopup(styles Styles, width int, p Popup) string {
-	boxW := popupBoxWidth(width)
-	innerW := boxW - 4 // 2-cell padding each side
-	if innerW < 10 {
-		innerW = 10
-	}
+	return renderPopup(styles, width, 24, p)
+}
 
+func renderPopup(styles Styles, width, height int, p Popup) string {
+	boxW := PopupWidth(width)
+	inner := max(boxW-6, 1)
+	title := p.Title
+	if tag := severityTag(p.Severity); tag != "" {
+		if title != "" {
+			title = tag + ": " + title
+		} else {
+			title = tag
+		}
+	}
+	title = lipgloss.NewStyle().Width(inner).MaxHeight(1).Render(styles.Title.Render(title))
+	message := p.Message
+	for _, detail := range p.Details {
+		message += "\n• " + detail
+	}
+	hints := lipgloss.NewStyle().Width(inner).Render(styles.Help.Render(p.Hints))
+	available := max(height-4-lipgloss.Height(title)-lipgloss.Height(hints), 1)
+	body := lipgloss.NewStyle().Width(inner).MaxHeight(available).Render(message)
+	content := strings.Join([]string{title, body, hints}, "\n")
 	border := p.BorderColor
 	if border == nil {
 		border = severityBorder(styles.Theme, p.Severity)
 	}
+	return overlayBox(styles, content, boxW, border)
+}
 
-	var b strings.Builder
+// RenderOverlayAtWidth shares the frame and placement used by forms and popups.
+// boxWidth includes the border; content must fit the caller's viewport budget.
+func RenderOverlayAtWidth(styles Styles, bg, content string, width, height, boxWidth int) string {
+	return OverlayPopup(styles, bg, overlayBox(styles, content, boxWidth, styles.Theme.Primary), width, height)
+}
 
-	// Title with textual severity tag (survives NO_COLOR / colorblind).
-	tag := severityTag(p.Severity)
-	titleText := p.Title
-	if tag != "" {
-		if titleText == "" {
-			titleText = tag
-		} else {
-			titleText = tag + ": " + titleText
-		}
-	}
-	if titleText != "" {
-		b.WriteString(styles.Title.Render(titleText))
-		b.WriteString("\n\n")
-	}
-
-	if p.Message != "" {
-		wrapped := lipgloss.NewStyle().
-			Foreground(styles.Theme.Text).
-			Width(innerW).
-			Render(p.Message)
-		b.WriteString(wrapped)
-		b.WriteString("\n")
-	}
-
-	if len(p.Details) > 0 {
-		b.WriteString("\n")
-		bulletStyle := lipgloss.NewStyle().Foreground(styles.Theme.Subtext).Width(innerW)
-		for _, d := range p.Details {
-			b.WriteString(bulletStyle.Render("• " + d))
-			b.WriteString("\n")
-		}
-	}
-
-	if p.Hints != "" {
-		b.WriteString("\n")
-		b.WriteString(styles.Help.Render(p.Hints))
-		b.WriteString("\n")
-	}
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(border).
-		BorderBackground(styles.Theme.Mantle).
-		Background(styles.Theme.Mantle).
-		Padding(1, 2).
-		Width(boxW).
-		Render(strings.TrimRight(b.String(), "\n"))
-
-	return box
+func overlayBox(styles Styles, content string, width int, border color.Color) string {
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).BorderBackground(styles.Theme.Mantle).
+		Background(styles.Theme.Mantle).Padding(0, 2).Width(max(width-2, 1)).Render(content)
 }
 
 // OverlayPopup composes a pre-rendered box on top of a background view. The
@@ -140,31 +118,18 @@ func OverlayPopup(styles Styles, bg, box string, w, h int) string {
 // RenderAndOverlayPopup is the one-shot convenience combining RenderPopup
 // and OverlayPopup for callers that don't need to inspect the box.
 func RenderAndOverlayPopup(styles Styles, bg string, w, h int, p Popup) string {
-	box := RenderPopup(styles, w, p)
+	box := renderPopup(styles, w, h, p)
 	return OverlayPopup(styles, bg, box, w, h)
 }
 
-// popupBoxWidth picks a box width that fits narrow terminals.
+// PopupWidth picks a box width that fits narrow terminals.
 // Target is 75% of terminal up to 80 cells; floor at 20 so wrapping still
 // produces readable lines, and always leave a 2-cell margin.
-func popupBoxWidth(termWidth int) int {
+func PopupWidth(termWidth int) int {
 	if termWidth <= 0 {
 		termWidth = 80
 	}
-	w := termWidth * 3 / 4
-	if w > 80 {
-		w = 80
-	}
-	if w < 44 {
-		w = 44
-	}
-	if w > termWidth-2 {
-		w = termWidth - 2
-	}
-	if w < 20 {
-		w = 20
-	}
-	return w
+	return max(1, min(max(termWidth*3/4, 44), 80, termWidth-2))
 }
 
 // padToSize ensures s occupies exactly w×h with the given background.

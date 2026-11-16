@@ -37,7 +37,12 @@ func FetchInstances(client *pkgClient.Client, app, model string) ([]pkgClient.In
 
 // FetchNodes retrieves and parses cluster node information.
 func FetchNodes(client *pkgClient.Client, fields string, refresh bool) ([]NodeInfo, error) {
-	response, err := client.GetNodesWithRefresh(fields, refresh)
+	return FetchNodesContext(context.Background(), client, fields, refresh)
+}
+
+// FetchNodesContext reads and parses node inventory within the caller's lifetime.
+func FetchNodesContext(ctx context.Context, client *pkgClient.Client, fields string, refresh bool) ([]NodeInfo, error) {
+	response, err := client.GetNodesWithRefreshContext(ctx, fields, refresh)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get nodes: %w", err)
 	}
@@ -113,7 +118,12 @@ func FetchDeployments(client *pkgClient.Client) ([]DeploymentInfo, error) {
 
 // FetchProviders retrieves, parses, and optionally filters provider apps.
 func FetchProviders(client *pkgClient.Client, node, providerFilter string, refresh ...bool) ([]ProviderInfo, error) {
-	response, err := client.GetProviders(node, refresh...)
+	return FetchProvidersContext(context.Background(), client, node, providerFilter, refresh...)
+}
+
+// FetchProvidersContext reads and parses inventory within the caller's lifetime.
+func FetchProvidersContext(ctx context.Context, client *pkgClient.Client, node, providerFilter string, refresh ...bool) ([]ProviderInfo, error) {
+	response, err := client.GetProvidersContext(ctx, node, refresh...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get providers: %w", err)
 	}
@@ -570,7 +580,7 @@ func isWorkJob(kind string) bool {
 // one unreachable worker must not blank the whole activity view, which is
 // exactly when an operator is most likely to be looking at it.
 func FetchAllJobs(ctx context.Context, client *pkgClient.Client) ([]pkgClient.JobEvent, error) {
-	nodes, err := FetchNodes(client, "", false)
+	nodes, err := FetchNodesContext(ctx, client, "", false)
 	if err != nil {
 		// No node list is survivable: report what the local node knows,
 		// filtered the same way the fan-out filters.

@@ -96,7 +96,7 @@ func TestInstalledProviderOpensDependencyPreview(t *testing.T) {
 			defer srv.Close()
 			m := NewProvidersViewModel(pkgClient.NewClient(config.ClientNodeConfig{Address: srv.URL}), ui.NewStyles(ui.CatppuccinMocha()))
 			t.Cleanup(m.Cancel)
-			provider := shared.ProviderInfo{Name: "comfyui", Node: "worker", Mode: constants.AppModeOnDemand}
+			provider := shared.ProviderInfo{Enabled: true, Name: "comfyui", Node: "worker", Mode: constants.AppModeOnDemand}
 			m.providers = []shared.ProviderInfo{provider}
 			m.list.SetItems([]tui.Item{providerItem{provider}})
 			m.mode = mode
@@ -192,7 +192,7 @@ func TestRetiredLastComponentCanBeExplicitlyRemoved(t *testing.T) {
 	defer srv.Close()
 	m := NewProvidersViewModel(pkgClient.NewClient(config.ClientNodeConfig{Address: srv.URL}), ui.NewStyles(ui.CatppuccinMocha()))
 	t.Cleanup(m.Cancel)
-	provider := shared.ProviderInfo{Name: "comfyui", Node: "worker", Mode: constants.AppModeOnDemand}
+	provider := shared.ProviderInfo{Enabled: true, Name: "comfyui", Node: "worker", Mode: constants.AppModeOnDemand}
 	m.providers = []shared.ProviderInfo{provider}
 	m.list.SetItems([]tui.Item{providerItem{provider}})
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})

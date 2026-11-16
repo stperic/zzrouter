@@ -55,18 +55,8 @@ func (m *ModelsViewModel) viewList(width, height int) string { //nolint:unparam 
 
 	var b strings.Builder
 
-	// Confirmation dialog overlay
-	if m.confirmKind != confirmNone {
-		b.WriteString(" " + m.styles.Error.Render(m.confirmMessage) + "\n\n")
-	}
-
 	vis := shared.VisibleRows(m.termHeight, shared.StdListFooter(m.styles))
-	if m.confirmKind != confirmNone {
-		vis -= shared.TuiConfirmLines
-	}
-	if vis < 3 {
-		vis = 3
-	}
+	m.list.SetVisible(vis)
 
 	// Pre-build all rows as strings for stable column sizing across pages
 	allRowStrs := make([][]string, len(m.rows))
@@ -83,15 +73,17 @@ func (m *ModelsViewModel) viewList(width, height int) string { //nolint:unparam 
 	}
 
 	t := shared.NewScrollTable(shared.ScrollTableConfig{
-		Headers:   []string{"MODEL", "PROVIDER", "NODE", "SIZE", "STATUS"},
-		Width:     width,
-		Vis:       vis,
-		Cursor:    m.list.Cursor(),
-		Offset:    m.list.Offset(),
-		Styles:    m.styles,
-		StatusCol: 4,
-		RowStyles: rowStyles,
-		AllRows:   allRowStrs,
+		Headers:        []string{"MODEL", "PROVIDER", "NODE", "SIZE", "STATUS"},
+		ColumnPriority: []int{100, 60, 80, 20, 90},
+		ColWidths:      []int{20, 12, 14, 10, 12},
+		Width:          width,
+		Vis:            vis,
+		Cursor:         m.list.Cursor(),
+		Offset:         m.list.Offset(),
+		Styles:         m.styles,
+		StatusCol:      4,
+		RowStyles:      rowStyles,
+		AllRows:        allRowStrs,
 	})
 
 	for _, r := range visibleRows {
@@ -113,7 +105,12 @@ func (m *ModelsViewModel) viewList(width, height int) string { //nolint:unparam 
 	if c >= 0 && c < len(m.rows) {
 		selectedRow = &m.rows[c]
 	}
-	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, status, m.withRefreshHint(modelsListHints(selectedRow), width)))
+	hints := m.withRefreshHint(modelsListHints(selectedRow)+"  ? help", width)
+	if m.confirmKind != confirmNone {
+		status = m.confirmMessage
+		hints = "Y confirm  Enter/Esc cancel"
+	}
+	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, status, hints))
 
 	return b.String()
 }

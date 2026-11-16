@@ -333,6 +333,10 @@ func (m *ModelsViewModel) restoreCursor(id rowID, have bool) {
 		}
 		if group := m.selectedRouteGroup(); group != nil {
 			id, have = rowID{kind: rowKindRoute, model: group.Name}, true
+		} else if m.Dirty && (m.mode == modelsViewEditRoute || m.mode == modelsViewAddDeploy) {
+			m.routeForm.statusMsg = "Route no longer exists. Your draft is preserved. Esc closes it."
+			m.statusMsg = m.routeForm.statusMsg
+			return
 		} else {
 			m.mode, m.activeRoute = modelsViewList, ""
 			m.routeForm.cancel()
@@ -354,6 +358,9 @@ func (m *ModelsViewModel) restoreCursor(id rowID, have bool) {
 		m.mode = modelsViewList
 	}
 	m.confirmKind, m.confirmMessage = confirmNone, ""
+	if m.usageCancel != nil {
+		m.usageCancel()
+	}
 	m.modelUsage, m.modelUsageIdle = nil, false
 	m.ping = pingState{}
 }

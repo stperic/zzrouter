@@ -1,4 +1,9 @@
-# zzRouter
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="internal/server/web/console/brand/wordmark-dark.svg">
+    <img src="internal/server/web/console/brand/wordmark-color.svg" width="320" alt="zzRouter">
+  </picture>
+</h1>
 
 zzRouter is a least-privilege control plane for AI agents. Its API replaces
 SSH for model downloads, provider installation, launches and inference across

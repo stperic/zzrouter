@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/constants"
 )
 
 // ============================================================================
@@ -44,14 +46,28 @@ func (m *ModelsViewModel) viewRouteDetail(width, height int) string {
 
 	d.Section(fmt.Sprintf("Deployments (%d)", len(g.Replicas)))
 
-	footer := "\n" + shared.RenderViewFooter(m.styles, width, tui.ModelsKeys.RouteDetailHintsString())
-
-	headerH := shared.RenderedHeight(d.String())
-	footerH := shared.RenderedHeight(footer)
-	availRows := max(height-headerH-footerH, 1)
+	hints := tui.ModelsKeys.RouteDetailHintsString() + "  ? help"
+	status := m.statusMsg
+	if m.confirmKind != confirmNone {
+		status = m.confirmMessage
+		hints = "Y remove  Enter/Esc cancel"
+	}
+	footer := shared.RenderViewFooterWithStatus(m.styles, width, status, hints)
+	header := strings.TrimRight(d.String(), "\n")
+	headerH := shared.RenderedHeight(header)
+	if headerH > height-shared.RenderedHeight(footer)-shared.TuiTableHeaderAdd-1 {
+		header = ""
+		headerH = 0
+	}
+	availRows := max(height-headerH-shared.RenderedHeight(footer)-shared.TuiTableHeaderAdd, 1)
+	if headerH > 0 {
+		header += "\n"
+	}
+	var body strings.Builder
+	body.WriteString(header)
 
 	if len(g.Replicas) == 0 {
-		d.Text(" ", m.styles.Help.Render("No deployments: this route is inactive. Press A to add one."))
+		body.WriteString(shared.TruncateText("No deployments. A adds a destination.", width) + "\n")
 	} else {
 		depRows := make([][]string, len(g.Replicas))
 		depStatuses := make([]string, len(g.Replicas))
@@ -64,13 +80,19 @@ func (m *ModelsViewModel) viewRouteDetail(width, height int) string {
 			if len(d.Tags) > 0 {
 				tags = strings.Join(d.Tags, ", ")
 			}
+			node := d.Node
+			if node == "" {
+				node = m.localNode
+			}
 			depRows[i] = []string{
-				d.Name, d.Model, d.App,
+				d.Name, d.Model, d.App, node,
 				fmt.Sprintf("%d", d.Priority),
 				tags, dot + " " + status,
 			}
 		}
 
+		m.detail.EnsureVisible(m.detailDepCursor, availRows)
+		m.detail.SetVisible(availRows)
 		maxScroll := max(len(depRows)-availRows, 0)
 		scroll := min(m.detail.Scroll(), maxScroll)
 		end := min(scroll+availRows, len(depRows))
@@ -81,33 +103,28 @@ func (m *ModelsViewModel) viewRouteDetail(width, height int) string {
 		}
 
 		dt := shared.NewScrollTable(shared.ScrollTableConfig{
-			Headers:   []string{"NAME", "MODEL", "PROVIDER", "PRI", "TAGS", "STATUS"},
-			Width:     width,
-			Vis:       availRows,
-			Cursor:    m.detailDepCursor,
-			Offset:    scroll,
-			Styles:    m.styles,
-			StatusCol: 5,
-			RowStyles: rowStyles,
-			AllRows:   depRows,
+			Headers:        []string{"NAME", "MODEL", "PROVIDER", "NODE", "PRI", "TAGS", "STATUS"},
+			ColumnPriority: []int{60, 100, 50, 90, 20, 10, 80},
+			ColWidths:      []int{12, 14, 12, 12, 5, 8, 10},
+			Width:          width,
+			Vis:            availRows,
+			Cursor:         m.detailDepCursor,
+			Offset:         scroll,
+			Styles:         m.styles,
+			StatusCol:      6,
+			RowStyles:      rowStyles,
+			AllRows:        depRows,
 		})
 
 		for _, row := range depRows[scroll:end] {
 			dt.Row(row...)
 		}
 
-		d.Write(dt.Render() + "\n")
+		body.WriteString(dt.Render() + "\n")
 	}
 
-	if m.confirmKind == confirmDeleteDeployDetail {
-		if m.detailDepCursor < len(g.Replicas) {
-			dep := g.Replicas[m.detailDepCursor]
-			d.Text("  ", m.styles.Error.Render(fmt.Sprintf("Remove deployment %q? (y/n)", dep.Name)))
-		}
-	}
-
-	d.Write(footer)
-	return d.String()
+	body.WriteString(footer)
+	return body.String()
 }
 
 func (m *ModelsViewModel) updateRouteDetail(msg tea.KeyPressMsg) tea.Cmd {
@@ -168,6 +185,10 @@ func (m *ModelsViewModel) updateRouteForm(msg tea.KeyPressMsg) tea.Cmd {
 		var existingGroup *pkgClient.ModelGroupResponse
 		if m.mode == modelsViewEditRoute {
 			existingGroup = m.selectedRouteGroup()
+			if existingGroup == nil {
+				m.routeForm.statusMsg = "Route no longer exists. Your draft is preserved. Esc closes it."
+				return nil
+			}
 		}
 		name, req := m.routeForm.buildGroupRequest(existingGroup)
 		if req == nil {
@@ -177,35 +198,23 @@ func (m *ModelsViewModel) updateRouteForm(msg tea.KeyPressMsg) tea.Cmd {
 		if m.mode == modelsViewNewRoute && m.routePrefix != "" && !strings.HasPrefix(name, m.routePrefix) {
 			name = m.routePrefix + name
 		}
-		savingMode := m.mode
-		oldName := m.routeForm.formEditName
-		isRename := m.mode == modelsViewEditRoute && oldName != "" && name != oldName
-		client := m.client
-		return func() tea.Msg {
-			group, err := client.CreateOrUpdateModelGroup(name, req)
-			if err != nil {
-				return routesSavedMsg{group: group, err: err, fromMode: savingMode}
-			}
-			// If renamed, delete the old group
-			if isRename {
-				if delErr := client.DeleteModelGroup(oldName); delErr != nil {
-					return routesSavedMsg{group: group, err: fmt.Errorf("renamed but failed to delete old route %q: %w", oldName, delErr), fromMode: savingMode}
-				}
-			}
-			return routesSavedMsg{group: group, err: nil, fromMode: savingMode}
+		oldName := ""
+		if m.mode == modelsViewEditRoute && m.routeForm.formEditName != name {
+			oldName = m.routeForm.formEditName
 		}
+		return m.saveRoute(name, req, m.mode, oldName)
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		if m.mode == modelsViewEditRoute {
-			m.mode = modelsViewRouteDetail
-		} else {
-			m.mode = modelsViewList
-		}
-		m.routeForm.cancel()
-		return nil
+		return func() tea.Msg { return routeCloseMsg{owner: m} }
 
 	default:
-		return m.routeForm.updateGroupForm(msg)
+		before := m.routeForm.values()
+		cmd := m.routeForm.updateGroupForm(msg)
+		if before != m.routeForm.values() {
+			m.Dirty = true
+			m.Draft.Discard = m.discardRouteForm
+		}
+		return cmd
 	}
 }
 
@@ -217,19 +226,19 @@ func (m *ModelsViewModel) updateDeployFormMode(msg tea.KeyPressMsg) tea.Cmd {
 		if req == nil {
 			return nil // validation error
 		}
-		client := m.client
-		return func() tea.Msg {
-			group, err := client.CreateOrUpdateModelGroup(groupName, req)
-			return routesSavedMsg{group: group, err: err, fromMode: modelsViewAddDeploy}
-		}
+		return m.saveRoute(groupName, req, modelsViewAddDeploy, "")
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		m.mode = modelsViewRouteDetail
-		m.routeForm.cancel()
-		return nil
+		return func() tea.Msg { return routeCloseMsg{owner: m} }
 
 	default:
-		return m.routeForm.updateDeployForm(msg)
+		before := m.routeForm.values()
+		cmd := m.routeForm.updateDeployForm(msg)
+		if before != m.routeForm.values() {
+			m.Dirty = true
+			m.Draft.Discard = m.discardRouteForm
+		}
+		return cmd
 	}
 }
 
@@ -258,12 +267,7 @@ func (m *ModelsViewModel) removeSelectedDeployment() tea.Cmd {
 	req := groupToRequest(g, m.detailDepCursor)
 	m.confirmKind = confirmNone
 	m.confirmMessage = ""
-	client := m.client
-	groupName := g.Name
-	return func() tea.Msg {
-		group, err := client.CreateOrUpdateModelGroup(groupName, req)
-		return routesSavedMsg{group: group, err: err, fromMode: modelsViewRouteDetail}
-	}
+	return m.saveRoute(g.Name, req, modelsViewRouteDetail, "")
 }
 
 // removeDeploymentFromList removes a deployment from a route when triggered from the list view (child row).
@@ -303,10 +307,77 @@ func (m *ModelsViewModel) removeDeploymentFromList() tea.Cmd {
 	req := groupToRequest(group, depIdx)
 	m.confirmKind = confirmNone
 	m.confirmMessage = ""
-	client := m.client
-	groupName := group.Name
+	return m.saveRoute(group.Name, req, modelsViewList, "")
+}
+
+type routeCloseMsg struct{ owner *ModelsViewModel }
+
+func (m *ModelsViewModel) discardRouteForm() {
+	switch m.mode {
+	case modelsViewEditRoute, modelsViewAddDeploy:
+		m.mode = modelsViewRouteDetail
+		if m.selectedRouteGroup() == nil {
+			m.mode = modelsViewList
+			m.activeRoute = ""
+		}
+	case modelsViewNewRoute:
+		m.mode = modelsViewList
+	default:
+		return
+	}
+	m.routeForm.cancel()
+	m.Dirty = false
+}
+
+// NavigationBlocked keeps route form state stable while its write completes.
+func (m *ModelsViewModel) NavigationBlocked() bool { return m.routeWriteContext != nil }
+
+func (m *ModelsViewModel) beginRouteWrite() context.Context {
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	m.fetching = false
+	m.routeWriteContext, m.routeWriteCancel = context.WithTimeout(m.Context(), constants.HTTPLongTimeout)
+	m.routeForm.statusMsg = "Saving route. Please wait..."
+	m.statusMsg = m.routeForm.statusMsg
+	return m.routeWriteContext
+}
+
+func (m *ModelsViewModel) finishRouteWrite(ctx context.Context) bool {
+	if ctx == nil || ctx != m.routeWriteContext || m.Context().Err() != nil {
+		return false
+	}
+	m.routeWriteCancel()
+	m.routeWriteContext = nil
+	return true
+}
+
+func (m *ModelsViewModel) saveRoute(name string, req *pkgClient.CreateOrUpdateModelGroupRequest, mode modelsViewMode, oldName string) tea.Cmd {
+	if m.NavigationBlocked() || m.routeWriteUncertain {
+		return nil
+	}
+	ctx, client := m.beginRouteWrite(), m.client
 	return func() tea.Msg {
-		group, err := client.CreateOrUpdateModelGroup(groupName, req)
-		return routesSavedMsg{group: group, err: err, fromMode: modelsViewList}
+		group, err := client.CreateOrUpdateModelGroupContext(ctx, name, req)
+		if err == nil && oldName != "" {
+			if deleteErr := client.DeleteModelGroupContext(ctx, oldName); deleteErr != nil {
+				err = fmt.Errorf("saved %q but could not remove old route %q: %w", name, oldName, deleteErr)
+			}
+		}
+		return routesSavedMsg{ctx: ctx, group: group, err: err, fromMode: mode}
+	}
+}
+
+// Cancel releases reads and bounded route writes when the host shuts down.
+func (m *ModelsViewModel) Cancel() {
+	m.ViewContext.Cancel()
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	if m.usageCancel != nil {
+		m.usageCancel()
+	}
+	if m.routeWriteCancel != nil {
+		m.routeWriteCancel()
 	}
 }

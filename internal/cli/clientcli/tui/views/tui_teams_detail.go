@@ -37,32 +37,11 @@ func (m *TeamsViewModel) viewDetail(width, height int) string { //nolint:unparam
 		d.Field("Status", "active")
 	}
 
-	if len(t.AllowedModels) > 0 {
-		d.Field("Allowed Models", strings.Join(t.AllowedModels, ", "))
-	} else {
-		d.Field("Allowed Models", "all")
+	d.Section("Team policy")
+	for _, line := range teamPolicyLines(t) {
+		d.Text("  ", line)
 	}
-
-	// --- Rate Limits ---
-	d.Section("Rate Limits")
-
-	rpm := "unlimited"
-	if t.RPMLimit > 0 {
-		rpm = fmt.Sprintf("%d req/min", t.RPMLimit)
-	}
-	d.Field("RPM Limit", rpm)
-
-	tpm := "unlimited"
-	if t.TPMLimit > 0 {
-		tpm = fmt.Sprintf("%d tok/min", t.TPMLimit)
-	}
-	d.Field("TPM Limit", tpm)
-
-	concurrency := "unlimited"
-	if t.MaxParallelRequests > 0 {
-		concurrency = fmt.Sprintf("%d parallel requests", t.MaxParallelRequests)
-	}
-	d.Field("Concurrency", concurrency)
+	d.Text("  ", "Press E to open this team in the web console.")
 
 	// --- Budget ---
 	if t.SpendLimit > 0 {
@@ -128,6 +107,8 @@ func (m *TeamsViewModel) viewDetail(width, height int) string { //nolint:unparam
 	}
 
 	// Confirmation dialogs
+	body := d.String()
+	d = shared.NewDetail(m.styles, width)
 	if m.confirmPending {
 		switch m.confirmAction {
 		case "delete":
@@ -150,7 +131,7 @@ func (m *TeamsViewModel) viewDetail(width, height int) string { //nolint:unparam
 		d.Text("  ", m.styles.Error.Render(m.statusMsg))
 	}
 
-	d.Write("\n" + shared.RenderViewFooter(m.styles, width, tui.TeamsKeys.DetailHintsString()))
-
-	return d.String()
+	footer := shared.RenderViewFooter(m.styles, width, shared.WrapIndent(tui.TeamsKeys.DetailHintsString(), "", max(width-2, 1)))
+	footer = d.String() + footer
+	return m.detail.Render(body, max(height-strings.Count(footer, "\n")-2, 1)) + "\n" + footer
 }

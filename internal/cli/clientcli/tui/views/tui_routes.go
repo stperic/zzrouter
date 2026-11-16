@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -8,9 +9,10 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
+	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/ui"
+	"github.com/stperic/zzrouter/pkg/ui/form"
 )
 
 // ---------------------------------------------------------------------------
@@ -19,6 +21,7 @@ import (
 
 // routesSavedMsg carries the result of saving a model group.
 type routesSavedMsg struct {
+	ctx      context.Context
 	group    *pkgClient.ModelGroupResponse
 	err      error
 	fromMode modelsViewMode // which mode triggered the save
@@ -26,6 +29,7 @@ type routesSavedMsg struct {
 
 // routesDeletedMsg carries the result of deleting a model group.
 type routesDeletedMsg struct {
+	ctx context.Context
 	err error
 }
 
@@ -77,6 +81,7 @@ var strategyDescriptions = map[string]string{
 // ---------------------------------------------------------------------------
 
 type routeFormState struct {
+	viewport tui.Detail
 	// Group form fields
 	formName     textinput.Model
 	formDesc     textinput.Model
@@ -103,6 +108,7 @@ type routeFormState struct {
 
 func newRouteFormState() routeFormState {
 	return routeFormState{
+		viewport:         tui.NewDetail(),
 		formName:         newFormInput("route-name", 64),
 		formDesc:         newFormInput("optional description", 128),
 		deployName:       newFormInput("deployment-name", 64),
@@ -138,6 +144,7 @@ func (f *routeFormState) cancel() {
 }
 
 func (f *routeFormState) openNewGroupForm() {
+	f.viewport.Reset()
 	f.formName.SetValue("")
 	f.formDesc.SetValue("")
 	f.formStrategy = 0
@@ -148,6 +155,7 @@ func (f *routeFormState) openNewGroupForm() {
 }
 
 func (f *routeFormState) openEditGroupForm(g *pkgClient.ModelGroupResponse) {
+	f.viewport.Reset()
 	f.formEditName = g.Name
 	f.formName.SetValue(g.Name)
 	f.formDesc.SetValue(g.Description)
@@ -176,6 +184,7 @@ func (f *routeFormState) setGroupFormFocus() {
 }
 
 func (f *routeFormState) openAddDeployForm(g *pkgClient.ModelGroupResponse) {
+	f.viewport.Reset()
 	f.deployModelIdx = 0
 	// Default priority: next after highest existing (1 if no deployments)
 	nextPri := 1
@@ -425,11 +434,15 @@ func (f *routeFormState) buildDeployRequest(g *pkgClient.ModelGroupResponse) (st
 
 func renderRouteFormOverlay(f *routeFormState, styles ui.Styles, bg string, width, height int, title string) string {
 	var popup strings.Builder
+	focusLine := 0
+	f.formName.SetWidth(max(form.OverlayWidth(width)-22, 1))
+	f.formDesc.SetWidth(max(form.OverlayWidth(width)-22, 1))
 
 	popup.WriteString(styles.Title.Render(title) + "\n\n")
 
 	focusPrefix := func(field routeFormField) string {
 		if f.formFocus == field {
+			focusLine = strings.Count(popup.String(), "\n")
 			return "▸ "
 		}
 		return "  "
@@ -440,15 +453,7 @@ func renderRouteFormOverlay(f *routeFormState, styles ui.Styles, bg string, widt
 
 	// Strategy selector with full description
 	popup.WriteString("\n")
-	var stratParts []string
-	for i, s := range routeStrategies {
-		if i == f.formStrategy {
-			stratParts = append(stratParts, "(●) "+s)
-		} else {
-			stratParts = append(stratParts, "( ) "+s)
-		}
-	}
-	popup.WriteString(styles.Normal.Render(focusPrefix(routeFieldStrategy)+"Strategy:     ") + strings.Join(stratParts, "  ") + "\n")
+	popup.WriteString(styles.Normal.Render(focusPrefix(routeFieldStrategy)+"Strategy:     ") + "‹ " + routeStrategies[f.formStrategy] + " ›\n")
 	if desc, ok := strategyDescriptions[routeStrategies[f.formStrategy]]; ok {
 		popup.WriteString(styles.Help.Render("                "+desc) + "\n")
 	}
@@ -457,13 +462,15 @@ func renderRouteFormOverlay(f *routeFormState, styles ui.Styles, bg string, widt
 		popup.WriteString("\n" + styles.Error.Render(f.statusMsg) + "\n")
 	}
 
-	popup.WriteString("\n" + styles.Help.Render("↑/↓ navigate  ←/→ strategy  Ctrl+S save  Esc cancel"))
-
-	return renderFormOverlay(popup.String(), bg, width, height, styles)
+	return tui.RenderForm(styles, &f.viewport, bg, popup.String(), "Ctrl+S save  Tab next  ←/→ choose  Esc cancel", width, height, focusLine)
 }
 
 func renderDeployFormOverlay(f *routeFormState, styles ui.Styles, bg string, width, height int, groupName string) string {
 	var popup strings.Builder
+	focusLine := 0
+	for _, input := range []*textinput.Model{&f.deployPriority, &f.deployTimeout, &f.deployMaxRetries, &f.deployTags} {
+		input.SetWidth(max(form.OverlayWidth(width)-22, 1))
+	}
 
 	title := "Add Deployment"
 	if groupName != "" {
@@ -473,6 +480,7 @@ func renderDeployFormOverlay(f *routeFormState, styles ui.Styles, bg string, wid
 
 	focusPrefix := func(field deployFormField) string {
 		if f.deployFocus == field {
+			focusLine = strings.Count(popup.String(), "\n")
 			return "▸ "
 		}
 		return "  "
@@ -492,46 +500,7 @@ func renderDeployFormOverlay(f *routeFormState, styles ui.Styles, bg string, wid
 		popup.WriteString("\n" + styles.Error.Render(f.statusMsg) + "\n")
 	}
 
-	popup.WriteString("\n" + styles.Help.Render("Tab/Shift+Tab navigate  Ctrl+S save  Esc cancel"))
-
-	return renderFormOverlay(popup.String(), bg, width, height, styles)
-}
-
-// renderFormOverlay renders a form popup overlaid on a background view.
-// Content is already formatted by the caller (title, fields, hints); this
-// helper only draws the border and centers it via ui.OverlayPopup.
-func renderFormOverlay(content, bg string, width, height int, styles ui.Styles) string {
-	return renderOverlayAtWidth(content, bg, width, height, formOverlayWidth(width), styles)
-}
-
-// renderOverlayAtWidth is renderFormOverlay with the box width chosen by
-// the caller. Forms want the fixed floor formOverlayWidth enforces so
-// input fields line up; a one-shot dialog wants to hug its content
-// rather than frame a screenful of empty space.
-func renderOverlayAtWidth(content, bg string, width, height, boxWidth int, styles ui.Styles) string {
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(styles.Theme.Primary).
-		BorderBackground(styles.Theme.Mantle).
-		Background(styles.Theme.Mantle).
-		Padding(1, 2).
-		Width(boxWidth).
-		Render(content)
-	return ui.OverlayPopup(styles, bg, box, width, height)
-}
-
-// formOverlayWidth mirrors the narrow-terminal clamps that popup.go uses
-// for non-form popups, kept distinct because forms want a hard 44-cell floor
-// to keep input fields usable.
-func formOverlayWidth(termWidth int) int {
-	w := min(termWidth*3/4, 80)
-	if w < 44 {
-		w = 44
-	}
-	if w > termWidth-4 && termWidth > 10 {
-		w = termWidth - 4
-	}
-	return w
+	return tui.RenderForm(styles, &f.viewport, bg, popup.String(), "Ctrl+S save  Tab next  Esc cancel", width, height, focusLine)
 }
 
 // ---------------------------------------------------------------------------
@@ -644,4 +613,8 @@ func renderModelPicker(models []pkgClient.ModelMetadata, selected int) string {
 		right = " →"
 	}
 	return left + label + right
+}
+
+func (f *routeFormState) values() string {
+	return fmt.Sprint(f.formName.Value(), "\x00", f.formDesc.Value(), "\x00", f.formStrategy, "\x00", f.deployName.Value(), "\x00", f.deployPriority.Value(), "\x00", f.deployTimeout.Value(), "\x00", f.deployMaxRetries.Value(), "\x00", f.deployTags.Value(), "\x00", f.deployModelIdx)
 }

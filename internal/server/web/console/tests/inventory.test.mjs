@@ -60,7 +60,7 @@ test('node inventory joins provider names within node scope and retains stale an
 test('local details distinguish disabled installed providers from missing installation and routing evidence', t => {
   installDOM(t);
   const dormant = nodeInventory(page(), [fulfilled(nodes), fulfilled(records)], { key: 'engine-b', name: 'engine-b' });
-  assert.match(nodeCard(dormant, 'atlas').textContent, /engine-bDisabledInstalled/);
+  assert.match(nodeCard(dormant, 'atlas').textContent, /DisabledInstalled/);
   for (const name of ['spruce', 'pine', 'cedar']) assert.ok(nodeCard(dormant, name), 'every known node remains visible');
   const withoutInstall = [{ ...nodes[0], providers: [] }];
   const engine = nodeInventory(page(), [fulfilled(withoutInstall), fulfilled([record('engine-a', 'atlas', false, false)])], local);

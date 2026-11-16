@@ -71,14 +71,16 @@ func (s *Server) registerOpenAIRoutes() int {
 	openai := s.engine.Group("/v1",
 		httperr.AttachResponder(openaiResponder),
 		RequestIDMiddleware(),
-		s.auth.OptionalAuthMiddleware(),
 	)
+	// Only the console's discovery and chat endpoints accept browser authority.
+	chat := openai.Group("", s.auth.optionalAuthMiddleware(true))
+	s.idempotent(chat, "POST", "/chat/completions", skipIdempotencyOnStreamingBody, ih.handleChatCompletions)
+	chat.GET("/models", mh.handleModels)
+	openai.Use(s.auth.OptionalAuthMiddleware())
 	{
 		// Core inference endpoints. Idempotency-Key dedup closes the
 		// agent-retry double-billing risk on non-streaming requests.
-		s.idempotent(openai, "POST", "/chat/completions", skipIdempotencyOnStreamingBody, ih.handleChatCompletions)
 		s.idempotent(openai, "POST", "/completions", skipIdempotencyOnStreamingBody, ih.handleCompletions)
-		openai.GET("/models", mh.handleModels)
 		openai.GET("/models/*model", mh.handleModelByID)
 		openai.DELETE("/models/*model", mh.handleDeleteModelByID)
 

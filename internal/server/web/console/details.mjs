@@ -30,7 +30,7 @@ export function details(p, title, close) {
     panel.close?.(); panel.remove();
     p.root.classList.remove('has-details');
     if (restoreFocus) {
-      const target = previousFocus?.isConnected ? previousFocus : p.root.querySelector?.('[aria-current="true"] button, button[aria-current="true"]') || document.querySelector?.('h1');
+      const target = previousFocus?.isConnected && previousFocus !== document.body && previousFocus !== document.documentElement ? previousFocus : p.root.querySelector?.('[aria-current="true"] button, button[aria-current="true"]') || document.querySelector?.('h1');
       target?.focus({ preventScroll: true });
     }
   };
@@ -47,10 +47,12 @@ export function details(p, title, close) {
   };
   const view = (nextTitle = title) => {
     const content = contents.next(); revision++;
+    const restoreHeader = body.contains(document.activeElement);
     clearSecrets(body); body.replaceChildren(); drafts.clear(); editing = false;
     label.textContent = nextTitle;
     panel.setAttribute('aria-label', nextTitle);
     dismiss.setAttribute('aria-label', `Close ${nextTitle.toLowerCase()}`);
+    if (restoreHeader) dismiss.focus({ preventScroll: true });
     const owner = { ...p, root: body, panel: controller, close, dispose, trackDraft,
       scope: { signal: AbortSignal.any([signal, content.signal]) }, current: () => current() && content.current(),
       get editing() { return editing; }, set editing(value) { editing = value; } };
@@ -67,6 +69,37 @@ export function details(p, title, close) {
   dismiss.focus({ preventScroll: true });
   queueMicrotask(() => { if (current()) dismiss.scrollIntoView({ block: 'nearest', behavior: 'instant' }); });
   return owner;
+}
+
+// Forms share outcome handling; the API remains the authority on uncertainty.
+export function formSubmission(p, controls, submit, draft) {
+  let busy = false, blocked = false;
+  const sync = () => {
+    controls.disabled = submit.disabled = busy || blocked;
+    controls.setAttribute('aria-busy', String(busy));
+    p.syncActivity?.();
+  };
+  return {
+    get blocked() { return blocked; },
+    block() { blocked = true; sync(); },
+    async run(write, saved, failed) {
+      if (busy || blocked || controls.disabled || !p.current() || !p.api.canChange()) return;
+      busy = true; sync();
+      try {
+        const result = await write();
+        if (!p.current()) return;
+        blocked = true; draft?.clean();
+        await saved(result);
+      } catch (error) {
+        if (!p.current()) return;
+        blocked ||= !!error.uncertain || !!error.mutation_applied;
+        await failed(error, blocked);
+      } finally {
+        busy = false;
+        if (p.current()) sync();
+      }
+    },
+  };
 }
 
 // Once a write succeeds, a failed read must never revive an editable stale form.

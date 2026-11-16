@@ -97,16 +97,16 @@ func OutputData(cmd *cobra.Command, data any, tableRenderer func()) error {
 		if err != nil {
 			return fmt.Errorf("failed to format JSON: %w", err)
 		}
-		fmt.Println(string(jsonBytes))
-		return nil
+		_, err = fmt.Fprintln(cmd.OutOrStdout(), string(jsonBytes))
+		return err
 
 	case OutputYAML:
 		yamlBytes, err := yamlLikeJSON(data)
 		if err != nil {
 			return fmt.Errorf("failed to format YAML: %w", err)
 		}
-		fmt.Print(string(yamlBytes))
-		return nil
+		_, err = cmd.OutOrStdout().Write(yamlBytes)
+		return err
 
 	default: // OutputTable
 		tableRenderer()
@@ -222,11 +222,9 @@ func EnsureConnected() (*pkgClient.Client, error) {
 	return EnsureConnectedCtx(context.Background())
 }
 
-// EnsureConnectedCtx is the cancellable form of EnsureConnected. The
-// supplied ctx is threaded through the health-check HTTP request so a
-// hung node doesn't pin the CLI command past its operator-supplied
-// deadline.
-func EnsureConnectedCtx(ctx context.Context) (*pkgClient.Client, error) {
+// connectedNodeConfig resolves the saved connection without making a network
+// request. Callers such as console discovery can use their own contextual API.
+func connectedNodeConfig() (*pkgConfig.ClientNodeConfig, error) {
 	cm := pkgConfig.NewConfigManager("zzrouter")
 	clientConfig, err := cm.LoadClientConfig()
 	if err != nil {
@@ -242,6 +240,19 @@ func EnsureConnectedCtx(ctx context.Context) (*pkgClient.Client, error) {
 	host, err := clientConfig.GetNodeConfig()
 	if err != nil {
 		return nil, fmt.Errorf("invalid connection config: %w\n\n  Reconnect with: zzrouter connect <host:port>", err)
+	}
+
+	return host, nil
+}
+
+// EnsureConnectedCtx is the cancellable form of EnsureConnected. The
+// supplied ctx is threaded through the health-check HTTP request so a
+// hung node doesn't pin the CLI command past its operator-supplied
+// deadline.
+func EnsureConnectedCtx(ctx context.Context) (*pkgClient.Client, error) {
+	host, err := connectedNodeConfig()
+	if err != nil {
+		return nil, err
 	}
 
 	// Check health check cache

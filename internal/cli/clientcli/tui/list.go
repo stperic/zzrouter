@@ -189,7 +189,11 @@ func (l *List) UpdateWheel(msg tea.MouseWheelMsg) {
 // check, equal-cursor-means-enter" boilerplate that existed in every list
 // view's handleMouseClick.
 func (l *List) Click(msg tea.MouseClickMsg, chromeLines int) (enter, ok bool) {
-	row := msg.Y - chromeLines + l.offset
+	relative := msg.Y - chromeLines
+	if relative < 0 || (l.visible > 0 && relative >= l.visible) {
+		return false, false
+	}
+	row := relative + l.offset
 	if row < 0 || row >= len(l.items) {
 		return false, false
 	}

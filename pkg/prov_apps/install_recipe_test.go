@@ -78,6 +78,32 @@ func (i *resolvedPlanInstaller) InstallPlan(context.Context, string) (*install.P
 	return &copy, nil
 }
 
+func TestPreparedPlanExportsAfterIdentityBinding(t *testing.T) {
+	isolateProviderRoot(t)
+	coord, fake, _, cleanup := newAsyncTestCoord(t, "vllm")
+	defer cleanup()
+	builder := &resolvedPlanInstaller{fakeInstaller: fake, plan: install.Plan{
+		Provider: "vllm", Action: "install", Version: "1", Platform: fsroot.Platform{OS: "linux"},
+		Steps: []install.Step{{Number: 1, Command: "printf ready"}},
+	}}
+	coord.dispatcher.Register("vllm", builder)
+	opts := install.PlanOptions{Force: true}
+	expectedID := install.BoundPlanID(install.Fingerprint(builder.plan), "install", opts)
+	plan, err := coord.PrepareInstallPlan(t.Context(), "vllm", "1", opts)
+	require.NoError(t, err)
+	require.Equal(t, expectedID, plan.PlanID, "export is not part of the existing identity")
+	require.NotEmpty(t, plan.ScriptExport.Script)
+	opts.ExpectedPlanID = plan.PlanID
+	repeated, err := coord.PrepareInstallPlan(t.Context(), "vllm", "1", opts)
+	require.NoError(t, err)
+	require.Equal(t, plan.ScriptExport, repeated.ScriptExport)
+	builder.plan.Steps[0].PostExec = func(context.Context) error { return nil }
+	managed, err := coord.PrepareInstallPlan(t.Context(), "vllm", "1", opts)
+	require.NoError(t, err)
+	require.Empty(t, managed.ScriptExport.Script)
+	require.NotEmpty(t, managed.ScriptExport.Reason)
+}
+
 func TestGuidedIntermediateRecipeStepDoesNotFinalizeHealthyLiveRuntime(t *testing.T) {
 	isolateProviderRoot(t)
 	coord, fake, _, cleanup := newAsyncTestCoord(t, "vllm")
