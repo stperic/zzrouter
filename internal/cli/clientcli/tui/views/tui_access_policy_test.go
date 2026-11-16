@@ -221,10 +221,10 @@ func TestTeamLifecycleBlocksNavigationAndDoubleSubmission(t *testing.T) {
 func TestKeyFormPolicyPreviewScrollsInShortTerminal(t *testing.T) {
 	m := newKeyPolicyFixture(t, func(http.ResponseWriter, *http.Request) {})
 	m.formTeamID = "engineering"
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	first := m.View().Content
 	require.LessOrEqual(t, lipgloss.Width(first), 80)
-	require.LessOrEqual(t, lipgloss.Height(first), 24)
+	require.LessOrEqual(t, lipgloss.Height(first), 16)
 	require.Contains(t, first, "Ctrl+S save")
 	m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	last := m.View().Content

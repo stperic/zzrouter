@@ -11,22 +11,21 @@ import (
 )
 
 func (m *ProvidersViewModel) viewList(width, height int) string { //nolint:unparam // Render helpers share width and height with the view dispatcher.
-	// Providers folds a connection error into the empty .State: if the API
-	// call fails we still want the "install a provider" invitation rather
-	// than a raw error dump. So err → empty (not Err:), and EmptyText
-	// carries the multi-line help.
-	emptyMsg := "No inference providers installed.\n\n" +
-		m.styles.Help.Render(" Press a to install a local provider (Ollama, vLLM, MLX, llama.cpp)") + "\n" +
-		m.styles.Help.Render(" or a cloud provider (OpenAI, Anthropic, Azure, Gemini).")
 	if out, done := tui.RenderListPrelude(m.styles, width, tui.ListPrelude{
-		Loading:   m.loading,
-		LoadTick:  m.loadTick,
-		Empty:     m.err != nil || len(m.providers) == 0,
-		EmptyText: emptyMsg,
-		BackHint:  tui.Hint(tui.ListKeys.Back, "back"),
-		EmptyHint: tui.JoinHints(tui.Hint(tui.ProvidersKeys.Install, "install"), tui.Hint(tui.ListKeys.Back, "back")),
+		Loading: m.loading && len(m.allProviders) == 0, Err: m.err, LoadTick: m.loadTick, BackHint: "R retry  Esc back",
 	}); done {
 		return out
+	}
+	if len(m.providers) == 0 {
+		message := "No matching providers. X shows disabled."
+		if len(m.allProviders) == 0 {
+			message = "No providers. A connects a provider."
+		}
+		hints := "A connect  / search  X disabled  ? help  Esc back"
+		if m.filterInput.Focused() {
+			hints = "Enter apply  Esc clear"
+		}
+		return shared.TruncateText(message, width) + "\n" + shared.RenderViewFooterWithStatus(m.styles, width, m.providerListStatus(), hints)
 	}
 
 	var b strings.Builder
@@ -35,10 +34,6 @@ func (m *ProvidersViewModel) viewList(width, height int) string { //nolint:unpar
 	// Pre-build all rows for stable column sizing
 	allRowStrs := make([][]string, len(m.providers))
 	for i, app := range m.providers {
-		mode := app.Mode
-		if mode == "" {
-			mode = constants.AppModeExternal
-		}
 		formats := shared.EmptyValue
 		if len(app.Formats) > 0 {
 			formats = strings.Join(app.Formats, ", ")
@@ -46,20 +41,27 @@ func (m *ProvidersViewModel) viewList(width, height int) string { //nolint:unpar
 				formats = fmt.Sprintf("%s(%s)", formats, app.FormatNote)
 			}
 		}
-		allRowStrs[i] = []string{app.Name, versionCell(app), app.Node, mode, formats}
+		status := "Disabled"
+		if app.Enabled {
+			status = "Enabled"
+		}
+		allRowStrs[i] = []string{app.Name, app.Node, status, providerKind(app), versionCell(app), formats}
 	}
 
+	m.list.SetVisible(vis)
 	start, end := m.list.VisibleRange()
 
 	t := shared.NewScrollTable(shared.ScrollTableConfig{
-		Headers:   []string{"PROVIDER", "VERSION", "NODE", "MODE", "FORMATS"},
-		Width:     width,
-		Vis:       vis,
-		Cursor:    m.list.Cursor(),
-		Offset:    m.list.Offset(),
-		Styles:    m.styles,
-		StatusCol: -1,
-		AllRows:   allRowStrs,
+		Headers:        []string{"PROVIDER", "NODE", "STATUS", "KIND", "VERSION", "FORMATS"},
+		ColumnPriority: []int{100, 80, 90, 70, 20, 10},
+		ColWidths:      []int{18, 16, 10, 8, 14, 12},
+		Width:          width,
+		Vis:            vis,
+		Cursor:         m.list.Cursor(),
+		Offset:         m.list.Offset(),
+		Styles:         m.styles,
+		StatusCol:      -1,
+		AllRows:        allRowStrs,
 	})
 
 	for _, row := range allRowStrs[start:end] {
@@ -68,18 +70,20 @@ func (m *ProvidersViewModel) viewList(width, height int) string { //nolint:unpar
 
 	b.WriteString(t.Render() + "\n")
 
+	status := m.providerListStatus()
 	if line := m.actionLine(); line != "" {
-		switch {
-		case strings.HasPrefix(line, "✓"):
-			b.WriteString(" " + m.styles.Success.Render(line) + "\n")
-		case strings.HasPrefix(line, "✗"):
-			b.WriteString(" " + m.styles.Error.Render(line) + "\n")
-		default:
-			b.WriteString(" " + m.styles.Help.Render(line) + "\n")
-		}
+		status = line
 	}
-
-	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, shared.TableStatus("Providers", len(m.providers), m.list.Offset(), vis), tui.ProvidersKeys.ListHintsString()))
+	hints := "Enter details  / search  A connect  Tab kind  N node  X disabled  R refresh  ? help  Esc back"
+	if m.filterInput.Focused() {
+		status = m.providerListStatus()
+		hints = "Enter apply  Esc clear"
+	}
+	if m.uninstallTarget != nil {
+		status = fmt.Sprintf("Uninstall %s on %s?", m.uninstallTarget.Name, m.uninstallTarget.Node)
+		hints = "Y uninstall  Enter/Esc cancel"
+	}
+	b.WriteString(shared.RenderViewFooterWithStatus(m.styles, width, status, hints))
 
 	return b.String()
 }
@@ -189,52 +193,24 @@ func (m *ProvidersViewModel) viewDetail(width, height int) string {
 
 	d.Section("Parameters")
 
-	// --- Fixed footer ---
-	footer := "\n" + shared.RenderViewFooter(m.styles, width, tui.ProvidersKeys.DetailHintsString())
-
-	// Measure header and footer dynamically to compute available rows
-	headerH := shared.RenderedHeight(d.String())
-	footerH := shared.RenderedHeight(footer)
-	availRows := max(height-headerH-footerH, 1)
-
-	// --- Scrollable middle: parameters ---
 	if m.detailParamsLoading {
-		d.Write(" Loading...\n")
+		d.Text(" ", "Loading parameters...")
 	} else if m.detailParamsErr != nil {
-		d.Write(" " + m.styles.Help.Render("Could not load parameters") + "\n")
+		d.Text(" ", m.styles.Error.Render("Could not load parameters"))
 	} else if len(m.detailParams) == 0 {
-		d.Write(" " + m.styles.Help.Render("No parameters") + "\n")
+		d.Text(" ", "No parameters")
 	} else {
-		keyW := max(width/3, 20)
-		if keyW > 44 {
-			keyW = 44
-		}
-		maxValW := max(width-keyW-4, 10)
-
-		// Clamp scroll
-		maxScroll := max(len(m.detailParams)-availRows, 0)
-		scroll := min(m.detail.Scroll(), maxScroll)
-
-		end := min(scroll+availRows, len(m.detailParams))
-
-		for i := scroll; i < end; i++ {
-			p := m.detailParams[i]
-			keyStr := shared.TruncateText(p.Key, keyW-2)
-
-			valStr := p.Value
-			if p.AutoResolvedHint != "" && p.AutoResolvedHint != p.Value {
-				valStr += " (" + p.AutoResolvedHint + ")"
+		for _, parameter := range m.detailParams {
+			value := parameter.Value
+			if parameter.AutoResolvedHint != "" && parameter.AutoResolvedHint != value {
+				value += " (" + parameter.AutoResolvedHint + ")"
 			}
-			valStr = shared.TruncateText(valStr, maxValW)
-
-			line := fmt.Sprintf(" %-*s %s", keyW, keyStr, valStr)
-			d.Write(m.styles.Normal.Render(line) + "\n")
+			d.Field(parameter.Key, value)
 		}
 	}
-
-	d.Write(footer)
-
-	return d.String()
+	footer := shared.RenderViewFooter(m.styles, width, tui.ProvidersKeys.DetailHintsString()+"  ? help")
+	body := m.detail.Render(strings.TrimRight(d.String(), "\n"), max(height-shared.RenderedHeight(footer), 1))
+	return body + "\n" + footer
 }
 
 // actionLine renders the status line under the table.

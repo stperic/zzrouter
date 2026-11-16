@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/stperic/zzrouter/pkg/apipath"
 	"github.com/stperic/zzrouter/pkg/config"
@@ -478,6 +477,15 @@ func (c *Client) UninstallProvider(name, node string) error {
 	return c.doLongJSON("DELETE", path, nil, nil, "uninstall provider")
 }
 
+// UninstallProviderContext removes a provider within a bounded caller lifetime.
+func (c *Client) UninstallProviderContext(ctx context.Context, name, node string) error {
+	path := apipath.Provider(name)
+	if node != "" {
+		path += "?node=" + url.QueryEscape(node)
+	}
+	return c.doContextJSON(ctx, http.MethodDelete, path, nil, nil, "uninstall provider")
+}
+
 // ============================================================================
 // Upstream Versions
 // ============================================================================
@@ -594,6 +602,11 @@ var ErrNoUsageRecorded = errors.New("no usage recorded since node start")
 // which is a reportable state rather than a failure.
 // GET /zzrouter/v1/usage/models/:model.
 func (c *Client) GetModelUsage(model, provider string) (*ModelUsageResponse, error) {
+	return c.GetModelUsageContext(context.Background(), model, provider)
+}
+
+// GetModelUsageContext binds the request to the caller's lifetime.
+func (c *Client) GetModelUsageContext(ctx context.Context, model, provider string) (*ModelUsageResponse, error) {
 	path := apipath.UsageModel(model)
 	if provider != "" {
 		path += "?provider=" + url.QueryEscape(provider)
@@ -601,10 +614,11 @@ func (c *Client) GetModelUsage(model, provider string) (*ModelUsageResponse, err
 	var envelope struct {
 		Data ModelUsageResponse `json:"data"`
 	}
-	if err := c.doJSON("GET", path, nil, &envelope, "model usage"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", path, nil, &envelope, "model usage"); err != nil {
 		// doJSON folds the status into the message, so match on it here
 		// rather than teaching every caller to parse the string.
-		if strings.Contains(err.Error(), "status 404") {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 			return nil, ErrNoUsageRecorded
 		}
 		return nil, err

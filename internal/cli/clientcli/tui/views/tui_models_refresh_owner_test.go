@@ -240,7 +240,7 @@ func TestModelsCreatedRouteOpensDetailOutsideRunningProjection(t *testing.T) {
 	loadModelRows(m, nil, []pkgClient.ModelGroupResponse{})
 	m.Update(tea.KeyPressMsg{Code: 'n', Text: "n"})
 	created := pkgClient.ModelGroupResponse{Name: "new-route", Replicas: []pkgClient.ReplicaResponse{}}
-	m.Update(routesSavedMsg{group: &created, fromMode: modelsViewNewRoute})
+	m.Update(routesSavedMsg{ctx: m.beginRouteWrite(), group: &created, fromMode: modelsViewNewRoute})
 	loadModelRows(m, nil, []pkgClient.ModelGroupResponse{created})
 	require.Empty(t, m.rows, "an inactive route remains excluded from the Running list")
 	require.Equal(t, modelsViewRouteDetail, m.mode)
@@ -248,4 +248,36 @@ func TestModelsCreatedRouteOpensDetailOutsideRunningProjection(t *testing.T) {
 	assert.Equal(t, "new-route", m.selectedRouteGroup().Name)
 	m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	assert.Equal(t, modelsViewAddDeploy, m.mode, "creation can proceed to adding its first replica")
+}
+
+func TestModelsDirtyRouteDraftSurvivesTargetRemoval(t *testing.T) {
+	for _, mode := range []modelsViewMode{modelsViewEditRoute, modelsViewAddDeploy} {
+		m := NewModelsViewModel(nil, ui.NewStyles(ui.ClaudeCodeTheme()))
+		t.Cleanup(m.Cancel)
+		g := pkgClient.ModelGroupResponse{Name: "target"}
+		loadModelRows(m, nil, []pkgClient.ModelGroupResponse{g})
+		m.activeRoute = "target"
+		if mode == modelsViewEditRoute {
+			m.routeForm.openEditGroupForm(&g)
+		} else {
+			m.routeForm.openAddDeployForm(&g)
+		}
+		m.mode = mode
+		m.Dirty = true
+		m.Draft.Discard = m.discardRouteForm
+		m.routeForm.formDesc.SetValue("keep this draft")
+		loadModelRows(m, nil, []pkgClient.ModelGroupResponse{})
+		require.Equal(t, mode, m.mode)
+		require.True(t, m.Dirty)
+		require.Equal(t, "keep this draft", m.routeForm.formDesc.Value())
+		require.Contains(t, m.routeForm.statusMsg, "no longer exists")
+		_, save := m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+		require.Nil(t, save)
+		require.False(t, m.NavigationBlocked())
+		m.Update(routeCloseMsg{owner: m})
+		_, discard := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+		require.NotNil(t, discard)
+		m.Update(discard())
+		require.Equal(t, modelsViewList, m.mode)
+	}
 }

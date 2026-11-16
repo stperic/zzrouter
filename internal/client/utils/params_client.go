@@ -1,7 +1,7 @@
 package client
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -43,36 +43,6 @@ type ProviderParametersResponse struct {
 	Environment []ParameterEntry `json:"environment"`
 }
 
-// ModelParametersResponse is the response for GET /providers/:name/models/parameters.
-type ModelParametersResponse struct {
-	Provider    string           `json:"provider"`
-	Model       string           `json:"model"`
-	Parameters  []ParameterEntry `json:"parameters"`
-	Environment []ParameterEntry `json:"environment"`
-}
-
-// ValidationWarning represents a non-blocking validation warning.
-type ValidationWarning struct {
-	Key     string `json:"key"`
-	Message string `json:"message"`
-}
-
-// UpdateParametersResponse is the response for PUT parameter endpoints.
-type UpdateParametersResponse struct {
-	Provider    string              `json:"provider"`
-	Model       string              `json:"model,omitempty"`
-	Parameters  []ParameterEntry    `json:"parameters"`
-	Environment []ParameterEntry    `json:"environment"`
-	Warnings    []ValidationWarning `json:"warnings,omitempty"`
-	Saved       bool                `json:"saved"`
-}
-
-// UpdateParametersRequest is the request body for PUT parameter endpoints.
-type UpdateParametersRequest struct {
-	Parameters  map[string]string `json:"parameters,omitempty"`
-	Environment map[string]string `json:"environment,omitempty"`
-}
-
 // GetProviderParameters retrieves provider-level parameters with schema metadata.
 // Set resolve=true to populate auto_resolved_hint for "auto" and "${VAR}" values.
 func (c *Client) GetProviderParameters(provider string, resolve bool) (*ProviderParametersResponse, error) {
@@ -87,85 +57,10 @@ func (c *Client) GetProviderParameters(provider string, resolve bool) (*Provider
 	return &result, nil
 }
 
-// UpdateProviderParameters updates provider-level parameters.
-//
-// dryRun has no server-side equivalent: Merge-Patch is the single
-// mutator and it has no preview mode. Returning an error is deliberate.
-// Silently saving when the caller asked to validate would be worse than
-// the 410 this replaced, because it would look like it worked.
-func (c *Client) UpdateProviderParameters(provider string, req *UpdateParametersRequest, dryRun bool) (*UpdateParametersResponse, error) {
-	if dryRun {
-		return nil, ErrValidateWithoutSaving
-	}
-	if err := c.patchParameters(provider, tierPatch("defaults", "", c.typedRequest(provider, req)), "update provider parameters"); err != nil {
-		return nil, err
-	}
-	return c.providerParametersAfterPatch(provider)
-}
-
-// GetModelParameters retrieves model-level parameters with override tracking.
-// Set resolve=true to populate auto_resolved_hint for "auto" values using local hardware.
-func (c *Client) GetModelParameters(provider, model string, resolve bool) (*ModelParametersResponse, error) {
-	params := url.Values{}
-	params.Set("model", model)
-	if resolve {
-		params.Set("resolve", "true")
-	}
-	endpoint := apipath.ProviderModelsParameters(provider) + "?" + params.Encode()
-	var result ModelParametersResponse
-	if err := c.doJSON("GET", endpoint, nil, &result, "get model parameters"); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// UpdateModelParameters updates model-level parameter overrides.
-// See UpdateProviderParameters on dryRun.
-func (c *Client) UpdateModelParameters(provider, model string, req *UpdateParametersRequest, dryRun bool) (*UpdateParametersResponse, error) {
-	if dryRun {
-		return nil, ErrValidateWithoutSaving
-	}
-	if err := c.patchParameters(provider, tierPatch("models", model, c.typedRequest(provider, req)), "update model parameters"); err != nil {
-		return nil, err
-	}
-	out, err := c.GetModelParameters(provider, model, false)
-	if err != nil {
-		return nil, err
-	}
-	return &UpdateParametersResponse{
-		Provider: out.Provider, Model: out.Model,
-		Parameters: out.Parameters, Environment: out.Environment, Saved: true,
-	}, nil
-}
-
-// NodeParametersResponse is the response for GET /providers/:name/nodes/parameters.
-type NodeParametersResponse struct {
-	Provider    string           `json:"provider"`
-	Node        string           `json:"node"`
-	Parameters  []ParameterEntry `json:"parameters"`
-	Environment []ParameterEntry `json:"environment"`
-}
-
-// GetNodeParameters retrieves node-level parameters with override tracking.
-// Set resolve=true to populate auto_resolved_hint for "auto" and "${VAR}" values.
-func (c *Client) GetNodeParameters(provider, node string, resolve bool) (*NodeParametersResponse, error) {
-	params := url.Values{}
-	params.Set("node", node)
-	if resolve {
-		params.Set("resolve", "true")
-	}
-	endpoint := apipath.ProviderNodesParameters(provider) + "?" + params.Encode()
-	var result NodeParametersResponse
-	if err := c.doJSON("GET", endpoint, nil, &result, "get node parameters"); err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// GetCoordinatorNodeName fetches the coordinator's node name from the nodes API.
+// GetCoordinatorNodeNameContext fetches the coordinator's node name from the nodes API.
 // Returns the name of the first node with role "coordinator" or "standalone".
-func (c *Client) GetCoordinatorNodeName() (string, error) {
-	resp, err := c.GetNodesWithRefresh("name,cluster_role", false)
+func (c *Client) GetCoordinatorNodeNameContext(ctx context.Context) (string, error) {
+	resp, err := c.GetNodesWithRefreshContext(ctx, "name,cluster_role", false)
 	if err != nil {
 		return "", fmt.Errorf("failed to get nodes: %w", err)
 	}
@@ -188,125 +83,14 @@ func (c *Client) GetCoordinatorNodeName() (string, error) {
 		}
 	}
 
-	if first, ok := nodes[0].(map[string]any); ok {
-		if name, ok := first["name"].(string); ok && name != "" {
-			return name, nil
-		}
-	}
-
 	return "", fmt.Errorf("could not determine coordinator node name")
 }
 
-// UpdateNodeParameters updates node-level parameter overrides.
-// See UpdateProviderParameters on dryRun.
-func (c *Client) UpdateNodeParameters(provider, node string, req *UpdateParametersRequest, dryRun bool) (*UpdateParametersResponse, error) {
-	if dryRun {
-		return nil, ErrValidateWithoutSaving
-	}
-	if err := c.patchParameters(provider, tierPatch("nodes", node, c.typedRequest(provider, req)), "update node parameters"); err != nil {
-		return nil, err
-	}
-	out, err := c.GetNodeParameters(provider, node, false)
-	if err != nil {
-		return nil, err
-	}
-	return &UpdateParametersResponse{
-		Provider: out.Provider, Parameters: out.Parameters,
-		Environment: out.Environment, Saved: true,
-	}, nil
-}
+const mergePatchContentType = "application/merge-patch+json"
 
-// DeleteNodeParameter deletes a single node-level parameter override.
-func (c *Client) DeleteNodeParameter(provider, node, key string) error {
-	return c.patchParameters(provider, tierDelete("nodes", node, sectionParameters, key), "delete node parameter")
-}
-
-// DeleteNodeEnvironment deletes a single node-level environment variable override.
-func (c *Client) DeleteNodeEnvironment(provider, node, key string) error {
-	return c.patchParameters(provider, tierDelete("nodes", node, sectionEnvironment, key), "delete node environment")
-}
-
-// DeleteProviderParameter deletes a single provider-level parameter.
-func (c *Client) DeleteProviderParameter(provider, key string) error {
-	return c.patchParameters(provider, tierDelete("defaults", "", sectionParameters, key), "delete provider parameter")
-}
-
-// DeleteProviderEnvironment deletes a single provider-level environment variable.
-func (c *Client) DeleteProviderEnvironment(provider, key string) error {
-	return c.patchParameters(provider, tierDelete("defaults", "", sectionEnvironment, key), "delete provider environment")
-}
-
-// DeleteModelParameter deletes a single model-level parameter override.
-func (c *Client) DeleteModelParameter(provider, model, key string) error {
-	return c.patchParameters(provider, tierDelete("models", model, sectionParameters, key), "delete model parameter")
-}
-
-// DeleteModelEnvironment deletes a single model-level environment variable override.
-func (c *Client) DeleteModelEnvironment(provider, model, key string) error {
-	return c.patchParameters(provider, tierDelete("models", model, sectionEnvironment, key), "delete model environment")
-}
-
-// ----------------------------------------------------------------------------
-// Merge-Patch plumbing
-// ----------------------------------------------------------------------------
-//
-// PATCH /providers/:name/parameters (RFC 7396) is the single mutator.
-// The PUT and DELETE routes this replaced answer 410 Gone, which is what
-// every parameter write in the TUI was hitting.
-
-const (
-	mergePatchContentType = "application/merge-patch+json"
-
-	sectionParameters  = "parameters"
-	sectionEnvironment = "environment"
-)
-
-// ErrValidateWithoutSaving reports that validate-without-saving is not
-// available. Merge-Patch has no preview mode, so a caller asking to
-// validate has to be told, not quietly obeyed with a save.
-var ErrValidateWithoutSaving = errors.New(
-	"validating without saving is not supported: the server applies parameter changes atomically")
-
-// tierPatch wraps an update in the Merge-Patch envelope for one tier.
-// scope is the tier key ("defaults", "models", "nodes"); name is the
-// model or node it applies to, empty for defaults.
-func tierPatch(scope, name string, req *typedUpdate) map[string]any {
-	body := map[string]any{}
-	if req != nil {
-		if len(req.Parameters) > 0 {
-			body[sectionParameters] = req.Parameters
-		}
-		if len(req.Environment) > 0 {
-			body[sectionEnvironment] = req.Environment
-		}
-	}
-	if name == "" {
-		return map[string]any{scope: body}
-	}
-	return map[string]any{scope: map[string]any{name: body}}
-}
-
-// tierDelete builds the patch that removes one key at one tier. A null
-// value is Merge-Patch's delete; the server never persists it, so after
-// the patch the key is either present with a value or absent.
-func tierDelete(scope, name, section, key string) map[string]any {
-	inner := map[string]any{section: map[string]any{key: nil}}
-	if name == "" {
-		return map[string]any{scope: inner}
-	}
-	return map[string]any{scope: map[string]any{name: inner}}
-}
-
-// patchParameters sends one Merge-Patch and discards the answer.
-func (c *Client) patchParameters(provider string, patch map[string]any, operation string) error {
-	return c.sendMergePatch(provider, nil, patch, nil, operation)
-}
-
-// sendMergePatch sends one Merge-Patch to the provider's parameters and
-// decodes the answer into target when there is one. The content type is
-// the contract, not decoration: the server routes on it.
-func (c *Client) sendMergePatch(provider string, query url.Values, patch, target any, operation string) error {
-	resp, err := c.makeRequestWithHeaders(http.MethodPatch, withQuery(apipath.ProviderParameters(provider), query), patch,
+// sendMergePatch uses the same transport and response handling as other API calls.
+func (c *Client) sendMergePatch(ctx context.Context, provider string, query url.Values, patch, target any, operation string) error {
+	resp, err := c.makeContextRequest(ctx, http.MethodPatch, withQuery(apipath.ProviderParameters(provider), query), patch,
 		map[string]string{"Content-Type": mergePatchContentType})
 	if err != nil {
 		return fmt.Errorf("%s: %w", operation, err)
@@ -315,26 +99,10 @@ func (c *Client) sendMergePatch(provider string, query url.Values, patch, target
 	return readResponse(resp, target, operation)
 }
 
-// providerParametersAfterPatch re-reads the provider tier so callers get
-// entries carrying schema metadata. The patch response is a resolved
-// value map with no labels or input types, which is not what the editor
-// renders.
-func (c *Client) providerParametersAfterPatch(provider string) (*UpdateParametersResponse, error) {
-	out, err := c.GetProviderParameters(provider, false)
-	if err != nil {
-		return nil, err
-	}
-	return &UpdateParametersResponse{
-		Provider:    out.Provider,
-		Parameters:  out.Parameters,
-		Environment: out.Environment,
-		Saved:       true,
-	}, nil
-}
-
 // ParameterSchema describes one key in a provider's merged schema.
 type ParameterSchema struct {
 	Type        string   `json:"type"`
+	Auto        string   `json:"auto,omitempty"`
 	Min         *float64 `json:"min,omitempty"`
 	Max         *float64 `json:"max,omitempty"`
 	Enum        []string `json:"enum,omitempty"`
@@ -351,8 +119,13 @@ type ProviderSchemaResponse struct {
 
 // GetProviderSchema fetches the merged parameter schema.
 func (c *Client) GetProviderSchema(provider string) (*ProviderSchemaResponse, error) {
+	return c.GetProviderSchemaContext(context.Background(), provider)
+}
+
+// GetProviderSchemaContext reads schema within the caller's lifetime.
+func (c *Client) GetProviderSchemaContext(ctx context.Context, provider string) (*ProviderSchemaResponse, error) {
 	var out ProviderSchemaResponse
-	if err := c.doJSON("GET", apipath.ProviderSchema(provider), nil, &out, "get provider schema"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", apipath.ProviderSchema(provider), nil, &out, "get provider schema"); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -373,7 +146,7 @@ func typeValues(schema map[string]ParameterSchema, vals map[string]string) map[s
 	out := make(map[string]any, len(vals))
 	for k, v := range vals {
 		spec, ok := schema[k]
-		if !ok {
+		if !ok || (spec.Auto != "" && v == spec.Auto) {
 			out[k] = v
 			continue
 		}
@@ -397,32 +170,4 @@ func typeValues(schema map[string]ParameterSchema, vals map[string]string) map[s
 		out[k] = v
 	}
 	return out
-}
-
-// typedRequest resolves req's values against the provider's schema.
-// A schema fetch that fails is not fatal: the untyped body still reaches
-// the validator, which will say what is wrong more precisely than a
-// swallowed fetch error would.
-func (c *Client) typedRequest(provider string, req *UpdateParametersRequest) *typedUpdate {
-	out := &typedUpdate{}
-	if req == nil {
-		return out
-	}
-	schema, err := c.GetProviderSchema(provider)
-	if err != nil || schema == nil {
-		schema = &ProviderSchemaResponse{}
-	}
-	if len(req.Parameters) > 0 {
-		out.Parameters = typeValues(schema.Parameters, req.Parameters)
-	}
-	if len(req.Environment) > 0 {
-		out.Environment = typeValues(schema.Environment, req.Environment)
-	}
-	return out
-}
-
-// typedUpdate is UpdateParametersRequest after schema coercion.
-type typedUpdate struct {
-	Parameters  map[string]any
-	Environment map[string]any
 }

@@ -75,7 +75,7 @@ var LogsKeys = LogsKeyMap{
 	Payload: key.NewBinding(key.WithKeys("p", "P"), key.WithHelp("P", "payload")),
 	Open:    key.NewBinding(key.WithKeys("o", "O", "enter"), key.WithHelp("O/Enter", "open")),
 	Copy:    key.NewBinding(key.WithKeys("c", "C"), key.WithHelp("C", "copy")),
-	Save:    key.NewBinding(key.WithKeys("s", "S"), key.WithHelp("S", "save")),
+	Save:    key.NewBinding(key.WithKeys("ctrl+s", "s", "S"), key.WithHelp("Ctrl+S", "save")),
 }
 
 // ProvidersKeyMap defines key bindings for the apps view (list + detail).
@@ -133,8 +133,8 @@ func (k ProvidersKeyMap) ListHintsString() string {
 
 func (k ProvidersKeyMap) DetailHintsString() string {
 	return JoinHints(
-		Hint(k.Up, "scroll"),
 		Hint(k.Edit, "parameters"),
+		Hint(k.Up, "scroll"),
 		Hint(k.Dependencies, "dependencies"),
 		Hint(k.Back, "back"),
 	)
@@ -573,94 +573,6 @@ func (k TeamsKeyMap) DetailHintsString() string {
 		Hint(k.ResetUsage, "reset usage"),
 		Hint(k.Delete, "delete"),
 		Hint(k.Back, "back"),
-	)
-}
-
-// KvEditorKeyMap defines key bindings for the key-value editor list mode.
-type KvEditorKeyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	PageUp   key.Binding
-	PageDown key.Binding
-	Home     key.Binding
-	End      key.Binding
-	Enter    key.Binding
-	Add      key.Binding
-	Delete   key.Binding
-	Validate key.Binding
-	Save     key.Binding
-	Back     key.Binding
-	Quit     key.Binding
-}
-
-var KvEditorKeys = KvEditorKeyMap{
-	Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/↓", "navigate")),
-	Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "navigate")),
-	PageUp:   key.NewBinding(key.WithKeys("pgup"), key.WithHelp("PgUp", "page up")),
-	PageDown: key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("PgDn", "page down")),
-	Home:     key.NewBinding(key.WithKeys("home"), key.WithHelp("Home", "top")),
-	End:      key.NewBinding(key.WithKeys("end"), key.WithHelp("End", "bottom")),
-	Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", "edit")),
-	Add:      key.NewBinding(key.WithKeys("a", "A"), key.WithHelp("A", "add")),
-	Delete:   key.NewBinding(key.WithKeys("d", "D"), key.WithHelp("D", "delete")),
-	Validate: key.NewBinding(key.WithKeys("v", "V"), key.WithHelp("V", "validate")),
-	Save:     key.NewBinding(key.WithKeys("s", "S"), key.WithHelp("S", "save")),
-	Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "back")),
-	Quit:     key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "quit")),
-}
-
-func (k KvEditorKeyMap) HintsString(dirty bool) string {
-	parts := []string{
-		Hint(k.Up, "navigate"),
-		Hint(k.Enter, "edit"),
-		Hint(k.Add, "add"),
-		Hint(k.Delete, "delete"),
-		Hint(k.Validate, "validate"),
-	}
-	if dirty {
-		parts = append(parts, Hint(k.Save, "save"))
-	}
-	parts = append(parts, Hint(k.Back, "back"))
-	return JoinHints(parts...)
-}
-
-// KvOverlayKeyMap defines key bindings for the value editor overlay.
-type KvOverlayKeyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Left     key.Binding
-	Right    key.Binding
-	Confirm  key.Binding
-	Cancel   key.Binding
-	Tab      key.Binding
-	ShiftTab key.Binding
-}
-
-var KvOverlayKeys = KvOverlayKeyMap{
-	Up:       key.NewBinding(key.WithKeys("up"), key.WithHelp("↑/↓", "move field")),
-	Down:     key.NewBinding(key.WithKeys("down"), key.WithHelp("↓", "move field")),
-	Left:     key.NewBinding(key.WithKeys("left"), key.WithHelp("←/→", "change value")),
-	Right:    key.NewBinding(key.WithKeys("right"), key.WithHelp("→", "change value")),
-	Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("Enter", "confirm")),
-	Cancel:   key.NewBinding(key.WithKeys("esc"), key.WithHelp("Esc", "cancel")),
-	Tab:      key.NewBinding(key.WithKeys("tab"), key.WithHelp("Tab", "next field")),
-	ShiftTab: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("Shift+Tab", "prev field")),
-}
-
-func (k KvOverlayKeyMap) EditHintsString() string {
-	return JoinHints(
-		Hint(k.Up, "select"),
-		Hint(k.Confirm, "confirm"),
-		Hint(k.Cancel, "cancel"),
-	)
-}
-
-func (k KvOverlayKeyMap) AddHintsString() string {
-	return JoinHints(
-		Hint(k.Up, "move field"),
-		Hint(k.Left, "change type"),
-		Hint(k.Confirm, "confirm"),
-		Hint(k.Cancel, "cancel"),
 	)
 }
 

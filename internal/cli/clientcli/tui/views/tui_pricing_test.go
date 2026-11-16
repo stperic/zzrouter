@@ -17,7 +17,9 @@ func newPricingView(t *testing.T, overrides []pkgClient.PricingOverride, unprice
 	updated, _ := v.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	v = updated.(*PricingViewModel)
 
-	updated, _ = v.Update(pricingLoadedMsg{
+	_ = v.fetchCmd()
+	t.Cleanup(v.Cancel)
+	updated, _ = v.Update(pricingLoadedMsg{owner: v, ctx: v.loadContext,
 		overrides: overrides,
 		status:    &pkgClient.PricingStatus{Enabled: true, Unpriced: unpriced, UnpricedCount: len(unpriced)},
 	})

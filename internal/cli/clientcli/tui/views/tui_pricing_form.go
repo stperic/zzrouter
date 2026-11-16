@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
+	"github.com/stperic/zzrouter/pkg/ui/form"
 
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 )
@@ -14,7 +17,10 @@ import (
 // correction to an existing rate from a new one; the (provider, model)
 // pair is the identity either way, so both save through the same upsert.
 func (m *PricingViewModel) openForm(o pkgClient.PricingOverride, editing bool) {
+	m.Dirty = false
+	m.Draft.Discard = func() { m.openForm(o, editing) }
 	m.mode = pricingViewForm
+	m.formDetail = tui.NewDetail()
 	m.editing = editing
 	m.statusMsg = ""
 
@@ -67,6 +73,13 @@ func (m *PricingViewModel) setFormFocus() {
 }
 
 func (m *PricingViewModel) updateForm(msg tea.KeyPressMsg) tea.Cmd {
+	before := m.formValues()
+	defer func() {
+		if before != m.formValues() {
+			m.Dirty = true
+		}
+	}()
+
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("tab", "down"))):
 		m.formFocus = (m.formFocus + 1) % (pricingFieldNote + 1)
@@ -82,9 +95,7 @@ func (m *PricingViewModel) updateForm(msg tea.KeyPressMsg) tea.Cmd {
 		return m.saveForm()
 
 	case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
-		m.mode = pricingViewList
-		m.statusMsg = ""
-		return nil
+		return func() tea.Msg { return pricingCloseMsg{owner: m} }
 
 	default:
 		var cmd tea.Cmd
@@ -118,6 +129,9 @@ func parseRate(s string) (float64, error) {
 }
 
 func (m *PricingViewModel) saveForm() tea.Cmd {
+	if m.pending || m.writeUncertain {
+		return nil
+	}
 	model := strings.TrimSpace(m.formModel.Value())
 	provider := strings.TrimSpace(m.formProvider.Value())
 
@@ -159,14 +173,19 @@ func (m *PricingViewModel) saveForm() tea.Cmd {
 		Note:               strings.TrimSpace(m.formNote.Value()),
 	}
 	client := m.client
+	ctx := m.beginWrite()
 	return func() tea.Msg {
-		_, err := client.SetPricingOverride(req)
-		return pricingSavedMsg{err: err}
+		_, err := client.SetPricingOverrideContext(ctx, req)
+		return pricingSavedMsg{ctx: ctx, err: err}
 	}
 }
 
 func (m *PricingViewModel) viewFormOverlay(width, height int) string {
 	var popup strings.Builder
+	focusLine := 0
+	for _, input := range []*textinput.Model{&m.formProvider, &m.formModel, &m.formInput, &m.formOutput, &m.formCached, &m.formNote} {
+		input.SetWidth(max(form.OverlayWidth(width)-22, 1))
+	}
 
 	title := "New Rate"
 	if m.editing {
@@ -176,6 +195,7 @@ func (m *PricingViewModel) viewFormOverlay(width, height int) string {
 
 	focusPrefix := func(f pricingFormField) string {
 		if m.formFocus == f {
+			focusLine = strings.Count(popup.String(), "\n")
 			return "> "
 		}
 		return "  "
@@ -197,8 +217,9 @@ func (m *PricingViewModel) viewFormOverlay(width, height int) string {
 		popup.WriteString("\n" + m.styles.Error.Render(m.statusMsg) + "\n")
 	}
 
-	popup.WriteString("\n" + m.styles.Help.Render("Tab next field  Ctrl+S save  Esc cancel"))
+	return tui.RenderForm(m.styles, &m.formDetail, m.viewList(width, height), popup.String(), "Ctrl+S save  Tab next  Esc cancel", width, height, focusLine)
+}
 
-	bg := m.viewList(width, height)
-	return renderFormOverlay(popup.String(), bg, width, height, m.styles)
+func (m *PricingViewModel) formValues() [6]string {
+	return [6]string{m.formProvider.Value(), m.formModel.Value(), m.formInput.Value(), m.formOutput.Value(), m.formCached.Value(), m.formNote.Value()}
 }

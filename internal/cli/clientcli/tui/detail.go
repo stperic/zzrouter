@@ -11,9 +11,11 @@ import (
 // content-agnostic — views pre-render their detail string and pass it to
 // Render along with a height budget.
 type Detail struct {
-	scroll  int
-	visible int // set by Render
-	keys    NavigationKeys
+	focusLine int
+	hasFocus  bool
+	scroll    int
+	visible   int // set by Render
+	keys      NavigationKeys
 }
 
 // NewDetail creates a Detail using the default navigation keymap.
@@ -23,7 +25,7 @@ func NewDetail() Detail { return Detail{keys: DefaultNavigationKeys()} }
 func (d *Detail) SetKeys(k NavigationKeys) { d.keys = k }
 
 // Reset scroll position. Call on entry to the detail view.
-func (d *Detail) Reset() { d.scroll = 0 }
+func (d *Detail) Reset() { d.scroll = 0; d.hasFocus = false }
 
 // SetVisible records the viewport height so PageUp/PageDown know the page
 // size. Call this in the WindowSizeMsg handler alongside List.SetVisible.
@@ -78,6 +80,21 @@ func (d *Detail) UpdateWheel(msg tea.MouseWheelMsg) {
 		}
 	case tea.MouseWheelDown:
 		d.scroll++
+	}
+}
+
+// EnsureVisible keeps the focused form field within its viewport.
+func (d *Detail) EnsureVisible(line, height int) {
+	height = max(height, 1)
+	if d.hasFocus && d.focusLine == line && d.visible == height {
+		return
+	}
+	d.hasFocus, d.focusLine = true, line
+	if line < d.scroll {
+		d.scroll = line
+	}
+	if line >= d.scroll+height {
+		d.scroll = line - height + 1
 	}
 }
 

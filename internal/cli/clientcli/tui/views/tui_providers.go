@@ -9,12 +9,10 @@ import (
 
 	"github.com/stperic/zzrouter/internal/cli/clientcli/shared"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui/jobstream"
-	logsclient "github.com/stperic/zzrouter/internal/client/logs"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
 	"github.com/stperic/zzrouter/pkg/constants"
 	"github.com/stperic/zzrouter/pkg/ui"
@@ -42,6 +40,7 @@ const (
 const ollamaConnectCatalogKey = "ollama-connect"
 
 type providersLoadedMsg struct {
+	ctx       context.Context
 	providers []shared.ProviderInfo
 	err       error
 }
@@ -69,6 +68,7 @@ type providersVerifySuccessTimerMsg struct{ ctx context.Context }
 
 // providersActionMsg carries result of install/uninstall operations.
 type providersActionMsg struct {
+	ctx    context.Context
 	action string // "install", "uninstall" or "upgrade"
 	name   string
 	err    error
@@ -82,18 +82,30 @@ func (p providerItem) Description() string { return p.Kind }
 func (p providerItem) FilterValue() string { return p.Name + " " + p.Kind }
 
 type ProvidersViewModel struct {
+	loadContext context.Context
+	loadCancel  context.CancelFunc
 	tui.ViewContext
+	help tui.Help
 
-	client     *pkgClient.Client
-	styles     ui.Styles
-	providers  []shared.ProviderInfo
-	list       tui.List
-	detail     tui.Detail
-	termWidth  int
-	termHeight int
-	loading    bool
-	err        error
-	mode       providersViewMode
+	client             *pkgClient.Client
+	styles             ui.Styles
+	providers          []shared.ProviderInfo
+	allProviders       []shared.ProviderInfo
+	filterInput        textinput.Model
+	filterKind         int
+	filterNode         string
+	showDisabled       bool
+	uninstallTarget    *shared.ProviderInfo
+	uninstallContext   context.Context
+	uninstallCancel    context.CancelFunc
+	uninstallUncertain bool
+	list               tui.List
+	detail             tui.Detail
+	termWidth          int
+	termHeight         int
+	loading            bool
+	err                error
+	mode               providersViewMode
 
 	// Detail view — parameter list
 	detailParams        []pkgClient.ParameterEntry
@@ -205,7 +217,10 @@ func NewProvidersViewModel(client *pkgClient.Client, styles ui.Styles) *Provider
 		PageUp: tui.ProvidersKeys.PageUp, PageDown: tui.ProvidersKeys.PageDown,
 		Home: tui.ProvidersKeys.Home, End: tui.ProvidersKeys.End,
 	})
-	return &ProvidersViewModel{client: client, styles: styles, loading: true, list: list, detail: detail}
+	m := &ProvidersViewModel{filterInput: newFormInput("Search providers or nodes", 128),
+		client: client, styles: styles, loading: true, list: list, detail: detail}
+	m.loadContext = m.Context()
+	return m
 }
 
 // needsTick reports whether anything on screen still changes over time.
@@ -233,6 +248,9 @@ func (m *ProvidersViewModel) hasRunningStep() bool {
 // buffer is full at the moment ctx cancellation races with a pending
 // send. ViewContext.Cancel alone cancels the ctx but can't drain.
 func (m *ProvidersViewModel) Cancel() {
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
 	m.retireInstallRequest()
 	m.cancelConnection()
 	// An upgrade outlives the prompt that started it, so leaving the view
@@ -240,6 +258,9 @@ func (m *ProvidersViewModel) Cancel() {
 	if m.upgrade != nil {
 		m.upgrade.row.Cancel()
 		m.upgrade = nil
+	}
+	if m.uninstallCancel != nil {
+		m.uninstallCancel()
 	}
 	m.ViewContext.Cancel()
 }
@@ -256,10 +277,16 @@ func (m *ProvidersViewModel) Init() tea.Cmd {
 func (m *ProvidersViewModel) Refresh() tea.Cmd { return m.fetchProvidersCmd(true) }
 
 func (m *ProvidersViewModel) fetchProvidersCmd(refresh bool) tea.Cmd {
+	if m.loadCancel != nil {
+		m.loadCancel()
+	}
+	ctx, cancel := context.WithCancel(m.Context())
+	m.loadContext, m.loadCancel = ctx, cancel
+	m.loading = true
 	client := m.client
 	return func() tea.Msg {
-		apps, err := shared.FetchProviders(client, "", "", refresh)
-		return providersLoadedMsg{providers: apps, err: err}
+		apps, err := shared.FetchProvidersContext(ctx, client, "", "", refresh)
+		return providersLoadedMsg{ctx: ctx, providers: apps, err: err}
 	}
 }
 
@@ -273,6 +300,10 @@ func (m *ProvidersViewModel) selectedProvider() *shared.ProviderInfo {
 
 // Update implements tea.Model.
 func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocyclo,cyclop // The explicit key, message and rendering cases keep the view flow together.
+	if m.help.Update(msg, (m.mode == providersViewList && !m.filterInput.Focused() && m.uninstallTarget == nil) || m.mode == providersViewDetail) {
+		return m, nil
+	}
+
 	if m.NavigationBlocked() {
 		switch msg.(type) {
 		case tea.KeyPressMsg, tea.PasteMsg, tea.MouseClickMsg, tea.MouseWheelMsg, tui.BreadcrumbClickMsg:
@@ -282,6 +313,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termWidth = msg.Width
+		m.filterInput.SetWidth(max(msg.Width-5, 1))
 		m.keyInput.SetWidth(max(msg.Width-4, 1))
 		m.termHeight = msg.Height - shared.TuiTitleBarLines - shared.TuiBreadcrumbLines
 		m.resizeInstallComponents()
@@ -298,6 +330,12 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case tea.PasteMsg:
+		if m.mode == providersViewList && m.filterInput.Focused() {
+			var cmd tea.Cmd
+			m.filterInput, cmd = m.filterInput.Update(msg)
+			m.filterProviders()
+			return m, cmd
+		}
 		// Handle paste in key input mode
 		if m.mode == providersViewEnterKey && !m.connectionBusy && m.connectionConfirm == "" {
 			pasted := strings.TrimSpace(msg.Content)
@@ -325,24 +363,24 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersLoadedMsg:
+		if msg.ctx == nil || msg.ctx != m.loadContext || msg.ctx.Err() != nil || m.Context().Err() != nil || m.uninstallContext != nil {
+			return m, nil
+		}
 		m.loading = false
 		// A failed background reload must not swap populated content for an
 		// error page: keep what is on screen and report in the status line.
-		if msg.err != nil && len(m.providers) > 0 {
+		if msg.err != nil && len(m.allProviders) > 0 {
 			m.actionStatus = fmt.Sprintf("Refresh failed: %v", msg.err)
 			return m, nil
 		}
 		m.needsRefresh = false
-		m.providers = msg.providers
+		m.allProviders = msg.providers
 		m.err = msg.err
-		// The table now reflects whatever the last action did, so the line
-		// describing it is no longer provisional.
 		m.actionUnconfirmed = false
-		items := make([]tui.Item, len(msg.providers))
-		for i, p := range msg.providers {
-			items[i] = providerItem{p}
+		if msg.err == nil {
+			m.uninstallUncertain = false
 		}
-		m.list.SetItems(items)
+		m.filterProviders()
 		return m, nil
 
 	case providersDetailParamsMsg:
@@ -385,6 +423,14 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		return m, nil
 
 	case providersActionMsg:
+		if msg.action == "uninstall" {
+			if msg.ctx == nil || msg.ctx != m.uninstallContext || m.Context().Err() != nil {
+				return m, nil
+			}
+			m.uninstallCancel()
+			m.uninstallContext = nil
+			m.uninstallUncertain = writeOutcomeUnknown(msg.err)
+		}
 		if msg.err != nil {
 			// A failure is already final: no later fetch can change it.
 			m.actionStatus = fmt.Sprintf("✗ %s %s failed: %v", msg.action, msg.name, msg.err)
@@ -396,11 +442,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		// Refresh the list, bypassing the cache: install/uninstall/upgrade
 		// all change the version or presence this table renders.
 		m.loading = true
-		client := m.client
-		return m, tea.Batch(func() tea.Msg {
-			apps, err := shared.FetchProviders(client, "", "", true)
-			return providersLoadedMsg{providers: apps, err: err}
-		}, shared.SpinnerTickCmd())
+		return m, tea.Batch(m.fetchProvidersCmd(true), shared.SpinnerTickCmd())
 
 	case providersPreflightMsg:
 		if m.mode != providersViewPickNode || !m.installLoading || !m.ownsInstallRequest(msg.ctx) {
@@ -546,11 +588,7 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 		m.mode = providersViewList
 		m.loading = true
 		m.actionStatus = ""
-		client := m.client
-		return m, tea.Batch(func() tea.Msg {
-			apps, err := shared.FetchProviders(client, "", "", true)
-			return providersLoadedMsg{providers: apps, err: err}
-		}, shared.SpinnerTickCmd())
+		return m, tea.Batch(m.fetchProvidersCmd(true), shared.SpinnerTickCmd())
 
 	case providersUpgradeJobSubscribedMsg:
 		if msg.err != nil {
@@ -715,254 +753,4 @@ func (m *ProvidersViewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint
 	}
 
 	return m, nil
-}
-
-func (m *ProvidersViewModel) updateList(msg tea.KeyPressMsg) tea.Cmd {
-	if key.Matches(msg, tui.ProvidersKeys.Dependencies) {
-		return m.openSelectedProviderComponents()
-	}
-	// If a sub-view (install/breadcrumb) flagged a refresh, trigger it now
-	if m.needsRefresh && !m.loading {
-		m.needsRefresh = false
-		m.loading = true
-		client := m.client
-		return tea.Batch(func() tea.Msg {
-			apps, err := shared.FetchProviders(client, "", "", true)
-			return providersLoadedMsg{providers: apps, err: err}
-		}, shared.SpinnerTickCmd())
-	}
-
-	if m.list.UpdateKey(msg) {
-		return nil
-	}
-
-	switch {
-	case key.Matches(msg, tui.ProvidersKeys.Enter):
-		if app := m.selectedProvider(); app != nil {
-			m.mode = providersViewDetail
-			m.detailParams = nil
-			m.detailParamsErr = nil
-			m.detailParamsLoading = true
-			m.detail.Reset()
-			m.providerStatus = nil
-			m.versionsReport = nil
-			client := m.client
-			appName := app.Name
-			return tea.Batch(
-				m.fetchProviderVersions(appName, false),
-				func() tea.Msg {
-					resp, err := client.GetProviderParameters(appName, true)
-					if err != nil {
-						return providersDetailParamsMsg{err: err}
-					}
-					return providersDetailParamsMsg{params: resp.Parameters}
-				},
-				func() tea.Msg {
-					statuses, err := client.ListProviderStatus()
-					if err != nil {
-						return providersStatusMsg{}
-					}
-					for i := range statuses {
-						if statuses[i].Name == appName {
-							return providersStatusMsg{status: &statuses[i]}
-						}
-					}
-					return providersStatusMsg{}
-				},
-			)
-		}
-		return nil
-	case key.Matches(msg, tui.ProvidersKeys.Install):
-		m.actionStatus = ""
-		m.buildTypePicker()
-		return nil
-
-	case key.Matches(msg, tui.ProvidersKeys.Uninstall):
-		app := m.selectedProvider()
-		if app == nil {
-			break
-		}
-		m.actionStatus = fmt.Sprintf("Uninstalling %s from %s...", app.Name, app.Node)
-		client := m.client
-		name, node := app.Name, app.Node
-		return func() tea.Msg {
-			err := client.UninstallProvider(name, node)
-			return providersActionMsg{action: "uninstall", name: name, err: err}
-		}
-
-	case key.Matches(msg, tui.ProvidersKeys.Upgrade):
-		app := m.selectedProvider()
-		if app == nil {
-			break
-		}
-		m.actionStatus = ""
-		m.upgradeProvider, m.upgradeNode, m.upgradeCurrent = app.Name, app.Node, app.Version
-		m.upgradeLatest, m.upgradeStatus = app.LatestVersion, app.VersionStatus
-		m.upgradePin = false
-		m.upgradeInput = newVersionInput()
-		m.prefillUpgradeInput(app)
-		m.mode = providersViewUpgrade
-		return m.upgradeInput.Focus()
-
-	case key.Matches(msg, tui.ProvidersKeys.Logs):
-		app := m.selectedProvider()
-		if app == nil {
-			break
-		}
-		providerName := app.Name
-		return func() tea.Msg {
-			return tui.LaunchRunLogsMsg{Filter: logsclient.RunFilter{Provider: providerName}}
-		}
-
-	case key.Matches(msg, tui.ProvidersKeys.Refresh):
-		m.loading = true
-		m.actionStatus = ""
-		client := m.client
-		return func() tea.Msg {
-			apps, err := shared.FetchProviders(client, "", "", true)
-			return providersLoadedMsg{providers: apps, err: err}
-		}
-	case key.Matches(msg, tui.ProvidersKeys.Back):
-		return tui.NavBack()
-	case key.Matches(msg, tui.ProvidersKeys.Quit):
-		return tea.Quit
-	}
-
-	return nil
-}
-
-func (m *ProvidersViewModel) updateDetail(msg tea.KeyPressMsg) tea.Cmd {
-	if m.detail.UpdateKey(msg) {
-		return nil
-	}
-	switch {
-	case key.Matches(msg, tui.ProvidersKeys.Dependencies):
-		return m.openSelectedProviderComponents()
-	case key.Matches(msg, tui.ProvidersKeys.Edit):
-		if app := m.selectedProvider(); app != nil {
-			appName := app.Name
-			return func() tea.Msg {
-				return tui.OpenParamsEditorMsg{Provider: appName}
-			}
-		}
-		return nil
-	case key.Matches(msg, tui.ProvidersKeys.Back, tui.ProvidersKeys.Enter):
-		m.mode = providersViewList
-		return nil
-	case key.Matches(msg, tui.ProvidersKeys.Quit):
-		return tea.Quit
-	}
-	return nil
-}
-
-func (m *ProvidersViewModel) handleMouseClick(msg tea.MouseClickMsg) tea.Cmd {
-	if msg.Button == tea.MouseRight {
-		if m.mode == providersViewDetail {
-			m.mode = providersViewList
-			m.detail.Reset()
-		} else {
-			return tui.NavBack()
-		}
-		return nil
-	}
-	if m.mode != providersViewList {
-		return nil
-	}
-	enter, ok := m.list.Click(msg, shared.TuiTableClickY)
-	if !ok || !enter {
-		return nil
-	}
-	m.mode = providersViewDetail
-	m.detailParams = nil
-	m.detailParamsErr = nil
-	m.detailParamsLoading = true
-	m.detail.Reset()
-	m.versionsReport = nil
-	client := m.client
-	appName := m.providers[m.list.Cursor()].Name
-	return tea.Batch(
-		m.fetchProviderVersions(appName, false),
-		func() tea.Msg {
-			resp, err := client.GetProviderParameters(appName, true)
-			if err != nil {
-				return providersDetailParamsMsg{err: err}
-			}
-			return providersDetailParamsMsg{params: resp.Parameters}
-		},
-	)
-}
-
-func (m *ProvidersViewModel) handleMouseWheel(msg tea.MouseWheelMsg) {
-	if m.mode == providersViewList {
-		m.list.UpdateWheel(msg)
-	}
-}
-
-// Breadcrumb implements tui.Breadcrumber.
-func (m *ProvidersViewModel) Breadcrumb() []string {
-	switch m.mode {
-	case providersViewDetail:
-		if p := m.selectedProvider(); p != nil {
-			return []string{"Providers", p.Name}
-		}
-		return []string{"Providers", "Details"}
-	case providersViewPickType, providersViewPickProvider, providersViewPickNode:
-		return []string{"Providers", "Install"}
-	case providersViewPreflightFail:
-		return []string{"Providers", "Install", "Preflight"}
-	case providersViewInstallSteps:
-		if m.installPlan != nil {
-			return []string{"Providers", "Install", m.installPlan.Provider}
-		}
-		return []string{"Providers", "Install"}
-	case providersViewEnterKey:
-		return []string{"Providers", "Install", m.installProvider}
-	case providersViewConnectForm:
-		return []string{"Providers", "Add remote Ollama"}
-	default:
-		return []string{"Providers"}
-	}
-}
-
-// navigateToBreadcrumb navigates to the state matching breadcrumb level.
-func (m *ProvidersViewModel) navigateToBreadcrumb(level int) {
-	m.retireInstallRequest()
-	if m.mode == providersViewEnterKey {
-		m.cancelConnection()
-	}
-	switch level {
-	case 1:
-		// Level 1 is detail or install — go back to list
-		m.mode = providersViewList
-	case 2:
-		// Level 2 is install sub-step — go back to install picker
-		m.mode = providersViewPickProvider
-	}
-}
-
-// View implements tea.Model.
-func (m *ProvidersViewModel) View() tea.View {
-	return shared.RenderChildView(m.styles, m.termWidth, m.Breadcrumb(), m.viewContent())
-}
-
-func (m *ProvidersViewModel) viewContent() string {
-	width, height := m.termWidth, m.termHeight
-	switch m.mode {
-	case providersViewDetail:
-		return m.viewDetail(width, height)
-	case providersViewPickType, providersViewPickProvider, providersViewPickNode:
-		return m.viewPicker(width, height)
-	case providersViewPreflightFail:
-		return m.viewPreflightFail(width, height)
-	case providersViewInstallSteps:
-		return m.viewInstallWizard(width, height)
-	case providersViewEnterKey:
-		return m.viewEnterKey(width, height)
-	case providersViewConnectForm:
-		return m.viewConnectForm(width, height)
-	case providersViewUpgrade:
-		return m.viewUpgrade(width, height)
-	default:
-		return m.viewList(width, height)
-	}
 }

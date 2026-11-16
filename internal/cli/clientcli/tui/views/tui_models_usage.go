@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,23 +26,31 @@ import (
 // reach the node" as "no requests" is the same lie as rendering a failed
 // version check as "up to date".
 type modelUsageMsg struct {
-	model string
-	usage *pkgClient.ModelUsageResponse
-	idle  bool
-	err   error
+	ctx    context.Context
+	target rowID
+	model  string
+	usage  *pkgClient.ModelUsageResponse
+	idle   bool
+	err    error
 }
 
 // fetchModelUsage loads running usage for a model. An empty provider sums
 // every provider serving that name, which is what "this model" means when the
 // row is not scoped to one deployment.
 func (m *ModelsViewModel) fetchModelUsage(model, provider string) tea.Cmd {
-	client := m.client
+	row := m.selectedRow()
+	if row == nil {
+		return nil
+	}
+	if m.usageCancel != nil {
+		m.usageCancel()
+	}
+	ctx, cancel := context.WithCancel(m.Context())
+	m.usageContext, m.usageCancel, m.usageTarget = ctx, cancel, row.id()
+	client, target := m.client, row.id()
 	return func() tea.Msg {
-		usage, err := client.GetModelUsage(model, provider)
-		if errors.Is(err, pkgClient.ErrNoUsageRecorded) {
-			return modelUsageMsg{model: model, idle: true}
-		}
-		return modelUsageMsg{model: model, usage: usage, err: err}
+		usage, err := client.GetModelUsageContext(ctx, model, provider)
+		return modelUsageMsg{ctx: ctx, target: target, model: model, usage: usage, idle: errors.Is(err, pkgClient.ErrNoUsageRecorded), err: err}
 	}
 }
 

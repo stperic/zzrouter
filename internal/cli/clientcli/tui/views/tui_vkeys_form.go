@@ -8,15 +8,21 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
+	"github.com/stperic/zzrouter/pkg/ui"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
 	"github.com/stperic/zzrouter/internal/cli/clientcli/tui"
 	pkgClient "github.com/stperic/zzrouter/internal/client/utils"
+	"github.com/stperic/zzrouter/pkg/ui/form"
 )
 
 func (m *VkeysViewModel) openNewKeyForm() {
+	m.Dirty = false
+	m.Draft.Discard = m.closeKeyForm
 	m.mode = vkeysViewNewKey
 	m.formID.SetValue("")
 	m.formName.SetValue("")
@@ -32,6 +38,8 @@ func (m *VkeysViewModel) openNewKeyForm() {
 }
 
 func (m *VkeysViewModel) openEditKeyForm(k *pkgClient.KeyResponse) {
+	m.Dirty = false
+	m.Draft.Discard = m.closeKeyForm
 	m.mode = vkeysViewEditKey
 	m.formID.SetValue(k.ID)
 	m.formName.SetValue(k.Name)
@@ -67,6 +75,13 @@ func (m *VkeysViewModel) setKeyFormFocus() {
 }
 
 func (m *VkeysViewModel) updateKeyForm(msg tea.KeyPressMsg) tea.Cmd {
+	before := m.keyFormValues()
+	defer func() {
+		if before != m.keyFormValues() {
+			m.Dirty = true
+		}
+	}()
+
 	if m.pending {
 		return nil
 	}
@@ -126,13 +141,7 @@ func (m *VkeysViewModel) updateKeyForm(msg tea.KeyPressMsg) tea.Cmd {
 	case "ctrl+o":
 		return tui.NavTo(NewConsoleViewModel(m.client, m.styles, pkgClient.ConsoleTarget{Page: "access", Item: "teams"}))
 	case "esc":
-		if m.mode == vkeysViewEditKey {
-			m.mode = vkeysViewDetail
-		} else {
-			m.mode = vkeysViewList
-		}
-		m.statusMsg = ""
-		return nil
+		return func() tea.Msg { return keyFormCloseMsg{owner: m} }
 	}
 	var cmd tea.Cmd
 	switch m.formFocus {
@@ -279,6 +288,10 @@ func (m *VkeysViewModel) Cancel() {
 
 func (m *VkeysViewModel) viewKeyFormOverlay(width, height int, title string) string {
 	var popup strings.Builder
+	focusLine := 0
+	for _, input := range []*textinput.Model{&m.formID, &m.formName, &m.formExpires} {
+		input.SetWidth(max(form.OverlayWidth(width)-22, 1))
+	}
 	popup.WriteString(m.styles.Title.Render(title) + "\n\n")
 	if m.statusMsg != "" {
 		popup.WriteString(m.styles.Error.Render(m.statusMsg) + "\n\n")
@@ -286,6 +299,7 @@ func (m *VkeysViewModel) viewKeyFormOverlay(width, height int, title string) str
 	field := func(f vkeysFormField, label, value string) {
 		prefix := "  "
 		if m.formFocus == f {
+			focusLine = strings.Count(popup.String(), "\n")
 			prefix = "▸ "
 		}
 		popup.WriteString(m.styles.Normal.Render(prefix+fmt.Sprintf("%-12s", label+":")) + value + "\n")
@@ -330,18 +344,14 @@ func (m *VkeysViewModel) viewKeyFormOverlay(width, height int, title string) str
 	if m.mode == vkeysViewEditKey {
 		popup.WriteString("\n" + m.styles.Help.Render("Additional key limits are read-only and preserved. Issue a new key to change teams.") + "\n")
 	}
-	innerWidth := max(formOverlayWidth(width)-6, 1)
-	content := lipgloss.NewStyle().Width(innerWidth).Render(strings.TrimSuffix(popup.String(), "\n"))
-	hints := "Tab next  ←/→ choose  Ctrl+S save\nPgUp/PgDn scroll  Ctrl+O teams  Esc cancel"
+	hints := "Ctrl+S save  Tab next  ←/→ choose  PgUp/PgDn scroll  Ctrl+O teams  Esc cancel"
 	if m.pending {
 		hints = "Saving. Please wait..."
 	}
 	if m.writeUncertain {
 		hints = "Esc close, then refresh keys to inspect the result."
 	}
-	footer := lipgloss.NewStyle().Width(innerWidth).Render(m.styles.Help.Render(hints))
-	content = m.formDetail.Render(content, max(height-5-lipgloss.Height(footer), 1)) + "\n" + footer
-	return renderFormOverlay(content, m.viewList(width, height), width, height, m.styles)
+	return tui.RenderForm(m.styles, &m.formDetail, m.viewList(width, height), popup.String(), hints, width, height, focusLine)
 }
 
 // updateRawKey drives the one-shot secret overlay. Only Copy, Save and an
@@ -457,5 +467,24 @@ func (m *VkeysViewModel) viewRawKeyOverlay(width, height int) string {
 	// Sized to the secret panel plus the popup's own padding and borders,
 	// so the dialog frames the key instead of a screenful of empty space.
 	boxWidth := min(rawKeyBoxWidth+rawKeyBoxChrome, max(width-4, 24))
-	return renderOverlayAtWidth(popup.String(), bg, width, height, boxWidth, m.styles)
+	return ui.RenderOverlayAtWidth(m.styles, bg, popup.String(), width, height, boxWidth)
+}
+
+type keyFormCloseMsg struct{ owner *VkeysViewModel }
+
+func (m *VkeysViewModel) closeKeyForm() {
+	switch m.mode {
+	case vkeysViewEditKey:
+		m.mode = vkeysViewDetail
+	case vkeysViewNewKey:
+		m.mode = vkeysViewList
+	default:
+		return
+	}
+	m.statusMsg = ""
+	m.Dirty = false
+}
+
+func (m *VkeysViewModel) keyFormValues() string {
+	return fmt.Sprint(m.formID.Value(), "\x00", m.formName.Value(), "\x00", m.formRole, "\x00", m.formTeamID, "\x00", m.formExpires.Value())
 }

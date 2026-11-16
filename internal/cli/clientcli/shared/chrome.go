@@ -1,13 +1,11 @@
 package shared
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
 	"github.com/stperic/zzrouter/pkg/ui"
 	"github.com/stperic/zzrouter/pkg/version"
 )
@@ -52,14 +50,10 @@ func NewAltScreenView(content string, theme ui.Theme) tea.View {
 
 // VisibleRows calculates how many data rows fit given a height budget and
 // rendered footer string.
-// Layout: tableChrome(2) + dataRows + TableTerminator(1) + footer.
+// Layout: tableChrome(2) + dataRows + footer. The joining newline adds no row.
 // The breadcrumb is rendered by the parent View and already subtracted from height.
 func VisibleRows(height int, footer string) int {
-	rows := height - TuiTableHeaderAdd - TableTerminator - RenderedHeight(footer)
-	if rows < 3 {
-		return 3
-	}
-	return rows
+	return max(height-TuiTableHeaderAdd-RenderedHeight(footer), 1)
 }
 
 // StdListFooter returns a representative footer for standard list views (with status bar).
@@ -79,7 +73,7 @@ func Hrule(styles ui.Styles, width int) string {
 	if width < 1 {
 		return ""
 	}
-	return styles.Help.Render(strings.Repeat("─", width))
+	return styles.Separator.Render(strings.Repeat("─", width))
 }
 
 // RenderedHeight counts how many terminal rows a rendered string occupies.
@@ -429,242 +423,6 @@ func TableClick(msg tea.MouseClickMsg, cursor *int, offset, total, chromeLines i
 	return false, true
 }
 
-// ProportionalWidth calculates a column width as a fraction of total, with a floor.
-func ProportionalWidth(total, numerator, denominator, floor int) int {
-	w := (total * numerator) / denominator
-	if w < floor {
-		return floor
-	}
-	return w
-}
-
-// MinFlexColumnWidth floors the flex column once the other columns already
-// claim the whole line: below this an identifier truncates to almost nothing,
-// which is less useful than letting the table run a few cells past the edge.
-const MinFlexColumnWidth = 12
-
-// ColumnLayout describes a table's columns for MeasureColumns.
-type ColumnLayout struct {
-	Headers []string
-	// Rows are the cell values to measure — the full dataset, not just the
-	// visible window, so columns don't resize as the list scrolls.
-	Rows [][]string
-	// Mins floors each column; a nil or short slice floors the rest at 0.
-	Mins []int
-	// Width is the line budget. Zero — a view rendering before its first
-	// WindowSizeMsg — returns pure content widths.
-	Width int
-	// Pad is the gap added to every column's content width.
-	Pad int
-	// Flex is the index of the column that shrinks to make the others fit,
-	// normally the one holding the longest free-form value.
-	Flex int
-}
-
-// MeasureColumns sizes table columns to the content they actually hold rather
-// than to fixed constants: each column takes its widest cell (header included)
-// plus Pad, floored by Mins. The Flex column is then capped so the others fit
-// within Width, and the last column absorbs any width left over so dynamic
-// trailing content never truncates.
-func MeasureColumns(l ColumnLayout) []int {
-	widths := make([]int, len(l.Headers))
-	copy(widths, l.Mins)
-
-	for col := range widths {
-		maxW := lipgloss.Width(l.Headers[col])
-		for _, row := range l.Rows {
-			if col < len(row) {
-				if w := lipgloss.Width(row[col]); w > maxW {
-					maxW = w
-				}
-			}
-		}
-		if contentW := maxW + l.Pad; contentW > widths[col] {
-			widths[col] = contentW
-		}
-	}
-
-	last := len(widths) - 1
-	if l.Width <= 0 || len(widths) < 3 {
-		return widths
-	}
-
-	// Shrink the flex column so the remaining columns have room.
-	if l.Flex >= 0 && l.Flex < last {
-		otherCols := 0
-		for col, w := range widths {
-			if col != l.Flex {
-				otherCols += w
-			}
-		}
-		widths[l.Flex] = min(widths[l.Flex], max(l.Width-otherCols, MinFlexColumnWidth))
-	}
-
-	// The last column expands to fill the line, but never shrinks.
-	used := 0
-	for col, w := range widths {
-		if col != last {
-			used += w
-		}
-	}
-	widths[last] = max(widths[last], l.Width-used)
-
-	return widths
-}
-
-// ScrollTableConfig describes a scrollable table's columns, window, and styling.
-// Callers must add only the visible slice of rows: rows[offset : offset+vis].
-// The cursor is adjusted internally to be relative to the visible slice.
-// rowStyles (when statusCol >= 0) must also be sliced to match: rowStyles[offset : offset+vis].
-//
-// colWidths: per-column minimum widths. All columns auto-size to content.
-// The first column with width 0 is treated as the "flex" column and gets remaining space.
-// statusCol: column index to apply per-row status coloring, or -1 to disable.
-type ScrollTableConfig struct {
-	Headers   []string
-	ColWidths []int
-	Width     int
-	Vis       int
-	Cursor    int
-	Offset    int
-	Styles    ui.Styles
-	StatusCol int              // -1 = no status coloring
-	RowStyles []lipgloss.Style // per-row status styles, sliced to visible range
-	AllRows   [][]string       // full dataset for column width measurement (optional)
-}
-
-// ScrollTable wraps table construction. Call Row() to add data, then Render().
-// The flexible column (colWidths==0) is auto-sized to fit data with a minimum of 40.
-type ScrollTable struct {
-	cfg  ScrollTableConfig
-	rows [][]string
-}
-
-func NewScrollTable(cfg ScrollTableConfig) *ScrollTable {
-	return &ScrollTable{cfg: cfg}
-}
-
-// Row adds a data row to the table.
-func (st *ScrollTable) Row(vals ...string) {
-	st.rows = append(st.rows, vals)
-}
-
-// Render measures the flexible column, builds the lipgloss table, and renders it.
-func (st *ScrollTable) Render() string {
-	cfg := st.cfg
-	helpStyle := cfg.Styles.Help
-	selectedStyle := cfg.Styles.Selected
-	normalStyle := cfg.Styles.Normal
-	cursorIdx := cfg.Cursor - cfg.Offset
-	statusCol := cfg.StatusCol
-	rowStyles := cfg.RowStyles
-
-	const colPad = 4 // PaddingLeft(1) + PaddingRight(3) — 2 char gap between columns
-
-	measureRows := cfg.AllRows
-	if measureRows == nil {
-		measureRows = st.rows
-	}
-
-	colWidths := MeasureColumns(ColumnLayout{
-		Headers: cfg.Headers,
-		Rows:    measureRows,
-		Mins:    cfg.ColWidths,
-		Width:   cfg.Width,
-		Pad:     colPad,
-		Flex:    0, // list views put their primary identifier first
-	})
-
-	t := table.New().
-		Headers(cfg.Headers...).
-		BorderTop(false).BorderBottom(false).BorderLeft(false).BorderRight(false).
-		BorderColumn(false).BorderHeader(true).BorderStyle(helpStyle).
-		Height(cfg.Vis + TuiTableHeaderAdd).
-		Wrap(false).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			s := lipgloss.NewStyle().PaddingRight(3)
-			if col == 0 {
-				s = s.PaddingLeft(1)
-			}
-			if col == len(colWidths)-1 {
-				s = s.PaddingRight(1)
-			}
-			if col < len(colWidths) && colWidths[col] > 0 {
-				s = s.Width(colWidths[col])
-			}
-			if row == table.HeaderRow {
-				return s.Inherit(helpStyle)
-			}
-			if row == cursorIdx {
-				if statusCol >= 0 && col == statusCol && row >= 0 && row < len(rowStyles) {
-					return s.Inherit(rowStyles[row]).Background(selectedStyle.GetBackground())
-				}
-				return s.Inherit(selectedStyle)
-			}
-			if statusCol >= 0 && col == statusCol && row >= 0 && row < len(rowStyles) {
-				return s.Inherit(rowStyles[row])
-			}
-			return s.Inherit(normalStyle)
-		})
-
-	for _, row := range st.rows {
-		t.Row(row...)
-	}
-
-	// Render without Width() so columns stay tight, then extend each line
-	// to full terminal width using styled padding so row highlights span edge to edge.
-	raw := t.Render()
-	if cfg.Width <= 0 {
-		return raw
-	}
-	lines := strings.Split(raw, "\n")
-	for i, line := range lines {
-		w := lipgloss.Width(line)
-		if w >= cfg.Width {
-			continue
-		}
-		gap := cfg.Width - w
-		// Line 1 is the border separator — extend with ─ characters, not spaces.
-		if i == 1 {
-			lines[i] = line + Hrule(cfg.Styles, gap)
-			continue
-		}
-		pad := strings.Repeat(" ", gap)
-		var padStyle lipgloss.Style
-		switch {
-		case i == 0:
-			padStyle = helpStyle
-		case i-2 == cursorIdx:
-			padStyle = selectedStyle
-		default:
-			padStyle = normalStyle
-		}
-		lines[i] = line + padStyle.Render(pad)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// TableSliceBounds returns start/end indices for slicing data to the visible window.
-func TableSliceBounds(offset, vis, total int) (start, end int) {
-	start = offset
-	end = min(offset+vis, total)
-	return start, end
-}
-
-// TableStatus builds the standard "Name (count)  Showing X-Y of Z" status line.
-func TableStatus(name string, total, offset, vis int) string {
-	if total > vis {
-		visEnd := min(offset+vis, total)
-		return fmt.Sprintf("Showing %d-%d of %d", offset+1, visEnd, total)
-	}
-	return fmt.Sprintf("%s (%d)", name, total)
-}
-
-// TuiSpinnerFrames is a simple braille dot spinner for list loading
-// states. Aliases pkg/ui.SpinnerFrames so the client + server TUIs
-// share one canonical frame list.
-var TuiSpinnerFrames = ui.SpinnerFrames
-
 // SpinnerFrame returns the spinner character for the given tick count.
 func SpinnerFrame(tick int) string { return ui.SpinnerFrame(tick) }
 
@@ -738,11 +496,40 @@ func RenderViewFooterWithStatus(styles ui.Styles, width int, status, hints strin
 	var b strings.Builder
 	b.WriteString(sep)
 	if status != "" {
-		b.WriteString(" " + styles.HintsBar.Render(status) + "\n")
-		b.WriteString(sep)
+		b.WriteString(" " + styles.HintsBar.Render(TruncateText(strings.ReplaceAll(status, "\n", " "), width-1)) + "\n")
 	}
-	b.WriteString(" " + styles.HintsBar.Render(hints))
+	b.WriteString(" " + styles.HintsBar.Render(FitHints(hints, width-1)))
 	return b.String()
+}
+
+// FitHints keeps whole shortcuts, including back and help, within one terminal line.
+func FitHints(hints string, width int) string {
+	if lipgloss.Width(hints) <= width {
+		return hints
+	}
+	parts := strings.Split(hints, "  ")
+	var primary, tail []string
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if strings.HasPrefix(part, "Esc ") || strings.HasPrefix(part, "? ") {
+			tail = append(tail, part)
+		} else {
+			primary = append(primary, part)
+		}
+	}
+	selected := []string{}
+	for _, part := range primary {
+		candidate := strings.Join(append(append([]string{}, selected...), part), "  ")
+		if len(tail) > 0 {
+			candidate += "  " + strings.Join(tail, "  ")
+		}
+		if lipgloss.Width(candidate) <= width {
+			selected = append(selected, part)
+		}
+	}
+	return TruncateText(strings.Join(append(selected, tail...), "  "), width)
 }
 
 // DetailBuilder composes detail-view content. It captures width and styles

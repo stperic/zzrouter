@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Simplify TUI parameter editing around scoped overrides and changed-leaf
+  patches. Protect drafts and pending writes, reject obsolete replies, and
+  require refresh after uncertain outcomes. Share responsive tables, forms,
+  popups and shortcut help; add provider search and local/cloud/node filters,
+  hide disabled providers by default, and confirm provider removal.
+
 - Carry the double-Z brand into CLI help, the TUI and the project README.
   Share the five-line ASCII logo between CLI help and the first TUI menu, then
   use a quiet single-line wordmark during navigation and in small terminals.

@@ -46,14 +46,7 @@ func (m *tuiModel) dispatchBreadcrumbClick(x int) tea.Cmd {
 			m.pane = paneMenu
 			return nil
 		}
-		// paneRoot: pop everything off the stack.
-		var cmds []tea.Cmd
-		for m.root.Depth() > 0 {
-			if cmd := m.popRoot(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
-		}
-		return tea.Batch(cmds...)
+		return func() tea.Msg { return tui.NavMenuMsg{} }
 	}
 	// Middle segments: dispatch to the active view as a synthetic msg.
 	return func() tea.Msg { return tui.BreadcrumbClickMsg{Level: idx} }
@@ -255,7 +248,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search.PullStatus = ""
 		return m, m.pushOnRoot(m.newModelsView())
 	case tui.OpenParamsEditorMsg:
-		return m, m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model))
+		return m, m.pushOnRoot(views.NewParamsViewModel(m.client, m.styles, msg.Provider, msg.Model, msg.Node))
 	case tui.LaunchRunLogsMsg:
 		return m, m.pushOnRoot(views.NewRunlogsViewModel(m.client, m.styles, msg.Filter))
 
@@ -271,16 +264,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return func() tea.Msg { return tui.QsStepDoneMsg{Step: step} }
 		})
 	case tui.QsEnterMenuMsg:
-		// Quickstart asked to exit to menu. Pop everything off root.
-		var cmds []tea.Cmd
-		for m.root.Depth() > 0 {
-			if cmd := m.popRoot(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		if m.pane == paneRoot {
+			return m, m.forwardToRoot(tui.NavMenuMsg{})
 		}
 		m.search.Deactivate()
 		m.pane = paneMenu
-		return m, tea.Batch(cmds...)
+		return m, nil
 
 	// --- Search-only signal. Search is off-stack, so it emits the
 	// classic tuiBackMsg; host catches it and switches pane. ---
@@ -435,7 +424,7 @@ func (m *tuiModel) blocksNavigationMessage(msg tea.Msg) bool {
 		return false
 	}
 	switch msg.(type) {
-	case tui.NavToMsg, tui.NavBackMsg, tui.NavReplaceMsg, tui.NavQuitMsg, tui.BreadcrumbClickMsg,
+	case tui.NavToMsg, tui.NavBackMsg, tui.NavReplaceMsg, tui.NavQuitMsg, tui.NavMenuMsg, tui.BreadcrumbClickMsg,
 		tui.LaunchChatMsg, tui.SwitchToModelsMsg, tui.OpenParamsEditorMsg, tui.LaunchRunLogsMsg,
 		tui.QsLaunchViewMsg, tui.QsEnterMenuMsg, tui.TuiBackMsg:
 		return true

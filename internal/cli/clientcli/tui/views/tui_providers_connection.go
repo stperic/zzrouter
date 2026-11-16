@@ -25,7 +25,9 @@ type providerConnectionMsg struct {
 }
 
 // NavigationBlocked keeps the connection form present until a write responds.
-func (m *ProvidersViewModel) NavigationBlocked() bool { return m.connectionWriting }
+func (m *ProvidersViewModel) NavigationBlocked() bool {
+	return m.connectionWriting || m.uninstallContext != nil
+}
 
 func (m *ProvidersViewModel) cancelConnection() {
 	if m.connectionCancel != nil {

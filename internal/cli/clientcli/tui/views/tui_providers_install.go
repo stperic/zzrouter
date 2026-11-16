@@ -418,11 +418,7 @@ func (m *ProvidersViewModel) leaveInstallWizard() tea.Cmd {
 	}
 	m.loading = true
 	m.actionStatus = ""
-	client := m.client
-	return tea.Batch(func() tea.Msg {
-		apps, err := shared.FetchProviders(client, "", "", true)
-		return providersLoadedMsg{providers: apps, err: err}
-	}, shared.SpinnerTickCmd())
+	return tea.Batch(m.fetchProvidersCmd(true), shared.SpinnerTickCmd())
 }
 
 // startInstallJobCmd POSTs /install and subscribes to the returned

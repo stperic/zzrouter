@@ -125,7 +125,7 @@ func TestProviderAsyncOwnershipListCannotRetirePickerLoad(t *testing.T) {
 		m := connectionWriteFixture(t, func(http.ResponseWriter, *http.Request) { t.Error("no HTTP expected") })
 		m.beginInstallRequest()
 		m.mode, m.installLoading = mode, true
-		m.Update(providersLoadedMsg{providers: []shared.ProviderInfo{{Name: "background"}}})
+		m.Update(providersLoadedMsg{ctx: m.loadContext, providers: []shared.ProviderInfo{{Enabled: true, Name: "background"}}})
 		assert.True(t, m.installLoading, "background list response must not clear active install load")
 	}
 }
@@ -368,11 +368,11 @@ func TestProviderAsyncOwnershipRefreshFinishesOutsideList(t *testing.T) {
 					http.Error(w, "refresh unavailable", http.StatusServiceUnavailable)
 					return
 				}
-				_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"name": "fixture", "node": "node", "version": "2"}}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"name": "fixture", "node": "node", "version": "2", "enabled": true}}})
 			})
 			m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 			m.mode = providersViewList
-			m.Update(providersLoadedMsg{providers: []shared.ProviderInfo{{Name: "fixture", Node: "node", Version: "1"}}})
+			m.Update(providersLoadedMsg{ctx: m.loadContext, providers: []shared.ProviderInfo{{Enabled: true, Name: "fixture", Node: "node", Version: "1"}}})
 			_, refresh := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
 			require.NotNil(t, refresh)
 			require.True(t, m.loading)
@@ -429,7 +429,7 @@ func TestProviderAsyncOwnershipLoadingOwnersCompleteIndependently(t *testing.T) 
 				if mode == providersViewPickNode {
 					reply = providersPreflightMsg{ctx: ctx, report: &client.PreflightResponse{Provider: "fixture", AllOK: false}}
 				}
-				list := providersLoadedMsg{providers: []shared.ProviderInfo{{Name: "background"}}}
+				list := providersLoadedMsg{ctx: m.loadContext, providers: []shared.ProviderInfo{{Enabled: true, Name: "background"}}}
 				if finish == "list-first" {
 					m.Update(list)
 					assert.False(t, m.loading)

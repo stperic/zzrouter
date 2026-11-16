@@ -219,3 +219,20 @@ func TestListClickHonorsOffset(t *testing.T) {
 		t.Fatalf("cursor want 2, got %d", l.Cursor())
 	}
 }
+
+func TestListClickIgnoresFooterAndHeaderAfterScrolling(t *testing.T) {
+	l := NewList()
+	l.SetItems(items("a", "b", "c", "d", "e"))
+	l.SetVisible(2)
+	l.SetCursor(3)
+	for _, y := range []int{5, 8, 9} {
+		_, ok := l.Click(tea.MouseClickMsg{Button: tea.MouseLeft, Y: y}, 6)
+		if ok || l.Cursor() != 3 {
+			t.Fatalf("outside row click %d changed selection", y)
+		}
+	}
+	_, ok := l.Click(tea.MouseClickMsg{Button: tea.MouseLeft, Y: 6}, 6)
+	if !ok || l.Cursor() != 2 {
+		t.Fatal("first visible row was not selected")
+	}
+}

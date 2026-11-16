@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/url"
 	"time"
 
@@ -58,8 +59,13 @@ type pricingStatusResponse struct {
 // GetPricingStatus reports catalog freshness and what went un-priced.
 // GET /zzrouter/v1/pricing/status
 func (c *Client) GetPricingStatus() (*PricingStatus, error) {
+	return c.GetPricingStatusContext(context.Background())
+}
+
+// GetPricingStatusContext reads pricing within the caller's lifetime.
+func (c *Client) GetPricingStatusContext(ctx context.Context) (*PricingStatus, error) {
 	var result pricingStatusResponse
-	if err := c.doJSON("GET", apipath.PricingStatus, nil, &result, "get pricing status"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", apipath.PricingStatus, nil, &result, "get pricing status"); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil
@@ -68,8 +74,13 @@ func (c *Client) GetPricingStatus() (*PricingStatus, error) {
 // ListPricingOverrides returns every operator price override.
 // GET /zzrouter/v1/pricing/overrides
 func (c *Client) ListPricingOverrides() ([]PricingOverride, error) {
+	return c.ListPricingOverridesContext(context.Background())
+}
+
+// ListPricingOverridesContext reads pricing within the caller's lifetime.
+func (c *Client) ListPricingOverridesContext(ctx context.Context) ([]PricingOverride, error) {
 	var result PricingOverrideListResponse
-	if err := c.doJSON("GET", apipath.PricingOverrides, nil, &result, "list pricing overrides"); err != nil {
+	if err := c.doContextJSON(ctx, "GET", apipath.PricingOverrides, nil, &result, "list pricing overrides"); err != nil {
 		return nil, err
 	}
 	return result.Data.Overrides, nil
@@ -78,8 +89,13 @@ func (c *Client) ListPricingOverrides() ([]PricingOverride, error) {
 // SetPricingOverride adds or replaces an override.
 // POST /zzrouter/v1/pricing/overrides
 func (c *Client) SetPricingOverride(o *PricingOverride) (*PricingOverride, error) {
+	return c.SetPricingOverrideContext(context.Background(), o)
+}
+
+// SetPricingOverrideContext binds the request to the caller's lifetime.
+func (c *Client) SetPricingOverrideContext(ctx context.Context, o *PricingOverride) (*PricingOverride, error) {
 	var result PricingOverrideDetailResponse
-	if err := c.doJSON("POST", apipath.PricingOverrides, o, &result, "save pricing override"); err != nil {
+	if err := c.doContextJSON(ctx, "POST", apipath.PricingOverrides, o, &result, "save pricing override"); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil
@@ -91,11 +107,16 @@ func (c *Client) SetPricingOverride(o *PricingOverride) (*PricingOverride, error
 // Both values are query-escaped: model ids carry slashes and "@" that
 // would otherwise reshape the request path.
 func (c *Client) DeletePricingOverride(provider, model string) error {
+	return c.DeletePricingOverrideContext(context.Background(), provider, model)
+}
+
+// DeletePricingOverrideContext binds the request to the caller's lifetime.
+func (c *Client) DeletePricingOverrideContext(ctx context.Context, provider, model string) error {
 	q := url.Values{}
 	q.Set("model", model)
 	if provider != "" {
 		q.Set("provider", provider)
 	}
 	path := apipath.PricingOverrides + "?" + q.Encode()
-	return c.doJSON("DELETE", path, nil, nil, "delete pricing override")
+	return c.doContextJSON(ctx, "DELETE", path, nil, nil, "delete pricing override")
 }

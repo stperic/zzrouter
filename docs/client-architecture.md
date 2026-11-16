@@ -22,6 +22,19 @@ provider admission, pricing and budget enforcement. Runtime parameter editing
 uses the existing scoped GET and merge-patch API; neither interface resolves
 effective parameters or implements a second policy engine.
 
+Terminal editors keep explicit overrides separate from effective-value evidence.
+Saving parameters compares edited leaves against a fresh scoped read, then sends
+one merge-patch; clearing an override uses null so inheritance stays intact. This
+check detects changes observed by that read, but is not an atomic compare-and-swap.
+The management API remains the validation and persistence owner.
+
+The TUI root owns pending-write navigation guards and unsaved-draft confirmation.
+Views own bounded writes and cancelable reads; replies must match the active
+request and selected resource. An uncertain write requires a fresh read before
+retry. Shared tables, form viewports, popups and footers own sizing and preserve
+primary identity, status and actions when the terminal narrows. Provider lists
+start with enabled entries, with explicit search, kind, node and disabled filters.
+
 ```mermaid
 flowchart TB
   TUI[Terminal client] --> API[Coordinator HTTP API]

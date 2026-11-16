@@ -1,182 +1,58 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
-	pkgConfig "github.com/stperic/zzrouter/pkg/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// Every parameter write must go out as a Merge-Patch.
-//
-// The PUT and DELETE routes these methods used answer 410 Gone, so every
-// parameter write in the TUI was failing: save, delete, the lot. Nothing
-// caught it because no test asserted what the client puts on the wire.
-// These do.
-
-type capturedRequest struct {
-	method      string
-	path        string
-	contentType string
-	body        map[string]any
-}
-
-// paramsTestServer records the mutating request and answers reads with
-// an empty-but-valid parameter payload.
-func paramsTestServer(t *testing.T, got *[]capturedRequest) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			raw, _ := io.ReadAll(r.Body)
-			var body map[string]any
-			_ = json.Unmarshal(raw, &body)
-			*got = append(*got, capturedRequest{
-				method:      r.Method,
-				path:        r.URL.Path,
-				contentType: r.Header.Get("Content-Type"),
-				body:        body,
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/schema") {
-			_, _ = w.Write([]byte(`{"parameters":{"threads":{"type":"int"},` +
-				`"context-shift":{"type":"bool"},"alias":{"type":"string"}},"environment":{}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"provider":"llamacpp","parameters":[],"environment":[]}`))
-	}))
-}
-
-func TestParameterWrites_UseMergePatch(t *testing.T) {
-	cases := []struct {
-		name     string
-		call     func(c *Client) error
-		wantBody map[string]any
-	}{
-		{
-			name: "provider tier",
-			call: func(c *Client) error {
-				_, err := c.UpdateProviderParameters("llamacpp",
-					&UpdateParametersRequest{Parameters: map[string]string{"threads": "8"}}, false)
-				return err
-			},
-			// 8, not "8": the validator type-checks against the schema
-			// even though storage is strings.
-			wantBody: map[string]any{"defaults": map[string]any{"parameters": map[string]any{"threads": float64(8)}}},
-		},
-		{
-			name: "model tier",
-			call: func(c *Client) error {
-				_, err := c.UpdateModelParameters("llamacpp", "qwen",
-					&UpdateParametersRequest{Parameters: map[string]string{"threads": "8"}}, false)
-				return err
-			},
-			wantBody: map[string]any{"models": map[string]any{"qwen": map[string]any{"parameters": map[string]any{"threads": float64(8)}}}},
-		},
-		{
-			name: "node tier",
-			call: func(c *Client) error {
-				_, err := c.UpdateNodeParameters("llamacpp", "worker-1",
-					&UpdateParametersRequest{Environment: map[string]string{"CUDA": "1"}}, false)
-				return err
-			},
-			wantBody: map[string]any{"nodes": map[string]any{"worker-1": map[string]any{"environment": map[string]any{"CUDA": "1"}}}},
-		},
-		{
-			// null is Merge-Patch's delete. Sending an empty string here
-			// would set the key to "" instead of removing it, which the
-			// three-meaning rule treats as a different intent entirely.
-			name: "delete uses a null, not an empty value",
-			call: func(c *Client) error {
-				return c.DeleteProviderParameter("llamacpp", "threads")
-			},
-			wantBody: map[string]any{"defaults": map[string]any{"parameters": map[string]any{"threads": nil}}},
-		},
-		{
-			name: "delete an environment key at the model tier",
-			call: func(c *Client) error {
-				return c.DeleteModelEnvironment("llamacpp", "qwen", "CUDA")
-			},
-			wantBody: map[string]any{"models": map[string]any{"qwen": map[string]any{"environment": map[string]any{"CUDA": nil}}}},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []capturedRequest
-			srv := paramsTestServer(t, &got)
-			defer srv.Close()
-
-			if err := tc.call(NewClient(pkgConfig.ClientNodeConfig{Name: "test", Address: srv.URL, APIKey: "test-key"})); err != nil {
-				t.Fatalf("call: %v", err)
-			}
-			if len(got) != 1 {
-				t.Fatalf("expected exactly 1 mutating request, got %d", len(got))
-			}
-			req := got[0]
-
-			// The retired verbs are the bug. Naming them keeps the test
-			// honest about what it is defending against.
-			if req.method == http.MethodPut || req.method == http.MethodDelete {
-				t.Fatalf("method = %s, which is a retired route that answers 410", req.method)
-			}
-			if req.method != http.MethodPatch {
-				t.Errorf("method = %s, want PATCH", req.method)
-			}
-			if req.contentType != mergePatchContentType {
-				t.Errorf("Content-Type = %q, want %q (the server routes on it)",
-					req.contentType, mergePatchContentType)
-			}
-			wantJSON, _ := json.Marshal(tc.wantBody)
-			gotJSON, _ := json.Marshal(req.body)
-			if string(gotJSON) != string(wantJSON) {
-				t.Errorf("body\n got: %s\nwant: %s", gotJSON, wantJSON)
-			}
-		})
-	}
-}
-
-// A caller asking to validate must be told it cannot, not quietly obeyed
-// with a save. Merge-Patch has no preview mode, so the old dry_run flag
-// has no equivalent: converting it to a plain patch would turn the TUI's
-// validate action into a silent write.
-func TestValidateWithoutSaving_IsRefusedNotSaved(t *testing.T) {
+func TestParameterWritesUseScopedMergePatch(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		call func(c *Client) error
+		name     string
+		scope    ParameterScope
+		envelope string
 	}{
-		{"provider", func(c *Client) error {
-			_, err := c.UpdateProviderParameters("llamacpp", &UpdateParametersRequest{}, true)
-			return err
-		}},
-		{"model", func(c *Client) error {
-			_, err := c.UpdateModelParameters("llamacpp", "qwen", &UpdateParametersRequest{}, true)
-			return err
-		}},
-		{"node", func(c *Client) error {
-			_, err := c.UpdateNodeParameters("llamacpp", "worker-1", &UpdateParametersRequest{}, true)
-			return err
-		}},
+		{"defaults", ParameterScope{Scope: "defaults"}, `{"defaults":{"parameters":{"threads":8,"removed":null},"environment":{"EMPTY":""}}}`},
+		{"model", ParameterScope{Scope: "model", Model: "q/a"}, `{"models":{"q/a":{"parameters":{"threads":8,"removed":null},"environment":{"EMPTY":""}}}}`},
+		{"node", ParameterScope{Scope: "node", Node: "worker"}, `{"nodes":{"worker":{"parameters":{"threads":8,"removed":null},"environment":{"EMPTY":""}}}}`},
+		{"node model", ParameterScope{Scope: "node-model", Node: "worker", Model: "q/a"}, `{"nodes":{"worker":{"models":{"q/a":{"parameters":{"threads":8,"removed":null},"environment":{"EMPTY":""}}}}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var got []capturedRequest
-			srv := paramsTestServer(t, &got)
-			defer srv.Close()
-
-			err := tc.call(NewClient(pkgConfig.ClientNodeConfig{Name: "test", Address: srv.URL, APIKey: "test-key"}))
-			if !errors.Is(err, ErrValidateWithoutSaving) {
-				t.Fatalf("err = %v, want ErrValidateWithoutSaving", err)
-			}
-			if len(got) != 0 {
-				t.Fatalf("a dry run sent %d mutating request(s); it must send none", len(got))
-			}
+			var got map[string]any
+			client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodPatch, r.Method)
+				assert.Equal(t, "/zzrouter/v1/providers/test/parameters", r.URL.Path)
+				assert.Equal(t, mergePatchContentType, r.Header.Get("Content-Type"))
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+				_, _ = io.WriteString(w, `{}`)
+			}))
+			value, empty := "8", ""
+			err := client.PatchConfiguredParameters(context.Background(), "test", tc.scope, ParameterChanges{
+				Parameters: map[string]*string{"threads": &value, "removed": nil}, Environment: map[string]*string{"EMPTY": &empty},
+			}, &ProviderSchemaResponse{Parameters: map[string]ParameterSchema{"threads": {Type: "int"}}})
+			require.NoError(t, err)
+			encoded, err := json.Marshal(got)
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.envelope, string(encoded))
 		})
 	}
+}
+
+func TestConfiguredParameterReadPreservesPresence(t *testing.T) {
+	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "model", r.URL.Query().Get("scope"))
+		assert.Equal(t, "q/a", r.URL.Query().Get("model"))
+		_, _ = io.WriteString(w, `{"scope":"model","model":"q/a","parameters":{"empty":""},"environment":{}}`)
+	}))
+	got, err := client.GetConfiguredParameters(context.Background(), "test", ParameterScope{Scope: "model", Model: "q/a"})
+	require.NoError(t, err)
+	assert.Contains(t, got.Parameters, "empty")
+	assert.NotContains(t, got.Parameters, "inherited")
 }
 
 // Values are typed against the schema before they go on the wire.

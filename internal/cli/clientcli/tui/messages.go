@@ -16,6 +16,7 @@ type LaunchChatMsg struct {
 
 // OpenParamsEditorMsg tells the parent TUI to open the params view.
 type OpenParamsEditorMsg struct {
+	Node     string
 	Provider string
 	Model    string
 }

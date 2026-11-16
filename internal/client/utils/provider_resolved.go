@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 
@@ -70,7 +71,11 @@ func (c *Client) UpdateModelCell(provider, model string, u ModelCellUpdate, rest
 	if len(u.Parameters)+len(u.Unset) > 0 {
 		var params map[string]any
 		if len(u.Parameters) > 0 {
-			params = c.typedRequest(provider, &UpdateParametersRequest{Parameters: u.Parameters}).Parameters
+			schema, err := c.GetProviderSchema(provider)
+			if err != nil {
+				return nil, err
+			}
+			params = typeValues(schema.Parameters, u.Parameters)
 		} else {
 			params = map[string]any{}
 		}
@@ -104,7 +109,7 @@ func (c *Client) patchModelCell(provider, model string, cell map[string]any, res
 	query := writeQuery(restart)
 	query.Set("model", model)
 	var out ProviderParametersWrite
-	if err := c.sendMergePatch(provider, query, map[string]any{"models": map[string]any{model: cell}}, &out, "patch model parameters"); err != nil {
+	if err := c.sendMergePatch(context.Background(), provider, query, map[string]any{"models": map[string]any{model: cell}}, &out, "patch model parameters"); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -113,6 +118,11 @@ func (c *Client) patchModelCell(provider, model string, cell map[string]any, res
 // GetProviderResolved resolves a provider's parameter tree for one model
 // on one node and endpoint; selectors may be empty.
 func (c *Client) GetProviderResolved(provider, node, model, endpoint string) (*ProviderResolved, error) {
+	return c.GetProviderResolvedContext(context.Background(), provider, node, model, endpoint)
+}
+
+// GetProviderResolvedContext reads effective values within the caller's lifetime.
+func (c *Client) GetProviderResolvedContext(ctx context.Context, provider, node, model, endpoint string) (*ProviderResolved, error) {
 	q := url.Values{}
 	if node != "" {
 		q.Set("node", node)
@@ -124,7 +134,7 @@ func (c *Client) GetProviderResolved(provider, node, model, endpoint string) (*P
 		q.Set("endpoint", endpoint)
 	}
 	var out ProviderResolved
-	if err := c.doJSON(http.MethodGet, withQuery(apipath.ProviderResolved(provider), q), nil, &out, "get resolved parameters"); err != nil {
+	if err := c.doContextJSON(ctx, http.MethodGet, withQuery(apipath.ProviderResolved(provider), q), nil, &out, "get resolved parameters"); err != nil {
 		return nil, err
 	}
 	return &out, nil
