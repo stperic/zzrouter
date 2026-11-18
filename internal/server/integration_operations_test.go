@@ -508,5 +508,5 @@ func linkOperationWorker(t *testing.T, coordinator, worker *Server) {
 	require.NoError(t, cluster.RegisterEndpoint(&mesh.Endpoint{URL: workerURL, ClusterURL: workerURL, NodeName: "worker", Status: mesh.StatusUp}))
 	coordinator.cluster.coordinator.Stop()
 	coordinator.cluster.coordinator = cluster
-	coordinator.cluster.routerSwap.Swap(routing.NewClusterAwareRouterWithClient("coordinator", cluster.GetClient(), "0", coordinator.ServeLocalRequest, client))
+	coordinator.cluster.router = routing.NewClusterAwareRouterWithClient("coordinator", cluster.GetClient(), "0", coordinator.ServeLocalRequest, client)
 }

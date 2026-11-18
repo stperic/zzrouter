@@ -52,21 +52,22 @@ func TestIntegrationBrowserRouteCatalogAuthority(t *testing.T) {
 	require.Empty(t, want, "all browser/self routes must be catalogued")
 }
 
-func TestIntegrationBrowserAuthoritySurvivesRoleCycleAndClosesOnStop(t *testing.T) {
+func TestIntegrationBrowserAuthorityFollowsLiveRoleAndClosesOnStop(t *testing.T) {
 	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
 	browser := newSessionBrowser(t, endpoint, TestAdminKey)
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "test demotion"))
+	// Each crossing ends the node; until it stops, the gates follow the live role.
+	crossRole(t, s, role.RoleWorker)
 	status, _ := browser.call(t, http.MethodGet, "/zzrouter/v1/session", nil, nil)
 	require.Equal(t, http.StatusMisdirectedRequest, status)
 	status, _ = browser.call(t, http.MethodGet, "/oauth/connections", nil, nil)
 	require.Equal(t, http.StatusNotFound, status)
 	status, _ = browser.call(t, http.MethodGet, "/zzrouter/v1/nodes", nil, nil)
 	require.Equal(t, http.StatusUnauthorized, status, "mounted management routes must not accept browser authority after demotion")
-	require.NoError(t, s.role.Set(t.Context(), role.RoleCoordinator, "test re-promotion"))
+	crossRole(t, s, role.RoleCoordinator)
 	status, body := browser.call(t, http.MethodGet, "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, http.StatusOK, status, string(body))
 
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "stop as worker"))
+	crossRole(t, s, role.RoleWorker)
 	require.NoError(t, s.Stop())
 	_, err := s.access.oauth.Bootstrap(t.Context(), httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, endpoint.URL+"/session", nil))
 	require.ErrorIs(t, err, oauth.ErrClosed)

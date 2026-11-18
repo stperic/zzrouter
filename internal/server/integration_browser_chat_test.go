@@ -158,7 +158,7 @@ func TestIntegrationBrowserChatAuthority(t *testing.T) {
 		status, _ = browser.call(t, method, path, map[string]any{}, nil)
 		require.Equal(t, 401, status, path)
 	}
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "browser chat test demotion"))
+	crossRole(t, s, role.RoleWorker)
 	status, _ = browser.call(t, "GET", "/v1/models", nil, nil)
 	require.Equal(t, 401, status, "cookie authority cannot survive coordinator demotion")
 }

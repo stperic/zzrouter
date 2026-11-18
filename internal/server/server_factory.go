@@ -129,9 +129,10 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.node = NewNodeIdentity(cfg)
 
 	// Cluster role. Derived from static config at construction;
-	// pairing completion and renewal failure handlers promote/demote
-	// via s.role.Set. Every read site uses s.role.Current() — no
-	// direct config sampling.
+	// pairing and leaving move a worker between Unclaimed and Worker
+	// via s.role.Set. What the boot role decides (the access store,
+	// the coordinator group, mounted routes) reads s.node; a change
+	// across the coordinator boundary ends the process instead.
 	paths := clusternode.PathsFromConfigDir(pkgConfig.Paths().GetConfigDir())
 	initialRole := role.RoleFromConfig(cfg.Cluster, clusternode.IsPaired(paths))
 	roleMgr, err := role.NewManager(initialRole)
@@ -447,24 +448,23 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			}
 		})
 
-		// Keys and teams on every node; people only beside the coordinator's browser issuer.
+		// The access store lives as long as a node that boots as a coordinator,
+		// with people beside its browser issuer. Any other role opens no store
+		// and authenticates static keys only; a role change ends the process.
 		if !s.node.IsWorker() {
 			if issuer, err = s.config.Auth.OAuth.EffectiveIssuer(s.config.Node); err != nil {
 				return nil, err
 			}
-		}
-		s.accessStore, err = filestore.Open(context.Background(), configDir, filestore.Options{
-			People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam,
-		})
-		if err != nil {
-			return nil, err
+			s.accessStore, err = filestore.Open(context.Background(), configDir, filestore.Options{
+				People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam,
+			})
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		// === Audit sink ===
-		// Opened/closed in start/stopCoordinatorSubsystems so runtime
-		// role transitions (Unclaimed → Coordinator via pairing) get
-		// audit coverage. The factory leaves the sink at audit.Null;
-		// workers stay on Null for their entire lifecycle.
+		// Opened and closed with the coordinator group; workers stay on Null.
 		s.auditSink = audit.Null{}
 		s.auditConfigDir = configDir
 
@@ -495,11 +495,9 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// zz.remaining.api.key.budget.metric) report live SpendLimit /
 		// remaining-budget rows on every Prometheus scrape. The gauges
 		// register lazily against the current global meter provider.
-		// Workers also reach this branch but their access store holds no
-		// keys in production (virtual keys only on coordinators), so the
-		// snapshotter returns no rows and the gauges emit nothing —
-		// the unconditional registration is harmless.
-		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.accessStore, s.access))
+		// A node without a store reads an empty snapshot, so its gauges
+		// emit nothing.
+		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.accessSnapshot, s.access))
 	}
 
 	s.initFallbackProxy()
@@ -828,10 +826,7 @@ func (s *Server) initClusterNetworking(cfg *pkgConfig.NodeConfig) error {
 	// Initialize HTTP-based routing
 	utils.LogDebugf("[Routing] Initializing request router...")
 	serverPort := fmt.Sprintf("%d", s.config.Node.Port)
-	initialRouter := s.buildRouterForMode(s.config.Cluster.IsWorker(), serverPort)
-	s.cluster.routerSwap = routing.NewSwappable(initialRouter)
-	s.cluster.router = s.cluster.routerSwap
-	s.nodeConfigStore.OnChange("reconfigureRouter", s.reconfigureRouter)
+	s.cluster.router = s.buildRouterForMode(s.config.Cluster.IsWorker(), serverPort)
 	s.nodeConfigStore.OnChange("handleClusterModeReload", s.handleClusterModeReload)
 	s.role.Subscribe(s.handleRoleTransition)
 

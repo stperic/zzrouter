@@ -39,7 +39,7 @@ func TestIntegrationClientActivityAuthorityAndBrowserExclusion(t *testing.T) {
 	require.EqualValues(t, 1, reply.Data[0].RequestCount)
 	require.Zero(t, reply.Data[0].ActiveRequests)
 	require.NotContains(t, string(body), TestAdminKey)
-	require.NoError(t, s.role.Set(t.Context(), role.RoleWorker, "test demotion"))
+	crossRole(t, s, role.RoleWorker)
 	response = makeAuthRequest(t, s, http.MethodGet, "/zzrouter/v1/clients", TestAdminKey, nil)
 	require.NotEqual(t, http.StatusOK, response.Code)
 }

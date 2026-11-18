@@ -36,9 +36,8 @@ import (
 // equivalent to server shutdown for background goroutines; Stop itself
 // additionally drains HTTP and runs the Stop-group helpers in reverse.
 //
-// The coordinator-group mode check lives here (not inside the group
-// helper) so the role subscriber can call startCoordinatorSubsystems
-// directly without re-acquiring role.Manager's mutex and deadlocking.
+// The coordinator group follows the role the node booted in, as the
+// access store does; a later role change never starts or stops it.
 func (s *Server) Start(ctx context.Context) (startErr error) {
 	//nolint:contextcheck // Failed startup drains with stop's independent budget even when ctx was cancelled.
 	defer func() {
@@ -58,11 +57,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if err := s.startCommonSubsystems(); err != nil {
 		return err
 	}
-	if s.role.Current().IsCoordinator() {
+	if !s.node.IsWorker() {
 		//nolint:contextcheck // subsystems live for the node's lifetime and stop via s.shutdownCtx, not this call's ctx
-		if err := s.startCoordinatorSubsystems(); err != nil {
-			return err
-		}
+		s.startCoordinatorSubsystems()
 	}
 	// Workers ping the coordinator on boot so its endpoint snapshot
 	// reflects live state immediately instead of waiting on the 30s
@@ -153,15 +150,13 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 		s.shutdownCancel()
 	}
 
-	var coordStopErr error
-	if s.role.Current().IsCoordinator() {
-		coordStopErr = s.stopCoordinatorSubsystems(ctx)
+	if !s.node.IsWorker() {
+		s.stopCoordinatorSubsystems(ctx)
 	}
 
-	stopErr := errors.Join(coordStopErr, s.stopCommonSubsystems(ctx))
+	stopErr := s.stopCommonSubsystems(ctx)
 
-	// Durable authority belongs to the server, not the restartable coordinator
-	// group. A demotion may be followed by promotion before final shutdown.
+	// Durable authority belongs to the server, not the coordinator group.
 	if s.access != nil && s.access.oauth != nil {
 		stopErr = errors.Join(stopErr, s.access.oauth.Close())
 	}
@@ -182,7 +177,7 @@ func (s *Server) startServing() error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
 	}
-	if s.role.Current().IsCoordinator() {
+	if !s.node.IsWorker() {
 		if err := s.startProviderBrowser(s.shutdownCtx); err != nil {
 			_ = ln.Close()
 			return err
@@ -209,6 +204,14 @@ func (s *Server) startServing() error {
 		return err
 	}
 	return nil
+}
+
+// fail ends Start with err through the one shutdown path; dropped once shutdown began.
+func (s *Server) fail(err error) {
+	select {
+	case s.servingErrors <- err:
+	case <-s.shutdownCtx.Done():
+	}
 }
 
 // warnIfCompatOpenToNetwork says so at startup when anyone who can reach
@@ -381,52 +384,22 @@ func (s *Server) runMaintenance(tickCount int) {
 // Mode-aware subsystem groups
 // ---------------------------------------------------------------------------
 
-// handleRoleTransition is the role.Manager subscriber. It runs
-// synchronously under role.Manager's transition mutex; concurrent
-// Set callers are serialized on the mutex and observe the state
-// after this returns.
-//
-// Promote (→ Coordinator): invokes startCoordinatorSubsystems with
-// s.shutdownCtx — coordinator subsystem goroutines are bound to the
-// server's lifetime, not the role's. Demote re-Stops them via their
-// restartable lifecycles.
-//
-// Demote (→ non-Coordinator): invokes stopCoordinatorSubsystems with
-// a Background-derived ctx carrying the standard shutdown drain
-// timeout. Transition.Reason is logged for audit.
-//
-// Start errors on promote are logged, not panicked — a failed
-// promote leaves the node in a partially-started state, which is
-// surfaced on the next readiness probe. Future role-transition
-// readiness would return the error to the Set caller; v1 logs.
+// handleRoleTransition is the role.Manager subscriber. The access store
+// and the coordinator group belong to the role the node booted in, so a
+// change across the coordinator boundary ends the node, and its
+// supervisor restarts it in the new role. Other changes only log.
 func (s *Server) handleRoleTransition(t role.Transition) {
 	slog.Info("cluster role transition",
 		"from", t.From, "to", t.To, "reason", t.Reason)
-
-	switch {
-	case t.To.IsCoordinator() && !t.From.IsCoordinator():
-		if err := s.startCoordinatorSubsystems(); err != nil {
-			slog.Error("promote failed", "error", err)
-		}
-	case !t.To.IsCoordinator() && t.From.IsCoordinator():
-		ctx, cancel := context.WithTimeout(context.Background(), constants.RoleDemoteTimeout)
-		defer cancel()
-		if err := s.stopCoordinatorSubsystems(ctx); err != nil {
-			slog.Error("demote failed", "error", err)
-		}
+	if t.From.IsCoordinator() != t.To.IsCoordinator() {
+		s.fail(fmt.Errorf("cluster role changed from %s to %s (%s): exiting so the service manager restarts the node as %s", t.From, t.To, t.Reason, t.To))
 	}
 }
 
-// startCoordinatorSubsystems starts subsystems that only run on
-// coordinator or standalone nodes. Returns the joined error from any
-// subsystem whose Start can fail; today none do, but the signature is
-// the extension point for role-transition readiness errors.
-//
-// Callers MUST check s.role.Current().IsCoordinator() before invoking.
-// The gate lives in Server.Start and handleRoleTransition, not here,
-// because the subscriber runs under role.Manager's mutex and cannot
-// infer completed subsystem readiness from the newly published role.
-func (s *Server) startCoordinatorSubsystems() error {
+// startCoordinatorSubsystems starts subsystems that only run on a node
+// that booted as a coordinator (standalone included). Start runs it once
+// and stop pairs it with stopCoordinatorSubsystems.
+func (s *Server) startCoordinatorSubsystems() {
 	if s.cluster.poller != nil {
 		s.cluster.poller.Start(s.shutdownCtx)
 		if s.cluster.coordinator != nil {
@@ -448,13 +421,8 @@ func (s *Server) startCoordinatorSubsystems() error {
 	s.providers.fallback.Start(s.shutdownCtx)
 	if s.model.Groups != nil {
 		// Ephemeral-route reaper. Coordinator-only because the
-		// model-groups mutator surface lives on the coord. The
-		// reaper runs under its own cancel so role-demote stops it
-		// without waiting for the global shutdownCtx — otherwise a
-		// re-promote would stack a second reaper on the same store.
-		reaperCtx, cancel := context.WithCancel(s.shutdownCtx) //nolint:gosec // G118: stopCoordinatorSubsystems cancels the stored reaper lifetime.
-		s.providers.groupReaperCancel = cancel
-		s.providers.groupReaperDone = s.model.Groups.StartReaper(reaperCtx, modelgroup.DefaultReaperInterval)
+		// model-groups mutator surface lives on the coord.
+		s.providers.groupReaperDone = s.model.Groups.StartReaper(s.shutdownCtx, modelgroup.DefaultReaperInterval)
 	}
 	s.services.Search.Start(s.shutdownCtx)
 	s.services.Discovery.Start() // sync.Once-deduped against the common-subsystem warm; kept for Start/Stop symmetry with Discovery.Stop in stopCoordinatorSubsystems
@@ -476,26 +444,13 @@ func (s *Server) startCoordinatorSubsystems() error {
 	if s.cluster.coordinator != nil {
 		s.cluster.coordinator.ReplayStartupReconnects()
 	}
-	select {
-	case <-s.listenerReady:
-		return s.startProviderBrowser(s.shutdownCtx)
-	default:
-	}
-	return nil
 }
 
-// openAuditSink opens the JSONL audit log and pushes it into any
-// services that were constructed during route registration. Idempotent
-// — calling twice without an intervening close is a no-op after the
-// first call. Runs at every coordinator-subsystem start so a node
-// that transitions Unclaimed → Coordinator via pairing picks up
-// audit coverage.
+// openAuditSink opens the JSONL audit log and pushes it into the access
+// store, which a node that booted as a coordinator always holds.
 func (s *Server) openAuditSink() {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
-	if _, ok := s.auditSink.(audit.Null); !ok {
-		return // already opened
-	}
 	if s.auditConfigDir == "" {
 		return
 	}
@@ -506,21 +461,16 @@ func (s *Server) openAuditSink() {
 		return
 	}
 	s.auditSink = sink
-	if s.accessStore != nil {
-		s.accessStore.SetAuditSink(sink)
-	}
+	s.accessStore.SetAuditSink(sink)
 	slog.Info("audit log opened", "path", path)
 }
 
 // closeAuditSink closes the audit sink (if open) and resets the
-// access store's sink to audit.Null. Paired with openAuditSink across a
-// role-transition cycle.
+// access store's sink to audit.Null. Paired with openAuditSink at stop.
 func (s *Server) closeAuditSink() {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
-	if s.accessStore != nil {
-		s.accessStore.SetAuditSink(audit.Null{})
-	}
+	s.accessStore.SetAuditSink(audit.Null{})
 	if closer, ok := s.auditSink.(interface{ Close() error }); ok {
 		if err := closer.Close(); err != nil {
 			slog.Warn("audit sink close failed", "error", err)
@@ -618,14 +568,9 @@ func (s *Server) startCommonSubsystems() error {
 // stopCoordinatorSubsystems stops coordinator-only subsystems. Order
 // is the reverse of startCoordinatorSubsystems — subsystems stop in
 // LIFO so a consumer is never torn down before its dependencies.
-//
-// Callers (Server.Stop, handleRoleTransition on demote) decide when
-// to invoke. No internal role check — the idempotent-Stop convention
-// makes every Stop a safe no-op when the paired Start never ran,
-// and moving the gate to callers avoids the role.Manager mutex
-// deadlock the subscriber would otherwise hit.
-func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
-	browserErr := s.stopProviderBrowser(ctx)
+// stop runs it after cancelling shutdownCtx and closing the provider
+// browser; the idempotent-Stop convention covers a failed Start.
+func (s *Server) stopCoordinatorSubsystems(ctx context.Context) {
 	if s.cluster.poller != nil {
 		s.cluster.poller.Stop(ctx)
 	}
@@ -636,24 +581,16 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
 	s.services.Discovery.Stop()
 	s.services.Search.Stop(ctx)
 	s.providers.fallback.Stop(ctx)
-	if cancel := s.providers.groupReaperCancel; cancel != nil {
-		// Signal the reaper to exit (independent of shutdownCtx so
-		// role-demote works) and wait synchronously for it to
-		// return. ctx deadline bounds the wait; a stuck reaper drops
-		// to a warn.
-		cancel()
-		done := s.providers.groupReaperDone
+	if done := s.providers.groupReaperDone; done != nil {
+		// The cancelled shutdownCtx ends the reaper; ctx bounds the wait.
 		select {
 		case <-done:
 		case <-ctx.Done():
 			slog.Warn("ephemeral-route reaper did not stop before shutdown deadline")
 		}
-		s.providers.groupReaperCancel = nil
-		s.providers.groupReaperDone = nil
 	}
 	s.closeAuditSink()
 	s.access.Stop(ctx)
-	return browserErr
 }
 
 // stopCommonSubsystems stops subsystems that run on every node.
