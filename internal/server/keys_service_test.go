@@ -3,39 +3,31 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 )
 
 // newKeysTestHarness wires a complete KeysService + TeamsService + AccessControl
 // against temp-dir-backed stores. Every test gets isolated state.
-func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, *filestore.Keys, *filestore.Teams, *AccessControl) {
+func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, access.Store, *AccessControl) {
 	t.Helper()
-
-	dir := t.TempDir()
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
-
-	enforcer := quota.NewEnforcer(
-		quota.NewRateLimiter(),
-		quota.NewConcurrencyLimiter(),
-		quota.NewSpendTracker(""),
-	)
-
-	access := NewAccessControl(StaticKeySet{}, keyStore, teamStore, nil, enforcer, nil, ModelHooks{})
-	t.Cleanup(func() { access.Stop(context.Background()) })
-
-	teamsSvc := NewTeamsService(teamStore, keyStore, access)
-	keysSvc := NewKeysService(keyStore, teamsSvc, access)
-	return keysSvc, teamsSvc, keyStore, teamStore, access
+	teamsSvc, store, accessControl := newTeamsTestHarness(t)
+	return NewKeysService(store, teamsSvc, accessControl), teamsSvc, store, accessControl
 }
 
 // ============================================================================
@@ -43,13 +35,13 @@ func newKeysTestHarness(t *testing.T) (*KeysService, *TeamsService, *filestore.K
 // ============================================================================
 
 func TestKeysService_UpdateKey_Suspend(t *testing.T) {
-	svc, _, _, _, _ := newKeysTestHarness(t)
+	svc, _, _, _ := newKeysTestHarness(t)
 
-	_, err := svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+	_, err := svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
 	require.NoError(t, err)
 
 	suspend := true
-	resp, err := svc.UpdateKey("alice", &UpdateKeyRequest{Suspended: &suspend}, "admin-who-did-it")
+	resp, err := svc.UpdateKey(t.Context(), "alice", &UpdateKeyRequest{Suspended: &suspend}, "admin-who-did-it")
 	require.NoError(t, err)
 	assert.True(t, resp.Suspended)
 	assert.NotNil(t, resp.SuspendedAt)
@@ -57,7 +49,7 @@ func TestKeysService_UpdateKey_Suspend(t *testing.T) {
 
 	// Unsuspend clears the audit fields.
 	unsuspend := false
-	resp, err = svc.UpdateKey("alice", &UpdateKeyRequest{Suspended: &unsuspend}, "other-admin")
+	resp, err = svc.UpdateKey(t.Context(), "alice", &UpdateKeyRequest{Suspended: &unsuspend}, "other-admin")
 	require.NoError(t, err)
 	assert.False(t, resp.Suspended)
 	assert.Nil(t, resp.SuspendedAt)
@@ -69,10 +61,10 @@ func TestKeysService_UpdateKey_Suspend(t *testing.T) {
 // ============================================================================
 
 func TestKeysService_DeleteKey_CascadesPersonalTeam(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
 	// Create a key with no team_id → personal team auto-created.
-	resp, err := svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+	resp, err := svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
 	require.NoError(t, err)
 	require.Equal(t, "personal-alice", resp.TeamID)
 	require.Equal(t, "owner", resp.TeamRole)
@@ -82,7 +74,7 @@ func TestKeysService_DeleteKey_CascadesPersonalTeam(t *testing.T) {
 	require.NoError(t, err, "personal team should exist after key create")
 
 	// Delete the key.
-	require.NoError(t, svc.DeleteKey("alice", "test"))
+	require.NoError(t, svc.DeleteKey(t.Context(), "alice", "test"))
 
 	// The personal team is gone — cascade fired.
 	_, err = teamsSvc.GetTeam("personal-alice")
@@ -92,20 +84,20 @@ func TestKeysService_DeleteKey_CascadesPersonalTeam(t *testing.T) {
 }
 
 func TestKeysService_DeleteKey_SharedTeamNotCascaded(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
 	// Create a shared team, then put a key in it.
-	_, err := teamsSvc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
+	_, err := teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
 	require.NoError(t, err)
 
-	_, err = svc.CreateKey("alice", &CreateKeyRequest{
+	_, err = svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{
 		Name:   "Alice",
 		TeamID: "eng",
 	}, "admin")
 	require.NoError(t, err)
 
 	// Delete the key.
-	require.NoError(t, svc.DeleteKey("alice", "test"))
+	require.NoError(t, svc.DeleteKey(t.Context(), "alice", "test"))
 
 	// The shared team survives — cascade must NOT touch shared teams.
 	team, err := teamsSvc.GetTeam("eng")
@@ -120,12 +112,12 @@ func TestKeysService_DeleteKey_SharedTeamNotCascaded(t *testing.T) {
 // A duplicate id is the caller's conflict, refused before a personal team
 // is written, so the first key's team is untouched and nothing is orphaned.
 func TestKeysService_CreateKey_DuplicateIDIsConflict(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
-	_, err := svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+	_, err := svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
 	require.NoError(t, err)
 
-	_, err = svc.CreateKey("alice", &CreateKeyRequest{Name: "Alice Again"}, "admin")
+	_, err = svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "Alice Again"}, "admin")
 	require.Error(t, err)
 	assert.True(t, isConflict(err), "a duplicate key id reported as: %v", err)
 
@@ -138,17 +130,17 @@ func TestKeysService_CreateKey_DuplicateIDIsConflict(t *testing.T) {
 // An invalid expires_at is refused before the personal team is written, so
 // a corrected retry with the same id succeeds.
 func TestKeysService_CreateKey_InvalidExpiryLeavesNoTeam(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
 	bad := "2027-01-01"
-	_, err := svc.CreateKey("ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &bad}, "admin")
+	_, err := svc.CreateKey(t.Context(), "ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &bad}, "admin")
 	require.Error(t, err)
 	assert.True(t, isInvalidInput(err), "an invalid expiry reported as: %v", err)
 	_, err = teamsSvc.GetTeam("personal-ci")
 	assert.ErrorIs(t, err, teams.ErrTeamNotFound)
 
 	good := "2027-01-01T00:00:00Z"
-	resp, err := svc.CreateKey("ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &good}, "admin")
+	resp, err := svc.CreateKey(t.Context(), "ci", &CreateKeyRequest{Name: "CI", ExpiresAt: &good}, "admin")
 	require.NoError(t, err)
 	assert.Equal(t, "personal-ci", resp.TeamID)
 }
@@ -158,7 +150,7 @@ func TestKeysService_CreateKey_InvalidExpiryLeavesNoTeam(t *testing.T) {
 // ============================================================================
 
 func TestKeysService_CreateKey_ConcurrentPersonalTeamCreate(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
 	// Hammer: 20 goroutines each trying to create a distinct key with
 	// auto-personal-team. The shared KeysService.mu + TeamsService.mu
@@ -174,7 +166,7 @@ func TestKeysService_CreateKey_ConcurrentPersonalTeamCreate(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			name := "alice-" + itoa(idx)
-			_, err := svc.CreateKey(name, &CreateKeyRequest{Name: name}, "admin")
+			_, err := svc.CreateKey(t.Context(), name, &CreateKeyRequest{Name: name}, "admin")
 			errs <- err
 		}(i)
 	}
@@ -222,9 +214,9 @@ func itoa(i int) string {
 // been missed, which is how a half-applied pattern fails: silently, and
 // only on the paths nobody drove.
 func TestKeysService_CreateKey_RejectsBadTeamInputAsCallerError(t *testing.T) {
-	svc, teamsSvc, _, _, _ := newKeysTestHarness(t)
+	svc, teamsSvc, _, _ := newKeysTestHarness(t)
 
-	_, err := teamsSvc.CreateTeam(&CreateTeamRequest{ID: "shared", Name: "Shared"}, "admin")
+	_, err := teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "shared", Name: "Shared"}, "admin")
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -242,10 +234,115 @@ func TestKeysService_CreateKey_RejectsBadTeamInputAsCallerError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := svc.CreateKey("probe-"+tc.name, tc.req, "admin")
+			_, err := svc.CreateKey(t.Context(), "probe-"+tc.name, tc.req, "admin")
 			require.Error(t, err)
 			assert.True(t, isInvalidInput(err),
 				"a rejected request body reported as a server fault: %v", err)
 		})
 	}
+}
+
+// ============================================================================
+// Key insert failing after its personal team was written
+// ============================================================================
+
+// cancelOnEvent ends a request as soon as the store records one action.
+type cancelOnEvent struct {
+	action audit.Action
+	cancel context.CancelFunc
+}
+
+func (c cancelOnEvent) Emit(_ context.Context, ev audit.Event) error {
+	if ev.Action == c.action {
+		c.cancel()
+	}
+	return nil
+}
+
+func TestKeysService_CreateKey_RollsBackPersonalTeamWhenKeyFails(t *testing.T) {
+	for _, cause := range []string{"persist failure", "client disconnect"} {
+		t.Run(cause, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := filestore.Open(t.Context(), dir, filestore.Options{})
+			require.NoError(t, err)
+			teamsSvc := NewTeamsService(store, newTestAccessControl(t, store))
+			svc := NewKeysService(store, teamsSvc, teamsSvc.access)
+			ctx := t.Context()
+			if cause == "persist failure" {
+				// A directory where keys.yaml belongs fails only the key's rename.
+				require.NoError(t, os.Mkdir(filepath.Join(dir, "keys.yaml"), 0o700))
+			} else {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				store.SetAuditSink(cancelOnEvent{action: audit.ActionTeamCreated, cancel: cancel})
+			}
+
+			_, err = svc.CreateKey(ctx, "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+			require.Error(t, err)
+			assert.Nil(t, store.Snapshot().Key("alice"))
+			assert.Nil(t, store.Snapshot().Team("personal-alice"), "the personal team is rolled back with the failed key")
+			data, err := os.ReadFile(filepath.Join(dir, "teams.yaml"))
+			require.NoError(t, err)
+			persisted, err := filestore.DecodeTeams(data)
+			require.NoError(t, err)
+			assert.NotContains(t, persisted, "personal-alice", "no orphan is left on disk for the next start to sweep")
+		})
+	}
+}
+
+// ============================================================================
+// Spend rows leave with their key or team
+// ============================================================================
+
+func TestKeyAndTeamDeletionPurgeSpend(t *testing.T) {
+	store := newTestAccessStore(t)
+	enforcer := quota.NewEnforcer(quota.NewRateLimiter(), quota.NewConcurrencyLimiter(), quota.NewSpendTracker(""))
+	accessControl := NewAccessControl(StaticKeySet{}, store, nil, enforcer, nil, ModelHooks{})
+	teamsSvc := NewTeamsService(store, accessControl)
+	svc := NewKeysService(store, teamsSvc, accessControl)
+	_, err := teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "admin")
+	require.NoError(t, err)
+	_, err = svc.CreateKey(t.Context(), "shared-key", &CreateKeyRequest{Name: "Shared", TeamID: "eng"}, "admin")
+	require.NoError(t, err)
+	_, err = svc.CreateKey(t.Context(), "solo", &CreateKeyRequest{Name: "Solo"}, "admin")
+	require.NoError(t, err)
+	for _, scope := range []quota.QuotaScope{
+		{Scope: quota.ScopeKey, EntityID: "shared-key"}, {Scope: quota.ScopeTeam, EntityID: "eng"},
+		{Scope: quota.ScopeKey, EntityID: "solo"}, {Scope: quota.ScopeTeam, EntityID: "personal-solo"},
+	} {
+		scope.Quotas = quota.QuotaConfig{SpendLimit: 5, ResetPeriod: "monthly", DefaultMaxTokens: 100}
+		_, reservations := enforcer.Check([]quota.QuotaScope{scope}, paidQuotes())
+		enforcer.SettleReservations(reservations, 250_000, 10, 10)
+	}
+	require.NotNil(t, accessControl.GetKeySpend("solo"))
+	require.NotNil(t, accessControl.GetTeamSpend("personal-solo"))
+
+	require.NoError(t, svc.DeleteKey(t.Context(), "solo", "admin"))
+	assert.Nil(t, accessControl.GetKeySpend("solo"))
+	assert.Nil(t, accessControl.GetTeamSpend("personal-solo"), "the cascaded personal team's spend goes too")
+	require.NoError(t, svc.DeleteKey(t.Context(), "shared-key", "admin"))
+	assert.Nil(t, accessControl.GetKeySpend("shared-key"))
+	require.NotNil(t, accessControl.GetTeamSpend("eng"), "a shared team keeps its spend after a member leaves")
+	require.NoError(t, teamsSvc.DeleteTeam(t.Context(), "eng", "admin"))
+	assert.Nil(t, accessControl.GetTeamSpend("eng"))
+}
+
+// A PATCH that would leave a key the node cannot load again is the caller's
+// error, and nothing is written.
+func TestUpdateKey_EmptyNameIsRefusedAs400(t *testing.T) {
+	svc, _, store, _ := newKeysTestHarness(t)
+	_, err := svc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "Alice"}, "admin")
+	require.NoError(t, err)
+
+	ctrl := &KeysController{service: svc}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPatch, "/zzrouter/v1/keys/alice", strings.NewReader(`{"name":""}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Params = gin.Params{{Key: "id", Value: "alice"}}
+	ctrl.UpdateKey(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	assert.Equal(t, "Alice", store.Snapshot().Key("alice").Name)
 }

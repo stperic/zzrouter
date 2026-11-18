@@ -1,2 +1,2 @@
-// Package filestore owns the YAML-backed keys and teams stores and their codecs.
+// Package filestore implements access.Store over keys.yaml, teams.yaml and people.json.
 package filestore

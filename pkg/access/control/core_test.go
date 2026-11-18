@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -10,34 +9,46 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/model/pricing"
 )
 
-// newTestCore returns a Core backed by empty tmp stores and a real
+// newTestCore returns a Core backed by an empty tmp store and a real
 // (in-memory) quota.Enforcer. The reaper is NOT started — tests that
 // want to exercise reap behaviour call reapStalePendingReservations
 // directly with an injected "now".
-func newTestCore(t *testing.T, staticKeys StaticKeySet) (*Core, *filestore.Keys, *filestore.Teams) {
+func newTestCore(t *testing.T, staticKeys StaticKeySet) (*Core, access.Store) {
 	t.Helper()
-	dir := t.TempDir()
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
+	store := openTestStore(t, filestore.Options{})
+	return newTestCoreFor(t, staticKeys, store), store
+}
+
+func newTestCoreFor(t *testing.T, staticKeys StaticKeySet, store access.Store) *Core {
+	t.Helper()
 	enforcer := quota.NewEnforcer(
 		quota.NewRateLimiter(),
 		quota.NewConcurrencyLimiter(),
 		quota.NewSpendTracker(""),
 	)
-	c := NewCore(staticKeys, keyStore, teamStore, nil, enforcer, nil)
+	c := NewCore(staticKeys, store, nil, enforcer, nil)
 	t.Cleanup(func() { c.Stop(context.Background()) })
-	return c, keyStore, teamStore
+	return c
+}
+
+func openTestStore(t *testing.T, opts filestore.Options) access.Store {
+	t.Helper()
+	store, err := filestore.Open(t.Context(), t.TempDir(), opts)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func TestCore_Authenticate_StaticAdmin(t *testing.T) {
 	t.Parallel()
 	const adminKey = "admin-key-value-of-sufficient-length"
-	c, _, _ := newTestCore(t, StaticKeySet{Admin: adminKey})
+	c, _ := newTestCore(t, StaticKeySet{Admin: adminKey})
 
 	ac, err := c.Authenticate(adminKey)
 	require.NoError(t, err)
@@ -51,7 +62,7 @@ func TestCore_Authenticate_StaticAdmin(t *testing.T) {
 
 func TestCore_Authenticate_EmptyKey(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	_, err := c.Authenticate("")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrEmptyKey)
@@ -59,7 +70,7 @@ func TestCore_Authenticate_EmptyKey(t *testing.T) {
 
 func TestCore_Authenticate_InvalidKey(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	_, err := c.Authenticate("totally-wrong")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidKey)
@@ -67,7 +78,7 @@ func TestCore_Authenticate_InvalidKey(t *testing.T) {
 
 func TestCore_Enforce_SuspendedKey(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{
@@ -86,7 +97,7 @@ func TestCore_Enforce_SuspendedKey(t *testing.T) {
 
 func TestCore_Enforce_SuspendedTeam(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	ac := &AccessContext{
 		Key: &KeyPrincipal{ID: "vk-1", Role: RoleUser, IsVirtual: true},
@@ -102,7 +113,7 @@ func TestCore_Enforce_SuspendedTeam(t *testing.T) {
 
 func TestCore_Enforce_ExpiredKey(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	past := time.Now().Add(-time.Hour)
 	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
@@ -120,7 +131,7 @@ func TestCore_Enforce_ExpiredKey(t *testing.T) {
 
 func TestCore_Enforce_ModelAccessDenied(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	ac := &AccessContext{
 		Key: &KeyPrincipal{ID: "vk-1", Role: RoleUser, IsVirtual: true},
@@ -136,7 +147,7 @@ func TestCore_Enforce_ModelAccessDenied(t *testing.T) {
 
 func TestCore_Enforce_Happy(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-1", Role: RoleUser, IsVirtual: true},
@@ -185,7 +196,7 @@ func TestTranslateQuotaReason(t *testing.T) {
 // budget to failed-acquire attempts over time.
 func TestCore_Enforce_ConcurrencyFailureCancelsBudget(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	// Key with MaxParallelRequests=1 + SpendLimit set so a budget
 	// reservation is actually taken in step 4.
@@ -234,7 +245,7 @@ func TestCore_Enforce_ConcurrencyFailureCancelsBudget(t *testing.T) {
 // without FIFO cross-settlement.
 func TestCore_PendingReservations_PopByID(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	const keyID = "vk-byid"
 
 	c.pendingMu.Lock()
@@ -265,7 +276,7 @@ func TestCore_PendingReservations_PopByID(t *testing.T) {
 // NoReservation is a safe no-op — CancelPending relies on this.
 func TestCore_PopPendingReservation_NoReservation(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	got := c.popPendingReservation("any-key", NoReservation)
 	assert.Nil(t, got)
 }
@@ -277,7 +288,7 @@ func TestCore_PopPendingReservation_NoReservation(t *testing.T) {
 // error paths.
 func TestCore_ReapStalePendingReservations(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	// Anchor on pendingReservationTTL so the test doesn't drift if the
 	// constant is retuned. Fresh is half-TTL; stale is 2× TTL.
@@ -312,7 +323,7 @@ func TestCore_ReapStalePendingReservations(t *testing.T) {
 // mid-flight can no longer steal a sibling request's settlement.
 func TestCore_PendingReservations_ConcurrentSameKey(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	quotas := quota.QuotaConfig{
 		SpendLimit:       1000, // very large — reservations never exhaust
@@ -379,7 +390,7 @@ func TestCore_PendingReservations_ConcurrentSameKey(t *testing.T) {
 // with no leftover entries.
 func TestCore_PendingReservations_CancelPending_Concurrent(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	quotas := quota.QuotaConfig{
 		SpendLimit:       1000,
@@ -439,7 +450,7 @@ func TestCore_PendingReservations_CancelPending_Concurrent(t *testing.T) {
 // stays honest.
 func TestCore_LateSettle_AfterReap(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	quotas := quota.QuotaConfig{
 		SpendLimit:       1000,
@@ -500,7 +511,7 @@ func TestCore_LateSettle_AfterReap(t *testing.T) {
 // cold-load latency.
 func TestCore_SettleWithinTTL_RecordsFullLedger(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 
 	quotas := quota.QuotaConfig{
 		SpendLimit:       1000,
@@ -549,7 +560,7 @@ func TestCore_SettleWithinTTL_RecordsFullLedger(t *testing.T) {
 // own request budget.
 func TestCore_Authorize_DoesNotTickRPM(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	ac := &AccessContext{Team: &TeamPrincipal{ID: "test-team"},
 		Key: &KeyPrincipal{ID: "vk-rpm", Role: RoleUser, IsVirtual: true,
 			Quotas: quota.QuotaConfig{RPMLimit: 1}},
@@ -568,7 +579,7 @@ func TestCore_Authorize_DoesNotTickRPM(t *testing.T) {
 
 func TestCore_Authorize_DeniesWhatEnforceDenies(t *testing.T) {
 	t.Parallel()
-	c, _, _ := newTestCore(t, StaticKeySet{})
+	c, _ := newTestCore(t, StaticKeySet{})
 	past := time.Now().Add(-time.Hour)
 	cases := map[DenialReason]*AccessContext{
 		DenyKeySuspended: {Key: &KeyPrincipal{ID: "vk", IsVirtual: true, Suspended: true}, Team: &TeamPrincipal{ID: "test-team"}},

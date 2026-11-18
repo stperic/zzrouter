@@ -15,7 +15,7 @@ type onboardingProgress struct {
 }
 
 func (s *Server) getOnboardingProgress(node string) onboardingProgress {
-	progress := onboardingProgress{Progress: s.people.Progress(), Node: node}
+	progress := onboardingProgress{Progress: s.accessStore.Snapshot().Progress(), Node: node}
 	if s.services.Apps == nil {
 		return progress
 	}

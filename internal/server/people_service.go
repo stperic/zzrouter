@@ -14,38 +14,38 @@ import (
 	"sync/atomic"
 
 	"github.com/google/uuid"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/localproof"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 )
 
-func (s *Server) initPeople(ctx context.Context, issuer string) error {
-	store, err := people.Open(ctx, filepath.Join(s.auditConfigDir, "access", "people.json"), people.Options{
-		ValidateExternalIssuer: func(_ context.Context, value string) error {
-			if s.ownerRecovery != nil && s.ownerRecovery.ValidReference(value) {
-				return nil
-			}
-			var ref control.CredentialReference
-			if err := json.Unmarshal([]byte(value), &ref); err != nil || ref.Kind == control.KindPerson {
-				return people.ErrInvalidGrant
-			}
-			_, err := s.access.core.AuthenticateReference(ref)
-			return err
-		},
-		ValidateTeam: func(_ context.Context, id string) error {
-			team := s.teamStore.Get(id)
-			if team == nil || team.Kind != teams.KindShared || team.Suspended {
-				return people.ErrInvalidGrant
-			}
-			return nil
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("initialize people: %w", err)
+// validateExternalIssuer runs with the people mutex held, so it never reads a person.
+func (s *Server) validateExternalIssuer(_ context.Context, value string) error {
+	if s.ownerRecovery != nil && s.ownerRecovery.ValidReference(value) {
+		return nil
 	}
-	s.people = store
-	s.access.core.SetPeople(store)
+	var ref control.CredentialReference
+	if err := json.Unmarshal([]byte(value), &ref); err != nil || ref.Kind == control.KindPerson {
+		return people.ErrInvalidGrant
+	}
+	_, err := s.access.core.AuthenticateReference(ref)
+	return err
+}
+
+// validatePeopleTeam admits people and grants only into an active shared team.
+func validatePeopleTeam(snap *access.Snapshot, id string) error {
+	team := snap.Team(id)
+	if team == nil || team.Kind != teams.KindShared || team.Suspended {
+		return people.ErrInvalidGrant
+	}
+	return nil
+}
+
+func (s *Server) initPeople(ctx context.Context, issuer string) error {
+	var err error
 	descriptor := localproof.File{ConsoleURL: issuer + "/console/", TLSCert: s.config.Node.TLSCert}
 	if descriptor.TLSCert != "" {
 		descriptor.TLSCert, err = filepath.Abs(descriptor.TLSCert)
@@ -70,7 +70,8 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 	}
 	if s.inference.logBridge != nil {
 		var responseDone, appDone atomic.Bool
-		progress := store.Progress()
+		store := s.accessStore.People()
+		progress := s.accessStore.Snapshot().Progress()
 		responseDone.Store(progress.ResponseVerified)
 		appDone.Store(progress.AppConnected)
 		s.inference.logBridge.SetOnboardingObserver(func(subject control.Subject) {
@@ -80,7 +81,7 @@ func (s *Server) initPeople(ctx context.Context, issuer string) error {
 						slog.Warn("Could not save onboarding response milestone")
 					}
 				} else {
-					responseDone.Store(store.Progress().ResponseVerified)
+					responseDone.Store(s.accessStore.Snapshot().Progress().ResponseVerified)
 				}
 			} else if subject.Kind != control.KindPerson && subject.ID != "" && !appDone.Load() {
 				if err := store.MarkAppConnected(ctx); err != nil {
@@ -121,7 +122,7 @@ func localRecoveryHost(ctx context.Context, bind string) (string, error) {
 // mutatePeople serializes membership and grants with team deletion. OAuth is
 // called only after this returns, preserving the documented lock order.
 func (s *Server) mutatePeople(change func() error) error {
-	if s.services.Teams == nil || s.people == nil {
+	if s.services.Teams == nil || s.accessStore.People() == nil {
 		return people.ErrClosed
 	}
 	s.services.Teams.mu.Lock()
@@ -129,20 +130,16 @@ func (s *Server) mutatePeople(change func() error) error {
 	return change()
 }
 
-func (s *Server) initialOwnerTeam() (string, error) {
-	// Caller holds TeamsService.mu. Re-save even a previously-created team so a
-	// failed first persistence cannot be mistaken for a durable workspace.
-	for _, team := range s.teamStore.List() {
+func (s *Server) initialOwnerTeam(ctx context.Context) (string, error) {
+	// Caller holds TeamsService.mu. A published team is already durable.
+	for id, team := range s.accessStore.Snapshot().Teams() {
 		if team.Kind == teams.KindShared && !team.Suspended && team.Metadata["owner_workspace"] == "true" {
-			return team.ID, s.teamStore.Save()
+			return id, nil
 		}
 	}
 	id := "workspace-" + uuid.NewString()
-	err := s.teamStore.Create(id, &teams.Team{Name: "Personal workspace", Kind: teams.KindShared, CreatedBy: "installation", Metadata: map[string]string{"owner_workspace": "true"}})
-	if err != nil {
-		return "", err
-	}
-	return id, s.teamStore.Save()
+	_, err := s.accessStore.CreateTeam(ctx, id, teams.Team{Name: "Personal workspace", Kind: teams.KindShared, CreatedBy: "installation", Metadata: map[string]string{"owner_workspace": "true"}}, audit.Event{})
+	return id, err
 }
 
 func peopleIssuer(ref control.CredentialReference) (people.Issuer, error) {
@@ -162,13 +159,14 @@ func localRecoveryRequest(rhost string) bool {
 	return err == nil && localproof.Address(host)
 }
 
-func (s *Server) closePeople() error {
+// closeAccess releases the owner proof before the store and its people lock.
+func (s *Server) closeAccess() error {
 	var err error
 	if s.ownerRecovery != nil {
 		err = s.ownerRecovery.Close()
 	}
-	if s.people != nil {
-		err = errors.Join(err, s.people.Close())
+	if s.accessStore != nil {
+		err = errors.Join(err, s.accessStore.Close())
 	}
 	return err
 }

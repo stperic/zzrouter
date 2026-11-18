@@ -16,6 +16,7 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/apipath"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/role"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
@@ -257,16 +258,17 @@ func TestIntegrationBrowserSessionRechecksLiveKeyPolicy(t *testing.T) {
 	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
 	key := loadTestKey(t, s, "browser-reader", keys.VirtualKey{Name: "Browser reader"})
 	browser := newSessionBrowser(t, endpoint, key)
-	stored := *s.keyStore.Get("browser-reader")
-	stored.Suspended = true
-	require.NoError(t, s.keyStore.Update("browser-reader", &stored))
+	suspend := func(suspended bool) {
+		_, err := s.accessStore.UpdateKey(t.Context(), "browser-reader", func(k *keys.VirtualKey) error { k.Suspended = suspended; return nil }, audit.Event{})
+		require.NoError(t, err)
+	}
+	suspend(true)
 	status, _ := browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 401, status)
-	stored.Suspended = false
-	require.NoError(t, s.keyStore.Update("browser-reader", &stored))
+	suspend(false)
 	status, _ = browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 200, status)
-	_, err := s.keyStore.RotateKey("browser-reader")
+	_, _, err := s.accessStore.RotateKey(t.Context(), "browser-reader", audit.Event{})
 	require.NoError(t, err)
 	status, _ = browser.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, 401, status)

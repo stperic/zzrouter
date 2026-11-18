@@ -51,7 +51,7 @@ func (ctrl *KeysController) CreateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.CreateKey(req.ID, &req.CreateKeyRequest, auditActor(c))
+	resp, err := ctrl.service.CreateKey(c.Request.Context(), req.ID, &req.CreateKeyRequest, auditActor(c))
 	if err != nil {
 		if isConflict(err) {
 			Conflict(c, err.Error())
@@ -96,7 +96,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.UpdateKey(id, &req, auditActor(c))
+	resp, err := ctrl.service.UpdateKey(c.Request.Context(), id, &req, auditActor(c))
 	if err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
@@ -117,7 +117,7 @@ func (ctrl *KeysController) UpdateKey(c *gin.Context) {
 func (ctrl *KeysController) DeleteKey(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := ctrl.service.DeleteKey(id, auditActor(c)); err != nil {
+	if err := ctrl.service.DeleteKey(c.Request.Context(), id, auditActor(c)); err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
 			return
@@ -133,7 +133,7 @@ func (ctrl *KeysController) DeleteKey(c *gin.Context) {
 func (ctrl *KeysController) RotateKey(c *gin.Context) {
 	id := c.Param("id")
 
-	resp, err := ctrl.service.RotateKey(id, auditActor(c))
+	resp, err := ctrl.service.RotateKey(c.Request.Context(), id, auditActor(c))
 	if err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
@@ -166,7 +166,7 @@ func (ctrl *KeysController) GetKeyUsage(c *gin.Context) {
 func (ctrl *KeysController) ResetKeyUsage(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := ctrl.service.ResetKeyUsage(id, auditActor(c)); err != nil {
+	if err := ctrl.service.ResetKeyUsage(c.Request.Context(), id, auditActor(c)); err != nil {
 		if isNotFound(err) {
 			NotFound(c, err.Error())
 			return

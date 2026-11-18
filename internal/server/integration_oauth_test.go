@@ -19,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -169,7 +170,7 @@ func TestIntegrationOAuthUserPreservesPolicyAndScrubsToken(t *testing.T) {
 	require.True(t, limited.IsError)
 	require.Contains(t, limited.Content[0].(*mcp.TextContent).Text, "HTTP 429")
 	require.EqualValues(t, 1, calls.Load())
-	_, err := s.keyStore.RotateKey("oauth-reader")
+	_, _, err := s.accessStore.RotateKey(t.Context(), "oauth-reader", audit.Event{})
 	require.NoError(t, err)
 	after := makeRequest(t, s, TestRequest{Method: "POST", Path: "/inference/mcp", Headers: map[string]string{"Authorization": "Bearer " + access}, Body: map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}})
 	require.Equal(t, 401, after.Code)

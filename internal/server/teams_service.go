@@ -2,7 +2,7 @@
 //
 // Team membership is owned by keys (VirtualKey.TeamID), not by teams —
 // this service never mutates a member list because there isn't one. Listing
-// the keys in a team is served via keyStore.ListByTeam.
+// the keys in a team is served via Snapshot.KeysByTeam.
 
 package server
 
@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/filestore"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
@@ -41,33 +41,17 @@ var ErrPersonalTeamImmutable = errors.New("personal team is immutable")
 // atomic against concurrent admin requests and against KeysService driving
 // personal-team auto-create. KeysService holds its own lock AND acquires
 // this service's lock via the helper methods below — lock order is always
-// KeysService.mu → TeamsService.mu. Don't reverse.
+// KeysService.mu → TeamsService.mu → the access store's writer gate, which
+// is innermost. Don't reverse.
 type TeamsService struct {
-	mu       sync.Mutex
-	store    *filestore.Teams
-	keyStore *filestore.Keys
-	access   *AccessControl
-	audit    audit.Sink
-	people   *people.Store // Set once during route construction, before serving.
+	mu     sync.Mutex
+	store  access.Store
+	access *AccessControl
 }
 
 // NewTeamsService creates a new teams service.
-func NewTeamsService(store *filestore.Teams, keyStore *filestore.Keys, access *AccessControl) *TeamsService {
-	return &TeamsService{store: store, keyStore: keyStore, access: access, audit: audit.Null{}}
-}
-
-// SetAuditSink replaces the audit sink. The zero-value sink is audit.Null,
-// so tests that don't care about audit output can omit this call. Safe
-// to call concurrently with mutation methods — acquires s.mu so an
-// in-flight CreateTeam that reads s.audit always sees a consistent value.
-func (s *TeamsService) SetAuditSink(sink audit.Sink) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sink == nil {
-		s.audit = audit.Null{}
-		return
-	}
-	s.audit = sink
+func NewTeamsService(store access.Store, access *AccessControl) *TeamsService {
+	return &TeamsService{store: store, access: access}
 }
 
 // ============================================================================
@@ -168,7 +152,7 @@ type TeamUsageResponse struct {
 
 // CreateTeam creates a shared team with the given config. Always Kind=shared —
 // personal teams cannot be created via the public API.
-func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*TeamResponse, error) {
+func (s *TeamsService) CreateTeam(ctx context.Context, req *CreateTeamRequest, createdBy string) (*TeamResponse, error) {
 	if req.ID == "" {
 		return nil, invalidInputf("id is required")
 	}
@@ -195,7 +179,7 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	team := &teams.Team{
+	team := teams.Team{
 		Name:           req.Name,
 		Kind:           teams.KindShared,
 		AllowedModels:  slices.Clone(req.AllowedModels),
@@ -214,14 +198,7 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 		DefaultMaxTokens:    req.DefaultMaxTokens,
 	}
 
-	if err := s.store.Create(req.ID, team); err != nil {
-		return nil, err
-	}
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("team created but failed to persist: %w", err)
-	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
+	created, err := s.store.CreateTeam(ctx, req.ID, team, audit.Event{
 		Action:  audit.ActionTeamCreated,
 		Actor:   resolveActor(createdBy),
 		Subject: req.ID,
@@ -232,36 +209,39 @@ func (s *TeamsService) CreateTeam(req *CreateTeamRequest, createdBy string) (*Te
 			"route_access":    team.RouteAccess.Clone(),
 		},
 	})
-
-	return s.response(s.store.Get(req.ID)), nil
+	if err != nil {
+		return nil, err
+	}
+	return s.response(s.store.Snapshot(), created), nil
 }
 
 // GetTeam returns a team by ID.
 func (s *TeamsService) GetTeam(id string) (*TeamResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	team := s.store.Get(id)
+	snap := s.store.Snapshot()
+	team := snap.Team(id)
 	if team == nil {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
-	return s.response(team), nil
+	return s.response(snap, team), nil
 }
 
 // ListTeams returns all teams.
 func (s *TeamsService) ListTeams() []*TeamResponse {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	all := s.store.List()
-	result := make([]*TeamResponse, 0, len(all))
-	for _, team := range all {
-		result = append(result, s.response(team))
+	snap := s.store.Snapshot()
+	result := []*TeamResponse{}
+	for _, team := range snap.Teams() {
+		result = append(result, s.response(snap, team))
 	}
 	return result
 }
 
 // UpdateTeam applies a partial update to a team. Personal teams reject
 // updates outright — their config is fixed at creation.
-func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy string) (*TeamResponse, error) {
+func (s *TeamsService) UpdateTeam(ctx context.Context, id string, req *UpdateTeamRequest, updatedBy string) (*TeamResponse, error) {
 	if req.ResetPeriod != nil {
 		if err := validateResetPeriod(*req.ResetPeriod); err != nil {
 			return nil, err
@@ -270,11 +250,12 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if req.Suspended != nil && *req.Suspended && s.people != nil && s.people.OwnerTeam(id) {
+	snap := s.store.Snapshot()
+	if req.Suspended != nil && *req.Suspended && snap.OwnerTeam(id) {
 		return nil, fmt.Errorf("the owner's team cannot be suspended: %w", people.ErrOwnerProtected)
 	}
 
-	existing := s.store.Get(id)
+	existing := snap.Team(id)
 	if existing == nil {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
@@ -288,82 +269,73 @@ func (s *TeamsService) UpdateTeam(id string, req *UpdateTeamRequest, updatedBy s
 	if err := req.ProviderAccess.Validate(); err != nil {
 		return nil, invalidInputf("%w", err)
 	}
-	updated := *existing
-	updated.RouteAccess = existing.RouteAccess.Clone()
-	if !req.RouteAccess.IsZero() {
-		updated.RouteAccess = req.RouteAccess.Clone()
-	}
-	updated.ProviderAccess = existing.ProviderAccess.Clone()
-	if req.ProviderAccess.Mode != "" {
-		updated.ProviderAccess = req.ProviderAccess.Clone()
-	}
-	updated.AllowedModels = slices.Clone(existing.AllowedModels)
-	updated.Metadata = maps.Clone(existing.Metadata)
-
-	if req.Name != nil {
-		updated.Name = *req.Name
-	}
-	if req.AllowedModels != nil {
-		updated.AllowedModels = slices.Clone(*req.AllowedModels)
-	}
-	if req.Suspended != nil {
-		updated.Suspended = *req.Suspended
-		if *req.Suspended {
-			now := utils.Now()
-			updated.SuspendedAt = &now
-			updated.SuspendedBy = updatedBy
-		} else {
-			updated.SuspendedAt = nil
-			updated.SuspendedBy = ""
+	updated, err := s.store.UpdateTeam(ctx, id, func(updated *teams.Team) error {
+		if !req.RouteAccess.IsZero() {
+			updated.RouteAccess = req.RouteAccess.Clone()
 		}
-	}
-	if req.MaxParallelRequests != nil {
-		updated.MaxParallelRequests = *req.MaxParallelRequests
-	}
-	if req.RPMLimit != nil {
-		updated.RPMLimit = *req.RPMLimit
-	}
-	if req.TPMLimit != nil {
-		updated.TPMLimit = *req.TPMLimit
-	}
-	if req.SpendLimit != nil {
-		updated.SpendLimit = *req.SpendLimit
-	}
-	if req.ResetPeriod != nil {
-		updated.ResetPeriod = *req.ResetPeriod
-	}
-	if req.DefaultMaxTokens != nil {
-		updated.DefaultMaxTokens = *req.DefaultMaxTokens
-	}
-	if req.Metadata != nil {
-		updated.Metadata = maps.Clone(req.Metadata)
-	}
-	updated.UpdatedBy = updatedBy
-
-	if err := s.store.Update(id, &updated); err != nil {
-		return nil, err
-	}
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("team updated but failed to persist: %w", err)
-	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
+		if req.ProviderAccess.Mode != "" {
+			updated.ProviderAccess = req.ProviderAccess.Clone()
+		}
+		if req.Name != nil {
+			updated.Name = *req.Name
+		}
+		if req.AllowedModels != nil {
+			updated.AllowedModels = slices.Clone(*req.AllowedModels)
+		}
+		if req.Suspended != nil {
+			updated.Suspended = *req.Suspended
+			if *req.Suspended {
+				now := utils.Now()
+				updated.SuspendedAt = &now
+				updated.SuspendedBy = updatedBy
+			} else {
+				updated.SuspendedAt = nil
+				updated.SuspendedBy = ""
+			}
+		}
+		if req.MaxParallelRequests != nil {
+			updated.MaxParallelRequests = *req.MaxParallelRequests
+		}
+		if req.RPMLimit != nil {
+			updated.RPMLimit = *req.RPMLimit
+		}
+		if req.TPMLimit != nil {
+			updated.TPMLimit = *req.TPMLimit
+		}
+		if req.SpendLimit != nil {
+			updated.SpendLimit = *req.SpendLimit
+		}
+		if req.ResetPeriod != nil {
+			updated.ResetPeriod = *req.ResetPeriod
+		}
+		if req.DefaultMaxTokens != nil {
+			updated.DefaultMaxTokens = *req.DefaultMaxTokens
+		}
+		if req.Metadata != nil {
+			updated.Metadata = maps.Clone(req.Metadata)
+		}
+		updated.UpdatedBy = updatedBy
+		return nil
+	}, audit.Event{
 		Action:   audit.ActionTeamUpdated,
 		Actor:    resolveActor(updatedBy),
 		Subject:  id,
 		Metadata: updateTeamChangedFields(req),
 	})
-
-	return s.response(s.store.Get(id)), nil
+	if err != nil {
+		return nil, err
+	}
+	return s.response(s.store.Snapshot(), updated), nil
 }
 
 // DeleteTeam removes a shared team. The team must have zero member keys —
 // callers must delete or re-home member keys first. Personal teams cannot
 // be deleted via this path; they cascade-delete with their key instead.
-func (s *TeamsService) DeleteTeam(id, actor string) error {
+func (s *TeamsService) DeleteTeam(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	existing := s.store.Get(id)
+	snap := s.store.Snapshot()
+	existing := snap.Team(id)
 	if existing == nil {
 		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
@@ -371,33 +343,29 @@ func (s *TeamsService) DeleteTeam(id, actor string) error {
 		return fmt.Errorf("team %q: %w", id, ErrPersonalTeamImmutable)
 	}
 
-	if impact := s.membership(existing); !impact.CanDelete {
+	if impact := membership(snap, existing); !impact.CanDelete {
 		return fmt.Errorf("team %q has %d app keys, %d people and %d pending enrollments; remove or reassign them first: %w",
 			id, impact.AppKeys, impact.People, impact.Invitations+impact.EnrollmentGrants, teams.ErrTeamHasMembers)
 	}
 
-	if err := s.store.Delete(id); err != nil {
+	err := s.store.DeleteTeam(ctx, id, audit.Event{
+		Action:  audit.ActionTeamDeleted,
+		Actor:   resolveActor(actor),
+		Subject: id,
+	})
+	if err != nil {
 		return err
-	}
-	if err := s.store.Save(); err != nil {
-		return fmt.Errorf("team deleted but failed to persist: %w", err)
 	}
 
 	if s.access != nil {
 		s.access.OnTeamDeleted(id)
 	}
-
-	audit.Log(context.Background(), s.audit, audit.Event{
-		Action:  audit.ActionTeamDeleted,
-		Actor:   resolveActor(actor),
-		Subject: id,
-	})
 	return nil
 }
 
 // GetTeamUsage returns live usage/spend for a team.
 func (s *TeamsService) GetTeamUsage(id string) (*TeamUsageResponse, error) {
-	team := s.store.Get(id)
+	team := s.store.Snapshot().Team(id)
 	if team == nil {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
@@ -411,14 +379,14 @@ func (s *TeamsService) GetTeamUsage(id string) (*TeamUsageResponse, error) {
 }
 
 // ResetTeamUsage clears the team's spend ledger.
-func (s *TeamsService) ResetTeamUsage(id, actor string) error {
-	if s.store.Get(id) == nil {
+func (s *TeamsService) ResetTeamUsage(ctx context.Context, id, actor string) error {
+	if s.store.Snapshot().Team(id) == nil {
 		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 	if s.access != nil {
 		s.access.ResetTeamSpend(id)
 	}
-	audit.Log(context.Background(), s.audit, audit.Event{
+	s.store.Record(ctx, audit.Event{
 		Action:  audit.ActionTeamUsageReset,
 		Actor:   resolveActor(actor),
 		Subject: id,
@@ -429,16 +397,13 @@ func (s *TeamsService) ResetTeamUsage(id, actor string) error {
 // GetTeamKeys returns the keys that belong to a team by consulting the key
 // store's reverse index — teams no longer carry their own member list.
 func (s *TeamsService) GetTeamKeys(id string) (*TeamKeysResponse, error) {
-	team := s.store.Get(id)
-	if team == nil {
+	snap := s.store.Snapshot()
+	if snap.Team(id) == nil {
 		return nil, fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 
 	resp := &TeamKeysResponse{TeamID: id, Keys: []TeamKeyItem{}}
-	if s.keyStore == nil {
-		return resp, nil
-	}
-	for keyID, vk := range s.keyStore.ListByTeam(id) {
+	for keyID, vk := range snap.KeysByTeam(id) {
 		resp.Keys = append(resp.Keys, TeamKeyItem{
 			KeyID: keyID,
 			Name:  vk.Name,
@@ -455,23 +420,17 @@ func (s *TeamsService) GetTeamKeys(id string) (*TeamKeysResponse, error) {
 // CreatePersonalTeam creates a kind=personal team with the given ID and
 // sensible defaults. Called by KeysService when a key is created without a
 // caller-supplied team_id. Returns the created TeamResponse.
-func (s *TeamsService) CreatePersonalTeam(id, keyName, createdBy string) (*TeamResponse, error) {
+func (s *TeamsService) CreatePersonalTeam(ctx context.Context, id, keyName, createdBy string) (*TeamResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	team := &teams.Team{
+	team := teams.Team{
 		Name:      "Personal: " + keyName,
 		Kind:      teams.KindPersonal,
 		CreatedBy: createdBy,
 		UpdatedBy: createdBy,
 	}
-	if err := s.store.Create(id, team); err != nil {
-		return nil, err
-	}
-	if err := s.store.Save(); err != nil {
-		return nil, fmt.Errorf("personal team created but failed to persist: %w", err)
-	}
-	audit.Log(context.Background(), s.audit, audit.Event{
+	created, err := s.store.CreateTeam(ctx, id, team, audit.Event{
 		Action:  audit.ActionTeamCreated,
 		Actor:   resolveActor(createdBy),
 		Subject: id,
@@ -480,7 +439,10 @@ func (s *TeamsService) CreatePersonalTeam(id, keyName, createdBy string) (*TeamR
 			"key_name": keyName,
 		},
 	})
-	return s.response(s.store.Get(id)), nil
+	if err != nil {
+		return nil, err
+	}
+	return s.response(s.store.Snapshot(), created), nil
 }
 
 // DeletePersonalTeam removes a personal team without the shared-team
@@ -489,28 +451,16 @@ func (s *TeamsService) CreatePersonalTeam(id, keyName, createdBy string) (*TeamR
 // the ID doesn't exist or references a non-personal team. actor is the
 // cascading caller's identity (e.g. the admin deleting the owning key);
 // passing "" attributes the op to the static admin sentinel.
-func (s *TeamsService) DeletePersonalTeam(id, actor string) error {
+func (s *TeamsService) DeletePersonalTeam(ctx context.Context, id, actor string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing := s.store.Get(id)
-	if existing == nil {
-		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
-	}
-	if existing.Kind != teams.KindPersonal {
+	existing := s.store.Snapshot().Team(id)
+	if existing == nil || existing.Kind != teams.KindPersonal {
 		return fmt.Errorf("team %q: %w", id, teams.ErrTeamNotFound)
 	}
 
-	if err := s.store.Delete(id); err != nil {
-		return err
-	}
-	if err := s.store.Save(); err != nil {
-		return fmt.Errorf("personal team deleted but failed to persist: %w", err)
-	}
-	if s.access != nil {
-		s.access.OnTeamDeleted(id)
-	}
-	audit.Log(context.Background(), s.audit, audit.Event{
+	err := s.store.DeleteTeam(ctx, id, audit.Event{
 		Action:  audit.ActionTeamDeleted,
 		Actor:   resolveActor(actor),
 		Subject: id,
@@ -519,6 +469,12 @@ func (s *TeamsService) DeletePersonalTeam(id, actor string) error {
 			"cascade": true,
 		},
 	})
+	if err != nil {
+		return err
+	}
+	if s.access != nil {
+		s.access.OnTeamDeleted(id)
+	}
 	return nil
 }
 
@@ -532,26 +488,13 @@ func (s *TeamsService) ReconcilePersonalTeams() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.keyStore == nil {
-		return 0
-	}
-
+	snap := s.store.Snapshot()
 	reaped := 0
-	for id, team := range s.store.List() {
-		if team.Kind != teams.KindPersonal {
+	for id, team := range snap.Teams() {
+		if team.Kind != teams.KindPersonal || hasKeys(snap, id) {
 			continue
 		}
-		if len(s.keyStore.ListByTeam(id)) > 0 {
-			continue
-		}
-		if err := s.store.Delete(id); err != nil {
-			slog.Warn("reconcile: failed to delete orphan personal team", "team", id, "error", err)
-			continue
-		}
-		if s.access != nil {
-			s.access.OnTeamDeleted(id)
-		}
-		audit.Log(context.Background(), s.audit, audit.Event{
+		err := s.store.DeleteTeam(context.Background(), id, audit.Event{
 			Action:  audit.ActionTeamDeleted,
 			Actor:   audit.ActorSystemReconciler,
 			Subject: id,
@@ -561,12 +504,16 @@ func (s *TeamsService) ReconcilePersonalTeams() int {
 				"cascade": false,
 			},
 		})
+		if err != nil {
+			slog.Warn("reconcile: failed to delete orphan personal team", "team", id, "error", err)
+			continue
+		}
+		if s.access != nil {
+			s.access.OnTeamDeleted(id)
+		}
 		reaped++
 	}
 	if reaped > 0 {
-		if err := s.store.Save(); err != nil {
-			slog.Warn("reconcile: failed to persist after reaping orphan personal teams", "error", err)
-		}
 		slog.Info("reconcile: reaped orphan personal teams", "count", reaped)
 	}
 	return reaped
@@ -577,21 +524,25 @@ func (s *TeamsService) ReconcilePersonalTeams() int {
 // ============================================================================
 
 // Caller holds the team mutation gate so policy and membership agree.
-func (s *TeamsService) response(team *teams.Team) *TeamResponse {
+func (s *TeamsService) response(snap *access.Snapshot, team *teams.Team) *TeamResponse {
 	response := toTeamResponse(team)
 	if response != nil {
-		response.Membership = s.membership(team)
+		response.Membership = membership(snap, team)
 	}
 	return response
 }
 
-func (s *TeamsService) membership(team *teams.Team) TeamMembership {
-	var result TeamMembership
-	if s.keyStore != nil {
-		result.AppKeys = len(s.keyStore.ListByTeam(team.ID))
+func hasKeys(snap *access.Snapshot, teamID string) bool {
+	for range snap.KeysByTeam(teamID) {
+		return true
 	}
-	if s.people != nil {
-		result.TeamDependencies = s.people.TeamImpact(team.ID)
+	return false
+}
+
+func membership(snap *access.Snapshot, team *teams.Team) TeamMembership {
+	result := TeamMembership{TeamDependencies: snap.TeamImpact(team.ID)}
+	for range snap.KeysByTeam(team.ID) {
+		result.AppKeys++
 	}
 	result.CanDelete = team.Kind == teams.KindShared && result.AppKeys == 0 && !result.HasMembers()
 	result.CanSuspend = team.Kind == teams.KindShared && !result.OwnerProtected

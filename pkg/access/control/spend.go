@@ -17,10 +17,8 @@ import (
 // scope too.
 func (c *Core) RecordSpendByKey(keyID string, reservationID ReservationID, costMicro, tokensIn, tokensOut int64) {
 	subject := Subject{Kind: KindKey, ID: keyID}
-	if c.keys != nil {
-		if key := c.keys.Get(keyID); key != nil {
-			subject.TeamID = key.TeamID
-		}
+	if key := snapshot(c.state).Key(keyID); key != nil {
+		subject.TeamID = key.TeamID
 	}
 	c.RecordSpend(subject, reservationID, costMicro, tokensIn, tokensOut)
 }
@@ -145,11 +143,5 @@ func (c *Core) FlushSpend() {
 	}
 }
 
-// HasGatedTeam exposes the underlying team store's gated-team flag for
-// the anonymous-compat guard.
-func (c *Core) HasGatedTeam() bool {
-	if c.teams == nil {
-		return false
-	}
-	return c.teams.HasGatedTeam()
-}
+// HasGatedTeam exposes the published gated-team flag for the anonymous-compat guard.
+func (c *Core) HasGatedTeam() bool { return snapshot(c.state).HasGatedTeam() }

@@ -1,10 +1,12 @@
-// Package keys defines virtual API keys, store contracts, and hashing without storage.
+// Package keys defines virtual API keys and hashing without storage.
 // Virtual keys extend the static 3-key model with named, scoped keys that
 // belong to a team (the team governs model access and shared quotas).
 package keys
 
 import (
 	"errors"
+	"fmt"
+	"maps"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -16,6 +18,8 @@ var (
 	ErrKeyNotFound = errors.New("key not found")
 	// ErrKeyExists is returned when creating a key with an ID that already exists.
 	ErrKeyExists = errors.New("key already exists")
+	// ErrInvalid marks a key record that breaks a state invariant.
+	ErrInvalid = errors.New("invalid key record")
 )
 
 // VirtualKey represents a named API key with access controls and metadata.
@@ -52,7 +56,7 @@ type VirtualKey struct {
 	ExpiresAt  *time.Time `yaml:"expires_at,omitempty"`
 	CreatedAt  time.Time  `yaml:"created_at,omitempty"`
 	UpdatedAt  time.Time  `yaml:"updated_at,omitempty"`
-	LastSeenAt time.Time  `yaml:"last_seen_at,omitempty"` // hot in-memory, persisted on save cycle
+	LastSeenAt time.Time  `yaml:"last_seen_at,omitempty"` // nothing sets or persists it yet
 	CreatedBy  string     `yaml:"created_by,omitempty"`
 	UpdatedBy  string     `yaml:"updated_by,omitempty"`
 
@@ -68,26 +72,35 @@ func (k *VirtualKey) IsExpired() bool {
 	return utils.Now().After(*k.ExpiresAt)
 }
 
-// KeyStore provides CRUD operations for virtual keys.
-// Read methods return independent snapshots; changes require Update. Create and
-// Update may fill server-owned fields on their input but retain a separate copy.
-type KeyStore interface {
-	Get(id string) *VirtualKey
-	List() map[string]*VirtualKey
-	ListByTeam(teamID string) map[string]*VirtualKey
-	ValidateRawKey(rawKey string) (string, *VirtualKey)
-	Create(id string, key *VirtualKey) (rawKey string, err error)
-	Update(id string, key *VirtualKey) error
-	Delete(id string) error
-	RotateKey(id string) (rawKey string, err error)
-	Reload() error
-	Save() error
+// Validate holds the invariants every stored key keeps.
+func (k *VirtualKey) Validate() error {
+	switch {
+	case k.Name == "":
+		return fmt.Errorf("%w: missing name", ErrInvalid)
+	case k.HashedKey == "" && k.KeyEnv == "":
+		return fmt.Errorf("%w: must have hashed_key or key_env", ErrInvalid)
+	case k.TeamID == "":
+		return fmt.Errorf("%w: missing team_id", ErrInvalid)
+	case k.TeamRole == "":
+		return fmt.Errorf("%w: missing team_role", ErrInvalid)
+	}
+	return nil
+}
 
-	// OnChange registers a listener that fires after any successful
-	// mutation (Create / Update / Delete / RotateKey / Reload). No
-	// arguments — the listener re-queries the store as needed. The
-	// auth cache subscribes here so revoked or rotated keys become
-	// un-authenticatable immediately, rather than lingering until
-	// their TTL window expires.
-	OnChange(fn func())
+// Clone copies reference fields too, so a holder cannot edit another's record.
+func (k *VirtualKey) Clone() *VirtualKey {
+	if k == nil {
+		return nil
+	}
+	c := *k
+	c.Metadata = maps.Clone(k.Metadata)
+	if k.ExpiresAt != nil {
+		expires := *k.ExpiresAt
+		c.ExpiresAt = &expires
+	}
+	if k.SuspendedAt != nil {
+		suspended := *k.SuspendedAt
+		c.SuspendedAt = &suspended
+	}
+	return &c
 }

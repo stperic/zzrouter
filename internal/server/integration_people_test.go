@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +35,7 @@ func TestIntegrationPeopleSelfMutationKeepsAuthenticatedRevision(t *testing.T) {
 	_, person := createBrowserOwner(t, s, endpoint)
 	ref, err := s.access.core.PersonReference(person)
 	require.NoError(t, err)
-	_, err = s.people.RevokeSessions(t.Context(), person.ID, person.Revision)
+	_, err = s.accessStore.People().RevokeSessions(t.Context(), person.ID, person.Revision)
 	require.NoError(t, err)
 	// Represent a reset after middleware resolved the old session, but before
 	// the handler constructs its password/revocation transaction.
@@ -86,8 +88,64 @@ func createBrowserOwner(t *testing.T, s *Server, endpoint *httptest.Server) (*se
 	info := peopleCall[oauth.SessionInfo](t, owner, "POST", "/access/setup", map[string]string{"token": bound.Token, "username": "owner", "name": "Test Owner", "password": personPassword})
 	require.True(t, info.Authenticated)
 	owner.csrf = info.CSRF
-	require.True(t, s.people.Initialized())
-	return owner, s.people.Owner()
+	require.True(t, s.accessStore.Snapshot().Initialized())
+	return owner, s.accessStore.Snapshot().Owner()
+}
+
+func TestIntegrationPeopleSecondSetupGrantReusesWorkspace(t *testing.T) {
+	s, _ := oauthTestNode(t, config.ClusterModeDisabled)
+	var teamIDs []string
+	for range 2 {
+		issued := makeAuthRequest(t, s, http.MethodPost, "/zzrouter/v1/access/console-grants", TestAdminKey, struct{}{})
+		require.Equal(t, http.StatusCreated, issued.Code, string(issued.Body))
+		grant := peopleResponse[people.IssuedGrant](t, issued.Body)
+		require.Equal(t, people.PurposeSetup, grant.Purpose)
+		teamIDs = append(teamIDs, grant.TeamID)
+	}
+	require.Equal(t, teamIDs[0], teamIDs[1], "a second setup grant targets the same workspace")
+	workspaces := 0
+	for _, team := range s.accessStore.Snapshot().Teams() {
+		if team.Metadata["owner_workspace"] == "true" {
+			workspaces++
+		}
+	}
+	require.Equal(t, 1, workspaces)
+}
+
+// An invitation and the deletion of its team are serialized: either the team
+// survives with the pending invitation, or the invitation is refused.
+func TestIntegrationPeopleInvitationAndTeamDeletionSerialize(t *testing.T) {
+	s, endpoint := oauthTestNode(t, config.ClusterModeDisabled)
+	owner, _ := createBrowserOwner(t, s, endpoint)
+	for i := range 8 {
+		id := "invited-" + strconv.Itoa(i)
+		_, err := s.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: id, Name: id}, "admin")
+		require.NoError(t, err)
+		start := make(chan struct{})
+		var invited, deleted int
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			<-start
+			invited, _ = owner.call(t, http.MethodPost, "/zzrouter/v1/access/invitations", map[string]string{"team_id": id, "role": "user"}, nil)
+		})
+		wg.Go(func() {
+			<-start
+			deleted, _ = owner.call(t, http.MethodDelete, "/zzrouter/v1/teams/"+id, nil, nil)
+		})
+		close(start)
+		wg.Wait()
+		snap := s.accessStore.Snapshot()
+		if invited == http.StatusCreated {
+			require.Equal(t, http.StatusConflict, deleted)
+			require.NotNil(t, snap.Team(id))
+			require.Equal(t, 1, snap.TeamImpact(id).Invitations)
+		} else {
+			require.Equal(t, http.StatusBadRequest, invited)
+			require.Equal(t, http.StatusOK, deleted)
+			require.Nil(t, snap.Team(id))
+			require.Zero(t, snap.TeamImpact(id).Invitations, "no invitation outlives its team")
+		}
+	}
 }
 
 func TestIntegrationPeopleSetupInvitationsAndOwnerProtection(t *testing.T) {
@@ -163,8 +221,8 @@ func TestIntegrationPeoplePasswordRevocationAndRecovery(t *testing.T) {
 	bound := peopleCall[people.IssuedGrant](t, recovery, "POST", "/access/console-grants/exchange", map[string]string{"token": grant.Token})
 	info = peopleCall[oauth.SessionInfo](t, recovery, "POST", "/access/recovery", map[string]string{"token": bound.Token, "password": "new correct test passphrase"})
 	recovery.csrf = info.CSRF
-	require.Equal(t, person.ID, s.people.Owner().ID)
-	require.Equal(t, person.TeamID, s.people.Owner().TeamID)
+	require.Equal(t, person.ID, s.accessStore.Snapshot().Owner().ID)
+	require.Equal(t, person.TeamID, s.accessStore.Snapshot().Owner().TeamID)
 	status, _ = owner.call(t, "GET", "/zzrouter/v1/me", nil, nil)
 	require.Equal(t, http.StatusUnauthorized, status)
 	status, _ = second.call(t, "POST", "/zzrouter/v1/session/password", map[string]string{"username": "owner", "password": personPassword}, nil)
@@ -177,7 +235,7 @@ func TestIntegrationPeopleSetupRequiresInstallationAuthority(t *testing.T) {
 	visitor := anonymousPeopleBrowser(t, endpoint)
 	status, _ := visitor.call(t, "POST", "/zzrouter/v1/access/setup", map[string]string{"username": "attacker", "name": "Visitor", "password": personPassword, "token": "made-up"}, nil)
 	require.Equal(t, http.StatusBadRequest, status)
-	require.False(t, s.people.Initialized())
+	require.False(t, s.accessStore.Snapshot().Initialized())
 	user := newSessionBrowser(t, endpoint, TestUserKey)
 	grant := peopleCall[people.IssuedGrant](t, user, "POST", "/access/console-grants", struct{}{})
 	require.Equal(t, people.PurposeSession, grant.Purpose)
@@ -186,5 +244,5 @@ func TestIntegrationPeopleSetupRequiresInstallationAuthority(t *testing.T) {
 	visitor.csrf = state.CSRF
 	identity := peopleCall[browserIdentity](t, visitor, "GET", "/me", nil)
 	require.Equal(t, RoleUser, identity.Role)
-	require.False(t, s.people.Initialized())
+	require.False(t, s.accessStore.Snapshot().Initialized())
 }

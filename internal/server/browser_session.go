@@ -296,7 +296,7 @@ func (s *Server) handleBrowserMe(c *gin.Context) {
 	info.Kind = "key"
 	if ac.Key.Kind == control.KindPerson {
 		info.Kind = "person"
-		if person := s.people.Get(ac.Key.ID); person != nil {
+		if person := s.accessStore.Snapshot().Person(ac.Key.ID); person != nil {
 			info.Username, info.Owner = person.Username, person.Owner
 		}
 		info.Usage = &browserUsage{PersonID: ac.Key.ID, Usage: quota.CurrentUsage(ac.Key.Quotas, s.access.core.GetPersonSpend(ac.Key.ID))}

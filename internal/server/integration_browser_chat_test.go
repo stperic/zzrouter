@@ -168,7 +168,7 @@ func TestIntegrationBrowserChatRevocationNeverBecomesAnonymous(t *testing.T) {
 	s.config.Auth.RequireCompatAuth = false
 	key := loadTestKey(t, s, "chat-client", keys.VirtualKey{Name: "Chat client", Role: "user"})
 	browser := newSessionBrowser(t, endpoint, key)
-	require.NoError(t, s.services.Keys.DeleteKey("chat-client", "admin"))
+	require.NoError(t, s.services.Keys.DeleteKey(t.Context(), "chat-client", "admin"))
 	for _, request := range []struct{ method, path string }{{"GET", "/v1/models"}, {"POST", "/v1/chat/completions"}} {
 		status, body := browser.call(t, request.method, request.path, map[string]any{}, nil)
 		require.Equal(t, 401, status, string(body))
@@ -195,7 +195,7 @@ func TestIntegrationBrowserChatUsesInferenceAccessAndQuota(t *testing.T) {
 				OAuthIssuer: "http://" + endpoint.Listener.Addr().String(), SeedProvidersDir: true})
 			_, err := s.configStore.SetProviderEnabled("vllm", "", true)
 			require.NoError(t, err)
-			_, err = s.services.Teams.CreateTeam(&CreateTeamRequest{ID: "chat-team", Name: "Chat team", AllowedModels: []string{"qwen"},
+			_, err = s.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: "chat-team", Name: "Chat team", AllowedModels: []string{"qwen"},
 				ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"vllm"}}, RPMLimit: 1}, "admin")
 			require.NoError(t, err)
 			key := loadTestKey(t, s, "chat-client", keys.VirtualKey{Name: "Chat client", Role: "user", TeamID: "chat-team"})
@@ -254,7 +254,7 @@ func TestIntegrationBrowserChatUsesInferenceAccessAndQuota(t *testing.T) {
 					}
 				}
 				require.True(t, found, "successful human inference must reach the settlement/log bridge")
-				require.False(t, s.people.Progress().ResponseVerified, "a teammate response is not an owner setup response")
+				require.False(t, s.accessStore.Snapshot().Progress().ResponseVerified, "a teammate response is not an owner setup response")
 			}
 			status, body = browser.call(t, "POST", "/v1/chat/completions", request, map[string]string{"X-API-Key": key})
 			require.Equal(t, 429, status, string(body))

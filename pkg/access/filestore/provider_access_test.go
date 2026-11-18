@@ -6,23 +6,22 @@ import (
 	"testing"
 
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stretchr/testify/require"
 )
 
 func TestProviderAccessPersistence(t *testing.T) {
 	for _, mode := range []string{"", "all", "selected", "none"} {
 		t.Run(mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "teams.yaml")
-			store := NewTeams(path)
+			dir := t.TempDir()
 			policy := teams.ProviderAccess{Mode: mode}
 			if mode == "selected" {
 				policy.Providers = []string{"ollama"}
 			}
-			require.NoError(t, store.Create("team", &teams.Team{Name: "Team", Kind: teams.KindShared, ProviderAccess: policy}))
-			require.NoError(t, store.Save())
-			loaded := NewTeams(path)
-			require.NoError(t, loaded.Load())
-			require.Equal(t, policy, loaded.Get("team").ProviderAccess)
+			_, err := openTestStore(t, dir).CreateTeam(t.Context(), "team", teams.Team{Name: "Team", Kind: teams.KindShared, ProviderAccess: policy}, audit.Event{})
+			require.NoError(t, err)
+			loaded := openTestStore(t, dir).Snapshot()
+			require.Equal(t, policy, loaded.Team("team").ProviderAccess)
 			require.Equal(t, mode == "selected" || mode == "none", loaded.HasGatedTeam())
 		})
 	}
@@ -35,11 +34,11 @@ func TestProviderAccessPersistence(t *testing.T) {
 		"teams:\n  a: &a {kind: shared, provider_access: null}\n  b: {<<: *a}",
 	} {
 		t.Run(yaml, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "teams.yaml")
-			require.NoError(t, os.WriteFile(path, []byte(yaml), 0600))
-			store := NewTeams(path)
-			require.Error(t, store.Load())
-			require.Empty(t, store.List())
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "teams.yaml"), []byte(yaml), 0600))
+			store, err := Open(t.Context(), dir, Options{})
+			require.Error(t, err)
+			require.Nil(t, store)
 		})
 	}
 }

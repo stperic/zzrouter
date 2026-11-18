@@ -8,8 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/stperic/zzrouter/pkg/access/keys"
-	"github.com/stperic/zzrouter/pkg/access/people"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
@@ -57,10 +56,8 @@ type Core struct {
 	authorizer    *Authorizer
 	enforcer      *quota.Enforcer
 
-	keys   keys.KeyStore
-	teams  teams.TeamStore
+	state  accessState
 	groups modelgroup.GroupReader
-	people interface{ Get(string) *people.Person }
 
 	// pendingReservations tracks in-flight budget reservations by
 	// (keyID, ReservationID) so the inference log bridge can settle
@@ -104,29 +101,41 @@ type pendingReservationEntry struct {
 	createdAt    time.Time
 }
 
+// accessState is the part of access.Store that Core reads.
+type accessState interface {
+	Snapshot() *access.Snapshot
+	OnCommit(func(access.Commit))
+}
+
+// snapshot reads the current state; without a store it reads as empty.
+func snapshot(state accessState) *access.Snapshot {
+	if state == nil {
+		return nil
+	}
+	return state.Snapshot()
+}
+
 // NewCore wires the collaborators. Caller must call Start() to begin
 // background goroutines (auth cache cleanup, reservation reaper,
 // rate-limiter cleanup, spend persistence).
 func NewCore(
 	staticKeys StaticKeySet,
-	keyStore keys.KeyStore,
-	teamStore teams.TeamStore,
+	state accessState,
 	groups modelgroup.GroupReader,
 	enforcer *quota.Enforcer,
 	identity ModelIdentity,
 ) *Core {
 	c := &Core{
-		authenticator:       NewAuthenticator(staticKeys, keyStore),
+		authenticator:       NewAuthenticator(staticKeys, state),
 		authorizer:          NewAuthorizer(groups, identity),
 		enforcer:            enforcer,
-		keys:                keyStore,
-		teams:               teamStore,
+		state:               state,
 		groups:              groups,
 		pendingReservations: make(map[string]map[ReservationID]pendingReservationEntry),
 		pendingReaperStop:   make(chan struct{}),
 	}
-	if teamStore == nil {
-		slog.Info("control.Core constructed without a team store; team features disabled")
+	if state == nil {
+		slog.Info("control.Core constructed without an access store; virtual keys and teams disabled")
 	}
 	return c
 }
@@ -191,11 +200,7 @@ func (c *Core) buildAccessContext(p *KeyPrincipal) (*AccessContext, error) {
 	if !p.TeamBound() {
 		return ac, nil
 	}
-	if c.teams == nil || p.TeamID == "" {
-		return nil, ErrInvalidKey
-	}
-
-	team := c.teams.Get(p.TeamID)
+	team := snapshot(c.state).Team(p.TeamID)
 	if team == nil {
 		return nil, ErrInvalidKey
 	}

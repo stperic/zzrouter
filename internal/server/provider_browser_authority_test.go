@@ -18,6 +18,8 @@ import (
 	"github.com/stperic/common/mcp/oauth"
 	"github.com/stperic/zzrouter/pkg/access/control"
 	"github.com/stperic/zzrouter/pkg/access/keys"
+	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stretchr/testify/require"
 )
@@ -151,7 +153,7 @@ func TestProviderBrowserSharedAuthorityLiveKeyRevocation(t *testing.T) {
 	}
 	require.NotContains(t, response.Body.String()+response.Header().Get("Location"), token.AccessToken)
 	require.NotContains(t, response.Body.String()+response.Header().Get("Location"), token.RefreshToken)
-	_, err = s.keyStore.RotateKey("provider-browser-reader")
+	_, _, err = s.accessStore.RotateKey(t.Context(), "provider-browser-reader", audit.Event{})
 	require.NoError(t, err)
 	result := httptest.NewRecorder()
 	g.ServeHTTP(result, request)
@@ -255,13 +257,15 @@ func TestProviderBrowserSharedAuthorityLiveTeamPolicy(t *testing.T) {
 			ac, err := g.authenticate(session)
 			require.NoError(t, err)
 			require.NotNil(t, ac.Team)
-			team := *s.teamStore.Get(ac.Team.ID)
-			if policy == "suspended" {
-				team.Suspended = true
-			} else {
-				team.AllowedModels = []string{"approved-model"}
-			}
-			require.NoError(t, s.teamStore.Update(team.ID, &team))
+			_, err = s.accessStore.UpdateTeam(t.Context(), ac.Team.ID, func(team *teams.Team) error {
+				if policy == "suspended" {
+					team.Suspended = true
+				} else {
+					team.AllowedModels = []string{"approved-model"}
+				}
+				return nil
+			}, audit.Event{})
+			require.NoError(t, err)
 			result := httptest.NewRecorder()
 			g.ServeHTTP(result, request)
 			require.Equal(t, http.StatusUnauthorized, result.Code)

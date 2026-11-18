@@ -74,7 +74,7 @@ func TestIntegrationOllamaMutationRoleAdmission(t *testing.T) {
 	require.Equal(t, http.StatusOK, result.Code, result.Body.String())
 
 	require.NoError(t, s.model.Groups.Set("coding", modelgroup.ModelGroup{Replicas: []modelgroup.Replica{{Name: "local", App: "ollama", Model: "m"}}}))
-	_, err := s.services.Teams.CreateTeam(&CreateTeamRequest{ID: "routes", Name: "Routes", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}}, "admin")
+	_, err := s.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: "routes", Name: "Routes", RouteAccess: teams.RouteAccess{Mode: "selected", Routes: []string{"coding"}}}, "admin")
 	require.NoError(t, err)
 	routeKey := loadTestKey(t, s, "ollama-route-client", keys.VirtualKey{Name: "Route client", Role: "user", TeamID: "routes"})
 	for _, tc := range []struct {

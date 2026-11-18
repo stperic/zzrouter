@@ -1,10 +1,13 @@
-// Package teams defines teams, store contracts, and access policies without storage.
+// Package teams defines teams and access policies without storage.
 // Teams collect virtual keys under a shared identity — quotas and model access
 // are enforced at the team level, keys point at their team via TeamID.
 package teams
 
 import (
 	"errors"
+	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/stperic/zzrouter/pkg/access/quota"
@@ -14,6 +17,8 @@ var (
 	ErrTeamNotFound   = errors.New("team not found")
 	ErrTeamExists     = errors.New("team already exists")
 	ErrTeamHasMembers = errors.New("team has member keys")
+	// ErrInvalid marks a team record that breaks a state invariant.
+	ErrInvalid = errors.New("invalid team record")
 )
 
 // MemberRole is the role a key plays within its team.
@@ -63,17 +68,36 @@ type Team struct {
 	Metadata  map[string]string `yaml:"metadata,omitempty"`
 }
 
-// TeamStore provides CRUD operations for teams.
-type TeamStore interface {
-	Get(id string) *Team
-	List() map[string]*Team
-	Create(id string, team *Team) error
-	Update(id string, team *Team) error
-	Delete(id string) error
-	Reload() error
-	Save() error
+// Validate holds the invariants every stored team keeps.
+func (t *Team) Validate() error {
+	if t.Kind != KindPersonal && t.Kind != KindShared {
+		if t.Kind == "" {
+			return fmt.Errorf("%w: missing kind (expected %q or %q)", ErrInvalid, KindPersonal, KindShared)
+		}
+		return fmt.Errorf("%w: invalid kind %q (expected %q or %q)", ErrInvalid, t.Kind, KindPersonal, KindShared)
+	}
+	if err := t.RouteAccess.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if err := t.ProviderAccess.Validate(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	return nil
+}
 
-	// HasGatedTeam reports whether any team restricts models or providers.
-	// Read on the anonymous compat hot path — must be lock-free.
-	HasGatedTeam() bool
+// Clone copies reference fields too, so a holder cannot edit another's record.
+func (t *Team) Clone() *Team {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	c.AllowedModels = slices.Clone(t.AllowedModels)
+	c.RouteAccess = t.RouteAccess.Clone()
+	c.ProviderAccess = t.ProviderAccess.Clone()
+	c.Metadata = maps.Clone(t.Metadata)
+	if t.SuspendedAt != nil {
+		suspended := *t.SuspendedAt
+		c.SuspendedAt = &suspended
+	}
+	return &c
 }

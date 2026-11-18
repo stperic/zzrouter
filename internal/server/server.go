@@ -12,9 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stperic/common/secrets"
-	"github.com/stperic/zzrouter/pkg/access/filestore"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/localproof"
-	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/cluster/mesh"
 	clusternode "github.com/stperic/zzrouter/pkg/cluster/node"
@@ -102,14 +101,12 @@ type Server struct {
 
 	// === Access control ===
 
-	access         *AccessControl   // Unified auth + quota enforcement
-	spendEvents    *SpendEventBus   // Quota breach event bus → /spend/events SSE
-	keyStore       *filestore.Keys  // Virtual key store (accessed by keys_service CRUD)
-	teamStore      *filestore.Teams // Team store (accessed by teams_service CRUD)
+	access         *AccessControl // Unified auth + quota enforcement
+	spendEvents    *SpendEventBus // Quota breach event bus → /spend/events SSE
+	accessStore    access.Store   // Keys, teams and people
 	auditMu        sync.RWMutex
 	auditSink      audit.Sink // Append-only audit log for key/team/quota mutations; audit.Null until wired
 	auditConfigDir string     // configDir captured for lazy audit-sink open on coordinator promote
-	people         *people.Store
 	ownerRecovery  *localproof.Proof
 
 	// === Infrastructure ===

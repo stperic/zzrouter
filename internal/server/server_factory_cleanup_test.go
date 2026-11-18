@@ -23,8 +23,10 @@ func TestProviderAccessInvalidPersistedPolicyPreventsStartup(t *testing.T) {
 	defer modelregistry.ClearModelsRootDirOverride()
 	dir := config.NewConfigManager("zzrouter").GetNodeConfigDir()
 	require.NoError(t, os.MkdirAll(dir, 0700))
-	keyPath := filepath.Join(dir, "keys.yaml")
-	seedFileTestKey(t, filestore.NewKeys(keyPath), keyPath, "client", keys.VirtualKey{Name: "Client", TeamID: "restricted", TeamRole: "member", Role: "user"})
+	fixture, err := filestore.Open(t.Context(), dir, filestore.Options{})
+	require.NoError(t, err)
+	seedTestKey(t, fixture, "client", keys.VirtualKey{Name: "Client", TeamID: "restricted", TeamRole: "member", Role: "user"})
+	require.NoError(t, fixture.Close())
 	for _, policy := range []string{"null", "{mode: select, providers: [ollama]}"} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "teams.yaml"), []byte("teams:\n  restricted: {kind: shared, provider_access: "+policy+"}\n"), 0600))
 		cfg := &config.NodeConfig{Node: config.ServeConfig{Bind: "localhost", Port: 19191, Name: "fixture"}, Auth: config.AuthConfig{AdminKey: TestAdminKey, UserKey: TestUserKey, ClusterNetworkKey: TestClusterKey}}
@@ -55,5 +57,8 @@ func TestConstructorFailureReleasesCredentialOwnersAndGoroutines(t *testing.T) {
 		vault, err := secrets.Open(filepath.Join(dir, "credentials.enc"), key)
 		require.NoError(t, err, "failed constructor must release its already-open credential store")
 		require.NoError(t, vault.Close())
+		people, err := atomicfile.Lock(filepath.Join(dir, "access", "people.json.lock"))
+		require.NoError(t, err, "failed constructor must release the access store's people lock")
+		require.NoError(t, people.Close())
 	}
 }

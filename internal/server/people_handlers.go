@@ -17,12 +17,12 @@ import (
 )
 
 func (s *Server) registerPeopleRoutes() {
-	if s.people == nil {
+	if s.accessStore.People() == nil {
 		return
 	}
 	group := s.engine.Group("/zzrouter/v1", s.browserCoordinatorOnly, browserResponseHeaders)
 	group.GET("/access/setup", s.browserOriginOnly, func(c *gin.Context) {
-		respondRetrievalSuccess(c, "Setup", gin.H{"initialized": s.people.Initialized()})
+		respondRetrievalSuccess(c, "Setup", gin.H{"initialized": s.accessStore.Snapshot().Initialized()})
 	})
 	group.POST("/session/password", s.handlePasswordLogin)
 	public := group.Group("/access", s.requirePeopleBrowserProof)
@@ -116,7 +116,7 @@ func (s *Server) handlePasswordLogin(c *gin.Context) {
 		return
 	}
 	s.loginPerson(c, func(ctx context.Context) (*people.Person, error) {
-		return s.people.Authenticate(ctx, input.Username, input.Password)
+		return s.accessStore.People().Authenticate(ctx, input.Username, input.Password)
 	})
 }
 
@@ -138,15 +138,15 @@ func (s *Server) handleConsoleGrantCreate(c *gin.Context) {
 	request := people.GrantRequest{Purpose: people.PurposeSession, Issuer: issuer, TTL: 10 * time.Minute}
 	var grant *people.IssuedGrant
 	err = s.mutatePeople(func() error {
-		if !s.people.Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin {
-			teamID, err := s.initialOwnerTeam()
+		if !s.accessStore.Snapshot().Initialized() && ref.Kind != control.KindPerson && !ref.IsVirtual && ref.ID == "admin" && ref.Role == control.RoleAdmin {
+			teamID, err := s.initialOwnerTeam(c.Request.Context())
 			if err != nil {
 				return err
 			}
 			request.Purpose, request.TeamID, request.Role = people.PurposeSetup, teamID, "admin"
 		}
 		var err error
-		grant, err = s.people.Issue(auditContext(c), request)
+		grant, err = s.accessStore.People().Issue(auditContext(c), request)
 		return err
 	})
 	if err != nil {
@@ -166,7 +166,7 @@ func (s *Server) handleConsoleGrantExchange(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	grant, err := s.people.Inspect(c.Request.Context(), input.Token)
+	grant, err := s.accessStore.People().Inspect(c.Request.Context(), input.Token)
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -176,7 +176,7 @@ func (s *Server) handleConsoleGrantExchange(c *gin.Context) {
 		var bound *people.IssuedGrant
 		err := s.mutatePeople(func() error {
 			var err error
-			bound, err = s.people.Exchange(c.Request.Context(), input.Token, proof)
+			bound, err = s.accessStore.People().Exchange(c.Request.Context(), input.Token, proof)
 			return err
 		})
 		if err != nil {
@@ -190,11 +190,11 @@ func (s *Server) handleConsoleGrantExchange(c *gin.Context) {
 	_, err = s.access.oauth.LoginWith(auditContext(c), c.Writer, c.Request, func(ctx context.Context) (control.CredentialReference, error) {
 		var issuer people.Issuer
 		grantErr = s.mutatePeople(func() error {
-			bound, err := s.people.Exchange(ctx, input.Token, proof)
+			bound, err := s.accessStore.People().Exchange(ctx, input.Token, proof)
 			if err != nil {
 				return err
 			}
-			issuer, err = s.people.ConsumeSession(ctx, bound.Token, proof)
+			issuer, err = s.accessStore.People().ConsumeSession(ctx, bound.Token, proof)
 			return err
 		})
 		if grantErr != nil {
@@ -233,9 +233,9 @@ func (s *Server) handlePersonEnrollment(c *gin.Context, owner bool) {
 		err := s.mutatePeople(func() error {
 			var err error
 			if owner {
-				person, err = s.people.ClaimOwner(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
+				person, err = s.accessStore.People().ClaimOwner(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
 			} else {
-				person, err = s.people.AcceptInvitation(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
+				person, err = s.accessStore.People().AcceptInvitation(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.CreatePerson)
 			}
 			return err
 		})
@@ -250,7 +250,7 @@ func (s *Server) handleInvitationInspect(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	grant, err := s.people.Inspect(c.Request.Context(), input.Token)
+	grant, err := s.accessStore.People().Inspect(c.Request.Context(), input.Token)
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -274,7 +274,7 @@ func (s *Server) handlePeopleRecovery(c *gin.Context) {
 		var person *people.Person
 		err := s.mutatePeople(func() error {
 			var err error
-			person, err = s.people.Recover(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.Password)
+			person, err = s.accessStore.People().Recover(ctx, input.Token, c.GetHeader("X-CSRF-Token"), input.Password)
 			return err
 		})
 		return person, err
@@ -296,7 +296,7 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 		Forbidden(c, "Local installation proof is invalid")
 		return
 	}
-	owner := s.people.Owner()
+	owner := s.accessStore.Snapshot().Owner()
 	if owner == nil {
 		Conflict(c, "Create the owner account through console setup first")
 		return
@@ -304,7 +304,7 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 	var grant *people.IssuedGrant
 	err := s.mutatePeople(func() error {
 		var err error
-		grant, err = s.people.Issue(audit.WithIdentity(c.Request.Context(), audit.ActorLocalOperator, c.GetString("request_id")), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.ownerRecovery.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
+		grant, err = s.accessStore.People().Issue(audit.WithIdentity(c.Request.Context(), audit.ActorLocalOperator, c.GetString("request_id")), people.GrantRequest{Purpose: people.PurposeRecovery, Issuer: people.Issuer{Reference: s.ownerRecovery.Reference()}, PersonID: owner.ID, TeamID: owner.TeamID, Role: owner.Role, TTL: 10 * time.Minute})
 		return err
 	})
 	if err != nil {
@@ -318,12 +318,12 @@ func (s *Server) handleLocalOwnerRecovery(c *gin.Context) {
 }
 
 func (s *Server) handlePeopleList(c *gin.Context) {
-	items := s.people.List()
+	items := s.accessStore.Snapshot().People()
 	respondList(c, items, len(items), false)
 }
 
 func (s *Server) handlePersonGet(c *gin.Context) {
-	person := s.people.Get(c.Param("id"))
+	person := s.accessStore.Snapshot().Person(c.Param("id"))
 	if person == nil {
 		writePeopleError(c, people.ErrNotFound)
 		return
@@ -339,7 +339,7 @@ func (s *Server) handlePersonUpdate(c *gin.Context) {
 	var person *people.Person
 	err := s.mutatePeople(func() error {
 		var err error
-		person, err = s.people.Update(auditContext(c), c.Param("id"), input)
+		person, err = s.accessStore.People().Update(auditContext(c), c.Param("id"), input)
 		return err
 	})
 	if err != nil {
@@ -350,7 +350,7 @@ func (s *Server) handlePersonUpdate(c *gin.Context) {
 }
 
 func (s *Server) handleInvitationsList(c *gin.Context) {
-	items := s.people.Invitations()
+	items := s.accessStore.Snapshot().Invitations()
 	respondList(c, items, len(items), false)
 }
 
@@ -378,7 +378,7 @@ func (s *Server) handleMemberRecovery(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	person := s.people.Get(c.Param("id"))
+	person := s.accessStore.Snapshot().Person(c.Param("id"))
 	if person == nil {
 		writePeopleError(c, people.ErrNotFound)
 		return
@@ -402,7 +402,11 @@ func (s *Server) issueInvitation(c *gin.Context, request people.GrantRequest) {
 		return
 	}
 	var grant *people.IssuedGrant
-	err = s.mutatePeople(func() error { var err error; grant, err = s.people.Issue(auditContext(c), request); return err })
+	err = s.mutatePeople(func() error {
+		var err error
+		grant, err = s.accessStore.People().Issue(auditContext(c), request)
+		return err
+	})
 	if err != nil {
 		writePeopleError(c, err)
 		return
@@ -414,7 +418,7 @@ func (s *Server) issueInvitation(c *gin.Context, request people.GrantRequest) {
 }
 
 func (s *Server) handleInvitationRevoke(c *gin.Context) {
-	if err := s.people.RevokeGrant(auditContext(c), c.Param("id")); err != nil {
+	if err := s.accessStore.People().RevokeGrant(auditContext(c), c.Param("id")); err != nil {
 		writePeopleError(c, err)
 		return
 	}
@@ -427,7 +431,7 @@ func (s *Server) currentPerson(c *gin.Context) *people.Person {
 		Forbidden(c, "Sign in with a person account to manage its password and sessions")
 		return nil
 	}
-	person := s.people.Get(ref.ID)
+	person := s.accessStore.Snapshot().Person(ref.ID)
 	// Preserve the authenticated revision. A reset between middleware and this
 	// handler must not grant an older session the authority of the new revision.
 	if person == nil || person.Revision != ref.Version {
@@ -450,7 +454,7 @@ func (s *Server) handlePasswordChange(c *gin.Context) {
 		return
 	}
 	s.loginPerson(c, func(ctx context.Context) (*people.Person, error) {
-		return s.people.ChangePassword(ctx, person.ID, person.Revision, input.Current, input.Password)
+		return s.accessStore.People().ChangePassword(ctx, person.ID, person.Revision, input.Current, input.Password)
 	})
 }
 
@@ -464,7 +468,7 @@ func (s *Server) handlePeopleRevokeSessions(c *gin.Context) {
 		return
 	}
 	s.loginPerson(c, func(ctx context.Context) (*people.Person, error) {
-		return s.people.RevokeSessions(ctx, person.ID, person.Revision)
+		return s.accessStore.People().RevokeSessions(ctx, person.ID, person.Revision)
 	})
 }
 
@@ -473,7 +477,7 @@ func (s *Server) handleOnboardingUpdate(c *gin.Context) {
 	if !readPeopleInput(c, &input) {
 		return
 	}
-	if err := s.people.UpdateProgress(c.Request.Context(), input); err != nil {
+	if err := s.accessStore.People().UpdateProgress(c.Request.Context(), input); err != nil {
 		writePeopleError(c, err)
 		return
 	}

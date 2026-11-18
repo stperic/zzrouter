@@ -47,7 +47,8 @@ func TestClientsDoNotImportAccessStorage(t *testing.T) {
 		var walk func(string, []string)
 		walk = func(pkg string, chain []string) {
 			chain = append(slices.Clone(chain), pkg)
-			if pkg == module+"pkg/access/filestore" || pkg == module+"pkg/access/people" {
+			// The root holds the Store interface and imports people.
+			if pkg == module+"pkg/access" || pkg == module+"pkg/access/filestore" || pkg == module+"pkg/access/people" {
 				t.Errorf("client or launcher imports access storage: %s", strings.Join(chain, " -> "))
 				return
 			}

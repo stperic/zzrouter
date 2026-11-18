@@ -293,7 +293,7 @@ func collectEnabledFeatures(s *Server) []string {
 	if s.model.Groups != nil {
 		features = append(features, "model_groups")
 	}
-	if s.keyStore != nil && s.access != nil {
+	if s.accessStore != nil && s.access != nil {
 		features = append(features, "virtual_keys")
 	}
 	if s.inference.logStore != nil {

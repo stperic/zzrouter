@@ -165,7 +165,7 @@ func (s *Server) stop(drainTimeout time.Duration) error {
 	if s.access != nil && s.access.oauth != nil {
 		stopErr = errors.Join(stopErr, s.access.oauth.Close())
 	}
-	stopErr = errors.Join(stopErr, s.closePeople())
+	stopErr = errors.Join(stopErr, s.closeAccess())
 	if s.providers.connectionStore != nil {
 		stopErr = errors.Join(stopErr, s.providers.connectionStore.Close())
 	}
@@ -506,32 +506,20 @@ func (s *Server) openAuditSink() {
 		return
 	}
 	s.auditSink = sink
-	if s.people != nil {
-		s.people.SetAuditSink(sink)
-	}
-	if s.services.Keys != nil {
-		s.services.Keys.SetAuditSink(sink)
-	}
-	if s.services.Teams != nil {
-		s.services.Teams.SetAuditSink(sink)
+	if s.accessStore != nil {
+		s.accessStore.SetAuditSink(sink)
 	}
 	slog.Info("audit log opened", "path", path)
 }
 
 // closeAuditSink closes the audit sink (if open) and resets the
-// services' sink to audit.Null. Paired with openAuditSink across a
+// access store's sink to audit.Null. Paired with openAuditSink across a
 // role-transition cycle.
 func (s *Server) closeAuditSink() {
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
-	if s.people != nil {
-		s.people.SetAuditSink(audit.Null{})
-	}
-	if s.services.Keys != nil {
-		s.services.Keys.SetAuditSink(audit.Null{})
-	}
-	if s.services.Teams != nil {
-		s.services.Teams.SetAuditSink(audit.Null{})
+	if s.accessStore != nil {
+		s.accessStore.SetAuditSink(audit.Null{})
 	}
 	if closer, ok := s.auditSink.(interface{ Close() error }); ok {
 		if err := closer.Close(); err != nil {
@@ -662,26 +650,6 @@ func (s *Server) stopCoordinatorSubsystems(ctx context.Context) error {
 		}
 		s.providers.groupReaperCancel = nil
 		s.providers.groupReaperDone = nil
-	}
-	// Flush key/team stores before access.Stop. Service-layer mutations
-	// already Save synchronously; this is defense-in-depth for any
-	// in-memory-only fields (VirtualKey.LastSeenAt is the current
-	// example — declared as "hot in-memory, persisted on save cycle").
-	// Skip when the store is empty so fresh-install hosts don't get a
-	// surprise keys.yaml/teams.yaml written on shutdown — the factory's
-	// os.ErrNotExist fast-path at server_factory.go:311 depends on that
-	// file staying absent until the first mutation creates it. Errors
-	// are logged and swallowed: a shutdown-time flush that fails is
-	// still better than a crash that would have lost the state too.
-	if s.keyStore != nil && len(s.keyStore.List()) > 0 {
-		if err := s.keyStore.Save(); err != nil {
-			slog.Warn("shutdown flush of keys.yaml failed", "error", err)
-		}
-	}
-	if s.teamStore != nil && len(s.teamStore.List()) > 0 {
-		if err := s.teamStore.Save(); err != nil {
-			slog.Warn("shutdown flush of teams.yaml failed", "error", err)
-		}
 	}
 	s.closeAuditSink()
 	s.access.Stop(ctx)

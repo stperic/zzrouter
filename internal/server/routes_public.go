@@ -143,22 +143,17 @@ func RegisterPublicAPIRoutes(router *gin.RouterGroup, s *Server, routingRouter r
 	// API depends on them being wired up for the rest of startup), but their
 	// HTTP routes are registered under a separate group — see
 	// RegisterAccessControlAPIRoutes below.
-	if s.teamStore != nil && s.access != nil {
-		s.services.Teams = NewTeamsService(s.teamStore, s.keyStore, s.access)
-		s.services.Teams.people = s.people
+	if s.accessStore != nil && s.access != nil {
+		s.services.Teams = NewTeamsService(s.accessStore, s.access)
 		s.controllers.Teams = NewTeamsController(s.services.Teams)
 
 		// Sweep orphan personal teams — any kind=personal team with zero
 		// referencing keys is the result of a crash mid-create-key and
-		// should be garbage-collected before serving traffic. Audit
-		// sink is still audit.Null here (opened later in
-		// startCoordinatorSubsystems); the reaper's audit events are
-		// captured by a follow-up sweep on coordinator start.
+		// should be garbage-collected before serving traffic. The audit
+		// sink is still audit.Null here, so the sweep is not audited.
 		s.services.Teams.ReconcilePersonalTeams()
-	}
 
-	if s.keyStore != nil && s.access != nil {
-		s.services.Keys = NewKeysService(s.keyStore, s.services.Teams, s.access)
+		s.services.Keys = NewKeysService(s.accessStore, s.services.Teams, s.access)
 		s.controllers.Keys = NewKeysController(s.services.Keys)
 	}
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
@@ -19,14 +20,14 @@ const (
 // Authenticator validates raw API keys with caching.
 //
 // The principal cache is an EventCache: primary invalidation flows from
-// keys.KeyStore.OnChange so a revoked or rotated key stops authenticating
+// the access store's key commits so a revoked or rotated key stops authenticating
 // on the next request rather than lingering until its TTL window expires.
 // cacheTTL is retained solely as a memory bound — expired entries are
 // evicted by a background cleanup goroutine to cap cache size under load —
 // and never serves as a freshness signal.
 type Authenticator struct {
 	staticKeys StaticKeySet
-	keys       keys.KeyStore
+	state      accessState
 
 	cacheMu  sync.RWMutex
 	cache    map[[32]byte]*cachedPrincipal
@@ -44,28 +45,31 @@ type cachedPrincipal struct {
 	expiresAt time.Time
 }
 
-// NewAuthenticator wires the authenticator and subscribes to KeyStore
-// mutations so cache entries drop immediately on Create/Update/Delete/
-// RotateKey/Reload.
-func NewAuthenticator(staticKeys StaticKeySet, keyStore keys.KeyStore) *Authenticator {
+// NewAuthenticator wires the authenticator and subscribes to key commits so
+// cache entries drop immediately when a key is created, updated, rotated or deleted.
+func NewAuthenticator(staticKeys StaticKeySet, state accessState) *Authenticator {
 	a := &Authenticator{
 		staticKeys: staticKeys,
-		keys:       keyStore,
+		state:      state,
 		cache:      make(map[[32]byte]*cachedPrincipal),
 		cacheTTL:   authCacheTTL,
 		stopCh:     make(chan struct{}),
 	}
 	// A revoked key that was previously cached would stay valid until
-	// cacheTTL elapsed without this subscription — unacceptable for key
-	// revocation.
-	if keyStore != nil {
-		keyStore.OnChange(a.Invalidate)
+	// cacheTTL elapsed without this subscription. Team commits leave the
+	// cache alone: each dropped entry costs an Argon2 verify.
+	if state != nil {
+		state.OnCommit(func(c access.Commit) {
+			if c.KeysChanged {
+				a.Invalidate()
+			}
+		})
 	}
 	return a
 }
 
-// Invalidate drops every cached principal. Called by the KeyStore on any
-// mutation and safe to call at any time.
+// Invalidate drops every cached principal. Called on every key commit
+// and safe to call at any time.
 func (a *Authenticator) Invalidate() {
 	a.cacheMu.Lock()
 	a.cache = make(map[[32]byte]*cachedPrincipal)
@@ -111,19 +115,16 @@ func (a *Authenticator) Validate(rawKey string) (*KeyPrincipal, error) {
 	}
 
 	// Virtual keys (Argon2id — slow, hence the cache).
-	if a.keys != nil {
-		id, vk := a.keys.ValidateRawKey(rawKey)
-		if vk != nil {
-			if vk.IsExpired() {
-				return nil, fmt.Errorf("%w: %q", ErrKeyExpired, id)
-			}
-			if vk.Suspended {
-				return nil, fmt.Errorf("%w: %q", ErrKeySuspended, id)
-			}
-			p := keyPrincipalFromVirtual(id, vk, rawKey)
-			a.putCached(fp, p)
-			return p, nil
+	if id, vk := snapshot(a.state).ValidateRawKey(rawKey); vk != nil {
+		if vk.IsExpired() {
+			return nil, fmt.Errorf("%w: %q", ErrKeyExpired, id)
 		}
+		if vk.Suspended {
+			return nil, fmt.Errorf("%w: %q", ErrKeySuspended, id)
+		}
+		p := keyPrincipalFromVirtual(id, vk, rawKey)
+		a.putCached(fp, p)
+		return p, nil
 	}
 
 	return nil, ErrInvalidKey
@@ -205,8 +206,7 @@ func (a *Authenticator) putCached(fp [32]byte, p *KeyPrincipal) {
 }
 
 // InvalidateAll clears the cache. Called after key rotation, deletion, or
-// bulk mutations (distinct from the per-entry OnChange invalidation —
-// InvalidateAll is the blunter hammer for operator-triggered resets).
+// bulk mutations, beside the invalidation every key commit already triggers.
 func (a *Authenticator) InvalidateAll() {
 	a.cacheMu.Lock()
 	a.cache = make(map[[32]byte]*cachedPrincipal)

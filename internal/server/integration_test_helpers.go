@@ -216,7 +216,7 @@ func cleanupTestNode(server *Server) {
 	if server.access != nil && server.access.oauth != nil {
 		_ = server.access.oauth.Close()
 	}
-	_ = server.closePeople()
+	_ = server.closeAccess()
 	if server.providers.connectionStore != nil {
 		_ = server.providers.connectionStore.Close()
 	}

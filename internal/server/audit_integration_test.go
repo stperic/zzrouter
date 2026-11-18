@@ -12,21 +12,21 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stperic/zzrouter/pkg/access/filestore"
-	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
 	"github.com/stperic/zzrouter/pkg/audit"
 )
 
-func newAuditTestAccess(t *testing.T, keyStore *filestore.Keys, teamStore *filestore.Teams) *AccessControl {
+// newAuditTestServices wires both services to one store in dir; sink, when set, is its audit sink.
+func newAuditTestServices(t *testing.T, dir string, sink audit.Sink) (*KeysService, *TeamsService) {
 	t.Helper()
-	enforcer := quota.NewEnforcer(
-		quota.NewRateLimiter(),
-		quota.NewConcurrencyLimiter(),
-		quota.NewSpendTracker(""),
-	)
-	access := NewAccessControl(StaticKeySet{}, keyStore, teamStore, nil, enforcer, nil, ModelHooks{})
-	t.Cleanup(func() { access.Stop(context.Background()) })
-	return access
+	store, err := filestore.Open(t.Context(), dir, filestore.Options{})
+	require.NoError(t, err)
+	if sink != nil {
+		store.SetAuditSink(sink)
+	}
+	accessControl := newTestAccessControl(t, store)
+	teamsSvc := NewTeamsService(store, accessControl)
+	return NewKeysService(store, teamsSvc, accessControl), teamsSvc
 }
 
 // TestAudit_EndToEnd_ServiceMutationsEmitEvents pins that the three
@@ -41,17 +41,10 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sink.Close() })
 
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
-	access := newAuditTestAccess(t, keyStore, teamStore)
-
-	teamsSvc := NewTeamsService(teamStore, keyStore, access)
-	teamsSvc.SetAuditSink(sink)
-	keysSvc := NewKeysService(keyStore, teamsSvc, access)
-	keysSvc.SetAuditSink(sink)
+	keysSvc, teamsSvc := newAuditTestServices(t, dir, sink)
 
 	// 1. Create a shared team.
-	_, err = teamsSvc.CreateTeam(&CreateTeamRequest{
+	_, err = teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{
 		ID:             "eng",
 		Name:           "Engineering",
 		ProviderAccess: teams.ProviderAccess{Mode: "selected", Providers: []string{"ollama"}},
@@ -60,7 +53,7 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 
 	// 2. Create a key into that team (not auto-personal, so no
 	//    second team_created event fires).
-	_, err = keysSvc.CreateKey("alice", &CreateKeyRequest{
+	_, err = keysSvc.CreateKey(t.Context(), "alice", &CreateKeyRequest{
 		Name:   "alice",
 		TeamID: "eng",
 	}, "static:admin")
@@ -69,7 +62,7 @@ func TestAudit_EndToEnd_ServiceMutationsEmitEvents(t *testing.T) {
 	// 3. Delete the key. Note: cascade-delete of a personal team would
 	//    fire an extra team.deleted event if this had been a personal
 	//    team; here it's a shared-team member, so no cascade.
-	require.NoError(t, keysSvc.DeleteKey("alice", "static:admin"))
+	require.NoError(t, keysSvc.DeleteKey(t.Context(), "alice", "static:admin"))
 
 	// Force-flush so Scan sees every line.
 	require.NoError(t, sink.Close())
@@ -106,19 +99,13 @@ func TestAudit_PersonalTeamCascade(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sink.Close() })
 
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
-	access := newAuditTestAccess(t, keyStore, teamStore)
-	teamsSvc := NewTeamsService(teamStore, keyStore, access)
-	teamsSvc.SetAuditSink(sink)
-	keysSvc := NewKeysService(keyStore, teamsSvc, access)
-	keysSvc.SetAuditSink(sink)
+	keysSvc, _ := newAuditTestServices(t, dir, sink)
 
 	// Create without team_id → auto-creates personal team.
-	_, err = keysSvc.CreateKey("alice", &CreateKeyRequest{Name: "alice"}, "static:admin")
+	_, err = keysSvc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "alice"}, "static:admin")
 	require.NoError(t, err)
 	// Delete the key → cascades to delete the personal team.
-	require.NoError(t, keysSvc.DeleteKey("alice", "static:admin"))
+	require.NoError(t, keysSvc.DeleteKey(t.Context(), "alice", "static:admin"))
 
 	require.NoError(t, sink.Close())
 	events := readAuditLog(t, auditPath)
@@ -144,15 +131,11 @@ func TestAudit_PersonalTeamCascade(t *testing.T) {
 // a fresh-install test host would get a surprise audit.jsonl.
 func TestAudit_DefaultSinkIsNull(t *testing.T) {
 	dir := t.TempDir()
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	teamStore := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
-	access := newAuditTestAccess(t, keyStore, teamStore)
-	teamsSvc := NewTeamsService(teamStore, keyStore, access)
-	keysSvc := NewKeysService(keyStore, teamsSvc, access)
+	keysSvc, teamsSvc := newAuditTestServices(t, dir, nil)
 
-	_, err := teamsSvc.CreateTeam(&CreateTeamRequest{ID: "eng", Name: "Eng"}, "a")
+	_, err := teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Eng"}, "a")
 	require.NoError(t, err)
-	_, err = keysSvc.CreateKey("alice", &CreateKeyRequest{Name: "alice", TeamID: "eng"}, "a")
+	_, err = keysSvc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "alice", TeamID: "eng"}, "a")
 	require.NoError(t, err)
 
 	// No audit.jsonl should exist — audit.Null doesn't touch disk.
@@ -161,6 +144,36 @@ func TestAudit_DefaultSinkIsNull(t *testing.T) {
 	for _, e := range entries {
 		require.NotEqual(t, "audit.jsonl", e.Name())
 	}
+}
+
+// TestAudit_UsageResetsAreRecorded pins the two events whose state lives in
+// the spend ledger, not the store: they still reach the store's sink.
+func TestAudit_UsageResetsAreRecorded(t *testing.T) {
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	sink, err := audit.NewFileSink(auditPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sink.Close() })
+	keysSvc, teamsSvc := newAuditTestServices(t, dir, sink)
+	_, err = teamsSvc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "eng", Name: "Engineering"}, "static:admin")
+	require.NoError(t, err)
+	_, err = keysSvc.CreateKey(t.Context(), "alice", &CreateKeyRequest{Name: "alice", TeamID: "eng"}, "static:admin")
+	require.NoError(t, err)
+
+	require.NoError(t, keysSvc.ResetKeyUsage(t.Context(), "alice", "operator"))
+	require.NoError(t, teamsSvc.ResetTeamUsage(t.Context(), "eng", ""))
+	require.Error(t, keysSvc.ResetKeyUsage(t.Context(), "missing", "operator"))
+	require.NoError(t, sink.Close())
+
+	events := readAuditLog(t, auditPath)
+	require.Len(t, events, 4, "a refused reset records nothing")
+	require.Equal(t, audit.ActionKeyUsageReset, events[2].Action)
+	require.Equal(t, "operator", events[2].Actor)
+	require.Equal(t, "alice", events[2].Subject)
+	require.Equal(t, audit.ActionTeamUsageReset, events[3].Action)
+	require.Equal(t, audit.ActorStaticAdmin, events[3].Actor)
+	require.Equal(t, "eng", events[3].Subject)
+	require.Empty(t, events[3].RequestID)
 }
 
 func readAuditLog(t *testing.T, path string) []audit.Event {

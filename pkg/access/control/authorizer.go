@@ -125,7 +125,7 @@ func (c *Core) ValidateRoutes(policy teams.RouteAccess) error {
 
 // TeamContext projects current team policy for an administrator's dry run.
 func (c *Core) TeamContext(id string) *AccessContext {
-	if c.teams == nil || c.teams.Get(id) == nil {
+	if snapshot(c.state).Team(id) == nil {
 		return nil
 	}
 	ac, _ := c.buildAccessContext(&KeyPrincipal{ID: "preview", IsVirtual: true, TeamID: id, Role: RoleUser})
@@ -135,11 +135,9 @@ func (c *Core) TeamContext(id string) *AccessContext {
 // RouteTeams returns the sorted explicit assignments, without a reverse store.
 func (c *Core) RouteTeams(name string) []string {
 	ids := []string{}
-	if c.teams != nil {
-		for id, team := range c.teams.List() {
-			if team.RouteAccess.Mode == "selected" && team.RouteAccess.Allows(name) {
-				ids = append(ids, id)
-			}
+	for id, team := range snapshot(c.state).Teams() {
+		if team.RouteAccess.Mode == "selected" && team.RouteAccess.Allows(name) {
+			ids = append(ids, id)
 		}
 	}
 	slices.Sort(ids)

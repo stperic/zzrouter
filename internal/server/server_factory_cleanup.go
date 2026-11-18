@@ -36,7 +36,7 @@ func (s *Server) cleanupConstruction() {
 	if s.access != nil && s.access.oauth != nil {
 		_ = s.access.oauth.Close()
 	}
-	_ = s.closePeople()
+	_ = s.closeAccess()
 	if s.providers.connectionStore != nil {
 		_ = s.providers.connectionStore.Close()
 	}

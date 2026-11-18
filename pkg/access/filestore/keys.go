@@ -1,19 +1,10 @@
 package filestore
 
 import (
-	"errors"
 	"fmt"
-	"log/slog"
-	"maps"
-	"os"
-	"sync"
 	"time"
 
-	"github.com/stperic/common/atomicfile"
-
-	"github.com/google/uuid"
 	"github.com/stperic/zzrouter/pkg/access/keys"
-	"github.com/stperic/zzrouter/pkg/utils"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,10 +16,11 @@ type keysFile struct {
 
 // virtualKeyYAML is the on-disk representation with all fields.
 type virtualKeyYAML struct {
-	UUID      string `yaml:"uuid,omitempty"`
-	Name      string `yaml:"name"`
-	HashedKey string `yaml:"hashed_key,omitempty"`
-	KeyEnv    string `yaml:"key_env,omitempty"`
+	UUID        string `yaml:"uuid,omitempty"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	HashedKey   string `yaml:"hashed_key,omitempty"`
+	KeyEnv      string `yaml:"key_env,omitempty"`
 
 	TeamID   string `yaml:"team_id"`
 	TeamRole string `yaml:"team_role"`
@@ -59,72 +51,6 @@ type virtualKeyYAML struct {
 	Metadata  map[string]string `yaml:"metadata,omitempty"`
 }
 
-// Keys implements keys.KeyStore backed by keys.yaml.
-type Keys struct {
-	mu   sync.RWMutex
-	keys map[string]*keys.VirtualKey
-	path string
-
-	// listeners fire (outside any store lock) after every successful
-	// mutation. Registered via OnChange. Notifying after unlock avoids
-	// the listener calling back into the store and deadlocking.
-	listenersMu sync.Mutex
-	listeners   []func()
-}
-
-// OnChange registers a listener invoked after every successful mutation.
-// Listeners run after the store lock is released so they may safely call
-// back into the store. Invoked in registration order.
-func (s *Keys) OnChange(fn func()) {
-	s.listenersMu.Lock()
-	s.listeners = append(s.listeners, fn)
-	s.listenersMu.Unlock()
-}
-
-// notifyListeners invokes every registered listener. Callers MUST release
-// the store lock before calling this — the listener is free to read from
-// the store and would otherwise deadlock on the RWMutex.
-func (s *Keys) notifyListeners() {
-	s.listenersMu.Lock()
-	listeners := make([]func(), len(s.listeners))
-	copy(listeners, s.listeners)
-	s.listenersMu.Unlock()
-	for _, fn := range listeners {
-		fn()
-	}
-}
-
-// NewKeys creates a key store that reads/writes to the given file path.
-func NewKeys(path string) *Keys {
-	return &Keys{
-		keys: make(map[string]*keys.VirtualKey),
-		path: path,
-	}
-}
-
-// Load reads virtual keys from keys.yaml.
-func (s *Keys) Load() error {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return fmt.Errorf("failed to read keys config: %w", err)
-	}
-	return s.loadFromBytes(data)
-}
-
-func (s *Keys) loadFromBytes(data []byte) error {
-	keys, err := DecodeKeys(data)
-	if err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	s.keys = keys
-	s.mu.Unlock()
-
-	s.notifyListeners()
-	return nil
-}
-
 // DecodeKeys shares the ordinary loader's validation without publishing state.
 func DecodeKeys(data []byte) (map[string]*keys.VirtualKey, error) {
 	var cfg keysFile
@@ -144,242 +70,12 @@ func DecodeKeys(data []byte) (map[string]*keys.VirtualKey, error) {
 	return keys, nil
 }
 
-// Get returns an isolated virtual-key snapshot, or nil if not found.
-func (s *Keys) Get(id string) *keys.VirtualKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneKey(s.keys[id])
-}
-
-// List returns all virtual keys (copies to prevent mutation).
-func (s *Keys) List() map[string]*keys.VirtualKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make(map[string]*keys.VirtualKey, len(s.keys))
-	for id, key := range s.keys {
-		result[id] = cloneKey(key)
-	}
-	return result
-}
-
-// ListByTeam returns all keys whose TeamID matches. Empty map on no matches.
-// Replaces the old "iterate + filter" pattern with a single store-aware call
-// so the future database backend can serve this as an indexed query.
-func (s *Keys) ListByTeam(teamID string) map[string]*keys.VirtualKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make(map[string]*keys.VirtualKey)
-	if teamID == "" {
-		return result
-	}
-	for id, vk := range s.keys {
-		if vk.TeamID == teamID {
-			result[id] = cloneKey(vk)
-		}
-	}
-	return result
-}
-
-// ValidateRawKey checks a raw API key against all stored keys.
-// For env-var keys, compares directly. For hashed keys, uses Argon2id verify.
-func (s *Keys) ValidateRawKey(rawKey string) (string, *keys.VirtualKey) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for id, vk := range s.keys {
-		// Env-var keys: resolve and compare
-		if vk.KeyEnv != "" {
-			envVal := os.Getenv(vk.KeyEnv)
-			if envVal != "" && envVal == rawKey {
-				return id, cloneKey(vk)
-			}
-			continue
-		}
-
-		// Hashed keys: Argon2id verify
-		if vk.HashedKey != "" && keys.VerifyKey(rawKey, vk.HashedKey) {
-			return id, cloneKey(vk)
-		}
-	}
-
-	return "", nil
-}
-
-// Create adds a new virtual key. Returns the generated raw key.
-// Caller must set TeamID and TeamRole on the key before calling — the store
-// does not auto-assign teams. That's the service layer's responsibility
-// (KeysService auto-creates a personal team when the caller omits team_id).
-func (s *Keys) Create(id string, key *keys.VirtualKey) (rawKey string, err error) {
-	s.mu.Lock()
-	defer func() {
-		s.mu.Unlock()
-		if err == nil {
-			s.notifyListeners()
-		}
-	}()
-
-	if _, exists := s.keys[id]; exists {
-		return "", fmt.Errorf("key %q: %w", id, keys.ErrKeyExists)
-	}
-	if key.TeamID == "" {
-		return "", fmt.Errorf("key %q: team_id is required", id)
-	}
-
-	rawKey, err = keys.GenerateRawKey()
-	if err != nil {
-		return "", err
-	}
-
-	hash, err := keys.HashKey(rawKey)
-	if err != nil {
-		return "", err
-	}
-
-	key.ID = id
-	key.HashedKey = hash
-	key.KeyEnv = "" // Ensure env-var mode is cleared for created keys
-	if key.UUID == "" {
-		key.UUID = uuid.New().String()
-	}
-	now := utils.NowUTC()
-	key.CreatedAt = now
-	key.UpdatedAt = now
-	s.keys[id] = cloneKey(key)
-
-	return rawKey, nil
-}
-
-// Update modifies an existing virtual key's mutable fields. TeamID and
-// TeamRole are preserved from the existing record — callers cannot move a
-// key between teams via PATCH. Moving a key = delete and re-create.
-func (s *Keys) Update(id string, key *keys.VirtualKey) (err error) {
-	s.mu.Lock()
-	defer func() {
-		s.mu.Unlock()
-		if err == nil {
-			s.notifyListeners()
-		}
-	}()
-
-	existing, ok := s.keys[id]
-	if !ok {
-		return fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-
-	// Preserve immutable fields
-	key.ID = id
-	key.UUID = existing.UUID
-	key.HashedKey = existing.HashedKey
-	key.KeyEnv = existing.KeyEnv
-	key.TeamID = existing.TeamID
-	key.TeamRole = existing.TeamRole
-	key.CreatedAt = existing.CreatedAt
-	key.CreatedBy = existing.CreatedBy
-	key.UpdatedAt = utils.NowUTC()
-	s.keys[id] = cloneKey(key)
-
-	return nil
-}
-
-// Delete removes a virtual key.
-func (s *Keys) Delete(id string) (err error) {
-	s.mu.Lock()
-	defer func() {
-		s.mu.Unlock()
-		if err == nil {
-			s.notifyListeners()
-		}
-	}()
-
-	if _, ok := s.keys[id]; !ok {
-		return fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-
-	delete(s.keys, id)
-	return nil
-}
-
-// RotateKey generates a new raw key for an existing key ID.
-func (s *Keys) RotateKey(id string) (rawKey string, err error) {
-	s.mu.Lock()
-	defer func() {
-		s.mu.Unlock()
-		if err == nil {
-			s.notifyListeners()
-		}
-	}()
-
-	vk, ok := s.keys[id]
-	if !ok {
-		return "", fmt.Errorf("key %q: %w", id, keys.ErrKeyNotFound)
-	}
-
-	rawKey, err = keys.GenerateRawKey()
-	if err != nil {
-		return "", err
-	}
-
-	hash, err := keys.HashKey(rawKey)
-	if err != nil {
-		return "", err
-	}
-
-	vk.HashedKey = hash
-	vk.KeyEnv = "" // Clear env-var on rotation
-	return rawKey, nil
-}
-
-// Reload re-reads keys from disk.
-func (s *Keys) Reload() error {
-	return s.Load()
-}
-
-// cloneKey prevents callers and rotations from mutating each other's snapshots.
-// Copy reference fields as well as the record; policy edits must use Update.
-func cloneKey(key *keys.VirtualKey) *keys.VirtualKey {
-	if key == nil {
-		return nil
-	}
-	copy := *key
-	copy.Metadata = maps.Clone(key.Metadata)
-	if key.ExpiresAt != nil {
-		expires := *key.ExpiresAt
-		copy.ExpiresAt = &expires
-	}
-	if key.SuspendedAt != nil {
-		suspended := *key.SuspendedAt
-		copy.SuspendedAt = &suspended
-	}
-	return &copy
-}
-
-// Save persists the current state to disk using atomic temp-file + rename.
-func (s *Keys) Save() error {
-	return s.save(atomicfile.WriteFile)
-}
-
-func (s *Keys) save(write func(string, []byte, os.FileMode) error) error {
-	s.mu.RLock()
-	cfg := keysFile{
-		Version: "1",
-		Keys:    make(map[string]*virtualKeyYAML, len(s.keys)),
-	}
-	for id, vk := range s.keys {
+func encodeKeys(records map[string]*keys.VirtualKey) ([]byte, error) {
+	cfg := keysFile{Version: "1", Keys: make(map[string]*virtualKeyYAML, len(records))}
+	for id, vk := range records {
 		cfg.Keys[id] = toYAML(vk)
 	}
-	s.mu.RUnlock()
-
-	data, err := yaml.Marshal(&cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal keys: %w", err)
-	}
-
-	err = write(s.path, data, 0o600)
-	if errors.Is(err, atomicfile.ErrPostRenameDurability) {
-		slog.Warn("Key state committed with uncertain durability", "error", err)
-		return nil
-	}
-	return err
+	return yaml.Marshal(&cfg)
 }
 
 // fromYAML converts the on-disk format to VirtualKey.
@@ -387,20 +83,8 @@ func fromYAML(id string, yk *virtualKeyYAML) (*keys.VirtualKey, error) {
 	if yk == nil {
 		return nil, fmt.Errorf("key must be an object")
 	}
-	if yk.Name == "" {
-		return nil, fmt.Errorf("missing name")
-	}
 	if yk.Role == "" {
 		yk.Role = "user"
-	}
-	if yk.HashedKey == "" && yk.KeyEnv == "" {
-		return nil, fmt.Errorf("must have hashed_key or key_env")
-	}
-	if yk.TeamID == "" {
-		return nil, fmt.Errorf("missing team_id")
-	}
-	if yk.TeamRole == "" {
-		return nil, fmt.Errorf("missing team_role")
 	}
 	if len(yk.AllowedModels) > 0 {
 		return nil, fmt.Errorf("allowed_models on keys is not supported; " +
@@ -411,6 +95,7 @@ func fromYAML(id string, yk *virtualKeyYAML) (*keys.VirtualKey, error) {
 		UUID:        yk.UUID,
 		ID:          id,
 		Name:        yk.Name,
+		Description: yk.Description,
 		HashedKey:   yk.HashedKey,
 		KeyEnv:      yk.KeyEnv,
 		TeamID:      yk.TeamID,
@@ -459,6 +144,9 @@ func fromYAML(id string, yk *virtualKeyYAML) (*keys.VirtualKey, error) {
 		vk.UpdatedAt = t
 	}
 
+	if err := vk.Validate(); err != nil {
+		return nil, err
+	}
 	return vk, nil
 }
 
@@ -467,6 +155,7 @@ func toYAML(vk *keys.VirtualKey) *virtualKeyYAML {
 	yk := &virtualKeyYAML{
 		UUID:                vk.UUID,
 		Name:                vk.Name,
+		Description:         vk.Description,
 		HashedKey:           vk.HashedKey,
 		KeyEnv:              vk.KeyEnv,
 		TeamID:              vk.TeamID,

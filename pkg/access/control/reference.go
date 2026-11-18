@@ -41,7 +41,7 @@ func (c *Core) Reference(raw string) (CredentialReference, error) {
 	if !p.IsVirtual {
 		ref.Version = credentialVersion(raw)
 	} else {
-		k := c.keys.Get(p.ID)
+		k := snapshot(c.state).Key(p.ID)
 		if k == nil || !(k.HashedKey != "" && keys.VerifyKey(raw, k.HashedKey) || k.KeyEnv != "" && subtle.ConstantTimeCompare([]byte(raw), []byte(os.Getenv(k.KeyEnv))) == 1) {
 			return CredentialReference{}, ErrInvalidKey
 		}
@@ -60,10 +60,10 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 	}
 	switch {
 	case ref.Kind == KindPerson:
-		if ref.IsVirtual || c.people == nil {
+		if ref.IsVirtual {
 			return nil, ErrInvalidKey
 		}
-		if person := c.people.Get(ref.ID); person != nil {
+		if person := snapshot(c.state).Person(ref.ID); person != nil {
 			p = &KeyPrincipal{Kind: KindPerson, ID: person.ID, Name: person.Name, Role: UserRole(person.Role), TeamID: person.TeamID, TeamRole: "member", Suspended: person.Suspended}
 			if person.Owner {
 				p.TeamRole = "owner"
@@ -81,8 +81,8 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 			version = credentialVersion(c.authenticator.staticKeys.User)
 		}
 	default:
-		if ref.IsVirtual && c.keys != nil {
-			if k := c.keys.Get(ref.ID); k != nil {
+		if ref.IsVirtual {
+			if k := snapshot(c.state).Key(ref.ID); k != nil {
 				version = virtualVersion(k)
 				p = keyPrincipalFromVirtual(k.ID, k, "")
 				p.Fingerprint = ref.Fingerprint
@@ -107,9 +107,6 @@ func (c *Core) AuthenticateReference(ref CredentialReference) (*AccessContext, e
 	}
 	return ac, nil
 }
-
-// SetPeople installs the coordinator's identity reader before serving requests.
-func (c *Core) SetPeople(reader interface{ Get(string) *people.Person }) { c.people = reader }
 
 // PersonReference binds the exact verified snapshot, refusing concurrent resets.
 func (c *Core) PersonReference(person *people.Person) (CredentialReference, error) {

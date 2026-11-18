@@ -384,6 +384,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 	s.model.Resolver = defaultResolver
 
 	// Load model groups and virtual keys from their respective config files.
+	var issuer string
 	s.model.Groups = modelgroup.NewGroupStore()
 	s.model.Groups.SetCloudAppChecker(func(app string) bool {
 		return s.appsConfig().GetCloud(app) != nil
@@ -446,29 +447,17 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 			}
 		})
 
-		// Load keys.yaml
-		keysPath := filepath.Join(configDir, "keys.yaml")
-		s.keyStore = filestore.NewKeys(keysPath)
-		if err := s.keyStore.Load(); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				logger.Warn("Failed to load keys.yaml", "error", err)
-			}
-		} else {
-			keyCount := len(s.keyStore.List())
-			if keyCount > 0 {
-				slog.Info("Virtual keys loaded", "count", keyCount)
+		// Keys and teams on every node; people only beside the coordinator's browser issuer.
+		if !s.node.IsWorker() {
+			if issuer, err = s.config.Auth.OAuth.EffectiveIssuer(s.config.Node); err != nil {
+				return nil, err
 			}
 		}
-
-		// Load teams.yaml
-		teamsPath := filepath.Join(configDir, "teams.yaml")
-		s.teamStore = filestore.NewTeams(teamsPath)
-		if err := s.teamStore.Load(); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("load teams.yaml: %w", err)
-			}
-		} else if teamCount := len(s.teamStore.List()); teamCount > 0 {
-			slog.Info("Teams loaded", "count", teamCount)
+		s.accessStore, err = filestore.Open(context.Background(), configDir, filestore.Options{
+			People: issuer != "", ValidateExternalIssuer: s.validateExternalIssuer, ValidateTeam: validatePeopleTeam,
+		})
+		if err != nil {
+			return nil, err
 		}
 
 		// === Audit sink ===
@@ -493,7 +482,7 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		}
 		s.spendEvents = NewSpendEventBus()
 		enforcer.SetBreachObserver(s.spendEvents)
-		s.access = NewAccessControl(staticKeySet, s.keyStore, s.teamStore, s.model.Groups, enforcer, cfg,
+		s.access = NewAccessControl(staticKeySet, s.accessStore, s.model.Groups, enforcer, cfg,
 			ModelHooks{IsCloudBacked: s.modelIsCloudBacked, Identity: s.modelIdentity})
 
 		// Wire gateway into the inference log bridge for post-response settlement
@@ -506,16 +495,16 @@ func NewServerWithOptions(cfg *pkgConfig.NodeConfig) (*Server, error) {
 		// zz.remaining.api.key.budget.metric) report live SpendLimit /
 		// remaining-budget rows on every Prometheus scrape. The gauges
 		// register lazily against the current global meter provider.
-		// Workers also reach this branch but their keystore is empty
-		// in production (virtual keys only on coordinators), so the
+		// Workers also reach this branch but their access store holds no
+		// keys in production (virtual keys only on coordinators), so the
 		// snapshotter returns no rows and the gauges emit nothing —
 		// the unconditional registration is harmless.
-		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.keyStore, s.teamStore, s.access))
+		obsspend.SetBudgetSnapshotter(newBudgetSnapshotter(s.accessStore, s.access))
 	}
 
 	s.initFallbackProxy()
 
-	if err := s.initOAuth(); err != nil {
+	if err := s.initOAuth(issuer); err != nil {
 		return nil, err
 	}
 

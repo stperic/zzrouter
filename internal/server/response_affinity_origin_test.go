@@ -98,13 +98,13 @@ func TestResponseAffinity_OwnerAndTenantIsolation(t *testing.T) {
 	backend := &serviceBackend{wire: []string{"responses"}, status: http.StatusOK, reply: `{"id":"resp_private","object":"response"}`}
 	s := newServiceGroupNode(t, []string{"origin"}, map[string]*serviceBackend{"origin": backend})
 	for _, name := range []string{"a", "b"} {
-		_, err := s.services.Teams.CreateTeam(&CreateTeamRequest{ID: name, Name: name}, "admin")
+		_, err := s.services.Teams.CreateTeam(t.Context(), &CreateTeamRequest{ID: name, Name: name}, "admin")
 		require.NoError(t, err)
 	}
 	creator := loadTestKey(t, s, "response-owner", keys.VirtualKey{Name: "Creator", Role: "user", TeamID: "a"})
 	others := []string{TestAdminKey,
-		seedFileTestKey(t, s.keyStore, filepath.Join(config.NewConfigManager("zzrouter").GetNodeConfigDir(), "keys.yaml"), "same-tenant-other-key", keys.VirtualKey{Name: "Peer", Role: "user", TeamID: "a", TeamRole: "member"}),
-		seedFileTestKey(t, s.keyStore, filepath.Join(config.NewConfigManager("zzrouter").GetNodeConfigDir(), "keys.yaml"), "other-tenant", keys.VirtualKey{Name: "Other tenant", Role: "user", TeamID: "b", TeamRole: "member"}),
+		seedTestKey(t, s.accessStore, "same-tenant-other-key", keys.VirtualKey{Name: "Peer", Role: "user", TeamID: "a", TeamRole: "member"}),
+		seedTestKey(t, s.accessStore, "other-tenant", keys.VirtualKey{Name: "Other tenant", Role: "user", TeamID: "b", TeamRole: "member"}),
 	}
 	create := makeAuthRequest(t, s, http.MethodPost, "/v1/responses", creator, map[string]any{"model": "claude", "input": "private"})
 	require.Equal(t, http.StatusOK, create.Code, string(create.Body))

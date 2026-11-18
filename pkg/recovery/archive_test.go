@@ -18,6 +18,7 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/people"
 	"github.com/stperic/zzrouter/pkg/access/quota"
 	"github.com/stperic/zzrouter/pkg/access/teams"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stretchr/testify/require"
@@ -47,13 +48,13 @@ func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	_, err = vault.Replace(t.Context(), "cloud", 0, map[string]string{"token": "synthetic-provider-secret"})
 	require.NoError(t, err)
 	require.NoError(t, vault.Close())
-	policy := filestore.NewTeams(filepath.Join(dir, "teams.yaml"))
-	require.NoError(t, policy.Create("workspace", &teams.Team{Name: "Workspace", Kind: teams.KindShared}))
-	require.NoError(t, policy.Save())
-	keyStore := filestore.NewKeys(filepath.Join(dir, "keys.yaml"))
-	_, err = keyStore.Create("editor", &keys.VirtualKey{Name: "Editor", Role: "user", TeamID: "workspace", TeamRole: "member"})
+	accessStore, err := filestore.Open(t.Context(), dir, filestore.Options{})
 	require.NoError(t, err)
-	require.NoError(t, keyStore.Save())
+	_, err = accessStore.CreateTeam(t.Context(), "workspace", teams.Team{Name: "Workspace", Kind: teams.KindShared}, audit.Event{})
+	require.NoError(t, err)
+	_, _, err = accessStore.CreateKey(t.Context(), "editor", keys.VirtualKey{Name: "Editor", Role: "user", TeamID: "workspace", TeamRole: "member"}, audit.Event{})
+	require.NoError(t, err)
+	require.NoError(t, accessStore.Close())
 	peopleStore, err := people.Open(t.Context(), filepath.Join(dir, "access", "people.json"), people.Options{
 		ValidateExternalIssuer: func(context.Context, string) error { return nil }, ValidateTeam: func(context.Context, string) error { return nil },
 	})
@@ -102,9 +103,11 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 	require.Equal(t, "admin", person.Role)
 	require.Equal(t, "workspace", person.TeamID)
 	require.NoError(t, restoredPeople.Close())
-	restoredKeys := filestore.NewKeys(filepath.Join(destination, "config", "keys.yaml"))
-	require.NoError(t, restoredKeys.Load())
-	require.Equal(t, "workspace", restoredKeys.Get("editor").TeamID)
+	keyData, err := os.ReadFile(filepath.Join(destination, "config", "keys.yaml"))
+	require.NoError(t, err)
+	restoredKeys, err := filestore.DecodeKeys(keyData)
+	require.NoError(t, err)
+	require.Equal(t, "workspace", restoredKeys["editor"].TeamID)
 	spend, err := quota.LoadSpend(filepath.Join(destination, "config", "spend.json"))
 	require.NoError(t, err)
 	require.EqualValues(t, 1750000, spend.States["team:workspace:"].SpendMicro)

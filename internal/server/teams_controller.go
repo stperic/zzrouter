@@ -50,7 +50,7 @@ func (ctrl *TeamsController) CreateTeam(c *gin.Context) {
 		return
 	}
 
-	resp, err := ctrl.service.CreateTeam(&req, auditActor(c))
+	resp, err := ctrl.service.CreateTeam(c.Request.Context(), &req, auditActor(c))
 	if err != nil {
 		writeTeamsError(c, err)
 		return
@@ -98,7 +98,7 @@ func (ctrl *TeamsController) UpdateTeam(c *gin.Context) {
 			"POST /zzrouter/v1/keys with the intended shared team_id to create a replacement key, then revoke the old key")
 		return
 	}
-	resp, err := ctrl.service.UpdateTeam(c.Param("id"), &req.UpdateTeamRequest, auditActor(c))
+	resp, err := ctrl.service.UpdateTeam(c.Request.Context(), c.Param("id"), &req.UpdateTeamRequest, auditActor(c))
 	if err != nil {
 		writeTeamsError(c, err)
 		return
@@ -107,7 +107,7 @@ func (ctrl *TeamsController) UpdateTeam(c *gin.Context) {
 }
 
 func (ctrl *TeamsController) DeleteTeam(c *gin.Context) {
-	if err := ctrl.service.DeleteTeam(c.Param("id"), auditActor(c)); err != nil {
+	if err := ctrl.service.DeleteTeam(c.Request.Context(), c.Param("id"), auditActor(c)); err != nil {
 		writeTeamsError(c, err)
 		return
 	}
@@ -133,7 +133,7 @@ func (ctrl *TeamsController) GetTeamUsage(c *gin.Context) {
 }
 
 func (ctrl *TeamsController) ResetTeamUsage(c *gin.Context) {
-	if err := ctrl.service.ResetTeamUsage(c.Param("id"), auditActor(c)); err != nil {
+	if err := ctrl.service.ResetTeamUsage(c.Request.Context(), c.Param("id"), auditActor(c)); err != nil {
 		writeTeamsError(c, err)
 		return
 	}

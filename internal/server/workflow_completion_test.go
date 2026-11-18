@@ -71,18 +71,18 @@ func TestWorkflowAuditAndRecoveryRequireAdmin(t *testing.T) {
 
 func TestSharedKeyEnrollmentAndTeamDeletionSerialize(t *testing.T) {
 	for range 12 {
-		svc, keyStore, _, access, _ := newTeamsTestHarness(t)
-		_, err := svc.CreateTeam(&CreateTeamRequest{ID: "shared", Name: "Shared"}, "operator")
+		svc, store, access := newTeamsTestHarness(t)
+		_, err := svc.CreateTeam(t.Context(), &CreateTeamRequest{ID: "shared", Name: "Shared"}, "operator")
 		require.NoError(t, err)
-		keyService := NewKeysService(keyStore, svc, access)
+		keyService := NewKeysService(store, svc, access)
 		start := make(chan struct{})
 		var createErr, deleteErr error
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			<-start
-			_, createErr = keyService.CreateKey("app", &CreateKeyRequest{Name: "App", TeamID: "shared"}, "operator")
+			_, createErr = keyService.CreateKey(t.Context(), "app", &CreateKeyRequest{Name: "App", TeamID: "shared"}, "operator")
 		})
-		wg.Go(func() { <-start; deleteErr = svc.DeleteTeam("shared", "operator") })
+		wg.Go(func() { <-start; deleteErr = svc.DeleteTeam(t.Context(), "shared", "operator") })
 		close(start)
 		wg.Wait()
 		if createErr == nil {
@@ -93,7 +93,7 @@ func TestSharedKeyEnrollmentAndTeamDeletionSerialize(t *testing.T) {
 			require.False(t, team.Membership.CanDelete)
 		} else {
 			require.NoError(t, deleteErr)
-			require.Nil(t, keyStore.Get("app"))
+			require.Nil(t, store.Snapshot().Key("app"))
 		}
 	}
 }

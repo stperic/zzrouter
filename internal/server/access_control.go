@@ -14,7 +14,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"time"
@@ -22,10 +21,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/stperic/common/mcp/oauth"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/control"
-	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/quota"
-	"github.com/stperic/zzrouter/pkg/access/teams"
 	pkgConfig "github.com/stperic/zzrouter/pkg/config"
 	"github.com/stperic/zzrouter/pkg/httperr"
 	modelgroup "github.com/stperic/zzrouter/pkg/model/group"
@@ -73,18 +71,14 @@ type ModelHooks struct {
 // must call Start() to begin background goroutines.
 func NewAccessControl(
 	staticKeys StaticKeySet,
-	keyStore keys.KeyStore,
-	teamStore teams.TeamStore,
+	store access.Store,
 	groups modelgroup.GroupReader,
 	enforcer *quota.Enforcer,
 	config *pkgConfig.NodeConfig,
 	hooks ModelHooks,
 ) *AccessControl {
-	if teamStore == nil {
-		slog.Info("AccessControl constructed without a team store; team features disabled")
-	}
 	return &AccessControl{
-		core:   control.NewCore(staticKeys, keyStore, teamStore, groups, enforcer, hooks.Identity),
+		core:   control.NewCore(staticKeys, store, groups, enforcer, hooks.Identity),
 		config: config,
 		hooks:  hooks,
 	}

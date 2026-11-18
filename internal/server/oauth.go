@@ -22,14 +22,8 @@ const (
 	browserHostCSRFCookie    = "__Host-" + browserCSRFCookie
 )
 
-func (s *Server) initOAuth() error {
-	if s.node.IsWorker() {
-		return nil
-	}
-	issuer, err := s.config.Auth.OAuth.EffectiveIssuer(s.config.Node)
-	if err != nil {
-		return err
-	}
+// initOAuth does nothing without an issuer; the factory resolves none on a worker.
+func (s *Server) initOAuth(issuer string) error {
 	if issuer == "" {
 		return nil
 	}
