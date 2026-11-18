@@ -46,11 +46,11 @@ func validateSnapshots(files map[string][]byte, key []byte) error {
 		}
 	}
 	if data, ok := files["config/access/people.json"]; ok {
-		records, err := people.DecodeSnapshot(data)
+		state, err := people.DecodeState(data)
 		if err != nil {
 			return fmt.Errorf("people snapshot: %w", err)
 		}
-		for _, person := range records {
+		for _, person := range state.People() {
 			if teamRecords[person.TeamID] == nil {
 				return fmt.Errorf("person %s references a missing team", person.ID)
 			}

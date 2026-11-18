@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/stperic/zzrouter/pkg/audit"
 )
 
 // Domain refusals do not contain submitted passwords or bearer tokens.
@@ -119,11 +121,17 @@ type ProgressUpdate struct {
 	Dismissed *bool   `json:"dismissed,omitempty"`
 }
 
-// Options joins the domain to existing credential and team authorities.
-// Callbacks run with the people mutex held and must not re-enter people or OAuth.
-// The external-issuer callback is never called for a person issuer. Servers must
-// serialize team deletion with enrollment outside this store before reading teams.
+// Options joins the domain to the credential and team authorities and to the
+// owner of the state. The validators run inside Mutate and must not re-enter
+// people or OAuth; the external-issuer one is never called for a person issuer.
+// Servers must serialize team deletion with enrollment before reading teams.
 type Options struct {
 	ValidateExternalIssuer func(context.Context, string) error
 	ValidateTeam           func(context.Context, string) error
+	// Mutate runs change on a private copy of the current state under the owner's
+	// writer gate, then persists, publishes and records the returned event with
+	// ctx. If change or the persist fails, nothing changes and its error returns.
+	Mutate func(ctx context.Context, change func(*State) (audit.Event, error)) error
+	// View returns the current published state without locking.
+	View func() *State
 }

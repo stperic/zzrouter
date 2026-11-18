@@ -93,9 +93,8 @@ func (s *Store) verifyPassword(ctx context.Context, password, encoded string) (b
 }
 
 func (s *Store) admitLogin(username string) error {
-	if s.closed {
-		return ErrClosed
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := utils.NowUTC()
 	for key, attempt := range s.attempts {
 		if !now.Before(attempt.Until) {
@@ -115,7 +114,7 @@ func (s *Store) admitLogin(username string) error {
 	return nil
 }
 
-// Authenticate verifies credentials outside the snapshot lock, then checks the
+// Authenticate verifies credentials outside any writer gate, then checks the
 // same revision again so a concurrent reset cannot authenticate an old password.
 func (s *Store) Authenticate(ctx context.Context, username, password string) (*Person, error) {
 	canonical, err := normalizeUsername(username)
@@ -125,19 +124,16 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 			return nil, ErrInvalidCredentials
 		}
 	}
-	s.mu.Lock()
 	if err := s.admitLogin(canonical); err != nil {
-		s.mu.Unlock()
 		return nil, err
 	}
 	var candidate personRecord
-	for _, record := range s.state.People {
+	for _, record := range s.view().people {
 		if record.Username == canonical {
 			candidate = record
 			break
 		}
 	}
-	s.mu.Unlock()
 	valid, err := s.verifyPassword(ctx, password, candidate.PasswordHash)
 	if err != nil {
 		return nil, err
@@ -145,10 +141,8 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 	if !valid {
 		return nil, ErrInvalidCredentials
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	current, ok := s.state.People[candidate.ID]
-	if s.closed || !ok || current.Revision != candidate.Revision || current.Suspended {
+	current, ok := s.view().people[candidate.ID]
+	if !ok || current.Revision != candidate.Revision || current.Suspended {
 		return nil, ErrInvalidCredentials
 	}
 	if err := s.options.ValidateTeam(ctx, current.TeamID); err != nil {
@@ -160,7 +154,7 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*P
 
 // ChangePassword verifies the existing password and invalidates prior revisions.
 func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPassword, newPassword string) (*Person, error) {
-	p := s.Get(id)
+	p := s.view().Person(id)
 	if p == nil || p.Revision != revision {
 		return nil, ErrInvalidCredentials
 	}
@@ -176,18 +170,18 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 		return nil, err
 	}
 	var result Person
-	err = s.mutate(ctx, &audit.Event{Action: audit.ActionPasswordChanged, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, func(state *snapshot) error {
-		record, ok := state.People[id]
+	err = s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
-			return ErrInvalidCredentials
+			return audit.Event{}, ErrInvalidCredentials
 		}
 		record.PasswordHash = hash
 		record.Revision = randomValue("")
 		record.UpdatedAt = utils.NowUTC()
-		state.People[id] = record
+		state.people[id] = record
 		invalidatePersonGrants(state, id)
 		result = record.Person
-		return nil
+		return audit.Event{Action: audit.ActionPasswordChanged, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -198,17 +192,17 @@ func (s *Store) ChangePassword(ctx context.Context, id, revision, currentPasswor
 // RevokeSessions advances the current revision without changing its password.
 func (s *Store) RevokeSessions(ctx context.Context, id, revision string) (*Person, error) {
 	var result Person
-	err := s.mutate(ctx, &audit.Event{Action: audit.ActionSessionsRevoked, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, func(state *snapshot) error {
-		record, ok := state.People[id]
+	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		record, ok := state.people[id]
 		if !ok || record.Suspended || record.Revision != revision {
-			return ErrInvalidCredentials
+			return audit.Event{}, ErrInvalidCredentials
 		}
 		record.Revision = randomValue("")
 		record.UpdatedAt = utils.NowUTC()
-		state.People[id] = record
+		state.people[id] = record
 		invalidatePersonGrants(state, id)
 		result = record.Person
-		return nil
+		return audit.Event{Action: audit.ActionSessionsRevoked, Actor: id, Subject: id, Metadata: map[string]any{"authority_invalidated": true}}, nil
 	})
 	if err != nil {
 		return nil, err

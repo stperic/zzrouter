@@ -16,7 +16,7 @@ func validIssuer(issuer Issuer) bool {
 	return issuer.Reference != "" && len(issuer.Reference) <= 4096 && (issuer.PersonID == "") == (issuer.Revision == "")
 }
 
-func (s *Store) validateIssuer(ctx context.Context, state *snapshot, issuer Issuer, purpose Purpose) error {
+func (s *Store) validateIssuer(ctx context.Context, state *State, issuer Issuer, purpose Purpose) error {
 	if !validIssuer(issuer) {
 		return ErrInvalidGrant
 	}
@@ -26,7 +26,7 @@ func (s *Store) validateIssuer(ctx context.Context, state *snapshot, issuer Issu
 		}
 		return nil
 	}
-	p, ok := state.People[issuer.PersonID]
+	p, ok := state.people[issuer.PersonID]
 	if !ok || p.Suspended || p.Revision != issuer.Revision {
 		return ErrInvalidGrant
 	}
@@ -39,7 +39,7 @@ func (s *Store) validateIssuer(ctx context.Context, state *snapshot, issuer Issu
 	return nil
 }
 
-func (s *Store) validateGrant(ctx context.Context, state *snapshot, grant grantRecord) error {
+func (s *Store) validateGrant(ctx context.Context, state *State, grant grantRecord) error {
 	if !active(grant.Grant) {
 		return ErrInvalidGrant
 	}
@@ -51,11 +51,11 @@ func (s *Store) validateGrant(ctx context.Context, state *snapshot, grant grantR
 			return ErrInvalidGrant
 		}
 	}
-	if grant.Purpose == PurposeSetup && state.Initialized {
+	if grant.Purpose == PurposeSetup && state.initialized {
 		return ErrInitialized
 	}
 	if grant.Purpose == PurposeRecovery {
-		person, ok := state.People[grant.PersonID]
+		person, ok := state.people[grant.PersonID]
 		if !ok || person.TeamID != grant.TeamID {
 			return ErrInvalidGrant
 		}
@@ -97,15 +97,15 @@ func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, 
 	now := utils.NowUTC()
 	grant := grantRecord{Grant: Grant{ID: randomValue("grant_"), Purpose: request.Purpose, TeamID: request.TeamID, Role: request.Role, PersonID: request.PersonID, CreatedAt: now, ExpiresAt: now.Add(request.TTL)}, Issuer: request.Issuer}
 	event := audit.Event{Action: audit.ActionGrantIssued, Subject: grant.ID, Metadata: map[string]any{"purpose": grant.Purpose, "team_id": grant.TeamID, "role": grant.Role}}
-	err := s.mutate(ctx, &event, func(state *snapshot) error {
+	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		if err := s.validateGrant(ctx, state, grant); err != nil {
-			return err
+			return audit.Event{}, err
 		}
 		ownerRecovery := false
 		if request.Purpose == PurposeRecovery {
-			person := state.People[request.PersonID]
+			person := state.people[request.PersonID]
 			if person.Owner && request.Issuer.PersonID != "" {
-				return ErrOwnerProtected
+				return audit.Event{}, ErrOwnerProtected
 			}
 			ownerRecovery = person.Owner
 			// Only the latest recovery operation remains usable for this person.
@@ -113,10 +113,10 @@ func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, 
 		}
 		pruneGrants(state, now)
 		if !canIssueGrant(state, request.Issuer, ownerRecovery) {
-			return ErrCapacity
+			return audit.Event{}, ErrCapacity
 		}
-		state.Grants[digest(raw)] = grant
-		return nil
+		state.grants[digest(raw)] = grant
+		return event, nil
 	})
 	if err != nil {
 		return nil, err
@@ -126,26 +126,26 @@ func (s *Store) Issue(ctx context.Context, request GrantRequest) (*IssuedGrant, 
 
 // Retain invitation history for the UI. Used/expired handoff and recovery codes
 // need no tombstone: an absent digest already fails redemption.
-func pruneGrants(state *snapshot, now time.Time) {
-	for hash, grant := range state.Grants {
+func pruneGrants(state *State, now time.Time) {
+	for hash, grant := range state.grants {
 		if now.After(grant.ExpiresAt.Add(24*time.Hour)) || grant.Purpose != PurposeInvitation && !active(grant.Grant) {
-			delete(state.Grants, hash)
+			delete(state.grants, hash)
 		}
 	}
 }
 
-func canIssueGrant(state *snapshot, issuer Issuer, ownerRecovery bool) bool {
+func canIssueGrant(state *State, issuer Issuer, ownerRecovery bool) bool {
 	// Reserve one slot for the local owner's recovery even when ordinary
 	// issuance is saturated. Reissuing recovery replaces its predecessor.
 	if ownerRecovery {
-		return len(state.Grants) < maxGrants
+		return len(state.grants) < maxGrants
 	}
-	if len(state.Grants) >= maxGrants-1 {
+	if len(state.grants) >= maxGrants-1 {
 		return false
 	}
 	const maxActiveGrantsPerIssuer = 64
 	count := 0
-	for _, grant := range state.Grants {
+	for _, grant := range state.grants {
 		sameIssuer := grant.Issuer.Reference == issuer.Reference
 		if issuer.PersonID != "" {
 			sameIssuer = grant.Issuer.PersonID == issuer.PersonID
@@ -159,19 +159,15 @@ func canIssueGrant(state *snapshot, issuer Issuer, ownerRecovery bool) bool {
 
 // Inspect verifies the token without consuming or exposing its issuer or binding.
 func (s *Store) Inspect(ctx context.Context, token string) (*Grant, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil, ErrClosed
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	g, ok := s.state.Grants[digest(token)]
+	state := s.view()
+	g, ok := state.grants[digest(token)]
 	if !ok || len(token) > 256 {
 		return nil, ErrInvalidGrant
 	}
-	if err := s.validateGrant(ctx, &s.state, g); err != nil {
+	if err := s.validateGrant(ctx, state, g); err != nil {
 		return nil, err
 	}
 	result := publicGrant(g)
@@ -185,20 +181,20 @@ func (s *Store) Exchange(ctx context.Context, token, browserProof string) (*Issu
 	}
 	raw := randomValue("zzb_")
 	var result Grant
-	err := s.mutate(ctx, nil, func(state *snapshot) error {
+	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		oldHash := digest(token)
-		grant, ok := state.Grants[oldHash]
+		grant, ok := state.grants[oldHash]
 		if !ok || grant.BrowserHash != "" {
-			return ErrInvalidGrant
+			return audit.Event{}, ErrInvalidGrant
 		}
 		if err := s.validateGrant(ctx, state, grant); err != nil {
-			return err
+			return audit.Event{}, err
 		}
 		grant.BrowserHash = digest(browserProof)
-		delete(state.Grants, oldHash)
-		state.Grants[digest(raw)] = grant
+		delete(state.grants, oldHash)
+		state.grants[digest(raw)] = grant
 		result = publicGrant(grant)
-		return nil
+		return audit.Event{}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -206,8 +202,8 @@ func (s *Store) Exchange(ctx context.Context, token, browserProof string) (*Issu
 	return &IssuedGrant{Grant: result, Token: raw}, nil
 }
 
-func (s *Store) redeem(ctx context.Context, state *snapshot, token, proof string, purpose Purpose) (grantRecord, error) {
-	grant, ok := state.Grants[digest(token)]
+func (s *Store) redeem(ctx context.Context, state *State, token, proof string, purpose Purpose) (grantRecord, error) {
+	grant, ok := state.grants[digest(token)]
 	if !ok || grant.Purpose != purpose || grant.BrowserHash == "" || len(token) > 256 || proof == "" || len(proof) > 4096 || subtle.ConstantTimeCompare([]byte(grant.BrowserHash), []byte(digest(proof))) != 1 {
 		return grantRecord{}, ErrInvalidGrant
 	}
@@ -216,20 +212,20 @@ func (s *Store) redeem(ctx context.Context, state *snapshot, token, proof string
 	}
 	now := utils.NowUTC()
 	grant.UsedAt = &now
-	state.Grants[digest(token)] = grant
+	state.grants[digest(token)] = grant
 	return grant, nil
 }
 
 // ConsumeSession transfers exactly the issuer's authority, never an owner's identity.
 func (s *Store) ConsumeSession(ctx context.Context, token, proof string) (Issuer, error) {
 	var issuer Issuer
-	err := s.mutate(ctx, nil, func(state *snapshot) error {
+	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		grant, err := s.redeem(ctx, state, token, proof, PurposeSession)
 		if err != nil {
-			return err
+			return audit.Event{}, err
 		}
 		issuer = grant.Issuer
-		return nil
+		return audit.Event{}, nil
 	})
 	return issuer, err
 }
@@ -263,33 +259,33 @@ func (s *Store) enroll(ctx context.Context, token, proof string, input CreatePer
 	}
 	var result Person
 	var event audit.Event
-	err = s.mutate(ctx, &event, func(state *snapshot) error {
-		if len(state.People) >= maxPeople {
-			return ErrCapacity
+	err = s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		if len(state.people) >= maxPeople {
+			return audit.Event{}, ErrCapacity
 		}
-		for _, p := range state.People {
+		for _, p := range state.people {
 			if p.Username == username {
-				return ErrConflict
+				return audit.Event{}, ErrConflict
 			}
 		}
 		grant, err := s.redeem(ctx, state, token, proof, purpose)
 		if err != nil {
-			return err
+			return audit.Event{}, err
 		}
-		if purpose == PurposeInvitation && !state.Initialized {
-			return ErrInvalidGrant
+		if purpose == PurposeInvitation && !state.initialized {
+			return audit.Event{}, ErrInvalidGrant
 		}
 		now := utils.NowUTC()
 		result = Person{ID: randomValue("person_"), Username: username, Name: strings.TrimSpace(input.Name), Role: grant.Role, TeamID: grant.TeamID, Owner: purpose == PurposeSetup, Revision: randomValue(""), CreatedAt: now, UpdatedAt: now}
-		state.People[result.ID] = personRecord{Person: result, PasswordHash: hash}
+		state.people[result.ID] = personRecord{Person: result, PasswordHash: hash}
 		if purpose == PurposeSetup {
-			state.Initialized = true
-			state.OwnerID = result.ID
-			state.Progress.Step = "provider"
-			state.Progress.UpdatedAt = now
+			state.initialized = true
+			state.ownerID = result.ID
+			state.progress.Step = "provider"
+			state.progress.UpdatedAt = now
 		}
 		event = audit.Event{Action: audit.ActionPersonCreated, Actor: result.ID, Subject: result.ID, Metadata: map[string]any{"purpose": purpose, "team_id": result.TeamID, "role": result.Role, "grant_id": grant.ID}}
-		return nil
+		return event, nil
 	})
 	if err != nil {
 		return nil, err
@@ -308,23 +304,23 @@ func (s *Store) Recover(ctx context.Context, token, proof, password string) (*Pe
 	}
 	var result Person
 	var event audit.Event
-	err = s.mutate(ctx, &event, func(state *snapshot) error {
+	err = s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		grant, err := s.redeem(ctx, state, token, proof, PurposeRecovery)
 		if err != nil {
-			return err
+			return audit.Event{}, err
 		}
-		record, ok := state.People[grant.PersonID]
+		record, ok := state.people[grant.PersonID]
 		if !ok {
-			return ErrInvalidGrant
+			return audit.Event{}, ErrInvalidGrant
 		}
 		record.PasswordHash = hash
 		record.Revision = randomValue("")
 		record.UpdatedAt = utils.NowUTC()
-		state.People[record.ID] = record
+		state.people[record.ID] = record
 		invalidatePersonGrants(state, record.ID)
 		result = record.Person
 		event = audit.Event{Action: audit.ActionPersonRecovered, Actor: record.ID, Subject: record.ID, Metadata: map[string]any{"grant_id": grant.ID, "authority_invalidated": true}}
-		return nil
+		return event, nil
 	})
 	if err != nil {
 		return nil, err
@@ -332,32 +328,33 @@ func (s *Store) Recover(ctx context.Context, token, proof, password string) (*Pe
 	return &result, nil
 }
 
-func invalidatePersonGrants(state *snapshot, id string) {
+func invalidatePersonGrants(state *State, id string) {
 	now := utils.NowUTC()
-	for hash, grant := range state.Grants {
+	for hash, grant := range state.grants {
 		if active(grant.Grant) && (grant.PersonID == id || grant.Issuer.PersonID == id) {
 			grant.RevokedAt = &now
-			state.Grants[hash] = grant
+			state.grants[hash] = grant
 		}
 	}
 }
 
-func invalidateRecoveryGrants(state *snapshot, id string) {
+func invalidateRecoveryGrants(state *State, id string) {
 	now := utils.NowUTC()
-	for hash, grant := range state.Grants {
+	for hash, grant := range state.grants {
 		if grant.Purpose == PurposeRecovery && grant.PersonID == id && active(grant.Grant) {
 			grant.RevokedAt = &now
-			state.Grants[hash] = grant
+			state.grants[hash] = grant
 		}
 	}
 }
 
 // Invitations returns safe invitation/recovery history, including expired and consumed records.
-func (s *Store) Invitations() []Grant {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *State) Invitations() []Grant {
 	items := []Grant{}
-	for _, grant := range s.state.Grants {
+	if s == nil {
+		return items
+	}
+	for _, grant := range s.grants {
 		if grant.Purpose == PurposeInvitation || grant.Purpose == PurposeRecovery {
 			items = append(items, publicGrant(grant))
 		}
@@ -369,19 +366,19 @@ func (s *Store) Invitations() []Grant {
 // RevokeGrant invalidates a pending grant by its public identifier.
 func (s *Store) RevokeGrant(ctx context.Context, id string) error {
 	var event audit.Event
-	return s.mutate(ctx, &event, func(state *snapshot) error {
-		for hash, grant := range state.Grants {
+	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		for hash, grant := range state.grants {
 			if grant.ID == id {
 				if active(grant.Grant) {
 					now := utils.NowUTC()
 					grant.RevokedAt = &now
-					state.Grants[hash] = grant
+					state.grants[hash] = grant
 					event = audit.Event{Action: audit.ActionGrantRevoked, Subject: id, Metadata: map[string]any{"purpose": grant.Purpose, "team_id": grant.TeamID}}
 				}
-				return nil
+				return event, nil
 			}
 		}
-		return ErrNotFound
+		return audit.Event{}, ErrNotFound
 	})
 }
 
@@ -389,34 +386,34 @@ func (s *Store) RevokeGrant(ctx context.Context, id string) error {
 func (s *Store) Update(ctx context.Context, id string, update UpdatePerson) (*Person, error) {
 	var result Person
 	var event audit.Event
-	err := s.mutate(ctx, &event, func(state *snapshot) error {
-		record, ok := state.People[id]
+	err := s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		record, ok := state.people[id]
 		if !ok {
-			return ErrNotFound
+			return audit.Event{}, ErrNotFound
 		}
 		if record.Owner && (update.Role != nil && *update.Role != record.Role || update.TeamID != nil && *update.TeamID != record.TeamID || update.Suspended != nil && *update.Suspended) {
-			return ErrOwnerProtected
+			return audit.Event{}, ErrOwnerProtected
 		}
 		authorityChanged := false
 		if update.Name != nil {
 			if !validName(*update.Name) {
-				return ErrInvalidInput
+				return audit.Event{}, ErrInvalidInput
 			}
 			record.Name = strings.TrimSpace(*update.Name)
 		}
 		if update.Role != nil {
 			if !validRole(*update.Role) {
-				return ErrInvalidInput
+				return audit.Event{}, ErrInvalidInput
 			}
 			authorityChanged = authorityChanged || record.Role != *update.Role
 			record.Role = *update.Role
 		}
 		if update.TeamID != nil {
 			if *update.TeamID == "" {
-				return ErrInvalidInput
+				return audit.Event{}, ErrInvalidInput
 			}
 			if err := s.options.ValidateTeam(ctx, *update.TeamID); err != nil {
-				return err
+				return audit.Event{}, err
 			}
 			authorityChanged = authorityChanged || record.TeamID != *update.TeamID
 			record.TeamID = *update.TeamID
@@ -429,13 +426,13 @@ func (s *Store) Update(ctx context.Context, id string, update UpdatePerson) (*Pe
 			record.Revision = randomValue("")
 			invalidatePersonGrants(state, id)
 		}
-		if authorityChanged || record.Name != state.People[id].Name {
-			event = audit.Event{Action: audit.ActionPersonUpdated, Subject: id, Metadata: map[string]any{"name_changed": record.Name != state.People[id].Name, "team_id": record.TeamID, "role": record.Role, "suspended": record.Suspended, "authority_invalidated": authorityChanged}}
+		if authorityChanged || record.Name != state.people[id].Name {
+			event = audit.Event{Action: audit.ActionPersonUpdated, Subject: id, Metadata: map[string]any{"name_changed": record.Name != state.people[id].Name, "team_id": record.TeamID, "role": record.Role, "suspended": record.Suspended, "authority_invalidated": authorityChanged}}
 		}
 		record.UpdatedAt = utils.NowUTC()
-		state.People[id] = record
+		state.people[id] = record
 		result = record.Person
-		return nil
+		return event, nil
 	})
 	if err != nil {
 		return nil, err

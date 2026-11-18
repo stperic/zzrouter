@@ -21,7 +21,8 @@ import (
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
-// Harness is one empty store under test.
+// Harness is one empty store under test. Its store has people, opened with
+// ValidateExternalIssuer and ValidateTeam below.
 type Harness struct {
 	Store          access.Store
 	Reopen         func() access.Store // closes Store and opens its persisted state again
@@ -53,6 +54,13 @@ func Run(t *testing.T, newHarness func(*testing.T) Harness) {
 		{"ClosedStoreRefusesWrites", testClosedStore},
 		{"ConcurrentCreatesOfOneKey", testConcurrentCreates},
 		{"ReopenRoundTrip", testReopenRoundTrip},
+		{"PeopleOwnerSetup", testPeopleOwnerSetup},
+		{"PeopleInvitation", testPeopleInvitation},
+		{"PeoplePasswordChange", testPeoplePasswordChange},
+		{"PeopleFailedCommitConsumesNothing", testPeopleFailedCommit},
+		{"PeopleSurviveReopen", testPeopleReopen},
+		{"PeopleCommitNotifies", testPeopleCommitNotifies},
+		{"PeopleSnapshotsDoNotChange", testPeopleSnapshotIsolation},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

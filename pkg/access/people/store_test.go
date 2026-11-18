@@ -4,14 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/stperic/common/atomicfile"
+	"github.com/stperic/zzrouter/pkg/audit"
 	"github.com/stperic/zzrouter/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,15 +36,81 @@ func testOptions() Options {
 	}
 }
 
-func openTestStore(t *testing.T) *Store {
-	t.Helper()
-	s, err := Open(t.Context(), filepath.Join(t.TempDir(), "access", "people.json"), testOptions())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, s.Close()) })
-	return s
+// memoryOwner stands in for the access store: one gate, the published state,
+// an audit sink and an optional persist failure.
+type memoryOwner struct {
+	gate    sync.Mutex
+	current atomic.Pointer[State]
+	sink    audit.Sink
+	failure error
 }
 
-func setupGrant(t *testing.T, s *Store) *IssuedGrant {
+func (o *memoryOwner) mutate(ctx context.Context, change func(*State) (audit.Event, error)) error {
+	o.gate.Lock()
+	defer o.gate.Unlock()
+	next := o.current.Load().Clone()
+	event, err := change(next)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if o.failure != nil {
+		return o.failure
+	}
+	o.current.Store(next)
+	if event.Action != "" && o.sink != nil {
+		audit.Log(ctx, o.sink, event)
+	}
+	return nil
+}
+
+// failPersists makes every later persist fail with err; nil restores success.
+func (o *memoryOwner) failPersists(err error) {
+	o.gate.Lock()
+	defer o.gate.Unlock()
+	o.failure = err
+}
+
+func (o *memoryOwner) setSink(sink audit.Sink) {
+	o.gate.Lock()
+	defer o.gate.Unlock()
+	o.sink = sink
+}
+
+// testPeople is a Store over its own in-memory owner.
+type testPeople struct {
+	*Store
+	owner *memoryOwner
+}
+
+func (p *testPeople) state() *State { return p.owner.current.Load() }
+
+func newTestPeople(t *testing.T, state *State) *testPeople {
+	t.Helper()
+	owner := &memoryOwner{}
+	owner.current.Store(state)
+	options := testOptions()
+	options.Mutate, options.View = owner.mutate, owner.current.Load
+	s, err := New(options)
+	require.NoError(t, err)
+	return &testPeople{Store: s, owner: owner}
+}
+
+func openTestStore(t *testing.T) *testPeople { return newTestPeople(t, nil) }
+
+// reopen restarts over the persisted form of the current state.
+func (p *testPeople) reopen(t *testing.T) *testPeople {
+	t.Helper()
+	data, err := json.Marshal(p.state())
+	require.NoError(t, err)
+	state, err := DecodeState(data)
+	require.NoError(t, err)
+	return newTestPeople(t, state)
+}
+
+func setupGrant(t *testing.T, s *testPeople) *IssuedGrant {
 	t.Helper()
 	grant, err := s.Issue(t.Context(), GrantRequest{Purpose: PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: Issuer{Reference: "installation"}})
 	require.NoError(t, err)
@@ -54,7 +119,7 @@ func setupGrant(t *testing.T, s *Store) *IssuedGrant {
 	return bound
 }
 
-func claimTestOwner(t *testing.T, s *Store) *Person {
+func claimTestOwner(t *testing.T, s *testPeople) *Person {
 	t.Helper()
 	grant := setupGrant(t, s)
 	p, err := s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "Owner", Name: "Router owner", Password: testPassword})
@@ -87,24 +152,21 @@ func TestOwnerClaimConcurrentAndDurable(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, winners)
-	require.True(t, s.Initialized())
-	require.Len(t, s.List(), 1)
-	before := s.Owner()
-	require.True(t, s.OwnerTeam(before.TeamID))
-	require.True(t, s.ReferencedTeam(before.TeamID))
-	data, err := os.ReadFile(s.path)
+	require.True(t, s.state().Initialized())
+	require.Len(t, s.state().People(), 1)
+	before := s.state().Owner()
+	require.True(t, s.state().OwnerTeam(before.TeamID))
+	require.True(t, s.state().TeamImpact(before.TeamID).HasMembers())
+	data, err := json.Marshal(s.state())
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), testPassword)
 	assert.NotContains(t, string(data), grant.Token)
 	assert.NotContains(t, string(data), testProof)
-	public, err := json.Marshal(s.List())
+	public, err := json.Marshal(s.state().People())
 	require.NoError(t, err)
 	assert.NotContains(t, string(public), "password_hash")
-	require.NoError(t, s.Close())
-	reopened, err := Open(t.Context(), s.path, testOptions())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
-	assert.Equal(t, before, reopened.Owner())
+	reopened := s.reopen(t)
+	assert.Equal(t, before, reopened.state().Owner())
 	_, err = reopened.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "retry", Name: "Retry", Password: testPassword})
 	require.Error(t, err)
 }
@@ -112,20 +174,16 @@ func TestOwnerClaimConcurrentAndDurable(t *testing.T) {
 func TestFailedOwnerSaveDoesNotConsumeGrant(t *testing.T) {
 	s := openTestStore(t)
 	grant := setupGrant(t, s)
-	before, err := os.ReadFile(s.path)
-	require.NoError(t, err)
-	write := s.write
-	s.write = func(string, []byte, os.FileMode) error { return errors.New("write failed") }
-	_, err = s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
+	before := s.state()
+	s.owner.failPersists(errors.New("write failed"))
+	_, err := s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
 	require.Error(t, err)
-	assert.False(t, s.Initialized())
-	assert.Empty(t, s.List())
+	assert.False(t, s.state().Initialized())
+	assert.Empty(t, s.state().People())
 	_, err = s.Inspect(t.Context(), grant.Token)
 	require.NoError(t, err)
-	after, err := os.ReadFile(s.path)
-	require.NoError(t, err)
-	assert.Equal(t, before, after)
-	s.write = write
+	assert.Same(t, before, s.state(), "a failed persist publishes nothing")
+	s.owner.failPersists(nil)
 	_, err = s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
 	require.NoError(t, err)
 }
@@ -151,7 +209,7 @@ func TestInvitationBindingConsumptionAndIssuerRevocation(t *testing.T) {
 	assert.False(t, member.Owner)
 	_, err = s.AcceptInvitation(t.Context(), bound.Token, testProof, CreatePerson{Username: "reuse", Name: "Reuse", Password: testPassword})
 	require.ErrorIs(t, err, ErrInvalidGrant)
-	assert.Equal(t, "accepted", s.Invitations()[0].Status)
+	assert.Equal(t, "accepted", s.state().Invitations()[0].Status)
 	invite, err = s.Issue(t.Context(), GrantRequest{Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", Issuer: issuer})
 	require.NoError(t, err)
 	_, err = s.RevokeSessions(t.Context(), owner.ID, owner.Revision)
@@ -193,13 +251,12 @@ func TestGrantPurposeExpiryAndFailedExchange(t *testing.T) {
 	s := openTestStore(t)
 	grant, err := s.Issue(t.Context(), GrantRequest{Purpose: PurposeSession, Issuer: Issuer{Reference: "installation"}})
 	require.NoError(t, err)
-	write := s.write
-	s.write = func(string, []byte, os.FileMode) error { return errors.New("disk unavailable") }
+	s.owner.failPersists(errors.New("disk unavailable"))
 	_, err = s.Exchange(t.Context(), grant.Token, testProof)
 	require.Error(t, err)
 	_, err = s.Inspect(t.Context(), grant.Token)
 	require.NoError(t, err)
-	s.write = write
+	s.owner.failPersists(nil)
 	bound, err := s.Exchange(t.Context(), grant.Token, testProof)
 	require.NoError(t, err)
 	_, err = s.ClaimOwner(t.Context(), bound.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
@@ -215,20 +272,6 @@ func TestGrantPurposeExpiryAndFailedExchange(t *testing.T) {
 	defer restore()
 	_, err = s.Exchange(t.Context(), grant.Token, testProof)
 	require.ErrorIs(t, err, ErrInvalidGrant)
-}
-
-func TestStoreLockAndCorruptLoadRelease(t *testing.T) {
-	s := openTestStore(t)
-	_, err := Open(t.Context(), s.path, testOptions())
-	require.ErrorIs(t, err, atomicfile.ErrLocked)
-	require.NoError(t, s.Close())
-	require.NoError(t, os.WriteFile(s.path, []byte(`{"version":1,"initialized":false,"people":{},"grants":{},"unexpected":true}`), 0o600))
-	_, err = Open(t.Context(), s.path, testOptions())
-	require.Error(t, err)
-	require.NoError(t, os.Remove(s.path))
-	reopened, err := Open(t.Context(), s.path, testOptions())
-	require.NoError(t, err)
-	require.NoError(t, reopened.Close())
 }
 
 func TestPasswordValidationThrottlingAndCapacity(t *testing.T) {
@@ -261,13 +304,13 @@ func TestProgressUsesObservedMilestones(t *testing.T) {
 	s := openTestStore(t)
 	owner := claimTestOwner(t, s)
 	require.NoError(t, s.UpdateProgress(t.Context(), ProgressUpdate{Step: ptr("app"), Dismissed: ptr(true)}))
-	assert.False(t, s.Progress().ResponseVerified)
-	assert.False(t, s.Progress().AppConnected)
+	assert.False(t, s.state().Progress().ResponseVerified)
+	assert.False(t, s.state().Progress().AppConnected)
 	require.ErrorIs(t, s.MarkResponse(t.Context(), "another-person"), ErrNotFound)
 	require.NoError(t, s.MarkResponse(t.Context(), owner.ID))
 	require.NoError(t, s.MarkAppConnected(t.Context()))
-	assert.True(t, s.Progress().ResponseVerified)
-	assert.True(t, s.Progress().AppConnected)
+	assert.True(t, s.state().Progress().ResponseVerified)
+	assert.True(t, s.state().Progress().AppConnected)
 }
 
 func ptr[T any](value T) *T { return &value }
@@ -302,14 +345,11 @@ func TestInvitationConcurrentConsumptionSurvivesRestart(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, winners)
-	require.Len(t, s.List(), 2)
-	require.NoError(t, s.Close())
-	reopened, err := Open(t.Context(), s.path, testOptions())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
+	require.Len(t, s.state().People(), 2)
+	reopened := s.reopen(t)
 	_, err = reopened.Inspect(t.Context(), bound.Token)
 	require.ErrorIs(t, err, ErrInvalidGrant)
-	assert.Equal(t, "accepted", reopened.Invitations()[0].Status)
+	assert.Equal(t, "accepted", reopened.state().Invitations()[0].Status)
 }
 
 func TestInvitationIssuerSuspensionRevokesPendingAuthority(t *testing.T) {
@@ -332,7 +372,7 @@ func TestInvitationIssuerSuspensionRevokesPendingAuthority(t *testing.T) {
 	assert.NotEqual(t, admin.Revision, suspended.Revision)
 	_, err = s.AcceptInvitation(t.Context(), bound.Token, testProof, CreatePerson{Username: "recipient", Name: "Recipient", Password: testPassword})
 	require.ErrorIs(t, err, ErrInvalidGrant)
-	assert.Len(t, s.List(), 2)
+	assert.Len(t, s.state().People(), 2)
 }
 
 func TestGrantExternalIssuerAndTeamRevalidated(t *testing.T) {
@@ -346,26 +386,34 @@ func TestGrantExternalIssuerAndTeamRevalidated(t *testing.T) {
 	s.options.ValidateTeam = func(context.Context, string) error { return ErrNotFound }
 	_, err = s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
 	require.ErrorIs(t, err, ErrInvalidGrant)
-	assert.False(t, s.Initialized())
+	assert.False(t, s.state().Initialized())
 }
 
-func TestPostRenameWarningPublishesCommittedClaim(t *testing.T) {
+// Both changes verify the same revision; the commit's compare-and-swap admits one.
+func TestConcurrentPasswordChangesOneWins(t *testing.T) {
 	s := openTestStore(t)
-	grant := setupGrant(t, s)
-	s.write = func(path string, data []byte, mode os.FileMode) error {
-		if err := atomicfile.WriteFile(path, data, mode); err != nil {
-			return err
-		}
-		return atomicfile.ErrPostRenameDurability
+	owner := claimTestOwner(t, s)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, next := range []string{"first replacement password", "second replacement password"} {
+		wg.Go(func() {
+			<-start
+			_, err := s.ChangePassword(t.Context(), owner.ID, owner.Revision, testPassword, next)
+			results <- err
+		})
 	}
-	person, err := s.ClaimOwner(t.Context(), grant.Token, testProof, CreatePerson{Username: "alice", Name: "Alice", Password: testPassword})
-	require.NoError(t, err)
-	assert.Equal(t, person, s.Owner())
-	require.NoError(t, s.Close())
-	reopened, err := Open(t.Context(), s.path, testOptions())
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
-	assert.Equal(t, person, reopened.Owner())
-	_, err = reopened.Inspect(t.Context(), grant.Token)
-	require.ErrorIs(t, err, ErrInvalidGrant)
+	close(start)
+	wg.Wait()
+	close(results)
+	winners := 0
+	for err := range results {
+		if err == nil {
+			winners++
+		} else {
+			require.ErrorIs(t, err, ErrInvalidCredentials)
+		}
+	}
+	require.Equal(t, 1, winners)
+	assert.NotEqual(t, owner.Revision, s.state().Person(owner.ID).Revision)
 }

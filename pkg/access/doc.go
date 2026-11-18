@@ -13,7 +13,8 @@
 //     tracking, concurrency limiter ([quota.Enforcer]).
 //   - [teams]   — teams and their access policies.
 //
-// filestore implements Store over the YAML files and people's account store;
+// people holds the account state and its transitions without storage;
+// filestore implements Store over keys.yaml, teams.yaml and people.json;
 // accesstest is the contract every Store passes. Localproof owns the
 // installation proof without importing access storage.
 //

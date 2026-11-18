@@ -9,31 +9,19 @@ import (
 	"github.com/stperic/zzrouter/pkg/access/teams"
 )
 
-// PeopleReader is the people state a Snapshot reads; *people.Store satisfies it.
-type PeopleReader interface {
-	Get(id string) *people.Person
-	List() []people.Person
-	Owner() *people.Person
-	Initialized() bool
-	Progress() people.Progress
-	Invitations() []people.Grant
-	TeamImpact(teamID string) people.TeamDependencies
-	OwnerTeam(teamID string) bool
-}
-
-// Snapshot is one published state; a nil *Snapshot reads as empty.
-// Yielded records are copies. Until step 6 the people methods read the live store.
+// Snapshot is one published state of keys, teams and people; a nil *Snapshot
+// reads as empty. Yielded records are copies.
 type Snapshot struct {
 	keys       map[string]*keys.VirtualKey
 	teams      map[string]*teams.Team
 	keysByTeam map[string][]string
 	gated      bool
-	people     PeopleReader
+	people     *people.State
 }
 
 // NewSnapshot owns k and t: the caller never changes them or their records
 // again. A nil p means no people.
-func NewSnapshot(k map[string]*keys.VirtualKey, t map[string]*teams.Team, p PeopleReader) *Snapshot {
+func NewSnapshot(k map[string]*keys.VirtualKey, t map[string]*teams.Team, p *people.State) *Snapshot {
 	s := &Snapshot{keys: k, teams: t, keysByTeam: make(map[string][]string), people: p}
 	for id, key := range k {
 		s.keysByTeam[key.TeamID] = append(s.keysByTeam[key.TeamID], id)
@@ -125,7 +113,7 @@ func (s *Snapshot) Teams() iter.Seq2[string, *teams.Team] {
 // The anonymous compat gate reads it on every keyless request.
 func (s *Snapshot) HasGatedTeam() bool { return s != nil && s.gated }
 
-func (s *Snapshot) livePeople() PeopleReader {
+func (s *Snapshot) peopleState() *people.State {
 	if s == nil {
 		return nil
 	}
@@ -133,61 +121,27 @@ func (s *Snapshot) livePeople() PeopleReader {
 }
 
 // Person returns one account, or nil.
-func (s *Snapshot) Person(id string) *people.Person {
-	if p := s.livePeople(); p != nil {
-		return p.Get(id)
-	}
-	return nil
-}
+func (s *Snapshot) Person(id string) *people.Person { return s.peopleState().Person(id) }
 
 // People lists accounts by username.
-func (s *Snapshot) People() []people.Person {
-	if p := s.livePeople(); p != nil {
-		return p.List()
-	}
-	return []people.Person{}
-}
+func (s *Snapshot) People() []people.Person { return s.peopleState().People() }
 
 // Owner returns the initial owner, or nil.
-func (s *Snapshot) Owner() *people.Person {
-	if p := s.livePeople(); p != nil {
-		return p.Owner()
-	}
-	return nil
-}
+func (s *Snapshot) Owner() *people.Person { return s.peopleState().Owner() }
 
 // Initialized reports the permanent owner-claim marker.
-func (s *Snapshot) Initialized() bool {
-	p := s.livePeople()
-	return p != nil && p.Initialized()
-}
+func (s *Snapshot) Initialized() bool { return s.peopleState().Initialized() }
 
 // Progress returns the persisted onboarding state.
-func (s *Snapshot) Progress() people.Progress {
-	if p := s.livePeople(); p != nil {
-		return p.Progress()
-	}
-	return people.Progress{}
-}
+func (s *Snapshot) Progress() people.Progress { return s.peopleState().Progress() }
 
 // Invitations lists invitation and recovery grants, newest first.
-func (s *Snapshot) Invitations() []people.Grant {
-	if p := s.livePeople(); p != nil {
-		return p.Invitations()
-	}
-	return []people.Grant{}
-}
+func (s *Snapshot) Invitations() []people.Grant { return s.peopleState().Invitations() }
 
 // TeamImpact counts the people and pending enrollments that use teamID.
 func (s *Snapshot) TeamImpact(teamID string) people.TeamDependencies {
-	if p := s.livePeople(); p != nil {
-		return p.TeamImpact(teamID)
-	}
-	return people.TeamDependencies{}
+	return s.peopleState().TeamImpact(teamID)
 }
 
 // OwnerTeam reports whether teamID is the owner's team.
-func (s *Snapshot) OwnerTeam(teamID string) bool {
-	p := s.livePeople()
-	return p != nil && p.OwnerTeam(teamID)
-}
+func (s *Snapshot) OwnerTeam(teamID string) bool { return s.peopleState().OwnerTeam(teamID) }

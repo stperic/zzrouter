@@ -23,11 +23,13 @@ func TestConsoleGrantIssuanceCannotExhaustOwnerRecovery(t *testing.T) {
 	_, err = s.Issue(t.Context(), request)
 	require.NoError(t, err)
 	// Even global normal-grant saturation leaves capacity for local recovery.
-	s.state.Grants = make(map[string]grantRecord)
+	saturated := s.state().Clone()
+	saturated.grants = make(map[string]grantRecord)
 	now := utils.NowUTC()
 	for i := range maxGrants - 1 {
-		s.state.Grants[fmt.Sprintf("%064x", i)] = grantRecord{Grant: Grant{ID: fmt.Sprint(i), Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, Issuer: issuer}
+		saturated.grants[fmt.Sprintf("%064x", i)] = grantRecord{Grant: Grant{ID: fmt.Sprint(i), Purpose: PurposeInvitation, TeamID: "engineering", Role: "user", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, Issuer: issuer}
 	}
+	s.owner.current.Store(saturated)
 	_, err = s.Issue(t.Context(), GrantRequest{Purpose: PurposeSession, Issuer: issuer})
 	require.ErrorIs(t, err, ErrCapacity)
 	first, err := s.Issue(t.Context(), request)
@@ -49,6 +51,6 @@ func TestConsumedConsoleCodesDoNotAccumulate(t *testing.T) {
 		require.NoError(t, err)
 		_, err = s.ConsumeSession(t.Context(), bound.Token, testProof)
 		require.NoError(t, err)
-		require.Len(t, s.state.Grants, 1)
+		require.Len(t, s.state().grants, 1)
 	}
 }

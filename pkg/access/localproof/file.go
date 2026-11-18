@@ -64,7 +64,7 @@ func Address(host string) bool {
 	return false
 }
 
-// New rotates proof only while the caller owns the people store lock.
+// New rotates proof only while the caller holds the open access store.
 // The containing directory is restricted before any secret bytes are written.
 func New(ctx context.Context, configDir string, descriptor File) (*Proof, error) {
 	if err := ctx.Err(); err != nil {

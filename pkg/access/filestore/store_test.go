@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stperic/common/atomicfile"
 	"github.com/stretchr/testify/assert"
@@ -26,7 +27,10 @@ func TestStoreContract(t *testing.T) {
 		dir := t.TempDir()
 		var fail atomic.Bool
 		open := func() access.Store {
-			s := openTestStore(t, dir)
+			opened, err := Open(t.Context(), dir, contractOptions)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = opened.Close() })
+			s := opened.(*store)
 			s.write = func(path string, data []byte, mode os.FileMode) error {
 				if fail.CompareAndSwap(true, false) {
 					return io.ErrClosedPipe
@@ -47,6 +51,9 @@ func TestStoreContract(t *testing.T) {
 		}
 	})
 }
+
+// contractOptions opens people the way accesstest expects.
+var contractOptions = Options{People: true, ValidateExternalIssuer: accesstest.ValidateExternalIssuer, ValidateTeam: accesstest.ValidateTeam}
 
 func openTestStore(t *testing.T, dir string) *store {
 	t.Helper()
@@ -283,5 +290,93 @@ func TestOpenRefusesPeopleWithoutValidators(t *testing.T) {
 		require.Error(t, err, name)
 		_, err = os.Stat(filepath.Join(dir, "access"))
 		require.ErrorIs(t, err, os.ErrNotExist, "%s: refused before people is opened", name)
+	}
+}
+
+// TestStoreLockAndCorruptLoadRelease moved here with people's persistence.
+func TestPeopleLockAndCorruptLoadRelease(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	opened, err := Open(t.Context(), dir, contractOptions)
+	require.NoError(t, err)
+	_, err = Open(t.Context(), dir, contractOptions)
+	require.ErrorIs(t, err, atomicfile.ErrLocked)
+	require.NoError(t, opened.Close())
+	path := filepath.Join(dir, peopleFileName)
+	require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"initialized":false,"people":{},"grants":{},"unexpected":true}`), 0o600))
+	_, err = Open(t.Context(), dir, contractOptions)
+	require.Error(t, err)
+	require.NoError(t, os.Remove(path))
+	reopened, err := Open(t.Context(), dir, contractOptions)
+	require.NoError(t, err, "a refused load releases the lock")
+	require.NoError(t, reopened.Close())
+}
+
+// recordedEvents is an audit sink a test reads after the fact.
+type recordedEvents struct{ events []audit.Event }
+
+func (r *recordedEvents) Emit(_ context.Context, ev audit.Event) error {
+	r.events = append(r.events, ev)
+	return nil
+}
+
+func TestPostRenameWarningPublishesCommittedClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	opened, err := Open(t.Context(), dir, contractOptions)
+	require.NoError(t, err)
+	s := opened.(*store)
+	_, err = s.CreateTeam(t.Context(), "workspace", teams.Team{Name: "Workspace", Kind: teams.KindShared}, audit.Event{})
+	require.NoError(t, err)
+	grant, err := s.People().Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: "installation"}})
+	require.NoError(t, err)
+	bound, err := s.People().Exchange(t.Context(), grant.Token, "browser proof")
+	require.NoError(t, err)
+	sink := &recordedEvents{}
+	s.SetAuditSink(sink)
+	s.write = failWrite(true)
+	ctx := audit.WithIdentity(t.Context(), "claimer", "claim-request")
+	person, err := s.People().ClaimOwner(ctx, bound.Token, "browser proof", people.CreatePerson{Username: "alice", Name: "Alice", Password: "a long test password"})
+	require.NoError(t, err)
+	assert.Equal(t, person, s.Snapshot().Owner())
+	require.Len(t, sink.events, 1, "committed state is audited despite uncertain directory durability")
+	assert.Equal(t, audit.ActionPersonCreated, sink.events[0].Action)
+	assert.Equal(t, "claim-request", sink.events[0].RequestID)
+	require.NoError(t, s.Close())
+	reopened, err := Open(t.Context(), dir, contractOptions)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopened.Close() })
+	assert.Equal(t, person, reopened.Snapshot().Owner())
+	_, err = reopened.People().Inspect(t.Context(), bound.Token)
+	require.ErrorIs(t, err, people.ErrInvalidGrant)
+}
+
+// People reads are lock-free, so the team validator may use them mid-commit.
+func TestPeopleTeamValidatorMayReadPeople(t *testing.T) {
+	t.Parallel()
+	opened, err := Open(t.Context(), t.TempDir(), Options{
+		People:                 true,
+		ValidateExternalIssuer: accesstest.ValidateExternalIssuer,
+		ValidateTeam: func(snap *access.Snapshot, id string) error {
+			if snap.Initialized() || len(snap.People()) > 0 || snap.TeamImpact(id).People > 0 || snap.OwnerTeam(id) {
+				return people.ErrInvalidGrant
+			}
+			return accesstest.ValidateTeam(snap, id)
+		},
+	})
+	require.NoError(t, err)
+	_, err = opened.CreateTeam(t.Context(), "workspace", teams.Team{Name: "Workspace", Kind: teams.KindShared}, audit.Event{})
+	require.NoError(t, err)
+	issued := make(chan error, 1)
+	go func() {
+		_, err := opened.People().Issue(context.Background(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: "installation"}})
+		issued <- err
+	}()
+	select {
+	case err := <-issued:
+		require.NoError(t, err)
+		require.NoError(t, opened.Close())
+	case <-time.After(10 * time.Second):
+		t.Fatal("a people read inside the team validator blocked the commit")
 	}
 }

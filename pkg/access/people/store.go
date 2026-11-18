@@ -8,28 +8,21 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
-	"github.com/stperic/common/atomicfile"
 	"github.com/stperic/zzrouter/pkg/audit"
-	"github.com/stperic/zzrouter/pkg/security"
 	"github.com/stperic/zzrouter/pkg/utils"
 )
 
 const (
-	maxPeople     = 10000
-	maxGrants     = 4096
-	maxStateBytes = 8 << 20
+	maxPeople = 10000
+	maxGrants = 4096
 )
 
 type personRecord struct {
@@ -43,7 +36,18 @@ type grantRecord struct {
 	BrowserHash string `json:"browser_hash,omitempty"`
 }
 
-type snapshot struct {
+// State is the people records, grants and onboarding progress. A published
+// *State is never changed; a nil *State reads as empty.
+type State struct {
+	initialized bool
+	ownerID     string
+	people      map[string]personRecord
+	grants      map[string]grantRecord
+	progress    Progress
+}
+
+// stateJSON is the persisted form of State.
+type stateJSON struct {
 	Version     int                     `json:"version"`
 	Initialized bool                    `json:"initialized"`
 	OwnerID     string                  `json:"owner_id,omitempty"`
@@ -52,121 +56,54 @@ type snapshot struct {
 	Progress    Progress                `json:"progress"`
 }
 
-// Store serializes identity mutations and owns its snapshot for the process lifetime.
-// Lock order: server team mutation gate, Store.mu, read-only key/team stores.
-// Neither callbacks nor mutations may acquire the browser session authority lock.
-type Store struct {
-	mu        sync.Mutex
-	path      string
-	lock      *os.File
-	state     snapshot
-	options   Options
-	audit     audit.Sink
-	closed    bool
-	passwords chan struct{}
-	attempts  map[string]loginAttempt
-	write     func(string, []byte, os.FileMode) error
+// Clone is the private copy a transition changes; a nil State clones as empty.
+func (s *State) Clone() *State {
+	if s == nil {
+		return &State{people: make(map[string]personRecord), grants: make(map[string]grantRecord)}
+	}
+	next := *s
+	next.people = maps.Clone(s.people)
+	next.grants = maps.Clone(s.grants)
+	return &next
 }
 
-// Open locks and loads one installation's people snapshot. A missing file is unclaimed.
-func Open(ctx context.Context, path string, options Options) (*Store, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if path == "" || options.ValidateExternalIssuer == nil || options.ValidateTeam == nil {
-		return nil, fmt.Errorf("people store requires a path and authority validators")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create people directory: %w", err)
-	}
-	if err := security.RestrictDirectoryPermissions(filepath.Dir(path)); err != nil {
-		return nil, fmt.Errorf("restrict people directory: %w", err)
-	}
-	lock, err := atomicfile.Lock(path + ".lock")
-	if err != nil {
-		return nil, fmt.Errorf("lock people snapshot: %w", err)
-	}
-	s := &Store{path: path, lock: lock, options: options, passwords: make(chan struct{}, 2), attempts: make(map[string]loginAttempt), write: atomicfile.WriteFile,
-		state: snapshot{Version: 1, People: make(map[string]personRecord), Grants: make(map[string]grantRecord)}}
-	if err := s.load(); err != nil {
-		_ = lock.Close()
-		return nil, err
-	}
-	return s, nil
+// MarshalJSON writes the persisted form; Clone gives a nil State its empty maps.
+func (s *State) MarshalJSON() ([]byte, error) {
+	s = s.Clone()
+	return json.Marshal(stateJSON{Version: 1, Initialized: s.initialized, OwnerID: s.ownerID, People: s.people, Grants: s.grants, Progress: s.progress})
 }
 
-func (s *Store) load() error {
-	f, err := os.Open(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("open people snapshot: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	data, err := io.ReadAll(io.LimitReader(f, maxStateBytes+1))
-	if err != nil {
-		return fmt.Errorf("read people snapshot: %w", err)
-	}
-	s.state, err = decodeSnapshot(data)
-	return err
-}
-
-// DecodeSnapshot validates persisted account state and returns safe person
-// projections so recovery can check references without copying the wire format.
-func DecodeSnapshot(data []byte) ([]Person, error) {
-	state, err := decodeSnapshot(data)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]Person, 0, len(state.People))
-	for _, record := range state.People {
-		result = append(result, record.Person)
-	}
-	return result, nil
-}
-
-func decodeSnapshot(data []byte) (snapshot, error) {
-	if len(data) > maxStateBytes {
-		return snapshot{}, fmt.Errorf("people snapshot exceeds size limit")
-	}
-	var state snapshot
+// DecodeState validates persisted account state.
+func DecodeState(data []byte) (*State, error) {
+	var wire stateJSON
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&state); err != nil {
-		return snapshot{}, fmt.Errorf("decode people snapshot: %w", err)
+	if err := decoder.Decode(&wire); err != nil {
+		return nil, fmt.Errorf("decode people snapshot: %w", err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return snapshot{}, fmt.Errorf("people snapshot has trailing data")
+		return nil, fmt.Errorf("people snapshot has trailing data")
 	}
-	if err := validateSnapshot(state); err != nil {
-		return snapshot{}, err
+	if wire.Version != 1 || wire.People == nil || wire.Grants == nil {
+		return nil, fmt.Errorf("invalid people snapshot structure")
+	}
+	state := &State{initialized: wire.Initialized, ownerID: wire.OwnerID, people: wire.People, grants: wire.Grants, progress: wire.Progress}
+	if err := state.validate(); err != nil {
+		return nil, err
 	}
 	return state, nil
 }
 
-func validateSnapshot(state snapshot) error {
-	if state.Version != 1 || state.People == nil || state.Grants == nil || len(state.People) > maxPeople || len(state.Grants) > maxGrants {
+func (s *State) validate() error {
+	if len(s.people) > maxPeople || len(s.grants) > maxGrants {
 		return fmt.Errorf("invalid people snapshot structure")
 	}
-	if state.Initialized != (state.OwnerID != "") {
+	if s.initialized != (s.ownerID != "") {
 		return fmt.Errorf("invalid people ownership marker")
 	}
-	if err := validateSnapshotPeople(state); err != nil {
-		return err
-	}
-	for hash, grant := range state.Grants {
-		if len(hash) != 64 || grant.ID == "" || !validPurpose(grant.Purpose) || grant.ExpiresAt.IsZero() || !validIssuer(grant.Issuer) {
-			return fmt.Errorf("invalid people grant snapshot")
-		}
-	}
-	return nil
-}
-
-func validateSnapshotPeople(state snapshot) error {
 	owners := 0
-	usernames := make(map[string]bool, len(state.People))
-	for id, record := range state.People {
+	usernames := make(map[string]bool, len(s.people))
+	for id, record := range s.people {
 		p := record.Person
 		if id != p.ID || validatePerson(p) != nil || usernames[p.Username] || !validPasswordHash(record.PasswordHash) {
 			return fmt.Errorf("invalid people snapshot account")
@@ -174,84 +111,56 @@ func validateSnapshotPeople(state snapshot) error {
 		usernames[p.Username] = true
 		if p.Owner {
 			owners++
-			if id != state.OwnerID || p.Role != "admin" || p.Suspended {
+			if id != s.ownerID || p.Role != "admin" || p.Suspended {
 				return fmt.Errorf("invalid owner account")
 			}
 		}
 	}
-	if state.Initialized && owners != 1 || !state.Initialized && len(state.People) != 0 {
+	if s.initialized && owners != 1 || !s.initialized && len(s.people) != 0 {
 		return fmt.Errorf("invalid people ownership state")
 	}
-	return nil
-}
-
-// Close releases ownership. Closed stores cannot authenticate or mutate state.
-func (s *Store) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil
-	}
-	s.closed = true
-	return s.lock.Close()
-}
-
-func (s *Store) mutate(ctx context.Context, event *audit.Event, change func(*snapshot) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ErrClosed
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	next := s.state
-	next.People = maps.Clone(s.state.People)
-	next.Grants = maps.Clone(s.state.Grants)
-	if err := change(&next); err != nil {
-		return err
-	}
-	data, err := json.Marshal(next)
-	if err != nil {
-		return fmt.Errorf("encode people snapshot: %w", err)
-	}
-	if len(data) > maxStateBytes {
-		return ErrCapacity
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err = s.write(s.path, data, 0o600); err != nil && !errors.Is(err, atomicfile.ErrPostRenameDurability) {
-		return fmt.Errorf("save people snapshot: %w", err)
-	}
-	s.state = next
-	if event != nil && event.Action != "" {
-		audit.Log(ctx, s.audit, *event)
-	}
-	if err != nil {
-		slog.Warn("People snapshot committed with uncertain directory durability")
+	for hash, grant := range s.grants {
+		if len(hash) != 64 || grant.ID == "" || !validPurpose(grant.Purpose) || grant.ExpiresAt.IsZero() || !validIssuer(grant.Issuer) {
+			return fmt.Errorf("invalid people grant snapshot")
+		}
 	}
 	return nil
 }
 
-// SetAuditSink shares the server-owned sink without taking ownership of its lifetime.
-func (s *Store) SetAuditSink(sink audit.Sink) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.audit = sink
+// Store runs people transitions over state its owner persists. It keeps only
+// runtime guards: login throttling and Argon2 admission.
+type Store struct {
+	options   Options
+	passwords chan struct{}
+	mu        sync.Mutex // guards attempts
+	attempts  map[string]loginAttempt
+}
+
+// New builds the transitions over the owner's Mutate and View.
+func New(options Options) (*Store, error) {
+	if options.Mutate == nil || options.View == nil || options.ValidateExternalIssuer == nil || options.ValidateTeam == nil {
+		return nil, fmt.Errorf("people requires state access and authority validators")
+	}
+	return &Store{options: options, passwords: make(chan struct{}, 2), attempts: make(map[string]loginAttempt)}, nil
+}
+
+// view reads the owner's current state; none reads as empty.
+func (s *Store) view() *State {
+	if state := s.options.View(); state != nil {
+		return state
+	}
+	return &State{}
 }
 
 // Initialized reports the permanent owner-claim marker.
-func (s *Store) Initialized() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.state.Initialized }
+func (s *State) Initialized() bool { return s != nil && s.initialized }
 
-// Get returns a safe copy, or nil for an absent account or closed store.
-func (s *Store) Get(id string) *Person {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+// Person returns a copy, or nil for an absent account.
+func (s *State) Person(id string) *Person {
+	if s == nil {
 		return nil
 	}
-	record, ok := s.state.People[id]
+	record, ok := s.people[id]
 	if !ok {
 		return nil
 	}
@@ -260,23 +169,18 @@ func (s *Store) Get(id string) *Person {
 }
 
 // Owner returns the immutable initial owner, if claimed.
-func (s *Store) Owner() *Person {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || !s.state.Initialized {
+func (s *State) Owner() *Person {
+	if !s.Initialized() {
 		return nil
 	}
-	p := s.state.People[s.state.OwnerID].Person
-	return &p
+	return s.Person(s.ownerID)
 }
 
-// List returns public account snapshots ordered by username.
-func (s *Store) List() []Person {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	items := make([]Person, 0, len(s.state.People))
-	if !s.closed {
-		for _, record := range s.state.People {
+// People returns public accounts ordered by username.
+func (s *State) People() []Person {
+	items := []Person{}
+	if s != nil {
+		for _, record := range s.people {
 			items = append(items, record.Person)
 		}
 	}
@@ -300,17 +204,18 @@ func (d TeamDependencies) HasMembers() bool {
 }
 
 // TeamImpact is the canonical projection used by both access UI and deletion.
-func (s *Store) TeamImpact(id string) TeamDependencies {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *State) TeamImpact(id string) TeamDependencies {
 	var result TeamDependencies
-	for _, record := range s.state.People {
+	if s == nil {
+		return result
+	}
+	for _, record := range s.people {
 		if record.TeamID == id {
 			result.People++
 			result.OwnerProtected = result.OwnerProtected || record.Owner
 		}
 	}
-	for _, grant := range s.state.Grants {
+	for _, grant := range s.grants {
 		if grant.TeamID == id && active(grant.Grant) {
 			if grant.Purpose == PurposeInvitation {
 				result.Invitations++
@@ -322,14 +227,18 @@ func (s *Store) TeamImpact(id string) TeamDependencies {
 	return result
 }
 
-// ReferencedTeam prevents removal while identities or pending grants use a team.
-func (s *Store) ReferencedTeam(id string) bool { return s.TeamImpact(id).HasMembers() }
-
 // OwnerTeam reports whether suspension or deletion would lock out the owner.
-func (s *Store) OwnerTeam(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state.Initialized && s.state.People[s.state.OwnerID].TeamID == id
+func (s *State) OwnerTeam(id string) bool {
+	owner := s.Owner()
+	return owner != nil && owner.TeamID == id
+}
+
+// Progress returns the persisted onboarding state.
+func (s *State) Progress() Progress {
+	if s == nil {
+		return Progress{}
+	}
+	return s.progress
 }
 
 func randomValue(prefix string) string {
@@ -396,45 +305,42 @@ func publicGrant(record grantRecord) Grant {
 	return g
 }
 
-// Progress returns the persisted onboarding state.
-func (s *Store) Progress() Progress { s.mu.Lock(); defer s.mu.Unlock(); return s.state.Progress }
-
 // UpdateProgress saves navigation choices without accepting success evidence.
 func (s *Store) UpdateProgress(ctx context.Context, update ProgressUpdate) error {
-	return s.mutate(ctx, nil, func(state *snapshot) error {
+	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
 		if update.Step != nil {
 			switch *update.Step {
 			case "", "owner", "provider", "model", "test", "app", "complete":
-				state.Progress.Step = *update.Step
+				state.progress.Step = *update.Step
 			default:
-				return ErrInvalidInput
+				return audit.Event{}, ErrInvalidInput
 			}
 		}
 		if update.Dismissed != nil {
-			state.Progress.Dismissed = *update.Dismissed
+			state.progress.Dismissed = *update.Dismissed
 		}
-		state.Progress.UpdatedAt = utils.NowUTC()
-		return nil
+		state.progress.UpdatedAt = utils.NowUTC()
+		return audit.Event{}, nil
 	})
 }
 
 // MarkResponse records successful routed inference by the initial owner.
 func (s *Store) MarkResponse(ctx context.Context, personID string) error {
-	return s.mutate(ctx, nil, func(state *snapshot) error {
-		if !state.Initialized || state.OwnerID != personID {
-			return ErrNotFound
+	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		if !state.initialized || state.ownerID != personID {
+			return audit.Event{}, ErrNotFound
 		}
-		state.Progress.ResponseVerified = true
-		state.Progress.UpdatedAt = utils.NowUTC()
-		return nil
+		state.progress.ResponseVerified = true
+		state.progress.UpdatedAt = utils.NowUTC()
+		return audit.Event{}, nil
 	})
 }
 
 // MarkAppConnected records a successful inference request from an application key.
 func (s *Store) MarkAppConnected(ctx context.Context) error {
-	return s.mutate(ctx, nil, func(state *snapshot) error {
-		state.Progress.AppConnected = true
-		state.Progress.UpdatedAt = utils.NowUTC()
-		return nil
+	return s.options.Mutate(ctx, func(state *State) (audit.Event, error) {
+		state.progress.AppConnected = true
+		state.progress.UpdatedAt = utils.NowUTC()
+		return audit.Event{}, nil
 	})
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stperic/common/secrets"
+	"github.com/stperic/zzrouter/pkg/access"
 	"github.com/stperic/zzrouter/pkg/access/filestore"
 	"github.com/stperic/zzrouter/pkg/access/keys"
 	"github.com/stperic/zzrouter/pkg/access/people"
@@ -23,6 +24,13 @@ import (
 	"github.com/stperic/zzrouter/pkg/config/templates"
 	"github.com/stretchr/testify/require"
 )
+
+// peopleOptions accepts every issuer and team: the fixture tests archives, not authority.
+var peopleOptions = filestore.Options{
+	People:                 true,
+	ValidateExternalIssuer: func(context.Context, string) error { return nil },
+	ValidateTeam:           func(*access.Snapshot, string) error { return nil },
+}
 
 func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	t.Helper()
@@ -48,24 +56,20 @@ func recoveryFixture(t *testing.T) (dir, output, keyOutput string) {
 	_, err = vault.Replace(t.Context(), "cloud", 0, map[string]string{"token": "synthetic-provider-secret"})
 	require.NoError(t, err)
 	require.NoError(t, vault.Close())
-	accessStore, err := filestore.Open(t.Context(), dir, filestore.Options{})
+	accessStore, err := filestore.Open(t.Context(), dir, peopleOptions)
 	require.NoError(t, err)
 	_, err = accessStore.CreateTeam(t.Context(), "workspace", teams.Team{Name: "Workspace", Kind: teams.KindShared}, audit.Event{})
 	require.NoError(t, err)
 	_, _, err = accessStore.CreateKey(t.Context(), "editor", keys.VirtualKey{Name: "Editor", Role: "user", TeamID: "workspace", TeamRole: "member"}, audit.Event{})
 	require.NoError(t, err)
-	require.NoError(t, accessStore.Close())
-	peopleStore, err := people.Open(t.Context(), filepath.Join(dir, "access", "people.json"), people.Options{
-		ValidateExternalIssuer: func(context.Context, string) error { return nil }, ValidateTeam: func(context.Context, string) error { return nil },
-	})
-	require.NoError(t, err)
+	peopleStore := accessStore.People()
 	grant, err := peopleStore.Issue(t.Context(), people.GrantRequest{Purpose: people.PurposeSetup, TeamID: "workspace", Role: "admin", Issuer: people.Issuer{Reference: "test"}})
 	require.NoError(t, err)
 	bound, err := peopleStore.Exchange(t.Context(), grant.Token, "test-proof")
 	require.NoError(t, err)
 	_, err = peopleStore.ClaimOwner(t.Context(), bound.Token, "test-proof", people.CreatePerson{Username: "owner", Name: "Owner", Password: "a long test password"})
 	require.NoError(t, err)
-	require.NoError(t, peopleStore.Close())
+	require.NoError(t, accessStore.Close())
 	require.NoError(t, quota.SaveSpend(filepath.Join(dir, "spend.json"), &quota.SpendFile{Version: 1, States: map[string]*quota.SpendState{"team:workspace:": {EntityID: "workspace", Kind: quota.ScopeTeam, SpendMicro: 1750000}}}))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pairing.txt"), []byte("transient-pairing-proof"), 0o600))
 	output = filepath.Join(t.TempDir(), "backup.tar.gz")
@@ -94,15 +98,13 @@ func TestRecoveryRoundTripPreservesAuthorityAndSpend(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, before, after, name)
 	}
-	restoredPeople, err := people.Open(t.Context(), filepath.Join(destination, "config", "access", "people.json"), people.Options{
-		ValidateExternalIssuer: func(context.Context, string) error { return nil }, ValidateTeam: func(context.Context, string) error { return nil },
-	})
+	restoredStore, err := filestore.Open(t.Context(), filepath.Join(destination, "config"), peopleOptions)
 	require.NoError(t, err)
-	person, err := restoredPeople.Authenticate(t.Context(), "owner", "a long test password")
+	person, err := restoredStore.People().Authenticate(t.Context(), "owner", "a long test password")
 	require.NoError(t, err)
 	require.Equal(t, "admin", person.Role)
 	require.Equal(t, "workspace", person.TeamID)
-	require.NoError(t, restoredPeople.Close())
+	require.NoError(t, restoredStore.Close())
 	keyData, err := os.ReadFile(filepath.Join(destination, "config", "keys.yaml"))
 	require.NoError(t, err)
 	restoredKeys, err := filestore.DecodeKeys(keyData)
